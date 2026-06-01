@@ -1,2 +1,2 @@
 # Carpeta raiz donde estan los .ex5 a testear.
-C:/Users/13199/AppData/Roaming/MetaQuotes/Terminal/5FFA568149E88FCD5B44D926DCFEAA79/MQL5/Experts/old
+C:/Users/Adrian/AppData/Roaming/MetaQuotes/Terminal/5FFA568149E88FCD5B44D926DCFEAA79/MQL5/Experts

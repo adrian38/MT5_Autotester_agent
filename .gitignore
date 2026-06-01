@@ -27,6 +27,7 @@ dist/
 
 # Installer / project generated folders
 reports/
+outputs/
 dist_installer/
 build_installer/
 

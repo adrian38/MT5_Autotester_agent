@@ -1,11 +1,15 @@
 import configparser
+import html
+import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
 import traceback
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -512,6 +516,7 @@ class MT5AutotesterUI(tk.Tk):
         self.theme_mode = tk.StringVar(value="dark" if saved_theme == "dark" else "light")
         self._apply_theme_palette()
 
+        default_ubs_ready = BASE_DIR / "sets" / "ubs_ready"
         self.mt5_path = tk.StringVar(value=saved_paths.get("mt5_path", str(terminal_path_from_env() or find_mt5_path(None))))
         self.mt5_data_root = tk.StringVar(value=saved_paths.get("mt5_data_root", ""))
         self.metaeditor_path = tk.StringVar(
@@ -521,9 +526,17 @@ class MT5AutotesterUI(tk.Tk):
         self.compile_file = tk.StringVar(value=saved_paths.get("compile_file", ""))
         self.experts_root = tk.StringVar(value=saved_paths.get("experts_root", str(load_experts_root() or "")))
         self.ubs_ex5_file = tk.StringVar(value=saved_paths.get("ubs_ex5_file", ""))
-        self.set_files_root = tk.StringVar(value=saved_paths.get("set_files_root", ""))
+        self.set_files_root = tk.StringVar(
+            value=saved_paths.get(
+                "set_files_root",
+                str(default_ubs_ready) if default_ubs_ready.exists() else "",
+            )
+        )
         self.ubs_set_file = tk.StringVar(value=saved_paths.get("ubs_set_file", ""))
         self.template_path = tk.StringVar(value=saved_paths.get("template_path", str(TEMPLATE_FILE)))
+        self.ubs_generation_output = tk.StringVar(
+            value=saved_paths.get("ubs_generation_output", str(BASE_DIR / "outputs" / "ubs_agent"))
+        )
         self.portfolio_input = tk.StringVar(value=saved_paths.get("portfolio_input", str(REPORT_DIR)))
         self.portfolio_output = tk.StringVar(
             value=saved_paths.get("portfolio_output", str(BASE_DIR / "outputs" / "ALL_STRATEGIES.xlsx"))
@@ -531,6 +544,15 @@ class MT5AutotesterUI(tk.Tk):
         self.portfolio_threshold = tk.StringVar(value=saved_general.get("portfolio_threshold", "50"))
         self.recursive = tk.BooleanVar(value=saved_general.get("recursive", "0") in {"1", "true", "yes", "on"})
         self.delay = tk.IntVar(value=self._saved_int(saved_general.get("delay"), 5))
+        self.ubs_generation_count = tk.IntVar(value=self._saved_int(saved_general.get("ubs_generation_count"), 1))
+        self.ubs_variants_per_seed = tk.IntVar(value=self._saved_int(saved_general.get("ubs_variants_per_seed"), 3))
+        self.ubs_max_seeds = tk.IntVar(value=self._saved_int(saved_general.get("ubs_max_seeds"), 50))
+        self.ubs_agent_execute = tk.BooleanVar(value=saved_general.get("ubs_agent_execute", "0") in {"1", "true", "yes", "on"})
+        self.ubs_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_pass_min_net_profit", "100"))
+        self.ubs_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_profit_factor", "1.20"))
+        self.ubs_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_pass_min_trades"), 50))
+        self.ubs_pass_max_drawdown_pct = tk.StringVar(value=saved_general.get("ubs_pass_max_drawdown_pct", "25"))
+        self.ubs_pass_min_recovery_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_recovery_factor", "1.0"))
         self.symbol_suffix_enabled = tk.BooleanVar(value=saved_general.get("symbol_suffix_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_suffix = tk.StringVar(value=saved_general.get("symbol_suffix", ""))
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
@@ -545,6 +567,15 @@ class MT5AutotesterUI(tk.Tk):
         self.reports_count = tk.StringVar(value="0")
         self.portfolio_count = tk.StringVar(value="Reports encontrados: 0")
         self.portfolio_status = tk.StringVar(value="Selecciona una carpeta de reportes y genera el Excel.")
+        self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
+        self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
+        self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
+        self.ubs_history_candidate_summary = tk.StringVar(value="Selecciona un run")
+        self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
+        self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
+        self.ubs_compare_summary = tk.StringVar(value="Sin sets aceptados")
+        self.ubs_compare_detail = tk.StringVar(value="Selecciona un set aceptado para comparar contra su seed.")
+        self.ubs_continue_status = tk.StringVar(value="Continuar: sin memoria UBS")
         self.mode_text = tk.StringVar(value="Real")
         self.last_log_text = tk.StringVar(value="Sin log reciente")
         self.active_task_text = tk.StringVar(value="Sin tarea activa")
@@ -559,6 +590,10 @@ class MT5AutotesterUI(tk.Tk):
         self.portfolio_buttons: list[ttk.Button] = []
         self.nav_buttons: dict[str, tk.Button] = {}
         self.section_frames: dict[str, ttk.Frame] = {}
+        self.ubs_result_paths: dict[str, dict[str, str]] = {}
+        self.ubs_history_candidate_paths: dict[str, dict[str, str]] = {}
+        self.ubs_compare_paths: dict[str, dict[str, str]] = {}
+        self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"
 
         self._configure_style()
@@ -702,12 +737,17 @@ class MT5AutotesterUI(tk.Tk):
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "portfolio", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "portfolio", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
 
         self._build_dashboard(self.section_frames["panel"])
+        self._build_ubs_agent(self.section_frames["agente_ubs"])
+        self._build_ubs_results(self.section_frames["ubs_resultados"])
+        self._build_ubs_history(self.section_frames["ubs_historico"])
+        self._build_ubs_universe(self.section_frames["ubs_universo"])
+        self._build_ubs_comparison(self.section_frames["ubs_comparar"])
         self._build_portfolio(self.section_frames["portfolio"])
         self._build_settings(self.section_frames["configuracion"])
         self._build_files(self.section_frames["archivos"])
@@ -740,6 +780,11 @@ class MT5AutotesterUI(tk.Tk):
         nav.columnconfigure(0, weight=1)
         items = [
             ("panel", "▦  Panel"),
+            ("agente_ubs", "UBS  Agente UBS"),
+            ("ubs_resultados", "UBS  Resultados"),
+            ("ubs_historico", "UBS  Historico"),
+            ("ubs_universo", "UBS  Universo"),
+            ("ubs_comparar", "UBS  Comparar"),
             ("portfolio", "▤  Portfolio"),
             ("configuracion", "⚙  Configuracion"),
             ("archivos", "▤  Archivos"),
@@ -917,6 +962,13 @@ class MT5AutotesterUI(tk.Tk):
             title="Tester UBS",
             description="Testea un solo bot usando todos los set files configurados.",
             command=self._run_ubs_tester,
+        )
+        self._action_card(
+            actions_card, 2, 1,
+            icon="GEN",
+            title="Agente UBS",
+            description="Elige seeds/assets, muta parametros y usa feedback si ejecuta backtests.",
+            command=self._run_ubs_generator,
         )
 
         compile_and = RoundedButton(
@@ -1172,6 +1224,473 @@ class MT5AutotesterUI(tk.Tk):
             parent_bg=COLORS["panel"],
             command=self._save_template_clicked,
         ).grid(row=8, column=0, columnspan=4, sticky="ew", padx=20, pady=(10, 22))
+
+    def _build_ubs_agent(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        paths = self._card(parent, "Rutas Agente UBS")
+        paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        paths.columnconfigure(1, weight=1)
+        self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 1, self._browse_ex5_file)
+        self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 2, self._browse_dir)
+        self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 3, self._browse_dir)
+
+        agent = self._card(parent, "Configuracion Agente UBS")
+        agent.grid(row=1, column=0, sticky="ew")
+        for column in (1, 3, 5):
+            agent.columnconfigure(column, weight=1)
+
+        gen_fields = [
+            ("Generaciones", self.ubs_generation_count, 1, 100),
+            ("Variantes por set", self.ubs_variants_per_seed, 1, 100),
+            ("Max seeds/gen", self.ubs_max_seeds, 0, 5000),
+        ]
+        for index, (label, variable, from_value, to_value) in enumerate(gen_fields):
+            column = index * 2
+            left_pad = 20 if index == 0 else 10
+            right_pad = 10 if index < len(gen_fields) - 1 else 20
+            ttk.Label(agent, text=label, style="Panel.TLabel").grid(
+                row=1, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=10).grid(
+                row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
+            )
+
+        exec_row = tk.Frame(agent, bg=COLORS["panel"])
+        exec_row.grid(row=2, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))
+        exec_row.columnconfigure(0, weight=1)
+        exec_text = tk.Frame(exec_row, bg=COLORS["panel"])
+        exec_text.grid(row=0, column=0, sticky="w")
+        tk.Label(exec_text, text="Ejecutar backtests", bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(exec_text, text="Activa feedback real; apagado solo genera variantes.", bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
+        ToggleSwitch(exec_row, variable=self.ubs_agent_execute, bg=COLORS["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+
+        buttons = ttk.Frame(agent, style="Panel.TFrame")
+        buttons.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
+        buttons.columnconfigure(0, weight=1)
+        buttons.columnconfigure(1, weight=1)
+        buttons.columnconfigure(2, weight=1)
+        RoundedButton(
+            buttons, text="Guardar configuracion Agente UBS",
+            bg=COLORS["primary_container"], hover_bg=COLORS["primary"],
+            font=("Segoe UI", 10, "bold"),
+            radius=12, padx=18, pady=14,
+            parent_bg=COLORS["panel"],
+            command=self._save_ubs_agent_clicked,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        RoundedButton(
+            buttons, text="Lanzar Agente UBS",
+            bg=COLORS["accent"], hover_bg=COLORS["accent_hover"],
+            font=("Segoe UI", 10, "bold"),
+            radius=12, padx=18, pady=14,
+            parent_bg=COLORS["panel"],
+            command=self._run_ubs_generator,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.ubs_continue_button = RoundedButton(
+            buttons, text="Continuar iteracion",
+            bg=COLORS["primary"], fg=COLORS["primary_text"],
+            hover_bg=COLORS["primary_container"], hover_fg=COLORS["primary_hover_text"],
+            font=("Segoe UI", 10, "bold"),
+            radius=12, padx=18, pady=14,
+            parent_bg=COLORS["panel"],
+            command=self._run_ubs_continue,
+        )
+        self.ubs_continue_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
+        ttk.Label(agent, textvariable=self.ubs_continue_status, style="Muted.TLabel").grid(
+            row=4, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
+        )
+
+        pass_config = self._card(parent, "Filtros de aceptacion")
+        pass_config.grid(row=2, column=0, sticky="ew", pady=(16, 0))
+        for column in (1, 3, 5):
+            pass_config.columnconfigure(column, weight=1)
+        pass_fields = [
+            ("Profit neto min", self.ubs_pass_min_net_profit, "entry"),
+            ("Profit factor min", self.ubs_pass_min_profit_factor, "entry"),
+            ("Trades min", self.ubs_pass_min_trades, "spin"),
+            ("DD max %", self.ubs_pass_max_drawdown_pct, "entry"),
+            ("Recovery min", self.ubs_pass_min_recovery_factor, "entry"),
+        ]
+        for index, (label, variable, kind) in enumerate(pass_fields):
+            row = 1 + index // 3
+            column = (index % 3) * 2
+            left_pad = 20 if column == 0 else 10
+            right_pad = 10 if column < 4 else 20
+            ttk.Label(pass_config, text=label, style="Panel.TLabel").grid(
+                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            if kind == "spin":
+                ttk.Spinbox(pass_config, from_=0, to=100000, textvariable=variable, width=10).grid(
+                    row=row, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
+                )
+            else:
+                ttk.Entry(pass_config, textvariable=variable).grid(
+                    row=row, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
+                )
+        ttk.Label(
+            pass_config,
+            text="Profit neto min es moneda de la cuenta. Con deposito 1000, default 100 = 10%. Estabilidad mensual: score, no filtro hard.",
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, columnspan=6, sticky="w", padx=20, pady=(4, 18))
+
+    def _build_ubs_results(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        results = self._card(parent, "Resultados Agente UBS")
+        results.grid(row=0, column=0, sticky="nsew")
+        results.columnconfigure(0, weight=1)
+        results.rowconfigure(3, weight=1)
+
+        results_bar = tk.Frame(results, bg=COLORS["panel_alt"])
+        results_bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
+        results_bar.columnconfigure(0, weight=1)
+        tk.Label(
+            results_bar,
+            textvariable=self.ubs_results_summary,
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        tk.Button(
+            results_bar,
+            text="Abrir output",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._open_ubs_output_dir,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            results_bar,
+            text="Abrir set",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._open_selected_ubs_set,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            results_bar,
+            text="Abrir reporte",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._open_selected_ubs_report,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            results_bar,
+            text="Limpiar vista",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._hide_latest_ubs_results,
+        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            results_bar,
+            text="Actualizar",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._refresh_ubs_results,
+        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=4)
+
+        ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
+            row=2, column=0, sticky="w", padx=20, pady=(0, 6)
+        )
+
+        table_frame = ttk.Frame(results, style="Panel.TFrame")
+        table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = ("run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
+        self.ubs_results_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
+        headings = {
+            "run": "RUN",
+            "gen": "GEN",
+            "status": "ESTADO",
+            "symbol": "SYMBOL",
+            "period": "TF",
+            "score": "SCORE",
+            "profit": "NET",
+            "pf": "PF",
+            "dd": "DD %",
+            "trades": "TRADES",
+            "set": "SET",
+        }
+        widths = {
+            "run": 56,
+            "gen": 50,
+            "status": 86,
+            "symbol": 96,
+            "period": 58,
+            "score": 82,
+            "profit": 90,
+            "pf": 72,
+            "dd": 72,
+            "trades": 74,
+            "set": 360,
+        }
+        anchors = {"score": "e", "profit": "e", "pf": "e", "dd": "e", "trades": "e"}
+        for column in columns:
+            self.ubs_results_tree.heading(column, text=headings[column])
+            self.ubs_results_tree.column(
+                column,
+                width=widths[column],
+                minwidth=42,
+                anchor=anchors.get(column, "w"),
+                stretch=column == "set",
+            )
+        self.ubs_results_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
+        self.ubs_results_tree.tag_configure("rejected", foreground=COLORS["danger"])
+        self.ubs_results_tree.tag_configure("pending", foreground=COLORS["muted"])
+        self.ubs_results_tree.grid(row=0, column=0, sticky="nsew")
+        self.ubs_results_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_report())
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.ubs_results_tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.ubs_results_tree.configure(yscrollcommand=scrollbar.set)
+
+    def _build_ubs_history(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        panel = self._card(parent, "Historico SQLite UBS")
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(3, weight=1)
+
+        bar = tk.Frame(panel, bg=COLORS["panel_alt"])
+        bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
+        bar.columnconfigure(0, weight=1)
+        tk.Label(bar, textvariable=self.ubs_history_summary, bg=COLORS["panel_alt"], fg=COLORS["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        tk.Button(
+            bar, text="Actualizar", bg=COLORS["panel"], fg=COLORS["muted"],
+            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
+            cursor="hand2", command=self._refresh_ubs_history,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=4)
+
+        runs_frame = ttk.Frame(panel, style="Panel.TFrame")
+        runs_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
+        runs_frame.columnconfigure(0, weight=1)
+        run_columns = ("id", "created", "gens", "variants", "seeds", "backtests", "hidden", "total", "accepted", "rejected", "output")
+        self.ubs_history_runs_tree = ttk.Treeview(runs_frame, columns=run_columns, show="headings", height=6)
+        run_headings = {
+            "id": "RUN", "created": "FECHA", "gens": "GENS", "variants": "VAR/SET",
+            "seeds": "SEEDS", "backtests": "BT", "hidden": "ARCH", "total": "TOTAL",
+            "accepted": "OK", "rejected": "BAD", "output": "OUTPUT",
+        }
+        run_widths = {"id": 56, "created": 150, "gens": 54, "variants": 70, "seeds": 70, "backtests": 50, "hidden": 55, "total": 70, "accepted": 55, "rejected": 55, "output": 380}
+        for column in run_columns:
+            self.ubs_history_runs_tree.heading(column, text=run_headings[column])
+            self.ubs_history_runs_tree.column(column, width=run_widths[column], anchor="e" if column in {"id", "gens", "variants", "seeds", "total", "accepted", "rejected"} else "w", stretch=column == "output")
+        self.ubs_history_runs_tree.grid(row=0, column=0, sticky="ew")
+        self.ubs_history_runs_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_history_candidates())
+
+        candidates_panel = ttk.Frame(panel, style="Panel.TFrame")
+        candidates_panel.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        candidates_panel.columnconfigure(0, weight=1)
+        candidates_panel.rowconfigure(1, weight=1)
+        ttk.Label(candidates_panel, textvariable=self.ubs_history_candidate_summary, style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        cand_columns = ("id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
+        self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings", height=12)
+        cand_headings = {"id": "ID", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
+        cand_widths = {"id": 60, "gen": 50, "status": 86, "symbol": 96, "period": 58, "score": 82, "profit": 90, "pf": 72, "dd": 72, "trades": 74, "set": 360}
+        for column in cand_columns:
+            self.ubs_history_candidates_tree.heading(column, text=cand_headings[column])
+            self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="e" if column in {"id", "gen", "score", "profit", "pf", "dd", "trades"} else "w", stretch=column == "set")
+        self.ubs_history_candidates_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
+        self.ubs_history_candidates_tree.tag_configure("rejected", foreground=COLORS["danger"])
+        self.ubs_history_candidates_tree.tag_configure("pending", foreground=COLORS["muted"])
+        self.ubs_history_candidates_tree.grid(row=1, column=0, sticky="nsew")
+        cand_scroll = ttk.Scrollbar(candidates_panel, orient="vertical", command=self.ubs_history_candidates_tree.yview)
+        cand_scroll.grid(row=1, column=1, sticky="ns")
+        self.ubs_history_candidates_tree.configure(yscrollcommand=cand_scroll.set)
+
+    def _build_ubs_comparison(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        panel = self._card(parent, "Comparar aceptados contra seed")
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(2, weight=1)
+
+        bar = tk.Frame(panel, bg=COLORS["panel_alt"])
+        bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
+        bar.columnconfigure(0, weight=1)
+        tk.Label(bar, textvariable=self.ubs_compare_summary, bg=COLORS["panel_alt"], fg=COLORS["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        tk.Button(
+            bar, text="Abrir seed", bg=COLORS["panel"], fg=COLORS["muted"],
+            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
+            cursor="hand2", command=self._open_selected_ubs_compare_seed,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            bar, text="Abrir aceptado", bg=COLORS["panel"], fg=COLORS["muted"],
+            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
+            cursor="hand2", command=self._open_selected_ubs_compare_set,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            bar, text="Reporte completo", bg=COLORS["panel"], fg=COLORS["muted"],
+            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
+            cursor="hand2", command=self._generate_ubs_compare_report,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=4)
+        tk.Button(
+            bar, text="Actualizar", bg=COLORS["panel"], fg=COLORS["muted"],
+            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
+            cursor="hand2", command=self._refresh_ubs_comparison,
+        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=4)
+
+        body = ttk.Frame(panel, style="Panel.TFrame")
+        body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        body.columnconfigure(0, weight=2)
+        body.columnconfigure(1, weight=3)
+        body.rowconfigure(0, weight=1)
+
+        accepted_frame = ttk.Frame(body, style="Panel.TFrame")
+        accepted_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        accepted_frame.columnconfigure(0, weight=1)
+        accepted_frame.rowconfigure(1, weight=1)
+        ttk.Label(accepted_frame, text="Aceptados", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        accepted_columns = ("run", "gen", "symbol", "period", "score", "profit", "pf", "dd", "set")
+        self.ubs_compare_sets_tree = ttk.Treeview(accepted_frame, columns=accepted_columns, show="headings", height=18)
+        accepted_headings = {"run": "RUN", "gen": "GEN", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "set": "ACEPTADO"}
+        accepted_widths = {"run": 50, "gen": 44, "symbol": 82, "period": 46, "score": 72, "profit": 82, "pf": 58, "dd": 62, "set": 260}
+        for column in accepted_columns:
+            self.ubs_compare_sets_tree.heading(column, text=accepted_headings[column])
+            self.ubs_compare_sets_tree.column(column, width=accepted_widths[column], anchor="e" if column in {"run", "gen", "score", "profit", "pf", "dd"} else "w", stretch=column == "set")
+        self.ubs_compare_sets_tree.grid(row=1, column=0, sticky="nsew")
+        self.ubs_compare_sets_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_comparison_diff())
+        accepted_scroll = ttk.Scrollbar(accepted_frame, orient="vertical", command=self.ubs_compare_sets_tree.yview)
+        accepted_scroll.grid(row=1, column=1, sticky="ns")
+        self.ubs_compare_sets_tree.configure(yscrollcommand=accepted_scroll.set)
+
+        diff_panel = ttk.Frame(body, style="Panel.TFrame")
+        diff_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        diff_panel.columnconfigure(0, weight=1)
+        diff_panel.rowconfigure(1, weight=1)
+        ttk.Label(diff_panel, textvariable=self.ubs_compare_detail, style="Muted.TLabel", wraplength=760).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        diff_columns = ("key", "seed", "accepted")
+        self.ubs_compare_diff_tree = ttk.Treeview(diff_panel, columns=diff_columns, show="headings", height=18)
+        for column, heading, width in (("key", "PARAMETRO", 210), ("seed", "SEED", 240), ("accepted", "ACEPTADO", 240)):
+            self.ubs_compare_diff_tree.heading(column, text=heading)
+            self.ubs_compare_diff_tree.column(column, width=width, anchor="w", stretch=True)
+        self.ubs_compare_diff_tree.grid(row=1, column=0, sticky="nsew")
+        diff_scroll = ttk.Scrollbar(diff_panel, orient="vertical", command=self.ubs_compare_diff_tree.yview)
+        diff_scroll.grid(row=1, column=1, sticky="ns")
+        self.ubs_compare_diff_tree.configure(yscrollcommand=diff_scroll.set)
+
+    def _build_ubs_universe(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        panel = self._card(parent, "Universo, scores y pesos UBS")
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(2, weight=1)
+
+        bar = tk.Frame(panel, bg=COLORS["panel_alt"])
+        bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
+        bar.columnconfigure(0, weight=1)
+        tk.Label(
+            bar,
+            textvariable=self.ubs_universe_summary,
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        tk.Button(
+            bar,
+            text="Actualizar",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._refresh_ubs_universe,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=4)
+
+        body = ttk.Frame(panel, style="Panel.TFrame")
+        body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        asset_frame = ttk.Frame(body, style="Panel.TFrame")
+        asset_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        asset_frame.columnconfigure(0, weight=1)
+        asset_frame.rowconfigure(1, weight=1)
+        ttk.Label(asset_frame, text="Activos RoboForex", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        asset_columns = ("group", "symbol", "aliases", "weight", "avg", "best", "tests", "accepted", "pending")
+        self.ubs_universe_assets_tree = ttk.Treeview(asset_frame, columns=asset_columns, show="headings", height=18)
+        asset_headings = {
+            "group": "GRUPO",
+            "symbol": "ACTIVO",
+            "aliases": "ALIAS",
+            "weight": "PESO",
+            "avg": "AVG",
+            "best": "BEST",
+            "tests": "TESTS",
+            "accepted": "OK",
+            "pending": "PEND",
+        }
+        asset_widths = {"group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
+        for column in asset_columns:
+            self.ubs_universe_assets_tree.heading(column, text=asset_headings[column])
+            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="e" if column in {"weight", "avg", "best", "tests", "accepted", "pending"} else "w", stretch=column == "aliases")
+        self.ubs_universe_assets_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
+        self.ubs_universe_assets_tree.tag_configure("negative", foreground=COLORS["danger"])
+        self.ubs_universe_assets_tree.tag_configure("neutral", foreground=COLORS["muted"])
+        self.ubs_universe_assets_tree.grid(row=1, column=0, sticky="nsew")
+        asset_scroll = ttk.Scrollbar(asset_frame, orient="vertical", command=self.ubs_universe_assets_tree.yview)
+        asset_scroll.grid(row=1, column=1, sticky="ns")
+        self.ubs_universe_assets_tree.configure(yscrollcommand=asset_scroll.set)
+
+        tf_frame = ttk.Frame(body, style="Panel.TFrame")
+        tf_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        tf_frame.columnconfigure(0, weight=1)
+        tf_frame.rowconfigure(2, weight=1)
+        ttk.Label(tf_frame, text="Timeframes", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(tf_frame, textvariable=self.ubs_timeframe_summary, style="Muted.TLabel", wraplength=520).grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        tf_columns = ("period", "weight", "avg", "best", "tests", "accepted", "pending")
+        self.ubs_timeframes_tree = ttk.Treeview(tf_frame, columns=tf_columns, show="headings", height=18)
+        tf_headings = {"period": "TF", "weight": "PESO", "avg": "AVG", "best": "BEST", "tests": "TESTS", "accepted": "OK", "pending": "PEND"}
+        tf_widths = {"period": 70, "weight": 88, "avg": 88, "best": 88, "tests": 65, "accepted": 55, "pending": 60}
+        for column in tf_columns:
+            self.ubs_timeframes_tree.heading(column, text=tf_headings[column])
+            self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="e" if column != "period" else "w", stretch=column in {"weight", "avg", "best"})
+        self.ubs_timeframes_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
+        self.ubs_timeframes_tree.tag_configure("negative", foreground=COLORS["danger"])
+        self.ubs_timeframes_tree.tag_configure("neutral", foreground=COLORS["muted"])
+        self.ubs_timeframes_tree.grid(row=2, column=0, sticky="nsew")
+        tf_scroll = ttk.Scrollbar(tf_frame, orient="vertical", command=self.ubs_timeframes_tree.yview)
+        tf_scroll.grid(row=2, column=1, sticky="ns")
+        self.ubs_timeframes_tree.configure(yscrollcommand=tf_scroll.set)
 
     def _build_files(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1634,6 +2153,15 @@ class MT5AutotesterUI(tk.Tk):
         self.status_text.set("Configuracion guardada")
         messagebox.showinfo("Configuracion guardada", "La configuracion se guardo correctamente.")
 
+    def _save_ubs_agent_clicked(self) -> None:
+        try:
+            self._write_ui_settings()
+        except Exception as exc:
+            self._show_error("No se pudo guardar Agente UBS", str(exc))
+            return
+        self.status_text.set("Configuracion Agente UBS guardada")
+        messagebox.showinfo("Agente UBS", "La configuracion del Agente UBS se guardo correctamente.")
+
     def _delete_old_reports(self) -> None:
         report_suffixes = {".htm", ".html", ".png", ".set"}
         files = [
@@ -1681,12 +2209,22 @@ class MT5AutotesterUI(tk.Tk):
             "set_files_root": self.set_files_root.get().strip(),
             "ubs_set_file": self.ubs_set_file.get().strip(),
             "template_path": self.template_path.get().strip(),
+            "ubs_generation_output": self.ubs_generation_output.get().strip(),
             "portfolio_input": self.portfolio_input.get().strip(),
             "portfolio_output": self.portfolio_output.get().strip(),
         }
         parser["General"] = {
             "recursive": "1" if self.recursive.get() else "0",
             "delay": str(self.delay.get()),
+            "ubs_generation_count": str(self.ubs_generation_count.get()),
+            "ubs_variants_per_seed": str(self.ubs_variants_per_seed.get()),
+            "ubs_max_seeds": str(self.ubs_max_seeds.get()),
+            "ubs_agent_execute": "1" if self.ubs_agent_execute.get() else "0",
+            "ubs_pass_min_net_profit": self.ubs_pass_min_net_profit.get().strip(),
+            "ubs_pass_min_profit_factor": self.ubs_pass_min_profit_factor.get().strip(),
+            "ubs_pass_min_trades": str(self.ubs_pass_min_trades.get()),
+            "ubs_pass_max_drawdown_pct": self.ubs_pass_max_drawdown_pct.get().strip(),
+            "ubs_pass_min_recovery_factor": self.ubs_pass_min_recovery_factor.get().strip(),
             "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
             "symbol_suffix": self.symbol_suffix.get().strip(),
             "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
@@ -1836,8 +2374,931 @@ class MT5AutotesterUI(tk.Tk):
     def _refresh_all(self) -> None:
         self._refresh_experts()
         self._refresh_reports()
+        self._refresh_ubs_results()
+        self._refresh_ubs_history()
+        self._refresh_ubs_universe()
+        self._refresh_ubs_comparison()
+        self._refresh_ubs_continue_state()
         self._refresh_portfolio_count()
         self._refresh_last_log()
+
+    def _ubs_memory_path(self) -> Path:
+        return BASE_DIR / "outputs" / "ubs_memory.sqlite"
+
+    def _ensure_ubs_memory_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {str(row["name"]) for row in conn.execute("pragma table_info(runs)")}
+        if "hidden" not in columns:
+            conn.execute("alter table runs add column hidden integer not null default 0")
+            conn.commit()
+
+    def _ubs_continuation_info(self) -> dict[str, object]:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return {"available": False, "message": "Continuar: sin memoria UBS"}
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            run = conn.execute("select * from runs order by id desc limit 1").fetchone()
+            if run is None:
+                conn.close()
+                return {"available": False, "message": "Continuar: no hay runs guardados"}
+            generation_row = conn.execute(
+                "select max(generation) as generation from candidates where run_id=?",
+                (run["id"],),
+            ).fetchone()
+            latest_generation = int(generation_row["generation"] or 0)
+            pending_row = conn.execute(
+                """
+                select min(generation) as generation
+                from candidates
+                where run_id=? and status='generated'
+                """,
+                (run["id"],),
+            ).fetchone()
+            pending_generation = int(pending_row["generation"] or 0)
+            if pending_generation > 0:
+                pending_count = int(conn.execute(
+                    """
+                    select count(*) as total
+                    from candidates
+                    where run_id=? and generation=? and status='generated'
+                    """,
+                    (run["id"], pending_generation),
+                ).fetchone()["total"] or 0)
+            else:
+                pending_count = 0
+            rows = conn.execute(
+                "select set_path from candidates where run_id=? and generation=?",
+                (run["id"], latest_generation),
+            ).fetchall() if latest_generation > 0 else []
+            conn.close()
+        except sqlite3.Error as exc:
+            return {"available": False, "message": f"Continuar: error SQLite ({exc})"}
+
+        planned_generations = int(run["generations"] or 0)
+        variants_per_seed = int(run["variants_per_seed"] or 0)
+        max_seeds = int(run["max_seeds"] or 0)
+        execute_backtests = bool(run["execute_backtests"])
+        seed_count = len({str(Path(row["set_path"])) for row in rows if Path(row["set_path"]).exists()})
+        if latest_generation <= 0 or seed_count <= 0:
+            return {"available": False, "message": f"Continuar: run #{run['id']} sin seeds disponibles"}
+
+        if execute_backtests and pending_generation > 0 and pending_count > 0:
+            remaining_after_pending = max(0, planned_generations - pending_generation)
+            return {
+                "available": True,
+                "message": (
+                    f"Continuar: gen {pending_generation} generada sin backtest "
+                    f"({pending_count} pendientes); luego faltan {remaining_after_pending} gen"
+                ),
+                "run_id": int(run["id"]),
+                "latest_generation": latest_generation,
+                "pending_generation": pending_generation,
+                "pending_count": pending_count,
+                "planned_generations": planned_generations,
+                "remaining": remaining_after_pending,
+                "seed_count": pending_count,
+                "variants_per_seed": variants_per_seed,
+                "max_seeds": max_seeds,
+                "execute_backtests": execute_backtests,
+            }
+
+        remaining = max(0, planned_generations - latest_generation)
+        if remaining <= 0:
+            return {
+                "available": False,
+                "message": f"Continuar: deshabilitado, run #{run['id']} completo ({latest_generation}/{planned_generations})",
+                "run_id": int(run["id"]),
+                "latest_generation": latest_generation,
+                "planned_generations": planned_generations,
+                "remaining": 0,
+                "seed_count": seed_count,
+                "variants_per_seed": variants_per_seed,
+                "max_seeds": max_seeds,
+                "execute_backtests": execute_backtests,
+            }
+        return {
+            "available": True,
+            "message": f"Continuar: run #{run['id']} pendiente ({latest_generation}/{planned_generations}), faltan {remaining} gen",
+            "run_id": int(run["id"]),
+            "latest_generation": latest_generation,
+            "pending_generation": 0,
+            "pending_count": 0,
+            "planned_generations": planned_generations,
+            "remaining": remaining,
+            "seed_count": seed_count,
+            "variants_per_seed": variants_per_seed,
+            "max_seeds": max_seeds,
+            "execute_backtests": execute_backtests,
+        }
+
+    def _refresh_ubs_continue_state(self) -> None:
+        info = self._ubs_continuation_info()
+        available = bool(info.get("available"))
+        self.ubs_continue_status.set(str(info.get("message") or "Continuar: no disponible"))
+        if self.ubs_continue_button is not None:
+            self.ubs_continue_button.set_disabled(not available)
+
+    def _refresh_ubs_results(self) -> None:
+        if hasattr(self, "ubs_results_tree"):
+            for item in self.ubs_results_tree.get_children():
+                self.ubs_results_tree.delete(item)
+        self.ubs_result_paths.clear()
+
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            self.ubs_results_summary.set("Sin resultados UBS")
+            self.ubs_results_status.set(f"No existe memoria: {memory_path}")
+            return
+
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            latest_run = conn.execute(
+                "select * from runs where hidden=0 order by id desc limit 1"
+            ).fetchone()
+            if latest_run is None:
+                total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
+                self.ubs_results_summary.set("Sin resultados visibles")
+                if total_runs:
+                    self.ubs_results_status.set("Los resultados anteriores estan archivados; el agente conserva la memoria.")
+                else:
+                    self.ubs_results_status.set(f"Memoria: {memory_path}")
+                conn.close()
+                return
+
+            counts = conn.execute(
+                """
+                select
+                    count(*) as total,
+                    sum(case when score is not null then 1 else 0 end) as scored,
+                    sum(case when status = 'accepted' then 1 else 0 end) as accepted,
+                    sum(case when status = 'rejected' then 1 else 0 end) as rejected,
+                    sum(case when status = 'generated' then 1 else 0 end) as generated,
+                    sum(case when status = 'no_report' then 1 else 0 end) as no_report
+                from candidates
+                where run_id = ?
+                """,
+                (latest_run["id"],),
+            ).fetchone()
+            rows = conn.execute(
+                """
+                select *
+                from candidates
+                where run_id = ?
+                order by
+                    case
+                        when status = 'accepted' then 0
+                        when score is not null then 1
+                        else 2
+                    end,
+                    score desc,
+                    id desc
+                limit 300
+                """,
+                (latest_run["id"],),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self.ubs_results_summary.set("No se pudieron leer resultados UBS")
+            self.ubs_results_status.set(str(exc))
+            return
+
+        total = int(counts["total"] or 0)
+        scored = int(counts["scored"] or 0)
+        accepted = int(counts["accepted"] or 0)
+        rejected = int(counts["rejected"] or 0)
+        generated = int(counts["generated"] or 0)
+        no_report = int(counts["no_report"] or 0)
+        self.ubs_results_summary.set(
+            f"Run #{latest_run['id']} | {latest_run['created_at']} | "
+            f"candidatos {total} | puntuados {scored} | aceptados {accepted} | rechazados {rejected}"
+        )
+        extra = []
+        if generated:
+            extra.append(f"generados sin backtest {generated}")
+        if no_report:
+            extra.append(f"sin reporte {no_report}")
+        extra_text = f" | {', '.join(extra)}" if extra else ""
+        backtests = "si" if latest_run["execute_backtests"] else "no"
+        self.ubs_results_status.set(
+            f"Output: {latest_run['output_dir']} | Backtests: {backtests}{extra_text}"
+        )
+
+        if not hasattr(self, "ubs_results_tree"):
+            return
+        for index, row in enumerate(rows):
+            metrics = self._parse_ubs_metrics(row["metrics_json"])
+            status = str(row["status"] or "")
+            item = self.ubs_results_tree.insert(
+                "",
+                "end",
+                values=(
+                    row["run_id"],
+                    row["generation"],
+                    self._format_ubs_status(status),
+                    row["target_symbol"] or row["symbol"],
+                    row["period"],
+                    self._format_ubs_number(row["score"]),
+                    self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("profit_factor")),
+                    self._format_ubs_number(metrics.get("drawdown_pct")),
+                    self._format_ubs_int(metrics.get("trades")),
+                    Path(row["set_path"]).name,
+                ),
+                tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
+            )
+            self.ubs_result_paths[item] = {
+                "set": str(row["set_path"] or ""),
+                "report": str(row["report_path"] or ""),
+            }
+
+    def _hide_latest_ubs_results(self) -> None:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo("Agente UBS", "No hay memoria UBS para limpiar.")
+            return
+        if not messagebox.askyesno(
+            "Limpiar vista",
+            "Esto ocultara el ultimo run de la tabla, pero conservara la memoria para el agente.\n\nContinuar?",
+        ):
+            return
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            latest_run = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()
+            if latest_run is None:
+                conn.close()
+                messagebox.showinfo("Agente UBS", "No hay resultados visibles para limpiar.")
+                return
+            conn.execute("update runs set hidden=1 where id=?", (latest_run["id"],))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("No se pudo limpiar la vista UBS", str(exc))
+            return
+        self.status_text.set("Resultados UBS archivados en memoria")
+        self._refresh_ubs_results()
+        self._refresh_ubs_history()
+        self._refresh_ubs_comparison()
+
+    def _refresh_ubs_history(self) -> None:
+        if hasattr(self, "ubs_history_runs_tree"):
+            for item in self.ubs_history_runs_tree.get_children():
+                self.ubs_history_runs_tree.delete(item)
+        if hasattr(self, "ubs_history_candidates_tree"):
+            for item in self.ubs_history_candidates_tree.get_children():
+                self.ubs_history_candidates_tree.delete(item)
+        self.ubs_history_candidate_paths.clear()
+
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            self.ubs_history_summary.set("Sin memoria SQLite UBS")
+            self.ubs_history_candidate_summary.set(f"No existe: {memory_path}")
+            return
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            rows = conn.execute(
+                """
+                select
+                    r.id, r.created_at, r.generations, r.variants_per_seed, r.max_seeds,
+                    r.execute_backtests, r.hidden, r.output_dir,
+                    count(c.id) as total,
+                    sum(case when c.status = 'accepted' then 1 else 0 end) as accepted,
+                    sum(case when c.status = 'rejected' then 1 else 0 end) as rejected
+                from runs r
+                left join candidates c on c.run_id = r.id
+                group by r.id
+                order by r.id desc
+                """
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self.ubs_history_summary.set("No se pudo leer historico UBS")
+            self.ubs_history_candidate_summary.set(str(exc))
+            return
+
+        self.ubs_history_summary.set(f"Runs en SQLite: {len(rows)} | Memoria: {memory_path}")
+        if not hasattr(self, "ubs_history_runs_tree"):
+            return
+        for row in rows:
+            item = self.ubs_history_runs_tree.insert(
+                "",
+                "end",
+                iid=str(row["id"]),
+                values=(
+                    row["id"],
+                    row["created_at"],
+                    row["generations"],
+                    row["variants_per_seed"],
+                    row["max_seeds"],
+                    "si" if row["execute_backtests"] else "no",
+                    "si" if row["hidden"] else "no",
+                    int(row["total"] or 0),
+                    int(row["accepted"] or 0),
+                    int(row["rejected"] or 0),
+                    row["output_dir"],
+                ),
+            )
+        if rows:
+            self.ubs_history_runs_tree.selection_set(str(rows[0]["id"]))
+            self._refresh_ubs_history_candidates()
+        else:
+            self.ubs_history_candidate_summary.set("Sin runs registrados")
+
+    def _selected_ubs_history_run_id(self) -> int | None:
+        if not hasattr(self, "ubs_history_runs_tree"):
+            return None
+        selected = self.ubs_history_runs_tree.selection()
+        if not selected:
+            return None
+        try:
+            return int(selected[0])
+        except ValueError:
+            return None
+
+    def _refresh_ubs_history_candidates(self) -> None:
+        if hasattr(self, "ubs_history_candidates_tree"):
+            for item in self.ubs_history_candidates_tree.get_children():
+                self.ubs_history_candidates_tree.delete(item)
+        self.ubs_history_candidate_paths.clear()
+        run_id = self._selected_ubs_history_run_id()
+        if run_id is None:
+            self.ubs_history_candidate_summary.set("Selecciona un run")
+            return
+        memory_path = self._ubs_memory_path()
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select *
+                from candidates
+                where run_id=?
+                order by generation desc,
+                    case
+                        when status = 'accepted' then 0
+                        when score is not null then 1
+                        else 2
+                    end,
+                    score desc,
+                    id desc
+                limit 1000
+                """,
+                (run_id,),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self.ubs_history_candidate_summary.set(str(exc))
+            return
+
+        total = len(rows)
+        accepted = sum(1 for row in rows if row["status"] == "accepted")
+        rejected = sum(1 for row in rows if row["status"] == "rejected")
+        self.ubs_history_candidate_summary.set(f"Run #{run_id}: {total} candidatos | aceptados {accepted} | rechazados {rejected}")
+        if not hasattr(self, "ubs_history_candidates_tree"):
+            return
+        for row in rows:
+            metrics = self._parse_ubs_metrics(row["metrics_json"])
+            status = str(row["status"] or "")
+            item = self.ubs_history_candidates_tree.insert(
+                "",
+                "end",
+                values=(
+                    row["id"],
+                    row["generation"],
+                    self._format_ubs_status(status),
+                    row["target_symbol"] or row["symbol"],
+                    row["period"],
+                    self._format_ubs_number(row["score"]),
+                    self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("profit_factor")),
+                    self._format_ubs_number(metrics.get("drawdown_pct")),
+                    self._format_ubs_int(metrics.get("trades")),
+                    Path(row["set_path"]).name,
+                ),
+                tags=(self._ubs_result_tag(status),),
+            )
+            self.ubs_history_candidate_paths[item] = {
+                "set": str(row["set_path"] or ""),
+                "seed": str(row["seed_path"] or ""),
+                "report": str(row["report_path"] or ""),
+            }
+
+    def _load_ubs_asset_universe(self) -> tuple[list[tuple[str, str, list[str]]], dict[str, str]]:
+        path = BASE_DIR / "assets" / "roboforex_assets.ini"
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        if path.exists():
+            parser.read(path, encoding="utf-8-sig")
+        aliases: dict[str, str] = {}
+        if parser.has_section("CommonAliases"):
+            aliases = {key.upper(): value.upper() for key, value in parser["CommonAliases"].items()}
+        reverse_aliases: dict[str, list[str]] = {}
+        for alias, target in aliases.items():
+            reverse_aliases.setdefault(target.upper(), []).append(alias)
+
+        assets: list[tuple[str, str, list[str]]] = []
+        for section in parser.sections():
+            if section == "CommonAliases":
+                continue
+            symbols = [item.strip().upper() for item in parser[section].get("symbols", "").split(",") if item.strip()]
+            for symbol in symbols:
+                assets.append((section, symbol, sorted(reverse_aliases.get(symbol.upper(), []))))
+        return assets, aliases
+
+    def _canonical_ubs_symbol(self, symbol: str, aliases: dict[str, str]) -> str:
+        normalized = str(symbol or "").upper()
+        return aliases.get(normalized, normalized)
+
+    def _empty_ubs_stat(self) -> dict[str, object]:
+        return {"scores": [], "weights": [], "tests": 0, "accepted": 0, "pending": 0, "best": None}
+
+    def _tag_for_weight(self, value: float | None) -> str:
+        if value is None:
+            return "neutral"
+        return "positive" if value >= 0 else "negative"
+
+    def _refresh_ubs_universe(self) -> None:
+        if hasattr(self, "ubs_universe_assets_tree"):
+            for item in self.ubs_universe_assets_tree.get_children():
+                self.ubs_universe_assets_tree.delete(item)
+        if hasattr(self, "ubs_timeframes_tree"):
+            for item in self.ubs_timeframes_tree.get_children():
+                self.ubs_timeframes_tree.delete(item)
+
+        assets, aliases = self._load_ubs_asset_universe()
+        memory_path = self._ubs_memory_path()
+        asset_stats: dict[str, dict[str, object]] = {}
+        timeframe_stats: dict[str, dict[str, object]] = {}
+        total_scored = 0
+        total_pending = 0
+
+        if memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    select target_symbol, symbol, period, score, accepted, status
+                    from candidates
+                    """
+                ).fetchall()
+                conn.close()
+            except sqlite3.Error as exc:
+                self.ubs_universe_summary.set(f"No se pudo leer memoria UBS: {exc}")
+                self.ubs_timeframe_summary.set("Sin pesos por error SQLite")
+                return
+
+            for row in rows:
+                canonical = self._canonical_ubs_symbol(row["target_symbol"] or row["symbol"], aliases)
+                period = str(row["period"] or "UNKNOWN").upper()
+                asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
+                tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
+                if row["status"] == "generated":
+                    asset_stat["pending"] = int(asset_stat["pending"]) + 1
+                    tf_stat["pending"] = int(tf_stat["pending"]) + 1
+                    total_pending += 1
+                if row["score"] is None:
+                    continue
+                score = float(row["score"])
+                accepted = bool(row["accepted"])
+                weight = score + (20.0 if accepted else 0.0)
+                for stat in (asset_stat, tf_stat):
+                    stat["scores"].append(score)
+                    stat["weights"].append(weight)
+                    stat["tests"] = int(stat["tests"]) + 1
+                    stat["accepted"] = int(stat["accepted"]) + (1 if accepted else 0)
+                    stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
+                total_scored += 1
+
+        universe_symbols = {symbol for _, symbol, _ in assets}
+        observed_only = sorted(symbol for symbol in asset_stats if symbol not in universe_symbols)
+        all_assets = assets + [("Memoria", symbol, []) for symbol in observed_only]
+        ranked_assets = []
+        for group, symbol, symbol_aliases in all_assets:
+            stat = asset_stats.get(symbol, self._empty_ubs_stat())
+            weights = stat["weights"]
+            scores = stat["scores"]
+            weight_value = (sum(weights) / len(weights)) if weights else None
+            avg_score = (sum(scores) / len(scores)) if scores else None
+            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, avg_score))
+        ranked_assets.sort(key=lambda item: (item[0], item[4]["pending"]), reverse=True)
+
+        if hasattr(self, "ubs_universe_assets_tree"):
+            for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
+                self.ubs_universe_assets_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        group,
+                        symbol,
+                        ", ".join(symbol_aliases),
+                        self._format_ubs_number(weight_value),
+                        self._format_ubs_number(avg_score),
+                        self._format_ubs_number(stat["best"]),
+                        int(stat["tests"]),
+                        int(stat["accepted"]),
+                        int(stat["pending"]),
+                    ),
+                    tags=(self._tag_for_weight(weight_value),),
+                )
+
+        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
+        observed_timeframes = sorted(period for period in timeframe_stats if period not in timeframe_order)
+        ordered_timeframes = timeframe_order + observed_timeframes
+        tf_rows = []
+        for period in ordered_timeframes:
+            stat = timeframe_stats.get(period, self._empty_ubs_stat())
+            weights = stat["weights"]
+            scores = stat["scores"]
+            weight_value = (sum(weights) / len(weights)) if weights else None
+            avg_score = (sum(scores) / len(scores)) if scores else None
+            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, avg_score))
+        tf_rows.sort(key=lambda item: item[0], reverse=True)
+
+        if hasattr(self, "ubs_timeframes_tree"):
+            for _, period, stat, weight_value, avg_score in tf_rows:
+                self.ubs_timeframes_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        period,
+                        self._format_ubs_number(weight_value),
+                        self._format_ubs_number(avg_score),
+                        self._format_ubs_number(stat["best"]),
+                        int(stat["tests"]),
+                        int(stat["accepted"]),
+                        int(stat["pending"]),
+                    ),
+                    tags=(self._tag_for_weight(weight_value),),
+                )
+
+        self.ubs_universe_summary.set(
+            f"Universo: {len(assets)} activos | puntuados: {total_scored} | pendientes sin backtest: {total_pending}"
+        )
+        self.ubs_timeframe_summary.set(
+            "PESO = promedio(score + bonus accepted). El agente prioriza TF buenos y explora M15/M30/H1/H4/D1 reemplazando claves de timeframe existentes."
+        )
+
+    def _refresh_ubs_comparison(self) -> None:
+        if hasattr(self, "ubs_compare_sets_tree"):
+            for item in self.ubs_compare_sets_tree.get_children():
+                self.ubs_compare_sets_tree.delete(item)
+        if hasattr(self, "ubs_compare_diff_tree"):
+            for item in self.ubs_compare_diff_tree.get_children():
+                self.ubs_compare_diff_tree.delete(item)
+        self.ubs_compare_paths.clear()
+
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            self.ubs_compare_summary.set("Sin memoria SQLite UBS")
+            self.ubs_compare_detail.set(f"No existe: {memory_path}")
+            return
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select *
+                from candidates
+                where status = 'accepted'
+                order by score desc, id desc
+                limit 500
+                """
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self.ubs_compare_summary.set("No se pudo leer comparacion UBS")
+            self.ubs_compare_detail.set(str(exc))
+            return
+
+        self.ubs_compare_summary.set(f"Sets aceptados en memoria: {len(rows)}")
+        if not hasattr(self, "ubs_compare_sets_tree"):
+            return
+        for row in rows:
+            metrics = self._parse_ubs_metrics(row["metrics_json"])
+            item = self.ubs_compare_sets_tree.insert(
+                "",
+                "end",
+                values=(
+                    row["run_id"],
+                    row["generation"],
+                    row["target_symbol"] or row["symbol"],
+                    row["period"],
+                    self._format_ubs_number(row["score"]),
+                    self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("profit_factor")),
+                    self._format_ubs_number(metrics.get("drawdown_pct")),
+                    Path(row["set_path"]).name,
+                ),
+            )
+            self.ubs_compare_paths[item] = {
+                "candidate_id": str(row["id"] or ""),
+                "set": str(row["set_path"] or ""),
+                "seed": str(row["seed_path"] or ""),
+                "mutated": str(row["mutated_keys"] or ""),
+            }
+        if rows:
+            first = self.ubs_compare_sets_tree.get_children()[0]
+            self.ubs_compare_sets_tree.selection_set(first)
+            self._refresh_ubs_comparison_diff()
+        else:
+            self.ubs_compare_detail.set("No hay candidatos aceptados con los filtros actuales.")
+
+    def _refresh_ubs_comparison_diff(self) -> None:
+        if hasattr(self, "ubs_compare_diff_tree"):
+            for item in self.ubs_compare_diff_tree.get_children():
+                self.ubs_compare_diff_tree.delete(item)
+        paths = self._selected_ubs_compare_paths()
+        if not paths:
+            self.ubs_compare_detail.set("Selecciona un set aceptado para comparar contra su seed.")
+            return
+        seed_path = Path(paths.get("seed", "")).expanduser()
+        set_path = Path(paths.get("set", "")).expanduser()
+        if not seed_path.exists() or not set_path.exists():
+            self.ubs_compare_detail.set("No existe el seed o el set aceptado en disco.")
+            return
+        seed_values = self._read_set_values_for_compare(seed_path)
+        set_values = self._read_set_values_for_compare(set_path)
+        changed = []
+        for key in sorted(set(seed_values) | set(set_values)):
+            seed_value = seed_values.get(key, "(faltante)")
+            set_value = set_values.get(key, "(faltante)")
+            if seed_value != set_value:
+                changed.append((key, seed_value, set_value))
+        mutated = [key for key in paths.get("mutated", "").split(";") if key]
+        mutated_hint = f" | mutados por agente: {', '.join(mutated[:8])}" if mutated else ""
+        self.ubs_compare_detail.set(
+            f"{len(changed)} diferencias | Seed: {seed_path.name} | Aceptado: {set_path.name}{mutated_hint}"
+        )
+        if not hasattr(self, "ubs_compare_diff_tree"):
+            return
+        for key, seed_value, set_value in changed:
+            self.ubs_compare_diff_tree.insert("", "end", values=(key, seed_value, set_value))
+
+    def _ubs_accepted_rows_for_report(self) -> list[sqlite3.Row]:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return []
+        conn = sqlite3.connect(memory_path, timeout=1.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute(
+                """
+                select *
+                from candidates
+                where status = 'accepted'
+                order by score desc, id desc
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def _set_diff_rows(self, seed_path: Path, set_path: Path) -> list[tuple[str, str, str]]:
+        seed_values = self._read_set_values_for_compare(seed_path)
+        set_values = self._read_set_values_for_compare(set_path)
+        changed: list[tuple[str, str, str]] = []
+        for key in sorted(set(seed_values) | set(set_values)):
+            seed_value = seed_values.get(key, "(faltante)")
+            set_value = set_values.get(key, "(faltante)")
+            if seed_value != set_value:
+                changed.append((key, seed_value, set_value))
+        return changed
+
+    def _generate_ubs_compare_report(self) -> None:
+        try:
+            rows = self._ubs_accepted_rows_for_report()
+        except sqlite3.Error as exc:
+            self._show_error("No se pudo generar reporte UBS", str(exc))
+            return
+        if not rows:
+            messagebox.showinfo("Reporte UBS", "No hay sets aceptados para reportar.")
+            return
+
+        output_dir = BASE_DIR / "outputs" / "ubs_compare"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report_path = output_dir / f"ubs_seed_compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+
+        summary_rows: list[str] = []
+        detail_blocks: list[str] = []
+        total_changes = 0
+        for index, row in enumerate(rows, start=1):
+            metrics = self._parse_ubs_metrics(row["metrics_json"])
+            seed_path = Path(row["seed_path"])
+            set_path = Path(row["set_path"])
+            if seed_path.exists() and set_path.exists():
+                changes = self._set_diff_rows(seed_path, set_path)
+                missing_note = ""
+            else:
+                changes = []
+                missing_note = "Archivo seed o aceptado no encontrado"
+            total_changes += len(changes)
+            mutated = [key for key in str(row["mutated_keys"] or "").split(";") if key]
+            summary_rows.append(
+                "<tr>"
+                f"<td>{index}</td>"
+                f"<td>{html.escape(str(row['run_id']))}</td>"
+                f"<td>{html.escape(str(row['generation']))}</td>"
+                f"<td>{html.escape(str(row['target_symbol'] or row['symbol']))}</td>"
+                f"<td>{html.escape(str(row['period']))}</td>"
+                f"<td>{html.escape(self._format_ubs_number(row['score']))}</td>"
+                f"<td>{html.escape(self._format_ubs_number(metrics.get('net_profit')))}</td>"
+                f"<td>{html.escape(self._format_ubs_number(metrics.get('profit_factor')))}</td>"
+                f"<td>{html.escape(self._format_ubs_number(metrics.get('drawdown_pct')))}</td>"
+                f"<td>{len(changes)}</td>"
+                f"<td>{html.escape(set_path.name)}</td>"
+                f"<td>{html.escape(seed_path.name)}</td>"
+                "</tr>"
+            )
+            diff_rows = "\n".join(
+                "<tr>"
+                f"<td>{html.escape(key)}</td>"
+                f"<td>{html.escape(seed_value)}</td>"
+                f"<td>{html.escape(set_value)}</td>"
+                "</tr>"
+                for key, seed_value, set_value in changes
+            )
+            if not diff_rows:
+                diff_rows = f"<tr><td colspan='3'>{html.escape(missing_note or 'Sin diferencias')}</td></tr>"
+            detail_blocks.append(
+                "<details>"
+                f"<summary>#{index} {html.escape(str(row['target_symbol'] or row['symbol']))} "
+                f"{html.escape(str(row['period']))} | score {html.escape(self._format_ubs_number(row['score']))} "
+                f"| cambios {len(changes)} | {html.escape(set_path.name)}</summary>"
+                f"<p><b>Seed:</b> {html.escape(str(seed_path))}<br>"
+                f"<b>Aceptado:</b> {html.escape(str(set_path))}<br>"
+                f"<b>Mutados por agente:</b> {html.escape(', '.join(mutated) if mutated else '-')}</p>"
+                "<table><thead><tr><th>Parametro</th><th>Seed</th><th>Aceptado</th></tr></thead>"
+                f"<tbody>{diff_rows}</tbody></table>"
+                "</details>"
+            )
+
+        html_text = (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<title>UBS Seed Compare</title>"
+            "<style>"
+            "body{font-family:Segoe UI,Arial,sans-serif;background:#0f172a;color:#e5e7eb;margin:24px;}"
+            "h1{margin:0 0 8px;font-size:24px;} h2{margin-top:28px;}"
+            ".meta{color:#a8b3c7;margin-bottom:18px;}"
+            "table{border-collapse:collapse;width:100%;margin:12px 0;background:#111827;}"
+            "th,td{border:1px solid #334155;padding:6px 8px;font-size:12px;vertical-align:top;}"
+            "th{background:#243247;color:#dbeafe;} tr:nth-child(even){background:#172033;}"
+            "details{border:1px solid #334155;border-radius:6px;padding:10px;margin:10px 0;background:#111827;}"
+            "summary{cursor:pointer;font-weight:600;color:#86efac;} p{color:#cbd5e1;font-size:13px;}"
+            "</style></head><body>"
+            "<h1>UBS comparacion aceptados contra seed</h1>"
+            f"<div class='meta'>Generado: {html.escape(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))} | "
+            f"sets aceptados: {len(rows)} | cambios totales: {total_changes}</div>"
+            "<h2>Resumen</h2>"
+            "<table><thead><tr>"
+            "<th>#</th><th>Run</th><th>Gen</th><th>Symbol</th><th>TF</th><th>Score</th>"
+            "<th>Net</th><th>PF</th><th>DD %</th><th>Cambios</th><th>Aceptado</th><th>Seed</th>"
+            "</tr></thead><tbody>"
+            + "\n".join(summary_rows)
+            + "</tbody></table><h2>Detalle por set</h2>"
+            + "\n".join(detail_blocks)
+            + "</body></html>"
+        )
+        report_path.write_text(html_text, encoding="utf-8")
+        self.status_text.set(f"Reporte UBS generado: {report_path.name}")
+        self._open_local_file(report_path)
+
+    def _selected_ubs_compare_paths(self) -> dict[str, str] | None:
+        if not hasattr(self, "ubs_compare_sets_tree"):
+            return None
+        selected = self.ubs_compare_sets_tree.selection()
+        if not selected:
+            return None
+        return self.ubs_compare_paths.get(selected[0])
+
+    def _read_set_values_for_compare(self, path: Path) -> dict[str, str]:
+        text = ""
+        for encoding in ("utf-8-sig", "utf-16", "cp1252"):
+            try:
+                text = path.read_text(encoding=encoding)
+                break
+            except UnicodeError:
+                continue
+        if not text:
+            text = path.read_text(errors="replace")
+        values: dict[str, str] = {}
+        for line in text.splitlines():
+            if "=" not in line or line.lstrip().startswith(";"):
+                continue
+            key, raw_value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            values[key] = raw_value.split("||", 1)[0].strip()
+        return values
+
+    def _selected_ubs_compare_path(self, kind: str) -> Path | None:
+        paths = self._selected_ubs_compare_paths()
+        if not paths:
+            return None
+        raw_path = paths.get(kind, "")
+        return Path(raw_path).expanduser() if raw_path else None
+
+    def _open_selected_ubs_compare_seed(self) -> None:
+        path = self._selected_ubs_compare_path("seed")
+        if path is None:
+            messagebox.showinfo("Agente UBS", "Selecciona un set aceptado primero.")
+            return
+        self._open_local_file(path)
+
+    def _open_selected_ubs_compare_set(self) -> None:
+        path = self._selected_ubs_compare_path("set")
+        if path is None:
+            messagebox.showinfo("Agente UBS", "Selecciona un set aceptado primero.")
+            return
+        self._open_local_file(path)
+
+    def _parse_ubs_metrics(self, raw: str | None) -> dict[str, object]:
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _format_ubs_number(self, value: object, decimals: int = 2) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return f"{float(value):.{decimals}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _format_ubs_int(self, value: object) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return str(int(float(value)))
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _format_ubs_status(self, status: str) -> str:
+        labels = {
+            "accepted": "aceptado",
+            "rejected": "rechazado",
+            "generated": "generado",
+            "no_report": "sin reporte",
+            "parse_error": "parse error",
+        }
+        return labels.get(status, status or "-")
+
+    def _ubs_result_tag(self, status: str) -> str:
+        if status == "accepted":
+            return "accepted"
+        if status in {"rejected", "parse_error"}:
+            return "rejected"
+        return "pending"
+
+    def _selected_ubs_result_path(self, kind: str) -> Path | None:
+        if not hasattr(self, "ubs_results_tree"):
+            return None
+        selected = self.ubs_results_tree.selection()
+        if not selected:
+            return None
+        raw_path = self.ubs_result_paths.get(selected[0], {}).get(kind, "")
+        return Path(raw_path).expanduser() if raw_path else None
+
+    def _open_ubs_output_dir(self) -> None:
+        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent")).expanduser()
+        if not output_dir.exists():
+            messagebox.showinfo("Agente UBS", f"No existe la carpeta:\n{output_dir}")
+            return
+        subprocess.Popen(["explorer", str(output_dir)])
+
+    def _open_selected_ubs_set(self) -> None:
+        path = self._selected_ubs_result_path("set")
+        if path is None:
+            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
+            return
+        self._open_local_file(path)
+
+    def _open_selected_ubs_report(self) -> None:
+        path = self._selected_ubs_result_path("report")
+        if path is None:
+            messagebox.showinfo("Agente UBS", "Ese resultado no tiene reporte asociado.")
+            return
+        self._open_local_file(path)
+
+    def _open_local_file(self, path: Path) -> None:
+        if not path.exists():
+            messagebox.showinfo("Agente UBS", f"No existe el archivo:\n{path}")
+            return
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        except OSError:
+            subprocess.Popen(["explorer", "/select,", str(path)])
 
     def _refresh_experts(self) -> None:
         for item in self.experts_tree.get_children() if hasattr(self, "experts_tree") else []:
@@ -1923,9 +3384,89 @@ class MT5AutotesterUI(tk.Tk):
             set_dir = self.set_files_root.get().strip()
             if not set_dir:
                 raise ValueError("Indica la carpeta .set antes de ejecutar Tester UBS en modo recursivo.")
-            files = sorted(Path(set_dir).expanduser().glob("*.set"))
-            return len([path for path in files if path.is_file()]), set_dir
+            files = load_set_files(Path(set_dir).expanduser(), None, recursive=True)
+            return len(files), set_dir
         return 1, self._required_ubs_set_file()
+
+    def _ubs_generator_source_dir(self) -> Path:
+        set_dir = self.set_files_root.get().strip() or str(BASE_DIR / "sets" / "ubs_ready")
+        source_dir = Path(set_dir).expanduser()
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise ValueError(f"No existe la carpeta de seeds UBS: {source_dir}")
+        return source_dir
+
+    def _count_ubs_generations(self) -> tuple[int, str]:
+        source_dir = self._ubs_generator_source_dir()
+        files = load_set_files(source_dir, None, recursive=True)
+        if not files:
+            return 0, str(source_dir)
+        return self._planned_ubs_generation_total(len(files)), str(source_dir)
+
+    def _planned_ubs_generation_total(
+        self,
+        seed_files: int,
+        *,
+        generations: int | None = None,
+        variants: int | None = None,
+        max_seeds: int | None = None,
+    ) -> int:
+        generations = max(0, int(self.ubs_generation_count.get() if generations is None else generations))
+        variants = max(0, int(self.ubs_variants_per_seed.get() if variants is None else variants))
+        max_seeds = max(0, int(self.ubs_max_seeds.get() if max_seeds is None else max_seeds))
+        seed_count = seed_files if max_seeds == 0 else min(seed_files, max_seeds)
+        total = 0
+        current = seed_count
+        for _ in range(generations):
+            produced = current * variants
+            total += produced
+            current = produced if max_seeds == 0 else min(produced, max_seeds)
+        return total
+
+    def _count_ubs_continuation_generations(self) -> tuple[int, str]:
+        info = self._ubs_continuation_info()
+        if not info.get("available"):
+            raise ValueError(str(info.get("message") or "No hay iteracion UBS pendiente para continuar."))
+        total = self._planned_ubs_generation_total(
+            int(info["seed_count"]),
+            generations=int(info["remaining"]),
+            variants=int(info["variants_per_seed"]),
+            max_seeds=int(info["max_seeds"]),
+        )
+        pending_count = int(info.get("pending_count") or 0)
+        total += pending_count
+        if pending_count:
+            target = f"memoria run #{info['run_id']} gen {info['pending_generation']} sin backtest -> luego faltan {info['remaining']}"
+        else:
+            target = f"memoria run #{info['run_id']} gen {info['latest_generation']} -> faltan {info['remaining']}"
+        return total, target
+
+    def _score_float(self, variable: tk.StringVar, label: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
+        raw = variable.get().strip().replace(",", ".")
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{label} debe ser numerico.") from exc
+        if minimum is not None and value < minimum:
+            raise ValueError(f"{label} no puede ser menor que {minimum}.")
+        if maximum is not None and value > maximum:
+            raise ValueError(f"{label} no puede ser mayor que {maximum}.")
+        return value
+
+    def _ubs_score_args(self) -> list[str]:
+        min_net_profit = self._score_float(self.ubs_pass_min_net_profit, "Profit neto min")
+        min_profit_factor = self._score_float(self.ubs_pass_min_profit_factor, "Profit factor min", minimum=0)
+        max_drawdown_pct = self._score_float(self.ubs_pass_max_drawdown_pct, "DD max %", minimum=0)
+        min_recovery_factor = self._score_float(self.ubs_pass_min_recovery_factor, "Recovery min")
+        min_trades = int(self.ubs_pass_min_trades.get())
+        if min_trades < 0:
+            raise ValueError("Trades min no puede ser menor que 0.")
+        return [
+            "--min-net-profit", str(min_net_profit),
+            "--min-profit-factor", str(min_profit_factor),
+            "--min-trades", str(min_trades),
+            "--max-drawdown-pct", str(max_drawdown_pct),
+            "--min-recovery-factor", str(min_recovery_factor),
+        ]
 
     def _confirm_execution_start(self, title: str, total: int, details: list[str]) -> bool:
         if total <= 0:
@@ -2078,6 +3619,101 @@ class MT5AutotesterUI(tk.Tk):
         if self._confirm_execution_start("Confirmar Tester UBS", total, details):
             self._run_script("run_tests.py", args)
 
+    def _ubs_generator_args(self, *, continue_last: bool = False) -> list[str]:
+        source_dir = (
+            Path(self.set_files_root.get().strip()).expanduser()
+            if self.set_files_root.get().strip()
+            else BASE_DIR / "sets" / "ubs_ready"
+        )
+        if not continue_last:
+            source_dir = self._ubs_generator_source_dir()
+        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        generations = int(self.ubs_generation_count.get())
+        variants = int(self.ubs_variants_per_seed.get())
+        max_seeds = int(self.ubs_max_seeds.get())
+        continuation_info: dict[str, object] = {}
+        if continue_last:
+            continuation_info = self._ubs_continuation_info()
+            if not continuation_info.get("available"):
+                raise ValueError(str(continuation_info.get("message") or "No hay iteracion UBS pendiente para continuar."))
+            generations = max(1, int(continuation_info["remaining"]))
+            variants = int(continuation_info["variants_per_seed"])
+            max_seeds = int(continuation_info["max_seeds"])
+        if generations <= 0:
+            raise ValueError("Generaciones UBS debe ser mayor que 0.")
+        if variants <= 0:
+            raise ValueError("Variantes por set debe ser mayor que 0.")
+        if max_seeds < 0:
+            raise ValueError("Max seeds/gen no puede ser negativo.")
+        args = [
+            "--source-dir", str(source_dir),
+            "--output-dir", str(output_dir),
+            "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+            "--template", self.template_path.get(),
+            "--generations", str(generations),
+            "--variants-per-seed", str(variants),
+            "--max-seeds", str(max_seeds),
+            "--delay", str(self.delay.get()),
+        ]
+        if continue_last:
+            args.append("--continue-last-run")
+        args.extend(self._ubs_score_args())
+        should_execute_backtests = (
+            bool(continuation_info.get("execute_backtests"))
+            if continue_last
+            else self.ubs_agent_execute.get()
+        )
+        if should_execute_backtests:
+            args.append("--execute-backtests")
+            args.extend(["--expert", self._required_ubs_ex5_file()])
+            if self.mt5_path.get().strip():
+                args.extend(["--mt5-path", self.mt5_path.get()])
+            if self.mt5_data_root.get().strip():
+                args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        return args
+
+    def _run_ubs_generator(self) -> None:
+        self._run_ubs_agent(continue_last=False)
+
+    def _run_ubs_continue(self) -> None:
+        self._run_ubs_agent(continue_last=True)
+
+    def _run_ubs_agent(self, *, continue_last: bool) -> None:
+        try:
+            args = self._ubs_generator_args(continue_last=continue_last)
+            total, target = (
+                self._count_ubs_continuation_generations()
+                if continue_last
+                else self._count_ubs_generations()
+            )
+            continuation_info = self._ubs_continuation_info() if continue_last else {}
+        except Exception as exc:
+            self._show_error("No se pudo iniciar Agente UBS", str(exc))
+            return
+        pending_count = int(continuation_info.get("pending_count") or 0)
+        new_sets = max(0, total - pending_count)
+        shown_generations = continuation_info.get("remaining", self.ubs_generation_count.get())
+        shown_variants = continuation_info.get("variants_per_seed", self.ubs_variants_per_seed.get())
+        shown_max_seeds = continuation_info.get("max_seeds", self.ubs_max_seeds.get())
+        shown_backtests = bool(continuation_info.get("execute_backtests")) if continue_last else self.ubs_agent_execute.get()
+        details = [
+            f"Accion: {'Continuar iteracion UBS' if continue_last else 'Agente UBS'}",
+            f"Seeds: {target}",
+            f"Generaciones nuevas restantes: {shown_generations}",
+            f"Variantes por set: {shown_variants}",
+            f"Max seeds/gen: {shown_max_seeds}",
+            f"Backtests: {'si' if shown_backtests else 'no'}",
+            f"Pass: PF>={self.ubs_pass_min_profit_factor.get().strip()} | DD<={self.ubs_pass_max_drawdown_pct.get().strip()}% | Trades>={self.ubs_pass_min_trades.get()}",
+            f"Pass: Profit neto>{self.ubs_pass_min_net_profit.get().strip()} | Recovery>={self.ubs_pass_min_recovery_factor.get().strip()}",
+            f"Backtests pendientes existentes: {pending_count}",
+            f"Sets nuevos previstos: {new_sets}",
+        ]
+        title = "Confirmar continuacion UBS" if continue_last else "Confirmar Agente UBS"
+        if self._confirm_execution_start(title, total, details):
+            self._run_script("ubs_agent.py", args)
+
     def _ubs_set_paths(self) -> list[Path]:
         if self.recursive.get():
             set_dir = self.set_files_root.get().strip()
@@ -2224,7 +3860,9 @@ class MT5AutotesterUI(tk.Tk):
         self.reader_thread.start()
 
     def _should_block_for_running_mt5(self, script_name: str) -> bool:
-        if script_name not in {"run_tests.py", "compile_and_backtest.py"}:
+        if script_name not in {"run_tests.py", "compile_and_backtest.py", "ubs_agent.py"}:
+            return False
+        if script_name == "ubs_agent.py" and not self.ubs_agent_execute.get():
             return False
 
         mt5_path = Path(self.mt5_path.get()).expanduser()
@@ -2447,6 +4085,8 @@ class MT5AutotesterUI(tk.Tk):
             "compile_mq5.py": "Compilando .mq5",
             "run_tests.py": "Ejecutando backtests",
             "compile_and_backtest.py": "Compilando y backtesteando",
+            "ubs_generate_sets.py": "Generando sets UBS",
+            "ubs_agent.py": "Agente UBS",
         }
         return labels.get(script_name, script_name)
 

@@ -364,7 +364,7 @@ def load_set_files(set_dir: Path | None, set_files: list[str] | None, recursive:
             raise FileNotFoundError(f"No existe la carpeta de set files: {set_dir}")
         if not set_dir.is_dir():
             raise NotADirectoryError(f"No es una carpeta: {set_dir}")
-        iterator = set_dir.glob("*.set")
+        iterator = set_dir.rglob("*.set") if recursive else set_dir.glob("*.set")
         files.extend(sorted(path for path in iterator if path.is_file()))
 
     for value in set_files or []:
@@ -460,6 +460,8 @@ FOREX_SYMBOLS = {
 
 SYMBOL_ALIASES = (
     ("XAUUSD", re.compile(r"XAUUSD|GOLD|GOLDTRADE|GOLDREAPER|GOLDBOT|PHANTOM", re.IGNORECASE)),
+    ("XAGUSD", re.compile(r"XAGUSD|SILVER", re.IGNORECASE)),
+    ("XAUEUR", re.compile(r"XAUEUR", re.IGNORECASE)),
     ("XTIUSD", re.compile(r"XTIUSD", re.IGNORECASE)),
     ("BTCUSD", re.compile(r"BTCUSD|BTC|BITCOIN", re.IGNORECASE)),
     ("US100", re.compile(r"US100|USTEC|NAS100|NASDAQ|NAS_", re.IGNORECASE)),
