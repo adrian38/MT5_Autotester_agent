@@ -1,0 +1,71 @@
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Build / packaging outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Installer / project generated folders
+reports/
+dist_installer/
+build_installer/
+
+# Local MT5 autotester generated/user files
+ui_settings.ini
+tester_template.ini
+configs/
+sets/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+
+# Type checkers / linters
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local databases / temporary files
+*.sqlite3
+*.db
+*.tmp
+*.bak
+.claude

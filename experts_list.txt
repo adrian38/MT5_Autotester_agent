@@ -1,0 +1,4 @@
+# Rutas relativas a la carpeta MQL5.
+# Una linea por Expert Advisor. Las lineas con # se ignoran.
+# Experts\Strategy 2.7.12.ex5
+# Experts\Strategy 3.3.19.ex5
