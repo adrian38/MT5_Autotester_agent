@@ -87,11 +87,12 @@ Main UI areas:
 
 - `UBS Agente UBS`: generation/pass configuration and launch/continue actions.
 - `UBS Seeds`: original seed scoring state, manual symbol/timeframe overrides,
-  and seed evaluation actions.
+  seed evaluation actions, reset of seed scores/reports, and seed deletion.
 - `UBS Resultados`: latest run candidates, including `report_mismatch` rows,
   single-candidate retry, and run-level mismatch retry.
 - `UBS Historico`: SQLite run/candidate history.
-- `UBS Universo`: asset/timeframe weights used by the agent.
+- `UBS Universo`: asset/timeframe weights used by the agent. After seed
+  evaluation reset, weights stay blocked until the user presses `Calcular pesos`.
 - `UBS Comparar`: accepted set vs seed differences and HTML comparison report.
 
 ## High-Level Data Flow

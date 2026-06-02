@@ -178,6 +178,13 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.9.6** When a `seed_override` changes the symbol or timeframe of a seed
   that was previously evaluated, the seed MUST be re-evaluated on the next
   `--evaluate-seeds` run.
+- **FR-1.9.7** Resetting seed evaluation from the UI MUST delete stored seed
+  report files where possible, reset active `seed_scores` rows to `pending`, and
+  clear `score`, `accepted`, `metrics_json`, `report_path`, and `evaluated_at`.
+  Source `.set` files MUST NOT be deleted by this reset.
+- **FR-1.9.8** After seed evaluation is reset, Universe weights MUST be hidden or
+  blocked until the user completes seed evaluation and explicitly applies weights
+  with the UI "Calcular pesos" action.
 
 ### 1.10 UBS agent — symbol mapping
 
@@ -253,6 +260,14 @@ requirement changes or a debt item is opened/closed.
   The change MUST be written immediately to `ubs_mutation_overrides.json` and
   reflected in the table without restart.
 - **FR-1.12.13** Treeview column values across all tabs MUST be center-aligned.
+- **FR-1.12.14** The UBS Seeds tab MUST expose "Resetear evaluación". It MUST
+  confirm the action, reset active seed DB rows to pending, delete stored report
+  files when present, refresh Seeds/summary/Universe views, and lock Universe
+  weights until recalculation.
+- **FR-1.12.15** The UBS Universo tab MUST expose "Calcular pesos". It MUST
+  refuse to unlock weights while active seeds remain in a non-ready state. Ready
+  states for applying weights are `accepted`, `rejected`, and `report_mismatch`;
+  other active seed states require another evaluation pass or manual triage.
 
 ### 1.13 Packaging & runtime
 
@@ -265,6 +280,20 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.13.3** Generated/runtime directories (`configs/`, `logs/`, `reports/`,
   `outputs/`, `build_installer/`, `dist_installer/`) MUST NOT be committed to
   version control.
+
+### 1.14 Python dependencies
+
+- **FR-1.14.1** Runtime code MUST remain standard-library-first. Required
+  third-party packages are:
+  - `lxml` for MT5 HTML parsing.
+  - `openpyxl` for Excel workbook generation and image embedding.
+- **FR-1.14.2** `Pillow` is optional at runtime. When installed, the UI uses it
+  for anti-aliased rounded widgets; without it, the UI MUST fall back to plain
+  Tk drawing.
+- **FR-1.14.3** Packaging requires `PyInstaller`, but normal source execution
+  MUST NOT depend on PyInstaller being installed.
+- **FR-1.14.4** `tkinter`, `sqlite3`, `winreg`, `urllib`, and other Windows/Python
+  standard library modules MUST NOT be listed as pip dependencies.
 
 ---
 
@@ -292,11 +321,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   pass that doesn't require re-running backtests (scores already exist in
   `metrics_json`).
 
-- **TD-2.1.4 — `report_mismatch` rows re-evaluated every run.**
+- **TD-2.1.4 — `report_mismatch` seed rows are reprocessed every evaluation.**
   Seeds stuck as `report_mismatch` (symbol/TF cannot be inferred, no override)
-  are never in `{"accepted","rejected"}` so they are always queued. Add a
-  `blocked` terminal status for seeds with no fixable path, or surface them
-  distinctly in the UI, to avoid wasting backtest slots.
+  are not backtested, but they are still re-marked/logged on each evaluation
+  because they are not `accepted`/`rejected`. Add a `blocked` terminal status or
+  skip unchanged `report_mismatch` rows until the seed file or override changes.
 
 ### 2.2 Seed management
 
@@ -382,6 +411,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   Removing all user-defined frozen/mutable overrides requires deleting
   `ubs_mutation_overrides.json` manually. A one-click reset would reduce friction.
 
+- **TD-2.6.6 — Weight lock state is session-only.**
+  `ubs_weights_locked` is an in-memory Tk variable. If the app restarts after
+  "Resetear evaluación" but before "Calcular pesos", the lock state may be lost.
+  Persist the lock in `ui_settings.ini` or derive it from pending seed rows.
+
 ### 2.7 Observability / logging
 
 - **TD-2.7.1 — No structured log format.**
@@ -426,6 +460,13 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 - **2025-06** — UBS Seeds tab: added "Abrir reporte" button and double-click to
   open the HTML report; "Eliminar seed" and "Eliminar rechazadas" buttons with
   DB cleanup and Universe weight refresh.
+
+- **2025-06** — UBS Seeds tab: added "Resetear evaluación" to clear active seed
+  scores/reports without deleting source `.set` files. Universe weights are
+  locked after reset.
+
+- **2025-06** — UBS Universo tab: added "Calcular pesos" to explicitly unlock
+  and apply weights once active seeds are evaluated or quarantined as mismatch.
 
 - **2025-06** — Fixed `is_agent_mutable_key()` link. The UI previously used
   `is_mutable_key()` from `ubs_generate_sets.py` which has different constants

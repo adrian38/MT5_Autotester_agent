@@ -70,8 +70,24 @@ The project also uses simple text files for source discovery:
   `last_compile.log`.
 - `reports/`: copied MT5 `.htm/.html` reports, images, and `.set` files.
 - `outputs/`: generated Excel workbooks.
+- `outputs/ubs_memory.sqlite`: UBS runs/candidates plus `seed_scores` and
+  `seed_overrides`.
+- `outputs/ubs_global_params.json`: global UBS EA parameter values.
+- `outputs/ubs_mutation_overrides.json`: user mutability overrides for UBS
+  parameters.
 - `build_installer/`: temporary PyInstaller packaging workdir.
 - `dist_installer/`: generated installer and portable ZIP.
+
+## Python Packages
+
+Normal source execution requires only a small set of third-party packages:
+
+- `lxml`
+- `openpyxl`
+- `Pillow` optional for smoother UI rendering
+
+Packaging additionally requires `PyInstaller`. Standard-library modules such as
+`tkinter`, `sqlite3`, `urllib`, and `winreg` are provided by Python/Windows.
 
 ## Packaged/Frozen Runtime
 
@@ -85,4 +101,3 @@ if getattr(sys, "frozen", False):
 
 Preserve this pattern for files that must work both from source and from
 packaged `.exe` builds.
-

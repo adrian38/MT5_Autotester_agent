@@ -73,6 +73,10 @@ For UBS agent changes:
 - Confirm manual fixes saved in the UI `UBS Seeds` tab are written to
   `seed_overrides` and are applied by both seed evaluation and normal UBS
   generation.
+- For seed reset/weight changes, use `UBS Seeds` -> `Resetear evaluación` and
+  confirm active seed rows become `pending`, report paths/scores are cleared,
+  Universe weights are hidden, and `UBS Universo` -> `Calcular pesos` refuses
+  to unlock while non-ready active seed rows remain.
 - If multiterminal behavior changed, run a dry test with
   `run_tests.py --multi-terminal --terminals-config ui_settings.ini
   --max-workers 2 --dry-run` and verify the queue splits without launching MT5.
@@ -105,6 +109,14 @@ For packaging changes:
 - Run `tools/build_installer.ps1`.
 - Confirm generated files exist in `dist_installer/`.
 - Verify new required runtime files are included in the stage directory.
+
+For dependency changes:
+
+- Runtime third-party packages should stay limited to `lxml`, `openpyxl`, and
+  optional `Pillow` unless a change clearly requires more.
+- `PyInstaller` is a packaging dependency only.
+- Do not add standard-library modules such as `tkinter`, `sqlite3`, `urllib`,
+  or `winreg` to pip requirements.
 
 ## Useful Debug Snippets
 

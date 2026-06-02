@@ -792,6 +792,7 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_compare_run_id = tk.StringVar(value="")
         self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
         self.ubs_seed_override_symbol = tk.StringVar(value="")
+        self.ubs_weights_locked = tk.BooleanVar(value=False)
         self.ubs_params_file_label = tk.StringVar(value="Sin archivo cargado")
         self.ubs_params_desc_var = tk.StringVar(value="Selecciona un parámetro para ver su descripción")
         self.ubs_params_modified: bool = False
@@ -2334,8 +2335,11 @@ class MT5AutotesterUI(tk.Tk):
         ttk.Button(toolbar, text="Eliminar rechazadas", style="Danger.TButton", command=self._delete_rejected_ubs_seeds).grid(
             row=0, column=6, sticky="e", padx=(0, 8)
         )
+        ttk.Button(toolbar, text="Resetear evaluación", style="Danger.TButton", command=self._reset_ubs_seed_evaluation).grid(
+            row=0, column=7, sticky="e", padx=(0, 8)
+        )
         ttk.Button(toolbar, text="Actualizar", style="TButton", command=self._refresh_ubs_seeds).grid(
-            row=0, column=7, sticky="e"
+            row=0, column=8, sticky="e"
         )
 
         criteria_bar = ttk.Frame(card, style="Panel.TFrame")
@@ -2737,7 +2741,21 @@ class MT5AutotesterUI(tk.Tk):
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._refresh_ubs_universe,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=4)
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        self._ubs_calc_weights_btn = tk.Button(
+            bar,
+            text="Calcular pesos",
+            bg=COLORS["accent"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=14,
+            pady=4,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=self._ubs_apply_weights,
+        )
+        self._ubs_calc_weights_btn.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=4)
 
         body = ttk.Frame(panel, style="Panel.TFrame")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
@@ -4086,6 +4104,94 @@ class MT5AutotesterUI(tk.Tk):
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_universe()
 
+    def _reset_ubs_seed_evaluation(self) -> None:
+        """Delete all seed reports from disk and reset seed_scores to pending."""
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo("Resetear evaluación", "Sin memoria UBS. No hay nada que resetear.")
+            return
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("select seed_path, report_path from seed_scores where active=1").fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error SQLite", str(exc))
+            return
+        count = len(rows)
+        if not messagebox.askyesno(
+            "Resetear evaluación de semillas",
+            f"¿Eliminar los reportes y resetear {count} semilla(s) a pendiente?\n\n"
+            "Los archivos .set no se borran. Los pesos del Universo quedarán\n"
+            "bloqueados hasta que uses 'Calcular pesos' tras la nueva evaluación.",
+        ):
+            return
+        deleted_reports = 0
+        for row in rows:
+            rp = row["report_path"]
+            if rp:
+                try:
+                    p = Path(str(rp))
+                    if p.exists():
+                        p.unlink()
+                        deleted_reports += 1
+                except OSError:
+                    pass
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.execute("""
+                update seed_scores
+                set status='pending', score=null, accepted=null,
+                    metrics_json=null, report_path=null, evaluated_at=null
+                where active=1
+            """)
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error al resetear DB", str(exc))
+            return
+        self.ubs_weights_locked.set(True)
+        self._refresh_ubs_seeds()
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_universe()
+        messagebox.showinfo(
+            "Resetear evaluación",
+            f"{count} semilla(s) reseteadas a pendiente.\n{deleted_reports} reporte(s) eliminados del disco.\n\n"
+            "Ejecuta 'Evaluar semillas' y luego usa 'Calcular pesos' en el Universo.",
+        )
+
+    def _ubs_apply_weights(self) -> None:
+        """Check all seeds are evaluated, then unlock and show weights."""
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo("Calcular pesos", "Sin memoria UBS. Evalúa las semillas primero.")
+            return
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            pending = conn.execute(
+                "select count(*) as n from seed_scores where active=1 and status not in ('accepted','rejected','report_mismatch')"
+            ).fetchone()
+            total = conn.execute(
+                "select count(*) as n from seed_scores where active=1"
+            ).fetchone()
+            conn.close()
+            pending_count = int(pending["n"] if pending else 0)
+            total_count = int(total["n"] if total else 0)
+        except sqlite3.Error as exc:
+            self._show_error("Error SQLite", str(exc))
+            return
+        if pending_count > 0:
+            messagebox.showwarning(
+                "Calcular pesos",
+                f"Hay {pending_count} semilla(s) sin evaluar de {total_count} activas.\n\n"
+                "Ejecuta 'Evaluar semillas' primero para obtener pesos fiables.",
+            )
+            return
+        self.ubs_weights_locked.set(False)
+        self._refresh_ubs_universe()
+        messagebox.showinfo("Calcular pesos", "Pesos calculados y aplicados al Universo.")
+
     def _save_ubs_seed_override(self) -> None:
         info = self._selected_ubs_seed_info()
         seed_path = info.get("seed_path", "")
@@ -4598,6 +4704,15 @@ class MT5AutotesterUI(tk.Tk):
         if hasattr(self, "ubs_timeframes_tree"):
             for item in self.ubs_timeframes_tree.get_children():
                 self.ubs_timeframes_tree.delete(item)
+        # Respect locked state — don't show weights until user confirms with "Calcular pesos"
+        if getattr(self, "ubs_weights_locked", None) and self.ubs_weights_locked.get():
+            if hasattr(self, "ubs_universe_summary"):
+                self.ubs_universe_summary.set(
+                    "Pesos bloqueados — evalúa todas las semillas y pulsa 'Calcular pesos'"
+                )
+            if hasattr(self, "ubs_timeframe_summary"):
+                self.ubs_timeframe_summary.set("Sin pesos hasta que completes la evaluación")
+            return
 
         assets, aliases = self._load_ubs_asset_universe()
         memory_path = self._ubs_memory_path()

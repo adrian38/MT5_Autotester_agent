@@ -1,0 +1,9 @@
+# Runtime dependencies
+lxml
+openpyxl
+
+# Optional UI polish: anti-aliased rounded widgets in app_ui.py.
+Pillow
+
+# Packaging only; not required for normal source execution.
+PyInstaller

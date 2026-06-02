@@ -111,6 +111,11 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
 - Double-click a row to open the HTML report in the system viewer.
 - "Eliminar seed" and "Eliminar rechazadas" buttons delete files and DB rows,
   then refresh both the Seeds table and the Universe weights tab.
+- "Resetear evaluación" clears active seed scores/reports without deleting
+  source `.set` files, then locks Universe weights.
+- The Universe tab has "Calcular pesos"; weights remain hidden/blocked after a
+  reset until active seeds are evaluated or quarantined and the user applies
+  weights explicitly.
 - Seed evaluation skip logic now detects symbol/TF override changes: saving a
   `seed_override` that changes symbol or TF triggers re-evaluation.
 - Evaluation dialog shows the actual expected backtest count (pre-computed from
@@ -131,3 +136,9 @@ this fix, `ALL_STRATEGIES.xlsx` was generated but contained empty/zero metrics
 for English-language reports. Relevant files:
 [`portfolio_manager/mt5_report.py`](../portfolio_manager/mt5_report.py),
 [`portfolio_manager/excel.py`](../portfolio_manager/excel.py).
+
+## Python Dependencies
+
+The runtime is standard-library-first. Third-party runtime dependencies are
+`lxml` for report parsing and `openpyxl` for Excel generation. `Pillow` is
+optional for anti-aliased UI widgets. `PyInstaller` is only needed for packaging.

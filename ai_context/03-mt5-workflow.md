@@ -163,6 +163,16 @@ Accepted/rejected seed scores can feed Universe asset/timeframe weights.
 `report_mismatch`, `no_report`, and `parse_error` seed rows must not feed
 weights.
 
+The UI can reset seed evaluation from `UBS Seeds`:
+
+- "Resetear evaluación" resets active `seed_scores` rows to `pending`, clears
+  score/report fields, deletes stored report files when possible, and does not
+  delete source `.set` files.
+- After reset, Universe weights are locked/hidden until seed evaluation is run
+  again and the user presses "Calcular pesos" in `UBS Universo`.
+- "Calcular pesos" only unlocks weights when active seeds are ready. Current UI
+  ready states are `accepted`, `rejected`, and `report_mismatch`.
+
 For single-candidate retry, `ubs_agent.py --retry-candidate-id <id>` copies the
 candidate `.set` into `outputs/ubs_agent/<run>/retry_mismatch/...`, runs
 `run_tests.py` only on that retry folder, and then re-evaluates the original

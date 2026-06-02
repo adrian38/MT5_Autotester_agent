@@ -200,3 +200,15 @@ explicitly about packaging.
 `ubs_global_params.json` and `ubs_mutation_overrides.json` are runtime files
 produced by the UI. They are gitignored but are critical for agent behavior —
 back them up when changing machine.
+
+## External Dependencies
+
+Runtime third-party packages are intentionally minimal:
+
+- `lxml`: MT5 HTML report parsing.
+- `openpyxl`: Excel workbook generation and image embedding.
+- `Pillow`: optional; improves rounded UI widget rendering when available.
+
+Packaging additionally needs `PyInstaller`. Tkinter, SQLite, urllib, and winreg
+are from Python/Windows standard libraries and should not be treated as pip
+dependencies.
