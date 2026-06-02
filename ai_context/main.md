@@ -75,12 +75,23 @@ batch wrappers.
 
 ## Recent Important Change
 
-The UBS agent now protects against symbol/timeframe mismatches:
+The UBS agent now has seed-level evaluation and stricter UBS mismatch
+protection:
 
 - `run_tests.py` prioritizes exact symbol tokens when inferring tester fields,
   so names like `XAGUSD__...__XAUUSD_MIX...` infer `XAGUSD`, not `XAUUSD`.
 - `ubs_agent.py` validates parsed report symbol/timeframe against the
   candidate target after applying `symbol_map`.
+- UBS seeds can be evaluated directly with `ubs_agent.py --evaluate-seeds`.
+  Results are stored in SQLite `seed_scores` and feed the Universe tab weights
+  only when the seed is `accepted` or `rejected`.
+- UBS seeds that cannot infer both symbol and timeframe are marked
+  `report_mismatch` before MT5 is launched. This is a hard rule: do not run a
+  seed backtest when UBS cannot determine the intended symbol/timeframe.
+- The UI has a dedicated `UBS Seeds` tab. It lists seed states, lets the user
+  open a seed, and stores manual symbol/timeframe corrections in
+  `seed_overrides`. These overrides are applied before seed evaluation and
+  before normal UBS generation.
 - Mismatched rows are stored as `report_mismatch`, excluded from agent
   feedback/universe weights, and can be retried from the UI with
   `Reprobar mismatch` for one row or `Reprobar run` for every mismatch in the
@@ -94,6 +105,16 @@ The UBS agent now protects against symbol/timeframe mismatches:
 - Broker symbols with a leading dot, such as `.US30Cash`, must stay intact in
   the report parser. Only trailing broker suffixes such as `EURUSD.a` should be
   stripped.
+
+Multiterminal support is available for batch backtests and UBS backtest
+execution:
+
+- `run_tests.py` accepts `--multi-terminal`, `--terminals-config`, and
+  `--max-workers`.
+- `ui_settings.ini` stores `[Multiterminal]` and `[Terminal.N]` profiles.
+- The UI has `MT5 Multiterminales` for manual terminal profiles and compact
+  multiterminal controls near execution buttons.
+- Compilation remains sequential; multiterminal applies to backtest queues.
 
 Earlier important change: the portfolio parser was fixed to support English
 MT5 reports. Before that, `ALL_STRATEGIES.xlsx` could be generated

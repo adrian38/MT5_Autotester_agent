@@ -64,6 +64,22 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
 7. Locate reports in MT5 data/install report locations.
 8. Copy report files into `reports/`.
 
+## Multiterminal Backtests
+
+`run_tests.py` can distribute a backtest queue across multiple manually
+configured MT5 terminals:
+
+- CLI flags: `--multi-terminal`, `--terminals-config <path>`,
+  `--max-workers N`.
+- UI settings live in `ui_settings.ini` under `[Multiterminal]` and
+  `[Terminal.N]`.
+- Each terminal profile can specify `enabled`, `name`, `mt5_path`, `data_dir`,
+  `experts_root`, `ubs_ex5_file`, and `portable`.
+- The worker count is a limit, not a required exact count: use up to `N`
+  enabled terminals and never more workers than jobs.
+- Compilation remains sequential. Multiterminal mode applies to backtest
+  queues, including UBS Tester and UBS Agent backtest execution.
+
 ## Template Contract
 
 `tester_template.ini` must contain a `[Tester]` section. The script overwrites
@@ -126,6 +142,26 @@ If these do not match, the candidate is stored as `report_mismatch`, not
 `accepted` or `rejected`. Mismatches are excluded from agent feedback and from
 the Universe tab weights. The Results tab has `Reprobar mismatch` for one
 candidate and `Reprobar run` for all mismatches in the visible run.
+
+## UBS Seed Evaluation
+
+Original UBS seeds can be scored with `ubs_agent.py --evaluate-seeds`.
+The UI exposes this from `UBS Agente UBS` and the dedicated `UBS Seeds` tab.
+
+Seed results are stored in `outputs/ubs_memory.sqlite`:
+
+- `seed_scores`: one row per source seed, including score, accepted flag,
+  status, report path, active/inactive state, symbol, and timeframe.
+- `seed_overrides`: manual symbol/timeframe corrections keyed by seed path.
+
+Hard rule: if a UBS seed cannot infer both symbol and timeframe after applying
+`seed_overrides`, it must be marked `report_mismatch` before MT5 is launched.
+Do not copy it into the seed evaluation folder and do not run a backtest for
+it. The user must correct it in `UBS Seeds` before it can be evaluated.
+
+Accepted/rejected seed scores can feed Universe asset/timeframe weights.
+`report_mismatch`, `no_report`, and `parse_error` seed rows must not feed
+weights.
 
 For single-candidate retry, `ubs_agent.py --retry-candidate-id <id>` copies the
 candidate `.set` into `outputs/ubs_agent/<run>/retry_mismatch/...`, runs

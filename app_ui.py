@@ -586,11 +586,15 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
         self.ubs_history_candidate_summary = tk.StringVar(value="Selecciona un run")
+        self.ubs_seed_eval_summary = tk.StringVar(value="Semillas: sin evaluar")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
         self.ubs_compare_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_compare_detail = tk.StringVar(value="Selecciona un resultado para comparar contra su seed.")
         self.ubs_compare_run_id = tk.StringVar(value="")
+        self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
+        self.ubs_seed_override_symbol = tk.StringVar(value="")
+        self.ubs_seed_override_period = tk.StringVar(value="")
         self.ubs_continue_status = tk.StringVar(value="Continuar: sin memoria UBS")
         self.mode_text = tk.StringVar(value="Real")
         self.last_log_text = tk.StringVar(value="Sin log reciente")
@@ -609,6 +613,7 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_result_paths: dict[str, dict[str, str]] = {}
         self.ubs_history_candidate_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
+        self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self._tree_sort_reverse: dict[tuple[str, str], bool] = {}
         self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"
@@ -865,13 +870,14 @@ class MT5AutotesterUI(tk.Tk):
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
 
         self._build_dashboard(self.section_frames["panel"])
         self._build_ubs_agent(self.section_frames["agente_ubs"])
+        self._build_ubs_seeds(self.section_frames["ubs_seeds"])
         self._build_ubs_results(self.section_frames["ubs_resultados"])
         self._build_ubs_history(self.section_frames["ubs_historico"])
         self._build_ubs_universe(self.section_frames["ubs_universo"])
@@ -910,6 +916,7 @@ class MT5AutotesterUI(tk.Tk):
         items = [
             ("panel", "▦  Panel"),
             ("agente_ubs", "UBS  Agente UBS"),
+            ("ubs_seeds", "UBS  Seeds"),
             ("ubs_resultados", "UBS  Resultados"),
             ("ubs_historico", "UBS  Historico"),
             ("ubs_universo", "UBS  Universo"),
@@ -1561,6 +1568,18 @@ class MT5AutotesterUI(tk.Tk):
         self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 1, self._browse_ex5_file)
         self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 2, self._browse_dir)
         self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 3, self._browse_dir)
+        seed_eval_row = ttk.Frame(paths, style="Panel.TFrame")
+        seed_eval_row.grid(row=4, column=0, columnspan=3, sticky="ew", padx=20, pady=(10, 18))
+        seed_eval_row.columnconfigure(0, weight=1)
+        ttk.Label(seed_eval_row, textvariable=self.ubs_seed_eval_summary, style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 10)
+        )
+        ttk.Button(
+            seed_eval_row,
+            text="Evaluar semillas",
+            style="Primary.TButton",
+            command=self._run_ubs_seed_evaluation,
+        ).grid(row=0, column=1, sticky="e")
 
         agent = self._card(parent, "Configuracion Agente UBS")
         agent.grid(row=1, column=0, sticky="ew")
@@ -1661,6 +1680,84 @@ class MT5AutotesterUI(tk.Tk):
             text="Profit neto min es moneda de la cuenta. Con deposito 1000, default 100 = 10%. Estabilidad mensual: score, no filtro hard.",
             style="Muted.TLabel",
         ).grid(row=3, column=0, columnspan=6, sticky="w", padx=20, pady=(4, 18))
+
+    def _build_ubs_seeds(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        card = self._card(parent, "Semillas UBS")
+        card.grid(row=0, column=0, sticky="nsew")
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(2, weight=1)
+
+        toolbar = ttk.Frame(card, style="Panel.TFrame")
+        toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 8))
+        toolbar.columnconfigure(0, weight=1)
+        ttk.Label(toolbar, textvariable=self.ubs_seed_eval_summary, style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 10)
+        )
+        ttk.Button(toolbar, text="Evaluar semillas", style="Primary.TButton", command=self._run_ubs_seed_evaluation).grid(
+            row=0, column=1, sticky="e", padx=(0, 8)
+        )
+        ttk.Button(toolbar, text="Abrir seed", style="TButton", command=self._open_selected_ubs_seed).grid(
+            row=0, column=2, sticky="e", padx=(0, 8)
+        )
+        ttk.Button(toolbar, text="Guardar Symbol/TF", style="TButton", command=self._save_ubs_seed_override).grid(
+            row=0, column=3, sticky="e", padx=(0, 8)
+        )
+        ttk.Button(toolbar, text="Actualizar", style="TButton", command=self._refresh_ubs_seeds).grid(
+            row=0, column=4, sticky="e"
+        )
+
+        table_frame = ttk.Frame(card, style="Panel.TFrame")
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 10))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = ("status", "symbol", "period", "score", "accepted", "override", "seed")
+        self.ubs_seeds_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        headings = {
+            "status": "ESTADO",
+            "symbol": "SYMBOL",
+            "period": "TF",
+            "score": "SCORE",
+            "accepted": "OK",
+            "override": "OVERRIDE",
+            "seed": "SEED",
+        }
+        widths = {"status": 125, "symbol": 90, "period": 60, "score": 90, "accepted": 70, "override": 90, "seed": 720}
+        for column in columns:
+            self.ubs_seeds_tree.heading(column, text=headings[column])
+            anchor = "e" if column == "score" else "center" if column in {"period", "accepted", "override"} else "w"
+            self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=column == "seed", anchor=anchor)
+        self._make_tree_sortable(self.ubs_seeds_tree)
+        self._attach_tree_scrollbars(table_frame, self.ubs_seeds_tree, 0)
+        self.ubs_seeds_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
+        self.ubs_seeds_tree.tag_configure("rejected", foreground=COLORS["danger"])
+        self.ubs_seeds_tree.tag_configure("pending", foreground=COLORS["muted"])
+        self.ubs_seeds_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_ubs_seed_select())
+
+        editor = ttk.Frame(card, style="Panel.TFrame")
+        editor.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 18))
+        editor.columnconfigure(1, weight=1)
+        editor.columnconfigure(3, weight=1)
+        ttk.Label(editor, textvariable=self.ubs_seed_detail, style="Muted.TLabel").grid(
+            row=0, column=0, columnspan=5, sticky="ew", pady=(0, 8)
+        )
+        ttk.Label(editor, text="Symbol correcto", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(editor, textvariable=self.ubs_seed_override_symbol, width=18).grid(
+            row=1, column=1, sticky="ew", padx=(0, 16)
+        )
+        ttk.Label(editor, text="Timeframe correcto", style="Panel.TLabel").grid(row=1, column=2, sticky="w", padx=(0, 8))
+        ttk.Combobox(
+            editor,
+            textvariable=self.ubs_seed_override_period,
+            values=("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"),
+            width=10,
+            state="readonly",
+        ).grid(row=1, column=3, sticky="w", padx=(0, 16))
+        ttk.Button(editor, text="Guardar override", style="Primary.TButton", command=self._save_ubs_seed_override).grid(
+            row=1, column=4, sticky="e"
+        )
 
     def _build_ubs_results(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -3014,6 +3111,8 @@ class MT5AutotesterUI(tk.Tk):
         self._refresh_reports()
         self._refresh_ubs_results()
         self._refresh_ubs_history()
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_seeds()
         self._refresh_ubs_universe()
         self._refresh_ubs_comparison()
         self._refresh_ubs_continue_state()
@@ -3023,6 +3122,273 @@ class MT5AutotesterUI(tk.Tk):
 
     def _ubs_memory_path(self) -> Path:
         return BASE_DIR / "outputs" / "ubs_memory.sqlite"
+
+    def _refresh_ubs_seed_eval_summary(self) -> None:
+        if not hasattr(self, "ubs_seed_eval_summary"):
+            return
+        try:
+            source_dir = self._ubs_generator_source_dir()
+            seed_count = len(load_set_files(source_dir, None, recursive=True))
+        except Exception:
+            self.ubs_seed_eval_summary.set("Semillas: carpeta no valida")
+            return
+
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            self.ubs_seed_eval_summary.set(f"Semillas: {seed_count} | evaluadas 0 | pendientes {seed_count}")
+            return
+        try:
+            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            seed_table = conn.execute(
+                "select name from sqlite_master where type='table' and name='seed_scores'"
+            ).fetchone()
+            if not seed_table:
+                conn.close()
+                self.ubs_seed_eval_summary.set(f"Semillas: {seed_count} | evaluadas 0 | pendientes {seed_count}")
+                return
+            active_counts = conn.execute(
+                """
+                select
+                    count(*) as total,
+                    sum(case when status in ('accepted', 'rejected') and score is not null then 1 else 0 end) as scored,
+                    sum(case when status not in ('accepted', 'rejected') or score is null then 1 else 0 end) as pending
+                from seed_scores
+                where active=1
+                """
+            ).fetchone()
+            inactive = int(conn.execute("select count(*) from seed_scores where active=0").fetchone()[0] or 0)
+            conn.close()
+        except sqlite3.Error as exc:
+            self.ubs_seed_eval_summary.set(f"Semillas: error SQLite ({exc})")
+            return
+
+        scored = int(active_counts["scored"] or 0) if active_counts else 0
+        pending = max(seed_count - scored, int(active_counts["pending"] or 0) if active_counts else seed_count)
+        self.ubs_seed_eval_summary.set(
+            f"Semillas: {seed_count} | evaluadas {scored} | pendientes {pending} | obsoletas {inactive}"
+        )
+
+    def _sqlite_table_exists(self, conn: sqlite3.Connection, table: str) -> bool:
+        return bool(conn.execute("select name from sqlite_master where type='table' and name=?", (table,)).fetchone())
+
+    def _ensure_ubs_seed_override_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            create table if not exists seed_overrides (
+                seed_path text primary key,
+                symbol text not null default '',
+                period text not null default '',
+                updated_at text not null
+            )
+            """
+        )
+        if self._sqlite_table_exists(conn, "seed_scores"):
+            conn.execute(
+                """
+                update seed_scores
+                set status='report_mismatch', accepted=null
+                where status in ('accepted', 'rejected')
+                  and (upper(symbol)='UNKNOWN' or upper(period)='UNKNOWN')
+                """
+            )
+        conn.commit()
+
+    def _current_ubs_seed_files(self) -> list[Path]:
+        return sorted(load_set_files(self._ubs_generator_source_dir(), None, recursive=True), key=lambda path: path.name.lower())
+
+    def _inferred_ubs_seed_fields(self, path: Path) -> tuple[str, str]:
+        try:
+            fields = infer_tester_fields_from_set(path)
+        except Exception:
+            fields = {}
+        symbol = str(fields.get("Symbol") or "UNKNOWN").strip().upper()
+        period = str(fields.get("Period") or "UNKNOWN").strip().upper()
+        return symbol, period
+
+    def _refresh_ubs_seeds(self) -> None:
+        if not hasattr(self, "ubs_seeds_tree"):
+            return
+        tree = self.ubs_seeds_tree
+        tree.delete(*tree.get_children(""))
+        self.ubs_seed_paths.clear()
+
+        try:
+            seed_files = self._current_ubs_seed_files()
+        except Exception as exc:
+            self.ubs_seed_detail.set(f"Carpeta de seeds no valida: {exc}")
+            return
+
+        score_rows: dict[str, sqlite3.Row] = {}
+        overrides: dict[str, tuple[str, str]] = {}
+        inactive_rows: list[sqlite3.Row] = []
+        memory_path = self._ubs_memory_path()
+        if memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn.row_factory = sqlite3.Row
+                self._ensure_ubs_seed_override_schema(conn)
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    rows = conn.execute("select * from seed_scores").fetchall()
+                    score_rows = {str(row["seed_path"]): row for row in rows}
+                    inactive_rows = [row for row in rows if not int(row["active"] or 0)]
+                for row in conn.execute("select seed_path, symbol, period from seed_overrides").fetchall():
+                    overrides[str(row["seed_path"])] = (
+                        str(row["symbol"] or "").strip().upper(),
+                        str(row["period"] or "").strip().upper(),
+                    )
+                conn.close()
+            except sqlite3.Error as exc:
+                self.ubs_seed_detail.set(f"Error SQLite semillas: {exc}")
+
+        current_paths = {str(path) for path in seed_files}
+        first_item = ""
+        for path in seed_files:
+            path_text = str(path)
+            row = score_rows.get(path_text)
+            inferred_symbol, inferred_period = self._inferred_ubs_seed_fields(path)
+            override_symbol, override_period = overrides.get(path_text, ("", ""))
+            symbol = override_symbol or (str(row["symbol"] or "").strip().upper() if row else inferred_symbol)
+            period = override_period or (str(row["period"] or "").strip().upper() if row else inferred_period)
+            status = str(row["status"] or "sin_evaluar") if row else "sin_evaluar"
+            accepted = ""
+            if row and row["accepted"] is not None:
+                accepted = "si" if int(row["accepted"]) else "no"
+            item = tree.insert(
+                "",
+                "end",
+                values=(
+                    self._format_ubs_status(status),
+                    symbol,
+                    period,
+                    self._format_ubs_number(row["score"] if row else None),
+                    accepted,
+                    "si" if override_symbol or override_period else "no",
+                    path.name,
+                ),
+                tags=(self._ubs_result_tag(status),),
+            )
+            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "1", "status": status}
+            if not first_item:
+                first_item = item
+
+        for row in inactive_rows:
+            path_text = str(row["seed_path"] or "")
+            if not path_text or path_text in current_paths:
+                continue
+            status = str(row["status"] or "obsoleta")
+            override_symbol, override_period = overrides.get(path_text, ("", ""))
+            symbol = override_symbol or str(row["symbol"] or "").strip().upper()
+            period = override_period or str(row["period"] or "").strip().upper()
+            item = tree.insert(
+                "",
+                "end",
+                values=(
+                    "obsoleta",
+                    symbol,
+                    period,
+                    self._format_ubs_number(row["score"]),
+                    "",
+                    "si" if override_symbol or override_period else "no",
+                    Path(path_text).name,
+                ),
+                tags=("pending",),
+            )
+            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "0", "status": status}
+
+        if first_item:
+            tree.selection_set(first_item)
+            tree.focus(first_item)
+            self._on_ubs_seed_select()
+        else:
+            self.ubs_seed_detail.set("No hay semillas .set en la carpeta UBS")
+            self.ubs_seed_override_symbol.set("")
+            self.ubs_seed_override_period.set("")
+
+    def _selected_ubs_seed_info(self) -> dict[str, str]:
+        if not hasattr(self, "ubs_seeds_tree"):
+            return {}
+        selected = self.ubs_seeds_tree.selection()
+        if not selected:
+            return {}
+        return self.ubs_seed_paths.get(selected[0], {})
+
+    def _on_ubs_seed_select(self) -> None:
+        info = self._selected_ubs_seed_info()
+        if not info:
+            return
+        item = self.ubs_seeds_tree.selection()[0]
+        values = self.ubs_seeds_tree.item(item, "values")
+        seed_path = info.get("seed_path", "")
+        symbol = str(values[1] if len(values) > 1 else "").strip().upper()
+        period = str(values[2] if len(values) > 2 else "").strip().upper()
+        self.ubs_seed_override_symbol.set("" if symbol == "UNKNOWN" else symbol)
+        self.ubs_seed_override_period.set("" if period == "UNKNOWN" else period)
+        self.ubs_seed_detail.set(f"{Path(seed_path).name} | estado: {values[0] if values else '-'}")
+
+    def _open_selected_ubs_seed(self) -> None:
+        info = self._selected_ubs_seed_info()
+        seed_path = info.get("seed_path", "")
+        if not seed_path:
+            self._show_error("Sin seleccion", "Selecciona una semilla.")
+            return
+        self._open_local_file(Path(seed_path))
+
+    def _save_ubs_seed_override(self) -> None:
+        info = self._selected_ubs_seed_info()
+        seed_path = info.get("seed_path", "")
+        if not seed_path:
+            self._show_error("Sin seleccion", "Selecciona una semilla para guardar Symbol/TF.")
+            return
+        symbol = self.ubs_seed_override_symbol.get().strip().upper()
+        period = self.ubs_seed_override_period.get().strip().upper()
+        valid_periods = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"}
+        if not symbol:
+            self._show_error("Symbol requerido", "Indica la moneda o activo correcto para esta semilla.")
+            return
+        if period not in valid_periods:
+            self._show_error("Timeframe invalido", f"El timeframe debe ser uno de: {', '.join(sorted(valid_periods))}.")
+            return
+        memory_path = self._ubs_memory_path()
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            conn = sqlite3.connect(memory_path, timeout=3.0)
+            self._ensure_ubs_seed_override_schema(conn)
+            now = datetime.now().isoformat(timespec="seconds")
+            conn.execute(
+                """
+                insert into seed_overrides (seed_path, symbol, period, updated_at)
+                values (?, ?, ?, ?)
+                on conflict(seed_path) do update set
+                    symbol=excluded.symbol,
+                    period=excluded.period,
+                    updated_at=excluded.updated_at
+                """,
+                (seed_path, symbol, period, now),
+            )
+            if self._sqlite_table_exists(conn, "seed_scores"):
+                conn.execute(
+                    """
+                    update seed_scores
+                    set symbol=?,
+                        period=?,
+                        report_path=case when status in ('accepted', 'rejected') then null else report_path end,
+                        score=case when status in ('accepted', 'rejected') then null else score end,
+                        accepted=case when status in ('accepted', 'rejected') then null else accepted end,
+                        metrics_json=case when status in ('accepted', 'rejected') then null else metrics_json end,
+                        status=case when status in ('accepted', 'rejected') then 'pending' else status end
+                    where seed_path=?
+                    """,
+                    (symbol, period, seed_path),
+                )
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error guardando seed", str(exc))
+            return
+        self.status_text.set("Override de seed guardado")
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_seeds()
 
     def _ensure_ubs_memory_schema(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"]) for row in conn.execute("pragma table_info(runs)")}
@@ -3488,6 +3854,8 @@ class MT5AutotesterUI(tk.Tk):
         total_scored = 0
         total_pending = 0
         total_mismatch = 0
+        total_seed_scored = 0
+        total_seed_pending = 0
 
         if memory_path.exists():
             try:
@@ -3499,6 +3867,18 @@ class MT5AutotesterUI(tk.Tk):
                     from candidates
                     """
                 ).fetchall()
+                seed_table = conn.execute(
+                    "select name from sqlite_master where type='table' and name='seed_scores'"
+                ).fetchone()
+                seed_rows = []
+                if seed_table:
+                    seed_rows = conn.execute(
+                        """
+                        select symbol, period, score, accepted, status, active
+                        from seed_scores
+                        where active=1
+                        """
+                    ).fetchall()
                 conn.close()
             except sqlite3.Error as exc:
                 self.ubs_universe_summary.set(f"No se pudo leer memoria UBS: {exc}")
@@ -3530,6 +3910,29 @@ class MT5AutotesterUI(tk.Tk):
                     stat["accepted"] = int(stat["accepted"]) + (1 if accepted else 0)
                     stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
                 total_scored += 1
+
+            for row in seed_rows:
+                status = str(row["status"] or "")
+                canonical = self._canonical_ubs_symbol(row["symbol"], aliases)
+                period = str(row["period"] or "UNKNOWN").upper()
+                asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
+                tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
+                if status in {"pending", "no_report", "parse_error", "report_mismatch"}:
+                    asset_stat["pending"] = int(asset_stat["pending"]) + 1
+                    tf_stat["pending"] = int(tf_stat["pending"]) + 1
+                    total_seed_pending += 1
+                if row["score"] is None or status not in {"accepted", "rejected"}:
+                    continue
+                score = float(row["score"])
+                accepted = bool(row["accepted"])
+                weight = score + (20.0 if accepted else 0.0)
+                for stat in (asset_stat, tf_stat):
+                    stat["scores"].append(score)
+                    stat["weights"].append(weight)
+                    stat["tests"] = int(stat["tests"]) + 1
+                    stat["accepted"] = int(stat["accepted"]) + (1 if accepted else 0)
+                    stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
+                total_seed_scored += 1
 
         universe_symbols = {symbol.upper() for _, symbol, _ in assets}
         observed_only = sorted(symbol for symbol in asset_stats if symbol.upper() not in universe_symbols)
@@ -3595,7 +3998,8 @@ class MT5AutotesterUI(tk.Tk):
 
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
-            f"pendientes sin backtest: {total_pending} | mismatch ignorados: {total_mismatch}"
+            f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
+            f"mismatch ignorados: {total_mismatch}"
         )
         self.ubs_timeframe_summary.set(
             "PESO = promedio(score + bonus accepted). El agente prioriza TF buenos y explora M15/M30/H1/H4/D1 reemplazando claves de timeframe existentes."
@@ -3998,6 +4402,8 @@ class MT5AutotesterUI(tk.Tk):
             "no_report": "sin reporte",
             "parse_error": "parse error",
             "report_mismatch": "mismatch reporte",
+            "pending": "pendiente",
+            "sin_evaluar": "sin evaluar",
         }
         return labels.get(status, status or "-")
 
@@ -4557,6 +4963,54 @@ class MT5AutotesterUI(tk.Tk):
         if self._confirm_execution_start("Confirmar Tester UBS", total, details):
             self._run_script("run_tests.py", args)
 
+    def _count_ubs_seed_files(self) -> tuple[int, str]:
+        source_dir = self._ubs_generator_source_dir()
+        files = load_set_files(source_dir, None, recursive=True)
+        return len(files), str(source_dir)
+
+    def _ubs_seed_eval_args(self) -> list[str]:
+        source_dir = self._ubs_generator_source_dir()
+        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        args = [
+            "--evaluate-seeds",
+            "--source-dir", str(source_dir),
+            "--output-dir", str(output_dir),
+            "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+            "--template", self.template_path.get(),
+            "--delay", str(self.delay.get()),
+        ]
+        args.extend(self._ubs_score_args())
+        if self.multiterminal_enabled.get():
+            args.extend(self._multiterminal_args(require_ubs=True))
+        else:
+            args.extend(["--expert", self._required_ubs_ex5_file()])
+            if self.mt5_path.get().strip():
+                args.extend(["--mt5-path", self.mt5_path.get()])
+            if self.mt5_data_root.get().strip():
+                args.extend(["--data-dir", self.mt5_data_root.get()])
+        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+            args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        return args
+
+    def _run_ubs_seed_evaluation(self) -> None:
+        try:
+            args = self._ubs_seed_eval_args()
+            total, target = self._count_ubs_seed_files()
+        except Exception as exc:
+            self._show_error("No se pudo preparar evaluacion de semillas", str(exc))
+            return
+        details = [
+            "Accion: Evaluar semillas UBS",
+            f"Carpeta seeds: {target}",
+            f"Seeds detectadas: {total}",
+            "Se ejecutan backtests solo para semillas nuevas, modificadas o sin score valido.",
+            "Las semillas borradas quedan inactivas para los pesos.",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar evaluacion de semillas", total, details):
+            self.ubs_seed_eval_summary.set("Evaluando semillas UBS...")
+            self._run_script("ubs_agent.py", args)
+
     def _ubs_generator_args(self, *, continue_last: bool = False) -> list[str]:
         source_dir = (
             Path(self.set_files_root.get().strip()).expanduser()
@@ -4811,6 +5265,7 @@ class MT5AutotesterUI(tk.Tk):
         ubs_runs_backtests = (
             self.ubs_agent_execute.get()
             or "--execute-backtests" in args
+            or "--evaluate-seeds" in args
             or "--retry-candidate-id" in args
             or "--retry-mismatch-run" in args
             or "--retry-mismatch-generation" in args

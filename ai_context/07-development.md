@@ -34,6 +34,7 @@ python .\ubs_agent.py --execute-backtests --expert "C:\path\to\Ultimate Breakout
 python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5"
 python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --retry-run-id 1 --retry-mismatch-run --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+python .\ubs_agent.py --evaluate-seeds --source-dir ".\sets\ubs_ready" --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 ```
 
 Compile then backtest:
@@ -64,11 +65,22 @@ For UBS agent changes:
 - Run `python -m py_compile run_tests.py ubs_agent.py app_ui.py`.
 - For symbol/timeframe inference changes, run a dry retry of a known mismatch
   and confirm the generated `.ini` has the intended `Symbol` and `Period`.
+- For seed evaluation changes, run `ubs_agent.py --evaluate-seeds --dry-run`
+  against a small seed folder.
+- Confirm a UBS seed with missing/unknown symbol or timeframe is stored as
+  `report_mismatch` before `run_tests.py` is launched. This case must not
+  create a backtest job.
+- Confirm manual fixes saved in the UI `UBS Seeds` tab are written to
+  `seed_overrides` and are applied by both seed evaluation and normal UBS
+  generation.
+- If multiterminal behavior changed, run a dry test with
+  `run_tests.py --multi-terminal --terminals-config ui_settings.ini
+  --max-workers 2 --dry-run` and verify the queue splits without launching MT5.
 - Confirm `outputs/ubs_memory.sqlite` candidate statuses remain terminal after
   completed generations: `accepted`, `rejected`, `report_mismatch`,
   `no_report`, or `parse_error`.
 - Confirm `report_mismatch` rows do not feed `asset_feedback`,
-  `timeframe_feedback`, or Universe tab weights.
+  `timeframe_feedback`, seed feedback, or Universe tab weights.
 - If testing real MT5 retry, close MT5 first, select a `mismatch reporte` row
   in the UI, and use `Reprobar mismatch` for one candidate or `Reprobar run`
   for all mismatches in the visible run.
@@ -164,3 +176,7 @@ Known current UBS memory after retry cleanup:
 - `rejected`: 146
 - `no_report`: 1
 - `report_mismatch`: 0
+
+This snapshot is historical only. Current work may include `seed_scores` rows
+and `report_mismatch` seed rows for source seeds that need manual Symbol/TF
+overrides.

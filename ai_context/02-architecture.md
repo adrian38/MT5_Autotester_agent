@@ -66,6 +66,12 @@ Owns the Strategy Tester workflow:
   real backtests, so stale HTML/images are not mistaken for fresh output.
 - When `--infer-tester-from-set` is used, infer exact symbol tokens before
   loose aliases. This matters for UBS names like `XAGUSD__...__XAUUSD_MIX...`.
+- Support multiterminal execution with `--multi-terminal`,
+  `--terminals-config`, and `--max-workers`. In this mode, jobs are queued and
+  distributed across enabled terminal profiles. Each profile can have its own
+  `terminal64.exe`, data directory, Experts root, UBS `.ex5`, and portable
+  flag. Report names remain compatible with the existing UBS stem-based
+  convention.
 
 ### `ubs_agent.py`
 
@@ -81,6 +87,14 @@ Owns the UBS agent workflow:
   `outputs/ubs_memory.sqlite`.
 - Validate parsed report `Symbol`/`Period` against the intended target after
   applying `symbol_map`; invalid executions become `report_mismatch`.
+- Evaluate original UBS seeds with `--evaluate-seeds`. Seed scores are stored
+  in `seed_scores`, can feed asset/timeframe feedback, and are surfaced in the
+  UI.
+- Store manual seed symbol/timeframe corrections in `seed_overrides`. Overrides
+  are applied before seed evaluation and before normal generation.
+- Hard UBS seed rule: if a seed cannot infer both symbol and timeframe after
+  applying overrides, it is recorded as `report_mismatch` and must not be
+  backtested.
 - Retry a single candidate with `--retry-candidate-id`, used by the UI
   `Reprobar mismatch` button.
 - Retry all `report_mismatch` candidates in a run with `--retry-run-id` and
@@ -94,7 +108,9 @@ Important candidate states:
 - `no_report`: MT5 did not produce a report for the expected name.
 - `parse_error`: report exists but could not be parsed.
 - `report_mismatch`: report parsed, but actual symbol/timeframe does not match
-  the candidate target.
+  the candidate target. For `seed_scores`, this also covers UBS seeds that lack
+  a resolvable symbol/timeframe before execution; those are intentionally not
+  sent to MT5.
 
 ### `ubs_score.py`
 

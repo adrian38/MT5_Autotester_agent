@@ -8,7 +8,8 @@ Advisors:
 - Locate MT5 and MetaEditor executables.
 - Compile `.mq5` source files to `.ex5`.
 - Generate Strategy Tester `.ini` files from a reusable template.
-- Run MT5 backtests one by one.
+- Run MT5 backtests one by one or distribute queues across configured
+  multiterminal profiles.
 - Collect generated `.htm/.html` reports into the project `reports/` folder.
 - Parse reports and export portfolio analysis workbooks under `outputs/`.
 - Generate, backtest, score, and retain UBS `.set` variants through an agent
@@ -38,7 +39,9 @@ The UI exposes:
 - Backtest execution with live logs.
 - Portfolio Manager Excel generators.
 - UBS agent tabs for configuration, results, SQLite history, asset/timeframe
-  universe weights, and accepted-vs-seed comparison.
+  universe weights, seed evaluation/overrides, and accepted-vs-seed comparison.
+- Multiterminal profile configuration for multiple MT5 installations/data
+  folders.
 - Runtime file/log browsing.
 - Light/dark theme selection.
 
@@ -83,6 +86,8 @@ history in SQLite.
 Main UI areas:
 
 - `UBS Agente UBS`: generation/pass configuration and launch/continue actions.
+- `UBS Seeds`: original seed scoring state, manual symbol/timeframe overrides,
+  and seed evaluation actions.
 - `UBS Resultados`: latest run candidates, including `report_mismatch` rows,
   single-candidate retry, and run-level mismatch retry.
 - `UBS Historico`: SQLite run/candidate history.
@@ -109,6 +114,7 @@ UBS agent flow:
 
 ```text
 sets/ubs_ready/*.set
+    -> optional seed evaluation / seed_overrides
     -> ubs_agent.py
     -> generated outputs/ubs_agent/<run>/gen_*/**/*.set
     -> run_tests.py + terminal64.exe
