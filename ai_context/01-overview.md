@@ -11,6 +11,8 @@ Advisors:
 - Run MT5 backtests one by one.
 - Collect generated `.htm/.html` reports into the project `reports/` folder.
 - Parse reports and export portfolio analysis workbooks under `outputs/`.
+- Generate, backtest, score, and retain UBS `.set` variants through an agent
+  with SQLite memory.
 - Optionally send Telegram notifications after backtests.
 - Package the UI and helper CLIs into a Windows installer/portable ZIP.
 
@@ -35,6 +37,8 @@ The UI exposes:
 - Compile-and-backtest actions.
 - Backtest execution with live logs.
 - Portfolio Manager Excel generators.
+- UBS agent tabs for configuration, results, SQLite history, asset/timeframe
+  universe weights, and accepted-vs-seed comparison.
 - Runtime file/log browsing.
 - Light/dark theme selection.
 
@@ -45,6 +49,8 @@ The CLI scripts are the automation core:
 - `compile_mq5.py`: compile `.mq5` files with MetaEditor.
 - `run_tests.py`: generate Strategy Tester configs and launch MT5.
 - `compile_and_backtest.py`: orchestrate compile first, then backtest.
+- `ubs_agent.py`: generate UBS variants, run backtests, score reports, and
+  update `outputs/ubs_memory.sqlite`.
 
 Batch files call those scripts for double-click usage:
 
@@ -68,6 +74,21 @@ workbooks in `outputs/`:
 
 See [04-portfolio-manager.md](04-portfolio-manager.md).
 
+### 4. UBS Agent Workflow
+
+The UBS agent starts from known-good UBS `.set` files, generates variants, runs
+Strategy Tester backtests, scores the resulting reports, and saves candidate
+history in SQLite.
+
+Main UI areas:
+
+- `UBS Agente UBS`: generation/pass configuration and launch/continue actions.
+- `UBS Resultados`: latest run candidates, including `report_mismatch` rows,
+  single-candidate retry, and run-level mismatch retry.
+- `UBS Historico`: SQLite run/candidate history.
+- `UBS Universo`: asset/timeframe weights used by the agent.
+- `UBS Comparar`: accepted set vs seed differences and HTML comparison report.
+
 ## High-Level Data Flow
 
 ```text
@@ -84,6 +105,19 @@ See [04-portfolio-manager.md](04-portfolio-manager.md).
     -> outputs/*.xlsx
 ```
 
+UBS agent flow:
+
+```text
+sets/ubs_ready/*.set
+    -> ubs_agent.py
+    -> generated outputs/ubs_agent/<run>/gen_*/**/*.set
+    -> run_tests.py + terminal64.exe
+    -> reports/*.htm
+    -> ubs_score.py
+    -> outputs/ubs_memory.sqlite
+    -> accepted_gen_* or report_mismatch/rejected state
+```
+
 ## Tech Stack
 
 - Python 3, standard library-first.
@@ -94,4 +128,3 @@ See [04-portfolio-manager.md](04-portfolio-manager.md).
 - `openpyxl` writes Excel workbooks and embeds report images.
 - PyInstaller builds Windows `.exe` artifacts and the installer payload.
 - PowerShell scripts clean MT5 data and build installer packages.
-

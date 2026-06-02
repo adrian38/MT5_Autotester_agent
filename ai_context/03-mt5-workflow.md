@@ -58,6 +58,8 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
    - optionally infer `Symbol` and `Period` from the `.set`;
    - apply symbol suffix and symbol map;
    - create a generated `.ini` under `configs/`;
+   - delete previous report artifacts with the same report name before real
+     execution;
    - launch `terminal64.exe /config:<ini>`.
 7. Locate reports in MT5 data/install report locations.
 8. Copy report files into `reports/`.
@@ -106,12 +108,50 @@ Report=
 Broker symbol rewriting can be configured through a `source=target` symbol map
 from the UI or `--symbol-map`.
 
+Exact path tokens are intentionally preferred over loose aliases. Example:
+`XAGUSD__D1__XAUUSD_MIX__...set` should infer `XAGUSD`, even though the name
+also contains `XAUUSD_MIX`.
+
+## UBS Agent Report Validation
+
+The UBS agent does not trust filenames as proof that MT5 executed the intended
+asset. After each report is parsed, `ubs_agent.py` compares:
+
+- candidate target symbol after applying `symbol_map`;
+- candidate target timeframe;
+- parsed report symbol;
+- parsed report timeframe.
+
+If these do not match, the candidate is stored as `report_mismatch`, not
+`accepted` or `rejected`. Mismatches are excluded from agent feedback and from
+the Universe tab weights. The Results tab has `Reprobar mismatch` for one
+candidate and `Reprobar run` for all mismatches in the visible run.
+
+For single-candidate retry, `ubs_agent.py --retry-candidate-id <id>` copies the
+candidate `.set` into `outputs/ubs_agent/<run>/retry_mismatch/...`, runs
+`run_tests.py` only on that retry folder, and then re-evaluates the original
+candidate row.
+
+For run-level retry, use `ubs_agent.py --retry-run-id <run> --retry-mismatch-run`.
+It copies all current `report_mismatch` candidates from that run into one retry
+folder, runs one batch, and updates each original SQLite row. If one MT5
+backtest in that batch fails, the retry should still evaluate every report that
+was produced; only candidates without a generated report should remain
+`no_report`.
+
+Normal UBS generations follow the same partial-failure rule. A non-zero
+`run_tests.py` exit does not discard reports already produced, but the agent
+must stop if the batch produced no puntuable reports.
+
 ## MT5 Gotchas
 
 - MT5 can ignore `/config` when the same terminal is already open. Preserve the
   running-terminal detection unless intentionally changing this behavior.
 - Reports may be written to the terminal data folder or install directory;
   `run_tests.py` searches multiple locations.
+- Stale report files can survive in several MT5 locations. `run_tests.py`
+  deletes matching report artifacts just before real execution.
 - MT5 report files may be UTF-16 HTML. Do not parse them as plain UTF-8 text
   without checking encoding.
-
+- Broker symbols may start with a dot, for example `.US30Cash`; this leading
+  dot is part of the symbol and must not be stripped by report parsing.

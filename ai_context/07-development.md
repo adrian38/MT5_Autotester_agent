@@ -26,6 +26,16 @@ python .\run_tests.py --expert "MyEA.ex5" --set-dir ".\sets"
 python .\run_tests.py --dry-run
 ```
 
+Run UBS agent:
+
+```powershell
+python .\ubs_agent.py --dry-run
+python .\ubs_agent.py --execute-backtests --expert "C:\path\to\Ultimate Breakout System_4.3.ex5"
+python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5"
+python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+python .\ubs_agent.py --retry-run-id 1 --retry-mismatch-run --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+```
+
 Compile then backtest:
 
 ```powershell
@@ -48,6 +58,20 @@ For compile/backtest changes:
   `Period`, `Report`, and optional set fields.
 - If testing real MT5 execution, ensure MT5 is fully closed first.
 - Check `logs/last_run.log` or `logs/last_compile.log`.
+
+For UBS agent changes:
+
+- Run `python -m py_compile run_tests.py ubs_agent.py app_ui.py`.
+- For symbol/timeframe inference changes, run a dry retry of a known mismatch
+  and confirm the generated `.ini` has the intended `Symbol` and `Period`.
+- Confirm `outputs/ubs_memory.sqlite` candidate statuses remain terminal after
+  completed generations: `accepted`, `rejected`, `report_mismatch`,
+  `no_report`, or `parse_error`.
+- Confirm `report_mismatch` rows do not feed `asset_feedback`,
+  `timeframe_feedback`, or Universe tab weights.
+- If testing real MT5 retry, close MT5 first, select a `mismatch reporte` row
+  in the UI, and use `Reprobar mismatch` for one candidate or `Reprobar run`
+  for all mismatches in the visible run.
 
 For portfolio changes:
 
@@ -121,3 +145,22 @@ Compile syntax only:
 python -m compileall .
 ```
 
+Inspect UBS memory:
+
+```powershell
+@'
+import sqlite3
+conn = sqlite3.connect("outputs/ubs_memory.sqlite")
+conn.row_factory = sqlite3.Row
+for row in conn.execute("select status, count(*) n from candidates group by status order by status"):
+    print(dict(row))
+conn.close()
+'@ | python -
+```
+
+Known current UBS memory after retry cleanup:
+
+- `accepted`: 153
+- `rejected`: 146
+- `no_report`: 1
+- `report_mismatch`: 0

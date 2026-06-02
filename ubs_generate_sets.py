@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from ubs_set_utils import force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, write_set_text
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -222,7 +222,7 @@ def generate_sets(
 
         for seed_index, seed in enumerate(seeds, start=1):
             text, encoding = read_set_with_encoding(seed)
-            parent_name = safe_part(seed.stem)
+            parent_name = compact_safe_part(seed.stem, 32)
             for variant_index in range(1, variants_per_seed + 1):
                 mutated, changed, missing_lot_keys = mutate_text(text, rng, mutations_per_variant)
                 output = generation_dir / f"{parent_name}__g{generation:03d}_s{seed_index:03d}_v{variant_index:03d}.set"

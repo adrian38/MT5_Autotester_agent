@@ -17,6 +17,8 @@ MetaTrader 5. It automates three related workflows:
    files and launching `terminal64.exe /config:<ini>`.
 3. Parse MT5 HTML reports and generate Excel portfolio workbooks with
    strategy metrics and drawdown analysis.
+4. Run a UBS-specific set-generation agent that mutates known-good `.set`
+   files, backtests variants, scores reports, and stores memory in SQLite.
 
 The main user-facing entry point is the Tkinter desktop app in
 [`app_ui.py`](../app_ui.py). The same functionality is also available through
@@ -42,6 +44,12 @@ batch wrappers.
 - Portfolio parsing must support both English and Spanish MT5 HTML reports.
   Recent MT5 reports in this workspace use English labels (`Results`,
   `Orders`, `Deals`, `Symbol`, `Time`, etc.).
+- UBS agent results must validate the actual MT5 report `Symbol`/`Period`
+  against the intended candidate target. Do not trust set/report filenames
+  alone; stale reports and broker symbol aliases can otherwise poison memory.
+- `report_mismatch` is an intentional UBS candidate state. It means the
+  report was parsed, but MT5 executed a different symbol/timeframe than the
+  candidate target after applying the configured `symbol_map`.
 
 ## Topic Index
 
@@ -61,16 +69,36 @@ batch wrappers.
 - Compile EA(s): `python compile_mq5.py`
 - Run backtests: `python run_tests.py`
 - Compile then backtest: `python compile_and_backtest.py`
+- UBS agent: `python ubs_agent.py`
 - Build installer: `powershell -ExecutionPolicy Bypass -File tools/build_installer.ps1`
 - Portfolio workbook generation: functions in `portfolio_manager/generator.py`
 
 ## Recent Important Change
 
-The portfolio parser was fixed to support English MT5 reports. Before that,
-`ALL_STRATEGIES.xlsx` could be generated successfully but contain empty/zero
-metrics because the parser only looked for Spanish section/header names.
-Relevant files:
+The UBS agent now protects against symbol/timeframe mismatches:
+
+- `run_tests.py` prioritizes exact symbol tokens when inferring tester fields,
+  so names like `XAGUSD__...__XAUUSD_MIX...` infer `XAGUSD`, not `XAUUSD`.
+- `ubs_agent.py` validates parsed report symbol/timeframe against the
+  candidate target after applying `symbol_map`.
+- Mismatched rows are stored as `report_mismatch`, excluded from agent
+  feedback/universe weights, and can be retried from the UI with
+  `Reprobar mismatch` for one row or `Reprobar run` for every mismatch in the
+  visible run.
+- `run_tests.py` deletes old report artifacts for the same report name before
+  real backtests, reducing stale-report reads.
+- UBS generation and run-level mismatch retry tolerate partial `run_tests.py`
+  failures: they still evaluate reports that were produced, while failed
+  candidates remain `no_report`. If nothing puntuable is produced, the agent
+  still stops with an error.
+- Broker symbols with a leading dot, such as `.US30Cash`, must stay intact in
+  the report parser. Only trailing broker suffixes such as `EURUSD.a` should be
+  stripped.
+
+Earlier important change: the portfolio parser was fixed to support English
+MT5 reports. Before that, `ALL_STRATEGIES.xlsx` could be generated
+successfully but contain empty/zero metrics because the parser only looked for
+Spanish section/header names. Relevant files:
 
 - [`portfolio_manager/mt5_report.py`](../portfolio_manager/mt5_report.py)
 - [`portfolio_manager/excel.py`](../portfolio_manager/excel.py)
-

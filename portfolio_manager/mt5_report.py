@@ -290,6 +290,8 @@ def _normalize_timeframe(value: str) -> str:
 
 def _clean_symbol(value: str) -> str:
     value = value.strip()
+    if value.startswith("."):
+        return value
     return value.split(".")[0] if "." in value else value
 
 

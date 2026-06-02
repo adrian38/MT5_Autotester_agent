@@ -3,6 +3,7 @@ import html
 import json
 import os
 import queue
+import re
 import sqlite3
 import subprocess
 import sys
@@ -55,6 +56,7 @@ if getattr(sys, "frozen", False):
 COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+TRUE_VALUES = {"1", "true", "yes", "on", "si"}
 
 
 LIGHT_COLORS = {
@@ -512,6 +514,7 @@ class MT5AutotesterUI(tk.Tk):
         ui_settings = self._read_ui_settings()
         saved_paths = ui_settings["Paths"] if ui_settings.has_section("Paths") else {}
         saved_general = ui_settings["General"] if ui_settings.has_section("General") else {}
+        saved_multi = ui_settings["Multiterminal"] if ui_settings.has_section("Multiterminal") else {}
         saved_theme = saved_general.get("theme", "light").strip().lower()
         self.theme_mode = tk.StringVar(value="dark" if saved_theme == "dark" else "light")
         self._apply_theme_palette()
@@ -558,7 +561,19 @@ class MT5AutotesterUI(tk.Tk):
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_map = tk.StringVar(value=saved_general.get("symbol_map", ""))
         _tg_default = "1" if (env_value("TELEGRAM_BOT_TOKEN") and env_value("TELEGRAM_CHAT_ID")) else "0"
-        self.telegram_enabled = tk.BooleanVar(value=saved_general.get("telegram_enabled", _tg_default) in {"1", "true", "yes", "on"})
+        self.telegram_enabled = tk.BooleanVar(value=self._bool_setting(saved_general.get("telegram_enabled", _tg_default)))
+        self.multiterminal_enabled = tk.BooleanVar(value=self._bool_setting(saved_multi.get("enabled"), False))
+        self.multiterminal_workers = tk.IntVar(value=max(1, self._saved_int(saved_multi.get("workers"), 1)))
+        self.multiterminal_profiles = self._read_multiterminal_profiles(ui_settings)
+        self.mt_selected_index: int | None = None
+        self.mt_profile_enabled = tk.BooleanVar(value=True)
+        self.mt_profile_portable = tk.BooleanVar(value=False)
+        self.mt_profile_name = tk.StringVar(value="")
+        self.mt_profile_mt5_path = tk.StringVar(value="")
+        self.mt_profile_data_dir = tk.StringVar(value="")
+        self.mt_profile_experts_root = tk.StringVar(value="")
+        self.mt_profile_ubs_ex5_file = tk.StringVar(value="")
+        self.multiterminal_summary = tk.StringVar(value="")
 
         self.tester_vars: dict[str, tk.StringVar] = {}
         self.status_text = tk.StringVar(value="Listo")
@@ -573,8 +588,9 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_history_candidate_summary = tk.StringVar(value="Selecciona un run")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
-        self.ubs_compare_summary = tk.StringVar(value="Sin sets aceptados")
-        self.ubs_compare_detail = tk.StringVar(value="Selecciona un set aceptado para comparar contra su seed.")
+        self.ubs_compare_summary = tk.StringVar(value="Sin resultados UBS")
+        self.ubs_compare_detail = tk.StringVar(value="Selecciona un resultado para comparar contra su seed.")
+        self.ubs_compare_run_id = tk.StringVar(value="")
         self.ubs_continue_status = tk.StringVar(value="Continuar: sin memoria UBS")
         self.mode_text = tk.StringVar(value="Real")
         self.last_log_text = tk.StringVar(value="Sin log reciente")
@@ -593,6 +609,7 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_result_paths: dict[str, dict[str, str]] = {}
         self.ubs_history_candidate_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
+        self._tree_sort_reverse: dict[tuple[str, str], bool] = {}
         self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"
 
@@ -650,6 +667,45 @@ class MT5AutotesterUI(tk.Tk):
             return int(value)
         except ValueError:
             return default
+
+    def _bool_setting(self, value: object, default: bool = False) -> bool:
+        if value is None:
+            return default
+        return str(value).strip().lower() in TRUE_VALUES
+
+    def _read_multiterminal_profiles(self, parser: configparser.ConfigParser) -> list[dict[str, object]]:
+        sections = [section for section in parser.sections() if section.lower().startswith("terminal.")]
+
+        def section_key(section: str) -> tuple[int, str]:
+            suffix = section.split(".", 1)[1] if "." in section else section
+            try:
+                return (int(suffix), section)
+            except ValueError:
+                return (9999, section)
+
+        profiles: list[dict[str, object]] = []
+        for section in sorted(sections, key=section_key):
+            data = parser[section]
+            profiles.append({
+                "enabled": self._bool_setting(data.get("enabled"), True),
+                "name": data.get("name", section).strip() or section,
+                "mt5_path": data.get("mt5_path", "").strip(),
+                "data_dir": data.get("data_dir", "").strip(),
+                "experts_root": data.get("experts_root", "").strip(),
+                "ubs_ex5_file": data.get("ubs_ex5_file", "").strip(),
+                "portable": self._bool_setting(data.get("portable"), False),
+            })
+        if profiles:
+            return profiles
+        return [{
+            "enabled": bool(self.mt5_path.get().strip()),
+            "name": "MT5 principal",
+            "mt5_path": self.mt5_path.get().strip(),
+            "data_dir": self.mt5_data_root.get().strip(),
+            "experts_root": self.experts_root.get().strip(),
+            "ubs_ex5_file": self.ubs_ex5_file.get().strip(),
+            "portable": False,
+        }]
 
     def report_callback_exception(self, exc_type, exc_value, exc_traceback) -> None:
         if exc_type is ValueError:
@@ -726,6 +782,78 @@ class MT5AutotesterUI(tk.Tk):
         style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.configure("Horizontal.TProgressbar", background=COLORS["accent"], troughcolor=COLORS["panel_high"], bordercolor=COLORS["panel_high"], lightcolor=COLORS["accent"], darkcolor=COLORS["accent"], thickness=10)
 
+    def _attach_tree_scrollbars(
+        self,
+        parent: ttk.Frame,
+        tree: ttk.Treeview,
+        row: int,
+        column: int = 0,
+        *,
+        vertical: bool = True,
+        horizontal: bool = True,
+    ) -> None:
+        tree.grid(row=row, column=column, sticky="nsew")
+        if vertical:
+            y_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+            y_scroll.grid(row=row, column=column + 1, sticky="ns")
+            tree.configure(yscrollcommand=y_scroll.set)
+        if horizontal:
+            x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+            x_scroll.grid(row=row + 1, column=column, sticky="ew")
+            tree.configure(xscrollcommand=x_scroll.set)
+
+    def _make_tree_sortable(self, tree: ttk.Treeview) -> None:
+        for column in tree["columns"]:
+            title = str(tree.heading(column).get("text") or column)
+            tree.heading(column, text=title, command=lambda col=column: self._sort_tree_by_column(tree, col))
+
+    def _sort_tree_by_column(self, tree: ttk.Treeview, column: str) -> None:
+        sort_id = (str(tree), column)
+        reverse = self._tree_sort_reverse.get(sort_id, False)
+        rows = [(self._tree_sort_value(tree.set(item, column)), item) for item in tree.get_children("")]
+        rows.sort(key=lambda item: item[0], reverse=reverse)
+        for index, (_, item) in enumerate(rows):
+            tree.move(item, "", index)
+        self._tree_sort_reverse[sort_id] = not reverse
+
+    def _tree_sort_value(self, value: object) -> tuple[int, object]:
+        raw = str(value or "").strip()
+        if not raw or raw == "-":
+            return (2, "")
+        numeric = raw.rstrip("%").replace(",", "")
+        try:
+            return (0, float(numeric))
+        except ValueError:
+            return (1, raw.casefold())
+
+    def _short_filename(self, value: str | Path, max_length: int = 72) -> str:
+        name = Path(str(value)).name
+        if len(name) <= max_length:
+            return name
+        suffix = Path(name).suffix
+        stem = name[: -len(suffix)] if suffix else name
+        tail_length = max(12, max_length // 3)
+        head_length = max(8, max_length - tail_length - len(suffix) - 3)
+        return f"{stem[:head_length]}...{stem[-tail_length:]}{suffix}"
+
+    def _ubs_variant_code(self, set_name: str) -> str:
+        matches = re.findall(r"g\d+_s\d+_v\d+", set_name, flags=re.IGNORECASE)
+        return matches[-1] if matches else ""
+
+    def _format_ubs_set_label(self, row: sqlite3.Row) -> str:
+        set_path = Path(str(row["set_path"] or ""))
+        name = set_path.name
+        candidate_id = str(row["id"] or "").strip()
+        symbol = str(row["target_symbol"] or row["symbol"] or "").strip()
+        period = str(row["period"] or "").strip()
+        variant_code = self._ubs_variant_code(name)
+        prefix = f"#{candidate_id} " if candidate_id else ""
+        if symbol and period and variant_code:
+            return f"{prefix}{symbol}_{period}_{variant_code}{set_path.suffix or '.set'}"
+        if variant_code:
+            return f"{prefix}{variant_code}{set_path.suffix or '.set'}"
+        return f"{prefix}{self._short_filename(name)}"
+
     def _build_ui(self) -> None:
         self.columnconfigure(1, weight=1)
         self.rowconfigure(1, weight=1)
@@ -737,7 +865,7 @@ class MT5AutotesterUI(tk.Tk):
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "portfolio", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -749,6 +877,7 @@ class MT5AutotesterUI(tk.Tk):
         self._build_ubs_universe(self.section_frames["ubs_universo"])
         self._build_ubs_comparison(self.section_frames["ubs_comparar"])
         self._build_portfolio(self.section_frames["portfolio"])
+        self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
         self._build_files(self.section_frames["archivos"])
         self._build_logs(self.section_frames["logs"])
@@ -785,6 +914,7 @@ class MT5AutotesterUI(tk.Tk):
             ("ubs_historico", "UBS  Historico"),
             ("ubs_universo", "UBS  Universo"),
             ("ubs_comparar", "UBS  Comparar"),
+            ("multiterminal", "MT5  Multiterminales"),
             ("portfolio", "▤  Portfolio"),
             ("configuracion", "⚙  Configuracion"),
             ("archivos", "▤  Archivos"),
@@ -941,30 +1071,31 @@ class MT5AutotesterUI(tk.Tk):
         actions_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
         actions_card.columnconfigure(0, weight=1)
         actions_card.columnconfigure(1, weight=1)
+        self._build_multiterminal_inline(actions_card)
 
         self._action_card(
-            actions_card, 1, 0,
+            actions_card, 2, 0,
             icon="< >",
             title="Compilar .mq5",
             description="Regenera los .ex5 a partir de los .mq5 del directorio fuente.",
             command=self._run_compile,
         )
         self._action_card(
-            actions_card, 1, 1,
+            actions_card, 2, 1,
             icon="▶",
             title="Ejecutar backtests",
             description="Lanza la cola configurada contra los datos historicos.",
-            command=lambda: self._run_script("run_tests.py", self._backtest_args()),
+            command=self._run_backtests,
         )
         self._action_card(
-            actions_card, 2, 0,
+            actions_card, 3, 0,
             icon="UBS",
             title="Tester UBS",
             description="Testea un solo bot usando todos los set files configurados.",
             command=self._run_ubs_tester,
         )
         self._action_card(
-            actions_card, 2, 1,
+            actions_card, 3, 1,
             icon="GEN",
             title="Agente UBS",
             description="Elige seeds/assets, muta parametros y usa feedback si ejecuta backtests.",
@@ -980,7 +1111,7 @@ class MT5AutotesterUI(tk.Tk):
             parent_bg=COLORS["panel"],
             command=self._run_full_flow,
         )
-        compile_and.grid(row=3, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 8))
+        compile_and.grid(row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 8))
 
         stop_btn = RoundedButton(
             actions_card,
@@ -991,7 +1122,7 @@ class MT5AutotesterUI(tk.Tk):
             parent_bg=COLORS["panel"],
             command=self._stop_process,
         )
-        stop_btn.grid(row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 18))
+        stop_btn.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 18))
 
         config_card = self._card(body, "Configuration")
         config_card.grid(row=0, column=1, sticky="nsew")
@@ -1225,6 +1356,202 @@ class MT5AutotesterUI(tk.Tk):
             command=self._save_template_clicked,
         ).grid(row=8, column=0, columnspan=4, sticky="ew", padx=20, pady=(10, 22))
 
+    def _build_multiterminal_inline(self, parent: ttk.Frame) -> None:
+        bar = tk.Frame(parent, bg=COLORS["panel_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 14))
+        bar.columnconfigure(1, weight=1)
+        tk.Label(bar, text="Multiterminal", bg=COLORS["panel_alt"], fg=COLORS["text"],
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(12, 10), pady=8)
+        tk.Label(bar, textvariable=self.multiterminal_summary, bg=COLORS["panel_alt"], fg=COLORS["muted"],
+                 font=("Segoe UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 8), pady=8)
+        ToggleSwitch(
+            bar,
+            variable=self.multiterminal_enabled,
+            command=self._on_multiterminal_changed,
+            bg=COLORS["panel_alt"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=2, sticky="e", padx=(6, 8), pady=8)
+        worker_spin = ttk.Spinbox(
+            bar,
+            from_=1,
+            to=32,
+            width=5,
+            textvariable=self.multiterminal_workers,
+            command=self._on_multiterminal_changed,
+        )
+        worker_spin.grid(row=0, column=3, sticky="e", padx=(0, 8), pady=8)
+        worker_spin.bind("<FocusOut>", lambda _event: self._on_multiterminal_changed())
+        worker_spin.bind("<Return>", lambda _event: self._on_multiterminal_changed())
+        ttk.Button(
+            bar,
+            text="Configurar",
+            style="Tool.TButton",
+            command=lambda: self._show_section("multiterminal"),
+        ).grid(row=0, column=4, sticky="e", padx=(0, 12), pady=8)
+
+    def _build_multiterminal(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        panel = self._card(parent, "Multiterminales MT5")
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=7)
+        panel.columnconfigure(1, weight=5)
+        panel.rowconfigure(2, weight=1)
+
+        top = tk.Frame(panel, bg=COLORS["panel_alt"])
+        top.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 12))
+        top.columnconfigure(1, weight=1)
+        tk.Label(top, text="Modo multiterminal", bg=COLORS["panel_alt"], fg=COLORS["text"],
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(10, 10), pady=8)
+        tk.Label(top, textvariable=self.multiterminal_summary, bg=COLORS["panel_alt"], fg=COLORS["muted"],
+                 font=("Segoe UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 10), pady=8)
+        ToggleSwitch(
+            top,
+            variable=self.multiterminal_enabled,
+            command=self._on_multiterminal_changed,
+            bg=COLORS["panel_alt"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
+        ttk.Label(top, text="Terminales a usar", style="MutedBg.TLabel").grid(row=0, column=3, sticky="e", padx=(8, 6), pady=8)
+        worker_spin = ttk.Spinbox(
+            top,
+            from_=1,
+            to=32,
+            width=6,
+            textvariable=self.multiterminal_workers,
+            command=self._on_multiterminal_changed,
+        )
+        worker_spin.grid(row=0, column=4, sticky="e", padx=(0, 8), pady=8)
+        worker_spin.bind("<FocusOut>", lambda _event: self._on_multiterminal_changed())
+        worker_spin.bind("<Return>", lambda _event: self._on_multiterminal_changed())
+        ttk.Button(top, text="Validar", style="Tool.TButton", command=self._validate_multiterminal_profiles).grid(
+            row=0, column=5, sticky="e", padx=(0, 6), pady=8
+        )
+        ttk.Button(top, text="Guardar", style="Primary.TButton", command=self._save_multiterminal_clicked).grid(
+            row=0, column=6, sticky="e", padx=(0, 10), pady=8
+        )
+
+        table_frame = ttk.Frame(panel, style="Panel.TFrame")
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=(20, 12), pady=(0, 10))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = ("enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file", "portable")
+        self.multiterminal_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=14)
+        headings = {
+            "enabled": "ON",
+            "name": "NOMBRE",
+            "mt5_path": "TERMINAL64.EXE",
+            "data_dir": "DATOS MT5",
+            "experts_root": "MQL5\\EXPERTS",
+            "ubs_ex5_file": "UBS .EX5",
+            "portable": "PORTABLE",
+        }
+        widths = {
+            "enabled": 58,
+            "name": 150,
+            "mt5_path": 260,
+            "data_dir": 260,
+            "experts_root": 240,
+            "ubs_ex5_file": 220,
+            "portable": 80,
+        }
+        for column in columns:
+            self.multiterminal_tree.heading(column, text=headings[column])
+            self.multiterminal_tree.column(column, width=widths[column], minwidth=50, stretch=column not in {"enabled", "portable"})
+        self._attach_tree_scrollbars(table_frame, self.multiterminal_tree, 0)
+        self._make_tree_sortable(self.multiterminal_tree)
+        self.multiterminal_tree.bind("<<TreeviewSelect>>", self._on_multiterminal_tree_select)
+
+        table_buttons = ttk.Frame(panel, style="Panel.TFrame")
+        table_buttons.grid(row=3, column=0, sticky="ew", padx=(20, 12), pady=(0, 18))
+        for column in range(5):
+            table_buttons.columnconfigure(column, weight=1)
+        ttk.Button(table_buttons, text="Anadir", style="Tool.TButton", command=self._add_multiterminal_profile).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(table_buttons, text="Duplicar", style="Tool.TButton", command=self._duplicate_multiterminal_profile).grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        ttk.Button(table_buttons, text="Eliminar", style="DangerOutline.TButton", command=self._delete_multiterminal_profile).grid(row=0, column=2, sticky="ew", padx=(0, 6))
+        ttk.Button(table_buttons, text="Validar", style="Tool.TButton", command=self._validate_multiterminal_profiles).grid(row=0, column=3, sticky="ew", padx=(0, 6))
+        ttk.Button(table_buttons, text="Guardar", style="Primary.TButton", command=self._save_multiterminal_clicked).grid(row=0, column=4, sticky="ew")
+
+        editor = tk.Frame(panel, bg=COLORS["panel"], highlightthickness=1, highlightbackground=COLORS["border"])
+        editor.grid(row=2, column=1, rowspan=2, sticky="nsew", padx=(0, 20), pady=(0, 18))
+        editor.columnconfigure(1, weight=1)
+        tk.Label(editor, text="Editor de terminal", bg=COLORS["panel"], fg=COLORS["text"],
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(14, 8))
+        state_row = tk.Frame(editor, bg=COLORS["panel"])
+        state_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 8))
+        state_row.columnconfigure(0, weight=1)
+        ttk.Checkbutton(state_row, text="Habilitada", variable=self.mt_profile_enabled, style="Panel.TCheckbutton").grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(state_row, text="Portable", variable=self.mt_profile_portable, style="Panel.TCheckbutton").grid(row=0, column=1, sticky="e")
+        ttk.Label(editor, text="Nombre", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(16, 10), pady=7)
+        ttk.Entry(editor, textvariable=self.mt_profile_name).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=7)
+        self._path_row(editor, "Terminal MT5", self.mt_profile_mt5_path, 3, self._browse_file)
+        self._path_row(editor, "Carpeta datos MT5", self.mt_profile_data_dir, 4, self._browse_dir)
+        self._path_row(editor, "MQL5\\Experts", self.mt_profile_experts_root, 5, self._browse_dir)
+        self._path_row(editor, "Archivo UBS .ex5", self.mt_profile_ubs_ex5_file, 6, self._browse_profile_ex5_file)
+        ttk.Button(editor, text="Aplicar fila", style="Primary.TButton", command=self._apply_multiterminal_editor).grid(
+            row=7, column=0, columnspan=3, sticky="ew", padx=16, pady=(12, 8)
+        )
+        ttk.Label(
+            editor,
+            text="La cantidad es un limite: se usan hasta N terminales habilitadas. Compilar sigue siendo secuencial.",
+            style="Muted.TLabel",
+            wraplength=420,
+            justify="left",
+        ).grid(row=8, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 14))
+
+        self._refresh_multiterminal_tree()
+        if self.multiterminal_profiles:
+            self._select_multiterminal_profile(0)
+        self._update_multiterminal_summary()
+
+    def _build_ubs_multiterminal_row(self, parent: ttk.Frame, *, row: int) -> None:
+        mt_row = tk.Frame(parent, bg=COLORS["panel_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
+        mt_row.grid(row=row, column=0, columnspan=6, sticky="ew", padx=20, pady=(10, 0))
+        mt_row.columnconfigure(1, weight=1)
+        tk.Label(
+            mt_row,
+            text="Multiterminal",
+            bg=COLORS["panel_alt"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(12, 10), pady=8)
+        tk.Label(
+            mt_row,
+            textvariable=self.multiterminal_summary,
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=1, sticky="w", padx=(0, 10), pady=8)
+        ToggleSwitch(
+            mt_row,
+            variable=self.multiterminal_enabled,
+            command=self._on_multiterminal_changed,
+            bg=COLORS["panel_alt"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
+        ttk.Label(mt_row, text="Terminales a usar", style="MutedBg.TLabel").grid(row=0, column=3, sticky="e", padx=(0, 6), pady=8)
+        worker_spin = ttk.Spinbox(
+            mt_row,
+            from_=1,
+            to=32,
+            width=6,
+            textvariable=self.multiterminal_workers,
+            command=self._on_multiterminal_changed,
+        )
+        worker_spin.grid(row=0, column=4, sticky="e", padx=(0, 8), pady=8)
+        worker_spin.bind("<FocusOut>", lambda _event: self._on_multiterminal_changed())
+        worker_spin.bind("<Return>", lambda _event: self._on_multiterminal_changed())
+        ttk.Button(
+            mt_row,
+            text="Configurar",
+            style="Tool.TButton",
+            command=lambda: self._show_section("multiterminal"),
+        ).grid(row=0, column=5, sticky="e", padx=(0, 12), pady=8)
+
     def _build_ubs_agent(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
 
@@ -1265,8 +1592,10 @@ class MT5AutotesterUI(tk.Tk):
         tk.Label(exec_text, text="Activa feedback real; apagado solo genera variantes.", bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
         ToggleSwitch(exec_row, variable=self.ubs_agent_execute, bg=COLORS["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
 
+        self._build_ubs_multiterminal_row(agent, row=3)
+
         buttons = ttk.Frame(agent, style="Panel.TFrame")
-        buttons.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
+        buttons.grid(row=4, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
         buttons.columnconfigure(0, weight=1)
         buttons.columnconfigure(1, weight=1)
         buttons.columnconfigure(2, weight=1)
@@ -1297,7 +1626,7 @@ class MT5AutotesterUI(tk.Tk):
         )
         self.ubs_continue_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         ttk.Label(agent, textvariable=self.ubs_continue_status, style="Muted.TLabel").grid(
-            row=4, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
+            row=5, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
 
         pass_config = self._card(parent, "Filtros de aceptacion")
@@ -1393,6 +1722,32 @@ class MT5AutotesterUI(tk.Tk):
         ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
         tk.Button(
             results_bar,
+            text="Reprobar mismatch",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._retry_selected_ubs_mismatch,
+        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            results_bar,
+            text="Reprobar run",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._retry_visible_ubs_run_mismatches,
+        ).grid(row=0, column=5, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            results_bar,
             text="Limpiar vista",
             bg=COLORS["panel"],
             fg=COLORS["muted"],
@@ -1403,7 +1758,7 @@ class MT5AutotesterUI(tk.Tk):
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._hide_latest_ubs_results,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=4)
+        ).grid(row=0, column=6, sticky="e", padx=(0, 6), pady=4)
         tk.Button(
             results_bar,
             text="Actualizar",
@@ -1416,7 +1771,7 @@ class MT5AutotesterUI(tk.Tk):
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._refresh_ubs_results,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=4)
+        ).grid(row=0, column=7, sticky="e", padx=(0, 10), pady=4)
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(0, 6)
@@ -1452,7 +1807,7 @@ class MT5AutotesterUI(tk.Tk):
             "pf": 72,
             "dd": 72,
             "trades": 74,
-            "set": 360,
+            "set": 240,
         }
         anchors = {"score": "e", "profit": "e", "pf": "e", "dd": "e", "trades": "e"}
         for column in columns:
@@ -1462,16 +1817,14 @@ class MT5AutotesterUI(tk.Tk):
                 width=widths[column],
                 minwidth=42,
                 anchor=anchors.get(column, "w"),
-                stretch=column == "set",
+                stretch=False,
             )
         self.ubs_results_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
         self.ubs_results_tree.tag_configure("rejected", foreground=COLORS["danger"])
         self.ubs_results_tree.tag_configure("pending", foreground=COLORS["muted"])
-        self.ubs_results_tree.grid(row=0, column=0, sticky="nsew")
+        self._make_tree_sortable(self.ubs_results_tree)
         self.ubs_results_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_report())
-        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.ubs_results_tree.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.ubs_results_tree.configure(yscrollcommand=scrollbar.set)
+        self._attach_tree_scrollbars(table_frame, self.ubs_results_tree, 0)
 
     def _build_ubs_history(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1505,8 +1858,9 @@ class MT5AutotesterUI(tk.Tk):
         run_widths = {"id": 56, "created": 150, "gens": 54, "variants": 70, "seeds": 70, "backtests": 50, "hidden": 55, "total": 70, "accepted": 55, "rejected": 55, "output": 380}
         for column in run_columns:
             self.ubs_history_runs_tree.heading(column, text=run_headings[column])
-            self.ubs_history_runs_tree.column(column, width=run_widths[column], anchor="e" if column in {"id", "gens", "variants", "seeds", "total", "accepted", "rejected"} else "w", stretch=column == "output")
-        self.ubs_history_runs_tree.grid(row=0, column=0, sticky="ew")
+            self.ubs_history_runs_tree.column(column, width=run_widths[column], anchor="e" if column in {"id", "gens", "variants", "seeds", "total", "accepted", "rejected"} else "w", stretch=False)
+        self._make_tree_sortable(self.ubs_history_runs_tree)
+        self._attach_tree_scrollbars(runs_frame, self.ubs_history_runs_tree, 0, vertical=False)
         self.ubs_history_runs_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_history_candidates())
 
         candidates_panel = ttk.Frame(panel, style="Panel.TFrame")
@@ -1517,23 +1871,21 @@ class MT5AutotesterUI(tk.Tk):
         cand_columns = ("id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
         self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings", height=12)
         cand_headings = {"id": "ID", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
-        cand_widths = {"id": 60, "gen": 50, "status": 86, "symbol": 96, "period": 58, "score": 82, "profit": 90, "pf": 72, "dd": 72, "trades": 74, "set": 360}
+        cand_widths = {"id": 60, "gen": 50, "status": 86, "symbol": 96, "period": 58, "score": 82, "profit": 90, "pf": 72, "dd": 72, "trades": 74, "set": 240}
         for column in cand_columns:
             self.ubs_history_candidates_tree.heading(column, text=cand_headings[column])
-            self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="e" if column in {"id", "gen", "score", "profit", "pf", "dd", "trades"} else "w", stretch=column == "set")
+            self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="e" if column in {"id", "gen", "score", "profit", "pf", "dd", "trades"} else "w", stretch=False)
         self.ubs_history_candidates_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
         self.ubs_history_candidates_tree.tag_configure("rejected", foreground=COLORS["danger"])
         self.ubs_history_candidates_tree.tag_configure("pending", foreground=COLORS["muted"])
-        self.ubs_history_candidates_tree.grid(row=1, column=0, sticky="nsew")
-        cand_scroll = ttk.Scrollbar(candidates_panel, orient="vertical", command=self.ubs_history_candidates_tree.yview)
-        cand_scroll.grid(row=1, column=1, sticky="ns")
-        self.ubs_history_candidates_tree.configure(yscrollcommand=cand_scroll.set)
+        self._make_tree_sortable(self.ubs_history_candidates_tree)
+        self._attach_tree_scrollbars(candidates_panel, self.ubs_history_candidates_tree, 1)
 
     def _build_ubs_comparison(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
-        panel = self._card(parent, "Comparar aceptados contra seed")
+        panel = self._card(parent, "Comparar resultados contra seed")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(2, weight=1)
@@ -1542,26 +1894,35 @@ class MT5AutotesterUI(tk.Tk):
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
         bar.columnconfigure(0, weight=1)
         tk.Label(bar, textvariable=self.ubs_compare_summary, bg=COLORS["panel_alt"], fg=COLORS["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(bar, text="Run", style="MutedBg.TLabel").grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        self.ubs_compare_run_combo = ttk.Combobox(
+            bar,
+            textvariable=self.ubs_compare_run_id,
+            state="readonly",
+            width=12,
+        )
+        self.ubs_compare_run_combo.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+        self.ubs_compare_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_comparison())
         tk.Button(
             bar, text="Abrir seed", bg=COLORS["panel"], fg=COLORS["muted"],
             relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
             cursor="hand2", command=self._open_selected_ubs_compare_seed,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
         tk.Button(
-            bar, text="Abrir aceptado", bg=COLORS["panel"], fg=COLORS["muted"],
+            bar, text="Abrir set", bg=COLORS["panel"], fg=COLORS["muted"],
             relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
             cursor="hand2", command=self._open_selected_ubs_compare_set,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=4)
         tk.Button(
             bar, text="Reporte completo", bg=COLORS["panel"], fg=COLORS["muted"],
             relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
             cursor="hand2", command=self._generate_ubs_compare_report,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=4)
+        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=4)
         tk.Button(
             bar, text="Actualizar", bg=COLORS["panel"], fg=COLORS["muted"],
             relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
             cursor="hand2", command=self._refresh_ubs_comparison,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=4)
+        ).grid(row=0, column=6, sticky="e", padx=(0, 10), pady=4)
 
         body = ttk.Frame(panel, style="Panel.TFrame")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
@@ -1573,19 +1934,19 @@ class MT5AutotesterUI(tk.Tk):
         accepted_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         accepted_frame.columnconfigure(0, weight=1)
         accepted_frame.rowconfigure(1, weight=1)
-        ttk.Label(accepted_frame, text="Aceptados", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        accepted_columns = ("run", "gen", "symbol", "period", "score", "profit", "pf", "dd", "set")
+        ttk.Label(accepted_frame, text="Resultados", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        accepted_columns = ("run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "set")
         self.ubs_compare_sets_tree = ttk.Treeview(accepted_frame, columns=accepted_columns, show="headings", height=18)
-        accepted_headings = {"run": "RUN", "gen": "GEN", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "set": "ACEPTADO"}
-        accepted_widths = {"run": 50, "gen": 44, "symbol": 82, "period": 46, "score": 72, "profit": 82, "pf": 58, "dd": 62, "set": 260}
+        accepted_headings = {"run": "RUN", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "set": "SET"}
+        accepted_widths = {"run": 50, "gen": 44, "status": 82, "symbol": 82, "period": 46, "score": 72, "profit": 82, "pf": 58, "dd": 62, "set": 220}
         for column in accepted_columns:
             self.ubs_compare_sets_tree.heading(column, text=accepted_headings[column])
-            self.ubs_compare_sets_tree.column(column, width=accepted_widths[column], anchor="e" if column in {"run", "gen", "score", "profit", "pf", "dd"} else "w", stretch=column == "set")
-        self.ubs_compare_sets_tree.grid(row=1, column=0, sticky="nsew")
+            self.ubs_compare_sets_tree.column(column, width=accepted_widths[column], anchor="e" if column in {"run", "gen", "score", "profit", "pf", "dd"} else "w", stretch=False)
+        self.ubs_compare_sets_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
+        self.ubs_compare_sets_tree.tag_configure("rejected", foreground=COLORS["danger"])
+        self._make_tree_sortable(self.ubs_compare_sets_tree)
         self.ubs_compare_sets_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_comparison_diff())
-        accepted_scroll = ttk.Scrollbar(accepted_frame, orient="vertical", command=self.ubs_compare_sets_tree.yview)
-        accepted_scroll.grid(row=1, column=1, sticky="ns")
-        self.ubs_compare_sets_tree.configure(yscrollcommand=accepted_scroll.set)
+        self._attach_tree_scrollbars(accepted_frame, self.ubs_compare_sets_tree, 1)
 
         diff_panel = ttk.Frame(body, style="Panel.TFrame")
         diff_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -1596,11 +1957,9 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_compare_diff_tree = ttk.Treeview(diff_panel, columns=diff_columns, show="headings", height=18)
         for column, heading, width in (("key", "PARAMETRO", 210), ("seed", "SEED", 240), ("accepted", "ACEPTADO", 240)):
             self.ubs_compare_diff_tree.heading(column, text=heading)
-            self.ubs_compare_diff_tree.column(column, width=width, anchor="w", stretch=True)
-        self.ubs_compare_diff_tree.grid(row=1, column=0, sticky="nsew")
-        diff_scroll = ttk.Scrollbar(diff_panel, orient="vertical", command=self.ubs_compare_diff_tree.yview)
-        diff_scroll.grid(row=1, column=1, sticky="ns")
-        self.ubs_compare_diff_tree.configure(yscrollcommand=diff_scroll.set)
+            self.ubs_compare_diff_tree.column(column, width=width, anchor="w", stretch=False)
+        self._make_tree_sortable(self.ubs_compare_diff_tree)
+        self._attach_tree_scrollbars(diff_panel, self.ubs_compare_diff_tree, 1)
 
     def _build_ubs_universe(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1662,14 +2021,12 @@ class MT5AutotesterUI(tk.Tk):
         asset_widths = {"group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
         for column in asset_columns:
             self.ubs_universe_assets_tree.heading(column, text=asset_headings[column])
-            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="e" if column in {"weight", "avg", "best", "tests", "accepted", "pending"} else "w", stretch=column == "aliases")
+            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="e" if column in {"weight", "avg", "best", "tests", "accepted", "pending"} else "w", stretch=False)
         self.ubs_universe_assets_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
         self.ubs_universe_assets_tree.tag_configure("negative", foreground=COLORS["danger"])
         self.ubs_universe_assets_tree.tag_configure("neutral", foreground=COLORS["muted"])
-        self.ubs_universe_assets_tree.grid(row=1, column=0, sticky="nsew")
-        asset_scroll = ttk.Scrollbar(asset_frame, orient="vertical", command=self.ubs_universe_assets_tree.yview)
-        asset_scroll.grid(row=1, column=1, sticky="ns")
-        self.ubs_universe_assets_tree.configure(yscrollcommand=asset_scroll.set)
+        self._make_tree_sortable(self.ubs_universe_assets_tree)
+        self._attach_tree_scrollbars(asset_frame, self.ubs_universe_assets_tree, 1)
 
         tf_frame = ttk.Frame(body, style="Panel.TFrame")
         tf_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -1683,14 +2040,12 @@ class MT5AutotesterUI(tk.Tk):
         tf_widths = {"period": 70, "weight": 88, "avg": 88, "best": 88, "tests": 65, "accepted": 55, "pending": 60}
         for column in tf_columns:
             self.ubs_timeframes_tree.heading(column, text=tf_headings[column])
-            self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="e" if column != "period" else "w", stretch=column in {"weight", "avg", "best"})
+            self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="e" if column != "period" else "w", stretch=False)
         self.ubs_timeframes_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
         self.ubs_timeframes_tree.tag_configure("negative", foreground=COLORS["danger"])
         self.ubs_timeframes_tree.tag_configure("neutral", foreground=COLORS["muted"])
-        self.ubs_timeframes_tree.grid(row=2, column=0, sticky="nsew")
-        tf_scroll = ttk.Scrollbar(tf_frame, orient="vertical", command=self.ubs_timeframes_tree.yview)
-        tf_scroll.grid(row=2, column=1, sticky="ns")
-        self.ubs_timeframes_tree.configure(yscrollcommand=tf_scroll.set)
+        self._make_tree_sortable(self.ubs_timeframes_tree)
+        self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 2)
 
     def _build_files(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1896,6 +2251,21 @@ class MT5AutotesterUI(tk.Tk):
                 except ValueError:
                     pass
             variable.set(str(selected))
+
+    def _browse_profile_ex5_file(self, variable: tk.StringVar) -> None:
+        current = Path(variable.get()).expanduser() if variable.get().strip() else None
+        experts_root = Path(self.mt_profile_experts_root.get()).expanduser() if self.mt_profile_experts_root.get().strip() else None
+        initial_dir = (
+            str(current.parent)
+            if current and current.parent.exists()
+            else str(experts_root if experts_root and experts_root.exists() else BASE_DIR)
+        )
+        path = filedialog.askopenfilename(
+            initialdir=initial_dir,
+            filetypes=(("Compiled Expert Advisor", "*.ex5"), ("Todos", "*.*")),
+        )
+        if path:
+            variable.set(str(Path(path)))
 
     def _browse_set_file(self, variable: tk.StringVar) -> None:
         current = Path(variable.get()).expanduser() if variable.get().strip() else None
@@ -2162,6 +2532,258 @@ class MT5AutotesterUI(tk.Tk):
         self.status_text.set("Configuracion Agente UBS guardada")
         messagebox.showinfo("Agente UBS", "La configuracion del Agente UBS se guardo correctamente.")
 
+    def _multiterminal_worker_limit(self) -> int:
+        try:
+            workers = int(self.multiterminal_workers.get())
+        except (tk.TclError, ValueError):
+            workers = 1
+        workers = max(1, workers)
+        try:
+            if int(self.multiterminal_workers.get()) != workers:
+                self.multiterminal_workers.set(workers)
+        except (tk.TclError, ValueError):
+            self.multiterminal_workers.set(workers)
+        return workers
+
+    def _active_multiterminal_profiles(self) -> list[dict[str, object]]:
+        return [profile for profile in self.multiterminal_profiles if bool(profile.get("enabled"))]
+
+    def _update_multiterminal_summary(self) -> None:
+        if not hasattr(self, "multiterminal_summary"):
+            return
+        active = len(self._active_multiterminal_profiles())
+        workers = min(self._multiterminal_worker_limit(), active) if active else 0
+        mode = "on" if self.multiterminal_enabled.get() else "off"
+        self.multiterminal_summary.set(f"{active} activas / usando hasta {workers} / {mode}")
+
+    def _save_current_multiterminal_editor(self) -> None:
+        if not hasattr(self, "mt_profile_name"):
+            return
+        index = self.mt_selected_index
+        if index is None or index < 0 or index >= len(self.multiterminal_profiles):
+            return
+        self.multiterminal_profiles[index] = {
+            "enabled": bool(self.mt_profile_enabled.get()),
+            "name": self.mt_profile_name.get().strip() or f"Terminal {index + 1}",
+            "mt5_path": self.mt_profile_mt5_path.get().strip(),
+            "data_dir": self.mt_profile_data_dir.get().strip(),
+            "experts_root": self.mt_profile_experts_root.get().strip(),
+            "ubs_ex5_file": self.mt_profile_ubs_ex5_file.get().strip(),
+            "portable": bool(self.mt_profile_portable.get()),
+        }
+
+    def _multiterminal_tree_values(self, profile: dict[str, object]) -> tuple[str, str, str, str, str, str, str]:
+        return (
+            "si" if bool(profile.get("enabled")) else "no",
+            str(profile.get("name") or ""),
+            str(profile.get("mt5_path") or ""),
+            str(profile.get("data_dir") or ""),
+            str(profile.get("experts_root") or ""),
+            str(profile.get("ubs_ex5_file") or ""),
+            "si" if bool(profile.get("portable")) else "no",
+        )
+
+    def _refresh_multiterminal_tree(self) -> None:
+        if not hasattr(self, "multiterminal_tree"):
+            self._update_multiterminal_summary()
+            return
+        selected_index = self.mt_selected_index
+        for item in self.multiterminal_tree.get_children():
+            self.multiterminal_tree.delete(item)
+        for index, profile in enumerate(self.multiterminal_profiles):
+            tag = "odd" if index % 2 else "even"
+            self.multiterminal_tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=self._multiterminal_tree_values(profile),
+                tags=(tag,),
+            )
+        if selected_index is not None and 0 <= selected_index < len(self.multiterminal_profiles):
+            self.multiterminal_tree.selection_set(str(selected_index))
+            self.multiterminal_tree.focus(str(selected_index))
+        self._update_multiterminal_summary()
+
+    def _update_multiterminal_tree_item(self, index: int) -> None:
+        if not hasattr(self, "multiterminal_tree"):
+            return
+        if index < 0 or index >= len(self.multiterminal_profiles):
+            return
+        iid = str(index)
+        if self.multiterminal_tree.exists(iid):
+            self.multiterminal_tree.item(iid, values=self._multiterminal_tree_values(self.multiterminal_profiles[index]))
+
+    def _load_multiterminal_profile_editor(self, index: int) -> None:
+        if index < 0 or index >= len(self.multiterminal_profiles):
+            self.mt_selected_index = None
+            self.mt_profile_enabled.set(False)
+            self.mt_profile_portable.set(False)
+            self.mt_profile_name.set("")
+            self.mt_profile_mt5_path.set("")
+            self.mt_profile_data_dir.set("")
+            self.mt_profile_experts_root.set("")
+            self.mt_profile_ubs_ex5_file.set("")
+            return
+        profile = self.multiterminal_profiles[index]
+        self.mt_selected_index = index
+        self.mt_profile_enabled.set(bool(profile.get("enabled")))
+        self.mt_profile_portable.set(bool(profile.get("portable")))
+        self.mt_profile_name.set(str(profile.get("name") or f"Terminal {index + 1}"))
+        self.mt_profile_mt5_path.set(str(profile.get("mt5_path") or ""))
+        self.mt_profile_data_dir.set(str(profile.get("data_dir") or ""))
+        self.mt_profile_experts_root.set(str(profile.get("experts_root") or ""))
+        self.mt_profile_ubs_ex5_file.set(str(profile.get("ubs_ex5_file") or ""))
+
+    def _select_multiterminal_profile(self, index: int) -> None:
+        self._load_multiterminal_profile_editor(index)
+        if hasattr(self, "multiterminal_tree") and 0 <= index < len(self.multiterminal_profiles):
+            self.multiterminal_tree.selection_set(str(index))
+            self.multiterminal_tree.focus(str(index))
+
+    def _on_multiterminal_tree_select(self, _event=None) -> None:
+        if not hasattr(self, "multiterminal_tree"):
+            return
+        selected = self.multiterminal_tree.selection()
+        if not selected:
+            return
+        try:
+            index = int(selected[0])
+        except (TypeError, ValueError):
+            return
+        if index == self.mt_selected_index:
+            return
+        old_index = self.mt_selected_index
+        self._save_current_multiterminal_editor()
+        if old_index is not None:
+            self._update_multiterminal_tree_item(old_index)
+        self._load_multiterminal_profile_editor(index)
+        self._update_multiterminal_summary()
+
+    def _apply_multiterminal_editor(self) -> None:
+        self._save_current_multiterminal_editor()
+        if self.mt_selected_index is not None:
+            self._update_multiterminal_tree_item(self.mt_selected_index)
+        self._update_multiterminal_summary()
+        self.status_text.set("Fila multiterminal aplicada")
+
+    def _new_multiterminal_profile(self, name: str | None = None) -> dict[str, object]:
+        index = len(self.multiterminal_profiles) + 1
+        return {
+            "enabled": True,
+            "name": name or f"Terminal {index}",
+            "mt5_path": self.mt5_path.get().strip(),
+            "data_dir": self.mt5_data_root.get().strip(),
+            "experts_root": self.experts_root.get().strip(),
+            "ubs_ex5_file": self.ubs_ex5_file.get().strip(),
+            "portable": False,
+        }
+
+    def _add_multiterminal_profile(self) -> None:
+        self._save_current_multiterminal_editor()
+        self.multiterminal_profiles.append(self._new_multiterminal_profile())
+        self._refresh_multiterminal_tree()
+        self._select_multiterminal_profile(len(self.multiterminal_profiles) - 1)
+
+    def _duplicate_multiterminal_profile(self) -> None:
+        self._save_current_multiterminal_editor()
+        index = self.mt_selected_index if self.mt_selected_index is not None else 0
+        if index < 0 or index >= len(self.multiterminal_profiles):
+            return
+        source = dict(self.multiterminal_profiles[index])
+        source["name"] = f"{source.get('name') or f'Terminal {index + 1}'} copia"
+        self.multiterminal_profiles.append(source)
+        self._refresh_multiterminal_tree()
+        self._select_multiterminal_profile(len(self.multiterminal_profiles) - 1)
+
+    def _delete_multiterminal_profile(self) -> None:
+        index = self.mt_selected_index
+        if index is None or index < 0 or index >= len(self.multiterminal_profiles):
+            messagebox.showinfo("Multiterminales", "Selecciona una terminal para eliminar.")
+            return
+        name = str(self.multiterminal_profiles[index].get("name") or f"Terminal {index + 1}")
+        if not messagebox.askyesno("Eliminar terminal", f"Eliminar el perfil '{name}'?"):
+            return
+        del self.multiterminal_profiles[index]
+        self.mt_selected_index = None
+        self._refresh_multiterminal_tree()
+        if self.multiterminal_profiles:
+            self._select_multiterminal_profile(min(index, len(self.multiterminal_profiles) - 1))
+        else:
+            self._load_multiterminal_profile_editor(-1)
+        self._update_multiterminal_summary()
+
+    def _profile_path(self, profile: dict[str, object], key: str, *, base_key: str | None = None) -> Path | None:
+        raw = str(profile.get(key) or "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        if path.is_absolute() or not base_key:
+            return path
+        base_raw = str(profile.get(base_key) or "").strip()
+        return (Path(base_raw).expanduser() / path) if base_raw else path
+
+    def _validate_multiterminal_errors(self, *, require_ubs: bool = True) -> list[str]:
+        self._save_current_multiterminal_editor()
+        errors: list[str] = []
+        active = self._active_multiterminal_profiles()
+        if not active:
+            errors.append("No hay terminales habilitadas.")
+        for index, profile in enumerate(self.multiterminal_profiles, start=1):
+            if not bool(profile.get("enabled")):
+                continue
+            name = str(profile.get("name") or f"Terminal {index}")
+            mt5_path = self._profile_path(profile, "mt5_path")
+            data_dir = self._profile_path(profile, "data_dir")
+            experts_root = self._profile_path(profile, "experts_root")
+            ubs_ex5 = self._profile_path(profile, "ubs_ex5_file", base_key="experts_root")
+            if not mt5_path:
+                errors.append(f"{name}: falta terminal64.exe.")
+            elif not mt5_path.exists() or not mt5_path.is_file():
+                errors.append(f"{name}: no existe terminal64.exe: {mt5_path}")
+            if data_dir and (not data_dir.exists() or not data_dir.is_dir()):
+                errors.append(f"{name}: carpeta datos MT5 invalida: {data_dir}")
+            if not experts_root:
+                errors.append(f"{name}: falta carpeta MQL5\\Experts.")
+            elif not experts_root.exists() or not experts_root.is_dir():
+                errors.append(f"{name}: carpeta MQL5\\Experts invalida: {experts_root}")
+            if require_ubs:
+                if not ubs_ex5:
+                    errors.append(f"{name}: falta archivo UBS .ex5.")
+                elif not ubs_ex5.exists() or not ubs_ex5.is_file():
+                    errors.append(f"{name}: no existe UBS .ex5: {ubs_ex5}")
+        return errors
+
+    def _validate_multiterminal_profiles(self) -> bool:
+        errors = self._validate_multiterminal_errors()
+        if errors:
+            details = "\n".join(f"- {item}" for item in errors[:20])
+            if len(errors) > 20:
+                details += f"\n- ... y {len(errors) - 20} mas"
+            self._show_error("Multiterminal invalido", details)
+            return False
+        self.status_text.set("Multiterminal validado")
+        messagebox.showinfo("Multiterminales", "Perfiles multiterminal validados correctamente.")
+        return True
+
+    def _save_multiterminal_clicked(self) -> None:
+        try:
+            self._write_ui_settings()
+        except Exception as exc:
+            self._show_error("No se pudo guardar Multiterminales", str(exc))
+            return
+        self._refresh_multiterminal_tree()
+        self.status_text.set("Multiterminales guardados")
+        messagebox.showinfo("Multiterminales", "La configuracion multiterminal se guardo correctamente.")
+
+    def _on_multiterminal_changed(self) -> None:
+        self._multiterminal_worker_limit()
+        self._save_current_multiterminal_editor()
+        self._update_multiterminal_summary()
+        try:
+            self._write_ui_settings()
+        except Exception:
+            pass
+
     def _delete_old_reports(self) -> None:
         report_suffixes = {".htm", ".html", ".png", ".set"}
         files = [
@@ -2196,6 +2818,7 @@ class MT5AutotesterUI(tk.Tk):
             messagebox.showinfo("Reportes borrados", f"Se borraron {deleted} reporte(s).")
 
     def _write_ui_settings(self) -> None:
+        self._save_current_multiterminal_editor()
         parser = configparser.ConfigParser(interpolation=None)
         parser.optionxform = str
         parser["Paths"] = {
@@ -2233,8 +2856,23 @@ class MT5AutotesterUI(tk.Tk):
             "portfolio_threshold": self.portfolio_threshold.get().strip(),
             "theme": self.theme_mode.get(),
         }
+        parser["Multiterminal"] = {
+            "enabled": "1" if self.multiterminal_enabled.get() else "0",
+            "workers": str(self._multiterminal_worker_limit()),
+        }
+        for index, profile in enumerate(self.multiterminal_profiles, start=1):
+            parser[f"Terminal.{index}"] = {
+                "enabled": "1" if bool(profile.get("enabled")) else "0",
+                "name": str(profile.get("name") or f"Terminal {index}").strip(),
+                "mt5_path": str(profile.get("mt5_path") or "").strip(),
+                "data_dir": str(profile.get("data_dir") or "").strip(),
+                "experts_root": str(profile.get("experts_root") or "").strip(),
+                "ubs_ex5_file": str(profile.get("ubs_ex5_file") or "").strip(),
+                "portable": "1" if bool(profile.get("portable")) else "0",
+            }
         with UI_SETTINGS_FILE.open("w", encoding="utf-8", newline="\n") as file:
             parser.write(file, space_around_delimiters=False)
+        self._update_multiterminal_summary()
 
     def _delete_historical_data(self) -> None:
         if self.process and self.process.poll() is None:
@@ -2381,6 +3019,7 @@ class MT5AutotesterUI(tk.Tk):
         self._refresh_ubs_continue_state()
         self._refresh_portfolio_count()
         self._refresh_last_log()
+        self._refresh_multiterminal_tree()
 
     def _ubs_memory_path(self) -> Path:
         return BASE_DIR / "outputs" / "ubs_memory.sqlite"
@@ -2537,7 +3176,8 @@ class MT5AutotesterUI(tk.Tk):
                     sum(case when status = 'accepted' then 1 else 0 end) as accepted,
                     sum(case when status = 'rejected' then 1 else 0 end) as rejected,
                     sum(case when status = 'generated' then 1 else 0 end) as generated,
-                    sum(case when status = 'no_report' then 1 else 0 end) as no_report
+                    sum(case when status = 'no_report' then 1 else 0 end) as no_report,
+                    sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
                 from candidates
                 where run_id = ?
                 """,
@@ -2572,6 +3212,7 @@ class MT5AutotesterUI(tk.Tk):
         rejected = int(counts["rejected"] or 0)
         generated = int(counts["generated"] or 0)
         no_report = int(counts["no_report"] or 0)
+        report_mismatch = int(counts["report_mismatch"] or 0)
         self.ubs_results_summary.set(
             f"Run #{latest_run['id']} | {latest_run['created_at']} | "
             f"candidatos {total} | puntuados {scored} | aceptados {accepted} | rechazados {rejected}"
@@ -2581,6 +3222,8 @@ class MT5AutotesterUI(tk.Tk):
             extra.append(f"generados sin backtest {generated}")
         if no_report:
             extra.append(f"sin reporte {no_report}")
+        if report_mismatch:
+            extra.append(f"mismatch reporte {report_mismatch}")
         extra_text = f" | {', '.join(extra)}" if extra else ""
         backtests = "si" if latest_run["execute_backtests"] else "no"
         self.ubs_results_status.set(
@@ -2606,11 +3249,17 @@ class MT5AutotesterUI(tk.Tk):
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
                     self._format_ubs_int(metrics.get("trades")),
-                    Path(row["set_path"]).name,
+                    self._format_ubs_set_label(row),
                 ),
                 tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
             )
             self.ubs_result_paths[item] = {
+                "id": str(row["id"] or ""),
+                "run": str(row["run_id"] or ""),
+                "generation": str(row["generation"] or ""),
+                "status": status,
+                "symbol": str(row["target_symbol"] or row["symbol"] or ""),
+                "period": str(row["period"] or ""),
                 "set": str(row["set_path"] or ""),
                 "report": str(row["report_path"] or ""),
             }
@@ -2780,7 +3429,7 @@ class MT5AutotesterUI(tk.Tk):
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
                     self._format_ubs_int(metrics.get("trades")),
-                    Path(row["set_path"]).name,
+                    self._format_ubs_set_label(row),
                 ),
                 tags=(self._ubs_result_tag(status),),
             )
@@ -2798,7 +3447,7 @@ class MT5AutotesterUI(tk.Tk):
             parser.read(path, encoding="utf-8-sig")
         aliases: dict[str, str] = {}
         if parser.has_section("CommonAliases"):
-            aliases = {key.upper(): value.upper() for key, value in parser["CommonAliases"].items()}
+            aliases = {key.upper(): value.strip() for key, value in parser["CommonAliases"].items()}
         reverse_aliases: dict[str, list[str]] = {}
         for alias, target in aliases.items():
             reverse_aliases.setdefault(target.upper(), []).append(alias)
@@ -2807,14 +3456,14 @@ class MT5AutotesterUI(tk.Tk):
         for section in parser.sections():
             if section == "CommonAliases":
                 continue
-            symbols = [item.strip().upper() for item in parser[section].get("symbols", "").split(",") if item.strip()]
+            symbols = [item.strip() for item in parser[section].get("symbols", "").split(",") if item.strip()]
             for symbol in symbols:
                 assets.append((section, symbol, sorted(reverse_aliases.get(symbol.upper(), []))))
         return assets, aliases
 
     def _canonical_ubs_symbol(self, symbol: str, aliases: dict[str, str]) -> str:
         normalized = str(symbol or "").upper()
-        return aliases.get(normalized, normalized)
+        return aliases.get(normalized, normalized).upper()
 
     def _empty_ubs_stat(self) -> dict[str, object]:
         return {"scores": [], "weights": [], "tests": 0, "accepted": 0, "pending": 0, "best": None}
@@ -2838,6 +3487,7 @@ class MT5AutotesterUI(tk.Tk):
         timeframe_stats: dict[str, dict[str, object]] = {}
         total_scored = 0
         total_pending = 0
+        total_mismatch = 0
 
         if memory_path.exists():
             try:
@@ -2856,15 +3506,19 @@ class MT5AutotesterUI(tk.Tk):
                 return
 
             for row in rows:
+                status = str(row["status"] or "")
+                if status == "report_mismatch":
+                    total_mismatch += 1
+                    continue
                 canonical = self._canonical_ubs_symbol(row["target_symbol"] or row["symbol"], aliases)
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
-                if row["status"] == "generated":
+                if status == "generated":
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_pending += 1
-                if row["score"] is None:
+                if row["score"] is None or status not in {"accepted", "rejected"}:
                     continue
                 score = float(row["score"])
                 accepted = bool(row["accepted"])
@@ -2877,12 +3531,12 @@ class MT5AutotesterUI(tk.Tk):
                     stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
                 total_scored += 1
 
-        universe_symbols = {symbol for _, symbol, _ in assets}
-        observed_only = sorted(symbol for symbol in asset_stats if symbol not in universe_symbols)
+        universe_symbols = {symbol.upper() for _, symbol, _ in assets}
+        observed_only = sorted(symbol for symbol in asset_stats if symbol.upper() not in universe_symbols)
         all_assets = assets + [("Memoria", symbol, []) for symbol in observed_only]
         ranked_assets = []
         for group, symbol, symbol_aliases in all_assets:
-            stat = asset_stats.get(symbol, self._empty_ubs_stat())
+            stat = asset_stats.get(symbol.upper(), self._empty_ubs_stat())
             weights = stat["weights"]
             scores = stat["scores"]
             weight_value = (sum(weights) / len(weights)) if weights else None
@@ -2940,7 +3594,8 @@ class MT5AutotesterUI(tk.Tk):
                 )
 
         self.ubs_universe_summary.set(
-            f"Universo: {len(assets)} activos | puntuados: {total_scored} | pendientes sin backtest: {total_pending}"
+            f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
+            f"pendientes sin backtest: {total_pending} | mismatch ignorados: {total_mismatch}"
         )
         self.ubs_timeframe_summary.set(
             "PESO = promedio(score + bonus accepted). El agente prioriza TF buenos y explora M15/M30/H1/H4/D1 reemplazando claves de timeframe existentes."
@@ -2963,14 +3618,36 @@ class MT5AutotesterUI(tk.Tk):
         try:
             conn = sqlite3.connect(memory_path, timeout=1.0)
             conn.row_factory = sqlite3.Row
+            run_options = self._ubs_compare_run_options(conn)
+            selected_run_id = self._selected_ubs_compare_run_id(run_options)
+            if selected_run_id <= 0:
+                conn.close()
+                self.ubs_compare_summary.set("Sin run visible")
+                self.ubs_compare_detail.set("No hay runs UBS visibles en memoria.")
+                return
+            self._update_ubs_compare_run_combo(run_options, selected_run_id)
+            counts = conn.execute(
+                """
+                select
+                    count(*) as total,
+                    sum(case when status = 'accepted' then 1 else 0 end) as accepted,
+                    sum(case when status = 'rejected' then 1 else 0 end) as rejected
+                from candidates
+                where run_id = ? and status in ('accepted', 'rejected')
+                """,
+                (selected_run_id,),
+            ).fetchone()
             rows = conn.execute(
                 """
                 select *
                 from candidates
-                where status = 'accepted'
-                order by score desc, id desc
-                limit 500
-                """
+                where run_id = ? and status in ('accepted', 'rejected')
+                order by
+                    case when status = 'accepted' then 0 else 1 end,
+                    score desc,
+                    id desc
+                """,
+                (selected_run_id,),
             ).fetchall()
             conn.close()
         except sqlite3.Error as exc:
@@ -2978,25 +3655,33 @@ class MT5AutotesterUI(tk.Tk):
             self.ubs_compare_detail.set(str(exc))
             return
 
-        self.ubs_compare_summary.set(f"Sets aceptados en memoria: {len(rows)}")
+        total = int(counts["total"] or 0) if counts else len(rows)
+        accepted = int(counts["accepted"] or 0) if counts else sum(1 for row in rows if row["status"] == "accepted")
+        rejected = int(counts["rejected"] or 0) if counts else sum(1 for row in rows if row["status"] == "rejected")
+        self.ubs_compare_summary.set(
+            f"Run #{selected_run_id}: resultados {total} | aceptados {accepted} | rechazados {rejected} | cargados {len(rows)}"
+        )
         if not hasattr(self, "ubs_compare_sets_tree"):
             return
         for row in rows:
             metrics = self._parse_ubs_metrics(row["metrics_json"])
+            status = str(row["status"] or "")
             item = self.ubs_compare_sets_tree.insert(
                 "",
                 "end",
                 values=(
                     row["run_id"],
                     row["generation"],
+                    self._format_ubs_status(status),
                     row["target_symbol"] or row["symbol"],
                     row["period"],
                     self._format_ubs_number(row["score"]),
                     self._format_ubs_number(metrics.get("net_profit")),
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
-                    Path(row["set_path"]).name,
+                    self._format_ubs_set_label(row),
                 ),
+                tags=(self._ubs_result_tag(status),),
             )
             self.ubs_compare_paths[item] = {
                 "candidate_id": str(row["id"] or ""),
@@ -3009,7 +3694,52 @@ class MT5AutotesterUI(tk.Tk):
             self.ubs_compare_sets_tree.selection_set(first)
             self._refresh_ubs_comparison_diff()
         else:
-            self.ubs_compare_detail.set("No hay candidatos aceptados con los filtros actuales.")
+            self.ubs_compare_detail.set("No hay resultados puntuados para el run visible.")
+
+    def _ubs_compare_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
+        rows = conn.execute(
+            """
+            select
+                r.id,
+                r.created_at,
+                count(c.id) as total,
+                sum(case when c.status = 'accepted' then 1 else 0 end) as accepted,
+                sum(case when c.status = 'rejected' then 1 else 0 end) as rejected
+            from runs r
+            left join candidates c
+                on c.run_id = r.id and c.status in ('accepted', 'rejected')
+            where coalesce(r.hidden, 0) = 0
+            group by r.id
+            order by r.id desc
+            """
+        ).fetchall()
+        options: list[tuple[int, str]] = []
+        for row in rows:
+            run_id = int(row["id"])
+            created = str(row["created_at"] or "")[:16]
+            total = int(row["total"] or 0)
+            accepted = int(row["accepted"] or 0)
+            rejected = int(row["rejected"] or 0)
+            options.append((run_id, f"#{run_id} | {created} | {total} ({accepted}/{rejected})"))
+        return options
+
+    def _selected_ubs_compare_run_id(self, options: list[tuple[int, str]]) -> int:
+        selected = self.ubs_compare_run_id.get().strip()
+        match = re.search(r"#?(\d+)", selected)
+        if match:
+            run_id = int(match.group(1))
+            if any(option_id == run_id for option_id, _label in options):
+                return run_id
+        return options[0][0] if options else 0
+
+    def _update_ubs_compare_run_combo(self, options: list[tuple[int, str]], selected_run_id: int) -> None:
+        if not hasattr(self, "ubs_compare_run_combo"):
+            return
+        labels = [label for _run_id, label in options]
+        self.ubs_compare_run_combo.configure(values=labels)
+        selected_label = next((label for run_id, label in options if run_id == selected_run_id), "")
+        if selected_label and self.ubs_compare_run_id.get() != selected_label:
+            self.ubs_compare_run_id.set(selected_label)
 
     def _refresh_ubs_comparison_diff(self) -> None:
         if hasattr(self, "ubs_compare_diff_tree"):
@@ -3017,7 +3747,7 @@ class MT5AutotesterUI(tk.Tk):
                 self.ubs_compare_diff_tree.delete(item)
         paths = self._selected_ubs_compare_paths()
         if not paths:
-            self.ubs_compare_detail.set("Selecciona un set aceptado para comparar contra su seed.")
+            self.ubs_compare_detail.set("Selecciona un resultado para comparar contra su seed.")
             return
         seed_path = Path(paths.get("seed", "")).expanduser()
         set_path = Path(paths.get("set", "")).expanduser()
@@ -3035,28 +3765,38 @@ class MT5AutotesterUI(tk.Tk):
         mutated = [key for key in paths.get("mutated", "").split(";") if key]
         mutated_hint = f" | mutados por agente: {', '.join(mutated[:8])}" if mutated else ""
         self.ubs_compare_detail.set(
-            f"{len(changed)} diferencias | Seed: {seed_path.name} | Aceptado: {set_path.name}{mutated_hint}"
+            f"{len(changed)} diferencias | Seed: {self._short_filename(seed_path.name)} | "
+            f"Resultado: {self._short_filename(set_path.name)}{mutated_hint}"
         )
         if not hasattr(self, "ubs_compare_diff_tree"):
             return
         for key, seed_value, set_value in changed:
             self.ubs_compare_diff_tree.insert("", "end", values=(key, seed_value, set_value))
 
-    def _ubs_accepted_rows_for_report(self) -> list[sqlite3.Row]:
+    def _ubs_compare_rows_for_report(self) -> tuple[int, list[sqlite3.Row]]:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
-            return []
+            return 0, []
         conn = sqlite3.connect(memory_path, timeout=1.0)
         conn.row_factory = sqlite3.Row
         try:
-            return conn.execute(
+            run_options = self._ubs_compare_run_options(conn)
+            run_id = self._selected_ubs_compare_run_id(run_options)
+            if run_id <= 0:
+                return 0, []
+            rows = conn.execute(
                 """
                 select *
                 from candidates
-                where status = 'accepted'
-                order by score desc, id desc
-                """
+                where run_id = ? and status in ('accepted', 'rejected')
+                order by
+                    case when status = 'accepted' then 0 else 1 end,
+                    score desc,
+                    id desc
+                """,
+                (run_id,),
             ).fetchall()
+            return run_id, rows
         finally:
             conn.close()
 
@@ -3073,12 +3813,12 @@ class MT5AutotesterUI(tk.Tk):
 
     def _generate_ubs_compare_report(self) -> None:
         try:
-            rows = self._ubs_accepted_rows_for_report()
+            run_id, rows = self._ubs_compare_rows_for_report()
         except sqlite3.Error as exc:
             self._show_error("No se pudo generar reporte UBS", str(exc))
             return
         if not rows:
-            messagebox.showinfo("Reporte UBS", "No hay sets aceptados para reportar.")
+            messagebox.showinfo("Reporte UBS", "No hay resultados puntuados para reportar.")
             return
 
         output_dir = BASE_DIR / "outputs" / "ubs_compare"
@@ -3105,6 +3845,7 @@ class MT5AutotesterUI(tk.Tk):
                 f"<td>{index}</td>"
                 f"<td>{html.escape(str(row['run_id']))}</td>"
                 f"<td>{html.escape(str(row['generation']))}</td>"
+                f"<td>{html.escape(self._format_ubs_status(str(row['status'] or '')))}</td>"
                 f"<td>{html.escape(str(row['target_symbol'] or row['symbol']))}</td>"
                 f"<td>{html.escape(str(row['period']))}</td>"
                 f"<td>{html.escape(self._format_ubs_number(row['score']))}</td>"
@@ -3128,16 +3869,20 @@ class MT5AutotesterUI(tk.Tk):
                 diff_rows = f"<tr><td colspan='3'>{html.escape(missing_note or 'Sin diferencias')}</td></tr>"
             detail_blocks.append(
                 "<details>"
-                f"<summary>#{index} {html.escape(str(row['target_symbol'] or row['symbol']))} "
+                f"<summary>#{index} {html.escape(self._format_ubs_status(str(row['status'] or '')))} | "
+                f"{html.escape(str(row['target_symbol'] or row['symbol']))} "
                 f"{html.escape(str(row['period']))} | score {html.escape(self._format_ubs_number(row['score']))} "
                 f"| cambios {len(changes)} | {html.escape(set_path.name)}</summary>"
                 f"<p><b>Seed:</b> {html.escape(str(seed_path))}<br>"
-                f"<b>Aceptado:</b> {html.escape(str(set_path))}<br>"
+                f"<b>Set:</b> {html.escape(str(set_path))}<br>"
                 f"<b>Mutados por agente:</b> {html.escape(', '.join(mutated) if mutated else '-')}</p>"
-                "<table><thead><tr><th>Parametro</th><th>Seed</th><th>Aceptado</th></tr></thead>"
+                "<table><thead><tr><th>Parametro</th><th>Seed</th><th>Set</th></tr></thead>"
                 f"<tbody>{diff_rows}</tbody></table>"
                 "</details>"
             )
+
+        accepted = sum(1 for row in rows if row["status"] == "accepted")
+        rejected = sum(1 for row in rows if row["status"] == "rejected")
 
         html_text = (
             "<!doctype html><html><head><meta charset='utf-8'>"
@@ -3152,13 +3897,14 @@ class MT5AutotesterUI(tk.Tk):
             "details{border:1px solid #334155;border-radius:6px;padding:10px;margin:10px 0;background:#111827;}"
             "summary{cursor:pointer;font-weight:600;color:#86efac;} p{color:#cbd5e1;font-size:13px;}"
             "</style></head><body>"
-            "<h1>UBS comparacion aceptados contra seed</h1>"
+            "<h1>UBS comparacion resultados contra seed</h1>"
             f"<div class='meta'>Generado: {html.escape(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))} | "
-            f"sets aceptados: {len(rows)} | cambios totales: {total_changes}</div>"
+            f"run #{run_id} | resultados: {len(rows)} | aceptados: {accepted} | rechazados: {rejected} | "
+            f"cambios totales: {total_changes}</div>"
             "<h2>Resumen</h2>"
             "<table><thead><tr>"
-            "<th>#</th><th>Run</th><th>Gen</th><th>Symbol</th><th>TF</th><th>Score</th>"
-            "<th>Net</th><th>PF</th><th>DD %</th><th>Cambios</th><th>Aceptado</th><th>Seed</th>"
+            "<th>#</th><th>Run</th><th>Gen</th><th>Estado</th><th>Symbol</th><th>TF</th><th>Score</th>"
+            "<th>Net</th><th>PF</th><th>DD %</th><th>Cambios</th><th>Set</th><th>Seed</th>"
             "</tr></thead><tbody>"
             + "\n".join(summary_rows)
             + "</tbody></table><h2>Detalle por set</h2>"
@@ -3208,14 +3954,14 @@ class MT5AutotesterUI(tk.Tk):
     def _open_selected_ubs_compare_seed(self) -> None:
         path = self._selected_ubs_compare_path("seed")
         if path is None:
-            messagebox.showinfo("Agente UBS", "Selecciona un set aceptado primero.")
+            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
             return
         self._open_local_file(path)
 
     def _open_selected_ubs_compare_set(self) -> None:
         path = self._selected_ubs_compare_path("set")
         if path is None:
-            messagebox.showinfo("Agente UBS", "Selecciona un set aceptado primero.")
+            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
             return
         self._open_local_file(path)
 
@@ -3251,24 +3997,31 @@ class MT5AutotesterUI(tk.Tk):
             "generated": "generado",
             "no_report": "sin reporte",
             "parse_error": "parse error",
+            "report_mismatch": "mismatch reporte",
         }
         return labels.get(status, status or "-")
 
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
-        if status in {"rejected", "parse_error"}:
+        if status in {"rejected", "parse_error", "report_mismatch"}:
             return "rejected"
         return "pending"
 
     def _selected_ubs_result_path(self, kind: str) -> Path | None:
-        if not hasattr(self, "ubs_results_tree"):
+        info = self._selected_ubs_result_info()
+        if not info:
             return None
+        raw_path = info.get(kind, "")
+        return Path(raw_path).expanduser() if raw_path else None
+
+    def _selected_ubs_result_info(self) -> dict[str, str]:
+        if not hasattr(self, "ubs_results_tree"):
+            return {}
         selected = self.ubs_results_tree.selection()
         if not selected:
-            return None
-        raw_path = self.ubs_result_paths.get(selected[0], {}).get(kind, "")
-        return Path(raw_path).expanduser() if raw_path else None
+            return {}
+        return self.ubs_result_paths.get(selected[0], {})
 
     def _open_ubs_output_dir(self) -> None:
         output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent")).expanduser()
@@ -3290,6 +4043,128 @@ class MT5AutotesterUI(tk.Tk):
             messagebox.showinfo("Agente UBS", "Ese resultado no tiene reporte asociado.")
             return
         self._open_local_file(path)
+
+    def _retry_selected_ubs_mismatch(self) -> None:
+        info = self._selected_ubs_result_info()
+        if not info:
+            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
+            return
+        if info.get("status") != "report_mismatch":
+            messagebox.showinfo("Agente UBS", "Esta accion solo aplica a filas con estado mismatch reporte.")
+            return
+        candidate_id = info.get("id", "").strip()
+        set_path = Path(info.get("set", "")).expanduser()
+        if not candidate_id:
+            messagebox.showinfo("Agente UBS", "La fila seleccionada no tiene candidate id.")
+            return
+        if not set_path.exists():
+            messagebox.showinfo("Agente UBS", f"No existe el set:\n{set_path}")
+            return
+        try:
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--template", self.template_path.get(),
+                "--retry-candidate-id", candidate_id,
+                "--delay", str(self.delay.get()),
+            ]
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+            args.extend(self._ubs_score_args())
+            if not self.multiterminal_enabled.get():
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar retry mismatch", str(exc))
+            return
+
+        details = [
+            "Accion: Reprobar mismatch UBS",
+            f"Candidate: #{candidate_id}",
+            f"Objetivo: {info.get('symbol', '')} {info.get('period', '')}",
+            f"Set: {set_path.name}",
+            "Backtests previstos: 1",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar retry mismatch", 1, details):
+            self._run_script("ubs_agent.py", args)
+
+    def _retry_visible_ubs_run_mismatches(self) -> None:
+        try:
+            run_id = self._visible_ubs_run_id()
+            if run_id <= 0:
+                messagebox.showinfo("Agente UBS", "No hay run visible para reprobar.")
+                return
+            mismatch_count = self._count_ubs_run_mismatches(run_id)
+            if mismatch_count <= 0:
+                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch pendientes.")
+                return
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--template", self.template_path.get(),
+                "--retry-run-id", str(run_id),
+                "--retry-mismatch-run",
+                "--delay", str(self.delay.get()),
+            ]
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+            args.extend(self._ubs_score_args())
+            if not self.multiterminal_enabled.get():
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar retry de run", str(exc))
+            return
+
+        details = [
+            "Accion: Reprobar mismatches de run UBS",
+            f"Run: #{run_id}",
+            f"Backtests previstos: {mismatch_count}",
+            "Al terminar actualiza esas mismas filas SQLite.",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar retry run mismatch", mismatch_count, details):
+            self._run_script("ubs_agent.py", args)
+
+    def _visible_ubs_run_id(self) -> int:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return 0
+        conn = sqlite3.connect(memory_path, timeout=1.0)
+        try:
+            row = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
+
+    def _count_ubs_run_mismatches(self, run_id: int) -> int:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return 0
+        conn = sqlite3.connect(memory_path, timeout=1.0)
+        try:
+            row = conn.execute(
+                """
+                select count(*) as total
+                from candidates
+                where run_id=? and status='report_mismatch'
+                """,
+                (run_id,),
+            ).fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
 
     def _open_local_file(self, path: Path) -> None:
         if not path.exists():
@@ -3352,6 +4227,48 @@ class MT5AutotesterUI(tk.Tk):
             args.append("--recursive")
         return args
 
+    def _multiterminal_args(self, *, require_ubs: bool = False) -> list[str]:
+        if not self.multiterminal_enabled.get():
+            return []
+        errors = self._validate_multiterminal_errors(require_ubs=require_ubs)
+        if errors:
+            details = "\n".join(f"- {item}" for item in errors[:12])
+            if len(errors) > 12:
+                details += f"\n- ... y {len(errors) - 12} mas"
+            raise ValueError(f"Configuracion multiterminal invalida:\n{details}")
+        self._write_ui_settings()
+        return [
+            "--multi-terminal",
+            "--terminals-config",
+            str(UI_SETTINGS_FILE),
+            "--max-workers",
+            str(self._multiterminal_worker_limit()),
+        ]
+
+    def _multiterminal_execution_details(self) -> list[str]:
+        if not self.multiterminal_enabled.get():
+            return ["Multiterminal: no"]
+        active = len(self._active_multiterminal_profiles())
+        workers = min(self._multiterminal_worker_limit(), active) if active else 0
+        return [
+            "Multiterminal: si",
+            f"Terminales activas: {active}",
+            f"Workers: {workers}",
+        ]
+
+    def _count_backtests(self) -> tuple[int, str]:
+        if not self.recursive.get():
+            _source_dir, source_file = self._compile_source_selection()
+            return 1, source_file
+        root = self.experts_root.get().strip()
+        if not root and self.multiterminal_enabled.get():
+            active = self._active_multiterminal_profiles()
+            root = str(active[0].get("experts_root") or "") if active else ""
+        if not root:
+            raise ValueError("Indica la carpeta .ex5 o configura al menos una terminal activa con MQL5\\Experts.")
+        experts = load_experts_from_dir(Path(root).expanduser(), recursive=True)
+        return len(experts), root
+
     def _backtest_args(self) -> list[str]:
         args = ["--template", self.template_path.get(), "--delay", str(self.delay.get())]
         if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
@@ -3370,6 +4287,7 @@ class MT5AutotesterUI(tk.Tk):
             args.extend(["--data-dir", self.mt5_data_root.get()])
         if self.recursive.get():
             args.append("--recursive")
+        args.extend(self._multiterminal_args(require_ubs=False))
         return args
 
     def _count_compile_sources(self) -> tuple[int, str]:
@@ -3538,6 +4456,23 @@ class MT5AutotesterUI(tk.Tk):
         if self._confirm_execution_start("Confirmar compilacion", total, details):
             self._run_script("compile_mq5.py", args)
 
+    def _run_backtests(self) -> None:
+        try:
+            args = self._backtest_args()
+            total, target = self._count_backtests()
+        except Exception as exc:
+            self._show_error("No se pudo preparar backtests", str(exc))
+            return
+        details = [
+            "Accion: Ejecutar backtests",
+            f"Modo: {'recursivo' if self.recursive.get() else 'archivo unico'}",
+            f"Origen: {target}",
+            f"Backtests: {total}",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar backtests", total, details):
+            self._run_script("run_tests.py", args)
+
     def _run_full_flow(self) -> None:
         try:
             args = self._full_flow_args()
@@ -3572,13 +4507,15 @@ class MT5AutotesterUI(tk.Tk):
         return str(source_path)
 
     def _ubs_tester_args(self) -> list[str]:
-        expert = self._required_ubs_ex5_file()
         args = [
             "--template", self.template_path.get(),
             "--delay", str(self.delay.get()),
-            "--expert", expert,
             "--infer-tester-from-set",
         ]
+        if self.multiterminal_enabled.get():
+            args.extend(self._multiterminal_args(require_ubs=True))
+        else:
+            args.extend(["--expert", self._required_ubs_ex5_file()])
         if self.recursive.get():
             set_dir = self.set_files_root.get().strip()
             if not set_dir:
@@ -3614,6 +4551,7 @@ class MT5AutotesterUI(tk.Tk):
             f"Set(s): {target}",
             f"Total backtests: {total}",
         ]
+        details.extend(self._multiterminal_execution_details())
         if missing_symbol_sets:
             self._warn_ubs_template_symbol_fallback(missing_symbol_sets)
         if self._confirm_execution_start("Confirmar Tester UBS", total, details):
@@ -3665,11 +4603,14 @@ class MT5AutotesterUI(tk.Tk):
         )
         if should_execute_backtests:
             args.append("--execute-backtests")
-            args.extend(["--expert", self._required_ubs_ex5_file()])
-            if self.mt5_path.get().strip():
-                args.extend(["--mt5-path", self.mt5_path.get()])
-            if self.mt5_data_root.get().strip():
-                args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
             if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
                 args.extend(["--symbol-map", self.symbol_map.get().strip()])
         return args
@@ -3710,6 +4651,8 @@ class MT5AutotesterUI(tk.Tk):
             f"Backtests pendientes existentes: {pending_count}",
             f"Sets nuevos previstos: {new_sets}",
         ]
+        if shown_backtests:
+            details.extend(self._multiterminal_execution_details())
         title = "Confirmar continuacion UBS" if continue_last else "Confirmar Agente UBS"
         if self._confirm_execution_start(title, total, details):
             self._run_script("ubs_agent.py", args)
@@ -3811,7 +4754,7 @@ class MT5AutotesterUI(tk.Tk):
         if self.process and self.process.poll() is None:
             messagebox.showwarning("Proceso activo", "Ya hay un proceso en ejecucion.")
             return
-        if self._should_block_for_running_mt5(script_name):
+        if self._should_block_for_running_mt5(script_name, args):
             return
         try:
             self._save_template()
@@ -3859,10 +4802,20 @@ class MT5AutotesterUI(tk.Tk):
         self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
         self.reader_thread.start()
 
-    def _should_block_for_running_mt5(self, script_name: str) -> bool:
+    def _should_block_for_running_mt5(self, script_name: str, args: list[str] | None = None) -> bool:
         if script_name not in {"run_tests.py", "compile_and_backtest.py", "ubs_agent.py"}:
             return False
-        if script_name == "ubs_agent.py" and not self.ubs_agent_execute.get():
+        args = args or []
+        if "--multi-terminal" in args:
+            return False
+        ubs_runs_backtests = (
+            self.ubs_agent_execute.get()
+            or "--execute-backtests" in args
+            or "--retry-candidate-id" in args
+            or "--retry-mismatch-run" in args
+            or "--retry-mismatch-generation" in args
+        )
+        if script_name == "ubs_agent.py" and not ubs_runs_backtests:
             return False
 
         mt5_path = Path(self.mt5_path.get()).expanduser()

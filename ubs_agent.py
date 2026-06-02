@@ -13,10 +13,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from run_tests import TIMEFRAME_ENUM, infer_period_from_set, infer_symbol_from_set, load_set_params
+from run_tests import (
+    TIMEFRAME_ENUM,
+    apply_symbol_map,
+    infer_period_from_set,
+    infer_symbol_from_set,
+    load_set_params,
+    normalize_set_symbol,
+    parse_symbol_map,
+)
 from ubs_generate_sets import format_like, parse_numeric
 from ubs_score import ScoreConfig, ScoreResult, score_report_file
-from ubs_set_utils import force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -251,6 +259,7 @@ class AgentMemory:
         self.conn.commit()
 
     def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
+        accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
         self.conn.execute(
             """
             update candidates
@@ -260,7 +269,7 @@ class AgentMemory:
             (
                 str(report_path) if report_path else (result.report_path if result else None),
                 result.score if result else None,
-                int(result.accepted) if result else None,
+                accepted,
                 result.to_json() if result else None,
                 status,
                 str(set_path),
@@ -273,7 +282,7 @@ class AgentMemory:
             """
             select mutated_keys, score, accepted
             from candidates
-            where score is not null and mutated_keys != ''
+            where score is not null and mutated_keys != '' and status in ('accepted', 'rejected')
             """
         ).fetchall()
         totals: dict[str, list[float]] = {}
@@ -289,7 +298,7 @@ class AgentMemory:
             """
             select target_symbol, score, accepted
             from candidates
-            where score is not null
+            where score is not null and status in ('accepted', 'rejected')
             """
         ).fetchall()
         totals: dict[str, list[float]] = {}
@@ -303,7 +312,7 @@ class AgentMemory:
             """
             select period, score, accepted
             from candidates
-            where score is not null
+            where score is not null and status in ('accepted', 'rejected')
             """
         ).fetchall()
         totals: dict[str, list[float]] = {}
@@ -328,7 +337,7 @@ class AgentMemory:
             """
             select *
             from candidates
-            where run_id=? and generation=?
+            where run_id=? and generation=? and status in ('accepted', 'rejected')
             order by
                 case
                     when status = 'accepted' then 0
@@ -352,7 +361,7 @@ class AgentMemory:
             seeds.append(
                 Seed(
                     path=path,
-                    symbol=(row["target_symbol"] or row["symbol"] or "UNKNOWN").upper(),
+                    symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
                     period=row["period"] or "UNKNOWN",
                     family=row["family"] or path.parent.name,
                     run_strategy=row["run_strategy"] or "",
@@ -396,6 +405,34 @@ class AgentMemory:
             ).fetchall()
         return [variant_from_candidate_row(row) for row in rows if Path(row["set_path"]).exists()]
 
+    def candidate_by_id(self, candidate_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()
+
+    def run_by_id(self, run_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("select * from runs where id=?", (run_id,)).fetchone()
+
+    def mismatch_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select *
+            from candidates
+            where run_id=? and generation=? and status='report_mismatch'
+            order by id
+            """,
+            (run_id, generation),
+        ).fetchall()
+
+    def mismatch_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select *
+            from candidates
+            where run_id=? and status='report_mismatch'
+            order by generation, id
+            """,
+            (run_id,),
+        ).fetchall()
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
@@ -408,6 +445,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expert", help="Ruta .ex5 UBS para ejecutar backtests.")
     parser.add_argument("--mt5-path", help="Ruta terminal64.exe.")
     parser.add_argument("--data-dir", help="Carpeta de datos MT5.")
+    parser.add_argument("--terminals-config", help="Archivo .ini con perfiles multiterminal.")
+    parser.add_argument("--multi-terminal", action="store_true", help="Ejecuta backtests UBS repartidos entre terminales configuradas.")
+    parser.add_argument("--max-workers", type=int, default=1, help="Maximo de terminales simultaneas con --multi-terminal.")
     parser.add_argument("--symbol-map", default=DEFAULT_SYMBOL_MAP)
     parser.add_argument("--generations", type=int, default=1)
     parser.add_argument("--variants-per-seed", type=int, default=3)
@@ -415,6 +455,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mutations-per-variant", type=int, default=6)
     parser.add_argument("--top-percent", type=float, default=20.0)
     parser.add_argument("--continue-last-run", action="store_true", help="Usa la ultima generacion registrada como seeds.")
+    parser.add_argument("--retry-candidate-id", type=int, help="Relanza un candidato concreto y actualiza su estado en memoria.")
+    parser.add_argument("--retry-run-id", type=int, help="Run SQLite para retry de mismatches. Si se omite usa el ultimo run.")
+    parser.add_argument("--retry-mismatch-run", action="store_true", help="Relanza todos los report_mismatch de un run.")
+    parser.add_argument("--retry-mismatch-generation", type=int, help="Relanza todos los report_mismatch de una generacion.")
     parser.add_argument("--min-net-profit", type=float, default=score_defaults.min_net_profit)
     parser.add_argument("--min-profit-factor", type=float, default=score_defaults.min_profit_factor)
     parser.add_argument("--min-trades", type=int, default=score_defaults.min_trades)
@@ -438,7 +482,7 @@ def load_asset_universe(path: Path) -> tuple[dict[str, list[str]], dict[str, str
         if section == "CommonAliases":
             aliases = {key.upper(): value for key, value in parser[section].items()}
             continue
-        symbols = [item.strip().upper() for item in parser[section].get("symbols", "").split(",") if item.strip()]
+        symbols = [item.strip() for item in parser[section].get("symbols", "").split(",") if item.strip()]
         groups[section] = symbols
     return groups, aliases
 
@@ -454,7 +498,7 @@ def load_seeds(source_dir: Path) -> list[Seed]:
                     seeds.append(
                         Seed(
                             path=path,
-                            symbol=(row.get("symbol") or "UNKNOWN").upper(),
+                            symbol=row.get("symbol") or "UNKNOWN",
                             period=row.get("period") or "UNKNOWN",
                             family=row.get("source_family") or path.parent.name,
                             run_strategy=row.get("run_strategy") or "",
@@ -467,7 +511,7 @@ def load_seeds(source_dir: Path) -> list[Seed]:
         seeds.append(
             Seed(
                 path=path,
-                symbol=(infer_symbol_from_set(path, params) or "UNKNOWN").upper(),
+                symbol=infer_symbol_from_set(path, params) or "UNKNOWN",
                 period=infer_period_from_set(path, params) or "UNKNOWN",
                 family=path.parent.name,
                 run_strategy=params.get("Run_Strategy", ""),
@@ -479,7 +523,7 @@ def load_seeds(source_dir: Path) -> list[Seed]:
 def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
     seed = Seed(
         path=Path(row["seed_path"]),
-        symbol=(row["symbol"] or "UNKNOWN").upper(),
+        symbol=row["symbol"] or "UNKNOWN",
         period=row["period"] or "UNKNOWN",
         family=row["family"] or Path(row["seed_path"]).parent.name,
         run_strategy=row["run_strategy"] or "",
@@ -487,7 +531,7 @@ def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
     return Variant(
         path=Path(row["set_path"]),
         seed=seed,
-        target_symbol=(row["target_symbol"] or row["symbol"] or "UNKNOWN").upper(),
+        target_symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
         target_period=(row["period"] or seed.period or "UNKNOWN").upper(),
         mutated_keys=tuple(key for key in str(row["mutated_keys"] or "").split(";") if key),
         missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
@@ -548,8 +592,8 @@ def related_assets(symbol: str) -> tuple[str, ...]:
         return ("XAUUSD", "XAGUSD", "XAUEUR")
     if symbol in {"US30", ".US30CASH", "US500", ".US500CASH", "USTEC", "US100", ".USTECHCASH", "DAX", "DE40", ".DE40CASH"}:
         return ("US30", "US500", "USTEC", "DAX")
-    if symbol in {"BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "ADAUSD", "DOGEUSD"}:
-        return ("BTCUSD", "ETHUSD", "SOLUSD")
+    if symbol in {"BTCUSD", "ETHUSD", "XRPUSD", "ADAUSD", "DOGEUSD"}:
+        return ("BTCUSD", "ETHUSD")
     if symbol in {"XTIUSD", "WTI", "BRENT", "CRUDEOIL"}:
         return ("XTIUSD", "BRENT")
     if len(symbol) == 6:
@@ -561,9 +605,37 @@ def related_assets(symbol: str) -> tuple[str, ...]:
     return (symbol,)
 
 
-def choose_target_symbol(seed: Seed, asset_feedback: dict[str, float], rng: random.Random) -> tuple[str, str]:
-    choices = related_assets(seed.symbol)
-    if not choices or rng.random() < 0.70:
+def choose_target_symbol(
+    seed: Seed,
+    asset_feedback: dict[str, float],
+    rng: random.Random,
+    universe_symbols: tuple[str, ...] = (),
+    aliases: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    aliases = aliases or {}
+    current = seed.symbol or "UNKNOWN"
+    exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
+    for alias, target in aliases.items():
+        exact_by_key[str(alias).upper()] = target
+
+    related = tuple(
+        dict.fromkeys(exact_by_key.get(symbol.upper(), symbol) for symbol in related_assets(current))
+    )
+    universe_choices = tuple(
+        symbol for symbol in dict.fromkeys(universe_symbols) if symbol.upper() != current.upper()
+    )
+
+    if rng.random() < 0.70:
+        return current, "exploit"
+    if universe_choices and rng.random() < 0.65:
+        ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
+        ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
+        if ranked_with_feedback and rng.random() < 0.55:
+            return ranked_with_feedback[0], "asset_universe_feedback"
+        return rng.choice(universe_choices), "asset_universe_explore"
+
+    choices = tuple(symbol for symbol in related if symbol.upper() != current.upper())
+    if not choices:
         return seed.symbol, "exploit"
     ranked = sorted(choices, key=lambda item: asset_feedback.get(item.upper(), 0.0), reverse=True)
     if ranked and rng.random() < 0.50:
@@ -744,9 +816,11 @@ def create_variant(
     changed.extend(timeframe_keys)
 
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    seed_label = compact_safe_part(seed.path.stem, 24)
+    family_label = compact_safe_part(seed.family, 24)
     filename = (
-        f"{safe_part(target_symbol)}__{safe_part(target_period)}__{safe_part(seed.family)}__"
-        f"{safe_part(seed.path.stem)}__g{generation:03d}_s{seed_index:03d}_v{variant_index:03d}.set"
+        f"{safe_part(target_symbol)}_{safe_part(target_period)}_{family_label}_{seed_label}_"
+        f"g{generation:03d}_s{seed_index:03d}_v{variant_index:03d}.set"
     )
     target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
     write_set_text(target, normalized, encoding)
@@ -754,7 +828,7 @@ def create_variant(
 
 
 def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
-    if not args.expert:
+    if not args.expert and not args.multi_terminal:
         print("AVISO: --expert no indicado; se omiten backtests.")
         return 0
     command = [
@@ -762,8 +836,6 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         str(BASE_DIR / "run_tests.py"),
         "--template",
         str(Path(args.template).expanduser()),
-        "--expert",
-        args.expert,
         "--set-dir",
         str(set_dir),
         "--recursive",
@@ -771,10 +843,17 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         "--delay",
         str(args.delay),
     ]
+    if args.expert:
+        command.extend(["--expert", args.expert])
     if args.mt5_path:
         command.extend(["--mt5-path", args.mt5_path])
     if args.data_dir:
         command.extend(["--data-dir", args.data_dir])
+    if args.multi_terminal:
+        command.append("--multi-terminal")
+        command.extend(["--max-workers", str(args.max_workers)])
+        if args.terminals_config:
+            command.extend(["--terminals-config", args.terminals_config])
     if args.symbol_map:
         command.extend(["--symbol-map", args.symbol_map])
     if args.dry_run:
@@ -793,22 +872,58 @@ def find_report_for_set(set_path: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def evaluate_variants(memory: AgentMemory, variants: list[Variant], score_config: ScoreConfig) -> list[tuple[Variant, ScoreResult]]:
+def report_matches_variant(variant: Variant, result: ScoreResult, symbol_map: dict[str, str]) -> tuple[bool, str]:
+    report_symbol = normalize_set_symbol(result.symbol)
+    target_symbol = normalize_set_symbol(apply_symbol_map(variant.target_symbol, symbol_map))
+    report_timeframe = str(result.timeframe or "").upper()
+    target_timeframe = str(variant.target_period or "").upper()
+    issues: list[str] = []
+    if report_symbol != target_symbol:
+        issues.append(f"symbol reporte={report_symbol or '(vacio)'} objetivo={target_symbol or '(vacio)'}")
+    if report_timeframe != target_timeframe:
+        issues.append(f"tf reporte={report_timeframe or '(vacio)'} objetivo={target_timeframe or '(vacio)'}")
+    return not issues, "; ".join(issues)
+
+
+def evaluate_variants(
+    memory: AgentMemory,
+    variants: list[Variant],
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+) -> list[tuple[Variant, ScoreResult]]:
     scored: list[tuple[Variant, ScoreResult]] = []
     for variant in variants:
-        report = find_report_for_set(variant.path)
-        if not report:
-            memory.record_score(variant.path, None, "no_report", None)
+        status, result = evaluate_variant(memory, variant, score_config, symbol_map)
+        if status not in {"accepted", "rejected"} or result is None:
             continue
-        try:
-            result = score_report_file(report, config=score_config)
-        except Exception as exc:
-            print(f"AVISO: no pude parsear {report}: {exc}")
-            memory.record_score(variant.path, None, "parse_error", report)
-            continue
-        memory.record_score(variant.path, result, "accepted" if result.accepted else "rejected", report)
         scored.append((variant, result))
     return scored
+
+
+def evaluate_variant(
+    memory: AgentMemory,
+    variant: Variant,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+) -> tuple[str, ScoreResult | None]:
+    report = find_report_for_set(variant.path)
+    if not report:
+        memory.record_score(variant.path, None, "no_report", None)
+        return "no_report", None
+    try:
+        result = score_report_file(report, config=score_config)
+    except Exception as exc:
+        print(f"AVISO: no pude parsear {report}: {exc}")
+        memory.record_score(variant.path, None, "parse_error", report)
+        return "parse_error", None
+    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+    if not matches:
+        print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")
+        memory.record_score(variant.path, result, "report_mismatch", report)
+        return "report_mismatch", result
+    status = "accepted" if result.accepted else "rejected"
+    memory.record_score(variant.path, result, status, report)
+    return status, result
 
 
 def select_survivors(scored: list[tuple[Variant, ScoreResult]], top_percent: float) -> list[tuple[Variant, ScoreResult]]:
@@ -834,6 +949,206 @@ def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Pa
     return copied
 
 
+def remove_candidate_copies(run_dir: Path, generation: int, set_name: str) -> None:
+    for prefix in ("accepted", "mismatch"):
+        folder = run_dir / f"{prefix}_gen_{generation:03d}"
+        if not folder.exists():
+            continue
+        for path in folder.glob(f"*__{set_name}"):
+            if path.is_file():
+                path.unlink()
+
+
+def remove_report_artifacts(set_path: Path) -> None:
+    for path in (BASE_DIR / "reports").glob(f"{set_path.stem}*"):
+        if path.is_file() and path.suffix.lower() in {".htm", ".html", ".xml", ".png", ".set"}:
+            path.unlink()
+
+
+def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.retry_candidate_id:
+        print("ERROR: falta --retry-candidate-id")
+        return 1
+    if not args.expert and not args.multi_terminal:
+        print("ERROR: retry requiere --expert")
+        return 1
+
+    row = memory.candidate_by_id(args.retry_candidate_id)
+    if row is None:
+        print(f"ERROR: no existe candidate id {args.retry_candidate_id}")
+        return 1
+
+    set_path = Path(row["set_path"])
+    if not set_path.exists():
+        print(f"ERROR: no existe el set del candidato: {set_path}")
+        return 1
+
+    run = memory.run_by_id(int(row["run_id"]))
+    run_dir = Path(run["output_dir"]) if run else DEFAULT_OUTPUT
+    generation = int(row["generation"] or 0)
+    retry_dir = run_dir / "retry_mismatch" / f"candidate_{args.retry_candidate_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    retry_dir.mkdir(parents=True, exist_ok=True)
+    retry_set = retry_dir / set_path.name
+    shutil.copy2(set_path, retry_set)
+
+    variant = variant_from_candidate_row(row)
+    if not args.dry_run:
+        remove_report_artifacts(set_path)
+        remove_candidate_copies(run_dir, generation, set_path.name)
+
+    print(f"Retry candidate #{args.retry_candidate_id}")
+    print(f"Set original: {set_path}")
+    print(f"Set retry: {retry_set}")
+    code = run_backtests(args, retry_dir)
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    status, result = evaluate_variant(memory, variant, score_config, parse_symbol_map(args.symbol_map))
+    if status == "accepted" and result is not None:
+        copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
+        print(f"Retry aceptado; copias accepted: {len(copied)}")
+    else:
+        print(f"Retry terminado con estado: {status}")
+    return 0
+
+
+def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.retry_mismatch_generation:
+        print("ERROR: falta --retry-mismatch-generation")
+        return 1
+    if not args.expert and not args.multi_terminal:
+        print("ERROR: retry por generacion requiere --expert")
+        return 1
+
+    if args.retry_run_id:
+        run = memory.run_by_id(args.retry_run_id)
+    else:
+        run = memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para retry por generacion")
+        return 1
+
+    run_id = int(run["id"])
+    generation = int(args.retry_mismatch_generation)
+    rows = memory.mismatch_candidates_for_generation(run_id, generation)
+    rows = [row for row in rows if Path(row["set_path"]).exists()]
+    if not rows:
+        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch con .set existente")
+        return 1
+
+    run_dir = Path(run["output_dir"])
+    retry_dir = run_dir / "retry_mismatch" / f"run_{run_id}_gen_{generation:03d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    retry_dir.mkdir(parents=True, exist_ok=True)
+    variants = [variant_from_candidate_row(row) for row in rows]
+
+    print(f"Retry mismatches run #{run_id} gen {generation}: {len(rows)} candidato(s)")
+    seen_names: set[str] = set()
+    for row in rows:
+        set_path = Path(row["set_path"])
+        if set_path.name in seen_names:
+            print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
+            return 1
+        seen_names.add(set_path.name)
+        shutil.copy2(set_path, retry_dir / set_path.name)
+        if not args.dry_run:
+            remove_report_artifacts(set_path)
+            remove_candidate_copies(run_dir, generation, set_path.name)
+
+    code = run_backtests(args, retry_dir)
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    accepted: list[tuple[Variant, ScoreResult]] = []
+    status_counts: dict[str, int] = {}
+    symbol_map = parse_symbol_map(args.symbol_map)
+    for variant in variants:
+        status, result = evaluate_variant(memory, variant, score_config, symbol_map)
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status == "accepted" and result is not None:
+            accepted.append((variant, result))
+
+    copied = copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}")
+    print(
+        "Retry gen terminado: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        + f"; accepted/copied={len(copied)}"
+    )
+    return 0
+
+
+def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.expert and not args.multi_terminal:
+        print("ERROR: retry por run requiere --expert")
+        return 1
+
+    run = memory.run_by_id(args.retry_run_id) if args.retry_run_id else memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para retry por run")
+        return 1
+
+    run_id = int(run["id"])
+    rows = memory.mismatch_candidates_for_run(run_id)
+    rows = [row for row in rows if Path(row["set_path"]).exists()]
+    if not rows:
+        print(f"ERROR: run #{run_id} no tiene report_mismatch con .set existente")
+        return 1
+
+    run_dir = Path(run["output_dir"])
+    retry_dir = run_dir / "retry_mismatch" / f"run_{run_id}_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    retry_dir.mkdir(parents=True, exist_ok=True)
+    variants = [variant_from_candidate_row(row) for row in rows]
+
+    print(f"Retry mismatches run #{run_id}: {len(rows)} candidato(s)")
+    seen_names: set[str] = set()
+    for row in rows:
+        set_path = Path(row["set_path"])
+        if set_path.name in seen_names:
+            print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
+            return 1
+        seen_names.add(set_path.name)
+        shutil.copy2(set_path, retry_dir / set_path.name)
+        if not args.dry_run:
+            generation = int(row["generation"] or 0)
+            remove_report_artifacts(set_path)
+            remove_candidate_copies(run_dir, generation, set_path.name)
+
+    code = run_backtests(args, retry_dir)
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    accepted_by_generation: dict[int, list[tuple[Variant, ScoreResult]]] = {}
+    status_counts: dict[str, int] = {}
+    symbol_map = parse_symbol_map(args.symbol_map)
+    for row, variant in zip(rows, variants):
+        status, result = evaluate_variant(memory, variant, score_config, symbol_map)
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status == "accepted" and result is not None:
+            generation = int(row["generation"] or 0)
+            accepted_by_generation.setdefault(generation, []).append((variant, result))
+
+    copied = 0
+    for generation, accepted in accepted_by_generation.items():
+        copied += len(copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}"))
+    print(
+        "Retry run terminado: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        + f"; accepted/copied={copied}"
+    )
+    return 0
+
+
 def evaluate_generation(
     args: argparse.Namespace,
     memory: AgentMemory,
@@ -847,14 +1162,19 @@ def evaluate_generation(
         return scored
     generation_dir = run_dir / f"gen_{generation:03d}"
     code = run_backtests(args, generation_dir)
+    partial_failure = code != 0
     if code != 0:
-        raise RuntimeError(f"run_tests.py termino con codigo {code}")
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            raise RuntimeError(f"run_tests.py termino con codigo {code}")
     if args.dry_run:
         return scored
-    scored = evaluate_variants(memory, variants, score_config)
+    scored = evaluate_variants(memory, variants, score_config, parse_symbol_map(args.symbol_map))
     survivors = select_survivors(scored, args.top_percent)
     copied = copy_accepted(survivors, run_dir / f"accepted_gen_{generation:03d}")
     print(f"Reportes puntuados gen {generation}: {len(scored)}; accepted/copied: {len(copied)}")
+    if partial_failure and not scored:
+        raise RuntimeError(f"run_tests.py termino con codigo {code} y no produjo reportes puntuables")
     return scored
 
 
@@ -870,14 +1190,17 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     args.max_seeds = int(run["max_seeds"])
     args.execute_backtests = bool(run["execute_backtests"])
     args.dry_run = bool(run["dry_run"]) or args.dry_run
-    if args.execute_backtests and not args.expert:
-        print("ERROR: el run pendiente requiere backtests; indica --expert para continuar")
+    if args.execute_backtests and not args.expert and not args.multi_terminal:
+        print("ERROR: el run pendiente requiere backtests; indica --expert o activa --multi-terminal para continuar")
         return 1
 
     max_generation = memory.max_generation(run_id)
     pending_generation = memory.pending_generated_generation(run_id) if args.execute_backtests else 0
     current_seeds: list[Seed] = []
     did_work = False
+    asset_groups, aliases = load_asset_universe(Path(args.assets).expanduser())
+    universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
+    print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
     print(f"Continuando run #{run_id}: plan={planned_generations}, ultima_gen={max_generation}")
 
@@ -924,7 +1247,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
-                target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng)
+                target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng, universe_symbols, aliases)
                 target_period, period_policy = choose_target_period(seed, timeframe_feedback, rng)
                 variant = create_variant(
                     seed,
@@ -983,6 +1306,21 @@ def run_agent(args: argparse.Namespace) -> int:
             return resume_last_run(args, memory, score_config)
         finally:
             memory.close()
+    if args.retry_candidate_id:
+        try:
+            return retry_candidate(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.retry_mismatch_run:
+        try:
+            return retry_run_mismatches(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.retry_mismatch_generation:
+        try:
+            return retry_generation_mismatches(args, memory, score_config)
+        finally:
+            memory.close()
 
     seed_source = str(source_dir)
     seeds = load_seeds(source_dir)
@@ -990,8 +1328,9 @@ def run_agent(args: argparse.Namespace) -> int:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
     asset_groups, aliases = load_asset_universe(Path(args.assets).expanduser())
+    universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
-    print(f"Universo RoboForex cargado: {sum(len(v) for v in asset_groups.values())} simbolos, {len(aliases)} aliases")
+    print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
         if score_config.min_positive_month_ratio > 0
@@ -1030,7 +1369,7 @@ def run_agent(args: argparse.Namespace) -> int:
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
-                    target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng)
+                    target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng, universe_symbols, aliases)
                     target_period, period_policy = choose_target_period(seed, timeframe_feedback, rng)
                     variant = create_variant(
                         seed,
@@ -1053,14 +1392,19 @@ def run_agent(args: argparse.Namespace) -> int:
             scored: list[tuple[Variant, ScoreResult]] = []
             if args.execute_backtests or args.dry_run:
                 code = run_backtests(args, generation_dir)
+                partial_failure = code != 0
                 if code != 0:
-                    print(f"ERROR: run_tests.py termino con codigo {code}")
-                    return code
+                    print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+                    if args.dry_run:
+                        return code
                 if not args.dry_run:
-                    scored = evaluate_variants(memory, variants, score_config)
+                    scored = evaluate_variants(memory, variants, score_config, parse_symbol_map(args.symbol_map))
                     survivors = select_survivors(scored, args.top_percent)
                     copied = copy_accepted(survivors, accepted_dir)
                     print(f"Reportes puntuados: {len(scored)}; accepted/copied: {len(copied)}")
+                    if partial_failure and not scored:
+                        print(f"ERROR: run_tests.py termino con codigo {code} y no produjo reportes puntuables")
+                        return code
 
             if scored:
                 survivors = select_survivors(scored, args.top_percent)

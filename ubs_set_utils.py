@@ -52,6 +52,16 @@ def safe_part(value: str, fallback: str = "UNKNOWN") -> str:
     return cleaned or fallback
 
 
+def compact_safe_part(value: str, max_length: int = 36, fallback: str = "UNKNOWN") -> str:
+    cleaned = safe_part(value, fallback)
+    if len(cleaned) <= max_length:
+        return cleaned
+    digest = hashlib.sha1(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    head_length = max(8, max_length - len(digest) - 1)
+    head = cleaned[:head_length].rstrip("._-") or fallback
+    return f"{head}_{digest}"
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:

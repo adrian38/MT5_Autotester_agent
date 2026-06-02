@@ -1,10 +1,13 @@
 import argparse
 import configparser
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +24,7 @@ LOG_DIR = BASE_DIR / "logs"
 EXPERTS_FILE = BASE_DIR / "experts_list.txt"
 EXPERTS_ROOT_FILE = BASE_DIR / "experts_root.txt"
 TEMPLATE_FILE = BASE_DIR / "tester_template.ini"
+UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 DEFAULT_MT5_PATHS = (
@@ -38,20 +42,49 @@ class TesterSettings:
     data_dir: Path | None
 
 
+@dataclass(frozen=True)
+class TerminalProfile:
+    name: str
+    mt5_path: Path
+    data_dir: Path | None
+    experts_root: Path
+    ubs_ex5_file: Path | None
+    portable: bool
+
+
+@dataclass(frozen=True)
+class BacktestJob:
+    index: int
+    expert: str
+    set_file: Path | None
+
+
 class RunLogger:
     def __init__(self, log_path: Path) -> None:
         self.log_path = log_path
+        self._lock = threading.Lock()
         self.last_log_path = LOG_DIR / "last_run.log"
         self.last_log_path.write_text("", encoding="utf-8")
 
     def write(self, message: str = "") -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] {message}" if message else ""
-        print(message)
-        with self.log_path.open("a", encoding="utf-8") as file:
-            file.write(f"{line}\n")
-        with self.last_log_path.open("a", encoding="utf-8") as file:
-            file.write(f"{line}\n")
+        with self._lock:
+            print(message)
+            with self.log_path.open("a", encoding="utf-8") as file:
+                file.write(f"{line}\n")
+            with self.last_log_path.open("a", encoding="utf-8") as file:
+                file.write(f"{line}\n")
+
+    def write_many(self, messages: list[str]) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            with self.log_path.open("a", encoding="utf-8") as log_file, self.last_log_path.open("a", encoding="utf-8") as last_file:
+                for message in messages:
+                    line = f"[{timestamp}] {message}" if message else ""
+                    print(message)
+                    log_file.write(f"{line}\n")
+                    last_file.write(f"{line}\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -104,6 +137,22 @@ def parse_args() -> argparse.Namespace:
         "--portable",
         action="store_true",
         help="Arranca MT5 con /portable. Util para terminales copiados fuera de Program Files.",
+    )
+    parser.add_argument(
+        "--terminals-config",
+        default=str(UI_SETTINGS_FILE),
+        help="Archivo .ini con secciones [Multiterminal] y [Terminal.N].",
+    )
+    parser.add_argument(
+        "--multi-terminal",
+        action="store_true",
+        help="Reparte la cola entre terminales MT5 configuradas.",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="Maximo de terminales simultaneas cuando --multi-terminal esta activo.",
     )
     parser.add_argument(
         "--dry-run",
@@ -257,6 +306,76 @@ def terminal_data_dir_from_cli(cli_value: str | None) -> Path | None:
     return data_dir
 
 
+def parse_bool(value: str | None, default: bool = False) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+
+
+def terminal_section_sort_key(section: str) -> tuple[int, str]:
+    suffix = section.split(".", 1)[1] if "." in section else section
+    try:
+        return (int(suffix), section)
+    except ValueError:
+        return (999999, section)
+
+
+def load_terminal_profiles(config_path: Path) -> list[TerminalProfile]:
+    if not config_path.exists():
+        raise FileNotFoundError(f"No existe la configuracion multiterminal: {config_path}")
+
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(config_path, encoding="utf-8-sig")
+    profiles: list[TerminalProfile] = []
+    sections = sorted(
+        (section for section in parser.sections() if section.lower().startswith("terminal.")),
+        key=terminal_section_sort_key,
+    )
+    for index, section in enumerate(sections, start=1):
+        values = parser[section]
+        if not parse_bool(values.get("enabled"), True):
+            continue
+        mt5_raw = values.get("mt5_path", "").strip()
+        experts_raw = values.get("experts_root", "").strip()
+        if not mt5_raw:
+            raise ValueError(f"{section}: falta mt5_path.")
+        if not experts_raw:
+            raise ValueError(f"{section}: falta experts_root.")
+        mt5_path = Path(mt5_raw).expanduser()
+        experts_root = Path(experts_raw).expanduser()
+        data_raw = values.get("data_dir", "").strip()
+        ubs_raw = values.get("ubs_ex5_file", "").strip()
+        ubs_ex5_file = Path(ubs_raw).expanduser() if ubs_raw else None
+        if ubs_ex5_file and not ubs_ex5_file.is_absolute():
+            ubs_ex5_file = experts_root / ubs_ex5_file
+        portable = parse_bool(values.get("portable"), should_use_portable(mt5_path, False))
+        profiles.append(
+            TerminalProfile(
+                name=values.get("name", "").strip() or f"Terminal {index}",
+                mt5_path=mt5_path,
+                data_dir=Path(data_raw).expanduser() if data_raw else None,
+                experts_root=experts_root,
+                ubs_ex5_file=ubs_ex5_file,
+                portable=portable,
+            )
+        )
+    return profiles
+
+
+def profile_data_dir(profile: TerminalProfile) -> Path | None:
+    return profile.data_dir or (portable_terminal_data_dir(profile.mt5_path) if profile.portable else terminal_data_dir_from_origin(profile.mt5_path))
+
+
+def settings_from_profile(profile: TerminalProfile, delay_seconds: int) -> TesterSettings:
+    return TesterSettings(
+        mt5_path=profile.mt5_path,
+        delay_seconds=delay_seconds,
+        portable=profile.portable,
+        data_dir=profile_data_dir(profile),
+    )
+
+
 def load_experts() -> list[str]:
     if not EXPERTS_FILE.exists():
         raise FileNotFoundError(f"No existe {EXPERTS_FILE}")
@@ -338,6 +457,55 @@ def expert_from_cli_value(value: str, experts_dir: Path | None) -> str:
                 pass
 
     return expert_from_value(str(path))
+
+
+def expert_file_path(expert: str, experts_root: Path) -> Path:
+    path = Path(expert.strip().replace("/", "\\"))
+    if path.is_absolute():
+        return path.with_suffix(".ex5") if path.suffix.lower() in {".mq5", ".ex5"} else path
+    if path.suffix.lower() in {".mq5", ".ex5"}:
+        path = path.with_suffix(".ex5")
+    elif not path.suffix:
+        path = path.with_suffix(".ex5")
+    return experts_root / path
+
+
+def profile_expert_for_job(profile: TerminalProfile, job: BacktestJob, set_mode: bool) -> str:
+    if set_mode and profile.ubs_ex5_file:
+        return expert_from_cli_value(str(profile.ubs_ex5_file), profile.experts_root)
+    return job.expert
+
+
+def validate_terminal_profiles(
+    profiles: list[TerminalProfile],
+    jobs: list[BacktestJob],
+    *,
+    set_mode: bool,
+    dry_run: bool,
+) -> list[str]:
+    errors: list[str] = []
+    for profile in profiles:
+        prefix = profile.name
+        if not dry_run and not profile.mt5_path.exists():
+            errors.append(f"{prefix}: no existe terminal64.exe: {profile.mt5_path}")
+        if profile.data_dir and (not profile.data_dir.exists() or not profile.data_dir.is_dir()):
+            errors.append(f"{prefix}: carpeta de datos MT5 invalida: {profile.data_dir}")
+        if not dry_run and (not profile.experts_root.exists() or not profile.experts_root.is_dir()):
+            errors.append(f"{prefix}: carpeta Experts invalida: {profile.experts_root}")
+        if set_mode:
+            if not profile.ubs_ex5_file:
+                errors.append(f"{prefix}: falta ubs_ex5_file para Tester/Agente UBS.")
+            elif not dry_run and not profile.ubs_ex5_file.exists():
+                errors.append(f"{prefix}: no existe UBS .ex5: {profile.ubs_ex5_file}")
+            continue
+        if dry_run:
+            continue
+        for job in jobs:
+            candidate = expert_file_path(job.expert, profile.experts_root)
+            if not candidate.exists():
+                errors.append(f"{prefix}: falta EA {job.expert} en {profile.experts_root}")
+                break
+    return errors
 
 
 def load_experts_root() -> Path | None:
@@ -471,6 +639,23 @@ SYMBOL_ALIASES = (
     ("CRUDEOIL", re.compile(r"CRUDEOIL|CRUDE|USOIL|WTI|OIL", re.IGNORECASE)),
 )
 
+EXPLICIT_SYMBOLS = FOREX_SYMBOLS | {
+    symbol for symbol, _pattern in SYMBOL_ALIASES
+} | {
+    "USTEC",
+    "US100",
+    "US500",
+    "US30",
+    "DE40",
+    "DAX",
+    "BRENT",
+    "BTCUSD",
+    "ETHUSD",
+    "XRPUSD",
+    "ADAUSD",
+    "DOGEUSD",
+}
+
 TIMEFRAME_PATTERNS = (
     ("M1", re.compile(r"(?:^|[^A-Z0-9])M1(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("M5", re.compile(r"(?:^|[^A-Z0-9])M5(?:[^A-Z0-9]|$)", re.IGNORECASE)),
@@ -528,7 +713,7 @@ def infer_symbol_from_set(set_file: Path, params: dict[str, str]) -> str:
 
     haystack = str(set_file).upper().replace("+", "_")
     for token in re.split(r"[^A-Z0-9]+", haystack):
-        if token in FOREX_SYMBOLS:
+        if token in EXPLICIT_SYMBOLS:
             return token
         match = re.search(r"(?:AUD|CAD|CHF|EUR|GBP|JPY|NZD|USD){2}", token)
         if match and match.group(0) in FOREX_SYMBOLS:
@@ -729,10 +914,23 @@ def copy_reports_to_project(report_files: list[Path], logger: RunLogger) -> list
     return copied
 
 
-def log_ini_content(ini_path: Path, logger: RunLogger) -> None:
-    logger.write("Contenido del .ini generado:")
-    for line in ini_path.read_text(encoding="utf-8-sig").splitlines():
-        logger.write(f"  {line}")
+def delete_existing_report_files(report_path: Path, terminal_data_dirs: list[Path], mt5_path: Path, logger: RunLogger) -> None:
+    suffixes = {".htm", ".html", ".xml", ".png", ".set"}
+    for path in find_report_files(report_path, terminal_data_dirs, mt5_path):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        try:
+            path.unlink()
+            logger.write(f"  Reporte previo borrado: {path}")
+        except OSError as exc:
+            logger.write(f"  Aviso: no pude borrar reporte previo {path}: {exc}")
+
+
+def log_ini_content(ini_path: Path, logger: RunLogger, prefix: list[str] | None = None) -> None:
+    messages = list(prefix or [])
+    messages.append("Contenido del .ini generado:")
+    messages.extend(f"  {line}" for line in ini_path.read_text(encoding="utf-8-sig").splitlines())
+    logger.write_many(messages)
 
 
 def run_test(
@@ -747,14 +945,17 @@ def run_test(
     if settings.portable:
         command.append("/portable")
     command.append(f"/config:{ini_path}")
-    logger.write("")
-    logger.write(f"Config: {ini_path}")
-    logger.write(f"Reporte esperado: {report_path}.*")
-    logger.write(f"Comando: {quote_command(command)}")
-    log_ini_content(ini_path, logger)
+    log_ini_content(ini_path, logger, [
+        "",
+        f"Config: {ini_path}",
+        f"Reporte esperado: {report_path}.*",
+        f"Comando: {quote_command(command)}",
+    ])
 
     if dry_run:
         return 0
+
+    delete_existing_report_files(report_path, terminal_data_dirs, settings.mt5_path, logger)
 
     before = time.time()
     process = subprocess.Popen(command, creationflags=NO_WINDOW)
@@ -777,6 +978,99 @@ def run_test(
         return 1
 
     return exit_code
+
+
+def terminal_data_dirs_for_profile(profile: TerminalProfile, settings: TesterSettings) -> list[Path]:
+    dirs: list[Path] = []
+    if settings.data_dir:
+        dirs.append(settings.data_dir)
+    fallback = terminal_data_dir_from_experts_dir(profile.experts_root)
+    if fallback:
+        dirs.append(fallback)
+    return sorted(set(dirs))
+
+
+def run_backtest_job(
+    job: BacktestJob,
+    profile: TerminalProfile,
+    settings: TesterSettings,
+    template: configparser.ConfigParser,
+    args: argparse.Namespace,
+    symbol_map: dict[str, str],
+    logger: RunLogger,
+    *,
+    set_mode: bool,
+) -> int:
+    terminal_data_dirs = terminal_data_dirs_for_profile(profile, settings)
+    expert = profile_expert_for_job(profile, job, set_mode)
+    logger.write("")
+    logger.write(
+        f"[{profile.name}] Job #{job.index}: "
+        f"{Path(expert).name if expert else '(perfil UBS)'}"
+        + (f" | set={job.set_file.name}" if job.set_file else "")
+    )
+    try:
+        ini_path, report_path = create_ini(
+            expert,
+            job.index,
+            template,
+            job.set_file,
+            args.symbol_suffix,
+            symbol_map,
+            args.infer_tester_from_set,
+            logger,
+        )
+    except ValueError as exc:
+        logger.write(f"[{profile.name}] ERROR: {exc}")
+        return 1
+    if job.set_file and not args.dry_run:
+        copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger)
+    return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
+
+
+def run_jobs_parallel(
+    jobs: list[BacktestJob],
+    profiles: list[TerminalProfile],
+    template: configparser.ConfigParser,
+    args: argparse.Namespace,
+    symbol_map: dict[str, str],
+    logger: RunLogger,
+    *,
+    set_mode: bool,
+) -> int:
+    job_queue: queue.Queue[BacktestJob] = queue.Queue()
+    for job in jobs:
+        job_queue.put(job)
+
+    def worker(profile: TerminalProfile) -> int:
+        failures = 0
+        settings = settings_from_profile(profile, args.delay)
+        while True:
+            try:
+                job = job_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                exit_code = run_backtest_job(
+                    job,
+                    profile,
+                    settings,
+                    template,
+                    args,
+                    symbol_map,
+                    logger,
+                    set_mode=set_mode,
+                )
+            except Exception as exc:
+                logger.write(f"[{profile.name}] ERROR inesperado: {exc}")
+                exit_code = 1
+            if exit_code != 0:
+                failures += 1
+            job_queue.task_done()
+        return failures
+
+    with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
+        return sum(future.result() for future in [executor.submit(worker, profile) for profile in profiles])
 
 
 def ensure_directories() -> None:
@@ -816,7 +1110,24 @@ def main() -> int:
 
     ensure_directories()
     logger = create_logger()
-    experts_dir = Path(args.experts_dir).expanduser() if args.experts_dir else load_experts_root()
+    terminal_profiles: list[TerminalProfile] = []
+    if args.multi_terminal:
+        try:
+            configured_profiles = load_terminal_profiles(Path(args.terminals_config).expanduser())
+        except (OSError, ValueError) as exc:
+            logger.write(f"ERROR: {exc}")
+            return 1
+        if not configured_profiles:
+            logger.write("ERROR: no hay terminales habilitadas en la configuracion multiterminal.")
+            return 1
+        worker_limit = args.max_workers if args.max_workers > 0 else len(configured_profiles)
+        terminal_profiles = configured_profiles[: max(1, min(worker_limit, len(configured_profiles)))]
+
+    experts_dir = (
+        Path(args.experts_dir).expanduser()
+        if args.experts_dir
+        else (terminal_profiles[0].experts_root if terminal_profiles else load_experts_root())
+    )
     set_dir = Path(args.set_dir).expanduser() if args.set_dir else None
     set_files = load_set_files(set_dir, args.set_file, recursive=args.recursive)
     if (set_dir or args.set_file) and not set_files:
@@ -824,11 +1135,13 @@ def main() -> int:
         logger.write(f"  Origen consultado: {set_dir if set_dir else 'argumentos --set-file'}")
         logger.write(f"  Modo recursivo: {'si' if args.recursive else 'no'}")
         return 1
-    if set_files and not args.expert:
+    if set_files and not args.expert and not args.multi_terminal:
         logger.write("ERROR: para testear multiples set files debes indicar un EA con --expert.")
         return 1
     if args.expert:
         experts = [expert_from_cli_value(args.expert, experts_dir)]
+    elif set_files and args.multi_terminal:
+        experts = [""]
     else:
         experts = (
             load_experts_from_dir(experts_dir, recursive=args.recursive, allow_sources=args.dry_run)
@@ -856,14 +1169,14 @@ def main() -> int:
             logger.write(f"  Revisa que {EXPERTS_FILE.name} liste rutas validas.")
         return 1
 
-    if not settings.mt5_path.exists() and not args.dry_run:
+    if not args.multi_terminal and not settings.mt5_path.exists() and not args.dry_run:
         logger.write(f"No encuentro MT5 en: {settings.mt5_path}")
         logger.write(
             f"Indica la ruta con --mt5-path o define {MT5_TERMINAL_ENV[0]} en el entorno o en .env"
         )
         return 1
 
-    if not args.dry_run and not args.skip_running_check:
+    if not args.multi_terminal and not args.dry_run and not args.skip_running_check:
         running = find_matching_running_terminals(settings.mt5_path)
         if running:
             logger.write("ERROR: RoboForex MT5 ya esta abierto.")
@@ -874,8 +1187,8 @@ def main() -> int:
             return 1
 
     template = load_template(template_path)
-    terminal_data_dirs = [settings.data_dir] if settings.data_dir else []
-    if not terminal_data_dirs:
+    terminal_data_dirs = [] if args.multi_terminal else ([settings.data_dir] if settings.data_dir else [])
+    if not args.multi_terminal and not terminal_data_dirs:
         terminal_data_dirs = discover_terminal_data_dirs(experts)
         if experts_dir:
             fallback_data_dir = terminal_data_dir_from_experts_dir(experts_dir)
@@ -886,66 +1199,117 @@ def main() -> int:
     logger.write(f"Ultimo log: {logger.last_log_path}")
     logger.write(f"Modo: {'DRY-RUN' if args.dry_run else 'REAL'}")
     logger.write(f"Proyecto: {BASE_DIR}")
-    logger.write(f"MT5: {settings.mt5_path}")
-    logger.write(f"Portable: {'si' if settings.portable else 'no'}")
-    if settings.data_dir:
-        logger.write(f"Carpeta de datos MT5 seleccionada: {settings.data_dir}")
+    if args.multi_terminal:
+        logger.write("MT5: perfiles multiterminal")
     else:
-        logger.write("Aviso: no pude detectar la carpeta de datos exacta del terminal seleccionado.")
+        logger.write(f"MT5: {settings.mt5_path}")
+        logger.write(f"Portable: {'si' if settings.portable else 'no'}")
+        if settings.data_dir:
+            logger.write(f"Carpeta de datos MT5 seleccionada: {settings.data_dir}")
+        else:
+            logger.write("Aviso: no pude detectar la carpeta de datos exacta del terminal seleccionado.")
     logger.write(f"INI general: {template_path}")
     logger.write(f"Origen EAs: {experts_dir if experts_dir else EXPERTS_FILE}")
     logger.write(f"Expert Advisors: {len(experts)}")
     if set_files:
         logger.write(f"Set files: {len(set_files)}")
         logger.write(f"Origen sets: {set_dir if set_dir else 'argumentos --set-file'}")
-    if terminal_data_dirs:
+    if not args.multi_terminal and terminal_data_dirs:
         logger.write("Carpetas de datos MT5 detectadas:")
         for directory in terminal_data_dirs:
             logger.write(f"  {directory}")
-    else:
+    elif not args.multi_terminal:
         logger.write("Aviso: no se detecto automaticamente la carpeta de datos MT5 con esos EAs.")
 
-    missing_experts = missing_experts_in_terminal_data_dirs(experts, terminal_data_dirs)
-    if missing_experts and not args.dry_run:
-        logger.write("ERROR: estos EAs no estan en la carpeta de datos que usara MT5:")
-        for expert in missing_experts[:20]:
-            logger.write(f"  {expert}")
-        if len(missing_experts) > 20:
-            logger.write(f"  ... y {len(missing_experts) - 20} mas")
-        logger.write("Compila/copialos dentro de MQL5\\Experts del terminal seleccionado.")
-        if settings.portable:
-            logger.write(f"Terminal portable esperado: {settings.mt5_path.parent / 'MQL5' / 'Experts'}")
-        return 1
-
-    failures = 0
-    jobs: list[tuple[str, Path | None]] = (
+    raw_jobs: list[tuple[str, Path | None]] = (
         [(experts[0], set_file) for set_file in set_files]
         if set_files
         else [(expert, None) for expert in experts]
     )
-    logger.write(f"Backtests en cola: {len(jobs)}")
-    for index, (expert, set_file) in enumerate(jobs, start=1):
-        try:
-            ini_path, report_path = create_ini(
-                expert,
-                index,
-            template,
-            set_file,
-            args.symbol_suffix,
-            symbol_map,
-            args.infer_tester_from_set,
-            logger,
+    jobs = [BacktestJob(index, expert, set_file) for index, (expert, set_file) in enumerate(raw_jobs, start=1)]
+
+    if args.multi_terminal:
+        profile_errors = validate_terminal_profiles(
+            terminal_profiles,
+            jobs,
+            set_mode=bool(set_files),
+            dry_run=args.dry_run,
         )
-        except ValueError as exc:
-            logger.write("")
-            logger.write(f"ERROR: {exc}")
-            failures += 1
-            continue
-        if set_file and not args.dry_run:
-            copy_set_file_to_tester_profiles(set_file, terminal_data_dirs, logger)
-        exit_code = run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
-        if exit_code != 0:
-            failures += 1
+        if profile_errors:
+            logger.write("ERROR: configuracion multiterminal invalida.")
+            for error in profile_errors[:30]:
+                logger.write(f"  {error}")
+            if len(profile_errors) > 30:
+                logger.write(f"  ... y {len(profile_errors) - 30} error(es) mas")
+            return 1
+        if not args.dry_run and not args.skip_running_check:
+            for profile in terminal_profiles:
+                running = find_matching_running_terminals(profile.mt5_path)
+                if running:
+                    logger.write(f"ERROR: {profile.name} ya esta abierta.")
+                    for process in running:
+                        logger.write(f"  PID {process['pid']}: {process['path']}")
+                    logger.write("Cierra esas terminales y vuelve a ejecutar.")
+                    return 1
+    else:
+        missing_experts = missing_experts_in_terminal_data_dirs(experts, terminal_data_dirs)
+        if missing_experts and not args.dry_run:
+            logger.write("ERROR: estos EAs no estan en la carpeta de datos que usara MT5:")
+            for expert in missing_experts[:20]:
+                logger.write(f"  {expert}")
+            if len(missing_experts) > 20:
+                logger.write(f"  ... y {len(missing_experts) - 20} mas")
+            logger.write("Compila/copialos dentro de MQL5\\Experts del terminal seleccionado.")
+            if settings.portable:
+                logger.write(f"Terminal portable esperado: {settings.mt5_path.parent / 'MQL5' / 'Experts'}")
+            return 1
+
+    if args.multi_terminal:
+        logger.write("Multiterminal: si")
+        logger.write(f"Terminales habilitadas: {len(terminal_profiles)}")
+        logger.write(f"Workers: {len(terminal_profiles)}")
+        for profile in terminal_profiles:
+            logger.write(f"  {profile.name}: {profile.mt5_path}")
+            logger.write(f"    Experts: {profile.experts_root}")
+            if profile.data_dir:
+                logger.write(f"    Data: {profile.data_dir}")
+            if profile.ubs_ex5_file:
+                logger.write(f"    UBS EX5: {profile.ubs_ex5_file}")
+    logger.write(f"Backtests en cola: {len(jobs)}")
+    if args.multi_terminal:
+        failures = run_jobs_parallel(
+            jobs,
+            terminal_profiles,
+            template,
+            args,
+            symbol_map,
+            logger,
+            set_mode=bool(set_files),
+        )
+    else:
+        failures = 0
+        for job in jobs:
+            try:
+                ini_path, report_path = create_ini(
+                    job.expert,
+                    job.index,
+                    template,
+                    job.set_file,
+                    args.symbol_suffix,
+                    symbol_map,
+                    args.infer_tester_from_set,
+                    logger,
+                )
+            except ValueError as exc:
+                logger.write("")
+                logger.write(f"ERROR: {exc}")
+                failures += 1
+                continue
+            if job.set_file and not args.dry_run:
+                copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger)
+            exit_code = run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
+            if exit_code != 0:
+                failures += 1
 
     if args.dry_run:
         logger.write("")
