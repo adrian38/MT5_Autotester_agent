@@ -335,6 +335,8 @@ class AgentMemory:
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
                 or str(row["status"] or "") not in {"accepted", "rejected"}
+                or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
+                or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
             )
             should_eval = force or changed
             if should_eval:
