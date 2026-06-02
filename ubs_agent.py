@@ -28,6 +28,8 @@ from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with
 
 
 BASE_DIR = Path(__file__).resolve().parent
+MUTATION_OVERRIDES_FILE = BASE_DIR / "outputs" / "ubs_mutation_overrides.json"
+GLOBAL_PARAMS_FILE = BASE_DIR / "outputs" / "ubs_global_params.json"
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
 DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
 DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
@@ -121,6 +123,93 @@ ALLOWED_MUTATION_KEYS = {
     "ATR_Period",
     "DefaultValue",
 }
+
+
+_overrides_cache: tuple[set[str], set[str]] | None = None
+_overrides_mtime: float = -1.0
+
+
+def load_mutation_overrides() -> tuple[dict[str, str], set[str]]:
+    """Return (frozen_override, mutable_override) from the user-editable JSON file.
+
+    frozen_override: {key: forced_value} — key is frozen and the agent injects this value.
+    mutable_override: {key} — normally frozen key that the user has made mutable.
+    Results are cached until the file changes on disk.
+    """
+    global _overrides_cache, _overrides_mtime
+    try:
+        mtime = MUTATION_OVERRIDES_FILE.stat().st_mtime if MUTATION_OVERRIDES_FILE.exists() else 0.0
+    except OSError:
+        mtime = 0.0
+    if _overrides_cache is not None and mtime == _overrides_mtime:
+        return _overrides_cache  # type: ignore[return-value]
+    _overrides_mtime = mtime
+    if mtime == 0.0:
+        _overrides_cache = ({}, set())
+        return _overrides_cache  # type: ignore[return-value]
+    try:
+        data = json.loads(MUTATION_OVERRIDES_FILE.read_text(encoding="utf-8"))
+        raw_frozen = data.get("frozen_override", {})
+        # Support legacy list format (no values)
+        if isinstance(raw_frozen, list):
+            raw_frozen = {k: "" for k in raw_frozen}
+        _overrides_cache = (
+            {str(k): str(v) for k, v in raw_frozen.items()},
+            set(data.get("mutable_override", [])),
+        )
+    except Exception:
+        _overrides_cache = ({}, set())
+    return _overrides_cache  # type: ignore[return-value]
+
+
+def save_mutation_overrides(frozen_override: dict[str, str], mutable_override: set[str]) -> None:
+    """Write user mutation overrides to disk and invalidate the cache."""
+    global _overrides_cache, _overrides_mtime
+    MUTATION_OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MUTATION_OVERRIDES_FILE.write_text(
+        json.dumps(
+            {
+                "frozen_override": {k: frozen_override[k] for k in sorted(frozen_override)},
+                "mutable_override": sorted(mutable_override),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _overrides_cache = None
+    _overrides_mtime = -1.0
+
+
+def load_global_params() -> dict[str, str]:
+    """Load the global parameter values from ubs_global_params.json."""
+    if not GLOBAL_PARAMS_FILE.exists():
+        return {}
+    try:
+        return {str(k): str(v) for k, v in json.loads(GLOBAL_PARAMS_FILE.read_text(encoding="utf-8")).items()}
+    except Exception:
+        return {}
+
+
+def save_global_params(params: dict[str, str]) -> None:
+    """Save all global parameter values to ubs_global_params.json."""
+    GLOBAL_PARAMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    GLOBAL_PARAMS_FILE.write_text(
+        json.dumps({k: params[k] for k in sorted(params)}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def is_agent_mutable_key(key: str) -> bool:
+    """Return True if the agent is allowed to mutate this key."""
+    frozen_ov, mutable_ov = load_mutation_overrides()
+    if key in frozen_ov:
+        return False
+    if key in mutable_ov:
+        return True
+    if key in FROZEN_KEYS or any(key.startswith(p) for p in FROZEN_PREFIXES):
+        return False
+    return key in ALLOWED_MUTATION_KEYS or any(key.startswith(p) for p in ALLOWED_MUTATION_PREFIXES)
 
 
 @dataclass(frozen=True)
@@ -883,9 +972,7 @@ def line_candidates(text: str, run_strategy: str, mutation_feedback: dict[str, f
             continue
         key, raw_value = line.split("=", 1)
         key = key.strip()
-        if key in FROZEN_KEYS or any(key.startswith(prefix) for prefix in FROZEN_PREFIXES):
-            continue
-        if key not in ALLOWED_MUTATION_KEYS and not any(key.startswith(prefix) for prefix in ALLOWED_MUTATION_PREFIXES):
+        if not is_agent_mutable_key(key):
             continue
         if "||" not in raw_value:
             continue
@@ -988,6 +1075,14 @@ def create_variant(
     lines = text.splitlines()
     replace_existing_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
+    # Apply user-defined frozen override values from the global params config
+    frozen_ov, _ = load_mutation_overrides()
+    if frozen_ov:
+        global_params = load_global_params()
+        for fkey in frozen_ov:
+            fvalue = global_params.get(fkey, frozen_ov.get(fkey, ""))
+            if fvalue:
+                replace_existing_current_value(lines, fkey, fvalue)
     text = "\n".join(lines)
     candidates = line_candidates(text, seed.run_strategy, mutation_feedback)
     selected = weighted_sample(candidates, mutations_per_variant, rng)

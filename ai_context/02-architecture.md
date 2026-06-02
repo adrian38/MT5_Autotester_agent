@@ -8,7 +8,7 @@
 |-- run_tests.py                 # Batch Strategy Tester runner
 |-- ubs_agent.py                 # UBS set-generation/scoring agent
 |-- ubs_score.py                 # UBS report scoring and pass/fail metrics
-|-- ubs_generate_sets.py         # UBS set mutation/generation helpers
+|-- ubs_generate_sets.py         # UBS set mutation/generation helpers (standalone CLI)
 |-- ubs_prepare_sets.py          # UBS source-set normalization/import helper
 |-- ubs_set_utils.py             # Shared .set parsing/writing/lot normalization
 |-- compile_mq5.py               # MetaEditor compile runner
@@ -23,7 +23,11 @@
 |-- configs/                     # Generated tester .ini files
 |-- logs/                        # Run and compile logs
 |-- reports/                     # Copied MT5 report files and images
-|-- outputs/                     # Portfolio Excel outputs
+|-- outputs/                     # Portfolio Excel outputs + UBS runtime files
+|   |-- ubs_memory.sqlite        # UBS agent SQLite memory
+|   |-- ubs_global_params.json   # Global UBS EA parameter values (UI-editable)
+|   |-- ubs_mutation_overrides.json  # User-defined mutability overrides
+|   `-- ubs_agent/               # Generated UBS variants and accepted sets
 |-- sets/                        # User .set files
 |-- live_sets/                   # Runtime/live .set files
 |-- portfolio_manager/
@@ -31,6 +35,16 @@
 |   |-- mt5_report.py            # MT5 HTML parser and report dataclasses
 |   |-- excel.py                 # ALL_STRATEGIES workbook builder
 |   `-- dd_excel.py              # Drawdown/portfolio workbook builders
+|-- ai_context/                  # AI agent context documents
+|   |-- main.md                  # Entry point and index
+|   |-- 01-overview.md           # Project overview and workflows
+|   |-- 02-architecture.md       # This file
+|   |-- 03-mt5-workflow.md       # Compile/backtest pipeline
+|   |-- 04-portfolio-manager.md  # Portfolio parsing and generation
+|   |-- 05-environment.md        # Runtime files and env vars
+|   |-- 06-conventions.md        # Coding conventions
+|   |-- 07-development.md        # Development workflow
+|   `-- 08-ubs-parameters.md     # UBS EA parameter reference
 |-- tools/
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
@@ -78,8 +92,14 @@ Owns the Strategy Tester workflow:
 Owns the UBS agent workflow:
 
 - Load source `.set` seeds from `sets/ubs_ready` or a supplied source folder.
-- Generate variants by replacing existing keys only; missing keys are not
-  added. Lot sizing is normalized through `ubs_set_utils.force_fixed_lot_text`.
+- Generate variants via `create_variant()`: reads seed, applies symbol/TF,
+  injects global frozen values from `ubs_global_params.json` for any key listed
+  in `ubs_mutation_overrides.json` `frozen_override`, then mutates the remaining
+  mutable keys using weighted random sampling.
+- Mutability is determined by `is_agent_mutable_key(key)` — checks
+  `ubs_mutation_overrides.json` overrides first, then falls back to the
+  hardcoded constant sets `FROZEN_KEYS`, `FROZEN_PREFIXES`,
+  `ALLOWED_MUTATION_KEYS`, `ALLOWED_MUTATION_PREFIXES`.
 - Explore related assets and timeframes (`M15`, `M30`, `H1`, `H4`, `D1`) using
   SQLite feedback from prior scored candidates.
 - Run MT5 backtests through `run_tests.py` when `--execute-backtests` is set.
@@ -88,19 +108,29 @@ Owns the UBS agent workflow:
 - Validate parsed report `Symbol`/`Period` against the intended target after
   applying `symbol_map`; invalid executions become `report_mismatch`.
 - Evaluate original UBS seeds with `--evaluate-seeds`. Seed scores are stored
-  in `seed_scores`, can feed asset/timeframe feedback, and are surfaced in the
-  UI.
+  in `seed_scores`, feed asset/timeframe feedback, and are surfaced in the UI.
 - Store manual seed symbol/timeframe corrections in `seed_overrides`. Overrides
   are applied before seed evaluation and before normal generation.
 - Hard UBS seed rule: if a seed cannot infer both symbol and timeframe after
   applying overrides, it is recorded as `report_mismatch` and must not be
   backtested.
-- Retry a single candidate with `--retry-candidate-id`, used by the UI
-  `Reprobar mismatch` button.
+- Retry a single candidate with `--retry-candidate-id`.
 - Retry all `report_mismatch` candidates in a run with `--retry-run-id` and
-  `--retry-mismatch-run`, used by the UI `Reprobar run` button.
+  `--retry-mismatch-run`.
 
-Important candidate states:
+**Key constants** (all in `ubs_agent.py`):
+
+| Constant | Purpose |
+|----------|---------|
+| `FROZEN_KEYS` | Keys never mutated (EA_MagicNumber, Risk, StartLots, …) |
+| `FROZEN_PREFIXES` | Key prefixes never mutated (Broker_GMT, NFP_, Grid, …) |
+| `ALLOWED_MUTATION_KEYS` | Specific keys always mutable (SpreadFilter, MaxSpread, …) |
+| `ALLOWED_MUTATION_PREFIXES` | Key prefixes always mutable (ST1_, Exit_, Vol) |
+| `CORE_MUTATION_KEYS` | Per-strategy preferred keys weighted 4× in sampling |
+| `MUTATION_OVERRIDES_FILE` | `outputs/ubs_mutation_overrides.json` |
+| `GLOBAL_PARAMS_FILE` | `outputs/ubs_global_params.json` |
+
+**Important candidate states:**
 
 - `generated`: `.set` exists but no backtest result is stored yet.
 - `accepted`: report passed configured filters and matches target.
@@ -109,8 +139,7 @@ Important candidate states:
 - `parse_error`: report exists but could not be parsed.
 - `report_mismatch`: report parsed, but actual symbol/timeframe does not match
   the candidate target. For `seed_scores`, this also covers UBS seeds that lack
-  a resolvable symbol/timeframe before execution; those are intentionally not
-  sent to MT5.
+  a resolvable symbol/timeframe before execution.
 
 ### `ubs_score.py`
 
@@ -118,9 +147,17 @@ Scores MT5 reports for UBS:
 
 - Net profit, profit factor, trade count, drawdown %, recovery factor.
 - Monthly stability metrics are score inputs, not a hard filter by default.
-- Default pass config currently uses `min_net_profit=100`,
-  `min_profit_factor=1.20`, `min_trades=50`, `max_drawdown_pct=25`,
-  `min_recovery_factor=1.0`.
+- Default pass config: `min_net_profit=100`, `min_profit_factor=1.20`,
+  `min_trades=50`, `max_drawdown_pct=25`, `min_recovery_factor=1.0`.
+- `ScoreResult.reasons` is a tuple of failing metric names. Empty = accepted.
+- All results serialised via `ScoreResult.to_json()` into `metrics_json` column.
+
+### `ubs_generate_sets.py`
+
+Standalone CLI for simple set mutation without agent memory. Has its own
+`is_mutable_key()` with different constants than `ubs_agent.py`. **Do not use
+`ubs_generate_sets.is_mutable_key()` to reason about agent behavior** — use
+`ubs_agent.is_agent_mutable_key()` instead.
 
 ### `compile_mq5.py`
 
@@ -147,15 +184,19 @@ Tkinter. The UI calls it from a background thread.
 Installer-only code. Keep it separate from app runtime code unless a change is
 explicitly about packaging.
 
-## Runtime Directories
+## Runtime Files
 
-The scripts create and use these local folders:
+| File / Dir | Purpose |
+|-----------|---------|
+| `configs/` | Generated Strategy Tester INI files (one per backtest job) |
+| `logs/` | Compile and backtest logs plus `last_*` pointers |
+| `reports/` | Copied MT5 HTML reports, `.set` files, chart images |
+| `outputs/` | Generated Excel workbooks |
+| `outputs/ubs_agent/` | Generated UBS variants and copied accepted sets |
+| `outputs/ubs_memory.sqlite` | UBS agent SQLite: candidates, runs, seed_scores, seed_overrides |
+| `outputs/ubs_global_params.json` | Global EA parameter values edited in the UBS Parámetros tab |
+| `outputs/ubs_mutation_overrides.json` | User mutability overrides: `frozen_override` and `mutable_override` |
 
-- `configs/`: generated Strategy Tester INI files.
-- `logs/`: compile/backtest logs plus `last_*` pointers.
-- `reports/`: copied MT5 HTML reports, `.set` files, and chart images.
-- `outputs/`: generated Excel workbooks.
-- `outputs/ubs_agent/`: generated UBS variants and copied accepted sets.
-- `outputs/ubs_memory.sqlite`: UBS agent memory and historical candidates.
-
-These are operational outputs, not core source files.
+`ubs_global_params.json` and `ubs_mutation_overrides.json` are runtime files
+produced by the UI. They are gitignored but are critical for agent behavior —
+back them up when changing machine.

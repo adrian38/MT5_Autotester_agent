@@ -29,6 +29,16 @@ from run_tests import (
     load_experts_from_dir,
     load_experts_root,
 )
+from ubs_set_utils import read_set_with_encoding
+from ubs_agent import (
+    is_agent_mutable_key,
+    load_mutation_overrides,
+    save_mutation_overrides,
+    load_global_params,
+    save_global_params,
+    MUTATION_OVERRIDES_FILE,
+    GLOBAL_PARAMS_FILE,
+)
 
 try:
     from portfolio_manager.generator import (
@@ -48,6 +58,17 @@ except Exception:
     generate_portfolio_valley_drawdown_workbook = None
     generate_top_portfolio_valleys_workbook = None
     generate_portfolio_workbook = None
+
+
+def _fmt_num(val: float) -> str:
+    return str(int(val)) if val == int(val) else f"{val:g}"
+
+
+def _fmt_num_str(s: str) -> str:
+    try:
+        return _fmt_num(float(s))
+    except ValueError:
+        return s
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -150,6 +171,183 @@ try:
     _PIL_OK = True
 except Exception:
     _PIL_OK = False
+
+
+# ---------------------------------------------------------------------------
+# UBS parameter metadata
+# ---------------------------------------------------------------------------
+
+UBS_SECTION_LABELS: dict[str, str] = {
+    "CustomOptimization": "Optimización personalizada",
+    "filters": "Filtros de trading",
+    "spreadfilter": "Filtro de spread / slippage",
+    "otherfilters": "Otros filtros",
+    "Variable_Values": "Valores de variables (ATR…)",
+    "ST1_Entry": "Estrategia 1 — Entrada",
+    "Trade_mg": "Gestión de salidas",
+    "Trade_Exit_TrailSL": "Trailing Stop Loss",
+    "Trade_Exit_TrailTP": "Trailing Take Profit",
+    "BE_Exit": "Break-even",
+    "HL_settings": "Trailing SL por High/Low",
+    "TimeTL": "Trailing SL por tiempo",
+    "MagicTrail": "MagicTrail",
+    "LotSizeSettings": "Gestión de lotaje",
+    "GMT_Settings": "Configuración GMT",
+    "NFP_FILTER": "Filtro NFP",
+    "IR_FILTER": "Filtro Interest Rate",
+    "CPI_FILTER": "Filtro CPI",
+    "timefilter": "Horario de trading",
+}
+
+UBS_PARAM_DESCRIPTIONS: dict[str, str] = {
+    "ShowInfoPanel": "Muestra el panel de información en el gráfico",
+    "UpdateInfoTesting": "Actualiza el panel de información durante backtesting",
+    "InfoPanelSizeAdjust": "Multiplicador de tamaño del panel de información",
+    "EP": "Expected Profit objetivo (criterio de optimización personalizada)",
+    "RF": "Recovery Factor objetivo (criterio de optimización personalizada)",
+    "TR": "Target Return objetivo (criterio de optimización personalizada)",
+    "SpreadFilter": "Activa el filtro de spread — bloquea entradas con spread excesivo",
+    "MaxSpread": "Spread máximo permitido en pips para abrir operación",
+    "DistForSpreadFilter": "Distancia en pips para activar el filtro de spread",
+    "setSL_TP_After_Entry": "Pone SL/TP después del fill, no en la orden pendiente",
+    "Virtual_expiration": "Usa expiración virtual de órdenes (no la del broker)",
+    "useVirtualStops": "Stops virtuales: 0=off, 1=SL virtual, 2=TP virtual, 3=ambos",
+    "VirtualSL_Safety_Hardstop_dist": "Distancia del hard stop de seguridad para SL virtual (0=off)",
+    "SetVSL_to_hardSL_sec_delay": "Segundos de delay antes de convertir SL virtual a hard SL",
+    "ATRDefault": "Valor ATR por defecto (0 = usar ATR calculado del mercado)",
+    "ATR_Period": "Período del ATR en barras",
+    "ATR_Timeframe": "Timeframe para calcular el ATR (enum MT5)",
+    "DefaultValue": "Valor por defecto para variables internas",
+    "AllowBuyTrades": "Permite operaciones largas (compra)",
+    "AllowSellTrades": "Permite operaciones cortas (venta)",
+    "ST1_Timeframe": "Timeframe de la estrategia 1 (0 = timeframe del gráfico)",
+    "Entry_Timing": "Modo de timing de entrada (enum MT5)",
+    "ST1_HL_strength_L": "Barras a la IZQUIERDA del pivot para validar High/Low",
+    "ST1_HL_strength_R": "Barras a la DERECHA del pivot para validar High/Low",
+    "ST1_countback": "Nº de barras hacia atrás para buscar el High/Low de entrada",
+    "ST1_MinDist_to_HL": "Distancia mínima del precio actual al H/L en pips",
+    "ST1_MinDist_to_HL_percentage": "Distancia mínima al H/L como porcentaje (0=desactivado)",
+    "ST1_UpDiff": "Offset sobre el High para la entrada en pips (negativo = dentro del rango)",
+    "ST1_DownDiff": "Offset bajo el Low para la entrada en pips (negativo = dentro del rango)",
+    "ST1_MaxPendingOrders": "Máximo de órdenes pendientes simultáneas",
+    "MaxTrades": "Máximo de operaciones abiertas simultáneas",
+    "MinDist_orders": "Distancia mínima entre órdenes pendientes en pips",
+    "ST1_Expiration_hours": "Tiempo de expiración de órdenes pendientes en horas",
+    "EA_MagicNumber": "Número mágico del EA — identifica sus operaciones en el broker",
+    "EA_Comment": "Comentario que aparece en cada operación abierta",
+    "Exit_Timing": "Modo de timing de salida (enum MT5)",
+    "UseEveryTick": "Calcula salidas en cada tick (false = solo al cierre de barra)",
+    "Exit_stop": "Tamaño del Stop Loss en pips",
+    "Exit_limit": "Tamaño del Take Profit en pips",
+    "Exit_TrailSL_size": "Distancia del Trailing SL en pips",
+    "Exit_TrailSL_Start": "Beneficio en pips para activar el Trailing SL (0=inmediato)",
+    "Exit_TrailSL_Stop": "Nivel de stop mínimo para el Trailing SL en pips",
+    "Exit_TrailSL_step": "Paso de ajuste del Trailing SL",
+    "Exit_TrailTP_size": "Distancia del Trailing TP en pips (0=desactivado)",
+    "Exit_TrailTP_Start": "Beneficio en pips para activar el Trailing TP",
+    "Exit_BE_start": "Beneficio en pips para mover SL a break-even (0=off)",
+    "Exit_BE_extra_pips": "Pips extra por encima del break-even al mover el SL",
+    "Exit_HL_UseBE": "Usa lógica break-even para el Trailing SL por H/L",
+    "Exit_HL_trailingSL_timeframe": "Timeframe para los pivots del Trailing SL por H/L",
+    "Exit_HL_countback": "Barras hacia atrás para buscar pivots H/L trailing",
+    "Exit_HL_trailingSL_candles_LEFT": "Barras a la izquierda del pivot H/L trailing",
+    "Exit_HL_trailingSL_candles_RIGHT": "Barras a la derecha del pivot H/L trailing",
+    "Exit_HL_TrailingSL_MinDist": "Distancia mínima para que cambie el H/L trailing SL",
+    "Exit_HL_Minimum_Dist_For_Change": "Distancia mínima de beneficio antes de mover el SL",
+    "Exit_HL_trailingSL_extra_distance": "Buffer extra para el Trailing SL por H/L",
+    "Exit_TrailSL_after_X_Minutes": "Minutos en operación para activar trailing por tiempo (0=off)",
+    "Exit_TrailSL_after_X_Minutes_size": "Tamaño del Trailing SL cuando se activa por tiempo",
+    "Exit_MagicTrail_Mode": "MagicTrail: 0=off, 1=solo SL, 2=SL+TP",
+    "Exit_MagicTrail_start": "Nivel de activación del MagicTrail (pips de beneficio)",
+    "Exit_MagicTrail_delay": "Delay en barras antes de que MagicTrail ajuste",
+    "Exit_MagicTrail_size": "Tamaño de trailing del MagicTrail",
+    "Exit_MagicTrail_BE_extra_pips": "Pips extra de break-even para MagicTrail",
+    "Exit_MagicTrail_Adjust_after_X_Minutes": "Ajusta MagicTrail después de X minutos (0=off)",
+    "Exit_MagicTrail_Adjust_after_X_Minutes_start": "Nivel de inicio para ajuste por tiempo de MagicTrail",
+    "LotsAdjustMinChangePercent": "Cambio mínimo en % para reajustar tamaño de lote",
+    "Risk": "Modo lotaje: 0=fijos, 1=% riesgo/op, 2=lote por balance, 3=manual",
+    "StartLots": "Tamaño de lote fijo (Risk=0)",
+    "Manual_RiskPerTrade": "Porcentaje de riesgo por operación (Risk=1)",
+    "LotPerBalance_step": "Incremento de balance para sumar 0.01 lote (Risk=2)",
+    "MaxLots": "Tamaño máximo de lote permitido",
+    "UseEquity": "Usa equidad en lugar de balance para calcular lotes",
+    "OnlyUp": "Solo incrementa lote, nunca reduce durante la sesión",
+    "CheckMargin": "Verifica margen disponible antes de abrir operación",
+    "Broker_GMT_OFFSET_Summer": "Offset GMT del broker en horario de verano (DST)",
+    "Broker_GMT_OFFSET_Winter": "Offset GMT del broker en horario de invierno",
+    "AutoGMT": "Detección automática del offset GMT del broker",
+    "EnableNFP_Filter": "Activa pausa de trading durante NFP (Non-Farm Payroll)",
+    "NFP_CloseOpenTrades": "Cierra operaciones abiertas antes del NFP",
+    "NFP_ClosePendingOrders": "Cancela órdenes pendientes antes del NFP",
+    "NFP_MinutesBefore": "Minutos antes del NFP para detener trading",
+    "NFP_MinutesAfter": "Minutos después del NFP para reanudar trading",
+    "EnableIR_Filter": "Activa pausa de trading durante anuncio de tipos de interés",
+    "IR_CloseOpenTrades": "Cierra operaciones abiertas antes del anuncio IR",
+    "IR_ClosePendingOrders": "Cancela órdenes pendientes antes del anuncio IR",
+    "IR_MinutesBefore": "Minutos antes del anuncio IR para detener trading",
+    "IR_MinutesAfter": "Minutos después del anuncio IR para reanudar",
+    "EnableCPI_Filter": "Activa pausa de trading durante publicación del CPI",
+    "CPI_CloseOpenTrades": "Cierra operaciones abiertas antes del CPI",
+    "CPI_ClosePendingOrders": "Cancela órdenes pendientes antes del CPI",
+    "CPI_MinutesBefore": "Minutos antes del CPI para detener trading",
+    "CPI_MinutesAfter": "Minutos después del CPI para reanudar",
+    "UseTradingTimeZones": "Activa filtro de horario de trading por días/horas",
+    "KillPending": "Cancela órdenes pendientes fuera del horario permitido",
+    "KillOpen": "Cierra operaciones abiertas fuera del horario permitido",
+    "Time_Source": "Fuente de tiempo: 0=broker, 1=local, 2=servidor",
+    "MondayStart": "Hora de inicio de trading los lunes (HH:MM)",
+    "MondayEnd": "Hora de fin de trading los lunes (HH:MM)",
+    "TuesdayStart": "Hora de inicio de trading los martes (HH:MM)",
+    "TuesdayEnd": "Hora de fin de trading los martes (HH:MM)",
+    "WednesdayStart": "Hora de inicio de trading los miércoles (HH:MM)",
+    "WednesdayEnd": "Hora de fin de trading los miércoles (HH:MM)",
+    "ThursdayStart": "Hora de inicio de trading los jueves (HH:MM)",
+    "ThursdayEnd": "Hora de fin de trading los jueves (HH:MM)",
+    "FridayStart": "Hora de inicio de trading los viernes (HH:MM)",
+    "FridayEnd": "Hora de fin de trading los viernes (HH:MM)",
+    "SaturdayStart": "Hora de inicio de trading los sábados (HH:MM)",
+    "SaturdayEnd": "Hora de fin de trading los sábados (HH:MM)",
+    "SundayStart": "Hora de inicio de trading los domingos (HH:MM)",
+    "SundayEnd": "Hora de fin de trading los domingos (HH:MM)",
+}
+
+
+class ToolTip:
+    """Simple hover tooltip for any Tkinter widget."""
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, event: tk.Event | None = None) -> None:
+        if self._tip or not self._text:
+            return
+        x = self._widget.winfo_rootx() + 20
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(
+            self._tip,
+            text=self._text,
+            justify="left",
+            background="#1e293b",
+            foreground="#e2e8f0",
+            relief="flat",
+            font=("Segoe UI", 9),
+            wraplength=340,
+            padx=8,
+            pady=5,
+        )
+        lbl.pack()
+
+    def _hide(self, event: tk.Event | None = None) -> None:
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
 
 
 class _CornerImageCache:
@@ -594,6 +792,11 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_compare_run_id = tk.StringVar(value="")
         self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
         self.ubs_seed_override_symbol = tk.StringVar(value="")
+        self.ubs_params_file_label = tk.StringVar(value="Sin archivo cargado")
+        self.ubs_params_desc_var = tk.StringVar(value="Selecciona un parámetro para ver su descripción")
+        self.ubs_params_modified: bool = False
+        self.ubs_params_data: list[dict] = []
+        self.ubs_params_current_path: Path | None = None
         self.ubs_seed_override_period = tk.StringVar(value="")
         self.ubs_continue_status = tk.StringVar(value="Continuar: sin memoria UBS")
         self.mode_text = tk.StringVar(value="Real")
@@ -793,6 +996,11 @@ class MT5AutotesterUI(tk.Tk):
         style.configure("Treeview.Heading", background=COLORS["panel_alt"], foreground=COLORS["muted"], font=("Segoe UI", 8, "bold"), padding=(6, 4))
         style.configure("TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
+        style.configure("TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"])
+        style.configure("Panel.TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"])
+        style.map("TRadiobutton",
+                  background=[("active", COLORS["panel"]), ("!active", COLORS["panel"])],
+                  foreground=[("active", COLORS["text"]), ("!active", COLORS["text"])])
         style.configure("Horizontal.TProgressbar", background=COLORS["accent"], troughcolor=COLORS["panel_high"], bordercolor=COLORS["panel_high"], lightcolor=COLORS["accent"], darkcolor=COLORS["accent"], thickness=10)
 
     def _attach_tree_scrollbars(
@@ -878,7 +1086,7 @@ class MT5AutotesterUI(tk.Tk):
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -890,6 +1098,7 @@ class MT5AutotesterUI(tk.Tk):
         self._build_ubs_history(self.section_frames["ubs_historico"])
         self._build_ubs_universe(self.section_frames["ubs_universo"])
         self._build_ubs_comparison(self.section_frames["ubs_comparar"])
+        self._build_ubs_params(self.section_frames["ubs_params"])
         self._build_portfolio(self.section_frames["portfolio"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
@@ -929,6 +1138,7 @@ class MT5AutotesterUI(tk.Tk):
             ("ubs_historico", "UBS  Historico"),
             ("ubs_universo", "UBS  Universo"),
             ("ubs_comparar", "UBS  Comparar"),
+            ("ubs_params", "UBS  Parámetros"),
             ("multiterminal", "MT5  Multiterminales"),
             ("portfolio", "▤  Portfolio"),
             ("configuracion", "⚙  Configuracion"),
@@ -1209,6 +1419,408 @@ class MT5AutotesterUI(tk.Tk):
         )
         del_btn.grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 22))
 
+    # ------------------------------------------------------------------
+    def _build_ubs_params(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        card = self._card(parent, "UBS Parámetros")
+        card.grid(row=0, column=0, sticky="nsew")
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(3, weight=1)
+
+        # row 1 — toolbar (solo Guardar, es una vista global no de archivo específico)
+        toolbar = ttk.Frame(card, style="Panel.TFrame")
+        toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 4))
+        toolbar.columnconfigure(0, weight=1)
+        ttk.Label(toolbar, text="Parámetros globales del agente UBS — doble click para editar valor",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(toolbar, text="Toggle inamovible/mutable", style="TButton",
+                   command=self._ubs_params_toggle_mutability).grid(row=0, column=1, sticky="e", padx=(0, 8))
+        ttk.Button(toolbar, text="Guardar", style="Primary.TButton",
+                   command=self._ubs_params_save).grid(row=0, column=2, sticky="e")
+
+        # row 2 — filter bar
+        filter_bar = ttk.Frame(card, style="Panel.TFrame")
+        filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
+        filter_bar.columnconfigure(4, weight=1)
+        self._ubs_params_filter = tk.StringVar(value="all")
+        ttk.Radiobutton(filter_bar, text="Todos", variable=self._ubs_params_filter, value="all",
+                        style="TRadiobutton",
+                        command=self._ubs_params_apply_filter).grid(row=0, column=0, padx=(0, 8))
+        ttk.Radiobutton(filter_bar, text="Mutables por agente", variable=self._ubs_params_filter, value="mutable",
+                        style="TRadiobutton",
+                        command=self._ubs_params_apply_filter).grid(row=0, column=1, padx=(0, 8))
+        ttk.Radiobutton(filter_bar, text="Inamovibles", variable=self._ubs_params_filter, value="frozen",
+                        style="TRadiobutton",
+                        command=self._ubs_params_apply_filter).grid(row=0, column=2, padx=(0, 20))
+        ttk.Label(filter_bar, text="Buscar:", style="Muted.TLabel").grid(row=0, column=3, padx=(0, 4))
+        self._ubs_params_search = tk.StringVar()
+        self._ubs_params_search.trace_add("write", lambda *_: self._ubs_params_apply_filter())
+        ttk.Entry(filter_bar, textvariable=self._ubs_params_search, width=26).grid(row=0, column=4, sticky="ew")
+
+        # row 3 — tree
+        tree_frame = ttk.Frame(card, style="Panel.TFrame")
+        tree_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 4))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        cols = ("key", "description", "value", "range", "agent")
+        self.ubs_params_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
+        headings = {
+            "key": "CLAVE", "description": "DESCRIPCIÓN", "value": "VALOR",
+            "range": "RANGO", "agent": "AGENTE",
+        }
+        widths = {"key": 230, "description": 420, "value": 120, "range": 140, "agent": 110}
+        for col in cols:
+            self.ubs_params_tree.heading(col, text=headings[col])
+            self.ubs_params_tree.column(col, width=widths[col], minwidth=40,
+                                        stretch=col == "description", anchor="center")
+        self.ubs_params_tree.tag_configure("section",
+                                           background=COLORS["panel_alt"],
+                                           foreground=COLORS["muted"],
+                                           font=("Segoe UI", 9, "bold"))
+        self.ubs_params_tree.tag_configure("mutable", foreground=COLORS["accent_soft_text"])
+        self.ubs_params_tree.tag_configure("frozen", foreground=COLORS["text"])
+        self.ubs_params_tree.tag_configure("overridden_frozen", foreground=COLORS["danger"])
+        self.ubs_params_tree.tag_configure("overridden_mutable", foreground="#f59e0b")
+        self._attach_tree_scrollbars(tree_frame, self.ubs_params_tree, 0)
+        self.ubs_params_tree.bind("<<TreeviewSelect>>", self._ubs_params_on_select)
+        self.ubs_params_tree.bind("<Double-1>", lambda _e: self._ubs_params_edit_selected())
+
+        # row 4 — description bar
+        desc_bar = ttk.Frame(card, style="Panel.TFrame")
+        desc_bar.grid(row=4, column=0, sticky="ew", padx=20, pady=(2, 14))
+        desc_bar.columnconfigure(1, weight=1)
+        ttk.Label(desc_bar, text="ℹ", style="Muted.TLabel", font=("Segoe UI", 11)).grid(row=0, column=0, padx=(0, 6))
+        ttk.Label(desc_bar, textvariable=self.ubs_params_desc_var,
+                  style="Muted.TLabel", wraplength=900, justify="left").grid(row=0, column=1, sticky="w")
+
+        # Auto-load first available seed
+        self.after(100, self._ubs_params_auto_load)
+
+    def _ubs_params_auto_load(self) -> None:
+        """Load global params from ubs_global_params.json, bootstrapping from the first seed if needed."""
+        if self.ubs_params_data:
+            return
+        # Try to bootstrap structure from first seed (for key/range info) but values from global file
+        try:
+            source_dir = self._ubs_generator_source_dir()
+            files = sorted(source_dir.rglob("*.set"))
+            seed_path = files[0] if files else None
+        except Exception:
+            seed_path = None
+
+        if seed_path:
+            try:
+                data = self._parse_set_file(seed_path)
+            except Exception:
+                data = []
+        else:
+            data = []
+
+        # Override values with what's stored in the global params file
+        global_vals = load_global_params()
+        if global_vals:
+            for p in data:
+                if p["key"] in global_vals:
+                    p["value"] = global_vals[p["key"]]
+        elif data:
+            # First run: persist the seed values as global baseline
+            save_global_params({p["key"]: p["value"] for p in data})
+
+        self.ubs_params_data = data
+        self.ubs_params_current_path = None
+        self.ubs_params_modified = False
+        self.ubs_params_file_label.set(
+            f"Global — {GLOBAL_PARAMS_FILE.name}" if GLOBAL_PARAMS_FILE.exists() else "Global (sin guardar aún)"
+        )
+        self.ubs_params_desc_var.set("Selecciona un parámetro para ver su descripción")
+        self._ubs_params_apply_filter()
+
+    def _ubs_params_load_from_selection(self) -> None:
+        pass  # not used — global tab does not load from individual seeds
+
+    def _ubs_params_browse(self) -> None:
+        pass  # not used — global tab does not load from individual seeds
+
+    def _ubs_params_load(self, path: Path) -> None:
+        pass  # not used — global tab does not load from individual seeds
+
+    def _parse_set_file(self, path: Path) -> list[dict]:
+        text, _enc = read_set_with_encoding(path)
+        params: list[dict] = []
+        current_section = ""
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(";"):
+                continue
+            if "=" not in stripped:
+                continue
+            key, _, rest = stripped.partition("=")
+            key = key.strip()
+            # Section header: value is a separator string
+            if rest.startswith("---") or rest.startswith("===") or (len(rest) > 6 and rest.count("-") > 4):
+                current_section = key
+                continue
+            parts = rest.split("||")
+            value = parts[0] if parts else rest
+            default = parts[1].strip() if len(parts) > 1 else ""
+            step = parts[2].strip() if len(parts) > 2 else ""
+            max_val = parts[3].strip() if len(parts) > 3 else ""
+            optimizable = parts[4].strip() if len(parts) > 4 else ""
+            # Determine range string
+            if step and max_val and step != "0.000000" and max_val != "0.000000":
+                try:
+                    mn = float(default) if default else 0.0
+                    mx = float(max_val)
+                    rng = f"{_fmt_num(mn)} – {_fmt_num(mx)}"
+                except ValueError:
+                    rng = f"{default} – {max_val}"
+            else:
+                rng = ""
+            params.append({
+                "section": current_section,
+                "key": key,
+                "value": value,
+                "default": default,
+                "step": step,
+                "max": max_val,
+                "optimizable": optimizable,
+                "range": rng,
+            })
+        return params
+
+    def _ubs_params_apply_filter(self) -> None:
+        if not hasattr(self, "ubs_params_tree"):
+            return
+        tree = self.ubs_params_tree
+        tree.delete(*tree.get_children(""))
+        filt = self._ubs_params_filter.get()
+        search = self._ubs_params_search.get().strip().lower()
+        last_section = None
+        iid_counter = 0
+        frozen_ov, mutable_ov = load_mutation_overrides()
+        for p in self.ubs_params_data:
+            key = p["key"]
+            mutable = is_agent_mutable_key(key)
+            if filt == "mutable" and not mutable:
+                continue
+            if filt == "frozen" and mutable:
+                continue
+            if search and search not in key.lower() and search not in UBS_PARAM_DESCRIPTIONS.get(key, "").lower():
+                continue
+            # Section header when section changes
+            section = p["section"]
+            if section != last_section:
+                label = UBS_SECTION_LABELS.get(section, section) if section else ""
+                if label:
+                    tree.insert("", "end", iid=f"__sec_{iid_counter}__", tags=("section",),
+                                values=(f"  ━━  {label}", "", "", "", ""))
+                    iid_counter += 1
+                last_section = section
+            desc = UBS_PARAM_DESCRIPTIONS.get(key, "")
+            if key in frozen_ov:
+                tag = "overridden_frozen"
+                agent_label = "✦ fijo global"
+                display_value = frozen_ov[key] if frozen_ov[key] else p["value"]
+            elif key in mutable_ov:
+                tag = "overridden_mutable"
+                agent_label = "✦ forzado mutable"
+                display_value = p["value"]
+            else:
+                tag = "mutable" if mutable else "frozen"
+                agent_label = "✓ mutable" if mutable else "— fijo"
+                display_value = p["value"]
+            iid = f"{key}_{iid_counter}"
+            iid_counter += 1
+            tree.insert("", "end", iid=iid, values=(
+                key, desc, display_value, p["range"], agent_label,
+            ), tags=(tag,))
+
+    def _ubs_params_toggle_mutability(self) -> None:
+        selected = self.ubs_params_tree.selection()
+        if not selected:
+            messagebox.showinfo("UBS Parámetros", "Selecciona un parámetro para cambiar su mutabilidad.")
+            return
+        row_values = self.ubs_params_tree.item(selected[0], "values")
+        if not row_values or str(row_values[1]) == "":
+            return
+        key = str(row_values[0])
+        frozen_ov, mutable_ov = load_mutation_overrides()
+        frozen_ov, mutable_ov = dict(frozen_ov), set(mutable_ov)
+        global_val = load_global_params().get(key, str(row_values[2]))
+
+        if key in frozen_ov:
+            del frozen_ov[key]
+            msg = f"'{key}' restaurado a su estado por defecto."
+        elif key in mutable_ov:
+            mutable_ov.discard(key)
+            msg = f"'{key}' restaurado a su estado por defecto."
+        else:
+            default_mutable = is_agent_mutable_key(key)
+            if default_mutable:
+                frozen_ov[key] = global_val
+                msg = f"'{key}' = {global_val} fijado globalmente. El agente usará este valor en todas las variantes."
+            else:
+                mutable_ov.add(key)
+                msg = f"'{key}' marcado como MUTABLE. El agente podrá mutarlo."
+
+        try:
+            save_mutation_overrides(frozen_ov, mutable_ov)
+        except Exception as exc:
+            self._show_error("Error al guardar overrides", str(exc))
+            return
+        self._ubs_params_apply_filter()
+        messagebox.showinfo("UBS Parámetros", msg)
+
+    def _ubs_params_on_select(self, _event: object = None) -> None:
+        selected = self.ubs_params_tree.selection()
+        if not selected:
+            return
+        values = self.ubs_params_tree.item(selected[0], "values")
+        if not values or str(values[1]) == "":  # section header
+            return
+        key = str(values[0])
+        desc = UBS_PARAM_DESCRIPTIONS.get(key, "Sin descripción disponible")
+        val = str(values[2])
+        rng = str(values[3])
+        agent = str(values[4])
+        extra = f"  |  Rango: {rng}" if rng else ""
+        self.ubs_params_desc_var.set(f"{desc}{extra}  |  Valor actual: {val}  |  {agent}")
+
+    def _ubs_params_edit_selected(self) -> None:
+        selected = self.ubs_params_tree.selection()
+        if not selected:
+            return
+        row_values = self.ubs_params_tree.item(selected[0], "values")
+        if not row_values or str(row_values[1]) == "":
+            return
+        key = str(row_values[0])
+        current_val = str(row_values[2])
+        param = next((p for p in self.ubs_params_data if p["key"] == key), None)
+        if not param:
+            return
+
+        # Edit dialog
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Editar: {key}")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.configure(bg=COLORS["panel"])
+        try:
+            dlg.iconbitmap(default="")
+        except Exception:
+            pass
+
+        pad = dict(padx=16, pady=6)
+        ttk.Label(dlg, text=key, style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", **pad)
+        desc = UBS_PARAM_DESCRIPTIONS.get(key, "")
+        if desc:
+            ttk.Label(dlg, text=desc, style="Muted.TLabel", wraplength=380).grid(
+                row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 8))
+
+        info_parts = []
+        if param["range"]:
+            info_parts.append(f"Rango: {param['range']}")
+        if param["step"]:
+            info_parts.append(f"Paso: {_fmt_num_str(param['step'])}")
+        if param["default"]:
+            info_parts.append(f"Default: {param['default']}")
+        if param["optimizable"]:
+            info_parts.append(f"Optimizable: {param['optimizable']}")
+        if info_parts:
+            ttk.Label(dlg, text="  ".join(info_parts), style="Muted.TLabel").grid(
+                row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
+
+        ttk.Label(dlg, text="Valor:", style="Panel.TLabel").grid(row=3, column=0, sticky="w", **pad)
+        val_var = tk.StringVar(value=current_val)
+        entry = ttk.Entry(dlg, textvariable=val_var, width=22)
+        entry.grid(row=3, column=1, sticky="ew", **pad)
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        btn_frame = ttk.Frame(dlg, style="Panel.TFrame")
+        btn_frame.grid(row=4, column=0, columnspan=2, sticky="ew", padx=16, pady=(6, 16))
+        btn_frame.columnconfigure(0, weight=1)
+
+        def apply() -> None:
+            new_val = val_var.get().strip()
+            param["value"] = new_val
+            # Always persist to global params file
+            try:
+                gp = load_global_params()
+                gp[key] = new_val
+                save_global_params(gp)
+            except Exception:
+                pass
+            # Update the value column in the tree
+            for iid in self.ubs_params_tree.get_children(""):
+                row = self.ubs_params_tree.item(iid, "values")
+                if row and str(row[0]) == key:
+                    self.ubs_params_tree.set(iid, "value", new_val)
+                    break
+            self.ubs_params_modified = True
+            name = self.ubs_params_current_path.name if self.ubs_params_current_path else "?"
+            self.ubs_params_file_label.set(f"{name}  *")
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text="Cancelar", style="TButton", command=dlg.destroy).grid(row=0, column=0, sticky="e", padx=(0, 8))
+        ttk.Button(btn_frame, text="Aplicar", style="Primary.TButton", command=apply).grid(row=0, column=1, sticky="e")
+        dlg.bind("<Return>", lambda _e: apply())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        # Center
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+    def _ubs_params_save(self) -> None:
+        if not self.ubs_params_data:
+            messagebox.showinfo("UBS Parámetros", "No hay parámetros cargados.")
+            return
+        try:
+            save_global_params({p["key"]: p["value"] for p in self.ubs_params_data})
+        except Exception as exc:
+            self._show_error("Error al guardar global params", str(exc))
+            return
+        self.ubs_params_modified = False
+        self.ubs_params_file_label.set(f"Global — {GLOBAL_PARAMS_FILE.name}")
+        messagebox.showinfo("UBS Parámetros", f"Guardado en {GLOBAL_PARAMS_FILE.name}")
+
+    def _write_set_file(self, path: Path, params: list[dict]) -> None:
+        text, encoding = read_set_with_encoding(path)
+        lookup = {p["key"]: p["value"] for p in params}
+        result_lines: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(";") or "=" not in stripped:
+                result_lines.append(line)
+                continue
+            key, _, rest = stripped.partition("=")
+            key = key.strip()
+            if key not in lookup or rest.startswith("---") or rest.startswith("===") or (len(rest) > 6 and rest.count("-") > 4):
+                result_lines.append(line)
+                continue
+            parts = rest.split("||")
+            parts[0] = lookup[key]
+            result_lines.append(f"{key}={'||'.join(parts)}")
+        out = "\n".join(result_lines) + "\n"
+        path.write_bytes(out.encode(encoding if encoding != "utf-16" else "utf-16"))
+
+    def _ubs_params_restore_defaults(self) -> None:
+        if not self.ubs_params_data:
+            messagebox.showinfo("UBS Parámetros", "Carga un archivo .set primero.")
+            return
+        if not messagebox.askyesno("Restaurar defaults", "¿Restaurar todos los valores al default del .set?"):
+            return
+        for p in self.ubs_params_data:
+            if p["default"]:
+                p["value"] = p["default"]
+        self._ubs_params_apply_filter()
+        self.ubs_params_modified = True
+        name = self.ubs_params_current_path.name if self.ubs_params_current_path else "?"
+        self.ubs_params_file_label.set(f"{name}  *")
 
     def _build_portfolio(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1764,8 +2376,7 @@ class MT5AutotesterUI(tk.Tk):
         widths = {"status": 125, "symbol": 90, "period": 60, "score": 90, "accepted": 70, "override": 90, "reason": 220, "seed": 500}
         for column in columns:
             self.ubs_seeds_tree.heading(column, text=headings[column])
-            anchor = "e" if column == "score" else "center" if column in {"period", "accepted", "override"} else "w"
-            self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=column == "seed", anchor=anchor)
+            self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=column == "seed", anchor="center")
         self._make_tree_sortable(self.ubs_seeds_tree)
         self._attach_tree_scrollbars(table_frame, self.ubs_seeds_tree, 0)
         self.ubs_seeds_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
@@ -1944,14 +2555,13 @@ class MT5AutotesterUI(tk.Tk):
             "trades": 74,
             "set": 240,
         }
-        anchors = {"score": "e", "profit": "e", "pf": "e", "dd": "e", "trades": "e"}
         for column in columns:
             self.ubs_results_tree.heading(column, text=headings[column])
             self.ubs_results_tree.column(
                 column,
                 width=widths[column],
                 minwidth=42,
-                anchor=anchors.get(column, "w"),
+                anchor="center",
                 stretch=False,
             )
         self.ubs_results_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
@@ -1993,7 +2603,7 @@ class MT5AutotesterUI(tk.Tk):
         run_widths = {"id": 56, "created": 150, "gens": 54, "variants": 70, "seeds": 70, "backtests": 50, "hidden": 55, "total": 70, "accepted": 55, "rejected": 55, "output": 380}
         for column in run_columns:
             self.ubs_history_runs_tree.heading(column, text=run_headings[column])
-            self.ubs_history_runs_tree.column(column, width=run_widths[column], anchor="e" if column in {"id", "gens", "variants", "seeds", "total", "accepted", "rejected"} else "w", stretch=False)
+            self.ubs_history_runs_tree.column(column, width=run_widths[column], anchor="center", stretch=False)
         self._make_tree_sortable(self.ubs_history_runs_tree)
         self._attach_tree_scrollbars(runs_frame, self.ubs_history_runs_tree, 0, vertical=False)
         self.ubs_history_runs_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_history_candidates())
@@ -2009,7 +2619,7 @@ class MT5AutotesterUI(tk.Tk):
         cand_widths = {"id": 60, "gen": 50, "status": 86, "symbol": 96, "period": 58, "score": 82, "profit": 90, "pf": 72, "dd": 72, "trades": 74, "set": 240}
         for column in cand_columns:
             self.ubs_history_candidates_tree.heading(column, text=cand_headings[column])
-            self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="e" if column in {"id", "gen", "score", "profit", "pf", "dd", "trades"} else "w", stretch=False)
+            self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="center", stretch=False)
         self.ubs_history_candidates_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
         self.ubs_history_candidates_tree.tag_configure("rejected", foreground=COLORS["danger"])
         self.ubs_history_candidates_tree.tag_configure("pending", foreground=COLORS["muted"])
@@ -2076,7 +2686,7 @@ class MT5AutotesterUI(tk.Tk):
         accepted_widths = {"run": 50, "gen": 44, "status": 82, "symbol": 82, "period": 46, "score": 72, "profit": 82, "pf": 58, "dd": 62, "set": 220}
         for column in accepted_columns:
             self.ubs_compare_sets_tree.heading(column, text=accepted_headings[column])
-            self.ubs_compare_sets_tree.column(column, width=accepted_widths[column], anchor="e" if column in {"run", "gen", "score", "profit", "pf", "dd"} else "w", stretch=False)
+            self.ubs_compare_sets_tree.column(column, width=accepted_widths[column], anchor="center", stretch=False)
         self.ubs_compare_sets_tree.tag_configure("accepted", foreground=COLORS["accent_soft_text"])
         self.ubs_compare_sets_tree.tag_configure("rejected", foreground=COLORS["danger"])
         self._make_tree_sortable(self.ubs_compare_sets_tree)
@@ -2092,7 +2702,7 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_compare_diff_tree = ttk.Treeview(diff_panel, columns=diff_columns, show="headings", height=18)
         for column, heading, width in (("key", "PARAMETRO", 210), ("seed", "SEED", 240), ("accepted", "ACEPTADO", 240)):
             self.ubs_compare_diff_tree.heading(column, text=heading)
-            self.ubs_compare_diff_tree.column(column, width=width, anchor="w", stretch=False)
+            self.ubs_compare_diff_tree.column(column, width=width, anchor="center", stretch=False)
         self._make_tree_sortable(self.ubs_compare_diff_tree)
         self._attach_tree_scrollbars(diff_panel, self.ubs_compare_diff_tree, 1)
 
@@ -2156,7 +2766,7 @@ class MT5AutotesterUI(tk.Tk):
         asset_widths = {"group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
         for column in asset_columns:
             self.ubs_universe_assets_tree.heading(column, text=asset_headings[column])
-            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="e" if column in {"weight", "avg", "best", "tests", "accepted", "pending"} else "w", stretch=False)
+            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="center", stretch=False)
         self.ubs_universe_assets_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
         self.ubs_universe_assets_tree.tag_configure("negative", foreground=COLORS["danger"])
         self.ubs_universe_assets_tree.tag_configure("neutral", foreground=COLORS["muted"])
@@ -2175,7 +2785,7 @@ class MT5AutotesterUI(tk.Tk):
         tf_widths = {"period": 70, "weight": 88, "avg": 88, "best": 88, "tests": 65, "accepted": 55, "pending": 60}
         for column in tf_columns:
             self.ubs_timeframes_tree.heading(column, text=tf_headings[column])
-            self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="e" if column != "period" else "w", stretch=False)
+            self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="center", stretch=False)
         self.ubs_timeframes_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
         self.ubs_timeframes_tree.tag_configure("negative", foreground=COLORS["danger"])
         self.ubs_timeframes_tree.tag_configure("neutral", foreground=COLORS["muted"])
@@ -2221,8 +2831,8 @@ class MT5AutotesterUI(tk.Tk):
         self.reports_tree.heading("name", text="REPORT NAME")
         self.reports_tree.heading("date", text="DATE")
         self.reports_tree.heading("size", text="SIZE (KB)")
-        self.reports_tree.column("date", width=160, anchor="w")
-        self.reports_tree.column("size", width=100, anchor="e")
+        self.reports_tree.column("date", width=160, anchor="center")
+        self.reports_tree.column("size", width=100, anchor="center")
         self.reports_tree.tag_configure("odd", background=COLORS["tree_odd"])
         self.reports_tree.tag_configure("even", background=COLORS["tree_even"])
         self.reports_tree.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))

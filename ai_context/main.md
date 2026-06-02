@@ -50,6 +50,11 @@ batch wrappers.
 - `report_mismatch` is an intentional UBS candidate state. It means the
   report was parsed, but MT5 executed a different symbol/timeframe than the
   candidate target after applying the configured `symbol_map`.
+- UBS parameter mutability is defined by `is_agent_mutable_key()` in
+  `ubs_agent.py` — NOT by the Y/N flag in `.set` files (that is the MT5
+  optimizer flag, a different thing) and NOT by `is_mutable_key()` in
+  `ubs_generate_sets.py` (which has different constants). Always use
+  `is_agent_mutable_key()` when reasoning about what the agent will mutate.
 
 ## Topic Index
 
@@ -62,6 +67,7 @@ batch wrappers.
 | [05-environment.md](05-environment.md) | Runtime files, environment variables, path resolution. |
 | [06-conventions.md](06-conventions.md) | Coding style, UI conventions, generated files, packaging notes. |
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
+| [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
 
 ## Common Entry Points
 
@@ -73,53 +79,55 @@ batch wrappers.
 - Build installer: `powershell -ExecutionPolicy Bypass -File tools/build_installer.ps1`
 - Portfolio workbook generation: functions in `portfolio_manager/generator.py`
 
-## Recent Important Change
+## Recent Important Changes
 
-The UBS agent now has seed-level evaluation and stricter UBS mismatch
-protection:
+### UBS Parámetros tab and global parameter system
 
-- `run_tests.py` prioritizes exact symbol tokens when inferring tester fields,
-  so names like `XAGUSD__...__XAUUSD_MIX...` infer `XAGUSD`, not `XAUUSD`.
-- `ubs_agent.py` validates parsed report symbol/timeframe against the
-  candidate target after applying `symbol_map`.
-- UBS seeds can be evaluated directly with `ubs_agent.py --evaluate-seeds`.
-  Results are stored in SQLite `seed_scores` and feed the Universe tab weights
-  only when the seed is `accepted` or `rejected`.
-- UBS seeds that cannot infer both symbol and timeframe are marked
-  `report_mismatch` before MT5 is launched. This is a hard rule: do not run a
-  seed backtest when UBS cannot determine the intended symbol/timeframe.
-- The UI has a dedicated `UBS Seeds` tab. It lists seed states, lets the user
-  open a seed, and stores manual symbol/timeframe corrections in
-  `seed_overrides`. These overrides are applied before seed evaluation and
-  before normal UBS generation.
-- Mismatched rows are stored as `report_mismatch`, excluded from agent
-  feedback/universe weights, and can be retried from the UI with
-  `Reprobar mismatch` for one row or `Reprobar run` for every mismatch in the
-  visible run.
-- `run_tests.py` deletes old report artifacts for the same report name before
-  real backtests, reducing stale-report reads.
-- UBS generation and run-level mismatch retry tolerate partial `run_tests.py`
-  failures: they still evaluate reports that were produced, while failed
-  candidates remain `no_report`. If nothing puntuable is produced, the agent
-  still stops with an error.
-- Broker symbols with a leading dot, such as `.US30Cash`, must stay intact in
-  the report parser. Only trailing broker suffixes such as `EURUSD.a` should be
-  stripped.
+A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
 
-Multiterminal support is available for batch backtests and UBS backtest
-execution:
+- Values are stored in `outputs/ubs_global_params.json` (not in individual seed
+  files). On first launch the tab bootstraps the file from the first available
+  seed, then uses the JSON file as the source of truth from that point on.
+- Parameters are displayed with their mutability status per the agent's actual
+  rules (`is_agent_mutable_key()`). Green = agent may mutate; white = fixed.
+- Users can toggle any parameter between frozen/mutable via "Toggle
+  inamovible/mutable". Changes are written immediately to
+  `outputs/ubs_mutation_overrides.json` and take effect in the next generation
+  run without restarting.
+- When a parameter is frozen (`frozen_override`), its value from
+  `ubs_global_params.json` is injected into every generated variant in
+  `create_variant()`, overriding whatever value the individual seed file holds.
+- `is_agent_mutable_key()` is the single source of truth for mutability: it
+  checks `ubs_mutation_overrides.json` first, then falls back to the hardcoded
+  `FROZEN_KEYS`, `FROZEN_PREFIXES`, `ALLOWED_MUTATION_KEYS`,
+  `ALLOWED_MUTATION_PREFIXES` constants in `ubs_agent.py`.
+
+### UBS Seeds tab improvements
+
+- MOTIVO column: shows each failed scoring criterion with its actual value
+  (e.g. `net profit: -830 | PF: 0.69 | DD: 96.6%`), parsed from `metrics_json`.
+- Criteria bar: displays active scoring thresholds above the table, bound live
+  to the same `tk.StringVar` instances as the configuration panel.
+- Double-click a row to open the HTML report in the system viewer.
+- "Eliminar seed" and "Eliminar rechazadas" buttons delete files and DB rows,
+  then refresh both the Seeds table and the Universe weights tab.
+- Seed evaluation skip logic now detects symbol/TF override changes: saving a
+  `seed_override` that changes symbol or TF triggers re-evaluation.
+- Evaluation dialog shows the actual expected backtest count (pre-computed from
+  DB state) alongside the total seed count.
+
+### Multiterminal support
 
 - `run_tests.py` accepts `--multi-terminal`, `--terminals-config`, and
   `--max-workers`.
 - `ui_settings.ini` stores `[Multiterminal]` and `[Terminal.N]` profiles.
-- The UI has `MT5 Multiterminales` for manual terminal profiles and compact
-  multiterminal controls near execution buttons.
 - Compilation remains sequential; multiterminal applies to backtest queues.
 
-Earlier important change: the portfolio parser was fixed to support English
-MT5 reports. Before that, `ALL_STRATEGIES.xlsx` could be generated
-successfully but contain empty/zero metrics because the parser only looked for
-Spanish section/header names. Relevant files:
+### Portfolio parser English support
 
-- [`portfolio_manager/mt5_report.py`](../portfolio_manager/mt5_report.py)
-- [`portfolio_manager/excel.py`](../portfolio_manager/excel.py)
+The portfolio parser was fixed to recognise English MT5 report labels (`Symbol`,
+`Period`, `Results`, `Orders`, `Deals`, `Balance Drawdown Maximal`, …). Before
+this fix, `ALL_STRATEGIES.xlsx` was generated but contained empty/zero metrics
+for English-language reports. Relevant files:
+[`portfolio_manager/mt5_report.py`](../portfolio_manager/mt5_report.py),
+[`portfolio_manager/excel.py`](../portfolio_manager/excel.py).

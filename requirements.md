@@ -110,6 +110,11 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.7** Continuation MUST be supported via `--continue-last-run`. The
   agent MUST pick up the pending generation count, variants-per-seed, and
   max-seeds from the last stored run.
+- **FR-1.6.8** Before mutating a variant, the agent MUST apply any values from
+  `outputs/ubs_global_params.json` for keys listed in
+  `outputs/ubs_mutation_overrides.json` `frozen_override`. This injects the
+  globally configured fixed value into every generated variant regardless of
+  what value the seed file holds for that key.
 
 ### 1.7 UBS agent — scoring
 
@@ -184,46 +189,80 @@ requirement changes or a debt item is opened/closed.
   (e.g. `.a`, `.b`). Symbols starting with a dot (e.g. `.US30Cash`) MUST be
   preserved intact.
 
-### 1.11 Desktop UI
+### 1.11 UBS agent — parameter mutability overrides
 
-- **FR-1.11.1** The Tkinter UI MUST expose all core workflows: compile, backtest,
+- **FR-1.11.1** Key mutability MUST be determined by `is_agent_mutable_key(key)`
+  in `ubs_agent.py`. This function checks `ubs_mutation_overrides.json` first,
+  then the hardcoded `FROZEN_KEYS`, `FROZEN_PREFIXES`, `ALLOWED_MUTATION_KEYS`,
+  and `ALLOWED_MUTATION_PREFIXES` constants.
+- **FR-1.11.2** `outputs/ubs_mutation_overrides.json` MUST support two override
+  types:
+  - `frozen_override`: `{key: ""}` — normally mutable keys the user has frozen.
+    The agent will NOT mutate these keys.
+  - `mutable_override`: `["key"]` — normally frozen keys the user has made
+    mutable. The agent MAY mutate these keys.
+- **FR-1.11.3** `outputs/ubs_global_params.json` MUST store the canonical global
+  value for every EA parameter. When a key appears in `frozen_override`, its
+  value from this file MUST be injected into every generated variant, overriding
+  whatever the seed file holds.
+- **FR-1.11.4** On first launch of the UBS Parámetros tab, if
+  `ubs_global_params.json` does not exist, it MUST be bootstrapped from the
+  first available seed file and saved immediately.
+- **FR-1.11.5** Any edit made in the UBS Parámetros tab MUST be persisted to
+  `ubs_global_params.json` immediately (no separate save required for individual
+  edits, though a bulk "Guardar" button also exists).
+
+### 1.12 Desktop UI
+
+- **FR-1.12.1** The Tkinter UI MUST expose all core workflows: compile, backtest,
   compile-and-backtest, portfolio workbook generation, and UBS agent operations.
-- **FR-1.11.2** Long-running operations (compile, backtest, agent) MUST run in
+- **FR-1.12.2** Long-running operations (compile, backtest, agent) MUST run in
   background threads. Output MUST be streamed line-by-line to the log panel via
   a thread-safe queue and `after()` polling. The UI MUST NOT freeze.
-- **FR-1.11.3** The UBS Seeds tab MUST display: status, symbol, TF, score, OK,
-  override flag, rejection motivo (criteria that failed with their values),
-  and seed filename.
-- **FR-1.11.4** The UBS Seeds tab MUST show the active scoring thresholds above
-  the table so the user can see at a glance what criteria are in effect.
-- **FR-1.11.5** Double-clicking a seed row MUST open its HTML report in the
-  system default browser/viewer if a report exists; otherwise show an
-  informative message.
-- **FR-1.11.6** The UI MUST allow the user to delete a single selected seed file
+- **FR-1.12.3** The UBS Seeds tab MUST display: status, symbol, TF, score, OK,
+  override flag, rejection motivo (criteria that failed with their actual values),
+  and seed filename. The motivo format is `metric: value | metric: value`.
+- **FR-1.12.4** The UBS Seeds tab MUST show the active scoring thresholds above
+  the table (bound to the same `tk.StringVar`/`tk.IntVar` as the config panel),
+  so they update live when the user changes them.
+- **FR-1.12.5** Double-clicking a seed row MUST open its HTML report in the
+  system default viewer if a report exists; otherwise show an informative message.
+- **FR-1.12.6** The UI MUST allow the user to delete a single selected seed file
   from disk (with confirmation) and to bulk-delete all rejected seeds (with
   confirmation showing the count). Both operations MUST remove the corresponding
-  `seed_scores` and `seed_overrides` DB rows and refresh the table.
-- **FR-1.11.7** Symbol/TF overrides saved via the UI MUST be persisted in
+  `seed_scores` and `seed_overrides` DB rows and refresh the seeds table AND the
+  Universe weights table.
+- **FR-1.12.7** Symbol/TF overrides saved via the UI MUST be persisted in
   `seed_overrides` and applied both at seed evaluation time and at UBS generation
   time.
-- **FR-1.11.8** The UI MUST support light and dark themes. All input widgets
-  (Entry, Combobox, Spinbox) MUST use the theme foreground/background colours
-  defined in `COLORS`.
-- **FR-1.11.9** UI state (paths, thresholds, theme, multiterminal profiles) MUST
+- **FR-1.12.8** The UI MUST support light and dark themes. All input widgets
+  (Entry, Combobox, Spinbox, Radiobutton) MUST use the theme foreground/background
+  colours defined in `COLORS` — no system-default white backgrounds on dark mode.
+- **FR-1.12.9** UI state (paths, thresholds, theme, multiterminal profiles) MUST
   be persisted in `ui_settings.ini` and restored on startup.
-- **FR-1.11.10** The evaluation confirmation dialog MUST show both the total seed
-  count AND the expected backtest count (seeds that will actually run), not just
-  the total.
+- **FR-1.12.10** The evaluation confirmation dialog MUST show both the total seed
+  count AND the expected backtest count (seeds that will actually run), computed
+  locally by comparing DB state against the seed files before launching the agent.
+- **FR-1.12.11** The UBS Parámetros tab MUST show all EA parameter keys grouped
+  by section, with columns: CLAVE, DESCRIPCIÓN, VALOR, RANGO, AGENTE. Values
+  are loaded from `ubs_global_params.json`. The AGENTE column indicates `✓ mutable`,
+  `— fijo`, `✦ fijo global` (user-frozen with injected value), or
+  `✦ forzado mutable` (user-unlocked).
+- **FR-1.12.12** The UBS Parámetros tab MUST allow the user to toggle any
+  parameter between mutable/frozen via a "Toggle inamovible/mutable" button.
+  The change MUST be written immediately to `ubs_mutation_overrides.json` and
+  reflected in the table without restart.
+- **FR-1.12.13** Treeview column values across all tabs MUST be center-aligned.
 
-### 1.12 Packaging & runtime
+### 1.13 Packaging & runtime
 
-- **FR-1.12.1** The app MUST run both from source (`python app_ui.py`) and as a
+- **FR-1.13.1** The app MUST run both from source (`python app_ui.py`) and as a
   PyInstaller-frozen executable. All `BASE_DIR` / `DATA_DIR` path logic MUST
   branch on `sys.frozen`.
-- **FR-1.12.2** The installer MUST be buildable via
+- **FR-1.13.2** The installer MUST be buildable via
   `tools/build_installer.ps1` and produce a self-contained `.exe` and a
   portable `.zip` under `dist_installer/`.
-- **FR-1.12.3** Generated/runtime directories (`configs/`, `logs/`, `reports/`,
+- **FR-1.13.3** Generated/runtime directories (`configs/`, `logs/`, `reports/`,
   `outputs/`, `build_installer/`, `dist_installer/`) MUST NOT be committed to
   version control.
 
@@ -329,13 +368,19 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 
 - **TD-2.6.3 — MOTIVO column truncates on narrow windows.**
   The rejection reason string (e.g. `net profit: -830 | PF: 0.69 | DD: 96.6%`)
-  is cut off when the window is narrow. Add tooltip support on hover so the full
-  reason is always readable.
+  is cut off when the window is narrow. The description bar in UBS Parámetros
+  provides a tooltip-style workaround; a similar hover tooltip on the Seeds tree
+  would help.
 
-- **TD-2.6.4 — Combobox arrow colour may not match theme on all Windows versions.**
-  `TCombobox` arrow color is set via `arrowcolor` in the style, but some ttk
-  themes on Windows 10/11 ignore this. Test and apply a workaround for the native
-  dropdown arrow if needed.
+- **TD-2.6.4 — Global params bootstrap uses only first seed.**
+  `ubs_global_params.json` is seeded from the first `.set` found alphabetically.
+  If that seed has non-representative values (e.g. MaxSpread=5 while most seeds
+  use 100), the user must manually correct them. A smarter bootstrap (e.g. median
+  across all seeds) would produce a better starting point.
+
+- **TD-2.6.5 — UBS Parámetros tab has no "reset all overrides" button.**
+  Removing all user-defined frozen/mutable overrides requires deleting
+  `ubs_mutation_overrides.json` manually. A one-click reset would reduce friction.
 
 ### 2.7 Observability / logging
 
@@ -356,8 +401,6 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 
 ### 2.8 Resolved debt
 
-_(Move closed items here with a date and brief note.)_
-
 - **2025-06** — Fixed portfolio parser to support English MT5 HTML reports
   (`Symbol`, `Period`, `Results`, `Orders`, `Deals`, `Balance Drawdown …`).
   Previously all metrics were zero for English-language reports.
@@ -372,3 +415,27 @@ _(Move closed items here with a date and brief note.)_
 
 - **2025-06** — Evaluation confirmation dialog now shows actual backtest count
   (seeds that will run) separately from total seed count.
+
+- **2025-06** — UBS Seeds tab: added MOTIVO column showing each rejected
+  criterion with its actual value (e.g. `net profit: -830 | PF: 0.69`).
+  Column is populated by parsing `metrics_json` from `seed_scores`.
+
+- **2025-06** — UBS Seeds tab: added scoring criteria bar above the table
+  showing active thresholds (bound live to the config `tk.StringVar` instances).
+
+- **2025-06** — UBS Seeds tab: added "Abrir reporte" button and double-click to
+  open the HTML report; "Eliminar seed" and "Eliminar rechazadas" buttons with
+  DB cleanup and Universe weight refresh.
+
+- **2025-06** — Fixed `is_agent_mutable_key()` link. The UI previously used
+  `is_mutable_key()` from `ubs_generate_sets.py` which has different constants
+  from the actual agent mutation logic in `ubs_agent.py`. Now uses
+  `is_agent_mutable_key()` defined in `ubs_agent.py` with the correct constants.
+
+- **2025-06** — Added UBS Parámetros tab: global parameter viewer/editor backed
+  by `ubs_global_params.json`. Parameters show mutability status per agent rules,
+  support inline editing, and allow toggling any key between frozen/mutable via
+  `ubs_mutation_overrides.json`.
+
+- **2025-06** — Theme fix: all ttk widgets (Combobox, Radiobutton) now use
+  panel background and text colours in dark mode; no system-default white boxes.
