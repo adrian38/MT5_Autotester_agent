@@ -8,6 +8,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
+from tkinter import filedialog
 from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, parse_symbol_map
 
 
@@ -524,6 +525,38 @@ class UBSSeedsLogicMixin:
         details.extend(self._multiterminal_execution_details())
         if self._confirm_execution_start("Confirmar retry seed", len(paths), details):
             self._run_script("ubs_agent.py", args)
+
+    def _import_ubs_seeds(self) -> None:
+        """Importa una carpeta de .set, normaliza lote fijo y la copia a la carpeta seeds configurada."""
+        source_dir = filedialog.askdirectory(
+            title="Carpeta origen con los .set a importar"
+        )
+        if not source_dir:
+            return
+
+        try:
+            output_dir = self._ubs_generator_source_dir()
+        except Exception:
+            output_dir = BASE_DIR / "sets" / "ubs_ready"
+
+        source_count = len(list(Path(source_dir).rglob("*.set")))
+        if source_count == 0:
+            messagebox.showinfo("Importar seeds", f"No se encontraron archivos .set en:\n{source_dir}")
+            return
+
+        if not messagebox.askyesno(
+            "Importar seeds",
+            f"Importar {source_count} .set desde:\n{source_dir}\n\n"
+            f"Destino (normalizado con lote fijo 0.01):\n{output_dir}\n\n"
+            "¿Continuar?",
+        ):
+            return
+
+        args = [
+            "--source-dir", str(source_dir),
+            "--output-dir", str(output_dir),
+        ]
+        self._run_script("ubs_prepare_sets.py", args)
 
     def _cleanup_seed_db(self, conn, seed_paths: list[str]) -> None:
         """Borra seed_scores y seed_overrides de esas seeds."""

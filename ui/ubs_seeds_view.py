@@ -26,18 +26,23 @@ class UBSSeedsViewMixin:
         tk.Label(toolbar, textvariable=self.ubs_seed_eval_summary,
                  bg=self.colors["panel_alt"], fg=self.colors["muted"],
                  font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        tk.Button(toolbar, text="⬆  Importar seeds",
+                  bg=self.colors["primary_container"], fg=self.colors["primary_hover_text"],
+                  relief="flat", borderwidth=0,
+                  padx=10, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self._import_ubs_seeds).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
         tk.Button(toolbar, text="Evaluar semillas",
                   bg=self.colors["accent"], fg="#ffffff", relief="flat", borderwidth=0,
                   padx=10, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
-                  command=self._run_ubs_seed_evaluation).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
+                  command=self._run_ubs_seed_evaluation).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=5)
         for col, (label, cmd) in enumerate([
             ("Abrir seed",      self._open_selected_ubs_seed),
             ("Abrir reporte",   self._open_selected_ubs_seed_report),
             ("Repetir backtest",self._retry_selected_ubs_seed),
             ("Guardar Symbol/TF", self._save_ubs_seed_override),
             ("Actualizar",      self._refresh_ubs_seeds_panel),
-        ], start=2):
-            padx = (0, 10) if col == 6 else (0, 6)
+        ], start=3):
+            padx = (0, 10) if col == 7 else (0, 6)
             tk.Button(toolbar, text=label,
                       bg=self.colors["panel"], fg=self.colors["muted"],
                       relief="solid", borderwidth=1, padx=8, pady=5,
@@ -46,7 +51,7 @@ class UBSSeedsViewMixin:
 
         # Fila 1: acciones destructivas (derecha)
         danger_frame = tk.Frame(toolbar, bg=self.colors["panel_alt"])
-        danger_frame.grid(row=1, column=0, columnspan=7, sticky="e", pady=(0, 5))
+        danger_frame.grid(row=1, column=0, columnspan=8, sticky="e", pady=(0, 5))
         for col, (label, cmd) in enumerate([
             ("Eliminar seed",        self._delete_selected_ubs_seed),
             ("Eliminar rechazadas",  self._delete_rejected_ubs_seeds),
