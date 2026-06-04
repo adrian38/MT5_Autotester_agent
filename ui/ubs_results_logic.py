@@ -1551,3 +1551,4 @@ class UBSResultsLogicMixin:
             f"Sets eliminados: {deleted} | pesos limpiados: {len(cids)}"
         )
         self._refresh_ubs_history_candidates()
+        self._safe_refresh("ubs_universe", self._refresh_ubs_universe)
