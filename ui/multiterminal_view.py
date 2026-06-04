@@ -104,11 +104,12 @@ class MultiterminalViewMixin:
         table_frame.grid(row=0, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("mark", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file")
+        columns = ("mark", "enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file")
         self.multiterminal_tree = ttk.Treeview(table_frame, columns=columns, show="headings",
                                                height=14, selectmode="browse")
         headings = {
-            "mark":         "PRINCIPAL",
+            "mark":         "SEL",
+            "enabled":      "ON",
             "name":         "NOMBRE",
             "mt5_path":     "TERMINAL64.EXE",
             "data_dir":     "DATOS MT5",
@@ -116,12 +117,13 @@ class MultiterminalViewMixin:
             "ubs_ex5_file": "UBS .EX5",
         }
         widths = {
-            "mark":         80,
-            "name":         160,
-            "mt5_path":     270,
-            "data_dir":     270,
-            "experts_root": 240,
-            "ubs_ex5_file": 220,
+            "mark":         48,
+            "enabled":      52,
+            "name":         150,
+            "mt5_path":     260,
+            "data_dir":     260,
+            "experts_root": 230,
+            "ubs_ex5_file": 210,
         }
         for column in columns:
             self.multiterminal_tree.heading(column, text=headings[column])
