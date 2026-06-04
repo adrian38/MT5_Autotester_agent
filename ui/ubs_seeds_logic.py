@@ -625,6 +625,50 @@ class UBSSeedsLogicMixin:
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_universe()
 
+    def _delete_all_ubs_seeds(self) -> None:
+        try:
+            source_dir = self._ubs_generator_source_dir()
+            all_paths = load_set_files(source_dir, None, recursive=True)
+        except Exception as exc:
+            self._show_error("Sin carpeta de seeds", str(exc))
+            return
+        if not all_paths:
+            messagebox.showinfo("Eliminar todas", "No hay seeds en la carpeta configurada.")
+            return
+        if not messagebox.askyesno(
+            "Eliminar TODAS las seeds",
+            f"Eliminar {len(all_paths)} seed(s) del disco?\n\n"
+            f"Carpeta: {source_dir}\n\n"
+            "Esta acción no se puede deshacer.",
+        ):
+            return
+        deleted: list[str] = []
+        errors: list[str] = []
+        for path in all_paths:
+            try:
+                path.unlink()
+                deleted.append(str(path))
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+        memory_path = self._ubs_memory_path()
+        if deleted and memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                placeholders = ",".join("?" for _ in deleted)
+                conn.execute(f"delete from seed_scores where seed_path in ({placeholders})", deleted)
+                conn.execute(f"delete from seed_overrides where seed_path in ({placeholders})", deleted)
+                conn.commit()
+                conn.close()
+            except sqlite3.Error:
+                pass
+        self.ubs_seed_checked.clear()
+        self.status_text.set(f"Seeds eliminadas: {len(deleted)}")
+        if errors:
+            self._show_error("Errores al eliminar", "\n".join(errors))
+        self._refresh_ubs_seeds()
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_universe()
+
     def _reset_ubs_seed_evaluation(self) -> None:
         """Delete all seed reports from disk and reset seed_scores to pending."""
         memory_path = self._ubs_memory_path()

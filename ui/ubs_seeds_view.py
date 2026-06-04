@@ -50,9 +50,10 @@ class UBSSeedsViewMixin:
         for col, (label, cmd) in enumerate([
             ("Eliminar seed",        self._delete_selected_ubs_seed),
             ("Eliminar rechazadas",  self._delete_rejected_ubs_seeds),
+            ("Eliminar todas",       self._delete_all_ubs_seeds),
             ("Resetear evaluación",  self._reset_ubs_seed_evaluation),
         ]):
-            padx = (0, 10) if col == 2 else (0, 6)
+            padx = (0, 10) if col == 3 else (0, 6)
             tk.Button(danger_frame, text=label,
                       bg=self.colors["danger"], fg="#ffffff",
                       relief="flat", borderwidth=0, padx=8, pady=5,
