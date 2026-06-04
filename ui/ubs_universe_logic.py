@@ -244,11 +244,14 @@ class UBSUniverseLogicMixin:
         tf_rows.sort(key=lambda item: item[0], reverse=True)
 
         if hasattr(self, "ubs_timeframes_tree"):
+            valid_tfs: set[str] = set()
             for _, period, stat, weight_value, avg_score in tf_rows:
+                valid_tfs.add(period.upper())
                 self.ubs_timeframes_tree.insert(
                     "",
                     "end",
                     values=(
+                        self._checkbox_text(period.upper() in self.ubs_timeframe_checked),
                         period,
                         self._format_ubs_number(weight_value),
                         self._format_ubs_number(avg_score),
@@ -259,6 +262,7 @@ class UBSUniverseLogicMixin:
                     ),
                     tags=(self._tag_for_weight(weight_value),),
                 )
+            self.ubs_timeframe_checked.intersection_update(valid_tfs)
 
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
@@ -280,5 +284,129 @@ class UBSUniverseLogicMixin:
     def _save_disabled_ubs_symbols(self, symbols: set) -> None:
         from ubs.universe import save_disabled_symbols
         save_disabled_symbols(self._disabled_symbols_path(), symbols)
+
+    # ── SEL en Timeframes ────────────────────────────────────────────────────
+
+    def _on_ubs_timeframe_tree_click(self, event) -> None:
+        if not hasattr(self, "ubs_timeframes_tree"):
+            return
+        item, column = self._tree_item_from_event(self.ubs_timeframes_tree, event)
+        if not item or column != "#1":
+            return
+        values = list(self.ubs_timeframes_tree.item(item, "values"))
+        if not values:
+            return
+        period = str(values[1]).upper()
+        if period in self.ubs_timeframe_checked:
+            self.ubs_timeframe_checked.remove(period)
+        else:
+            self.ubs_timeframe_checked.add(period)
+        values[0] = self._checkbox_text(period in self.ubs_timeframe_checked)
+        self.ubs_timeframes_tree.item(item, values=values)
+        return "break"
+
+    # ── Limpiar pesos (score=NULL en candidates/seed_scores) ─────────────────
+
+    def _weight_memory_path(self):
+        return BASE_DIR / "outputs" / "ubs_memory.sqlite"
+
+    def _clear_weights_sql(self, conn, *, symbols=None, periods=None) -> int:
+        """Set score=NULL for candidates matching symbols and/or periods.
+        Returns number of rows affected."""
+        affected = 0
+        if symbols:
+            for sym in symbols:
+                r = conn.execute(
+                    "update candidates set score=null, accepted=null "
+                    "where upper(target_symbol)=upper(?) and score is not null",
+                    (sym,),
+                )
+                affected += r.rowcount
+                r2 = conn.execute(
+                    "update seed_scores set score=null, accepted=null "
+                    "where upper(symbol)=upper(?) and score is not null",
+                    (sym,),
+                )
+                affected += r2.rowcount
+        if periods:
+            for per in periods:
+                r = conn.execute(
+                    "update candidates set score=null, accepted=null "
+                    "where upper(period)=upper(?) and score is not null",
+                    (per,),
+                )
+                affected += r.rowcount
+                r2 = conn.execute(
+                    "update seed_scores set score=null, accepted=null "
+                    "where upper(period)=upper(?) and score is not null",
+                    (per,),
+                )
+                affected += r2.rowcount
+        conn.commit()
+        return affected
+
+    def _clear_selected_weights(self) -> None:
+        symbols = set(self.ubs_universe_checked)
+        periods = set(self.ubs_timeframe_checked)
+        if not symbols and not periods:
+            messagebox.showinfo("Limpiar pesos", "Marca activos o TFs primero (columna SEL).")
+            return
+        mem = self._weight_memory_path()
+        if not mem.exists():
+            messagebox.showinfo("Limpiar pesos", "No existe memoria UBS.")
+            return
+        desc = []
+        if symbols:
+            desc.append(f"activos: {', '.join(sorted(symbols))}")
+        if periods:
+            desc.append(f"TF: {', '.join(sorted(periods))}")
+        if not messagebox.askyesno("Limpiar pesos seleccionados",
+                                   f"Esto pondrá score=NULL en todos los candidatos para:\n{chr(10).join(desc)}\n\nSus pesos volverán a 0. ¿Continuar?"):
+            return
+        import sqlite3
+        conn = sqlite3.connect(mem, timeout=2.0)
+        n = self._clear_weights_sql(conn, symbols=symbols, periods=periods)
+        conn.close()
+        self.ubs_universe_checked.clear()
+        self.ubs_timeframe_checked.clear()
+        self.status_text.set(f"Pesos limpiados: {n} candidatos afectados")
+        self._refresh_ubs_universe()
+
+    def _clear_all_asset_weights(self) -> None:
+        mem = self._weight_memory_path()
+        if not mem.exists():
+            messagebox.showinfo("Limpiar pesos activos", "No existe memoria UBS.")
+            return
+        if not messagebox.askyesno("Limpiar todos los pesos de activos",
+                                   "Esto pondrá score=NULL en TODOS los candidatos de todos los activos.\n"
+                                   "Los pesos volverán a 0. ¿Continuar?"):
+            return
+        import sqlite3
+        conn = sqlite3.connect(mem, timeout=2.0)
+        conn.execute("update candidates set score=null, accepted=null where score is not null")
+        conn.execute("update seed_scores  set score=null, accepted=null where score is not null")
+        n = conn.execute("select changes()").fetchone()[0]
+        conn.commit()
+        conn.close()
+        self.status_text.set(f"Todos los pesos de activos limpiados")
+        self._refresh_ubs_universe()
+
+    def _clear_all_tf_weights(self) -> None:
+        mem = self._weight_memory_path()
+        if not mem.exists():
+            messagebox.showinfo("Limpiar pesos TF", "No existe memoria UBS.")
+            return
+        if not messagebox.askyesno("Limpiar todos los pesos de Timeframes",
+                                   "Esto pondrá score=NULL para todos los TFs en candidates y seed_scores.\n"
+                                   "Los pesos de TF volverán a 0. ¿Continuar?"):
+            return
+        import sqlite3
+        periods = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
+        conn = sqlite3.connect(mem, timeout=2.0)
+        n = self._clear_weights_sql(conn, periods=periods)
+        conn.close()
+        self.ubs_timeframe_checked.clear()
+        self.status_text.set(f"Todos los pesos de TF limpiados: {n} candidatos afectados")
+        self._refresh_ubs_universe()
 
 

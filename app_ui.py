@@ -703,6 +703,7 @@ class MT5AutotesterUI(
         self.ubs_seed_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}
         self.ubs_universe_checked: set[str] = set()
+        self.ubs_timeframe_checked: set[str] = set()
         self._tree_sort_reverse: dict[tuple[str, str], bool] = {}
         self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"

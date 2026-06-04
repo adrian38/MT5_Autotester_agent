@@ -27,59 +27,28 @@ class UBSUniverseViewMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
-        tk.Button(
-            bar,
-            text="Actualizar",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._refresh_ubs_universe_panel,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
-        tk.Button(
-            bar,
-            text="Deshabilitar marcados",
-            bg=self.colors["panel"],
-            fg=self.colors["danger"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            command=lambda: self._set_checked_universe_symbols_enabled(False),
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=5)
-        tk.Button(
-            bar,
-            text="Habilitar marcados",
-            bg=self.colors["panel"],
-            fg=self.colors["accent_soft_text"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            command=lambda: self._set_checked_universe_symbols_enabled(True),
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=5)
+        for col, (label, fg, bold, cmd) in enumerate([
+            ("Actualizar",          self.colors["muted"],          False, self._refresh_ubs_universe_panel),
+            ("Deshabilitar marcados", self.colors["danger"],        True,  lambda: self._set_checked_universe_symbols_enabled(False)),
+            ("Habilitar marcados",  self.colors["accent_soft_text"], True, lambda: self._set_checked_universe_symbols_enabled(True)),
+            ("Limpiar sel",         self.colors["muted"],          False, self._clear_selected_weights),
+            ("Limpiar activos",     self.colors["muted"],          False, self._clear_all_asset_weights),
+            ("Limpiar TF",          self.colors["muted"],          False, self._clear_all_tf_weights),
+        ], start=1):
+            padx = (0, 10) if col == 6 else (0, 6)
+            font = ("Segoe UI", 9, "bold") if bold else ("Segoe UI", 9)
+            tk.Button(bar, text=label, bg=self.colors["panel"], fg=fg,
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=font, cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
         self._ubs_calc_weights_btn = tk.Button(
-            bar,
-            text="Calcular pesos",
-            bg=self.colors["accent"],
-            fg="#ffffff",
-            relief="flat",
-            borderwidth=0,
-            padx=10,
-            pady=5,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
+            bar, text="Calcular pesos",
+            bg=self.colors["accent"], fg="#ffffff",
+            relief="flat", borderwidth=0, padx=10, pady=5,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._ubs_apply_weights,
         )
-        self._ubs_calc_weights_btn.grid(row=0, column=4, sticky="e", padx=(0, 10), pady=5)
+        self._ubs_calc_weights_btn.grid(row=0, column=7, sticky="e", padx=(0, 10), pady=5)
 
         body = ttk.PanedWindow(panel, orient="horizontal")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
@@ -122,10 +91,11 @@ class UBSUniverseViewMixin:
         body.add(tf_frame, weight=2)
         ttk.Label(tf_frame, text="Timeframes", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         ttk.Label(tf_frame, textvariable=self.ubs_timeframe_summary, style="Muted.TLabel", wraplength=520).grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        tf_columns = ("period", "weight", "avg", "best", "tests", "accepted", "pending")
-        self.ubs_timeframes_tree = ttk.Treeview(tf_frame, columns=tf_columns, show="headings", height=18)
-        tf_headings = {"period": "TF", "weight": "PESO", "avg": "AVG", "best": "BEST", "tests": "TESTS", "accepted": "OK", "pending": "PEND"}
-        tf_widths = {"period": 70, "weight": 88, "avg": 88, "best": 88, "tests": 65, "accepted": 55, "pending": 60}
+        tf_columns = ("mark", "period", "weight", "avg", "best", "tests", "accepted", "pending")
+        self.ubs_timeframes_tree = ttk.Treeview(tf_frame, columns=tf_columns, show="headings",
+                                                height=18, selectmode="extended")
+        tf_headings = {"mark": "SEL", "period": "TF", "weight": "PESO", "avg": "AVG", "best": "BEST", "tests": "TESTS", "accepted": "OK", "pending": "PEND"}
+        tf_widths = {"mark": 48, "period": 66, "weight": 84, "avg": 84, "best": 84, "tests": 62, "accepted": 52, "pending": 56}
         for column in tf_columns:
             self.ubs_timeframes_tree.heading(column, text=tf_headings[column])
             self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="center", stretch=False)
@@ -133,5 +103,6 @@ class UBSUniverseViewMixin:
         self.ubs_timeframes_tree.tag_configure("negative", foreground=self.colors["danger"])
         self.ubs_timeframes_tree.tag_configure("neutral", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_timeframes_tree)
+        self.ubs_timeframes_tree.bind("<Button-1>", self._on_ubs_timeframe_tree_click)
         self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 2)
 
