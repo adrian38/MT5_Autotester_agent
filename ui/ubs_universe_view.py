@@ -31,9 +31,9 @@ class UBSUniverseViewMixin:
             ("Actualizar",          self.colors["muted"],          False, self._refresh_ubs_universe_panel),
             ("Deshabilitar marcados", self.colors["danger"],        True,  lambda: self._set_checked_universe_symbols_enabled(False)),
             ("Habilitar marcados",  self.colors["accent_soft_text"], True, lambda: self._set_checked_universe_symbols_enabled(True)),
-            ("Limpiar sel",         self.colors["muted"],          False, self._clear_selected_weights),
-            ("Limpiar activos",     self.colors["muted"],          False, self._clear_all_asset_weights),
-            ("Limpiar TF",          self.colors["muted"],          False, self._clear_all_tf_weights),
+            ("Limpiar marcados",    self.colors["muted"],          False, self._clear_selected_weights),
+            ("Reset pesos activos", self.colors["muted"],          False, self._clear_all_asset_weights),
+            ("Reset pesos TF",      self.colors["muted"],          False, self._clear_all_tf_weights),
         ], start=1):
             padx = (0, 10) if col == 6 else (0, 6)
             font = ("Segoe UI", 9, "bold") if bold else ("Segoe UI", 9)
