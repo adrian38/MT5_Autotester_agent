@@ -150,7 +150,98 @@ system. All UI code must follow it. Key rules:
 
 ### Shared widget helpers in `app_ui.py`
 
-`self._tooltip_cls = ToolTip` — use in any view mixin to attach hover tooltips.
+- `self._tooltip_cls = ToolTip` — attach hover tooltips in any view mixin.
+- `self._tooltip_cls(widget, "text")` — call after creating the widget.
+
+### Progress dialog pattern (reusable)
+
+Modal blocking dialog used in Export and Import Seeds. Canonical example:
+`ui/ubs_results_logic.py:_export_ubs_results_run` and
+`ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+
+```python
+dlg = tk.Toplevel(self); dlg.grab_set(); dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+bar = ttk.Progressbar(body, mode="determinate", maximum=100, ...)
+q: queue.Queue = queue.Queue()
+threading.Thread(target=_worker, daemon=True).start()
+# _worker sends ("progress", idx, total, label) and ("done", ...) into q
+dlg.after(40, _poll)  # poll queue, update bar, call _finish when done
+```
+
+### Automatic Universe weight refresh
+
+`_refresh_all()` (called whenever any `_run_script` process finishes) already
+includes `"ubs_universe"`. Any direct DB operation that modifies weights must
+also call `self._safe_refresh("ubs_universe", self._refresh_ubs_universe)`.
+Operations already covered: seed deletion, run deletion, candidate-set deletion,
+limpiar-pesos buttons, reset seed evaluation.
+
+### UBS Seeds tab — new features
+
+- **SEL checkbox column** + `self.ubs_seed_checked`.
+- **Criteria bar**: editable seed-only thresholds (net profit, PF, trades, DD,
+  recovery). Persisted separately from UBS Agent thresholds.
+- **Fechas Seeds bar**: `ubs_seed_from_date` / `ubs_seed_to_date` override
+  `FromDate`/`ToDate` for seed evaluation only.
+- **"⬆ Importar seeds"**: folder picker → normalises lot size (lote fijo 0.01
+  via `force_fixed_lot_text`) → deduplicates by SHA256 of normalised content →
+  copies to configured seeds folder. Modal progress popup + summary dialog.
+  Implemented in `ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+- **"Eliminar todas"**: deletes all `.set` files + their `seed_scores` /
+  `seed_overrides` DB rows. `_cleanup_seed_db()` helper used by all three
+  delete methods.
+- Deleting seeds does NOT clear candidate scores from `candidates` — those
+  remain and continue contributing to Universe weights.
+
+### UBS Universe tab — new features
+
+- **SEL column in Timeframes tree** + `self.ubs_timeframe_checked`.
+- **"Limpiar marcados"**: `score=NULL` in `candidates` + `seed_scores` for
+  checked assets and/or TFs → their weights drop to 0.
+- **"Reset pesos activos"**: `score=NULL` for ALL assets.
+- **"Reset pesos TF"**: `score=NULL` for all 9 known TF values.
+- **PanedWindow horizontal**: Activos | Timeframes drag-resizable.
+
+### UBS Histórico tab — new features
+
+- **PanedWindow vertical**: Runs | Candidatos drag-resizable.
+- **SEL column** on both Runs tree and Candidatos tree.
+- **"Eliminar run"**: deletes run + ALL its candidates from DB + their `.set`
+  files + report files (.htm + images). Refreshes Universe automatically.
+- **"Eliminar set"**: for selected/checked candidate(s) — deletes `.set` from
+  disk + sets `score=NULL` (weight removed). Candidate row kept in DB.
+
+### UBS Comparar tab — new features
+
+- **PanedWindow horizontal**: Resultados | Diff parámetros drag-resizable.
+- **SEL column** on Resultados tree + `self.ubs_compare_checked`.
+
+### Multiterminal tab — refactor
+
+- **PanedWindow horizontal**: table | editor drag-resizable.
+- **Editor** has horizontal scrollbar via Canvas (long paths fully visible).
+- **Portable checkbox removed** from UI (kept in data for compatibility).
+- **"Principal"** (was "Habilitada"): only ONE terminal can be principal at a
+  time. Clicking SEL unmarks all others. "Aplicar fila" enforces exclusivity
+  by setting `enabled=False` on all other profiles when Principal=ON.
+- **SEL column** on Multiterminal tree + `self.multiterminal_checked`.
+- Toolbar bar buttons converted to Type B (`tk.Button` themed) — Validar and
+  Guardar now follow the action-bar pattern.
+
+### Configuration tab — paths cleaned up
+
+Removed duplicate paths from Config Rutas (they exist in other tabs):
+
+| Removed | Already in |
+|---|---|
+| Terminal MT5 | Multiterminal profiles |
+| Carpeta datos MT5 | Multiterminal profiles |
+| MetaEditor | Auto-detected from terminal dir |
+| Archivo .ex5 UBS | UBS Agent tab |
+| Carpeta .set | UBS Agent tab |
+
+Config Rutas now only shows: MetaEditor (compilation), Carpeta/Archivo .mq5,
+Carpeta .ex5, Archivo .set UBS (single-set mode), Template tester.
 
 ### UBS Parámetros tab and global parameter system
 

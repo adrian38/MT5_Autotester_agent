@@ -566,3 +566,41 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 - **2026-06 (TD-2.6.1 partial)** — Seed evaluation: toolbar redesigned to
   2 rows (primary actions / destructive danger zone). All toolbar buttons now
   follow Type-B style (tk.Button themed in panel_alt bars).
+
+- **2026-06** — SEL checkbox column added to ALL Treeviews (Results,
+  History Runs, History Candidates, Compare, Universe Assets, Universe
+  Timeframes, Multiterminal). Matching `self.*_checked: set[str]` and
+  `_on_*_tree_click()` handlers follow the same pattern as Seeds/Universe.
+
+- **2026-06** — PanedWindow (drag-resizable splits) added to: Comparar
+  (horizontal), Universo (horizontal), Histórico (vertical), Multiterminal
+  (horizontal). Replaces fixed-weight grid layouts.
+
+- **2026-06** — Config Rutas simplified: removed paths that are duplicates
+  of other tabs (Terminal MT5, Carpeta datos MT5, MetaEditor, Archivo .ex5
+  UBS, Carpeta .set). Only compilation/template-specific paths remain.
+
+- **2026-06** — Multiterminal: PanedWindow + horizontal scrollbar on editor,
+  "Principal" (formerly "Habilitada") enforces radio exclusivity via
+  `_apply_multiterminal_editor`, Portable checkbox removed from UI.
+
+- **2026-06** — Universe: SEL in Timeframes table, three weight-reset buttons
+  (Limpiar marcados, Reset pesos activos, Reset pesos TF) — set `score=NULL`
+  in `candidates` and `seed_scores` without deleting rows.
+
+- **2026-06** — Histórico: Eliminar run (deletes run + all candidates + files
+  + reports from disk), Eliminar set (deletes .set + score=NULL for that
+  candidate). Both refresh Universe automatically.
+
+- **2026-06** — Seeds: "Eliminar todas" button. `_cleanup_seed_db()` helper
+  used by all three delete methods (deletes seed_scores + seed_overrides;
+  does NOT touch candidates generated from those seeds).
+
+- **2026-06** — Seeds: "⬆ Importar seeds" button — folder picker, runs
+  `force_fixed_lot_text` on each .set, deduplicates by SHA256 of normalised
+  content, copies to configured seeds folder. Modal progress popup +
+  summary dialog. Implemented in `ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+
+- **2026-06** — Universe auto-refresh: `_refresh_all()` (called on every
+  script completion) already includes `"ubs_universe"`. All direct DB weight
+  operations also call `_safe_refresh("ubs_universe", …)` explicitly.
