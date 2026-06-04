@@ -202,12 +202,8 @@ class SettingsLogicMixin:
     def _save_paths(self) -> None:
         self._write_single_path(COMPILE_ROOT_FILE, self.compile_root.get(), "Carpeta raiz donde estan los .mq5 a compilar.")
         self._write_single_path(EXPERTS_ROOT_FILE, self.experts_root.get(), "Carpeta raiz donde estan los .ex5 a testear.")
-        self._update_env_vars({
-            "MT5_TERMINAL_PATH": self.mt5_path.get().strip(),
-            "MT5_METAEDITOR_PATH": self.metaeditor_path.get().strip(),
-        })
         self._write_ui_settings()
-        self.status_text.set("Rutas y opciones guardadas")
+        self.status_text.set("Rutas guardadas")
         try:
             self._load_template()
         except Exception:
