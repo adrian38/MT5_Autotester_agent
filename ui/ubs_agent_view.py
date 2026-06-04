@@ -144,7 +144,7 @@ class UBSAgentViewMixin:
 
         # ── Filtros ─────────────────────────────────────────────────────────
         pass_config = self._card(inner, "Filtros de aceptacion")
-        pass_config.grid(row=2, column=0, sticky="ew", pady=(16, 0))
+        pass_config.grid(row=2, column=0, sticky="ew", pady=(16, 24))
         for column in (1, 3, 5):
             pass_config.columnconfigure(column, weight=1)
         pass_fields = [
@@ -174,5 +174,11 @@ class UBSAgentViewMixin:
             pass_config,
             text="Profit neto min es moneda de la cuenta. Con deposito 1000, default 100 = 10%. Estabilidad mensual: score, no filtro hard.",
             style="Muted.TLabel",
-        ).grid(row=3, column=0, columnspan=6, sticky="w", padx=20, pady=(4, 18))
+        ).grid(row=3, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
+        ttk.Button(
+            pass_config,
+            text="Guardar configuracion Agente UBS",
+            style="Primary.TButton",
+            command=self._save_ubs_agent_clicked,
+        ).grid(row=3, column=5, sticky="e", padx=20, pady=(4, 14))
 

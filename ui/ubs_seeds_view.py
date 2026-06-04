@@ -77,7 +77,7 @@ class UBSSeedsViewMixin:
                 )
         ttk.Button(
             criteria_bar,
-            text="Guardar criterios",
+            text="Guardar",
             style="TButton",
             command=self._save_seed_criteria_clicked,
         ).grid(row=0, column=11, sticky="e", padx=(0, 8))
@@ -104,7 +104,13 @@ class UBSSeedsViewMixin:
         _seed_to_e = ttk.Entry(dates_bar, textvariable=self.ubs_seed_to_date, width=14)
         _seed_to_e.grid(row=0, column=4, sticky="w", padx=(0, 12))
         self._tooltip_cls(_seed_to_e, _seed_date_tip)
-        ttk.Label(dates_bar, text="vacío = usa template", style="Muted.TLabel").grid(row=0, column=5, sticky="w")
+        ttk.Label(dates_bar, text="vacío = usa template", style="Muted.TLabel").grid(row=0, column=5, sticky="w", padx=(0, 12))
+        ttk.Button(
+            dates_bar,
+            text="Guardar",
+            style="TButton",
+            command=self._save_seed_criteria_clicked,
+        ).grid(row=0, column=6, sticky="e")
 
         table_frame = ttk.Frame(card, style="Panel.TFrame")
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 10))
@@ -126,7 +132,7 @@ class UBSSeedsViewMixin:
         widths = {"mark": 48, "status": 125, "symbol": 90, "period": 60, "score": 90, "accepted": 70, "override": 90, "reason": 220, "seed": 500}
         for column in columns:
             self.ubs_seeds_tree.heading(column, text=headings[column])
-            self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=column == "seed", anchor="center")
+            self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=False, anchor="center")
         self._make_tree_sortable(self.ubs_seeds_tree)
         self._attach_tree_scrollbars(table_frame, self.ubs_seeds_tree, 0)
         self.ubs_seeds_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
