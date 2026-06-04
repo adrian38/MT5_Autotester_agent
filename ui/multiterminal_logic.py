@@ -93,9 +93,9 @@ class MultiterminalLogicMixin:
 
     def _multiterminal_tree_values(self, profile: dict[str, object], index: int) -> tuple:
         name = str(profile.get("name") or f"Terminal {index + 1}")
+        is_principal = bool(profile.get("enabled"))
         return (
-            self._checkbox_text(name in self.multiterminal_checked),
-            "si" if bool(profile.get("enabled")) else "no",
+            "◉  principal" if is_principal else "○",
             name,
             str(profile.get("mt5_path") or ""),
             str(profile.get("data_dir") or ""),
@@ -110,10 +110,9 @@ class MultiterminalLogicMixin:
         selected_index = self.mt_selected_index
         for item in self.multiterminal_tree.get_children():
             self.multiterminal_tree.delete(item)
-        valid_names = set()
+        self.multiterminal_checked.clear()
         for index, profile in enumerate(self.multiterminal_profiles):
             name = str(profile.get("name") or f"Terminal {index + 1}")
-            valid_names.add(name)
             tag = "odd" if index % 2 else "even"
             self.multiterminal_tree.insert(
                 "",
@@ -122,7 +121,8 @@ class MultiterminalLogicMixin:
                 values=self._multiterminal_tree_values(profile, index),
                 tags=(tag,),
             )
-        self.multiterminal_checked.intersection_update(valid_names)
+            if bool(profile.get("enabled")):
+                self.multiterminal_checked.add(name)
         if selected_index is not None and 0 <= selected_index < len(self.multiterminal_profiles):
             self.multiterminal_tree.selection_set(str(selected_index))
             self.multiterminal_tree.focus(str(selected_index))
@@ -140,27 +140,24 @@ class MultiterminalLogicMixin:
             return
         if index < 0 or index >= len(self.multiterminal_profiles):
             return
-        name = str(self.multiterminal_profiles[index].get("name") or f"Terminal {index + 1}")
+        # Radio: pone enabled=True solo en este, False en todos los demás
+        for i, p in enumerate(self.multiterminal_profiles):
+            p["enabled"] = (i == index)
 
-        # Radio behavior: desmarcar todos los demás primero
-        was_checked = name in self.multiterminal_checked
-        self.multiterminal_checked.clear()
+        # Actualizar marca visual en todos los items
         for other in self.multiterminal_tree.get_children():
             v = list(self.multiterminal_tree.item(other, "values"))
             if v:
-                v[0] = self._checkbox_text(False)
+                other_idx = int(other)
+                v[0] = "◉  principal" if other_idx == index else "○"
                 self.multiterminal_tree.item(other, values=v)
 
-        # Si no estaba marcado, marcarlo ahora; si ya estaba, queda desmarcado (toggle)
-        if not was_checked:
-            self.multiterminal_checked.add(name)
+        # Actualizar SEL set
+        name = str(self.multiterminal_profiles[index].get("name") or f"Terminal {index + 1}")
+        self.multiterminal_checked = {name}
 
-        values = list(self.multiterminal_tree.item(item, "values"))
-        if values:
-            values[0] = self._checkbox_text(name in self.multiterminal_checked)
-            self.multiterminal_tree.item(item, values=values)
-
-        # Cargar datos en el editor
+        # Cargar datos en el editor y sincronizar checkbox
+        self.mt_profile_enabled.set(True)
         self._select_multiterminal_profile(index)
         return "break"
 
