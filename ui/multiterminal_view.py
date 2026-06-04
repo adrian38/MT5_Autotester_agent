@@ -180,8 +180,19 @@ class MultiterminalViewMixin:
         state_row = tk.Frame(editor, bg=self.colors["panel"])
         state_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=16, pady=(4, 8))
         state_row.columnconfigure(0, weight=1)
-        ttk.Checkbutton(state_row, text="Habilitada", variable=self.mt_profile_enabled, style="Panel.TCheckbutton").grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(state_row, text="Portable",   variable=self.mt_profile_portable, style="Panel.TCheckbutton").grid(row=0, column=1, sticky="e")
+        _cb_principal = ttk.Checkbutton(state_row, text="Principal", variable=self.mt_profile_enabled, style="Panel.TCheckbutton")
+        _cb_principal.grid(row=0, column=0, sticky="w")
+        self._tooltip_cls(_cb_principal,
+            "Marca esta terminal como activa.\n"
+            "Si solo hay una principal, es la que se usa siempre.\n"
+            "Con varias, el agente reparte trabajos entre todas las marcadas.")
+        _cb_portable = ttk.Checkbutton(state_row, text="Portable", variable=self.mt_profile_portable, style="Panel.TCheckbutton")
+        _cb_portable.grid(row=0, column=1, sticky="e")
+        self._tooltip_cls(_cb_portable,
+            "Arranca MT5 con el flag /portable.\n"
+            "Los datos (configuración, historial, EAs) se guardan en la\n"
+            "carpeta del ejecutable en vez de en %AppData%.\n"
+            "Útil para instalaciones de MT5 copiadas fuera de Program Files.")
         ttk.Label(editor, text="Nombre", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=7)
         ttk.Entry(editor, textvariable=self.mt_profile_name).grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=7)
         self._path_row(editor, "Terminal MT5",     self.mt_profile_mt5_path,     2, self._browse_file)
