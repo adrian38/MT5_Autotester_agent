@@ -18,44 +18,64 @@ class UBSResultsViewMixin:
         results.rowconfigure(4, weight=1)
 
         results_bar = tk.Frame(results, bg=self.colors["panel_alt"])
-        results_bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
+        results_bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         results_bar.columnconfigure(0, weight=1)
+
+        # ── Fila 0: resumen + acciones globales del run ──
         tk.Label(
             results_bar,
             textvariable=self.ubs_results_summary,
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
-        # Grupo 1: abrir archivos
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
+        tk.Button(
+            results_bar, text="⬇  Exportar run",
+            bg=self.colors["accent"], fg="#ffffff",
+            relief="flat", borderwidth=0, padx=10, pady=5,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._export_ubs_results_run,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            results_bar, text="Actualizar",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            relief="solid", borderwidth=1, padx=8, pady=5,
+            font=("Segoe UI", 9), cursor="hand2",
+            command=self._refresh_ubs_results_panel,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            results_bar, text="Limpiar vista",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            relief="solid", borderwidth=1, padx=8, pady=5,
+            font=("Segoe UI", 9), cursor="hand2",
+            command=self._hide_latest_ubs_results,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=(5, 3))
+
+        # ── Fila 1: acciones sobre la fila seleccionada ──
+        row1 = tk.Frame(results_bar, bg=self.colors["panel_alt"])
+        row1.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 5))
+        row1.columnconfigure(0, weight=1)
+        tk.Label(row1, text="Fila seleccionada:", bg=self.colors["panel_alt"],
+                 fg=self.colors["muted"], font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")
         for col, (label, cmd) in enumerate([
-            ("Abrir output", self._open_ubs_output_dir),
-            ("Abrir set",    self._open_selected_ubs_set),
+            ("Abrir output",  self._open_ubs_output_dir),
+            ("Abrir set",     self._open_selected_ubs_set),
             ("Abrir reporte", self._open_selected_ubs_report),
         ], start=1):
-            tk.Button(results_bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
-                      relief="solid", borderwidth=1, padx=8, pady=5,
-                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
-                      ).grid(row=0, column=col, sticky="e", padx=(0, 4), pady=5)
-        # Grupo 2: reprobar (con separación visual)
+            tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=7, pady=3,
+                      font=("Segoe UI", 8), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=(0, 4))
+        tk.Label(row1, text="|", bg=self.colors["panel_alt"],
+                 fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=4, padx=(4, 4))
         for col, (label, cmd) in enumerate([
             ("Reprobar mismatch", self._retry_selected_ubs_mismatch),
             ("Reprobar run",      self._retry_visible_ubs_run_mismatches),
-        ], start=4):
-            tk.Button(results_bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
-                      relief="solid", borderwidth=1, padx=8, pady=5,
-                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
-                      ).grid(row=0, column=col, sticky="e", padx=(0, 4) if col < 5 else (16, 4), pady=5)
-        # Grupo 3: utilidad
-        for col, (label, cmd) in enumerate([
-            ("Limpiar vista", self._hide_latest_ubs_results),
-            ("Actualizar",    self._refresh_ubs_results_panel),
-        ], start=6):
-            padx = (16, 4) if col == 6 else (0, 10)
-            tk.Button(results_bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
-                      relief="solid", borderwidth=1, padx=8, pady=5,
-                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
-                      ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
+        ], start=5):
+            tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=7, pady=3,
+                      font=("Segoe UI", 8), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=(0, 4))
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(0, 4)

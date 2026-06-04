@@ -3,12 +3,13 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1145,6 +1146,115 @@ class UBSResultsLogicMixin:
             return int(row[0] or 0) if row else 0
         finally:
             conn.close()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Export
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _export_ubs_results_run(self) -> None:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo("Exportar run", "No existe memoria UBS.")
+            return
+
+        base_dir = filedialog.askdirectory(title="Carpeta destino para la exportación")
+        if not base_dir:
+            return
+
+        try:
+            conn = sqlite3.connect(memory_path, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            run = conn.execute(
+                "select * from runs where hidden=0 order by id desc limit 1"
+            ).fetchone()
+            if run is None:
+                messagebox.showinfo("Exportar run", "No hay ningún run visible.")
+                conn.close()
+                return
+            rows = conn.execute(
+                """
+                select id, status, set_path, report_path, metrics_json
+                from candidates where run_id = ?
+                """,
+                (run["id"],),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error al leer memoria UBS", str(exc))
+            return
+
+        created = str(run["created_at"] or "").replace(":", "-").replace(" ", "_")[:16]
+        run_folder  = Path(base_dir) / f"Run_{run['id']}_{created}"
+        accept_dir  = run_folder / "aceptados"
+        netpos_dir  = run_folder / "fallidos" / "net_profit_positivo"
+        otros_dir   = run_folder / "fallidos" / "otros"
+        for d in (accept_dir, netpos_dir, otros_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        counts = {"aceptados": 0, "net_profit_positivo": 0, "otros": 0, "sin_archivo": 0}
+
+        def _copy(dest: Path, cid: int, set_str: str, rep_str: str) -> None:
+            stem = f"{Path(set_str).stem}_{cid}" if set_str else str(cid)
+            copied = False
+            for src_str, fallback_exts in (
+                (set_str,  []),
+                (rep_str,  [".html", ".htm"]),
+            ):
+                if not src_str:
+                    continue
+                src = Path(src_str)
+                if not src.exists() and fallback_exts:
+                    for ext in fallback_exts:
+                        alt = src.with_suffix(ext)
+                        if alt.exists():
+                            src = alt
+                            break
+                if src.exists():
+                    shutil.copy2(src, dest / f"{stem}{src.suffix}")
+                    copied = True
+            if not copied:
+                counts["sin_archivo"] += 1
+
+        for row in rows:
+            status    = str(row["status"] or "")
+            cid       = int(row["id"] or 0)
+            set_path  = str(row["set_path"] or "")
+            rep_path  = str(row["report_path"] or "")
+
+            if status == "accepted":
+                _copy(accept_dir, cid, set_path, rep_path)
+                counts["aceptados"] += 1
+            elif status in ("rejected", "no_trades"):
+                net_profit = 0.0
+                try:
+                    data = json.loads(row["metrics_json"] or "{}")
+                    net_profit = float(data.get("net_profit") or 0)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                if net_profit > 0:
+                    _copy(netpos_dir, cid, set_path, rep_path)
+                    counts["net_profit_positivo"] += 1
+                else:
+                    _copy(otros_dir, cid, set_path, rep_path)
+                    counts["otros"] += 1
+            else:
+                _copy(otros_dir, cid, set_path, "")
+                counts["otros"] += 1
+
+        summary = (
+            f"Exportado en:\n{run_folder}\n\n"
+            f"  aceptados/                   {counts['aceptados']}\n"
+            f"  fallidos/net_profit_positivo  {counts['net_profit_positivo']}\n"
+            f"  fallidos/otros               {counts['otros']}"
+        )
+        if counts["sin_archivo"]:
+            summary += f"\n\n  Sin archivos disponibles:    {counts['sin_archivo']}"
+        messagebox.showinfo("Exportar run — completado", summary)
+        try:
+            subprocess.Popen(["explorer", str(run_folder)])
+        except Exception:
+            pass
 
 
 
