@@ -159,6 +159,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Genera los .ini y muestra los comandos, pero no abre MT5.",
     )
+    parser.add_argument(
+        "--from-date",
+        default="",
+        help="Fecha inicio backtest en formato YYYY.MM.DD. Sobreescribe FromDate del template.",
+    )
+    parser.add_argument(
+        "--to-date",
+        default="",
+        help="Fecha fin backtest en formato YYYY.MM.DD. Sobreescribe ToDate del template.",
+    )
     return parser.parse_args()
 
 
@@ -1220,6 +1230,12 @@ def main() -> int:
             return 1
 
     template = load_template(template_path)
+    if args.from_date.strip():
+        template.setdefault("Tester", {})
+        template["Tester"]["FromDate"] = args.from_date.strip()
+    if args.to_date.strip():
+        template.setdefault("Tester", {})
+        template["Tester"]["ToDate"] = args.to_date.strip()
     terminal_data_dirs = [] if args.multi_terminal else ([settings.data_dir] if settings.data_dir else [])
     if not args.multi_terminal and not terminal_data_dirs:
         terminal_data_dirs = discover_terminal_data_dirs(experts)

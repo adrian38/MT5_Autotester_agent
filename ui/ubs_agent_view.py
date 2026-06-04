@@ -51,8 +51,16 @@ class UBSAgentViewMixin:
                 row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
             )
 
+        dates_row = ttk.Frame(agent, style="Panel.TFrame")
+        dates_row.grid(row=2, column=0, columnspan=6, sticky="ew", padx=20, pady=(4, 0))
+        ttk.Label(dates_row, text="Desde (YYYY.MM.DD)", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(dates_row, textvariable=self.ubs_agent_from_date, width=14).grid(row=0, column=1, sticky="w", padx=(0, 24))
+        ttk.Label(dates_row, text="Hasta (YYYY.MM.DD)", style="Panel.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Entry(dates_row, textvariable=self.ubs_agent_to_date, width=14).grid(row=0, column=3, sticky="w", padx=(0, 16))
+        ttk.Label(dates_row, text="Vacío = usa las fechas del template tester", style="Muted.TLabel").grid(row=0, column=4, sticky="w")
+
         exec_row = tk.Frame(agent, bg=self.colors["panel"])
-        exec_row.grid(row=2, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))
+        exec_row.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))
         exec_row.columnconfigure(0, weight=1)
         exec_text = tk.Frame(exec_row, bg=self.colors["panel"])
         exec_text.grid(row=0, column=0, sticky="w")
@@ -60,10 +68,10 @@ class UBSAgentViewMixin:
         tk.Label(exec_text, text="Activa feedback real; apagado solo genera variantes.", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
         self._toggle_switch_cls(exec_row, variable=self.ubs_agent_execute, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
 
-        self._build_ubs_multiterminal_row(agent, row=3)
+        self._build_ubs_multiterminal_row(agent, row=4)
 
         buttons = ttk.Frame(agent, style="Panel.TFrame")
-        buttons.grid(row=4, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
+        buttons.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
         buttons.columnconfigure(0, weight=1)
         buttons.columnconfigure(1, weight=1)
         buttons.columnconfigure(2, weight=1)
@@ -94,7 +102,7 @@ class UBSAgentViewMixin:
         )
         self.ubs_continue_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         ttk.Label(agent, textvariable=self.ubs_continue_status, style="Muted.TLabel").grid(
-            row=5, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
+            row=6, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
 
         pass_config = self._card(parent, "Filtros de aceptacion")

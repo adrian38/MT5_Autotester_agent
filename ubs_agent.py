@@ -253,6 +253,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-recovery-factor", type=float, default=score_defaults.min_recovery_factor)
     parser.add_argument("--min-positive-month-ratio", type=float, default=score_defaults.min_positive_month_ratio)
     parser.add_argument("--delay", type=int, default=1)
+    parser.add_argument("--from-date", default="", help="Fecha inicio YYYY.MM.DD. Sobreescribe FromDate del template.")
+    parser.add_argument("--to-date", default="", help="Fecha fin YYYY.MM.DD. Sobreescribe ToDate del template.")
     parser.add_argument("--execute-backtests", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
@@ -587,6 +589,10 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         command.extend(["--symbol-map", args.symbol_map])
     if args.dry_run:
         command.append("--dry-run")
+    if getattr(args, "from_date", ""):
+        command.extend(["--from-date", args.from_date])
+    if getattr(args, "to_date", ""):
+        command.extend(["--to-date", args.to_date])
     print("Ejecutando:", " ".join(f'"{part}"' if " " in part else part for part in command))
     process = subprocess.run(command, cwd=BASE_DIR, text=True)
     return process.returncode

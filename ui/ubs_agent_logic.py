@@ -50,6 +50,10 @@ class UBSAgentLogicMixin:
             "--max-seeds", str(max_seeds),
             "--delay", str(self.delay.get()),
         ]
+        if self.ubs_agent_from_date.get().strip():
+            args.extend(["--from-date", self.ubs_agent_from_date.get().strip()])
+        if self.ubs_agent_to_date.get().strip():
+            args.extend(["--to-date", self.ubs_agent_to_date.get().strip()])
         if continue_last:
             args.append("--continue-last-run")
         args.extend(self._ubs_score_args())

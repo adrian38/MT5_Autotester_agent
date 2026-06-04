@@ -150,6 +150,10 @@ class UBSSeedsLogicMixin:
             "--template", self.template_path.get(),
             "--delay", str(self.delay.get()),
         ]
+        if self.ubs_seed_from_date.get().strip():
+            args.extend(["--from-date", self.ubs_seed_from_date.get().strip()])
+        if self.ubs_seed_to_date.get().strip():
+            args.extend(["--to-date", self.ubs_seed_to_date.get().strip()])
         args.extend(self._ubs_seed_score_args())
         if self.multiterminal_enabled.get():
             args.extend(self._multiterminal_args(require_ubs=True))

@@ -15,7 +15,7 @@ class UBSSeedsViewMixin:
         card = self._card(parent, "Semillas UBS")
         card.grid(row=0, column=0, sticky="nsew")
         card.columnconfigure(0, weight=1)
-        card.rowconfigure(3, weight=1)
+        card.rowconfigure(4, weight=1)
 
         toolbar = ttk.Frame(card, style="Panel.TFrame")
         toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 8))
@@ -88,8 +88,17 @@ class UBSSeedsViewMixin:
             command=self._apply_seed_criteria_clicked,
         ).grid(row=0, column=12, sticky="e")
 
+        dates_bar = ttk.Frame(card, style="Panel.TFrame")
+        dates_bar.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 4))
+        ttk.Label(dates_bar, text="Fechas Seeds:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(dates_bar, text="Desde", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(0, 4))
+        ttk.Entry(dates_bar, textvariable=self.ubs_seed_from_date, width=14).grid(row=0, column=2, sticky="w", padx=(0, 16))
+        ttk.Label(dates_bar, text="Hasta", style="Muted.TLabel").grid(row=0, column=3, sticky="w", padx=(0, 4))
+        ttk.Entry(dates_bar, textvariable=self.ubs_seed_to_date, width=14).grid(row=0, column=4, sticky="w", padx=(0, 12))
+        ttk.Label(dates_bar, text="(YYYY.MM.DD — vacío = usa template)", style="Muted.TLabel").grid(row=0, column=5, sticky="w")
+
         table_frame = ttk.Frame(card, style="Panel.TFrame")
-        table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 10))
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 10))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         columns = ("mark", "status", "symbol", "period", "score", "accepted", "override", "reason", "seed")
@@ -119,7 +128,7 @@ class UBSSeedsViewMixin:
         self.ubs_seeds_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_seed_report())
 
         editor = ttk.Frame(card, style="Panel.TFrame")
-        editor.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 18))
+        editor.grid(row=5, column=0, sticky="ew", padx=20, pady=(0, 18))
         editor.columnconfigure(1, weight=1)
         editor.columnconfigure(3, weight=1)
         ttk.Label(editor, textvariable=self.ubs_seed_detail, style="Muted.TLabel").grid(
