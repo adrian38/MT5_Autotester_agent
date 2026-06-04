@@ -1151,6 +1151,60 @@ class MT5AutotesterUI(
 
         telegram_notify.send_async(message, on_result=on_result)
 
+    def _confirm_execution_start(self, title: str, total: int, details: list[str]) -> bool:
+        if total <= 0:
+            messagebox.showwarning(title, "No hay elementos para ejecutar.")
+            return False
+
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.configure(bg=COLORS["panel"])
+
+        result = {"start": False}
+        body = tk.Frame(dialog, bg=COLORS["panel"], padx=22, pady=18)
+        body.grid(row=0, column=0, sticky="nsew")
+        tk.Label(
+            body,
+            text=f"Se van a ejecutar {total} elemento(s) en total.",
+            bg=COLORS["panel"], fg=COLORS["text"],
+            font=("Segoe UI", 11, "bold"),
+            anchor="w", justify="left",
+        ).grid(row=0, column=0, sticky="ew")
+        detail_text = "\n".join(details)
+        tk.Label(
+            body,
+            text=detail_text,
+            bg=COLORS["panel"], fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+            anchor="w", justify="left",
+            wraplength=520,
+        ).grid(row=1, column=0, sticky="ew", pady=(10, 16))
+
+        buttons = tk.Frame(body, bg=COLORS["panel"])
+        buttons.grid(row=2, column=0, sticky="e")
+
+        def start() -> None:
+            result["start"] = True
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancelar", command=cancel).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Empezar", style="Primary.TButton", command=start).grid(row=0, column=1)
+        dialog.bind("<Escape>", lambda _event: cancel())
+        dialog.bind("<Return>", lambda _event: start())
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - dialog.winfo_width()) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - dialog.winfo_height()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.wait_window()
+        return result["start"]
+
     def _safe_refresh(self, label: str, callback) -> None:
         try:
             callback()
