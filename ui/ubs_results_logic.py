@@ -1211,6 +1211,54 @@ class UBSResultsLogicMixin:
         finally:
             conn.close()
 
+    def _retry_no_trades_result(self) -> None:
+        info = self._selected_ubs_result_info()
+        if not info:
+            messagebox.showinfo("Repetir sin ops", "Selecciona un resultado primero.")
+            return
+        if info.get("status") != "no_trades":
+            messagebox.showinfo("Repetir sin ops",
+                                "Esta acción solo aplica a filas con estado 'sin operaciones'.")
+            return
+        candidate_id = info.get("id", "").strip()
+        set_path = info.get("set", "")
+        if not candidate_id:
+            messagebox.showinfo("Repetir sin ops", "La fila seleccionada no tiene candidate id.")
+            return
+        try:
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--template", self.template_path.get(),
+                "--retry-candidate-id", candidate_id,
+                "--delay", str(self.delay.get()),
+            ]
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+            args.extend(self._ubs_score_args())
+            if not self.multiterminal_enabled.get():
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar retry sin ops", str(exc))
+            return
+
+        details = [
+            "Accion: Repetir candidato sin operaciones",
+            f"Candidate: #{candidate_id}",
+            f"Objetivo: {info.get('symbol', '')} {info.get('period', '')}",
+            f"Set: {Path(set_path).name if set_path else '-'}",
+            "Backtests previstos: 1",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar repetir sin ops", 1, details):
+            self._run_script("ubs_agent.py", args)
+
     # ──────────────────────────────────────────────────────────────────────
     # Export
     # ──────────────────────────────────────────────────────────────────────

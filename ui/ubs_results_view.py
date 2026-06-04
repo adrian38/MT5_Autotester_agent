@@ -69,8 +69,9 @@ class UBSResultsViewMixin:
         tk.Label(row1, text="|", bg=self.colors["panel_alt"],
                  fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=4, padx=(4, 4))
         for col, (label, cmd) in enumerate([
-            ("Reprobar mismatch", self._retry_selected_ubs_mismatch),
-            ("Reprobar run",      self._retry_visible_ubs_run_mismatches),
+            ("Reprobar mismatch",  self._retry_selected_ubs_mismatch),
+            ("Reprobar run",       self._retry_visible_ubs_run_mismatches),
+            ("Repetir sin ops",    self._retry_no_trades_result),
         ], start=5):
             tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
                       relief="solid", borderwidth=1, padx=8, pady=5,
