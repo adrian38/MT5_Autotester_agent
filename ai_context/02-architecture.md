@@ -5,8 +5,33 @@
 ```text
 .
 |-- app_ui.py                    # Tkinter desktop app and UI orchestration
+|-- app_ui_dashboard_logic.py    # Dashboard compile/backtest action logic
+|-- app_ui_dashboard_view.py     # Dashboard widget/layout mixin
+|-- app_ui_files_logic.py        # Files/Logs refresh logic mixin
+|-- app_ui_files_view.py         # Files/Logs widget/layout mixin
+|-- app_ui_multiterminal_logic.py # Multiterminal profiles/state/validation mixin
+|-- app_ui_multiterminal_view.py # Multiterminal widget/layout mixin
+|-- app_ui_portfolio_logic.py    # Portfolio tab actions/workbook execution mixin
+|-- app_ui_portfolio_view.py     # Portfolio tab widget/layout mixin
+|-- app_ui_settings_logic.py     # Settings/template/path action logic
+|-- app_ui_settings_view.py      # Settings widget/layout mixin
+|-- app_ui_ubs_agent_logic.py    # UBS Agent launch/continue logic
+|-- app_ui_ubs_agent_view.py     # UBS Agent widget/layout mixin
+|-- app_ui_ubs_params_logic.py   # UBS Parameters/global params logic
+|-- app_ui_ubs_params_view.py    # UBS Parameters widget/layout mixin
+|-- app_ui_ubs_results_logic.py  # UBS Results/History/Compare logic
+|-- app_ui_ubs_results_view.py   # UBS Results/History/Compare layouts
+|-- app_ui_ubs_seeds_logic.py    # UBS Seeds tab/evaluation logic
+|-- app_ui_ubs_seeds_view.py     # UBS Seeds widget/layout mixin
+|-- app_ui_ubs_universe_logic.py # UBS Universe enable/weights logic
+|-- app_ui_ubs_universe_view.py  # UBS Universe widget/layout mixin
 |-- run_tests.py                 # Batch Strategy Tester runner
 |-- ubs_agent.py                 # UBS set-generation/scoring agent
+|-- ubs_memory.py                # UBS SQLite persistence and row mapping
+|-- ubs_models.py                # Shared UBS dataclasses
+|-- ubs_params_catalog.py        # UBS parameter labels/descriptions/format helpers
+|-- ubs_seeds.py                 # UBS seed file discovery/naming/hash helpers
+|-- ubs_universe.py              # UBS asset universe, aliases, disabled symbols
 |-- ubs_score.py                 # UBS report scoring and pass/fail metrics
 |-- ubs_generate_sets.py         # UBS set mutation/generation helpers (standalone CLI)
 |-- ubs_prepare_sets.py          # UBS source-set normalization/import helper
@@ -54,9 +79,22 @@
 
 ## Composition Root
 
-`app_ui.py` is the user-facing composition root. It imports helper functions
-from the CLI scripts instead of duplicating path discovery and inference
-logic. Portfolio generators are imported from `portfolio_manager.generator`.
+`app_ui.py` is the user-facing composition root. It owns the app shell
+(window, sidebar, section registry, shared custom Tk widgets, theme/style,
+common dialogs/process plumbing) and composes per-screen mixins. It should not
+own tab-specific widget trees or tab-specific business behavior.
+
+Each substantial screen/tab uses a view/logic pair:
+
+- `app_ui_<screen>_view.py`: Tk widgets, layout, Treeview columns/tags, button
+  wiring, and visual-only setup.
+- `app_ui_<screen>_logic.py`: state transitions, validation, persistence,
+  database queries, path/report calculations, and long-running actions.
+
+Current pairs: Dashboard, Files/Logs, Multiterminal, Portfolio, Settings, UBS
+Agent, UBS Parameters, UBS Results/History/Compare, UBS Seeds, and UBS
+Universe. Shared cross-screen behavior may stay in `app_ui.py` only when it is
+genuinely shell-level or generic infrastructure.
 
 The CLI scripts can still run independently and should remain usable without
 the UI.
@@ -117,6 +155,16 @@ Owns the UBS agent workflow:
 - Retry a single candidate with `--retry-candidate-id`.
 - Retry all `report_mismatch` candidates in a run with `--retry-run-id` and
   `--retry-mismatch-run`.
+
+UBS support code is split out of this file where it has clear ownership:
+
+- `ubs_models.py`: shared `Seed` and `Variant` dataclasses.
+- `ubs_memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
+  and conversion from candidate rows to `Variant`.
+- `ubs_seeds.py`: seed `.set` discovery, manifest handling, seed report copy
+  names, and file hashing used to reconcile interrupted seed evaluations.
+- `ubs_universe.py`: RoboForex universe parsing, common alias canonicalisation,
+  disabled symbol JSON persistence, and disabled-seed filtering.
 
 **Key constants** (all in `ubs_agent.py`):
 

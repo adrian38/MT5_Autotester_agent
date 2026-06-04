@@ -1,32 +1,29 @@
 from __future__ import annotations
 
 import argparse
-import configparser
-import csv
-import hashlib
 import json
 import random
 import shutil
-import sqlite3
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from run_tests import (
     TIMEFRAME_ENUM,
     apply_symbol_map,
-    infer_period_from_set,
-    infer_symbol_from_set,
     load_set_params,
     normalize_set_symbol,
     parse_symbol_map,
 )
 from ubs_generate_sets import format_like, parse_numeric
+from ubs_memory import AgentMemory, variant_from_candidate_row
+from ubs_models import Seed, Variant
 from ubs_score import ScoreConfig, ScoreResult, score_report_file
+from ubs_seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs_universe import disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,7 +34,7 @@ DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
 DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
-DEFAULT_DISABLED_SYMBOLS = BASE_DIR / "outputs" / "ubs_disabled_symbols.json"
+DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
 DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
@@ -215,597 +212,6 @@ def is_agent_mutable_key(key: str) -> bool:
     return key in ALLOWED_MUTATION_KEYS or any(key.startswith(p) for p in ALLOWED_MUTATION_PREFIXES)
 
 
-@dataclass(frozen=True)
-class Seed:
-    path: Path
-    symbol: str
-    period: str
-    family: str
-    run_strategy: str
-
-
-@dataclass(frozen=True)
-class Variant:
-    path: Path
-    seed: Seed
-    target_symbol: str
-    target_period: str
-    mutated_keys: tuple[str, ...]
-    missing_lot_keys: tuple[str, ...]
-    policy: str
-
-
-class AgentMemory:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
-        self._init()
-
-    def close(self) -> None:
-        self.conn.close()
-
-    def _init(self) -> None:
-        self.conn.executescript(
-            """
-            create table if not exists runs (
-                id integer primary key autoincrement,
-                created_at text not null,
-                source_dir text not null,
-                output_dir text not null,
-                generations integer not null,
-                variants_per_seed integer not null,
-                max_seeds integer not null,
-                execute_backtests integer not null,
-                dry_run integer not null,
-                hidden integer not null default 0
-            );
-            create table if not exists candidates (
-                id integer primary key autoincrement,
-                run_id integer not null,
-                generation integer not null,
-                seed_path text not null,
-                set_path text not null,
-                symbol text not null,
-                target_symbol text not null,
-                period text not null,
-                family text not null,
-                run_strategy text not null,
-                mutated_keys text not null,
-                missing_lot_keys text not null,
-                policy text not null,
-                report_path text,
-                score real,
-                accepted integer,
-                metrics_json text,
-                status text not null,
-                created_at text not null
-            );
-            create table if not exists seed_scores (
-                id integer primary key autoincrement,
-                seed_path text not null unique,
-                seed_mtime real not null,
-                seed_size integer not null,
-                symbol text not null,
-                period text not null,
-                family text not null,
-                run_strategy text not null,
-                report_path text,
-                score real,
-                accepted integer,
-                metrics_json text,
-                status text not null,
-                active integer not null default 1,
-                last_seen text not null,
-                evaluated_at text
-            );
-            create table if not exists seed_overrides (
-                seed_path text primary key,
-                symbol text not null default '',
-                period text not null default '',
-                updated_at text not null
-            );
-            """
-        )
-        self._ensure_column("runs", "hidden", "integer not null default 0")
-        self.conn.execute(
-            """
-            update seed_scores
-            set status='report_mismatch', accepted=null
-            where status in ('accepted', 'rejected')
-              and (upper(symbol)='UNKNOWN' or upper(period)='UNKNOWN')
-            """
-        )
-        self.conn.commit()
-
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")}
-        if column not in columns:
-            self.conn.execute(f"alter table {table} add column {column} {definition}")
-
-    def create_run(
-        self,
-        source_dir: Path,
-        output_dir: Path,
-        generations: int,
-        variants_per_seed: int,
-        max_seeds: int,
-        execute_backtests: bool,
-        dry_run: bool,
-    ) -> int:
-        cur = self.conn.execute(
-            """
-            insert into runs (
-                created_at, source_dir, output_dir, generations, variants_per_seed,
-                max_seeds, execute_backtests, dry_run
-            ) values (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                str(source_dir),
-                str(output_dir),
-                generations,
-                variants_per_seed,
-                max_seeds,
-                int(execute_backtests),
-                int(dry_run),
-            ),
-        )
-        self.conn.commit()
-        return int(cur.lastrowid)
-
-    def record_variant(self, run_id: int, generation: int, variant: Variant, status: str = "generated") -> None:
-        self.conn.execute(
-            """
-            insert into candidates (
-                run_id, generation, seed_path, set_path, symbol, target_symbol, period,
-                family, run_strategy, mutated_keys, missing_lot_keys, policy, status, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                generation,
-                str(variant.seed.path),
-                str(variant.path),
-                variant.seed.symbol,
-                variant.target_symbol,
-                variant.target_period,
-                variant.seed.family,
-                variant.seed.run_strategy,
-                ";".join(variant.mutated_keys),
-                ";".join(variant.missing_lot_keys),
-                variant.policy,
-                status,
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        self.conn.commit()
-
-    def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
-        accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
-        self.conn.execute(
-            """
-            update candidates
-            set report_path=?, score=?, accepted=?, metrics_json=?, status=?
-            where set_path=?
-            """,
-            (
-                str(report_path) if report_path else (result.report_path if result else None),
-                result.score if result else None,
-                accepted,
-                result.to_json() if result else None,
-                status,
-                str(set_path),
-            ),
-        )
-        self.conn.commit()
-
-    def prepare_seed_evaluation(self, seeds: list[Seed], *, force: bool = False) -> list[Seed]:
-        existing = {
-            str(row["seed_path"]): row
-            for row in self.conn.execute("select * from seed_scores").fetchall()
-        }
-        now = datetime.now().isoformat(timespec="seconds")
-        current_paths = {str(seed.path) for seed in seeds}
-        self.conn.execute(
-            "update seed_scores set active=0 where seed_path not in ({})".format(
-                ",".join("?" for _ in current_paths) if current_paths else "''"
-            ),
-            tuple(current_paths),
-        )
-        pending: list[Seed] = []
-        for seed in seeds:
-            try:
-                stat = seed.path.stat()
-            except OSError:
-                continue
-            path_text = str(seed.path)
-            row = existing.get(path_text)
-            changed = (
-                row is None
-                or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
-                or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch"}
-                or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
-                or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
-            )
-            should_eval = force or changed
-            if should_eval:
-                pending.append(seed)
-            if row is None:
-                self.conn.execute(
-                    """
-                    insert into seed_scores (
-                        seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
-                        status, active, last_seen
-                    ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
-                    """,
-                    (
-                        path_text,
-                        float(stat.st_mtime),
-                        int(stat.st_size),
-                        seed.symbol,
-                        seed.period,
-                        seed.family,
-                        seed.run_strategy,
-                        now,
-                    ),
-                )
-            else:
-                previous_status = str(row["status"] or "")
-                if should_eval and previous_status == "no_trades":
-                    self.conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                            active=1, last_seen=?
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            seed.symbol,
-                            seed.period,
-                            seed.family,
-                            seed.run_strategy,
-                            now,
-                            path_text,
-                        ),
-                    )
-                elif should_eval:
-                    self.conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                            report_path=null, score=null, accepted=null, metrics_json=null,
-                            status='pending', active=1, last_seen=?, evaluated_at=null
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            seed.symbol,
-                            seed.period,
-                            seed.family,
-                            seed.run_strategy,
-                            now,
-                            path_text,
-                        ),
-                    )
-                else:
-                    self.conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                            active=1, last_seen=?
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            seed.symbol,
-                            seed.period,
-                            seed.family,
-                            seed.run_strategy,
-                            now,
-                            path_text,
-                        ),
-                    )
-        self.conn.commit()
-        return pending
-
-    def prepare_single_seed_evaluation(self, seed: Seed, *, force: bool = False) -> bool:
-        try:
-            stat = seed.path.stat()
-        except OSError:
-            return False
-        path_text = str(seed.path)
-        row = self.conn.execute("select * from seed_scores where seed_path=?", (path_text,)).fetchone()
-        now = datetime.now().isoformat(timespec="seconds")
-        if row is None:
-            self.conn.execute(
-                """
-                insert into seed_scores (
-                    seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
-                    status, active, last_seen
-                ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
-                """,
-                (
-                    path_text,
-                    float(stat.st_mtime),
-                    int(stat.st_size),
-                    seed.symbol,
-                    seed.period,
-                    seed.family,
-                    seed.run_strategy,
-                    now,
-                ),
-            )
-        else:
-            self.conn.execute(
-                """
-                update seed_scores
-                set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                    report_path=null, score=null, accepted=null, metrics_json=null,
-                    status='pending', active=1, last_seen=?, evaluated_at=null
-                where seed_path=?
-                """
-                if force
-                else """
-                update seed_scores
-                set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                    active=1, last_seen=?
-                where seed_path=?
-                """,
-                (
-                    float(stat.st_mtime),
-                    int(stat.st_size),
-                    seed.symbol,
-                    seed.period,
-                    seed.family,
-                    seed.run_strategy,
-                    now,
-                    path_text,
-                ),
-            )
-        self.conn.commit()
-        return True
-
-    def apply_seed_overrides(self, seeds: list[Seed]) -> list[Seed]:
-        rows = self.conn.execute("select seed_path, symbol, period from seed_overrides").fetchall()
-        overrides = {
-            str(row["seed_path"]): (
-                str(row["symbol"] or "").strip().upper(),
-                str(row["period"] or "").strip().upper(),
-            )
-            for row in rows
-        }
-        if not overrides:
-            return seeds
-        resolved: list[Seed] = []
-        for seed in seeds:
-            symbol_override, period_override = overrides.get(str(seed.path), ("", ""))
-            resolved.append(
-                Seed(
-                    path=seed.path,
-                    symbol=symbol_override or seed.symbol,
-                    period=period_override or seed.period,
-                    family=seed.family,
-                    run_strategy=seed.run_strategy,
-                )
-            )
-        return resolved
-
-    def record_seed_score(self, seed: Seed, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
-        accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
-        self.conn.execute(
-            """
-            update seed_scores
-            set symbol=?, period=?, family=?, run_strategy=?,
-                report_path=?, score=?, accepted=?, metrics_json=?, status=?, active=1,
-                evaluated_at=?
-            where seed_path=?
-            """,
-            (
-                seed.symbol,
-                seed.period,
-                seed.family,
-                seed.run_strategy,
-                str(report_path) if report_path else (result.report_path if result else None),
-                result.score if result else None,
-                accepted,
-                result.to_json() if result else None,
-                status,
-                datetime.now().isoformat(timespec="seconds"),
-                str(seed.path),
-            ),
-        )
-        self.conn.commit()
-
-    def seed_score_row(self, seed_path: Path) -> sqlite3.Row | None:
-        return self.conn.execute(
-            "select * from seed_scores where seed_path=? and active=1",
-            (str(seed_path),),
-        ).fetchone()
-
-    def mutation_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select mutated_keys, score, accepted
-            from candidates
-            where score is not null and mutated_keys != '' and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            bonus = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            for key in str(row["mutated_keys"]).split(";"):
-                if key:
-                    totals.setdefault(key, []).append(bonus)
-        return {key: sum(values) / len(values) for key, values in totals.items()}
-
-    def asset_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select target_symbol, score, accepted
-            from candidates
-            where score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["target_symbol"]).upper(), []).append(value)
-        seed_rows = self.conn.execute(
-            """
-            select symbol, score, accepted
-            from seed_scores
-            where active=1 and score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        for row in seed_rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["symbol"]).upper(), []).append(value)
-        return {symbol: sum(values) / len(values) for symbol, values in totals.items()}
-
-    def timeframe_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select period, score, accepted
-            from candidates
-            where score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["period"]).upper(), []).append(value)
-        seed_rows = self.conn.execute(
-            """
-            select period, score, accepted
-            from seed_scores
-            where active=1 and score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        for row in seed_rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["period"]).upper(), []).append(value)
-        return {period: sum(values) / len(values) for period, values in totals.items()}
-
-    def continuation_seeds(self, limit: int = 0) -> tuple[int, int, list[Seed]]:
-        run = self.conn.execute("select id from runs order by id desc limit 1").fetchone()
-        if run is None:
-            return 0, 0, []
-        run_id = int(run["id"])
-        generation = self.conn.execute(
-            "select max(generation) as generation from candidates where run_id=?",
-            (run_id,),
-        ).fetchone()
-        latest_generation = int(generation["generation"] or 0)
-        if latest_generation <= 0:
-            return run_id, 0, []
-        rows = self.conn.execute(
-            """
-            select *
-            from candidates
-            where run_id=? and generation=? and status in ('accepted', 'rejected')
-            order by
-                case
-                    when status = 'accepted' then 0
-                    when score is not null then 1
-                    else 2
-                end,
-                score desc,
-                id desc
-            """,
-            (run_id, latest_generation),
-        ).fetchall()
-
-        seeds: list[Seed] = []
-        seen: set[str] = set()
-        for row in rows:
-            path = Path(row["set_path"])
-            key = str(path.resolve()) if path.exists() else str(path)
-            if key in seen or not path.exists():
-                continue
-            seen.add(key)
-            seeds.append(
-                Seed(
-                    path=path,
-                    symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
-                    period=row["period"] or "UNKNOWN",
-                    family=row["family"] or path.parent.name,
-                    run_strategy=row["run_strategy"] or "",
-                )
-            )
-            if limit > 0 and len(seeds) >= limit:
-                break
-        return run_id, latest_generation, seeds
-
-    def latest_run(self) -> sqlite3.Row | None:
-        return self.conn.execute("select * from runs order by id desc limit 1").fetchone()
-
-    def max_generation(self, run_id: int) -> int:
-        row = self.conn.execute(
-            "select max(generation) as generation from candidates where run_id=?",
-            (run_id,),
-        ).fetchone()
-        return int(row["generation"] or 0)
-
-    def pending_generated_generation(self, run_id: int) -> int:
-        row = self.conn.execute(
-            """
-            select min(generation) as generation
-            from candidates
-            where run_id=? and status='generated'
-            """,
-            (run_id,),
-        ).fetchone()
-        return int(row["generation"] or 0)
-
-    def variants_for_generation(self, run_id: int, generation: int, *, status: str | None = None) -> list[Variant]:
-        if status:
-            rows = self.conn.execute(
-                "select * from candidates where run_id=? and generation=? and status=? order by id",
-                (run_id, generation, status),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "select * from candidates where run_id=? and generation=? order by id",
-                (run_id, generation),
-            ).fetchall()
-        return [variant_from_candidate_row(row) for row in rows if Path(row["set_path"]).exists()]
-
-    def candidate_by_id(self, candidate_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()
-
-    def run_by_id(self, run_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("select * from runs where id=?", (run_id,)).fetchone()
-
-    def mismatch_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            """
-            select *
-            from candidates
-            where run_id=? and generation=? and status='report_mismatch'
-            order by id
-            """,
-            (run_id, generation),
-        ).fetchall()
-
-    def mismatch_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            """
-            select *
-            from candidates
-            where run_id=? and status='report_mismatch'
-            order by generation, id
-            """,
-            (run_id,),
-        ).fetchall()
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
@@ -851,98 +257,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
     return parser.parse_args()
-
-
-def load_disabled_symbols(path: Path = DEFAULT_DISABLED_SYMBOLS) -> set[str]:
-    if not path.exists():
-        return set()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    if isinstance(data, dict):
-        values = data.get("disabled") or []
-    elif isinstance(data, list):
-        values = data
-    else:
-        values = []
-    return {str(value).strip().upper() for value in values if str(value).strip()}
-
-
-def load_asset_universe(path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.optionxform = str
-    parser.read(path, encoding="utf-8-sig")
-    groups: dict[str, list[str]] = {}
-    aliases: dict[str, str] = {}
-    disabled = load_disabled_symbols()
-    for section in parser.sections():
-        if section == "CommonAliases":
-            aliases = {key.upper(): value for key, value in parser[section].items()}
-            continue
-        symbols = [item.strip() for item in parser[section].get("symbols", "").split(",") if item.strip()]
-        symbols = [symbol for symbol in symbols if symbol.upper() not in disabled]
-        groups[section] = symbols
-    return groups, aliases
-
-
-def load_seeds(source_dir: Path) -> list[Seed]:
-    manifest = source_dir / "_manifest.csv"
-    seeds: list[Seed] = []
-    seen_paths: set[str] = set()
-    if manifest.exists():
-        with manifest.open("r", encoding="utf-8-sig", newline="") as file:
-            for row in csv.DictReader(file):
-                path = Path(row["target_path"]).expanduser()
-                if not path.exists() and not path.is_absolute():
-                    path = (BASE_DIR / path).resolve()
-                if path.exists():
-                    seen_paths.add(str(path.resolve()))
-                    seeds.append(
-                        Seed(
-                            path=path,
-                            symbol=row.get("symbol") or "UNKNOWN",
-                            period=row.get("period") or "UNKNOWN",
-                            family=row.get("source_family") or path.parent.name,
-                            run_strategy=row.get("run_strategy") or "",
-                        )
-                    )
-
-    for path in sorted(source_dir.rglob("*.set")):
-        path_key = str(path.resolve())
-        if path_key in seen_paths:
-            continue
-        seen_paths.add(path_key)
-        params = load_set_params(path)
-        seeds.append(
-            Seed(
-                path=path,
-                symbol=infer_symbol_from_set(path, params) or "UNKNOWN",
-                period=infer_period_from_set(path, params) or "UNKNOWN",
-                family=path.parent.name,
-                run_strategy=params.get("Run_Strategy", ""),
-            )
-        )
-    return seeds
-
-
-def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
-    seed = Seed(
-        path=Path(row["seed_path"]),
-        symbol=row["symbol"] or "UNKNOWN",
-        period=row["period"] or "UNKNOWN",
-        family=row["family"] or Path(row["seed_path"]).parent.name,
-        run_strategy=row["run_strategy"] or "",
-    )
-    return Variant(
-        path=Path(row["set_path"]),
-        seed=seed,
-        target_symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
-        target_period=(row["period"] or seed.period or "UNKNOWN").upper(),
-        mutated_keys=tuple(key for key in str(row["mutated_keys"] or "").split(";") if key),
-        missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
-        policy=row["policy"] or "",
-    )
 
 
 def seeds_from_variants(variants: list[Variant]) -> list[Seed]:
@@ -1020,7 +334,7 @@ def choose_target_symbol(
 ) -> tuple[str, str]:
     aliases = aliases or {}
     current = seed.symbol or "UNKNOWN"
-    disabled = load_disabled_symbols()
+    disabled = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
@@ -1278,36 +592,10 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
     return process.returncode
 
 
-def seed_eval_filename(index: int, seed: Seed, used: set[str]) -> str:
-    symbol = "" if seed.symbol == "UNKNOWN" else safe_part(seed.symbol)
-    period = "" if seed.period == "UNKNOWN" else safe_part(seed.period)
-    prefix = "_".join(part for part in (symbol, period) if part)
-    label = compact_safe_part(seed.path.stem, 40)
-    stem = f"seed_{index:04d}_{prefix}_{label}" if prefix else f"seed_{index:04d}_{label}"
-    name = f"{stem}.set"
-    suffix = 2
-    while name.lower() in used:
-        name = f"{stem}_{suffix}.set"
-        suffix += 1
-    used.add(name.lower())
-    return name
-
-
 def _parse_eval_dir_timestamp(eval_dir: Path) -> datetime | None:
     try:
         return datetime.strptime(eval_dir.name, "eval_%Y%m%d_%H%M%S")
     except ValueError:
-        return None
-
-
-def _file_digest(path: Path) -> str | None:
-    try:
-        digest = hashlib.sha1()
-        with path.open("rb") as file:
-            for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
         return None
 
 
@@ -1327,7 +615,7 @@ def reconcile_seed_eval_reports(
         row = memory.seed_score_row(seed.path)
         if row is not None and str(row["status"] or "") == "no_trades":
             continue
-        digest = _file_digest(seed.path)
+        digest = file_digest(seed.path)
         if digest:
             pending_by_hash.setdefault(digest, []).append(seed)
     eval_dirs = sorted(
@@ -1345,7 +633,7 @@ def reconcile_seed_eval_reports(
             report = find_report_for_set(copied_set, min_mtime=eval_started.timestamp() - 1.0)
             if not report:
                 continue
-            copied_digest = _file_digest(copied_set)
+            copied_digest = file_digest(copied_set)
             if not copied_digest:
                 continue
             candidates = pending_by_hash.get(copied_digest, [])
@@ -1390,7 +678,7 @@ def rescore_existing_seed_scores(
 def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = Path(args.source_dir).expanduser()
     output_root = Path(args.output_dir).expanduser()
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
@@ -1417,10 +705,26 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     pending = [seed for seed in pending if seed not in invalid_pending]
     unchanged_count = len(seeds) - original_pending_count
     blocked_count = len(invalid_pending)
+    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    disabled_pending = [
+        seed for seed in pending
+        if seed_symbol_disabled(seed, disabled_symbols, symbol_map)
+    ]
+    disabled_paths = {str(seed.path) for seed in disabled_pending}
+    for seed in disabled_pending:
+        print(
+            f"AVISO: seed con symbol deshabilitado: {seed.path.name} "
+            f"({seed.symbol}); marcada como disabled_symbol sin ejecutar backtest."
+        )
+        memory.record_seed_score(seed, None, "disabled_symbol", None)
+    pending = [seed for seed in pending if str(seed.path) not in disabled_paths]
+    blocked_count += len(disabled_pending)
     print(f"Semillas detectadas: {len(seeds)}")
     print(f"Semillas pendientes de evaluar: {len(pending)}")
     if invalid_pending:
         print(f"Semillas bloqueadas por symbol/timeframe no inferible: {len(invalid_pending)}")
+    if disabled_pending:
+        print(f"Semillas bloqueadas por symbol deshabilitado: {len(disabled_pending)}")
     print(f"Semillas ya evaluadas sin cambios: {unchanged_count}")
     reconciled_counts, reconciled_paths = reconcile_seed_eval_reports(
         memory,
@@ -1445,7 +749,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             seeds,
             score_config,
             symbol_map,
-            exclude_paths=original_pending_paths | invalid_paths,
+            exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
         )
         if rescored_counts:
             print(
@@ -1500,7 +804,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         seeds,
         score_config,
         symbol_map,
-        exclude_paths=original_pending_paths | invalid_paths,
+        exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
     )
     rescored_total = sum(rescored_counts.values())
 
@@ -1523,7 +827,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
 
 def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = Path(args.source_dir).expanduser()
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
@@ -1545,19 +849,6 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
         print("No hay seeds accepted/rejected con reporte guardado para repuntuar.")
     print(f"Memoria: {memory.path}")
     return 0
-
-
-def seed_from_path(path: Path) -> Seed:
-    params = load_set_params(path)
-    symbol = infer_symbol_from_set(path, params) or "UNKNOWN"
-    period = infer_period_from_set(path, params) or "UNKNOWN"
-    return Seed(
-        path=path,
-        symbol=symbol,
-        period=period,
-        family=path.parent.name,
-        run_strategy=params.get("Run_Strategy", "").strip(),
-    )
 
 
 def _report_is_fresh(path: Path, min_mtime: float | None) -> bool:
@@ -2121,7 +1412,11 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     pending_generation = memory.pending_generated_generation(run_id) if args.execute_backtests else 0
     current_seeds: list[Seed] = []
     did_work = False
-    asset_groups, aliases = load_asset_universe(Path(args.assets).expanduser())
+    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    asset_groups, aliases = load_asset_universe(
+        Path(args.assets).expanduser(),
+        disabled_symbols=disabled_symbols,
+    )
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
@@ -2261,11 +1556,15 @@ def run_agent(args: argparse.Namespace) -> int:
             memory.close()
 
     seed_source = str(source_dir)
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
-    asset_groups, aliases = load_asset_universe(Path(args.assets).expanduser())
+    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    asset_groups, aliases = load_asset_universe(
+        Path(args.assets).expanduser(),
+        disabled_symbols=disabled_symbols,
+    )
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")

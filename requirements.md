@@ -302,8 +302,9 @@ requirement changes or a debt item is opened/closed.
   weights until recalculation.
 - **FR-1.12.15** The UBS Universo tab MUST expose "Calcular pesos". It MUST
   refuse to unlock weights while active seeds remain in a non-ready state. Ready
-  states for applying weights are `accepted`, `rejected`, and `report_mismatch`;
-  other active seed states require another evaluation pass or manual triage.
+  states for applying weights are `accepted`, `rejected`, `report_mismatch`, and
+  `disabled_symbol`; other active seed states require another evaluation pass or
+  manual triage.
 - **FR-1.12.16** Every visible "Actualizar" button MUST refresh the full related
   panel state, not just one tree widget. A failure in one refresh section MUST
   not prevent other sections from refreshing.
@@ -319,6 +320,10 @@ requirement changes or a debt item is opened/closed.
   in `outputs/ubs_disabled_symbols.json`, remain visible as disabled in the UI,
   be excluded from Universe weights, and be excluded from UBS agent target-symbol
   exploration.
+- **FR-1.12.20** UBS seed evaluation MUST skip any seed whose inferred or
+  manually overridden symbol maps to a disabled Universe symbol. Skipped seeds
+  MUST be recorded as `disabled_symbol`, MUST NOT launch MT5, MUST NOT count as
+  pending after a reset, and MUST NOT contribute to weights.
 
 ### 1.13 Packaging & runtime
 

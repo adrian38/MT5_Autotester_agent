@@ -55,6 +55,14 @@ batch wrappers.
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
   `ubs_generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
+- Preserve the module split. `app_ui.py` is the composition/layout root; new
+  feature behavior should live in focused `app_ui_*.py`, `ubs_*.py`, or
+  `portfolio_manager/*` modules by responsibility. Do not keep growing
+  `app_ui.py`/`ubs_agent.py` for logic that has a clear domain owner.
+- For every substantial UI screen/tab, use a view/logic pair:
+  `app_ui_<screen>_view.py` for widgets/layout and
+  `app_ui_<screen>_logic.py` for behavior/state/persistence. This is the
+  default structure for the whole app from now on.
 
 ## Topic Index
 
@@ -138,7 +146,9 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   rows when present, otherwise the selected row. Universe checked symbols can be
   disabled/enabled; disabled symbols are persisted in
   `outputs/ubs_disabled_symbols.json`, remain visible, and are excluded from
-  weights and agent target-symbol exploration.
+  weights, seed backtest execution, pending counts after reset, and agent
+  target-symbol exploration. Seed evaluation records skipped disabled symbols as
+  `disabled_symbol` without launching MT5.
 - Evaluation dialog shows the actual expected backtest count (pre-computed from
   DB state) alongside the total seed count.
 - Refresh buttons now refresh full panel state, and `_refresh_all()` isolates

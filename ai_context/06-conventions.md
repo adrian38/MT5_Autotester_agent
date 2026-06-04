@@ -13,7 +13,27 @@
 - Preserve type hints already present in newer code.
 - Prefer `Path` over raw string path manipulation.
 - Keep Windows path behavior explicit; this project targets MT5 on Windows.
-- Avoid broad refactors in `app_ui.py` unless the task is UI restructuring.
+- Keep ownership split by domain. New behavior should go into focused modules
+  or mixins (`app_ui_*.py`, `ubs_*.py`, `portfolio_manager/*`) instead of
+  growing `app_ui.py` or `ubs_agent.py`.
+- For each substantial UI screen/tab, use at least two files:
+  `app_ui_<screen>_view.py` for Tk widget/layout construction and
+  `app_ui_<screen>_logic.py` for state transitions, persistence, validation,
+  database queries, and long-running actions. This is the default architecture
+  for the whole app, not an optional cleanup preference.
+- New tabs must start with this view/logic pair. When modifying an existing tab
+  that still mixes view and behavior, split the touched responsibility into the
+  correct file as part of the change unless doing so would be riskier than the
+  feature itself.
+- Treat `app_ui.py` as the composition/layout root. It may build Tk frames and
+  wire commands, but tab behavior, persistence, database queries, scoring,
+  path inference, and long-running actions should live in the domain module
+  that owns that feature.
+- When touching a large legacy method, prefer extracting a coherent helper or
+  mixin first if that reduces future maintenance risk without changing
+  behavior.
+- Avoid broad refactors in `app_ui.py` unless the task is UI restructuring or
+  an extraction that preserves behavior.
 
 ## File Editing
 
@@ -60,4 +80,3 @@ Tk event loop with MT5, MetaEditor, or Excel generation work.
 
 If adding new runtime files required by packaged execution, update the staging
 list in `tools/build_installer.ps1`.
-

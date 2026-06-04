@@ -206,14 +206,17 @@ The UI can reset seed evaluation from `UBS Seeds`:
 - After reset, Universe weights are locked/hidden until seed evaluation is run
   again and the user presses "Calcular pesos" in `UBS Universo`.
 - "Calcular pesos" only unlocks weights when active seeds are ready. Current UI
-  ready states are `accepted`, `rejected`, and `report_mismatch`.
+  ready states are `accepted`, `rejected`, `report_mismatch`, and
+  `disabled_symbol`.
 
 Seeds and Universe tables use a SEL checkbox column for multi-row operations.
 Seed actions use checked rows when any exist, otherwise the selected row.
 Universe symbols can be disabled/enabled from checked rows; the disabled set is
 stored in `outputs/ubs_disabled_symbols.json`. Disabled symbols remain visible
 in the Universe table, but are excluded from displayed weights and from UBS
-agent target-symbol exploration.
+agent target-symbol exploration. During seed evaluation, a seed whose inferred
+or overridden symbol maps to a disabled symbol is recorded as `disabled_symbol`
+and is not sent to MT5, including after a seed reset.
 
 For single-candidate retry, `ubs_agent.py --retry-candidate-id <id>` copies the
 candidate `.set` into `outputs/ubs_agent/<run>/retry_mismatch/...`, runs
