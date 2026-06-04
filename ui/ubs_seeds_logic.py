@@ -778,4 +778,30 @@ class UBSSeedsLogicMixin:
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 
+    def _save_seed_criteria_clicked(self) -> None:
+        try:
+            self._ubs_seed_score_args()
+            self._write_ui_settings()
+        except Exception as exc:
+            self._show_error("No se pudieron guardar criterios Seeds", str(exc))
+            return
+        self.status_text.set("Criterios Seeds guardados")
+        self._refresh_ubs_seeds_panel()
+
+    def _apply_seed_criteria_clicked(self) -> None:
+        try:
+            self._write_ui_settings()
+            args = [
+                "--rescore-seeds-only",
+                "--source-dir", str(self._ubs_generator_source_dir()),
+                "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+            ]
+            args.extend(self._ubs_seed_score_args())
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudieron aplicar criterios Seeds", str(exc))
+            return
+        self._run_script("ubs_agent.py", args)
+
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -823,6 +825,241 @@ class UBSResultsLogicMixin:
             messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
             return
         self._open_local_file(path)
+
+    def _short_filename(self, value, max_length: int = 72) -> str:
+        name = Path(str(value)).name
+        if len(name) <= max_length:
+            return name
+        suffix = Path(name).suffix
+        stem = name[: -len(suffix)] if suffix else name
+        tail_length = max(12, max_length // 3)
+        head_length = max(8, max_length - tail_length - len(suffix) - 3)
+        return f"{stem[:head_length]}...{stem[-tail_length:]}{suffix}"
+
+    def _ubs_variant_code(self, set_name: str) -> str:
+        matches = re.findall(r"g\d+_s\d+_v\d+", set_name, flags=re.IGNORECASE)
+        return matches[-1] if matches else ""
+
+    def _format_ubs_set_label(self, row: sqlite3.Row) -> str:
+        set_path = Path(str(row["set_path"] or ""))
+        name = set_path.name
+        candidate_id = str(row["id"] or "").strip()
+        symbol = str(row["target_symbol"] or row["symbol"] or "").strip()
+        period = str(row["period"] or "").strip()
+        variant_code = self._ubs_variant_code(name)
+        prefix = f"#{candidate_id} " if candidate_id else ""
+        if symbol and period and variant_code:
+            return f"{prefix}{symbol}_{period}_{variant_code}{set_path.suffix or '.set'}"
+        if variant_code:
+            return f"{prefix}{variant_code}{set_path.suffix or '.set'}"
+        return f"{prefix}{self._short_filename(name)}"
+
+    def _parse_ubs_metrics(self, raw) -> dict:
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _format_ubs_number(self, value, decimals: int = 2) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return f"{float(value):.{decimals}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _format_ubs_int(self, value) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return str(int(float(value)))
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _format_ubs_status(self, status: str) -> str:
+        labels = {
+            "accepted": "aceptado",
+            "rejected": "rechazado",
+            "generated": "generado",
+            "no_report": "sin reporte",
+            "no_trades": "sin operaciones",
+            "disabled_symbol": "deshabilitado",
+            "parse_error": "parse error",
+            "report_mismatch": "mismatch reporte",
+            "pending": "pendiente",
+            "sin_evaluar": "sin evaluar",
+        }
+        return labels.get(status, status or "-")
+
+    def _ubs_result_tag(self, status: str) -> str:
+        if status == "accepted":
+            return "accepted"
+        if status in {"rejected", "parse_error", "report_mismatch", "no_trades"}:
+            return "rejected"
+        if status == "disabled_symbol":
+            return "pending"
+        return "pending"
+
+    def _selected_ubs_result_path(self, kind: str):
+        info = self._selected_ubs_result_info()
+        if not info:
+            return None
+        raw_path = info.get(kind, "")
+        return Path(raw_path).expanduser() if raw_path else None
+
+    def _selected_ubs_result_info(self) -> dict:
+        if not hasattr(self, "ubs_results_tree"):
+            return {}
+        selected = self.ubs_results_tree.selection()
+        if not selected:
+            return {}
+        return self.ubs_result_paths.get(selected[0], {})
+
+    def _open_ubs_output_dir(self) -> None:
+        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent")).expanduser()
+        if not output_dir.exists():
+            messagebox.showinfo("Agente UBS", f"No existe la carpeta:\n{output_dir}")
+            return
+        subprocess.Popen(["explorer", str(output_dir)])
+
+    def _open_selected_ubs_set(self) -> None:
+        path = self._selected_ubs_result_path("set")
+        if path is None:
+            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
+            return
+        self._open_local_file(path)
+
+    def _open_selected_ubs_report(self) -> None:
+        path = self._selected_ubs_result_path("report")
+        if path is None:
+            messagebox.showinfo("Agente UBS", "Ese resultado no tiene reporte asociado.")
+            return
+        self._open_local_file(path)
+
+    def _retry_selected_ubs_mismatch(self) -> None:
+        info = self._selected_ubs_result_info()
+        if not info:
+            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
+            return
+        if info.get("status") != "report_mismatch":
+            messagebox.showinfo("Agente UBS", "Esta accion solo aplica a filas con estado mismatch reporte.")
+            return
+        candidate_id = info.get("id", "").strip()
+        set_path = Path(info.get("set", "")).expanduser()
+        if not candidate_id:
+            messagebox.showinfo("Agente UBS", "La fila seleccionada no tiene candidate id.")
+            return
+        if not set_path.exists():
+            messagebox.showinfo("Agente UBS", f"No existe el set:\n{set_path}")
+            return
+        try:
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--template", self.template_path.get(),
+                "--retry-candidate-id", candidate_id,
+                "--delay", str(self.delay.get()),
+            ]
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+            args.extend(self._ubs_score_args())
+            if not self.multiterminal_enabled.get():
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar retry mismatch", str(exc))
+            return
+
+        details = [
+            "Accion: Reprobar mismatch UBS",
+            f"Candidate: #{candidate_id}",
+            f"Objetivo: {info.get('symbol', '')} {info.get('period', '')}",
+            f"Set: {set_path.name}",
+            "Backtests previstos: 1",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar retry mismatch", 1, details):
+            self._run_script("ubs_agent.py", args)
+
+    def _retry_visible_ubs_run_mismatches(self) -> None:
+        try:
+            run_id = self._visible_ubs_run_id()
+            if run_id <= 0:
+                messagebox.showinfo("Agente UBS", "No hay run visible para reprobar.")
+                return
+            mismatch_count = self._count_ubs_run_mismatches(run_id)
+            if mismatch_count <= 0:
+                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch pendientes.")
+                return
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--template", self.template_path.get(),
+                "--retry-run-id", str(run_id),
+                "--retry-mismatch-run",
+                "--delay", str(self.delay.get()),
+            ]
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+            args.extend(self._ubs_score_args())
+            if not self.multiterminal_enabled.get():
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar retry de run", str(exc))
+            return
+
+        details = [
+            "Accion: Reprobar mismatches de run UBS",
+            f"Run: #{run_id}",
+            f"Backtests previstos: {mismatch_count}",
+            "Al terminar actualiza esas mismas filas SQLite.",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar retry run mismatch", mismatch_count, details):
+            self._run_script("ubs_agent.py", args)
+
+    def _visible_ubs_run_id(self) -> int:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return 0
+        conn = sqlite3.connect(memory_path, timeout=1.0)
+        try:
+            row = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
+
+    def _count_ubs_run_mismatches(self, run_id: int) -> int:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return 0
+        conn = sqlite3.connect(memory_path, timeout=1.0)
+        try:
+            row = conn.execute(
+                """
+                select count(*) as total
+                from candidates
+                where run_id=? and status='report_mismatch'
+                """,
+                (run_id,),
+            ).fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
 
 
 

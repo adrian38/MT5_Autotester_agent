@@ -269,4 +269,16 @@ class UBSUniverseLogicMixin:
             "PESO = promedio(score + bonus accepted). El agente prioriza TF buenos y explora M15/M30/H1/H4/D1 reemplazando claves de timeframe existentes."
         )
 
+    def _disabled_symbols_path(self):
+        from ubs.universe import disabled_symbols_path
+        return disabled_symbols_path(BASE_DIR)
+
+    def _load_disabled_ubs_symbols(self) -> set:
+        from ubs.universe import load_disabled_symbols
+        return load_disabled_symbols(self._disabled_symbols_path())
+
+    def _save_disabled_ubs_symbols(self, symbols: set) -> None:
+        from ubs.universe import save_disabled_symbols
+        save_disabled_symbols(self._disabled_symbols_path(), symbols)
+
 

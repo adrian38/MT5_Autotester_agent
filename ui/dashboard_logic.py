@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from run_tests import load_experts_from_dir
+from run_tests import load_experts_from_dir, load_set_files
 
 
 class DashboardLogicMixin:
@@ -98,4 +98,68 @@ class DashboardLogicMixin:
         ]
         if self._confirm_execution_start("Confirmar flujo completo", total, details):
             self._run_script("compile_and_backtest.py", args)
+
+    def _count_compile_sources(self) -> tuple[int, str]:
+        source_dir, source_file = self._compile_source_selection()
+        if self.recursive.get():
+            files = sorted(Path(source_dir).expanduser().glob("*.mq5"))
+            return len([path for path in files if path.is_file()]), source_dir
+        return 1, source_file
+
+    def _experts_dir_for_single_file(self, source_dir: str) -> str:
+        source_path = Path(source_dir).expanduser()
+        parts = [part.lower() for part in source_path.parts]
+        if "mql5" in parts and "experts" in parts:
+            return str(source_path)
+
+        data_root = self.mt5_data_root.get().strip()
+        if data_root:
+            return str(Path(data_root).expanduser() / "MQL5" / "Experts")
+
+        if self.experts_root.get().strip():
+            return self.experts_root.get()
+
+        return str(source_path)
+
+    def _full_flow_args(self) -> list[str]:
+        source_dir, source_file = self._compile_source_selection()
+        args = ["--source-dir", source_dir]
+        if not self.recursive.get():
+            args.extend(["--source-file", source_file])
+        if self.metaeditor_path.get().strip():
+            args.extend(["--metaeditor-path", self.metaeditor_path.get()])
+        if self.mt5_path.get().strip():
+            args.extend(["--mt5-path", self.mt5_path.get()])
+        if self.mt5_data_root.get().strip():
+            args.extend(["--data-dir", self.mt5_data_root.get()])
+        if self.template_path.get().strip():
+            args.extend(["--template", self.template_path.get()])
+        if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
+            args.extend(["--symbol-suffix", self.symbol_suffix.get().strip()])
+        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+            args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        args.extend(["--delay", str(self.delay.get())])
+        if self.recursive.get():
+            args.append("--recursive")
+        return args
+
+    def _compile_source_selection(self) -> tuple[str, str]:
+        compile_root = self.compile_root.get().strip()
+        compile_file = self.compile_file.get().strip()
+        if self.recursive.get():
+            if not compile_root:
+                raise ValueError("Carpeta .mq5 es obligatoria cuando Recursivo esta activado.")
+            return compile_root, compile_file
+        if not compile_file:
+            raise ValueError(
+                "Archivo .mq5 es obligatorio cuando Recursivo esta apagado. "
+                "Selecciona un archivo concreto o activa Recursivo."
+            )
+
+        source_file = Path(compile_file).expanduser()
+        if source_file.is_absolute():
+            return str(source_file.parent), str(source_file)
+        if not compile_root:
+            raise ValueError("Carpeta .mq5 es obligatoria si Archivo .mq5 no es una ruta completa.")
+        return compile_root, compile_file
 
