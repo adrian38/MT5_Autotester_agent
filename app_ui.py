@@ -27,28 +27,28 @@ from run_tests import (
     load_experts_root,
     looks_like_ubs_expert_file,
 )
-from ubs_set_utils import read_set_with_encoding
-from app_ui_dashboard_logic import DashboardLogicMixin
-from app_ui_dashboard_view import DashboardViewMixin
-from app_ui_files_logic import FilesLogicMixin
-from app_ui_files_view import FilesViewMixin
-from app_ui_multiterminal_logic import MultiterminalLogicMixin
-from app_ui_multiterminal_view import MultiterminalViewMixin
-from app_ui_portfolio_logic import PortfolioLogicMixin
-from app_ui_portfolio_view import PortfolioViewMixin
-from app_ui_ubs_params_logic import UBSParamsLogicMixin
-from app_ui_ubs_params_view import UBSParamsViewMixin
-from app_ui_settings_logic import SettingsLogicMixin
-from app_ui_settings_view import SettingsViewMixin
-from app_ui_ubs_agent_logic import UBSAgentLogicMixin
-from app_ui_ubs_agent_view import UBSAgentViewMixin
-from app_ui_ubs_results_logic import UBSResultsLogicMixin
-from app_ui_ubs_results_view import UBSResultsViewMixin
-from app_ui_ubs_universe_logic import UBSUniverseLogicMixin
-from app_ui_ubs_universe_view import UBSUniverseViewMixin
-from app_ui_ubs_seeds_logic import UBSSeedsLogicMixin
-from app_ui_ubs_seeds_view import UBSSeedsViewMixin
-from ubs_universe import disabled_symbols_path, load_disabled_symbols, save_disabled_symbols
+from ubs.set_utils import read_set_with_encoding
+from ui.dashboard_logic import DashboardLogicMixin
+from ui.dashboard_view import DashboardViewMixin
+from ui.files_logic import FilesLogicMixin
+from ui.files_view import FilesViewMixin
+from ui.multiterminal_logic import MultiterminalLogicMixin
+from ui.multiterminal_view import MultiterminalViewMixin
+from ui.portfolio_logic import PortfolioLogicMixin
+from ui.portfolio_view import PortfolioViewMixin
+from ui.ubs_params_logic import UBSParamsLogicMixin
+from ui.ubs_params_view import UBSParamsViewMixin
+from ui.settings_logic import SettingsLogicMixin
+from ui.settings_view import SettingsViewMixin
+from ui.ubs_agent_logic import UBSAgentLogicMixin
+from ui.ubs_agent_view import UBSAgentViewMixin
+from ui.ubs_results_logic import UBSResultsLogicMixin
+from ui.ubs_results_view import UBSResultsViewMixin
+from ui.ubs_universe_logic import UBSUniverseLogicMixin
+from ui.ubs_universe_view import UBSUniverseViewMixin
+from ui.ubs_seeds_logic import UBSSeedsLogicMixin
+from ui.ubs_seeds_view import UBSSeedsViewMixin
+from ubs.universe import disabled_symbols_path, load_disabled_symbols, save_disabled_symbols
 
 
 BASE_DIR = Path(__file__).resolve().parent

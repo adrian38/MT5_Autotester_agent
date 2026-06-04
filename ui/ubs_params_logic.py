@@ -4,7 +4,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from ubs_params_catalog import (
+from ubs.params_catalog import (
     UBS_PARAM_DESCRIPTIONS,
     UBS_SECTION_LABELS,
     fmt_num,
@@ -18,7 +18,7 @@ from ubs_agent import (
     save_global_params,
     save_mutation_overrides,
 )
-from ubs_set_utils import read_set_with_encoding
+from ubs.set_utils import read_set_with_encoding
 
 
 PARAM_DIALOG_BG = "#1f2937"

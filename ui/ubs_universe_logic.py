@@ -6,10 +6,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from ubs_universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
+from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 

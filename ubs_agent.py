@@ -18,12 +18,12 @@ from run_tests import (
     parse_symbol_map,
 )
 from ubs_generate_sets import format_like, parse_numeric
-from ubs_memory import AgentMemory, variant_from_candidate_row
-from ubs_models import Seed, Variant
-from ubs_score import ScoreConfig, ScoreResult, score_report_file
-from ubs_seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
-from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
-from ubs_universe import disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
+from ubs.memory import AgentMemory, variant_from_candidate_row
+from ubs.models import Seed, Variant
+from ubs.score import ScoreConfig, ScoreResult, score_report_file
+from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
+from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs.universe import disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
 
 
 BASE_DIR = Path(__file__).resolve().parent

@@ -4,47 +4,62 @@
 
 ```text
 .
-|-- app_ui.py                    # Tkinter desktop app and UI orchestration
-|-- app_ui_dashboard_logic.py    # Dashboard compile/backtest action logic
-|-- app_ui_dashboard_view.py     # Dashboard widget/layout mixin
-|-- app_ui_files_logic.py        # Files/Logs refresh logic mixin
-|-- app_ui_files_view.py         # Files/Logs widget/layout mixin
-|-- app_ui_multiterminal_logic.py # Multiterminal profiles/state/validation mixin
-|-- app_ui_multiterminal_view.py # Multiterminal widget/layout mixin
-|-- app_ui_portfolio_logic.py    # Portfolio tab actions/workbook execution mixin
-|-- app_ui_portfolio_view.py     # Portfolio tab widget/layout mixin
-|-- app_ui_settings_logic.py     # Settings/template/path action logic
-|-- app_ui_settings_view.py      # Settings widget/layout mixin
-|-- app_ui_ubs_agent_logic.py    # UBS Agent launch/continue logic
-|-- app_ui_ubs_agent_view.py     # UBS Agent widget/layout mixin
-|-- app_ui_ubs_params_logic.py   # UBS Parameters/global params logic
-|-- app_ui_ubs_params_view.py    # UBS Parameters widget/layout mixin
-|-- app_ui_ubs_results_logic.py  # UBS Results/History/Compare logic
-|-- app_ui_ubs_results_view.py   # UBS Results/History/Compare layouts
-|-- app_ui_ubs_seeds_logic.py    # UBS Seeds tab/evaluation logic
-|-- app_ui_ubs_seeds_view.py     # UBS Seeds widget/layout mixin
-|-- app_ui_ubs_universe_logic.py # UBS Universe enable/weights logic
-|-- app_ui_ubs_universe_view.py  # UBS Universe widget/layout mixin
-|-- run_tests.py                 # Batch Strategy Tester runner
-|-- ubs_agent.py                 # UBS set-generation/scoring agent
-|-- ubs_memory.py                # UBS SQLite persistence and row mapping
-|-- ubs_models.py                # Shared UBS dataclasses
-|-- ubs_params_catalog.py        # UBS parameter labels/descriptions/format helpers
-|-- ubs_seeds.py                 # UBS seed file discovery/naming/hash helpers
-|-- ubs_universe.py              # UBS asset universe, aliases, disabled symbols
-|-- ubs_score.py                 # UBS report scoring and pass/fail metrics
+|-- app_ui.py                    # Tkinter app entry point and composition root
+|-- ubs_agent.py                 # UBS set-generation/scoring agent (CLI)
 |-- ubs_generate_sets.py         # UBS set mutation/generation helpers (standalone CLI)
-|-- ubs_prepare_sets.py          # UBS source-set normalization/import helper
-|-- ubs_set_utils.py             # Shared .set parsing/writing/lot normalization
-|-- compile_mq5.py               # MetaEditor compile runner
-|-- compile_and_backtest.py      # Orchestrates compile then backtest
+|-- ubs_prepare_sets.py          # UBS source-set normalization/import helper (CLI)
+|-- compile_mq5.py               # MetaEditor compile runner (CLI)
+|-- compile_and_backtest.py      # Orchestrates compile then backtest (CLI)
+|-- run_tests.py                 # Batch Strategy Tester runner (CLI)
 |-- mt5_env.py                   # .env/env-var path resolution helpers
 |-- telegram_notify.py           # Optional Telegram notification helper
+|-- pyproject.toml               # Project metadata and dependencies
 |-- tester_template.ini          # Base MT5 Strategy Tester config
 |-- ui_settings.ini              # UI runtime settings, paths, theme
 |-- experts_list.txt             # Optional explicit .ex5 list
 |-- experts_root.txt             # Optional root folder for .ex5 discovery
 |-- compile_root.txt             # Optional root folder for .mq5 discovery
+|
+|-- ui/                          # UI screen mixin modules (view/logic pairs per tab)
+|   |-- __init__.py
+|   |-- dashboard_view.py        # Dashboard widget/layout mixin
+|   |-- dashboard_logic.py       # Dashboard compile/backtest action logic
+|   |-- files_view.py            # Files/Logs widget/layout mixin
+|   |-- files_logic.py           # Files/Logs refresh logic mixin
+|   |-- multiterminal_view.py    # Multiterminal widget/layout mixin
+|   |-- multiterminal_logic.py   # Multiterminal profiles/state/validation mixin
+|   |-- portfolio_view.py        # Portfolio tab widget/layout mixin
+|   |-- portfolio_logic.py       # Portfolio tab actions/workbook execution mixin
+|   |-- settings_view.py         # Settings widget/layout mixin
+|   |-- settings_logic.py        # Settings/template/path action logic
+|   |-- ubs_agent_view.py        # UBS Agent widget/layout mixin
+|   |-- ubs_agent_logic.py       # UBS Agent launch/continue logic
+|   |-- ubs_params_view.py       # UBS Parameters widget/layout mixin
+|   |-- ubs_params_logic.py      # UBS Parameters/global params logic
+|   |-- ubs_results_view.py      # UBS Results/History/Compare layouts
+|   |-- ubs_results_logic.py     # UBS Results/History/Compare logic
+|   |-- ubs_seeds_view.py        # UBS Seeds widget/layout mixin
+|   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
+|   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
+|   `-- ubs_universe_logic.py    # UBS Universe enable/weights logic
+|
+|-- ubs/                         # UBS agent support library
+|   |-- __init__.py
+|   |-- models.py                # Shared Seed/Variant dataclasses
+|   |-- memory.py                # SQLite persistence and row mapping
+|   |-- score.py                 # Report scoring and pass/fail metrics
+|   |-- seeds.py                 # Seed file discovery/naming/hash helpers
+|   |-- set_utils.py             # .set parsing/writing/lot normalization
+|   |-- universe.py              # Asset universe, aliases, disabled symbols
+|   `-- params_catalog.py        # Parameter labels/descriptions/format helpers
+|
+|-- portfolio_manager/           # MT5 HTML parsing and Excel workbook generation
+|   |-- __init__.py
+|   |-- generator.py             # Public workbook generator functions
+|   |-- mt5_report.py            # MT5 HTML parser and report dataclasses
+|   |-- excel.py                 # ALL_STRATEGIES workbook builder
+|   `-- dd_excel.py              # Drawdown/portfolio workbook builders
+|
 |-- configs/                     # Generated tester .ini files
 |-- logs/                        # Run and compile logs
 |-- reports/                     # Copied MT5 report files and images
@@ -55,11 +70,6 @@
 |   `-- ubs_agent/               # Generated UBS variants and accepted sets
 |-- sets/                        # User .set files
 |-- live_sets/                   # Runtime/live .set files
-|-- portfolio_manager/
-|   |-- generator.py             # Public workbook generator functions
-|   |-- mt5_report.py            # MT5 HTML parser and report dataclasses
-|   |-- excel.py                 # ALL_STRATEGIES workbook builder
-|   `-- dd_excel.py              # Drawdown/portfolio workbook builders
 |-- ai_context/                  # AI agent context documents
 |   |-- main.md                  # Entry point and index
 |   |-- 01-overview.md           # Project overview and workflows
@@ -156,15 +166,18 @@ Owns the UBS agent workflow:
 - Retry all `report_mismatch` candidates in a run with `--retry-run-id` and
   `--retry-mismatch-run`.
 
-UBS support code is split out of this file where it has clear ownership:
+UBS support code lives in the `ubs/` package:
 
-- `ubs_models.py`: shared `Seed` and `Variant` dataclasses.
-- `ubs_memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
+- `ubs/models.py`: shared `Seed` and `Variant` dataclasses.
+- `ubs/memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
   and conversion from candidate rows to `Variant`.
-- `ubs_seeds.py`: seed `.set` discovery, manifest handling, seed report copy
+- `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
-- `ubs_universe.py`: RoboForex universe parsing, common alias canonicalisation,
+- `ubs/universe.py`: RoboForex universe parsing, common alias canonicalisation,
   disabled symbol JSON persistence, and disabled-seed filtering.
+- `ubs/score.py`: `ScoreConfig`, `ScoreResult`, scoring formula.
+- `ubs/set_utils.py`: shared `.set` parsing/writing/lot normalization.
+- `ubs/params_catalog.py`: parameter labels, section names, format helpers.
 
 **Key constants** (all in `ubs_agent.py`):
 

@@ -1,0 +1,19 @@
+[project]
+name = "mt5-autotester-agent"
+version = "1.0.0"
+description = "MT5 Expert Advisor automation: compile, backtest, portfolio analysis, UBS agent"
+requires-python = ">=3.11"
+dependencies = [
+    "lxml",
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+ui = ["Pillow"]
+packaging = ["pyinstaller"]
+
+[project.scripts]
+mt5-autotester  = "app_ui:main"
+ubs-agent       = "ubs_agent:main"
+compile-mq5     = "compile_mq5:main"
+run-tests       = "run_tests:main"

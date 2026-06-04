@@ -9,7 +9,7 @@ from tkinter import messagebox
 from run_tests import looks_like_ubs_expert_file
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"

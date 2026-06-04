@@ -5,8 +5,8 @@ import hashlib
 from pathlib import Path
 
 from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-from ubs_models import Seed
-from ubs_set_utils import compact_safe_part, safe_part
+from ubs.models import Seed
+from ubs.set_utils import compact_safe_part, safe_part
 
 
 def load_seeds(source_dir: Path, *, base_dir: Path) -> list[Seed]:

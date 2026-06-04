@@ -4,8 +4,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from ubs_models import Seed, Variant
-from ubs_score import ScoreResult
+from ubs.models import Seed, Variant
+from ubs.score import ScoreResult
 
 
 class AgentMemory:

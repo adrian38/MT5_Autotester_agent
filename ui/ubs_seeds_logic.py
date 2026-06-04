@@ -11,7 +11,7 @@ from tkinter import messagebox
 from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, parse_symbol_map
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 

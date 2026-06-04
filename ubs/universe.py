@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from run_tests import apply_symbol_map, normalize_set_symbol
-from ubs_models import Seed
+from ubs.models import Seed
 
 
 def disabled_symbols_path(base_dir: Path) -> Path:
