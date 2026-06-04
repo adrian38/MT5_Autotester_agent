@@ -56,10 +56,8 @@ class SettingsViewMixin:
         self._path_row(paths, "Carpeta .mq5", self.compile_root, 4, self._browse_dir)
         self._path_row(paths, "Archivo .mq5", self.compile_file, 5, self._browse_mq5_file)
         self._path_row(paths, "Carpeta .ex5", self.experts_root, 6, self._browse_dir)
-        self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 7, self._browse_ex5_file)
-        self._path_row(paths, "Carpeta .set", self.set_files_root, 8, self._browse_dir)
-        self._path_row(paths, "Archivo .set UBS", self.ubs_set_file, 9, self._browse_set_file)
-        self._path_row(paths, "Template tester", self.template_path, 10, self._browse_template_file)
+        self._path_row(paths, "Archivo .set UBS", self.ubs_set_file, 7, self._browse_set_file)
+        self._path_row(paths, "Template tester", self.template_path, 8, self._browse_template_file)
         self._rounded_button_cls(
             paths, text="Guardar rutas",
             bg=self.colors["accent"], hover_bg=self.colors["accent_hover"],
@@ -67,7 +65,7 @@ class SettingsViewMixin:
             radius=12, padx=18, pady=10,
             parent_bg=self.colors["panel"],
             command=self._save_paths_clicked,
-        ).grid(row=11, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 18))
+        ).grid(row=9, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 18))
 
         tester = self._card(content, "Tester")
         tester.grid(row=1, column=0, sticky="ew")
