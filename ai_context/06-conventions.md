@@ -13,27 +13,26 @@
 - Preserve type hints already present in newer code.
 - Prefer `Path` over raw string path manipulation.
 - Keep Windows path behavior explicit; this project targets MT5 on Windows.
-- Keep ownership split by domain. New behavior should go into focused modules
-  or mixins (`app_ui_*.py`, `ubs_*.py`, `portfolio_manager/*`) instead of
-  growing `app_ui.py` or `ubs_agent.py`.
-- For each substantial UI screen/tab, use at least two files:
-  `app_ui_<screen>_view.py` for Tk widget/layout construction and
-  `app_ui_<screen>_logic.py` for state transitions, persistence, validation,
-  database queries, and long-running actions. This is the default architecture
-  for the whole app, not an optional cleanup preference.
-- New tabs must start with this view/logic pair. When modifying an existing tab
-  that still mixes view and behavior, split the touched responsibility into the
-  correct file as part of the change unless doing so would be riskier than the
-  feature itself.
+- Keep ownership split by domain. New behaviour should go into `ui/`, `ubs/`,
+  or `portfolio_manager/` rather than growing `app_ui.py` or `ubs_agent.py`.
+- For each substantial UI screen/tab, use a view/logic pair inside `ui/`:
+  `ui/<screen>_view.py` for Tk widget/layout construction and
+  `ui/<screen>_logic.py` for state transitions, persistence, validation,
+  database queries, and long-running actions.
+- New tabs must start with this view/logic pair.
 - Treat `app_ui.py` as the composition/layout root. It may build Tk frames and
-  wire commands, but tab behavior, persistence, database queries, scoring,
-  path inference, and long-running actions should live in the domain module
-  that owns that feature.
-- When touching a large legacy method, prefer extracting a coherent helper or
-  mixin first if that reduces future maintenance risk without changing
-  behavior.
+  wire commands, but tab behaviour belongs in the appropriate `ui/` mixin.
+- `BASE_DIR` inside `ui/` modules must be:
+  ```python
+  BASE_DIR = Path(__file__).resolve().parent.parent  # project root
+  if getattr(sys, "frozen", False):
+      BASE_DIR = Path(sys.executable).resolve().parent
+  ```
+  Using only `.parent` would point to the `ui/` package directory, not root.
+- UBS support modules live in `ubs/` (`ubs/memory.py`, `ubs/score.py`, etc.).
+  Import them as `from ubs.memory import AgentMemory`, not the old root paths.
 - Avoid broad refactors in `app_ui.py` unless the task is UI restructuring or
-  an extraction that preserves behavior.
+  an extraction that preserves behaviour.
 
 ## File Editing
 
@@ -46,19 +45,56 @@
 
 ## UI Conventions
 
-`app_ui.py` defines custom Tkinter widgets:
+### Custom widgets (defined in `app_ui.py`)
 
-- `RoundedCard`
-- `RoundedButton`
-- `ToggleSwitch`
+- `RoundedCard` — styled card container
+- `RoundedButton` — primary CTA button (Type A in design system)
+- `ToggleSwitch` — on/off toggle
+- `ToolTip` — hover tooltip; access via `self._tooltip_cls(widget, text)`
 
-It uses `LIGHT_COLORS` and `DARK_COLORS` dictionaries as the theme source of
-truth. When modifying UI colors or layout, update through those theme values
-where possible.
+`LIGHT_COLORS` and `DARK_COLORS` are the theme source of truth. Always read
+colours through `self.colors["key"]` in mixin methods.
 
-Long-running actions must run in background threads and report progress back
-to Tkinter with thread-safe queue/`after(...)` patterns. Do not block the main
-Tk event loop with MT5, MetaEditor, or Excel generation work.
+### Button types
+
+All button decisions must follow `ai_context/09-design-system.md`. Summary:
+
+| Type | Widget | When |
+|---|---|---|
+| A — CTA | `RoundedButton` | one main action per card |
+| B — Bar compact | `tk.Button` themed | inside `panel_alt` action bars |
+| C — Card content | `ttk.Button` with style | inside card body |
+
+Never mix `ttk.Button` and `tk.Button` in the same `panel_alt` bar.
+
+### Action bar pattern
+
+```python
+bar = tk.Frame(parent, bg=self.colors["panel_alt"])
+bar.grid(row=N, column=0, sticky="ew", padx=20, pady=(4, 8))
+bar.columnconfigure(0, weight=1)
+# summary label left (col=0, weight=1), Type-B buttons right
+```
+
+### Treeview mandatory rules (all four must be applied)
+
+1. `stretch=False` on every column (enables horizontal scroll).
+2. `self._make_tree_sortable(tree)` always.
+3. `self._attach_tree_scrollbars(frame, tree, row)` always.
+4. Explicit `height=N` on every `ttk.Treeview`.
+
+### Progress dialogs for blocking operations
+
+Use a `tk.Toplevel` + `grab_set()` + background `threading.Thread` +
+`queue.Queue` + `after(40, _poll)` pattern. Never block the event loop.
+See `ui/ubs_results_logic.py:_export_ubs_results_run` for the canonical
+implementation.
+
+### Long-running actions
+
+Long-running operations (compile, backtest, agent) must run in background
+threads. Output is streamed line-by-line to the log panel via a thread-safe
+queue and `after()` polling. The UI must not freeze.
 
 ## Logging
 

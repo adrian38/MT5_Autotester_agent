@@ -31,7 +31,9 @@ batch wrappers.
   headless MT5 runtime.
 - Keep paths robust for both source execution and PyInstaller frozen
   execution. Most scripts redefine `BASE_DIR` from `sys.executable` when
-  `sys.frozen` is true.
+  `sys.frozen` is true. Modules inside `ui/` must use
+  `Path(__file__).resolve().parent.parent` (not `.parent`) to reach the
+  project root.
 - `tester_template.ini` is the base Strategy Tester configuration. Scripts
   generate per-run `.ini` files under `configs/`; do not hand-edit generated
   configs as source of truth.
@@ -55,14 +57,17 @@ batch wrappers.
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
   `ubs_generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
-- Preserve the module split. `app_ui.py` is the composition/layout root; new
-  feature behavior should live in focused `app_ui_*.py`, `ubs_*.py`, or
-  `portfolio_manager/*` modules by responsibility. Do not keep growing
-  `app_ui.py`/`ubs_agent.py` for logic that has a clear domain owner.
-- For every substantial UI screen/tab, use a view/logic pair:
-  `app_ui_<screen>_view.py` for widgets/layout and
-  `app_ui_<screen>_logic.py` for behavior/state/persistence. This is the
-  default structure for the whole app from now on.
+- `app_ui.py` is the composition/layout root. Screen mixins live in `ui/`
+  (`ui/dashboard_view.py`, `ui/dashboard_logic.py`, etc.) and UBS support
+  modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, etc.). Do NOT grow
+  `app_ui.py` or `ubs_agent.py` with logic that belongs in a domain module.
+- For every substantial UI screen/tab use a view/logic pair inside `ui/`:
+  `ui/<screen>_view.py` for widgets/layout and `ui/<screen>_logic.py` for
+  behavior/state/persistence. This is the mandatory structure for all tabs.
+- **UI design rules are in `09-design-system.md`. Read it before touching any
+  widget.** Three button types, action-bar pattern, Treeview standard, and
+  input sizes are all defined there. Using a wrong button type or omitting
+  `stretch=False` on a Treeview column is a bug.
 
 ## Topic Index
 
@@ -89,6 +94,63 @@ batch wrappers.
 - Portfolio workbook generation: functions in `portfolio_manager/generator.py`
 
 ## Recent Important Changes
+
+### Package reorganisation (refactor branch)
+
+All UI screen mixins moved from root to `ui/` package with shorter names:
+`app_ui_dashboard_view.py` → `ui/dashboard_view.py`. UBS support modules moved
+to `ubs/` package: `ubs_memory.py` → `ubs/memory.py`, etc. Root now only
+contains entry-point CLIs and `app_ui.py`. `pyproject.toml` added.
+
+**Import consequences**: `from ui.dashboard_logic import DashboardLogicMixin`,
+`from ubs.memory import AgentMemory`, etc.
+
+### Independent date ranges per process
+
+`run_tests.py` accepts `--from-date` / `--to-date` (format `YYYY.MM.DD`);
+these override `FromDate`/`ToDate` in the generated `.ini`, leaving the global
+template untouched. `ubs_agent.py` accepts the same flags and forwards them to
+`run_tests.py`. The UI exposes four new `StringVar`:
+
+| Var | Scope |
+|-----|-------|
+| `self.ubs_agent_from_date` / `ubs_agent_to_date` | UBS Agent generation runs |
+| `self.ubs_seed_from_date` / `ubs_seed_to_date` | Seed evaluation runs |
+
+All four are persisted in `ui_settings.ini` `[General]`. Empty = uses template dates.
+
+### UBS Results tab — new columns and export
+
+- **SEL column** (first): checkbox toggling via `_on_ubs_result_tree_click()`;
+  checked set stored in `self.ubs_result_checked`.
+- **MOTIVO column**: shows failing criteria with values (e.g.
+  `net profit: -830 | PF: 0.69 | DD: 26.1%`), same format as Seeds.
+- **Criteria bar**: read-only display of current agent thresholds above the
+  table (reflects `ubs_pass_*` vars in real-time).
+- **⬇ Exportar run button**: creates `Run_<id>_<date>/` with:
+  - `aceptados/<set_stem>/` — `.set` + `.htm` + all associated `.png`/`.gif`
+  - `fallidos/net_profit_positivo/<set_stem>/` — rejected with net_profit > 0
+  - `fallidos/otros/<set_stem>/` — everything else
+  - Modal progress dialog (blocking, thread-safe queue + `after(40)` poll).
+  - `_report_related_files()` uses `REPORT_DIR.glob(f"{stem}*")` to find all
+    chart/image files associated with a report.
+
+### Design system
+
+`ai_context/09-design-system.md` defines three button types, the action-bar
+pattern, input field sizes, the Treeview standard, and the spacing/colour
+system. All UI code must follow it. Key rules:
+
+- **Type A** (CTA): `RoundedButton`, accent/primary bg, radius=12, pady=10.
+- **Type B** (bar compact): `tk.Button` themed, in `panel_alt` frames only.
+- **Type C** (card content): `ttk.Button` with a named style.
+- All `ttk.Treeview` columns: `stretch=False`, `_attach_tree_scrollbars`,
+  `_make_tree_sortable`, explicit `height=`.
+- Spinboxes: `width=8`; date entries: `width=14`; criteria entries: `width=8`.
+
+### Shared widget helpers in `app_ui.py`
+
+`self._tooltip_cls = ToolTip` — use in any view mixin to attach hover tooltips.
 
 ### UBS Parámetros tab and global parameter system
 

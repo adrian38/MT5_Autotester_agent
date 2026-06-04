@@ -538,3 +538,31 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 
 - **2025-06** — Theme fix: all ttk widgets (Combobox, Radiobutton) now use
   panel background and text colours in dark mode; no system-default white boxes.
+
+- **2026-06** — Package reorganisation: all UI mixins moved to `ui/` package
+  (`ui/dashboard_view.py`, etc.) and UBS support modules to `ubs/` package
+  (`ubs/memory.py`, etc.). Root has only CLI entry points. `pyproject.toml`
+  added. `BASE_DIR` in `ui/` modules correctly uses `.parent.parent`.
+
+- **2026-06** — Independent date ranges: `run_tests.py` and `ubs_agent.py`
+  accept `--from-date` / `--to-date` (YYYY.MM.DD) overriding the template.
+  UI exposes separate Desde/Hasta fields for UBS Agent and Seeds, persisted
+  in `ui_settings.ini`.
+
+- **2026-06** — UBS Results tab: SEL checkbox column, MOTIVO column (same
+  format as Seeds), read-only criteria bar showing active thresholds.
+
+- **2026-06** — UBS Results export: `⬇ Exportar run` creates
+  `Run_<id>_<date>/aceptados/`, `fallidos/net_profit_positivo/`,
+  `fallidos/otros/` with a subfolder per candidate containing `.set` + `.htm`
+  + all associated chart images (`stem*.png`, `stem*.gif`). Modal progress
+  dialog with determinate progress bar, thread-safe queue.
+
+- **2026-06** — Design system (`ai_context/09-design-system.md`): three button
+  types, action-bar pattern, Treeview standard (`stretch=False`, scrollbars,
+  sortable, explicit height), input sizes, spacing. Applied consistently
+  across all view files.
+
+- **2026-06 (TD-2.6.1 partial)** — Seed evaluation: toolbar redesigned to
+  2 rows (primary actions / destructive danger zone). All toolbar buttons now
+  follow Type-B style (tk.Button themed in panel_alt bars).
