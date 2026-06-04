@@ -119,7 +119,7 @@ template untouched. `ubs_agent.py` accepts the same flags and forwards them to
 
 All four are persisted in `ui_settings.ini` `[General]`. Empty = uses template dates.
 
-### UBS Results tab — new columns and export
+### UBS Results tab — new columns, export and retry
 
 - **SEL column** (first): checkbox toggling via `_on_ubs_result_tree_click()`;
   checked set stored in `self.ubs_result_checked`.
@@ -134,6 +134,9 @@ All four are persisted in `ui_settings.ini` `[General]`. Empty = uses template d
   - Modal progress dialog (blocking, thread-safe queue + `after(40)` poll).
   - `_report_related_files()` uses `REPORT_DIR.glob(f"{stem}*")` to find all
     chart/image files associated with a report.
+- **"Repetir sin ops"** button: retries a `no_trades` candidate using
+  `--retry-candidate-id`, same mechanism as "Reprobar mismatch". Only
+  activates for rows with status `no_trades`. `_retry_no_trades_result()`.
 
 ### Design system
 
@@ -192,6 +195,10 @@ limpiar-pesos buttons, reset seed evaluation.
   delete methods.
 - Deleting seeds does NOT clear candidate scores from `candidates` — those
   remain and continue contributing to Universe weights.
+- **Date fields auto-fill**: `ubs_agent_from_date`, `ubs_agent_to_date`,
+  `ubs_seed_from_date`, `ubs_seed_to_date` are pre-filled with the template's
+  `FromDate`/`ToDate` when empty (via `trace_add` on `template_path`).
+  Implemented in `ui/ubs_agent_view.py` and `ui/ubs_seeds_view.py`.
 
 ### UBS Universe tab — new features
 
@@ -207,7 +214,8 @@ limpiar-pesos buttons, reset seed evaluation.
 - **PanedWindow vertical**: Runs | Candidatos drag-resizable.
 - **SEL column** on both Runs tree and Candidatos tree.
 - **"Eliminar run"**: deletes run + ALL its candidates from DB + their `.set`
-  files + report files (.htm + images). Refreshes Universe automatically.
+  files + report files (.htm + images). Also sets `seed_scores.score=NULL`
+  for all active seeds so Universe weights drop to 0. Refreshes Universe.
 - **"Eliminar set"**: for selected/checked candidate(s) — deletes `.set` from
   disk + sets `score=NULL` (weight removed). Candidate row kept in DB.
 

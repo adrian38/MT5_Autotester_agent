@@ -589,8 +589,9 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   in `candidates` and `seed_scores` without deleting rows.
 
 - **2026-06** — Histórico: Eliminar run (deletes run + all candidates + files
-  + reports from disk), Eliminar set (deletes .set + score=NULL for that
-  candidate). Both refresh Universe automatically.
+  + reports from disk + sets seed_scores.score=NULL → Universe goes to 0),
+  Eliminar set (deletes .set + score=NULL for that candidate).
+  Both refresh Universe automatically.
 
 - **2026-06** — Seeds: "Eliminar todas" button. `_cleanup_seed_db()` helper
   used by all three delete methods (deletes seed_scores + seed_overrides;
@@ -604,3 +605,13 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 - **2026-06** — Universe auto-refresh: `_refresh_all()` (called on every
   script completion) already includes `"ubs_universe"`. All direct DB weight
   operations also call `_safe_refresh("ubs_universe", …)` explicitly.
+
+- **2026-06** — Results: "Repetir sin ops" button retries a `no_trades`
+  candidate via `--retry-candidate-id`. Mirrors Seeds "Repetir backtest".
+  `_retry_no_trades_result()` in `ui/ubs_results_logic.py`.
+
+- **2026-06** — Date fields pre-fill: `ubs_agent_from_date/to_date` and
+  `ubs_seed_from_date/to_date` auto-populate from template `FromDate`/`ToDate`
+  when empty (via `trace_add` on `template_path`). No_trades on agent runs
+  are classified identically to seeds: status `no_trades`, not contributing
+  to Universe weights, retryable via "Repetir sin ops".
