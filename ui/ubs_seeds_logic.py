@@ -525,6 +525,21 @@ class UBSSeedsLogicMixin:
         if self._confirm_execution_start("Confirmar retry seed", len(paths), details):
             self._run_script("ubs_agent.py", args)
 
+    def _cleanup_seed_db(self, conn, seed_paths: list[str]) -> None:
+        """Borra seed_scores/overrides y pone score=NULL en candidates generados de esas seeds."""
+        if not seed_paths:
+            return
+        ph = ",".join("?" for _ in seed_paths)
+        conn.execute(f"delete from seed_scores   where seed_path in ({ph})", seed_paths)
+        conn.execute(f"delete from seed_overrides where seed_path in ({ph})", seed_paths)
+        # Limpia los pesos de candidatos generados A PARTIR de esas seeds
+        conn.execute(
+            f"update candidates set score=null, accepted=null "
+            f"where seed_path in ({ph}) and score is not null",
+            seed_paths,
+        )
+        conn.commit()
+
     def _delete_selected_ubs_seed(self) -> None:
         infos = self._checked_ubs_seed_infos()
         if not infos:
@@ -553,9 +568,7 @@ class UBSSeedsLogicMixin:
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
                 placeholders = ",".join("?" for _ in deleted_paths)
-                conn.execute(f"delete from seed_scores where seed_path in ({placeholders})", deleted_paths)
-                conn.execute(f"delete from seed_overrides where seed_path in ({placeholders})", deleted_paths)
-                conn.commit()
+                self._cleanup_seed_db(conn, deleted_paths)
                 conn.close()
             except sqlite3.Error:
                 pass
@@ -613,9 +626,7 @@ class UBSSeedsLogicMixin:
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
                 placeholders = ",".join("?" for _ in deleted_paths)
-                conn.execute(f"delete from seed_scores where seed_path in ({placeholders})", deleted_paths)
-                conn.execute(f"delete from seed_overrides where seed_path in ({placeholders})", deleted_paths)
-                conn.commit()
+                self._cleanup_seed_db(conn, deleted_paths)
                 conn.close()
             except sqlite3.Error:
                 pass
@@ -655,9 +666,7 @@ class UBSSeedsLogicMixin:
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
                 placeholders = ",".join("?" for _ in deleted)
-                conn.execute(f"delete from seed_scores where seed_path in ({placeholders})", deleted)
-                conn.execute(f"delete from seed_overrides where seed_path in ({placeholders})", deleted)
-                conn.commit()
+                self._cleanup_seed_db(conn, deleted)
                 conn.close()
             except sqlite3.Error:
                 pass
