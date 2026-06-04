@@ -565,6 +565,7 @@ class MT5AutotesterUI(
         self._rounded_button_cls = RoundedButton
         self._rounded_card_cls = RoundedCard
         self._toggle_switch_cls = ToggleSwitch
+        self._tooltip_cls = ToolTip
         self.title("MT5 Autotester")
         self.geometry("1320x800")
         self.minsize(1180, 700)

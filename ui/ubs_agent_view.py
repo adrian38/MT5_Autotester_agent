@@ -10,8 +10,35 @@ from run_tests import REPORT_DIR
 class UBSAgentViewMixin:
     def _build_ubs_agent(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
 
-        paths = self._card(parent, "Rutas Agente UBS")
+        # ── Scrollable wrapper ──────────────────────────────────────────────
+        canvas = tk.Canvas(parent, bg=self.colors["bg"], highlightthickness=0, bd=0)
+        vscroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.grid(row=0, column=1, sticky="ns")
+        canvas.grid(row=0, column=0, sticky="nsew")
+
+        inner = ttk.Frame(canvas)
+        inner.columnconfigure(0, weight=1)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_resize(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_resize(event):
+            canvas.itemconfig(win_id, width=event.width)
+
+        def _on_scroll(event):
+            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        inner.bind("<Configure>", _on_inner_resize)
+        canvas.bind("<Configure>", _on_canvas_resize)
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_scroll))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        # ── Rutas ───────────────────────────────────────────────────────────
+        paths = self._card(inner, "Rutas Agente UBS")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
         self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 1, self._browse_ex5_file)
@@ -30,7 +57,8 @@ class UBSAgentViewMixin:
             command=self._run_ubs_seed_evaluation,
         ).grid(row=0, column=1, sticky="e")
 
-        agent = self._card(parent, "Configuracion Agente UBS")
+        # ── Configuracion ───────────────────────────────────────────────────
+        agent = self._card(inner, "Configuracion Agente UBS")
         agent.grid(row=1, column=0, sticky="ew")
         for column in (1, 3, 5):
             agent.columnconfigure(column, weight=1)
@@ -53,11 +81,20 @@ class UBSAgentViewMixin:
 
         dates_row = ttk.Frame(agent, style="Panel.TFrame")
         dates_row.grid(row=2, column=0, columnspan=6, sticky="ew", padx=20, pady=(4, 0))
-        ttk.Label(dates_row, text="Desde (YYYY.MM.DD)", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        ttk.Entry(dates_row, textvariable=self.ubs_agent_from_date, width=14).grid(row=0, column=1, sticky="w", padx=(0, 24))
-        ttk.Label(dates_row, text="Hasta (YYYY.MM.DD)", style="Panel.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
-        ttk.Entry(dates_row, textvariable=self.ubs_agent_to_date, width=14).grid(row=0, column=3, sticky="w", padx=(0, 16))
-        ttk.Label(dates_row, text="Vacío = usa las fechas del template tester", style="Muted.TLabel").grid(row=0, column=4, sticky="w")
+        _date_tip = (
+            "Formato: YYYY.MM.DD  (ej. 2020.01.01)\n"
+            "Sobreescribe FromDate/ToDate del template para este proceso.\n"
+            "Dejar vacío para usar las fechas del template tester."
+        )
+        ttk.Label(dates_row, text="Desde", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        _from_entry = ttk.Entry(dates_row, textvariable=self.ubs_agent_from_date, width=14)
+        _from_entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+        self._tooltip_cls(_from_entry, _date_tip)
+        ttk.Label(dates_row, text="Hasta", style="Panel.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 6))
+        _to_entry = ttk.Entry(dates_row, textvariable=self.ubs_agent_to_date, width=14)
+        _to_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
+        self._tooltip_cls(_to_entry, _date_tip)
+        ttk.Label(dates_row, text="vacío = usa template", style="Muted.TLabel").grid(row=0, column=4, sticky="w")
 
         exec_row = tk.Frame(agent, bg=self.colors["panel"])
         exec_row.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))
@@ -105,7 +142,8 @@ class UBSAgentViewMixin:
             row=6, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
 
-        pass_config = self._card(parent, "Filtros de aceptacion")
+        # ── Filtros ─────────────────────────────────────────────────────────
+        pass_config = self._card(inner, "Filtros de aceptacion")
         pass_config.grid(row=2, column=0, sticky="ew", pady=(16, 0))
         for column in (1, 3, 5):
             pass_config.columnconfigure(column, weight=1)

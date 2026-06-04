@@ -88,14 +88,23 @@ class UBSSeedsViewMixin:
             command=self._apply_seed_criteria_clicked,
         ).grid(row=0, column=12, sticky="e")
 
+        _seed_date_tip = (
+            "Formato: YYYY.MM.DD  (ej. 2020.01.01)\n"
+            "Sobreescribe FromDate/ToDate del template solo para la evaluacion de seeds.\n"
+            "Dejar vacío para usar las fechas del template tester."
+        )
         dates_bar = ttk.Frame(card, style="Panel.TFrame")
         dates_bar.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 4))
         ttk.Label(dates_bar, text="Fechas Seeds:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Label(dates_bar, text="Desde", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(0, 4))
-        ttk.Entry(dates_bar, textvariable=self.ubs_seed_from_date, width=14).grid(row=0, column=2, sticky="w", padx=(0, 16))
+        _seed_from_e = ttk.Entry(dates_bar, textvariable=self.ubs_seed_from_date, width=14)
+        _seed_from_e.grid(row=0, column=2, sticky="w", padx=(0, 16))
+        self._tooltip_cls(_seed_from_e, _seed_date_tip)
         ttk.Label(dates_bar, text="Hasta", style="Muted.TLabel").grid(row=0, column=3, sticky="w", padx=(0, 4))
-        ttk.Entry(dates_bar, textvariable=self.ubs_seed_to_date, width=14).grid(row=0, column=4, sticky="w", padx=(0, 12))
-        ttk.Label(dates_bar, text="(YYYY.MM.DD — vacío = usa template)", style="Muted.TLabel").grid(row=0, column=5, sticky="w")
+        _seed_to_e = ttk.Entry(dates_bar, textvariable=self.ubs_seed_to_date, width=14)
+        _seed_to_e.grid(row=0, column=4, sticky="w", padx=(0, 12))
+        self._tooltip_cls(_seed_to_e, _seed_date_tip)
+        ttk.Label(dates_bar, text="vacío = usa template", style="Muted.TLabel").grid(row=0, column=5, sticky="w")
 
         table_frame = ttk.Frame(card, style="Panel.TFrame")
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 10))
