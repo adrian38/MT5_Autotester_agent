@@ -94,24 +94,16 @@ class UBSAgentViewMixin:
         _to_entry = ttk.Entry(dates_row, textvariable=self.ubs_agent_to_date, width=14)
         _to_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
         self._tooltip_cls(_to_entry, _date_tip)
-        # Label dinámico que muestra las fechas actuales del template
-        _tpl_dates_var = tk.StringVar(value="vacío = usa template")
-
-        def _update_tpl_label(*_):
+        def _fill_agent_dates(*_):
             fd = self.tester_vars.get("FromDate")
             td = self.tester_vars.get("ToDate")
-            fv = fd.get().strip() if fd else ""
-            tv = td.get().strip() if td else ""
-            if fv or tv:
-                _tpl_dates_var.set(f"vacío = {fv or '?'} → {tv or '?'}")
-            else:
-                _tpl_dates_var.set("vacío = usa template")
+            if fd and not self.ubs_agent_from_date.get().strip():
+                self.ubs_agent_from_date.set(fd.get().strip())
+            if td and not self.ubs_agent_to_date.get().strip():
+                self.ubs_agent_to_date.set(td.get().strip())
 
-        # Actualizar cuando cambie el template
-        self.after(200, _update_tpl_label)
-        self.template_path.trace_add("write", lambda *_: self.after(300, _update_tpl_label))
-
-        ttk.Label(dates_row, textvariable=_tpl_dates_var, style="Muted.TLabel").grid(row=0, column=4, sticky="w")
+        self.after(200, _fill_agent_dates)
+        self.template_path.trace_add("write", lambda *_: self.after(300, _fill_agent_dates))
 
         exec_row = tk.Frame(agent, bg=self.colors["panel"])
         exec_row.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))

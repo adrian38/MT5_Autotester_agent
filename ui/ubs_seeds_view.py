@@ -118,22 +118,16 @@ class UBSSeedsViewMixin:
         _seed_to_e = ttk.Entry(dates_bar, textvariable=self.ubs_seed_to_date, width=14)
         _seed_to_e.grid(row=0, column=4, sticky="w", padx=(0, 12))
         self._tooltip_cls(_seed_to_e, _seed_date_tip)
-        _seed_tpl_var = tk.StringVar(value="vacío = usa template")
-
-        def _update_seed_tpl(*_):
+        def _fill_seed_dates(*_):
             fd = self.tester_vars.get("FromDate")
             td = self.tester_vars.get("ToDate")
-            fv = fd.get().strip() if fd else ""
-            tv = td.get().strip() if td else ""
-            if fv or tv:
-                _seed_tpl_var.set(f"vacío = {fv or '?'} → {tv or '?'}")
-            else:
-                _seed_tpl_var.set("vacío = usa template")
+            if fd and not self.ubs_seed_from_date.get().strip():
+                self.ubs_seed_from_date.set(fd.get().strip())
+            if td and not self.ubs_seed_to_date.get().strip():
+                self.ubs_seed_to_date.set(td.get().strip())
 
-        self.after(200, _update_seed_tpl)
-        self.template_path.trace_add("write", lambda *_: self.after(300, _update_seed_tpl))
-
-        ttk.Label(dates_bar, textvariable=_seed_tpl_var, style="Muted.TLabel").grid(row=0, column=5, sticky="w", padx=(0, 12))
+        self.after(200, _fill_seed_dates)
+        self.template_path.trace_add("write", lambda *_: self.after(300, _fill_seed_dates))
         ttk.Button(
             dates_bar,
             text="Guardar",
