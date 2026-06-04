@@ -17,6 +17,83 @@ if getattr(sys, "frozen", False):
 
 
 class UBSResultsLogicMixin:
+    def _ubs_result_reason(self, row: object, status: str) -> str:
+        if status == "report_mismatch":
+            return "mismatch symbol/TF"
+        if status == "parse_error":
+            return "error al parsear reporte"
+        if status == "no_report":
+            return "sin reporte"
+        if status == "no_trades":
+            return "reporte sin operaciones"
+        if status in ("generated",):
+            return "sin backtest"
+        metrics_json = None
+        try:
+            metrics_json = row["metrics_json"]  # type: ignore[index]
+        except (TypeError, KeyError, IndexError):
+            pass
+        if not metrics_json:
+            return ""
+        try:
+            data = json.loads(metrics_json)
+            reasons = data.get("reasons") or []
+            if not reasons:
+                return ""
+            formats = {
+                "net_profit": ("net profit", ".0f", ""),
+                "profit_factor": ("PF", ".2f", ""),
+                "trades": ("trades", "d", ""),
+                "drawdown_pct": ("DD", ".1f", "%"),
+                "recovery_factor": ("RF", ".2f", ""),
+                "positive_month_ratio": ("meses+", ".0%", ""),
+            }
+            parts = []
+            for reason in reasons:
+                label, fmt, suffix = formats.get(reason, (reason, "", ""))
+                value = data.get(reason)
+                if value is None:
+                    parts.append(label)
+                    continue
+                try:
+                    parts.append(f"{label}: {value:{fmt}}{suffix}")
+                except (TypeError, ValueError):
+                    parts.append(f"{label}: {value}")
+            return " | ".join(parts)
+        except Exception:
+            return ""
+
+    def _on_ubs_result_tree_click(self, event) -> None:
+        if not hasattr(self, "ubs_results_tree"):
+            return
+        item, column = self._tree_item_from_event(self.ubs_results_tree, event)
+        if not item or column != "#1":
+            return
+        info = self.ubs_result_paths.get(item, {})
+        candidate_id = info.get("id", "")
+        if not candidate_id:
+            return
+        if candidate_id in self.ubs_result_checked:
+            self.ubs_result_checked.remove(candidate_id)
+        else:
+            self.ubs_result_checked.add(candidate_id)
+        values = list(self.ubs_results_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(candidate_id in self.ubs_result_checked)
+            self.ubs_results_tree.item(item, values=values)
+        return "break"
+
+    def _checked_ubs_result_infos(self, *, fallback_selected: bool = True) -> list[dict[str, str]]:
+        checked = [
+            info for item, info in self.ubs_result_paths.items()
+            if info.get("id") in self.ubs_result_checked
+        ]
+        if checked:
+            return checked
+        if not fallback_selected:
+            return []
+        return [self._selected_ubs_result_info()] if self._selected_ubs_result_info() else []
+
     def _refresh_ubs_results_panel(self) -> None:
         for label, callback in (
             ("ubs_results", self._refresh_ubs_results),
@@ -163,6 +240,7 @@ class UBSResultsLogicMixin:
             for item in self.ubs_results_tree.get_children():
                 self.ubs_results_tree.delete(item)
         self.ubs_result_paths.clear()
+        self.ubs_result_checked.clear()
 
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
@@ -255,13 +333,18 @@ class UBSResultsLogicMixin:
 
         if not hasattr(self, "ubs_results_tree"):
             return
+        valid_ids = set()
         for index, row in enumerate(rows):
             metrics = self._parse_ubs_metrics(row["metrics_json"])
             status = str(row["status"] or "")
+            candidate_id = str(row["id"] or "")
+            valid_ids.add(candidate_id)
+            reason = self._ubs_result_reason(row, status)
             item = self.ubs_results_tree.insert(
                 "",
                 "end",
                 values=(
+                    self._checkbox_text(candidate_id in self.ubs_result_checked),
                     row["run_id"],
                     row["generation"],
                     self._format_ubs_status(status),
@@ -272,12 +355,13 @@ class UBSResultsLogicMixin:
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
                     self._format_ubs_int(metrics.get("trades")),
+                    reason,
                     self._format_ubs_set_label(row),
                 ),
                 tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
             )
             self.ubs_result_paths[item] = {
-                "id": str(row["id"] or ""),
+                "id": candidate_id,
                 "run": str(row["run_id"] or ""),
                 "generation": str(row["generation"] or ""),
                 "status": status,
@@ -286,6 +370,7 @@ class UBSResultsLogicMixin:
                 "set": str(row["set_path"] or ""),
                 "report": str(row["report_path"] or ""),
             }
+        self.ubs_result_checked.intersection_update(valid_ids)
 
     def _hide_latest_ubs_results(self) -> None:
         memory_path = self._ubs_memory_path()

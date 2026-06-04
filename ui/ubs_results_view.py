@@ -65,9 +65,10 @@ class UBSResultsViewMixin:
         table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
-        self.ubs_results_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
+        columns = ("mark", "run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "reason", "set")
+        self.ubs_results_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
         headings = {
+            "mark": "SEL",
             "run": "RUN",
             "gen": "GEN",
             "status": "ESTADO",
@@ -78,20 +79,23 @@ class UBSResultsViewMixin:
             "pf": "PF",
             "dd": "DD %",
             "trades": "TRADES",
+            "reason": "MOTIVO",
             "set": "SET",
         }
         widths = {
-            "run": 56,
-            "gen": 50,
+            "mark": 48,
+            "run": 50,
+            "gen": 44,
             "status": 86,
-            "symbol": 96,
-            "period": 58,
-            "score": 82,
-            "profit": 90,
-            "pf": 72,
-            "dd": 72,
-            "trades": 74,
-            "set": 240,
+            "symbol": 90,
+            "period": 52,
+            "score": 78,
+            "profit": 84,
+            "pf": 66,
+            "dd": 66,
+            "trades": 68,
+            "reason": 220,
+            "set": 220,
         }
         for column in columns:
             self.ubs_results_tree.heading(column, text=headings[column])
@@ -107,6 +111,7 @@ class UBSResultsViewMixin:
         self.ubs_results_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_results_tree)
         self.ubs_results_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_report())
+        self.ubs_results_tree.bind("<Button-1>", self._on_ubs_result_tree_click)
         self._attach_tree_scrollbars(table_frame, self.ubs_results_tree, 0)
     def _build_ubs_history(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
