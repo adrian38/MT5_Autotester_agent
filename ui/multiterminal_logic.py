@@ -91,10 +91,12 @@ class MultiterminalLogicMixin:
             "portable": bool(self.mt_profile_portable.get()),
         }
 
-    def _multiterminal_tree_values(self, profile: dict[str, object]) -> tuple[str, str, str, str, str, str, str]:
+    def _multiterminal_tree_values(self, profile: dict[str, object], index: int) -> tuple:
+        name = str(profile.get("name") or f"Terminal {index + 1}")
         return (
+            self._checkbox_text(name in self.multiterminal_checked),
             "si" if bool(profile.get("enabled")) else "no",
-            str(profile.get("name") or ""),
+            name,
             str(profile.get("mt5_path") or ""),
             str(profile.get("data_dir") or ""),
             str(profile.get("experts_root") or ""),
@@ -109,19 +111,46 @@ class MultiterminalLogicMixin:
         selected_index = self.mt_selected_index
         for item in self.multiterminal_tree.get_children():
             self.multiterminal_tree.delete(item)
+        valid_names = set()
         for index, profile in enumerate(self.multiterminal_profiles):
+            name = str(profile.get("name") or f"Terminal {index + 1}")
+            valid_names.add(name)
             tag = "odd" if index % 2 else "even"
             self.multiterminal_tree.insert(
                 "",
                 "end",
                 iid=str(index),
-                values=self._multiterminal_tree_values(profile),
+                values=self._multiterminal_tree_values(profile, index),
                 tags=(tag,),
             )
+        self.multiterminal_checked.intersection_update(valid_names)
         if selected_index is not None and 0 <= selected_index < len(self.multiterminal_profiles):
             self.multiterminal_tree.selection_set(str(selected_index))
             self.multiterminal_tree.focus(str(selected_index))
         self._update_multiterminal_summary()
+
+    def _on_multiterminal_tree_click(self, event) -> None:
+        if not hasattr(self, "multiterminal_tree"):
+            return
+        item, column = self._tree_item_from_event(self.multiterminal_tree, event)
+        if not item or column != "#1":
+            return
+        try:
+            index = int(item)
+        except ValueError:
+            return
+        if index < 0 or index >= len(self.multiterminal_profiles):
+            return
+        name = str(self.multiterminal_profiles[index].get("name") or f"Terminal {index + 1}")
+        if name in self.multiterminal_checked:
+            self.multiterminal_checked.remove(name)
+        else:
+            self.multiterminal_checked.add(name)
+        values = list(self.multiterminal_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(name in self.multiterminal_checked)
+            self.multiterminal_tree.item(item, values=values)
+        return "break"
 
     def _update_multiterminal_tree_item(self, index: int) -> None:
         if not hasattr(self, "multiterminal_tree"):
@@ -130,7 +159,7 @@ class MultiterminalLogicMixin:
             return
         iid = str(index)
         if self.multiterminal_tree.exists(iid):
-            self.multiterminal_tree.item(iid, values=self._multiterminal_tree_values(self.multiterminal_profiles[index]))
+            self.multiterminal_tree.item(iid, values=self._multiterminal_tree_values(self.multiterminal_profiles[index], index))
 
     def _load_multiterminal_profile_editor(self, index: int) -> None:
         if index < 0 or index >= len(self.multiterminal_profiles):

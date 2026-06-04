@@ -695,6 +695,7 @@ class MT5AutotesterUI(
         self.ubs_result_checked: set[str] = set()
         self.ubs_history_candidate_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
+        self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}

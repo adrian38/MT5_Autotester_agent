@@ -89,32 +89,37 @@ class MultiterminalViewMixin:
         table_frame.grid(row=2, column=0, sticky="nsew", padx=(20, 12), pady=(0, 10))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file", "portable")
-        self.multiterminal_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=14)
+        columns = ("mark", "enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file", "portable")
+        self.multiterminal_tree = ttk.Treeview(table_frame, columns=columns, show="headings",
+                                               height=14, selectmode="extended")
         headings = {
-            "enabled": "ON",
-            "name": "NOMBRE",
-            "mt5_path": "TERMINAL64.EXE",
-            "data_dir": "DATOS MT5",
-            "experts_root": "MQL5\\EXPERTS",
-            "ubs_ex5_file": "UBS .EX5",
-            "portable": "PORTABLE",
+            "mark":        "SEL",
+            "enabled":     "ON",
+            "name":        "NOMBRE",
+            "mt5_path":    "TERMINAL64.EXE",
+            "data_dir":    "DATOS MT5",
+            "experts_root":"MQL5\\EXPERTS",
+            "ubs_ex5_file":"UBS .EX5",
+            "portable":    "PORTABLE",
         }
         widths = {
-            "enabled": 58,
-            "name": 150,
-            "mt5_path": 260,
-            "data_dir": 260,
-            "experts_root": 240,
-            "ubs_ex5_file": 220,
-            "portable": 80,
+            "mark":        48,
+            "enabled":     52,
+            "name":        140,
+            "mt5_path":    250,
+            "data_dir":    250,
+            "experts_root":220,
+            "ubs_ex5_file":200,
+            "portable":    72,
         }
         for column in columns:
             self.multiterminal_tree.heading(column, text=headings[column])
-            self.multiterminal_tree.column(column, width=widths[column], minwidth=50, stretch=column not in {"enabled", "portable"})
+            self.multiterminal_tree.column(column, width=widths[column], minwidth=42,
+                                           anchor="center", stretch=False)
         self._attach_tree_scrollbars(table_frame, self.multiterminal_tree, 0)
         self._make_tree_sortable(self.multiterminal_tree)
         self.multiterminal_tree.bind("<<TreeviewSelect>>", self._on_multiterminal_tree_select)
+        self.multiterminal_tree.bind("<Button-1>", self._on_multiterminal_tree_click)
 
         table_buttons = ttk.Frame(panel, style="Panel.TFrame")
         table_buttons.grid(row=3, column=0, sticky="ew", padx=(20, 12), pady=(0, 18))
