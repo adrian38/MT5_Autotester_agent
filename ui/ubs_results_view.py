@@ -157,7 +157,7 @@ class UBSResultsViewMixin:
         panel = self._card(parent, "Historico SQLite UBS")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(3, weight=1)
+        panel.rowconfigure(2, weight=1)
 
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
@@ -169,12 +169,17 @@ class UBSResultsViewMixin:
             cursor="hand2", command=self._refresh_ubs_history_panel,
         ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=5)
 
-        runs_frame = ttk.Frame(panel, style="Panel.TFrame")
-        runs_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
+        # PanedWindow vertical: Runs (arriba) | Candidatos (abajo)
+        vpaned = ttk.PanedWindow(panel, orient="vertical")
+        vpaned.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+
+        runs_frame = ttk.Frame(vpaned, style="Panel.TFrame")
         runs_frame.columnconfigure(0, weight=1)
+        runs_frame.rowconfigure(0, weight=1)
+        vpaned.add(runs_frame, weight=1)
         run_columns = ("mark", "id", "created", "gens", "variants", "seeds", "backtests", "hidden", "total", "accepted", "rejected", "output")
         self.ubs_history_runs_tree = ttk.Treeview(runs_frame, columns=run_columns, show="headings",
-                                                   height=6, selectmode="extended")
+                                                   height=5, selectmode="extended")
         run_headings = {
             "mark": "SEL", "id": "RUN", "created": "FECHA", "gens": "GENS", "variants": "VAR/SET",
             "seeds": "SEEDS", "backtests": "BT", "hidden": "ARCH", "total": "TOTAL",
@@ -189,10 +194,10 @@ class UBSResultsViewMixin:
         self.ubs_history_runs_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_history_candidates())
         self.ubs_history_runs_tree.bind("<Button-1>", self._on_ubs_history_run_click)
 
-        candidates_panel = ttk.Frame(panel, style="Panel.TFrame")
-        candidates_panel.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        candidates_panel = ttk.Frame(vpaned, style="Panel.TFrame")
         candidates_panel.columnconfigure(0, weight=1)
         candidates_panel.rowconfigure(1, weight=1)
+        vpaned.add(candidates_panel, weight=3)
         ttk.Label(candidates_panel, textvariable=self.ubs_history_candidate_summary, style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         cand_columns = ("mark", "id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
         self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings",
@@ -242,16 +247,13 @@ class UBSResultsViewMixin:
                       cursor="hand2", command=cmd,
                       ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
 
-        body = ttk.Frame(panel, style="Panel.TFrame")
+        body = ttk.PanedWindow(panel, orient="horizontal")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
-        body.columnconfigure(0, weight=2)
-        body.columnconfigure(1, weight=3)
-        body.rowconfigure(0, weight=1)
 
         accepted_frame = ttk.Frame(body, style="Panel.TFrame")
-        accepted_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         accepted_frame.columnconfigure(0, weight=1)
         accepted_frame.rowconfigure(1, weight=1)
+        body.add(accepted_frame, weight=2)
         ttk.Label(accepted_frame, text="Resultados", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         accepted_columns = ("mark", "run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "set")
         self.ubs_compare_sets_tree = ttk.Treeview(accepted_frame, columns=accepted_columns, show="headings",
@@ -269,9 +271,9 @@ class UBSResultsViewMixin:
         self._attach_tree_scrollbars(accepted_frame, self.ubs_compare_sets_tree, 1)
 
         diff_panel = ttk.Frame(body, style="Panel.TFrame")
-        diff_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         diff_panel.columnconfigure(0, weight=1)
         diff_panel.rowconfigure(1, weight=1)
+        body.add(diff_panel, weight=3)
         ttk.Label(diff_panel, textvariable=self.ubs_compare_detail, style="Muted.TLabel", wraplength=760).grid(row=0, column=0, sticky="ew", pady=(0, 6))
         diff_columns = ("key", "seed", "accepted")
         self.ubs_compare_diff_tree = ttk.Treeview(diff_panel, columns=diff_columns, show="headings", height=18)
