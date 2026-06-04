@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import html
 import json
+import queue
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
+import tkinter as tk
+from tkinter import ttk
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1151,6 +1155,23 @@ class UBSResultsLogicMixin:
     # Export
     # ──────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _report_related_files(rep_str: str) -> list[Path]:
+        """Return the .htm/.html report + all associated image files."""
+        if not rep_str:
+            return []
+        rep = Path(rep_str)
+        parent = rep.parent if rep.parent.exists() else BASE_DIR / "reports"
+        stem = rep.stem
+        found = [f for f in parent.glob(f"{stem}*") if f.is_file() and f.suffix.lower() != ".set"]
+        if not found:
+            for ext in (".htm", ".html"):
+                alt = parent / (stem + ext)
+                if alt.exists():
+                    found = [f for f in parent.glob(f"{alt.stem}*") if f.is_file() and f.suffix.lower() != ".set"]
+                    break
+        return found
+
     def _export_ubs_results_run(self) -> None:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
@@ -1161,6 +1182,7 @@ class UBSResultsLogicMixin:
         if not base_dir:
             return
 
+        # ── Leer candidatos ──────────────────────────────────────────────
         try:
             conn = sqlite3.connect(memory_path, timeout=2.0)
             conn.row_factory = sqlite3.Row
@@ -1174,7 +1196,8 @@ class UBSResultsLogicMixin:
                 return
             rows = conn.execute(
                 """
-                select id, status, set_path, report_path, metrics_json
+                select id, status, set_path, report_path, metrics_json,
+                       target_symbol, period
                 from candidates where run_id = ?
                 """,
                 (run["id"],),
@@ -1184,77 +1207,148 @@ class UBSResultsLogicMixin:
             self._show_error("Error al leer memoria UBS", str(exc))
             return
 
-        created = str(run["created_at"] or "").replace(":", "-").replace(" ", "_")[:16]
-        run_folder  = Path(base_dir) / f"Run_{run['id']}_{created}"
-        accept_dir  = run_folder / "aceptados"
-        netpos_dir  = run_folder / "fallidos" / "net_profit_positivo"
-        otros_dir   = run_folder / "fallidos" / "otros"
+        created    = str(run["created_at"] or "").replace(":", "-").replace(" ", "_")[:16]
+        run_folder = Path(base_dir) / f"Run_{run['id']}_{created}"
+        accept_dir = run_folder / "aceptados"
+        netpos_dir = run_folder / "fallidos" / "net_profit_positivo"
+        otros_dir  = run_folder / "fallidos" / "otros"
         for d in (accept_dir, netpos_dir, otros_dir):
             d.mkdir(parents=True, exist_ok=True)
 
+        total  = len(rows)
         counts = {"aceptados": 0, "net_profit_positivo": 0, "otros": 0, "sin_archivo": 0}
+        q: queue.Queue = queue.Queue()
 
-        def _copy(dest: Path, cid: int, set_str: str, rep_str: str) -> None:
-            stem = f"{Path(set_str).stem}_{cid}" if set_str else str(cid)
+        def _folder_name(cid: int, set_str: str, symbol: str, period: str) -> str:
+            if set_str and Path(set_str).stem:
+                return Path(set_str).stem
+            parts = [p for p in (symbol, period) if p and p.upper() != "UNKNOWN"]
+            return "_".join(parts + [str(cid)]) if parts else str(cid)
+
+        def _copy_candidate(dest_cat: Path, cid: int, set_str: str,
+                            rep_str: str, symbol: str, period: str) -> bool:
+            folder = dest_cat / _folder_name(cid, set_str, symbol, period)
+            folder.mkdir(parents=True, exist_ok=True)
             copied = False
-            for src_str, fallback_exts in (
-                (set_str,  []),
-                (rep_str,  [".html", ".htm"]),
-            ):
-                if not src_str:
-                    continue
-                src = Path(src_str)
-                if not src.exists() and fallback_exts:
-                    for ext in fallback_exts:
-                        alt = src.with_suffix(ext)
-                        if alt.exists():
-                            src = alt
-                            break
+            if set_str:
+                src = Path(set_str)
                 if src.exists():
-                    shutil.copy2(src, dest / f"{stem}{src.suffix}")
+                    shutil.copy2(src, folder / src.name)
                     copied = True
-            if not copied:
-                counts["sin_archivo"] += 1
+            for f in self._report_related_files(rep_str):
+                shutil.copy2(f, folder / f.name)
+                copied = True
+            return copied
 
-        for row in rows:
-            status    = str(row["status"] or "")
-            cid       = int(row["id"] or 0)
-            set_path  = str(row["set_path"] or "")
-            rep_path  = str(row["report_path"] or "")
+        def _do_export() -> None:
+            for idx, row in enumerate(rows):
+                status   = str(row["status"] or "")
+                cid      = int(row["id"] or 0)
+                set_path = str(row["set_path"] or "")
+                rep_path = str(row["report_path"] or "")
+                symbol   = str(row["target_symbol"] or "")
+                period   = str(row["period"] or "")
+                label    = Path(set_path).stem if set_path else f"#{cid}"
+                q.put(("progress", idx, total, label))
 
-            if status == "accepted":
-                _copy(accept_dir, cid, set_path, rep_path)
-                counts["aceptados"] += 1
-            elif status in ("rejected", "no_trades"):
-                net_profit = 0.0
-                try:
-                    data = json.loads(row["metrics_json"] or "{}")
-                    net_profit = float(data.get("net_profit") or 0)
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
-                if net_profit > 0:
-                    _copy(netpos_dir, cid, set_path, rep_path)
-                    counts["net_profit_positivo"] += 1
+                if status == "accepted":
+                    ok = _copy_candidate(accept_dir, cid, set_path, rep_path, symbol, period)
+                    counts["aceptados" if ok else "sin_archivo"] += 1
+
+                elif status in ("rejected", "no_trades"):
+                    net_profit = 0.0
+                    try:
+                        data = json.loads(row["metrics_json"] or "{}")
+                        net_profit = float(data.get("net_profit") or 0)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+                    dest_cat = netpos_dir if net_profit > 0 else otros_dir
+                    key = "net_profit_positivo" if net_profit > 0 else "otros"
+                    ok = _copy_candidate(dest_cat, cid, set_path, rep_path, symbol, period)
+                    counts[key if ok else "sin_archivo"] += 1
+
                 else:
-                    _copy(otros_dir, cid, set_path, rep_path)
-                    counts["otros"] += 1
-            else:
-                _copy(otros_dir, cid, set_path, "")
-                counts["otros"] += 1
+                    ok = _copy_candidate(otros_dir, cid, set_path, "", symbol, period)
+                    counts["otros" if ok else "sin_archivo"] += 1
 
-        summary = (
-            f"Exportado en:\n{run_folder}\n\n"
-            f"  aceptados/                   {counts['aceptados']}\n"
-            f"  fallidos/net_profit_positivo  {counts['net_profit_positivo']}\n"
-            f"  fallidos/otros               {counts['otros']}"
-        )
-        if counts["sin_archivo"]:
-            summary += f"\n\n  Sin archivos disponibles:    {counts['sin_archivo']}"
-        messagebox.showinfo("Exportar run — completado", summary)
-        try:
-            subprocess.Popen(["explorer", str(run_folder)])
-        except Exception:
-            pass
+            q.put(("done",))
 
+        # ── Dialogo de progreso ────────────────────────────────────────────
+        dlg = tk.Toplevel(self)
+        dlg.title("Exportando...")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        dlg.configure(bg=self.colors["panel"])
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
 
+        body = tk.Frame(dlg, bg=self.colors["panel"], padx=28, pady=22)
+        body.pack()
+
+        tk.Label(body, text="Exportando run UBS",
+                 bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        tk.Label(body, text=f"Run #{run['id']}  ·  {run['created_at']}",
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 16))
+
+        bar = ttk.Progressbar(body, mode="determinate", maximum=100,
+                              style="Horizontal.TProgressbar", length=440)
+        bar.pack(fill="x")
+
+        count_var  = tk.StringVar(value=f"0 / {total}")
+        status_var = tk.StringVar(value="Iniciando...")
+        tk.Label(body, textvariable=count_var,
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9)).pack(anchor="e", pady=(4, 0))
+        tk.Label(body, textvariable=status_var,
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), wraplength=440, anchor="w").pack(
+            fill="x", pady=(3, 0))
+
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width()  - dlg.winfo_width())  // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - dlg.winfo_height()) // 2)
+        dlg.geometry(f"+{x}+{y}")
+
+        threading.Thread(target=_do_export, daemon=True).start()
+
+        def _poll() -> None:
+            try:
+                while True:
+                    msg = q.get_nowait()
+                    if msg[0] == "progress":
+                        _, idx, tot, label = msg
+                        pct = int((idx + 1) / max(tot, 1) * 100)
+                        bar["value"] = pct
+                        count_var.set(f"{idx + 1} / {tot}")
+                        name = label[:55] + "..." if len(label) > 55 else label
+                        status_var.set(f"Copiando: {name}")
+                    elif msg[0] == "done":
+                        bar["value"] = 100
+                        status_var.set("Completado.")
+                        dlg.after(400, _finish)
+                        return
+            except queue.Empty:
+                pass
+            dlg.after(40, _poll)
+
+        def _finish() -> None:
+            dlg.grab_release()
+            dlg.destroy()
+            summary = (
+                f"Exportado en:\n{run_folder}\n\n"
+                f"  aceptados/                   {counts['aceptados']}\n"
+                f"  fallidos/net_profit_positivo  {counts['net_profit_positivo']}\n"
+                f"  fallidos/otros               {counts['otros']}"
+            )
+            if counts["sin_archivo"]:
+                summary += f"\n\n  Sin archivos disponibles:    {counts['sin_archivo']}"
+            messagebox.showinfo("Exportar run — completado", summary)
+            try:
+                subprocess.Popen(["explorer", str(run_folder)])
+            except Exception:
+                pass
+
+        dlg.after(40, _poll)
 
