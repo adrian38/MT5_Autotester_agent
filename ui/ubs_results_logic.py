@@ -1455,7 +1455,8 @@ class UBSResultsLogicMixin:
             f"Esto eliminará:\n"
             f"  • {total} candidatos de la DB y el run\n"
             f"  • Sus archivos .set del disco\n"
-            f"  • Sus reportes (.htm + imágenes)\n\n"
+            f"  • Sus reportes (.htm + imágenes)\n"
+            f"  • Scores de evaluación de seeds (pesos → 0)\n\n"
             "¿Continuar?",
         ):
             return
@@ -1480,6 +1481,11 @@ class UBSResultsLogicMixin:
             conn = sqlite3.connect(memory_path, timeout=2.0)
             conn.execute("delete from candidates where run_id=?", (run_id,))
             conn.execute("delete from runs where id=?", (run_id,))
+            # Limpiar también los scores de seed_scores → los pesos del Universo van a 0
+            conn.execute(
+                "update seed_scores set score=null, accepted=null "
+                "where score is not null"
+            )
             conn.commit()
             conn.close()
         except sqlite3.Error as exc:
