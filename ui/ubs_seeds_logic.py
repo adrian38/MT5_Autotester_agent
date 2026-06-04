@@ -8,7 +8,12 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
+import hashlib
+import queue
+import threading
+import tkinter as tk
 from tkinter import filedialog
+from tkinter import ttk as _ttk
 from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, parse_symbol_map
 
 
@@ -527,36 +532,145 @@ class UBSSeedsLogicMixin:
             self._run_script("ubs_agent.py", args)
 
     def _import_ubs_seeds(self) -> None:
-        """Importa una carpeta de .set, normaliza lote fijo y la copia a la carpeta seeds configurada."""
-        source_dir = filedialog.askdirectory(
-            title="Carpeta origen con los .set a importar"
-        )
-        if not source_dir:
+        """Importa una carpeta de .set, normaliza lote fijo, detecta duplicados y muestra progreso."""
+        source_str = filedialog.askdirectory(title="Carpeta origen con los .set a importar")
+        if not source_str:
             return
 
+        source_dir = Path(source_str)
         try:
             output_dir = self._ubs_generator_source_dir()
         except Exception:
             output_dir = BASE_DIR / "sets" / "ubs_ready"
 
-        source_count = len(list(Path(source_dir).rglob("*.set")))
-        if source_count == 0:
+        set_files = sorted(source_dir.rglob("*.set"))
+        total = len(set_files)
+        if total == 0:
             messagebox.showinfo("Importar seeds", f"No se encontraron archivos .set en:\n{source_dir}")
             return
 
         if not messagebox.askyesno(
             "Importar seeds",
-            f"Importar {source_count} .set desde:\n{source_dir}\n\n"
-            f"Destino (normalizado con lote fijo 0.01):\n{output_dir}\n\n"
+            f"Importar {total} .set desde:\n{source_dir}\n\n"
+            f"Destino: {output_dir}\n\n"
+            "Se normalizará el lotaje (lote fijo 0.01) y se eliminarán duplicados.\n\n"
             "¿Continuar?",
         ):
             return
 
-        args = [
-            "--source-dir", str(source_dir),
-            "--output-dir", str(output_dir),
-        ]
-        self._run_script("ubs_prepare_sets.py", args)
+        q: queue.Queue = queue.Queue()
+
+        def _do_import() -> None:
+            from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
+            from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+            from ubs_prepare_sets import unique_target
+
+            seen_hashes: set[str] = set()
+            copied = 0
+            duplicates = 0
+            errors: list[str] = []
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            for idx, source in enumerate(set_files):
+                q.put(("progress", idx, total, source.name))
+                try:
+                    text, encoding = read_set_with_encoding(source)
+                    normalized, _found, _missing = force_fixed_lot_text(text)
+
+                    # Detectar duplicados por hash del contenido normalizado
+                    content_hash = hashlib.sha256(
+                        normalized.encode("utf-8", errors="replace")
+                    ).hexdigest()
+                    if content_hash in seen_hashes:
+                        duplicates += 1
+                        continue
+                    seen_hashes.add(content_hash)
+
+                    params = load_set_params(source)
+                    symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
+                    period = infer_period_from_set(source, params) or "UNKNOWN"
+                    relative = source.relative_to(source_dir)
+                    target = unique_target(output_dir, relative, symbol, period)
+                    write_set_text(target, normalized, encoding)
+                    copied += 1
+                except Exception as exc:
+                    errors.append(f"{source.name}: {exc}")
+
+            q.put(("done", copied, duplicates, errors))
+
+        # ── Popup de progreso ──────────────────────────────────────────────
+        dlg = tk.Toplevel(self)
+        dlg.title("Importando seeds...")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        dlg.configure(bg=self.colors["panel"])
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        body = tk.Frame(dlg, bg=self.colors["panel"], padx=28, pady=22)
+        body.pack()
+        tk.Label(body, text="Importando y normalizando seeds",
+                 bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        tk.Label(body, text=f"{source_dir}",
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), wraplength=440).pack(anchor="w", pady=(2, 16))
+
+        bar = _ttk.Progressbar(body, mode="determinate", maximum=100,
+                               style="Horizontal.TProgressbar", length=440)
+        bar.pack(fill="x")
+        count_var  = tk.StringVar(value=f"0 / {total}")
+        status_var = tk.StringVar(value="Iniciando...")
+        tk.Label(body, textvariable=count_var,
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9)).pack(anchor="e", pady=(4, 0))
+        tk.Label(body, textvariable=status_var,
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), wraplength=440, anchor="w").pack(fill="x", pady=(3, 0))
+
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width()  - dlg.winfo_width())  // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - dlg.winfo_height()) // 2)
+        dlg.geometry(f"+{x}+{y}")
+
+        threading.Thread(target=_do_import, daemon=True).start()
+
+        def _poll() -> None:
+            try:
+                while True:
+                    msg = q.get_nowait()
+                    if msg[0] == "progress":
+                        _, idx, tot, name = msg
+                        bar["value"] = int((idx + 1) / max(tot, 1) * 100)
+                        count_var.set(f"{idx + 1} / {tot}")
+                        label = name[:55] + "..." if len(name) > 55 else name
+                        status_var.set(f"Procesando: {label}")
+                    elif msg[0] == "done":
+                        _, copied, duplicates, errors = msg
+                        bar["value"] = 100
+                        status_var.set("Completado.")
+                        dlg.after(400, lambda: _finish(copied, duplicates, errors))
+                        return
+            except queue.Empty:
+                pass
+            dlg.after(40, _poll)
+
+        def _finish(copied: int, duplicates: int, errors: list[str]) -> None:
+            dlg.grab_release()
+            dlg.destroy()
+            summary = (
+                f"Importación completada\n\n"
+                f"  Seeds copiadas:    {copied}\n"
+                f"  Duplicados omitidos: {duplicates}\n"
+                f"  Destino: {output_dir}"
+            )
+            if errors:
+                summary += f"\n\n  Errores: {len(errors)}\n  " + "\n  ".join(errors[:5])
+            messagebox.showinfo("Importar seeds — completado", summary)
+            self._refresh_ubs_seeds_panel()
+
+        dlg.after(40, _poll)
 
     def _cleanup_seed_db(self, conn, seed_paths: list[str]) -> None:
         """Borra seed_scores y seed_overrides de esas seeds."""
