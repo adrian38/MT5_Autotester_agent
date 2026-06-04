@@ -31,15 +31,15 @@ class FilesViewMixin:
         tk.Label(actions_bar, text=f"Mostrando reportes de {REPORT_DIR.name}/",
                  bg=self.colors["panel_alt"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
         tk.Button(actions_bar, text="📂  Abrir carpeta", bg=self.colors["panel"], fg=self.colors["muted"],
-                  relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9), cursor="hand2",
+                  relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9), cursor="hand2",
                   command=lambda: subprocess.Popen(["explorer", str(REPORT_DIR)]) if REPORT_DIR.exists() else None
                   ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
         tk.Button(actions_bar, text="🗘  Actualizar", bg=self.colors["panel"], fg=self.colors["muted"],
-                  relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9), cursor="hand2",
+                  relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9), cursor="hand2",
                   command=self._refresh_reports
                   ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
         tk.Button(actions_bar, text="Borrar antiguos", bg=self.colors["danger"], fg="#ffffff",
-                  relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
                   command=self._delete_old_reports
                   ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=4)
 

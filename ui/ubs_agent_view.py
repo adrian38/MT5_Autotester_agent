@@ -113,27 +113,27 @@ class UBSAgentViewMixin:
         buttons.columnconfigure(1, weight=1)
         buttons.columnconfigure(2, weight=1)
         self._rounded_button_cls(
-            buttons, text="Guardar configuracion Agente UBS",
+            buttons, text="Guardar config",
             bg=self.colors["primary_container"], hover_bg=self.colors["primary"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=10, padx=14, pady=10,
             parent_bg=self.colors["panel"],
             command=self._save_ubs_agent_clicked,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._rounded_button_cls(
             buttons, text="Lanzar Agente UBS",
             bg=self.colors["accent"], hover_bg=self.colors["accent_hover"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=10, padx=14, pady=10,
             parent_bg=self.colors["panel"],
             command=self._run_ubs_generator,
-        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 6))
         self.ubs_continue_button = self._rounded_button_cls(
             buttons, text="Continuar iteracion",
             bg=self.colors["primary"], fg=self.colors["primary_text"],
             hover_bg=self.colors["primary_container"], hover_fg=self.colors["primary_hover_text"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=10, padx=14, pady=10,
             parent_bg=self.colors["panel"],
             command=self._run_ubs_continue,
         )

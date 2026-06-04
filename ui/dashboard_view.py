@@ -112,25 +112,25 @@ class DashboardViewMixin:
 
         compile_and = self._rounded_button_cls(
             actions_card,
-            text="🚀  Compilar y backtest      Flujo completo automatizado",
+            text="🚀  Compilar y backtest  —  Flujo completo automatizado",
             bg=self.colors["accent"], hover_bg=self.colors["accent_hover"],
-            font=("Segoe UI", 11, "bold"),
-            radius=14, padx=20, pady=18, anchor="w",
+            font=("Segoe UI", 10, "bold"),
+            radius=12, padx=18, pady=12, anchor="w",
             parent_bg=self.colors["panel"],
             command=self._run_full_flow,
         )
-        compile_and.grid(row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 8))
+        compile_and.grid(row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 6))
 
         stop_btn = self._rounded_button_cls(
             actions_card,
             text="✕  DETENER PROCESO",
             bg=self.colors["danger"], hover_bg="#8a0d0d",
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=16, pady=12,
+            radius=12, padx=16, pady=10,
             parent_bg=self.colors["panel"],
             command=self._stop_process,
         )
-        stop_btn.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 18))
+        stop_btn.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 14))
 
         config_card = self._card(body, "Configuration")
         config_card.grid(row=0, column=1, sticky="nsew")
@@ -184,11 +184,11 @@ class DashboardViewMixin:
             config_card, text="Guardar configuracion",
             bg=self.colors["primary_container"], hover_bg=self.colors["primary"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=12, padx=18, pady=10,
             parent_bg=self.colors["panel"],
             command=self._save_config_clicked,
         )
-        save_cfg.grid(row=9, column=0, sticky="ew", padx=20, pady=(20, 10))
+        save_cfg.grid(row=9, column=0, sticky="ew", padx=20, pady=(16, 8))
 
         del_btn = self._rounded_button_cls(
             config_card, text="🗑  Eliminar datos historicos",
@@ -196,11 +196,11 @@ class DashboardViewMixin:
             hover_bg=self.colors["danger_soft"], hover_fg=self.colors["danger"],
             border=self.colors["danger"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=12, padx=18, pady=10,
             parent_bg=self.colors["panel"],
             command=self._delete_historical_data,
         )
-        del_btn.grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 22))
+        del_btn.grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 18))
 
     # ------------------------------------------------------------------
 

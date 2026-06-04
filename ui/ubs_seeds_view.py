@@ -18,37 +18,43 @@ class UBSSeedsViewMixin:
         card.rowconfigure(4, weight=1)
 
         toolbar = ttk.Frame(card, style="Panel.TFrame")
-        toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 8))
+        toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 4))
         toolbar.columnconfigure(0, weight=1)
+
+        # Row 0: estado + acciones principales
         ttk.Label(toolbar, textvariable=self.ubs_seed_eval_summary, style="Muted.TLabel").grid(
             row=0, column=0, sticky="w", padx=(0, 10)
         )
         ttk.Button(toolbar, text="Evaluar semillas", style="Primary.TButton", command=self._run_ubs_seed_evaluation).grid(
-            row=0, column=1, sticky="e", padx=(0, 8)
+            row=0, column=1, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Abrir seed", style="TButton", command=self._open_selected_ubs_seed).grid(
-            row=0, column=2, sticky="e", padx=(0, 8)
+        ttk.Button(toolbar, text="Abrir seed", command=self._open_selected_ubs_seed).grid(
+            row=0, column=2, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Abrir reporte", style="TButton", command=self._open_selected_ubs_seed_report).grid(
-            row=0, column=3, sticky="e", padx=(0, 8)
+        ttk.Button(toolbar, text="Abrir reporte", command=self._open_selected_ubs_seed_report).grid(
+            row=0, column=3, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Repetir backtest", style="TButton", command=self._retry_selected_ubs_seed).grid(
-            row=0, column=4, sticky="e", padx=(0, 8)
+        ttk.Button(toolbar, text="Repetir backtest", command=self._retry_selected_ubs_seed).grid(
+            row=0, column=4, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Guardar Symbol/TF", style="TButton", command=self._save_ubs_seed_override).grid(
-            row=0, column=5, sticky="e", padx=(0, 8)
+        ttk.Button(toolbar, text="Guardar Symbol/TF", command=self._save_ubs_seed_override).grid(
+            row=0, column=5, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Eliminar seed", style="Danger.TButton", command=self._delete_selected_ubs_seed).grid(
-            row=0, column=6, sticky="e", padx=(0, 8)
+        ttk.Button(toolbar, text="Actualizar", command=self._refresh_ubs_seeds_panel).grid(
+            row=0, column=6, sticky="e"
         )
-        ttk.Button(toolbar, text="Eliminar rechazadas", style="Danger.TButton", command=self._delete_rejected_ubs_seeds).grid(
-            row=0, column=7, sticky="e", padx=(0, 8)
+
+        # Row 1: acciones destructivas (alineadas a la derecha)
+        danger_frame = ttk.Frame(toolbar, style="Panel.TFrame")
+        danger_frame.grid(row=1, column=0, columnspan=7, sticky="e", pady=(4, 0))
+        ttk.Button(danger_frame, text="Eliminar seed", style="Danger.TButton", command=self._delete_selected_ubs_seed).grid(
+            row=0, column=0, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Resetear evaluación", style="Danger.TButton", command=self._reset_ubs_seed_evaluation).grid(
-            row=0, column=8, sticky="e", padx=(0, 8)
+        ttk.Button(danger_frame, text="Eliminar rechazadas", style="Danger.TButton", command=self._delete_rejected_ubs_seeds).grid(
+            row=0, column=1, sticky="e", padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Actualizar", style="TButton", command=self._refresh_ubs_seeds_panel).grid(
-            row=0, column=9, sticky="e"
+        ttk.Button(danger_frame, text="Resetear evaluación", style="Danger.TButton", command=self._reset_ubs_seed_evaluation).grid(
+            row=0, column=2, sticky="e"
         )
 
         criteria_bar = ttk.Frame(card, style="Panel.TFrame")

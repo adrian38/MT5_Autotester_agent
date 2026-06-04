@@ -1082,19 +1082,19 @@ class MT5AutotesterUI(
                      font=("Segoe UI Symbol", 16)).grid(row=1, column=1, sticky="e", pady=(6, 0))
 
     def _action_card(self, parent: ttk.Frame, row: int, column: int, *, icon: str, title: str, description: str, command) -> None:
-        card = RoundedCard(parent, radius=14, bg=COLORS["panel"], border=COLORS["border"])
+        card = RoundedCard(parent, radius=12, bg=COLORS["panel"], border=COLORS["border"])
         card.grid(row=row, column=column, sticky="nsew",
-                  padx=(20 if column == 0 else 8, 20 if column == 1 else 8), pady=(0, 12),
-                  ipady=18)
+                  padx=(20 if column == 0 else 8, 20 if column == 1 else 8), pady=(0, 10),
+                  ipady=4)
         card.configure(cursor="hand2")
-        icon_lbl = tk.Label(card, text=icon, bg=COLORS["panel"], fg=COLORS["accent"], font=("Segoe UI", 20, "bold"))
-        icon_lbl.pack(anchor="w", padx=18, pady=(22, 10))
+        icon_lbl = tk.Label(card, text=icon, bg=COLORS["panel"], fg=COLORS["accent"], font=("Segoe UI", 16, "bold"))
+        icon_lbl.pack(anchor="w", padx=16, pady=(14, 6))
         title_lbl = tk.Label(card, text=title, bg=COLORS["panel"], fg=COLORS["text"],
-                             font=("Segoe UI", 12, "bold"), anchor="w")
-        title_lbl.pack(anchor="w", padx=18, pady=(0, 4))
+                             font=("Segoe UI", 10, "bold"), anchor="w")
+        title_lbl.pack(anchor="w", padx=16, pady=(0, 3))
         desc_lbl = tk.Label(card, text=description, bg=COLORS["panel"], fg=COLORS["muted"],
                             font=("Segoe UI", 9), anchor="w", justify="left", wraplength=240)
-        desc_lbl.pack(anchor="w", padx=18, pady=(2, 24))
+        desc_lbl.pack(anchor="w", padx=16, pady=(2, 14))
 
         def on_click(_event=None):
             command()

@@ -64,10 +64,10 @@ class SettingsViewMixin:
             paths, text="Guardar rutas",
             bg=self.colors["accent"], hover_bg=self.colors["accent_hover"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=12, padx=18, pady=10,
             parent_bg=self.colors["panel"],
             command=self._save_paths_clicked,
-        ).grid(row=11, column=0, columnspan=3, sticky="ew", padx=20, pady=(16, 22))
+        ).grid(row=11, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 18))
 
         tester = self._card(content, "Tester")
         tester.grid(row=1, column=0, sticky="ew")
@@ -101,16 +101,16 @@ class SettingsViewMixin:
             bg=self.colors["primary"], fg=self.colors["primary_text"],
             hover_bg=self.colors["primary_container"], hover_fg=self.colors["primary_hover_text"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=12,
+            radius=12, padx=18, pady=10,
             parent_bg=self.colors["panel"],
             command=self._load_template_clicked,
-        ).grid(row=7, column=0, columnspan=4, sticky="ew", padx=20, pady=(12, 0))
+        ).grid(row=7, column=0, columnspan=4, sticky="ew", padx=20, pady=(10, 0))
         self._rounded_button_cls(
             tester, text="Guardar tester_template.ini",
             bg=self.colors["accent"], hover_bg=self.colors["accent_hover"],
             font=("Segoe UI", 10, "bold"),
-            radius=12, padx=18, pady=14,
+            radius=12, padx=18, pady=10,
             parent_bg=self.colors["panel"],
             command=self._save_template_clicked,
-        ).grid(row=8, column=0, columnspan=4, sticky="ew", padx=20, pady=(10, 22))
+        ).grid(row=8, column=0, columnspan=4, sticky="ew", padx=20, pady=(8, 18))
 

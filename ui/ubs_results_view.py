@@ -27,97 +27,35 @@ class UBSResultsViewMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
-        tk.Button(
-            results_bar,
-            text="Abrir output",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_ubs_output_dir,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            results_bar,
-            text="Abrir set",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_set,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            results_bar,
-            text="Abrir reporte",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_report,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            results_bar,
-            text="Reprobar mismatch",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._retry_selected_ubs_mismatch,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            results_bar,
-            text="Reprobar run",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._retry_visible_ubs_run_mismatches,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            results_bar,
-            text="Limpiar vista",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._hide_latest_ubs_results,
-        ).grid(row=0, column=6, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            results_bar,
-            text="Actualizar",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._refresh_ubs_results_panel,
-        ).grid(row=0, column=7, sticky="e", padx=(0, 10), pady=4)
+        # Grupo 1: abrir archivos
+        for col, (label, cmd) in enumerate([
+            ("Abrir output", self._open_ubs_output_dir),
+            ("Abrir set",    self._open_selected_ubs_set),
+            ("Abrir reporte", self._open_selected_ubs_report),
+        ], start=1):
+            tk.Button(results_bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=(0, 4), pady=5)
+        # Grupo 2: reprobar (con separación visual)
+        for col, (label, cmd) in enumerate([
+            ("Reprobar mismatch", self._retry_selected_ubs_mismatch),
+            ("Reprobar run",      self._retry_visible_ubs_run_mismatches),
+        ], start=4):
+            tk.Button(results_bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=(0, 4) if col < 5 else (16, 4), pady=5)
+        # Grupo 3: utilidad
+        for col, (label, cmd) in enumerate([
+            ("Limpiar vista", self._hide_latest_ubs_results),
+            ("Actualizar",    self._refresh_ubs_results_panel),
+        ], start=6):
+            padx = (16, 4) if col == 6 else (0, 10)
+            tk.Button(results_bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(0, 6)
@@ -185,9 +123,9 @@ class UBSResultsViewMixin:
         tk.Label(bar, textvariable=self.ubs_history_summary, bg=self.colors["panel_alt"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
         tk.Button(
             bar, text="Actualizar", bg=self.colors["panel"], fg=self.colors["muted"],
-            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
+            relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9),
             cursor="hand2", command=self._refresh_ubs_history_panel,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=4)
+        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=5)
 
         runs_frame = ttk.Frame(panel, style="Panel.TFrame")
         runs_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
@@ -246,26 +184,17 @@ class UBSResultsViewMixin:
         )
         self.ubs_compare_run_combo.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
         self.ubs_compare_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_comparison())
-        tk.Button(
-            bar, text="Abrir seed", bg=self.colors["panel"], fg=self.colors["muted"],
-            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
-            cursor="hand2", command=self._open_selected_ubs_compare_seed,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            bar, text="Abrir set", bg=self.colors["panel"], fg=self.colors["muted"],
-            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
-            cursor="hand2", command=self._open_selected_ubs_compare_set,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=4)
-        tk.Button(
-            bar, text="Reporte completo", bg=self.colors["panel"], fg=self.colors["muted"],
-            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
-            cursor="hand2", command=self._generate_ubs_compare_report,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=4)
-        tk.Button(
-            bar, text="Actualizar", bg=self.colors["panel"], fg=self.colors["muted"],
-            relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
-            cursor="hand2", command=self._refresh_ubs_comparison_panel,
-        ).grid(row=0, column=6, sticky="e", padx=(0, 10), pady=4)
+        for col, (label, cmd) in enumerate([
+            ("Abrir seed",       self._open_selected_ubs_compare_seed),
+            ("Abrir set",        self._open_selected_ubs_compare_set),
+            ("Reporte completo", self._generate_ubs_compare_report),
+            ("Actualizar",       self._refresh_ubs_comparison_panel),
+        ], start=3):
+            padx = (0, 10) if col >= 5 else (0, 4)
+            tk.Button(bar, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9),
+                      cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
 
         body = ttk.Frame(panel, style="Panel.TFrame")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
