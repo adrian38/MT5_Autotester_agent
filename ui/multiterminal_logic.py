@@ -101,7 +101,6 @@ class MultiterminalLogicMixin:
             str(profile.get("data_dir") or ""),
             str(profile.get("experts_root") or ""),
             str(profile.get("ubs_ex5_file") or ""),
-            "si" if bool(profile.get("portable")) else "no",
         )
 
     def _refresh_multiterminal_tree(self) -> None:
@@ -142,14 +141,27 @@ class MultiterminalLogicMixin:
         if index < 0 or index >= len(self.multiterminal_profiles):
             return
         name = str(self.multiterminal_profiles[index].get("name") or f"Terminal {index + 1}")
-        if name in self.multiterminal_checked:
-            self.multiterminal_checked.remove(name)
-        else:
+
+        # Radio behavior: desmarcar todos los demás primero
+        was_checked = name in self.multiterminal_checked
+        self.multiterminal_checked.clear()
+        for other in self.multiterminal_tree.get_children():
+            v = list(self.multiterminal_tree.item(other, "values"))
+            if v:
+                v[0] = self._checkbox_text(False)
+                self.multiterminal_tree.item(other, values=v)
+
+        # Si no estaba marcado, marcarlo ahora; si ya estaba, queda desmarcado (toggle)
+        if not was_checked:
             self.multiterminal_checked.add(name)
+
         values = list(self.multiterminal_tree.item(item, "values"))
         if values:
             values[0] = self._checkbox_text(name in self.multiterminal_checked)
             self.multiterminal_tree.item(item, values=values)
+
+        # Cargar datos en el editor
+        self._select_multiterminal_profile(index)
         return "break"
 
     def _update_multiterminal_tree_item(self, index: int) -> None:

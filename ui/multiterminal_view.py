@@ -98,15 +98,15 @@ class MultiterminalViewMixin:
         left = ttk.Frame(paned, style="Panel.TFrame")
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
-        paned.add(left, weight=7)
+        paned.add(left, weight=5)
 
         table_frame = ttk.Frame(left, style="Panel.TFrame")
         table_frame.grid(row=0, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("mark", "enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file", "portable")
+        columns = ("mark", "enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file")
         self.multiterminal_tree = ttk.Treeview(table_frame, columns=columns, show="headings",
-                                               height=14, selectmode="extended")
+                                               height=14, selectmode="browse")
         headings = {
             "mark":         "SEL",
             "enabled":      "ON",
@@ -115,17 +115,15 @@ class MultiterminalViewMixin:
             "data_dir":     "DATOS MT5",
             "experts_root": "MQL5\\EXPERTS",
             "ubs_ex5_file": "UBS .EX5",
-            "portable":     "PORTABLE",
         }
         widths = {
             "mark":         48,
             "enabled":      52,
-            "name":         140,
-            "mt5_path":     250,
-            "data_dir":     250,
-            "experts_root": 220,
-            "ubs_ex5_file": 200,
-            "portable":     72,
+            "name":         150,
+            "mt5_path":     260,
+            "data_dir":     260,
+            "experts_root": 230,
+            "ubs_ex5_file": 210,
         }
         for column in columns:
             self.multiterminal_tree.heading(column, text=headings[column])
@@ -151,13 +149,13 @@ class MultiterminalViewMixin:
                          highlightthickness=1, highlightbackground=self.colors["border"])
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
-        paned.add(right, weight=5)
+        paned.add(right, weight=6)
 
         tk.Label(right, text="Editor de terminal",
                  bg=self.colors["panel"], fg=self.colors["text"],
                  font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 6))
 
-        # Canvas scrollable horizontalmente para las path rows largas
+        # Canvas que sincroniza su ancho con el editor para que los entries llenen el espacio
         e_canvas = tk.Canvas(right, bg=self.colors["panel"], highlightthickness=0)
         h_scroll = ttk.Scrollbar(right, orient="horizontal", command=e_canvas.xview)
         e_canvas.configure(xscrollcommand=h_scroll.set)
@@ -168,31 +166,28 @@ class MultiterminalViewMixin:
         editor.columnconfigure(1, weight=1)
         win_id = e_canvas.create_window((0, 0), window=editor, anchor="nw")
 
-        def _sync_canvas(event=None):
+        def _sync_scroll(event=None):
             e_canvas.configure(scrollregion=e_canvas.bbox("all"))
 
-        def _fit_canvas(event=None):
-            e_canvas.itemconfig(win_id, height=event.height)
+        def _fit_editor(event=None):
+            # Fuerza el editor a llenar el ancho del canvas → entries tan anchos como Nombre
+            e_canvas.itemconfig(win_id, width=event.width, height=event.height)
 
-        editor.bind("<Configure>", _sync_canvas)
-        e_canvas.bind("<Configure>", _fit_canvas)
+        editor.bind("<Configure>", _sync_scroll)
+        e_canvas.bind("<Configure>", _fit_editor)
 
         state_row = tk.Frame(editor, bg=self.colors["panel"])
         state_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=16, pady=(4, 8))
         state_row.columnconfigure(0, weight=1)
-        _cb_principal = ttk.Checkbutton(state_row, text="Principal", variable=self.mt_profile_enabled, style="Panel.TCheckbutton")
+        _cb_principal = ttk.Checkbutton(state_row, text="Principal",
+                                        variable=self.mt_profile_enabled,
+                                        style="Panel.TCheckbutton")
         _cb_principal.grid(row=0, column=0, sticky="w")
         self._tooltip_cls(_cb_principal,
             "Marca esta terminal como activa.\n"
-            "Si solo hay una principal, es la que se usa siempre.\n"
-            "Con varias, el agente reparte trabajos entre todas las marcadas.")
-        _cb_portable = ttk.Checkbutton(state_row, text="Portable", variable=self.mt_profile_portable, style="Panel.TCheckbutton")
-        _cb_portable.grid(row=0, column=1, sticky="e")
-        self._tooltip_cls(_cb_portable,
-            "Arranca MT5 con el flag /portable.\n"
-            "Los datos (configuración, historial, EAs) se guardan en la\n"
-            "carpeta del ejecutable en vez de en %AppData%.\n"
-            "Útil para instalaciones de MT5 copiadas fuera de Program Files.")
+            "Solo puede haber una Principal a la vez.\n"
+            "Con modo single-terminal (N=1) es la que se abre.\n"
+            "Con multiterminal, solo las marcadas reciben trabajo.")
         ttk.Label(editor, text="Nombre", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=7)
         ttk.Entry(editor, textvariable=self.mt_profile_name).grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=7)
         self._path_row(editor, "Terminal MT5",     self.mt_profile_mt5_path,     2, self._browse_file)
