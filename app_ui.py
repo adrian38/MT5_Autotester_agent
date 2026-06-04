@@ -28,6 +28,7 @@ from run_tests import (
     load_set_files,
     load_experts_from_dir,
     load_experts_root,
+    looks_like_ubs_expert_file,
 )
 from ubs_set_utils import read_set_with_encoding
 from ubs_agent import (
@@ -754,6 +755,11 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_pass_min_trades"), 50))
         self.ubs_pass_max_drawdown_pct = tk.StringVar(value=saved_general.get("ubs_pass_max_drawdown_pct", "25"))
         self.ubs_pass_min_recovery_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_recovery_factor", "1.0"))
+        self.ubs_seed_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_seed_pass_min_net_profit", "0"))
+        self.ubs_seed_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_seed_pass_min_profit_factor", "1.20"))
+        self.ubs_seed_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_seed_pass_min_trades"), 50))
+        self.ubs_seed_pass_max_drawdown_pct = tk.StringVar(value=saved_general.get("ubs_seed_pass_max_drawdown_pct", "25"))
+        self.ubs_seed_pass_min_recovery_factor = tk.StringVar(value=saved_general.get("ubs_seed_pass_min_recovery_factor", "1.0"))
         self.symbol_suffix_enabled = tk.BooleanVar(value=saved_general.get("symbol_suffix_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_suffix = tk.StringVar(value=saved_general.get("symbol_suffix", ""))
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
@@ -818,6 +824,9 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_history_candidate_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
+        self.ubs_seed_checked: set[str] = set()
+        self.ubs_universe_paths: dict[str, dict[str, str]] = {}
+        self.ubs_universe_checked: set[str] = set()
         self._tree_sort_reverse: dict[tuple[str, str], bool] = {}
         self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"
@@ -1047,6 +1056,31 @@ class MT5AutotesterUI(tk.Tk):
             return (0, float(numeric))
         except ValueError:
             return (1, raw.casefold())
+
+    def _checkbox_text(self, checked: bool) -> str:
+        return "[x]" if checked else "[ ]"
+
+    def _disabled_symbols_path(self) -> Path:
+        return BASE_DIR / "outputs" / "ubs_disabled_symbols.json"
+
+    def _load_disabled_ubs_symbols(self) -> set[str]:
+        path = self._disabled_symbols_path()
+        if not path.exists():
+            return set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        values = data.get("disabled", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        return {str(value).strip().upper() for value in values if str(value).strip()}
+
+    def _save_disabled_ubs_symbols(self, symbols: set[str]) -> None:
+        path = self._disabled_symbols_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"disabled": sorted(symbols)}, indent=2), encoding="utf-8")
+
+    def _tree_item_from_event(self, tree: ttk.Treeview, event: tk.Event) -> tuple[str, str]:
+        return tree.identify_row(event.y), tree.identify_column(event.x)
 
     def _short_filename(self, value: str | Path, max_length: int = 72) -> str:
         name = Path(str(value)).name
@@ -2326,48 +2360,70 @@ class MT5AutotesterUI(tk.Tk):
         ttk.Button(toolbar, text="Abrir reporte", style="TButton", command=self._open_selected_ubs_seed_report).grid(
             row=0, column=3, sticky="e", padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Guardar Symbol/TF", style="TButton", command=self._save_ubs_seed_override).grid(
+        ttk.Button(toolbar, text="Repetir backtest", style="TButton", command=self._retry_selected_ubs_seed).grid(
             row=0, column=4, sticky="e", padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Eliminar seed", style="Danger.TButton", command=self._delete_selected_ubs_seed).grid(
+        ttk.Button(toolbar, text="Guardar Symbol/TF", style="TButton", command=self._save_ubs_seed_override).grid(
             row=0, column=5, sticky="e", padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Eliminar rechazadas", style="Danger.TButton", command=self._delete_rejected_ubs_seeds).grid(
+        ttk.Button(toolbar, text="Eliminar seed", style="Danger.TButton", command=self._delete_selected_ubs_seed).grid(
             row=0, column=6, sticky="e", padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Resetear evaluación", style="Danger.TButton", command=self._reset_ubs_seed_evaluation).grid(
+        ttk.Button(toolbar, text="Eliminar rechazadas", style="Danger.TButton", command=self._delete_rejected_ubs_seeds).grid(
             row=0, column=7, sticky="e", padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Actualizar", style="TButton", command=self._refresh_ubs_seeds).grid(
-            row=0, column=8, sticky="e"
+        ttk.Button(toolbar, text="Resetear evaluación", style="Danger.TButton", command=self._reset_ubs_seed_evaluation).grid(
+            row=0, column=8, sticky="e", padx=(0, 8)
+        )
+        ttk.Button(toolbar, text="Actualizar", style="TButton", command=self._refresh_ubs_seeds_panel).grid(
+            row=0, column=9, sticky="e"
         )
 
         criteria_bar = ttk.Frame(card, style="Panel.TFrame")
         criteria_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
-        ttk.Label(criteria_bar, text="Criterios para pasar:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12))
+        for column in (2, 4, 6, 8, 10):
+            criteria_bar.columnconfigure(column, weight=1)
+        ttk.Label(criteria_bar, text="Criterios Seeds:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         criteria_items = [
-            ("Net profit ≥", self.ubs_pass_min_net_profit, ""),
-            ("PF ≥", self.ubs_pass_min_profit_factor, ""),
-            ("Trades ≥", self.ubs_pass_min_trades, ""),
-            ("DD ≤", self.ubs_pass_max_drawdown_pct, "%"),
-            ("Recovery ≥", self.ubs_pass_min_recovery_factor, ""),
+            ("Net profit >", self.ubs_seed_pass_min_net_profit, "entry"),
+            ("PF >=", self.ubs_seed_pass_min_profit_factor, "entry"),
+            ("Trades >=", self.ubs_seed_pass_min_trades, "spin"),
+            ("DD <=", self.ubs_seed_pass_max_drawdown_pct, "entry"),
+            ("Recovery >=", self.ubs_seed_pass_min_recovery_factor, "entry"),
         ]
-        for col, (prefix, var, suffix) in enumerate(criteria_items, start=1):
-            ttk.Label(criteria_bar, text=prefix, style="Muted.TLabel").grid(row=0, column=col * 2 - 1, sticky="w", padx=(0, 4))
-            ttk.Label(criteria_bar, textvariable=var, foreground=COLORS["accent_soft_text"],
-                      background=COLORS["panel"], font=("Segoe UI", 9, "bold")).grid(row=0, column=col * 2, sticky="w", padx=(0, 3))
-            if suffix:
-                ttk.Label(criteria_bar, text=suffix, style="Muted.TLabel").grid(row=0, column=col * 2 + 10, sticky="w", padx=(0, 14))
+        for col, (label, var, kind) in enumerate(criteria_items, start=1):
+            label_col = col * 2 - 1
+            field_col = col * 2
+            ttk.Label(criteria_bar, text=label, style="Muted.TLabel").grid(row=0, column=label_col, sticky="w", padx=(0, 4))
+            if kind == "spin":
+                ttk.Spinbox(criteria_bar, from_=0, to=100000, textvariable=var, width=7).grid(
+                    row=0, column=field_col, sticky="ew", padx=(0, 10)
+                )
             else:
-                ttk.Frame(criteria_bar, width=14, style="Panel.TFrame").grid(row=0, column=col * 2 + 10)
+                ttk.Entry(criteria_bar, textvariable=var, width=8).grid(
+                    row=0, column=field_col, sticky="ew", padx=(0, 10)
+                )
+        ttk.Button(
+            criteria_bar,
+            text="Guardar criterios",
+            style="TButton",
+            command=self._save_seed_criteria_clicked,
+        ).grid(row=0, column=11, sticky="e", padx=(0, 8))
+        ttk.Button(
+            criteria_bar,
+            text="Aplicar criterios",
+            style="Primary.TButton",
+            command=self._apply_seed_criteria_clicked,
+        ).grid(row=0, column=12, sticky="e")
 
         table_frame = ttk.Frame(card, style="Panel.TFrame")
         table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 10))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("status", "symbol", "period", "score", "accepted", "override", "reason", "seed")
-        self.ubs_seeds_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        columns = ("mark", "status", "symbol", "period", "score", "accepted", "override", "reason", "seed")
+        self.ubs_seeds_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
         headings = {
+            "mark": "SEL",
             "status": "ESTADO",
             "symbol": "SYMBOL",
             "period": "TF",
@@ -2377,7 +2433,7 @@ class MT5AutotesterUI(tk.Tk):
             "reason": "MOTIVO",
             "seed": "SEED",
         }
-        widths = {"status": 125, "symbol": 90, "period": 60, "score": 90, "accepted": 70, "override": 90, "reason": 220, "seed": 500}
+        widths = {"mark": 48, "status": 125, "symbol": 90, "period": 60, "score": 90, "accepted": 70, "override": 90, "reason": 220, "seed": 500}
         for column in columns:
             self.ubs_seeds_tree.heading(column, text=headings[column])
             self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=column == "seed", anchor="center")
@@ -2387,6 +2443,7 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_seeds_tree.tag_configure("rejected", foreground=COLORS["danger"])
         self.ubs_seeds_tree.tag_configure("pending", foreground=COLORS["muted"])
         self.ubs_seeds_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_ubs_seed_select())
+        self.ubs_seeds_tree.bind("<Button-1>", self._on_ubs_seed_tree_click)
         self.ubs_seeds_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_seed_report())
 
         editor = ttk.Frame(card, style="Panel.TFrame")
@@ -2520,7 +2577,7 @@ class MT5AutotesterUI(tk.Tk):
             pady=4,
             font=("Segoe UI", 9),
             cursor="hand2",
-            command=self._refresh_ubs_results,
+            command=self._refresh_ubs_results_panel,
         ).grid(row=0, column=7, sticky="e", padx=(0, 10), pady=4)
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
@@ -2591,7 +2648,7 @@ class MT5AutotesterUI(tk.Tk):
         tk.Button(
             bar, text="Actualizar", bg=COLORS["panel"], fg=COLORS["muted"],
             relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
-            cursor="hand2", command=self._refresh_ubs_history,
+            cursor="hand2", command=self._refresh_ubs_history_panel,
         ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=4)
 
         runs_frame = ttk.Frame(panel, style="Panel.TFrame")
@@ -2670,7 +2727,7 @@ class MT5AutotesterUI(tk.Tk):
         tk.Button(
             bar, text="Actualizar", bg=COLORS["panel"], fg=COLORS["muted"],
             relief="solid", borderwidth=1, padx=10, pady=4, font=("Segoe UI", 9),
-            cursor="hand2", command=self._refresh_ubs_comparison,
+            cursor="hand2", command=self._refresh_ubs_comparison_panel,
         ).grid(row=0, column=6, sticky="e", padx=(0, 10), pady=4)
 
         body = ttk.Frame(panel, style="Panel.TFrame")
@@ -2740,8 +2797,34 @@ class MT5AutotesterUI(tk.Tk):
             pady=4,
             font=("Segoe UI", 9),
             cursor="hand2",
-            command=self._refresh_ubs_universe,
+            command=self._refresh_ubs_universe_panel,
         ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            bar,
+            text="Deshabilitar marcados",
+            bg=COLORS["panel"],
+            fg=COLORS["danger"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=lambda: self._set_checked_universe_symbols_enabled(False),
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+        tk.Button(
+            bar,
+            text="Habilitar marcados",
+            bg=COLORS["panel"],
+            fg=COLORS["accent_soft_text"],
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=lambda: self._set_checked_universe_symbols_enabled(True),
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
         self._ubs_calc_weights_btn = tk.Button(
             bar,
             text="Calcular pesos",
@@ -2755,7 +2838,7 @@ class MT5AutotesterUI(tk.Tk):
             cursor="hand2",
             command=self._ubs_apply_weights,
         )
-        self._ubs_calc_weights_btn.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=4)
+        self._ubs_calc_weights_btn.grid(row=0, column=4, sticky="e", padx=(0, 10), pady=4)
 
         body = ttk.Frame(panel, style="Panel.TFrame")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
@@ -2768,9 +2851,11 @@ class MT5AutotesterUI(tk.Tk):
         asset_frame.columnconfigure(0, weight=1)
         asset_frame.rowconfigure(1, weight=1)
         ttk.Label(asset_frame, text="Activos RoboForex", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        asset_columns = ("group", "symbol", "aliases", "weight", "avg", "best", "tests", "accepted", "pending")
-        self.ubs_universe_assets_tree = ttk.Treeview(asset_frame, columns=asset_columns, show="headings", height=18)
+        asset_columns = ("mark", "enabled", "group", "symbol", "aliases", "weight", "avg", "best", "tests", "accepted", "pending")
+        self.ubs_universe_assets_tree = ttk.Treeview(asset_frame, columns=asset_columns, show="headings", height=18, selectmode="extended")
         asset_headings = {
+            "mark": "SEL",
+            "enabled": "ON",
             "group": "GRUPO",
             "symbol": "ACTIVO",
             "aliases": "ALIAS",
@@ -2781,14 +2866,16 @@ class MT5AutotesterUI(tk.Tk):
             "accepted": "OK",
             "pending": "PEND",
         }
-        asset_widths = {"group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
+        asset_widths = {"mark": 48, "enabled": 48, "group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
         for column in asset_columns:
             self.ubs_universe_assets_tree.heading(column, text=asset_headings[column])
             self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="center", stretch=False)
         self.ubs_universe_assets_tree.tag_configure("positive", foreground=COLORS["accent_soft_text"])
         self.ubs_universe_assets_tree.tag_configure("negative", foreground=COLORS["danger"])
         self.ubs_universe_assets_tree.tag_configure("neutral", foreground=COLORS["muted"])
+        self.ubs_universe_assets_tree.tag_configure("disabled", foreground=COLORS["muted"])
         self._make_tree_sortable(self.ubs_universe_assets_tree)
+        self.ubs_universe_assets_tree.bind("<Button-1>", self._on_ubs_universe_tree_click)
         self._attach_tree_scrollbars(asset_frame, self.ubs_universe_assets_tree, 1)
 
         tf_frame = ttk.Frame(body, style="Panel.TFrame")
@@ -3295,6 +3382,32 @@ class MT5AutotesterUI(tk.Tk):
         self.status_text.set("Configuracion Agente UBS guardada")
         messagebox.showinfo("Agente UBS", "La configuracion del Agente UBS se guardo correctamente.")
 
+    def _save_seed_criteria_clicked(self) -> None:
+        try:
+            self._ubs_seed_score_args()
+            self._write_ui_settings()
+        except Exception as exc:
+            self._show_error("No se pudieron guardar criterios Seeds", str(exc))
+            return
+        self.status_text.set("Criterios Seeds guardados")
+        self._refresh_ubs_seeds_panel()
+
+    def _apply_seed_criteria_clicked(self) -> None:
+        try:
+            self._write_ui_settings()
+            args = [
+                "--rescore-seeds-only",
+                "--source-dir", str(self._ubs_generator_source_dir()),
+                "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+            ]
+            args.extend(self._ubs_seed_score_args())
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudieron aplicar criterios Seeds", str(exc))
+            return
+        self._run_script("ubs_agent.py", args)
+
     def _multiterminal_worker_limit(self) -> int:
         try:
             workers = int(self.multiterminal_workers.get())
@@ -3512,8 +3625,11 @@ class MT5AutotesterUI(tk.Tk):
             if require_ubs:
                 if not ubs_ex5:
                     errors.append(f"{name}: falta archivo UBS .ex5.")
-                elif not ubs_ex5.exists() or not ubs_ex5.is_file():
-                    errors.append(f"{name}: no existe UBS .ex5: {ubs_ex5}")
+                else:
+                    if not looks_like_ubs_expert_file(ubs_ex5):
+                        errors.append(f"{name}: UBS .ex5 no parece Ultimate Breakout System: {ubs_ex5}")
+                    if not ubs_ex5.exists() or not ubs_ex5.is_file():
+                        errors.append(f"{name}: no existe UBS .ex5: {ubs_ex5}")
         return errors
 
     def _validate_multiterminal_profiles(self) -> bool:
@@ -3611,6 +3727,11 @@ class MT5AutotesterUI(tk.Tk):
             "ubs_pass_min_trades": str(self.ubs_pass_min_trades.get()),
             "ubs_pass_max_drawdown_pct": self.ubs_pass_max_drawdown_pct.get().strip(),
             "ubs_pass_min_recovery_factor": self.ubs_pass_min_recovery_factor.get().strip(),
+            "ubs_seed_pass_min_net_profit": self.ubs_seed_pass_min_net_profit.get().strip(),
+            "ubs_seed_pass_min_profit_factor": self.ubs_seed_pass_min_profit_factor.get().strip(),
+            "ubs_seed_pass_min_trades": str(self.ubs_seed_pass_min_trades.get()),
+            "ubs_seed_pass_max_drawdown_pct": self.ubs_seed_pass_max_drawdown_pct.get().strip(),
+            "ubs_seed_pass_min_recovery_factor": self.ubs_seed_pass_min_recovery_factor.get().strip(),
             "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
             "symbol_suffix": self.symbol_suffix.get().strip(),
             "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
@@ -3772,19 +3893,68 @@ class MT5AutotesterUI(tk.Tk):
         text = f"# {comment}\n{value.strip()}\n" if value.strip() else f"# {comment}\n"
         path.write_text(text, encoding="utf-8")
 
+    def _safe_refresh(self, label: str, callback) -> None:
+        try:
+            callback()
+        except Exception as exc:
+            self.status_text.set(f"Actualizar fallo: {label}")
+            if hasattr(self, "output_console"):
+                self._append_console(f"\n[Actualizar] {label}: {exc}\n", tag="error")
+
     def _refresh_all(self) -> None:
-        self._refresh_experts()
-        self._refresh_reports()
-        self._refresh_ubs_results()
-        self._refresh_ubs_history()
-        self._refresh_ubs_seed_eval_summary()
-        self._refresh_ubs_seeds()
-        self._refresh_ubs_universe()
-        self._refresh_ubs_comparison()
-        self._refresh_ubs_continue_state()
-        self._refresh_portfolio_count()
-        self._refresh_last_log()
-        self._refresh_multiterminal_tree()
+        for label, callback in (
+            ("experts", self._refresh_experts),
+            ("reports", self._refresh_reports),
+            ("ubs_results", self._refresh_ubs_results),
+            ("ubs_history", self._refresh_ubs_history),
+            ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
+            ("ubs_seeds", self._refresh_ubs_seeds),
+            ("ubs_universe", self._refresh_ubs_universe),
+            ("ubs_comparison", self._refresh_ubs_comparison),
+            ("ubs_continue", self._refresh_ubs_continue_state),
+            ("portfolio", self._refresh_portfolio_count),
+            ("last_log", self._refresh_last_log),
+            ("multiterminal", self._refresh_multiterminal_tree),
+        ):
+            self._safe_refresh(label, callback)
+
+    def _refresh_ubs_seeds_panel(self) -> None:
+        for label, callback in (
+            ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
+            ("ubs_seeds", self._refresh_ubs_seeds),
+            ("ubs_universe", self._refresh_ubs_universe),
+        ):
+            self._safe_refresh(label, callback)
+
+    def _refresh_ubs_results_panel(self) -> None:
+        for label, callback in (
+            ("ubs_results", self._refresh_ubs_results),
+            ("ubs_history", self._refresh_ubs_history),
+            ("ubs_comparison", self._refresh_ubs_comparison),
+            ("ubs_continue", self._refresh_ubs_continue_state),
+        ):
+            self._safe_refresh(label, callback)
+
+    def _refresh_ubs_history_panel(self) -> None:
+        for label, callback in (
+            ("ubs_history", self._refresh_ubs_history),
+            ("ubs_continue", self._refresh_ubs_continue_state),
+        ):
+            self._safe_refresh(label, callback)
+
+    def _refresh_ubs_comparison_panel(self) -> None:
+        for label, callback in (
+            ("ubs_comparison", self._refresh_ubs_comparison),
+            ("ubs_continue", self._refresh_ubs_continue_state),
+        ):
+            self._safe_refresh(label, callback)
+
+    def _refresh_ubs_universe_panel(self) -> None:
+        for label, callback in (
+            ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
+            ("ubs_universe", self._refresh_ubs_universe),
+        ):
+            self._safe_refresh(label, callback)
 
     def _ubs_memory_path(self) -> Path:
         return BASE_DIR / "outputs" / "ubs_memory.sqlite"
@@ -3817,8 +3987,8 @@ class MT5AutotesterUI(tk.Tk):
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected') and score is not null then 1 else 0 end) as scored,
-                    sum(case when status not in ('accepted', 'rejected') or score is null then 1 else 0 end) as pending
+                    sum(case when status in ('accepted', 'rejected', 'report_mismatch') then 1 else 0 end) as ready,
+                    sum(case when status not in ('accepted', 'rejected', 'report_mismatch') or score is null then 1 else 0 end) as pending
                 from seed_scores
                 where active=1
                 """
@@ -3829,10 +3999,10 @@ class MT5AutotesterUI(tk.Tk):
             self.ubs_seed_eval_summary.set(f"Semillas: error SQLite ({exc})")
             return
 
-        scored = int(active_counts["scored"] or 0) if active_counts else 0
-        pending = max(seed_count - scored, int(active_counts["pending"] or 0) if active_counts else seed_count)
+        ready = int(active_counts["ready"] or 0) if active_counts else 0
+        pending = max(seed_count - ready, int(active_counts["pending"] or 0) if active_counts else seed_count)
         self.ubs_seed_eval_summary.set(
-            f"Semillas: {seed_count} | evaluadas {scored} | pendientes {pending} | obsoletas {inactive}"
+            f"Semillas: {seed_count} | listas {ready} | pendientes {pending} | obsoletas {inactive}"
         )
 
     def _sqlite_table_exists(self, conn: sqlite3.Connection, table: str) -> bool:
@@ -3878,6 +4048,7 @@ class MT5AutotesterUI(tk.Tk):
         tree = self.ubs_seeds_tree
         tree.delete(*tree.get_children(""))
         self.ubs_seed_paths.clear()
+        current_checked = set(self.ubs_seed_checked)
 
         try:
             seed_files = self._current_ubs_seed_files()
@@ -3916,7 +4087,7 @@ class MT5AutotesterUI(tk.Tk):
             override_symbol, override_period = overrides.get(path_text, ("", ""))
             symbol = override_symbol or (str(row["symbol"] or "").strip().upper() if row else inferred_symbol)
             period = override_period or (str(row["period"] or "").strip().upper() if row else inferred_period)
-            status = str(row["status"] or "sin_evaluar") if row else "sin_evaluar"
+            status = str(row["status"] or "pending") if row else "pending"
             accepted = ""
             if row and row["accepted"] is not None:
                 accepted = "si" if int(row["accepted"]) else "no"
@@ -3925,6 +4096,7 @@ class MT5AutotesterUI(tk.Tk):
                 "",
                 "end",
                 values=(
+                    self._checkbox_text(path_text in current_checked),
                     self._format_ubs_status(status),
                     symbol,
                     period,
@@ -3936,7 +4108,7 @@ class MT5AutotesterUI(tk.Tk):
                 ),
                 tags=(self._ubs_result_tag(status),),
             )
-            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "1", "status": status}
+            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "1", "status": status, "has_row": "1" if row else "0"}
             if not first_item:
                 first_item = item
 
@@ -3953,6 +4125,7 @@ class MT5AutotesterUI(tk.Tk):
                 "",
                 "end",
                 values=(
+                    self._checkbox_text(path_text in current_checked),
                     "obsoleta",
                     symbol,
                     period,
@@ -3965,6 +4138,9 @@ class MT5AutotesterUI(tk.Tk):
                 tags=("pending",),
             )
             self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "0", "status": status}
+
+        valid_paths = {info["seed_path"] for info in self.ubs_seed_paths.values() if info.get("seed_path")}
+        self.ubs_seed_checked.intersection_update(valid_paths)
 
         if first_item:
             tree.selection_set(first_item)
@@ -3983,6 +4159,34 @@ class MT5AutotesterUI(tk.Tk):
             return {}
         return self.ubs_seed_paths.get(selected[0], {})
 
+    def _checked_ubs_seed_infos(self, *, fallback_selected: bool = True) -> list[dict[str, str]]:
+        infos = [
+            info for info in self.ubs_seed_paths.values()
+            if info.get("seed_path") in self.ubs_seed_checked
+        ]
+        if infos or not fallback_selected:
+            return infos
+        selected = self._selected_ubs_seed_info()
+        return [selected] if selected else []
+
+    def _on_ubs_seed_tree_click(self, event: tk.Event) -> None:
+        item, column = self._tree_item_from_event(self.ubs_seeds_tree, event)
+        if not item or column != "#1":
+            return
+        info = self.ubs_seed_paths.get(item, {})
+        seed_path = info.get("seed_path", "")
+        if not seed_path:
+            return
+        if seed_path in self.ubs_seed_checked:
+            self.ubs_seed_checked.remove(seed_path)
+        else:
+            self.ubs_seed_checked.add(seed_path)
+        values = list(self.ubs_seeds_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(seed_path in self.ubs_seed_checked)
+            self.ubs_seeds_tree.item(item, values=values)
+        return "break"
+
     def _on_ubs_seed_select(self) -> None:
         info = self._selected_ubs_seed_info()
         if not info:
@@ -3990,24 +4194,25 @@ class MT5AutotesterUI(tk.Tk):
         item = self.ubs_seeds_tree.selection()[0]
         values = self.ubs_seeds_tree.item(item, "values")
         seed_path = info.get("seed_path", "")
-        symbol = str(values[1] if len(values) > 1 else "").strip().upper()
-        period = str(values[2] if len(values) > 2 else "").strip().upper()
+        symbol = str(values[2] if len(values) > 2 else "").strip().upper()
+        period = str(values[3] if len(values) > 3 else "").strip().upper()
         self.ubs_seed_override_symbol.set("" if symbol == "UNKNOWN" else symbol)
         self.ubs_seed_override_period.set("" if period == "UNKNOWN" else period)
-        self.ubs_seed_detail.set(f"{Path(seed_path).name} | estado: {values[0] if values else '-'}")
+        self.ubs_seed_detail.set(f"{Path(seed_path).name} | estado: {values[1] if len(values) > 1 else '-'}")
 
     def _open_selected_ubs_seed(self) -> None:
-        info = self._selected_ubs_seed_info()
-        seed_path = info.get("seed_path", "")
-        if not seed_path:
+        infos = self._checked_ubs_seed_infos()
+        if not infos:
             self._show_error("Sin seleccion", "Selecciona una semilla.")
             return
-        self._open_local_file(Path(seed_path))
+        for info in infos:
+            seed_path = info.get("seed_path", "")
+            if seed_path:
+                self._open_local_file(Path(seed_path))
 
     def _open_selected_ubs_seed_report(self) -> None:
-        info = self._selected_ubs_seed_info()
-        seed_path = info.get("seed_path", "")
-        if not seed_path:
+        infos = self._checked_ubs_seed_infos()
+        if not infos:
             return
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
@@ -4016,15 +4221,70 @@ class MT5AutotesterUI(tk.Tk):
         try:
             conn = sqlite3.connect(memory_path, timeout=1.0)
             conn.row_factory = sqlite3.Row
-            row = conn.execute("select report_path from seed_scores where seed_path=?", (seed_path,)).fetchone()
+            rows = []
+            for info in infos:
+                seed_path = info.get("seed_path", "")
+                if seed_path:
+                    row = conn.execute("select report_path from seed_scores where seed_path=?", (seed_path,)).fetchone()
+                    if row and row["report_path"]:
+                        rows.append(row)
             conn.close()
         except sqlite3.Error as exc:
             self._show_error("Error SQLite", str(exc))
             return
-        if not row or not row["report_path"]:
+        if not rows:
             messagebox.showinfo("Semillas UBS", "Esta semilla no tiene reporte asociado.\nEjecuta 'Evaluar semillas' primero.")
             return
-        self._open_local_file(Path(str(row["report_path"])))
+        for row in rows:
+            self._open_local_file(Path(str(row["report_path"])))
+
+    def _retry_selected_ubs_seed(self) -> None:
+        infos = self._checked_ubs_seed_infos()
+        if not infos:
+            messagebox.showinfo("Semillas UBS", "Selecciona una semilla primero.")
+            return
+        active_infos = [info for info in infos if info.get("active") != "0" and Path(info.get("seed_path", "")).expanduser().exists()]
+        if not active_infos:
+            messagebox.showinfo("Semillas UBS", "No hay seeds activas/existentes entre las marcadas.")
+            return
+        paths = [Path(info["seed_path"]).expanduser() for info in active_infos]
+        try:
+            output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--output-dir", str(output_dir),
+                "--template", self.template_path.get(),
+                "--delay", str(self.delay.get()),
+            ]
+            for path in paths:
+                args.extend(["--retry-seed-path", str(path)])
+            args.extend(self._ubs_seed_score_args())
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar retry seed", str(exc))
+            return
+
+        selected_items = self.ubs_seeds_tree.selection() if hasattr(self, "ubs_seeds_tree") else ()
+        values = self.ubs_seeds_tree.item(selected_items[0], "values") if selected_items else ()
+        details = [
+            "Accion: Repetir backtest seed UBS",
+            f"Seeds: {len(paths)}",
+            f"Primera: {paths[0].name}",
+            f"Estado actual: {values[1] if len(values) > 1 else active_infos[0].get('status', '-')}",
+            f"Backtests previstos: {len(paths)}",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar retry seed", len(paths), details):
+            self._run_script("ubs_agent.py", args)
 
     def _delete_selected_ubs_seed(self) -> None:
         info = self._selected_ubs_seed_info()
@@ -4088,6 +4348,46 @@ class MT5AutotesterUI(tk.Tk):
                 deleted_paths.append(p_str)
             except OSError as exc:
                 errors.append(f"{Path(p_str).name}: {exc}")
+        if deleted_paths and memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                placeholders = ",".join("?" for _ in deleted_paths)
+                conn.execute(f"delete from seed_scores where seed_path in ({placeholders})", deleted_paths)
+                conn.execute(f"delete from seed_overrides where seed_path in ({placeholders})", deleted_paths)
+                conn.commit()
+                conn.close()
+            except sqlite3.Error:
+                pass
+        if errors:
+            self._show_error("Errores al eliminar", "\n".join(errors))
+        self._refresh_ubs_seeds()
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_universe()
+
+    def _delete_selected_ubs_seed(self) -> None:
+        infos = self._checked_ubs_seed_infos()
+        if not infos:
+            self._show_error("Sin seleccion", "Selecciona una semilla para eliminar.")
+            return
+        existing = [Path(info.get("seed_path", "")) for info in infos if Path(info.get("seed_path", "")).exists()]
+        if not existing:
+            messagebox.showinfo("Eliminar semilla", "No existe ningun archivo de las seeds marcadas.")
+            return
+        if not messagebox.askyesno(
+            "Eliminar semilla",
+            f"Eliminar {len(existing)} seed(s) del disco?\nEsta accion no se puede deshacer.",
+        ):
+            return
+        deleted_paths: list[str] = []
+        errors: list[str] = []
+        for path in existing:
+            try:
+                path.unlink()
+                deleted_paths.append(str(path))
+                self.ubs_seed_checked.discard(str(path))
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+        memory_path = self._ubs_memory_path()
         if deleted_paths and memory_path.exists():
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
@@ -4169,18 +4469,29 @@ class MT5AutotesterUI(tk.Tk):
         try:
             conn = sqlite3.connect(memory_path, timeout=1.0)
             conn.row_factory = sqlite3.Row
+            seed_files = self._current_ubs_seed_files()
+            current_paths = {str(path) for path in seed_files}
+            known_paths: set[str] = set()
             pending = conn.execute(
                 "select count(*) as n from seed_scores where active=1 and status not in ('accepted','rejected','report_mismatch')"
             ).fetchone()
             total = conn.execute(
                 "select count(*) as n from seed_scores where active=1"
             ).fetchone()
+            if self._sqlite_table_exists(conn, "seed_scores"):
+                known_paths = {str(row["seed_path"]) for row in conn.execute("select seed_path from seed_scores where active=1").fetchall()}
             conn.close()
             pending_count = int(pending["n"] if pending else 0)
             total_count = int(total["n"] if total else 0)
+            missing_count = len(current_paths - known_paths)
         except sqlite3.Error as exc:
             self._show_error("Error SQLite", str(exc))
             return
+        except Exception as exc:
+            self._show_error("Error leyendo semillas", str(exc))
+            return
+        pending_count += missing_count
+        total_count += missing_count
         if pending_count > 0:
             messagebox.showwarning(
                 "Calcular pesos",
@@ -4245,6 +4556,64 @@ class MT5AutotesterUI(tk.Tk):
             self._show_error("Error guardando seed", str(exc))
             return
         self.status_text.set("Override de seed guardado")
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_seeds()
+
+    def _save_ubs_seed_override(self) -> None:
+        infos = self._checked_ubs_seed_infos()
+        if not infos:
+            self._show_error("Sin seleccion", "Selecciona una o mas semillas.")
+            return
+        symbol = self.ubs_seed_override_symbol.get().strip().upper()
+        period = self.ubs_seed_override_period.get().strip().upper()
+        valid_periods = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"}
+        if not symbol:
+            self._show_error("Symbol invalido", "Indica el symbol correcto.")
+            return
+        if period not in valid_periods:
+            self._show_error("Timeframe invalido", f"El timeframe debe ser uno de: {', '.join(sorted(valid_periods))}.")
+            return
+        seed_paths = [info.get("seed_path", "") for info in infos if info.get("seed_path")]
+        memory_path = self._ubs_memory_path()
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            conn = sqlite3.connect(memory_path, timeout=3.0)
+            self._ensure_ubs_seed_override_schema(conn)
+            now = datetime.now().isoformat(timespec="seconds")
+            for seed_path in seed_paths:
+                conn.execute(
+                    """
+                    insert into seed_overrides (seed_path, symbol, period, updated_at)
+                    values (?, ?, ?, ?)
+                    on conflict(seed_path) do update set
+                        symbol=excluded.symbol,
+                        period=excluded.period,
+                        updated_at=excluded.updated_at
+                    """,
+                    (seed_path, symbol, period, now),
+                )
+            if self._sqlite_table_exists(conn, "seed_scores") and seed_paths:
+                placeholders = ",".join("?" for _ in seed_paths)
+                conn.execute(
+                    f"""
+                    update seed_scores
+                    set symbol=?,
+                        period=?,
+                        report_path=case when status in ('accepted', 'rejected', 'no_trades') then null else report_path end,
+                        score=case when status in ('accepted', 'rejected', 'no_trades') then null else score end,
+                        accepted=case when status in ('accepted', 'rejected', 'no_trades') then null else accepted end,
+                        metrics_json=case when status in ('accepted', 'rejected', 'no_trades') then null else metrics_json end,
+                        status=case when status in ('accepted', 'rejected', 'no_trades') then 'pending' else status end
+                    where seed_path in ({placeholders})
+                    """,
+                    (symbol, period, *seed_paths),
+                )
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error guardando seed", str(exc))
+            return
+        self.status_text.set(f"Override aplicado a {len(seed_paths)} seed(s)")
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 
@@ -4401,6 +4770,7 @@ class MT5AutotesterUI(tk.Tk):
                     sum(case when status = 'rejected' then 1 else 0 end) as rejected,
                     sum(case when status = 'generated' then 1 else 0 end) as generated,
                     sum(case when status = 'no_report' then 1 else 0 end) as no_report,
+                    sum(case when status = 'no_trades' then 1 else 0 end) as no_trades,
                     sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
                 from candidates
                 where run_id = ?
@@ -4436,6 +4806,7 @@ class MT5AutotesterUI(tk.Tk):
         rejected = int(counts["rejected"] or 0)
         generated = int(counts["generated"] or 0)
         no_report = int(counts["no_report"] or 0)
+        no_trades = int(counts["no_trades"] or 0)
         report_mismatch = int(counts["report_mismatch"] or 0)
         self.ubs_results_summary.set(
             f"Run #{latest_run['id']} | {latest_run['created_at']} | "
@@ -4446,6 +4817,8 @@ class MT5AutotesterUI(tk.Tk):
             extra.append(f"generados sin backtest {generated}")
         if no_report:
             extra.append(f"sin reporte {no_report}")
+        if no_trades:
+            extra.append(f"sin operaciones {no_trades}")
         if report_mismatch:
             extra.append(f"mismatch reporte {report_mismatch}")
         extra_text = f" | {', '.join(extra)}" if extra else ""
@@ -4697,10 +5070,53 @@ class MT5AutotesterUI(tk.Tk):
             return "neutral"
         return "positive" if value >= 0 else "negative"
 
+    def _on_ubs_universe_tree_click(self, event: tk.Event) -> None:
+        item, column = self._tree_item_from_event(self.ubs_universe_assets_tree, event)
+        if not item or column != "#1":
+            return
+        info = self.ubs_universe_paths.get(item, {})
+        symbol = info.get("symbol", "")
+        if not symbol:
+            return
+        if symbol in self.ubs_universe_checked:
+            self.ubs_universe_checked.remove(symbol)
+        else:
+            self.ubs_universe_checked.add(symbol)
+        values = list(self.ubs_universe_assets_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(symbol in self.ubs_universe_checked)
+            self.ubs_universe_assets_tree.item(item, values=values)
+        return "break"
+
+    def _set_checked_universe_symbols_enabled(self, enabled: bool) -> None:
+        symbols = set(self.ubs_universe_checked)
+        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
+            selected = self.ubs_universe_assets_tree.selection()
+            symbols = {
+                self.ubs_universe_paths.get(item, {}).get("symbol", "")
+                for item in selected
+            }
+            symbols.discard("")
+        if not symbols:
+            messagebox.showinfo("Universo UBS", "Marca uno o mas simbolos primero.")
+            return
+        disabled = self._load_disabled_ubs_symbols()
+        if enabled:
+            disabled.difference_update(symbols)
+            action = "habilitados"
+        else:
+            disabled.update(symbols)
+            action = "deshabilitados"
+        self._save_disabled_ubs_symbols(disabled)
+        self.ubs_universe_checked.clear()
+        self.status_text.set(f"Simbolos {action}: {len(symbols)}")
+        self._refresh_ubs_universe()
+
     def _refresh_ubs_universe(self) -> None:
         if hasattr(self, "ubs_universe_assets_tree"):
             for item in self.ubs_universe_assets_tree.get_children():
                 self.ubs_universe_assets_tree.delete(item)
+        self.ubs_universe_paths.clear()
         if hasattr(self, "ubs_timeframes_tree"):
             for item in self.ubs_timeframes_tree.get_children():
                 self.ubs_timeframes_tree.delete(item)
@@ -4715,6 +5131,8 @@ class MT5AutotesterUI(tk.Tk):
             return
 
         assets, aliases = self._load_ubs_asset_universe()
+        disabled_symbols = self._load_disabled_ubs_symbols()
+        checked_symbols = set(self.ubs_universe_checked)
         memory_path = self._ubs_memory_path()
         asset_stats: dict[str, dict[str, object]] = {}
         timeframe_stats: dict[str, dict[str, object]] = {}
@@ -4758,6 +5176,8 @@ class MT5AutotesterUI(tk.Tk):
                     total_mismatch += 1
                     continue
                 canonical = self._canonical_ubs_symbol(row["target_symbol"] or row["symbol"], aliases)
+                if canonical.upper() in disabled_symbols:
+                    continue
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
@@ -4781,6 +5201,8 @@ class MT5AutotesterUI(tk.Tk):
             for row in seed_rows:
                 status = str(row["status"] or "")
                 canonical = self._canonical_ubs_symbol(row["symbol"], aliases)
+                if canonical.upper() in disabled_symbols:
+                    continue
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
@@ -4816,10 +5238,13 @@ class MT5AutotesterUI(tk.Tk):
 
         if hasattr(self, "ubs_universe_assets_tree"):
             for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
-                self.ubs_universe_assets_tree.insert(
+                is_disabled = symbol.upper() in disabled_symbols
+                item = self.ubs_universe_assets_tree.insert(
                     "",
                     "end",
                     values=(
+                        self._checkbox_text(symbol.upper() in checked_symbols),
+                        "no" if is_disabled else "si",
                         group,
                         symbol,
                         ", ".join(symbol_aliases),
@@ -4830,8 +5255,12 @@ class MT5AutotesterUI(tk.Tk):
                         int(stat["accepted"]),
                         int(stat["pending"]),
                     ),
-                    tags=(self._tag_for_weight(weight_value),),
+                    tags=("disabled" if is_disabled else self._tag_for_weight(weight_value),),
                 )
+                self.ubs_universe_paths[item] = {"symbol": symbol.upper()}
+
+        valid_symbols = {info["symbol"] for info in self.ubs_universe_paths.values() if info.get("symbol")}
+        self.ubs_universe_checked.intersection_update(valid_symbols)
 
         timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
         observed_timeframes = sorted(period for period in timeframe_stats if period not in timeframe_order)
@@ -4866,7 +5295,7 @@ class MT5AutotesterUI(tk.Tk):
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
-            f"mismatch ignorados: {total_mismatch}"
+            f"mismatch ignorados: {total_mismatch} | deshabilitados: {len(disabled_symbols)}"
         )
         self.ubs_timeframe_summary.set(
             "PESO = promedio(score + bonus accepted). El agente prioriza TF buenos y explora M15/M30/H1/H4/D1 reemplazando claves de timeframe existentes."
@@ -5267,6 +5696,7 @@ class MT5AutotesterUI(tk.Tk):
             "rejected": "rechazado",
             "generated": "generado",
             "no_report": "sin reporte",
+            "no_trades": "sin operaciones",
             "parse_error": "parse error",
             "report_mismatch": "mismatch reporte",
             "pending": "pendiente",
@@ -5277,7 +5707,7 @@ class MT5AutotesterUI(tk.Tk):
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
-        if status in {"rejected", "parse_error", "report_mismatch"}:
+        if status in {"rejected", "parse_error", "report_mismatch", "no_trades"}:
             return "rejected"
         return "pending"
 
@@ -5290,6 +5720,8 @@ class MT5AutotesterUI(tk.Tk):
             return "error al parsear reporte"
         if status == "no_report":
             return "sin reporte"
+        if status == "no_trades":
+            return "reporte sin operaciones"
         metrics_json = None
         try:
             metrics_json = row["metrics_json"]
@@ -5687,14 +6119,23 @@ class MT5AutotesterUI(tk.Tk):
             raise ValueError(f"{label} no puede ser mayor que {maximum}.")
         return value
 
-    def _ubs_score_args(self) -> list[str]:
-        min_net_profit = self._score_float(self.ubs_pass_min_net_profit, "Profit neto min")
-        min_profit_factor = self._score_float(self.ubs_pass_min_profit_factor, "Profit factor min", minimum=0)
-        max_drawdown_pct = self._score_float(self.ubs_pass_max_drawdown_pct, "DD max %", minimum=0)
-        min_recovery_factor = self._score_float(self.ubs_pass_min_recovery_factor, "Recovery min")
-        min_trades = int(self.ubs_pass_min_trades.get())
+    def _score_args_from_vars(
+        self,
+        *,
+        min_net_profit_var: tk.StringVar,
+        min_profit_factor_var: tk.StringVar,
+        min_trades_var: tk.IntVar,
+        max_drawdown_pct_var: tk.StringVar,
+        min_recovery_factor_var: tk.StringVar,
+        context: str,
+    ) -> list[str]:
+        min_net_profit = self._score_float(min_net_profit_var, f"{context} profit neto min")
+        min_profit_factor = self._score_float(min_profit_factor_var, f"{context} profit factor min", minimum=0)
+        max_drawdown_pct = self._score_float(max_drawdown_pct_var, f"{context} DD max %", minimum=0)
+        min_recovery_factor = self._score_float(min_recovery_factor_var, f"{context} recovery min")
+        min_trades = int(min_trades_var.get())
         if min_trades < 0:
-            raise ValueError("Trades min no puede ser menor que 0.")
+            raise ValueError(f"{context} trades min no puede ser menor que 0.")
         return [
             "--min-net-profit", str(min_net_profit),
             "--min-profit-factor", str(min_profit_factor),
@@ -5702,6 +6143,26 @@ class MT5AutotesterUI(tk.Tk):
             "--max-drawdown-pct", str(max_drawdown_pct),
             "--min-recovery-factor", str(min_recovery_factor),
         ]
+
+    def _ubs_score_args(self) -> list[str]:
+        return self._score_args_from_vars(
+            min_net_profit_var=self.ubs_pass_min_net_profit,
+            min_profit_factor_var=self.ubs_pass_min_profit_factor,
+            min_trades_var=self.ubs_pass_min_trades,
+            max_drawdown_pct_var=self.ubs_pass_max_drawdown_pct,
+            min_recovery_factor_var=self.ubs_pass_min_recovery_factor,
+            context="Agente UBS",
+        )
+
+    def _ubs_seed_score_args(self) -> list[str]:
+        return self._score_args_from_vars(
+            min_net_profit_var=self.ubs_seed_pass_min_net_profit,
+            min_profit_factor_var=self.ubs_seed_pass_min_profit_factor,
+            min_trades_var=self.ubs_seed_pass_min_trades,
+            max_drawdown_pct_var=self.ubs_seed_pass_max_drawdown_pct,
+            min_recovery_factor_var=self.ubs_seed_pass_min_recovery_factor,
+            context="Seeds UBS",
+        )
 
     def _confirm_execution_start(self, title: str, total: int, details: list[str]) -> bool:
         if total <= 0:
@@ -5914,7 +6375,7 @@ class MT5AutotesterUI(tk.Tk):
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected"}
+                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch"}
                 or str(row["symbol"] or "").strip().upper() != symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != period.strip().upper()
             )
@@ -5933,7 +6394,7 @@ class MT5AutotesterUI(tk.Tk):
             "--template", self.template_path.get(),
             "--delay", str(self.delay.get()),
         ]
-        args.extend(self._ubs_score_args())
+        args.extend(self._ubs_seed_score_args())
         if self.multiterminal_enabled.get():
             args.extend(self._multiterminal_args(require_ubs=True))
         else:
@@ -5965,6 +6426,8 @@ class MT5AutotesterUI(tk.Tk):
             f"Backtests a ejecutar: {pending}  (ya evaluadas sin cambios: {already_ok})",
             "Corren: sin reporte, sin score, con symbol/TF cambiado.",
             "Las semillas borradas quedan inactivas para los pesos.",
+            f"Pass Seeds: net>{self.ubs_seed_pass_min_net_profit.get().strip()} | PF>={self.ubs_seed_pass_min_profit_factor.get().strip()} | DD<={self.ubs_seed_pass_max_drawdown_pct.get().strip()}%",
+            f"Pass Seeds: trades>={self.ubs_seed_pass_min_trades.get()} | recovery>={self.ubs_seed_pass_min_recovery_factor.get().strip()}",
         ]
         details.extend(self._multiterminal_execution_details())
         if self._confirm_execution_start("Confirmar evaluacion de semillas", pending, details):

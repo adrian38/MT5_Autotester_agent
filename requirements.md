@@ -59,6 +59,9 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.3.3** Each terminal profile MAY override: `enabled`, `name`, `mt5_path`,
   `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`.
 - **FR-1.3.4** Compilation MUST remain sequential even in multiterminal mode.
+- **FR-1.3.5** In UBS multiterminal mode, every enabled profile MUST point
+  `ubs_ex5_file` to a UBS / Ultimate Breakout System `.ex5`. Profiles that
+  point to another EA MUST fail validation before MT5 is launched.
 
 ### 1.4 MT5 report parsing
 
@@ -123,7 +126,7 @@ requirement changes or a debt item is opened/closed.
 
   | Metric | Default | Direction |
   |--------|---------|-----------|
-  | Net profit | 100.0 | ≥ |
+  | Net profit | 100.0 | > |
   | Profit factor | 1.20 | ≥ |
   | Trades | 50 | ≥ |
   | Max drawdown % | 25.0 | ≤ |
@@ -143,6 +146,9 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.7.4** After scoring, the agent MUST validate the parsed report's
   `symbol`/`timeframe` against the candidate target (after applying `symbol_map`).
   A mismatch MUST set status `report_mismatch` regardless of score.
+- **FR-1.7.5** After each MT5 batch, reports older than the batch start time MUST
+  be ignored. History-cache failures or stale files MUST NOT be scored as if
+  they belonged to the current backtest.
 
 ### 1.8 UBS agent — candidate lifecycle
 
@@ -162,16 +168,26 @@ requirement changes or a debt item is opened/closed.
 
 - **FR-1.9.1** `--evaluate-seeds` MUST run a dedicated backtest for each seed
   that is new, modified (different mtime/size), has a changed symbol/TF (via
-  override), or has a non-terminal status (not `accepted`/`rejected`).
-  Seeds already evaluated without changes MUST be skipped.
+  override), or has a retryable status (`pending`, `no_report`, `parse_error`).
+  Seeds already evaluated without changes MUST be skipped. `report_mismatch` is
+  a quarantined ready state and MUST NOT be re-run unless the seed file or its
+  symbol/TF override changes.
+- **FR-1.9.1a** If `_manifest.csv` exists in the seed directory, it MAY provide
+  metadata for listed seeds, but it MUST NOT hide additional `.set` files present
+  under the source directory. Unlisted `.set` files MUST still be loaded,
+  registered in `seed_scores`, and evaluated normally.
 - **FR-1.9.2** A seed whose symbol or timeframe cannot be determined (both
   `UNKNOWN`) after applying `seed_overrides` MUST be marked `report_mismatch`
   before launching any backtest. No backtest job MUST be created for it.
 - **FR-1.9.3** Seed statuses in `seed_scores` table MUST be one of:
   `pending` | `accepted` | `rejected` | `report_mismatch` | `no_report` |
-  `parse_error`.
+  `parse_error` | `no_trades`.
 - **FR-1.9.4** Only `accepted` and `rejected` seeds MUST contribute to Universe
-  weights.
+  weights. `report_mismatch` is ready for the purpose of pending counts, but it
+  MUST NOT contribute to weights.
+- **FR-1.9.4a** A parsed MT5 report with zero closed trades MUST be stored as
+  `no_trades`, not as ordinary `rejected`. `no_trades` is retryable and MUST
+  NOT contribute to Universe weights.
 - **FR-1.9.5** Seeds deleted from the source directory MUST be marked `active=0`
   in the DB and excluded from the UI active count, but their rows MUST be kept
   for historical reference.
@@ -185,6 +201,26 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.9.8** After seed evaluation is reset, Universe weights MUST be hidden or
   blocked until the user completes seed evaluation and explicitly applies weights
   with the UI "Calcular pesos" action.
+- **FR-1.9.9** Seed acceptance thresholds MUST be independent from UBS agent
+  generation thresholds in the UI. The default seed net-profit threshold MUST be
+  `0`, meaning a seed passes net profit only when `net_profit > 0`.
+- **FR-1.9.10** Running `--evaluate-seeds` MUST re-score already evaluated
+  `accepted`/`rejected` seed rows from their stored reports using the current
+  seed thresholds, without requiring another MT5 backtest when the seed file and
+  symbol/TF are unchanged.
+- **FR-1.9.11** `ubs_agent.py --rescore-seeds-only` MUST re-score existing
+  active `accepted`/`rejected` seed rows from stored reports and MUST NOT require
+  an MT5 expert path or launch MT5.
+- **FR-1.9.12** Before launching new seed backtests, `--evaluate-seeds` MUST
+  reconcile reports left by interrupted `outputs/ubs_agent/seed_eval/eval_*`
+  batches. It MUST match copied `.set` files back to source seeds by file
+  content, validate symbol/TF against the report, and update `seed_scores` so
+  completed jobs do not remain stuck as `pending`.
+- **FR-1.9.13** `--evaluate-seeds --reconcile-seed-eval-only` MUST perform only
+  that interrupted-batch reconciliation and MUST NOT require an MT5 expert path
+  or launch MT5.
+- **FR-1.9.14** `ubs_agent.py --retry-seed-path <path>` MUST relaunch one UBS
+  seed backtest and update its existing `seed_scores` row.
 
 ### 1.10 UBS agent — symbol mapping
 
@@ -229,16 +265,16 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.12.3** The UBS Seeds tab MUST display: status, symbol, TF, score, OK,
   override flag, rejection motivo (criteria that failed with their actual values),
   and seed filename. The motivo format is `metric: value | metric: value`.
-- **FR-1.12.4** The UBS Seeds tab MUST show the active scoring thresholds above
-  the table (bound to the same `tk.StringVar`/`tk.IntVar` as the config panel),
-  so they update live when the user changes them.
+- **FR-1.12.4** The UBS Seeds tab MUST expose editable seed-only scoring
+  thresholds above the table. These controls MUST be persisted in
+  `ui_settings.ini` separately from the UBS Agent thresholds.
 - **FR-1.12.5** Double-clicking a seed row MUST open its HTML report in the
   system default viewer if a report exists; otherwise show an informative message.
 - **FR-1.12.6** The UI MUST allow the user to delete a single selected seed file
-  from disk (with confirmation) and to bulk-delete all rejected seeds (with
-  confirmation showing the count). Both operations MUST remove the corresponding
-  `seed_scores` and `seed_overrides` DB rows and refresh the seeds table AND the
-  Universe weights table.
+  from disk (with confirmation), delete all checked seed files, and bulk-delete
+  all rejected seeds (with confirmation showing the count). Both operations MUST
+  remove the corresponding `seed_scores` and `seed_overrides` DB rows and
+  refresh the seeds table AND the Universe weights table.
 - **FR-1.12.7** Symbol/TF overrides saved via the UI MUST be persisted in
   `seed_overrides` and applied both at seed evaluation time and at UBS generation
   time.
@@ -268,6 +304,21 @@ requirement changes or a debt item is opened/closed.
   refuse to unlock weights while active seeds remain in a non-ready state. Ready
   states for applying weights are `accepted`, `rejected`, and `report_mismatch`;
   other active seed states require another evaluation pass or manual triage.
+- **FR-1.12.16** Every visible "Actualizar" button MUST refresh the full related
+  panel state, not just one tree widget. A failure in one refresh section MUST
+  not prevent other sections from refreshing.
+- **FR-1.12.17** The UBS Seeds tab MUST expose an "Aplicar criterios" action
+  that persists seed thresholds and re-scores existing seed reports without
+  launching MT5.
+- **FR-1.12.18** The UBS Seeds tab MUST expose a SEL checkbox column. Buttons
+  that normally act on one seed (`Abrir seed`, `Abrir reporte`, `Repetir
+  backtest`, `Guardar Symbol/TF`, `Eliminar seed`) MUST apply to checked rows
+  when any are checked, and fall back to the selected row otherwise.
+- **FR-1.12.19** The UBS Universo tab MUST expose a SEL checkbox column and
+  controls to disable/enable checked symbols. Disabled symbols MUST be persisted
+  in `outputs/ubs_disabled_symbols.json`, remain visible as disabled in the UI,
+  be excluded from Universe weights, and be excluded from UBS agent target-symbol
+  exploration.
 
 ### 1.13 Packaging & runtime
 
@@ -321,12 +372,6 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   pass that doesn't require re-running backtests (scores already exist in
   `metrics_json`).
 
-- **TD-2.1.4 — `report_mismatch` seed rows are reprocessed every evaluation.**
-  Seeds stuck as `report_mismatch` (symbol/TF cannot be inferred, no override)
-  are not backtested, but they are still re-marked/logged on each evaluation
-  because they are not `accepted`/`rejected`. Add a `blocked` terminal status or
-  skip unchanged `report_mismatch` rows until the seed file or override changes.
-
 ### 2.2 Seed management
 
 - **TD-2.2.1 — Deleting a seed file doesn't remove its override.**
@@ -338,11 +383,6 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   Overriding symbol/TF requires selecting each seed row individually. A CSV-import
   or bulk-edit dialog would save time when correcting many mismatched seeds at
   once.
-
-- **TD-2.2.3 — Rejected seeds with 0 trades are not distinguished.**
-  Seeds scoring `-55.00` with 0 trades, 0 net profit, 0 PF look identical in the
-  table to seeds with real trades that failed a threshold. A `no_trades` indicator
-  or separate status would make triaging faster.
 
 ### 2.3 Multiterminal
 
@@ -455,7 +495,20 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   Column is populated by parsing `metrics_json` from `seed_scores`.
 
 - **2025-06** — UBS Seeds tab: added scoring criteria bar above the table
-  showing active thresholds (bound live to the config `tk.StringVar` instances).
+  with editable seed-only thresholds and `--rescore-seeds-only` reclassification
+  without opening MT5.
+
+- **2025-06** — Seed evaluation recovery now reconciles interrupted
+  `seed_eval/eval_*` batches by matching copied `.set` file content to source
+  seeds and updating `seed_scores` before launching new MT5 jobs.
+
+- **2025-06** — Unchanged `report_mismatch` seed rows are treated as
+  ready/quarantined for pending counts and are not re-run until the seed file or
+  symbol/TF override changes.
+
+- **2025-06** — Zero-trade MT5 seed reports are classified as `no_trades`
+  instead of ordinary rejected rows, and the UBS Seeds tab can relaunch a single
+  selected seed backtest.
 
 - **2025-06** — UBS Seeds tab: added "Abrir reporte" button and double-click to
   open the HTML report; "Eliminar seed" and "Eliminar rechazadas" buttons with

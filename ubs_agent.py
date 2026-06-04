@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import configparser
 import csv
+import hashlib
 import json
 import random
 import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,7 @@ DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
 DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
+DEFAULT_DISABLED_SYMBOLS = BASE_DIR / "outputs" / "ubs_disabled_symbols.json"
 DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
@@ -423,7 +426,7 @@ class AgentMemory:
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected"}
+                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch"}
                 or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
             )
@@ -450,7 +453,27 @@ class AgentMemory:
                     ),
                 )
             else:
-                if should_eval:
+                previous_status = str(row["status"] or "")
+                if should_eval and previous_status == "no_trades":
+                    self.conn.execute(
+                        """
+                        update seed_scores
+                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
+                            active=1, last_seen=?
+                        where seed_path=?
+                        """,
+                        (
+                            float(stat.st_mtime),
+                            int(stat.st_size),
+                            seed.symbol,
+                            seed.period,
+                            seed.family,
+                            seed.run_strategy,
+                            now,
+                            path_text,
+                        ),
+                    )
+                elif should_eval:
                     self.conn.execute(
                         """
                         update seed_scores
@@ -491,6 +514,63 @@ class AgentMemory:
                     )
         self.conn.commit()
         return pending
+
+    def prepare_single_seed_evaluation(self, seed: Seed, *, force: bool = False) -> bool:
+        try:
+            stat = seed.path.stat()
+        except OSError:
+            return False
+        path_text = str(seed.path)
+        row = self.conn.execute("select * from seed_scores where seed_path=?", (path_text,)).fetchone()
+        now = datetime.now().isoformat(timespec="seconds")
+        if row is None:
+            self.conn.execute(
+                """
+                insert into seed_scores (
+                    seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
+                    status, active, last_seen
+                ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
+                """,
+                (
+                    path_text,
+                    float(stat.st_mtime),
+                    int(stat.st_size),
+                    seed.symbol,
+                    seed.period,
+                    seed.family,
+                    seed.run_strategy,
+                    now,
+                ),
+            )
+        else:
+            self.conn.execute(
+                """
+                update seed_scores
+                set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
+                    report_path=null, score=null, accepted=null, metrics_json=null,
+                    status='pending', active=1, last_seen=?, evaluated_at=null
+                where seed_path=?
+                """
+                if force
+                else """
+                update seed_scores
+                set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
+                    active=1, last_seen=?
+                where seed_path=?
+                """,
+                (
+                    float(stat.st_mtime),
+                    int(stat.st_size),
+                    seed.symbol,
+                    seed.period,
+                    seed.family,
+                    seed.run_strategy,
+                    now,
+                    path_text,
+                ),
+            )
+        self.conn.commit()
+        return True
 
     def apply_seed_overrides(self, seeds: list[Seed]) -> list[Seed]:
         rows = self.conn.execute("select seed_path, symbol, period from seed_overrides").fetchall()
@@ -542,6 +622,12 @@ class AgentMemory:
             ),
         )
         self.conn.commit()
+
+    def seed_score_row(self, seed_path: Path) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "select * from seed_scores where seed_path=? and active=1",
+            (str(seed_path),),
+        ).fetchone()
 
     def mutation_feedback(self) -> dict[str, float]:
         rows = self.conn.execute(
@@ -742,8 +828,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-percent", type=float, default=20.0)
     parser.add_argument("--continue-last-run", action="store_true", help="Usa la ultima generacion registrada como seeds.")
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
+    parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
+    parser.add_argument(
+        "--reconcile-seed-eval-only",
+        action="store_true",
+        help="Con --evaluate-seeds, clasifica reportes de evaluaciones seed incompletas sin abrir MT5.",
+    )
     parser.add_argument("--reevaluate-seeds", action="store_true", help="Con --evaluate-seeds, vuelve a testear todas las semillas activas.")
     parser.add_argument("--retry-candidate-id", type=int, help="Relanza un candidato concreto y actualiza su estado en memoria.")
+    parser.add_argument("--retry-seed-path", action="append", help="Relanza una semilla concreta y actualiza seed_scores. Puede repetirse.")
     parser.add_argument("--retry-run-id", type=int, help="Run SQLite para retry de mismatches. Si se omite usa el ultimo run.")
     parser.add_argument("--retry-mismatch-run", action="store_true", help="Relanza todos los report_mismatch de un run.")
     parser.add_argument("--retry-mismatch-generation", type=int, help="Relanza todos los report_mismatch de una generacion.")
@@ -760,17 +853,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def load_disabled_symbols(path: Path = DEFAULT_DISABLED_SYMBOLS) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if isinstance(data, dict):
+        values = data.get("disabled") or []
+    elif isinstance(data, list):
+        values = data
+    else:
+        values = []
+    return {str(value).strip().upper() for value in values if str(value).strip()}
+
+
 def load_asset_universe(path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
     parser.read(path, encoding="utf-8-sig")
     groups: dict[str, list[str]] = {}
     aliases: dict[str, str] = {}
+    disabled = load_disabled_symbols()
     for section in parser.sections():
         if section == "CommonAliases":
             aliases = {key.upper(): value for key, value in parser[section].items()}
             continue
         symbols = [item.strip() for item in parser[section].get("symbols", "").split(",") if item.strip()]
+        symbols = [symbol for symbol in symbols if symbol.upper() not in disabled]
         groups[section] = symbols
     return groups, aliases
 
@@ -778,11 +889,15 @@ def load_asset_universe(path: Path) -> tuple[dict[str, list[str]], dict[str, str
 def load_seeds(source_dir: Path) -> list[Seed]:
     manifest = source_dir / "_manifest.csv"
     seeds: list[Seed] = []
+    seen_paths: set[str] = set()
     if manifest.exists():
         with manifest.open("r", encoding="utf-8-sig", newline="") as file:
             for row in csv.DictReader(file):
-                path = Path(row["target_path"])
+                path = Path(row["target_path"]).expanduser()
+                if not path.exists() and not path.is_absolute():
+                    path = (BASE_DIR / path).resolve()
                 if path.exists():
+                    seen_paths.add(str(path.resolve()))
                     seeds.append(
                         Seed(
                             path=path,
@@ -792,9 +907,12 @@ def load_seeds(source_dir: Path) -> list[Seed]:
                             run_strategy=row.get("run_strategy") or "",
                         )
                     )
-        return seeds
 
     for path in sorted(source_dir.rglob("*.set")):
+        path_key = str(path.resolve())
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
         params = load_set_params(path)
         seeds.append(
             Seed(
@@ -902,15 +1020,18 @@ def choose_target_symbol(
 ) -> tuple[str, str]:
     aliases = aliases or {}
     current = seed.symbol or "UNKNOWN"
+    disabled = load_disabled_symbols()
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
 
     related = tuple(
-        dict.fromkeys(exact_by_key.get(symbol.upper(), symbol) for symbol in related_assets(current))
+        symbol for symbol in dict.fromkeys(exact_by_key.get(symbol.upper(), symbol) for symbol in related_assets(current))
+        if symbol.upper() not in disabled
     )
     universe_choices = tuple(
-        symbol for symbol in dict.fromkeys(universe_symbols) if symbol.upper() != current.upper()
+        symbol for symbol in dict.fromkeys(universe_symbols)
+        if symbol.upper() != current.upper() and symbol.upper() not in disabled
     )
 
     if rng.random() < 0.70:
@@ -1172,6 +1293,100 @@ def seed_eval_filename(index: int, seed: Seed, used: set[str]) -> str:
     return name
 
 
+def _parse_eval_dir_timestamp(eval_dir: Path) -> datetime | None:
+    try:
+        return datetime.strptime(eval_dir.name, "eval_%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
+
+
+def _file_digest(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha1()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def reconcile_seed_eval_reports(
+    memory: AgentMemory,
+    pending: list[Seed],
+    output_root: Path,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+) -> tuple[dict[str, int], set[str]]:
+    seed_eval_root = output_root / "seed_eval"
+    if not pending or not seed_eval_root.exists():
+        return {}, set()
+
+    pending_by_hash: dict[str, list[Seed]] = {}
+    for seed in pending:
+        row = memory.seed_score_row(seed.path)
+        if row is not None and str(row["status"] or "") == "no_trades":
+            continue
+        digest = _file_digest(seed.path)
+        if digest:
+            pending_by_hash.setdefault(digest, []).append(seed)
+    eval_dirs = sorted(
+        (path for path in seed_eval_root.glob("eval_*") if path.is_dir()),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    status_counts: dict[str, int] = {}
+    processed_paths: set[str] = set()
+    for eval_dir in eval_dirs:
+        eval_started = _parse_eval_dir_timestamp(eval_dir)
+        if eval_started is None:
+            continue
+        for copied_set in sorted(eval_dir.glob("*.set")):
+            report = find_report_for_set(copied_set, min_mtime=eval_started.timestamp() - 1.0)
+            if not report:
+                continue
+            copied_digest = _file_digest(copied_set)
+            if not copied_digest:
+                continue
+            candidates = pending_by_hash.get(copied_digest, [])
+            seed = next((candidate for candidate in candidates if str(candidate.path) not in processed_paths), None)
+            if seed is None:
+                continue
+            seed_path = str(seed.path)
+            status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
+            status_counts[status] = status_counts.get(status, 0) + 1
+            processed_paths.add(seed_path)
+            if len(processed_paths) >= len(pending):
+                return status_counts, processed_paths
+    return status_counts, processed_paths
+
+
+def rescore_existing_seed_scores(
+    memory: AgentMemory,
+    seeds: list[Seed],
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    *,
+    exclude_paths: set[str],
+) -> dict[str, int]:
+    status_counts: dict[str, int] = {}
+    for seed in seeds:
+        if str(seed.path) in exclude_paths:
+            continue
+        row = memory.seed_score_row(seed.path)
+        if row is None or str(row["status"] or "") not in {"accepted", "rejected"}:
+            continue
+        report_raw = str(row["report_path"] or "").strip()
+        if not report_raw:
+            continue
+        report = Path(report_raw)
+        if not report.exists():
+            continue
+        status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map)
+        status_counts[status] = status_counts.get(status, 0) + 1
+    return status_counts
+
+
 def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = Path(args.source_dir).expanduser()
     output_root = Path(args.output_dir).expanduser()
@@ -1179,17 +1394,20 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
-    if not args.expert and not args.multi_terminal:
+    if not args.expert and not args.multi_terminal and not args.reconcile_seed_eval_only:
         print("ERROR: evaluar semillas requiere --expert o --multi-terminal.")
         return 1
 
+    symbol_map = parse_symbol_map(args.symbol_map)
     pending = memory.prepare_seed_evaluation(seeds, force=args.reevaluate_seeds)
     original_pending_count = len(pending)
+    original_pending_paths = {str(seed.path) for seed in pending}
     invalid_pending = [
         seed
         for seed in pending
         if not seed.symbol or not seed.period or seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN"
     ]
+    invalid_paths = {str(seed.path) for seed in invalid_pending}
     for seed in invalid_pending:
         print(
             f"AVISO: seed sin symbol/timeframe inferible: {seed.path.name}; "
@@ -1204,7 +1422,36 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     if invalid_pending:
         print(f"Semillas bloqueadas por symbol/timeframe no inferible: {len(invalid_pending)}")
     print(f"Semillas ya evaluadas sin cambios: {unchanged_count}")
+    reconciled_counts, reconciled_paths = reconcile_seed_eval_reports(
+        memory,
+        pending,
+        output_root,
+        score_config,
+        symbol_map,
+    )
+    if reconciled_counts:
+        pending = [seed for seed in pending if str(seed.path) not in reconciled_paths]
+        print(
+            "Semillas reconciliadas desde evaluaciones incompletas: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(reconciled_counts.items()))
+        )
+        print(f"Semillas pendientes tras reconciliar: {len(pending)}")
+    if args.reconcile_seed_eval_only:
+        print(f"Memoria: {memory.path}")
+        return 0
     if not pending:
+        rescored_counts = rescore_existing_seed_scores(
+            memory,
+            seeds,
+            score_config,
+            symbol_map,
+            exclude_paths=original_pending_paths | invalid_paths,
+        )
+        if rescored_counts:
+            print(
+                "Semillas repuntuadas con criterios actuales: "
+                + ", ".join(f"{status}={count}" for status, count in sorted(rescored_counts.items()))
+            )
         if blocked_count:
             print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas bloqueadas.")
         else:
@@ -1222,6 +1469,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
 
     print(f"Backtests semillas: {len(copied)}")
     print(f"Directorio evaluacion: {eval_dir}")
+    batch_started_at = time.time()
     code = run_backtests(args, eval_dir)
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se puntuaran los reportes disponibles")
@@ -1230,83 +1478,106 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     if args.dry_run:
         return 0
 
-    symbol_map = parse_symbol_map(args.symbol_map)
     scored = 0
     handled_issues = blocked_count
     status_counts: dict[str, int] = {}
     for seed, copied_set in copied:
-        report = find_report_for_set(copied_set)
+        report = find_report_for_set(copied_set, min_mtime=batch_started_at - 1.0)
         if not report:
             memory.record_seed_score(seed, None, "no_report", None)
             status_counts["no_report"] = status_counts.get("no_report", 0) + 1
             handled_issues += 1
             continue
-        try:
-            result = score_report_file(report, config=score_config)
-        except Exception as exc:
-            print(f"AVISO: no pude parsear seed {copied_set.name}: {exc}")
-            memory.record_seed_score(seed, None, "parse_error", report)
-            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
-            handled_issues += 1
-            continue
-
-        if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
-            print(
-                f"AVISO: seed sin symbol/timeframe confirmado para {seed.path.name}; "
-                "queda como report_mismatch hasta guardar override."
-            )
-            memory.record_seed_score(seed, result, "report_mismatch", report)
-            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-            handled_issues += 1
-            continue
-
-        expected_symbol = seed.symbol if seed.symbol and seed.symbol != "UNKNOWN" else str(result.symbol or "UNKNOWN")
-        expected_period = seed.period if seed.period and seed.period != "UNKNOWN" else str(result.timeframe or "UNKNOWN").upper()
-        evaluated_seed = Seed(
-            path=seed.path,
-            symbol=expected_symbol,
-            period=expected_period,
-            family=seed.family,
-            run_strategy=seed.run_strategy,
-        )
-        variant = Variant(
-            path=copied_set,
-            seed=evaluated_seed,
-            target_symbol=expected_symbol,
-            target_period=expected_period,
-            mutated_keys=(),
-            missing_lot_keys=(),
-            policy="seed_eval",
-        )
-        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
-        if not matches:
-            print(f"AVISO: reporte seed no coincide para {seed.path.name}: {mismatch_reason}")
-            memory.record_seed_score(evaluated_seed, result, "report_mismatch", report)
-            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-            handled_issues += 1
-            continue
-        status = "accepted" if result.accepted else "rejected"
-        memory.record_seed_score(evaluated_seed, result, status, report)
+        status, result = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
         status_counts[status] = status_counts.get(status, 0) + 1
-        scored += 1
+        if status in {"accepted", "rejected"} and result is not None:
+            scored += 1
+        else:
+            handled_issues += 1
+
+    rescored_counts = rescore_existing_seed_scores(
+        memory,
+        seeds,
+        score_config,
+        symbol_map,
+        exclude_paths=original_pending_paths | invalid_paths,
+    )
+    rescored_total = sum(rescored_counts.values())
 
     print(
         "Evaluacion semillas terminada: "
         + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
         + f"; puntuadas={scored}/{len(copied)}"
     )
+    if rescored_counts:
+        print(
+            "Semillas repuntuadas con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(rescored_counts.items()))
+            + f"; repuntuadas={rescored_total}"
+        )
     print(f"Memoria: {memory.path}")
     if code != 0 and scored == 0 and handled_issues == 0:
         return 1
     return 0
 
 
-def find_report_for_set(set_path: Path) -> Path | None:
+def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    source_dir = Path(args.source_dir).expanduser()
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    if not seeds:
+        print(f"ERROR: no hay seeds .set en {source_dir}")
+        return 1
+    status_counts = rescore_existing_seed_scores(
+        memory,
+        seeds,
+        score_config,
+        parse_symbol_map(args.symbol_map),
+        exclude_paths=set(),
+    )
+    total = sum(status_counts.values())
+    if status_counts:
+        print(
+            "Semillas repuntuadas con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            + f"; total={total}"
+        )
+    else:
+        print("No hay seeds accepted/rejected con reporte guardado para repuntuar.")
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def seed_from_path(path: Path) -> Seed:
+    params = load_set_params(path)
+    symbol = infer_symbol_from_set(path, params) or "UNKNOWN"
+    period = infer_period_from_set(path, params) or "UNKNOWN"
+    return Seed(
+        path=path,
+        symbol=symbol,
+        period=period,
+        family=path.parent.name,
+        run_strategy=params.get("Run_Strategy", "").strip(),
+    )
+
+
+def _report_is_fresh(path: Path, min_mtime: float | None) -> bool:
+    if min_mtime is None:
+        return True
+    try:
+        return path.stat().st_mtime >= min_mtime
+    except OSError:
+        return False
+
+
+def find_report_for_set(set_path: Path, *, min_mtime: float | None = None) -> Path | None:
     for suffix in (".htm", ".html", ".xml"):
         candidate = BASE_DIR / "reports" / f"{set_path.stem}{suffix}"
-        if candidate.exists():
+        if candidate.exists() and _report_is_fresh(candidate, min_mtime):
             return candidate
-    candidates = sorted((BASE_DIR / "reports").glob(f"{set_path.stem}.*"))
+    candidates = sorted(
+        path for path in (BASE_DIR / "reports").glob(f"{set_path.stem}.*")
+        if _report_is_fresh(path, min_mtime)
+    )
     return candidates[0] if candidates else None
 
 
@@ -1323,15 +1594,76 @@ def report_matches_variant(variant: Variant, result: ScoreResult, symbol_map: di
     return not issues, "; ".join(issues)
 
 
+def evaluate_seed_report(
+    memory: AgentMemory,
+    seed: Seed,
+    report: Path,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    *,
+    label: str | None = None,
+) -> tuple[str, ScoreResult | None]:
+    display_name = label or seed.path.name
+    try:
+        result = score_report_file(report, config=score_config)
+    except Exception as exc:
+        print(f"AVISO: no pude parsear seed {display_name}: {exc}")
+        memory.record_seed_score(seed, None, "parse_error", report)
+        return "parse_error", None
+
+    if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
+        print(
+            f"AVISO: seed sin symbol/timeframe confirmado para {seed.path.name}; "
+            "queda como report_mismatch hasta guardar override."
+        )
+        memory.record_seed_score(seed, result, "report_mismatch", report)
+        return "report_mismatch", result
+
+    expected_symbol = seed.symbol if seed.symbol and seed.symbol != "UNKNOWN" else str(result.symbol or "UNKNOWN")
+    expected_period = seed.period if seed.period and seed.period != "UNKNOWN" else str(result.timeframe or "UNKNOWN").upper()
+    evaluated_seed = Seed(
+        path=seed.path,
+        symbol=expected_symbol,
+        period=expected_period,
+        family=seed.family,
+        run_strategy=seed.run_strategy,
+    )
+    variant = Variant(
+        path=Path(display_name),
+        seed=evaluated_seed,
+        target_symbol=expected_symbol,
+        target_period=expected_period,
+        mutated_keys=(),
+        missing_lot_keys=(),
+        policy="seed_eval",
+    )
+    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+    if not matches:
+        print(f"AVISO: reporte seed no coincide para {seed.path.name}: {mismatch_reason}")
+        memory.record_seed_score(evaluated_seed, result, "report_mismatch", report)
+        return "report_mismatch", result
+
+    if result.trades <= 0:
+        print(f"AVISO: reporte seed sin operaciones para {seed.path.name}; marcado como no_trades.")
+        memory.record_seed_score(evaluated_seed, result, "no_trades", report)
+        return "no_trades", result
+
+    status = "accepted" if result.accepted else "rejected"
+    memory.record_seed_score(evaluated_seed, result, status, report)
+    return status, result
+
+
 def evaluate_variants(
     memory: AgentMemory,
     variants: list[Variant],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    *,
+    min_report_mtime: float | None = None,
 ) -> list[tuple[Variant, ScoreResult]]:
     scored: list[tuple[Variant, ScoreResult]] = []
     for variant in variants:
-        status, result = evaluate_variant(memory, variant, score_config, symbol_map)
+        status, result = evaluate_variant(memory, variant, score_config, symbol_map, min_report_mtime=min_report_mtime)
         if status not in {"accepted", "rejected"} or result is None:
             continue
         scored.append((variant, result))
@@ -1343,8 +1675,10 @@ def evaluate_variant(
     variant: Variant,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    *,
+    min_report_mtime: float | None = None,
 ) -> tuple[str, ScoreResult | None]:
-    report = find_report_for_set(variant.path)
+    report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
         memory.record_score(variant.path, None, "no_report", None)
         return "no_report", None
@@ -1359,6 +1693,9 @@ def evaluate_variant(
         print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
+    if result.trades <= 0:
+        memory.record_score(variant.path, result, "no_trades", report)
+        return "no_trades", result
     status = "accepted" if result.accepted else "rejected"
     memory.record_score(variant.path, result, status, report)
     return status, result
@@ -1437,6 +1774,7 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     print(f"Retry candidate #{args.retry_candidate_id}")
     print(f"Set original: {set_path}")
     print(f"Set retry: {retry_set}")
+    batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
@@ -1445,13 +1783,139 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     if args.dry_run:
         return 0
 
-    status, result = evaluate_variant(memory, variant, score_config, parse_symbol_map(args.symbol_map))
+    status, result = evaluate_variant(
+        memory,
+        variant,
+        score_config,
+        parse_symbol_map(args.symbol_map),
+        min_report_mtime=batch_started_at - 1.0,
+    )
     if status == "accepted" and result is not None:
         copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
         print(f"Retry aceptado; copias accepted: {len(copied)}")
     else:
         print(f"Retry terminado con estado: {status}")
     return 0
+
+
+def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.retry_seed_path:
+        print("ERROR: falta --retry-seed-path")
+        return 1
+    if not args.expert and not args.multi_terminal:
+        print("ERROR: retry seed requiere --expert o --multi-terminal")
+        return 1
+    source_paths = [Path(value).expanduser() for value in args.retry_seed_path]
+    if len(source_paths) > 1:
+        seeds: list[Seed] = []
+        for source_path in source_paths:
+            if not source_path.exists():
+                print(f"ERROR: no existe seed {source_path}")
+                return 1
+            seed = memory.apply_seed_overrides([seed_from_path(source_path)])[0]
+            if not seed.symbol or not seed.period or seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
+                print(f"AVISO: seed sin symbol/timeframe inferible: {source_path.name}; marcada como report_mismatch.")
+                if not args.dry_run:
+                    memory.prepare_single_seed_evaluation(seed, force=True)
+                    memory.record_seed_score(seed, None, "report_mismatch", None)
+                continue
+            if not args.dry_run:
+                memory.prepare_single_seed_evaluation(seed, force=True)
+            seeds.append(seed)
+        if not seeds:
+            return 1
+
+        retry_dir = Path(args.output_dir).expanduser() / "seed_retry" / datetime.now().strftime("retry_%Y%m%d_%H%M%S")
+        retry_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[tuple[Seed, Path]] = []
+        used_names: set[str] = set()
+        for index, seed in enumerate(seeds, start=1):
+            retry_set = retry_dir / seed_eval_filename(index, seed, used_names)
+            shutil.copy2(seed.path, retry_set)
+            copied.append((seed, retry_set))
+        print(f"Retry seeds: {len(copied)}")
+        print(f"Directorio retry: {retry_dir}")
+        batch_started_at = time.time()
+        code = run_backtests(args, retry_dir)
+        if code != 0:
+            print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+            if args.dry_run:
+                return code
+        if args.dry_run:
+            return 0
+
+        statuses: dict[str, int] = {}
+        for seed, retry_set in copied:
+            report = find_report_for_set(retry_set, min_mtime=batch_started_at - 1.0)
+            if not report:
+                memory.record_seed_score(seed, None, "no_report", None)
+                statuses["no_report"] = statuses.get("no_report", 0) + 1
+                continue
+            status, _ = evaluate_seed_report(
+                memory,
+                seed,
+                report,
+                score_config,
+                parse_symbol_map(args.symbol_map),
+                label=retry_set.name,
+            )
+            statuses[status] = statuses.get(status, 0) + 1
+        print(
+            "Retry seeds terminado: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(statuses.items()))
+        )
+        return 0
+
+    source_seed = source_paths[0]
+    if not source_seed.exists():
+        print(f"ERROR: no existe seed {source_seed}")
+        return 1
+
+    seed = memory.apply_seed_overrides([seed_from_path(source_seed)])[0]
+    if not args.dry_run and not memory.prepare_single_seed_evaluation(seed, force=True):
+        print(f"ERROR: no se pudo preparar seed {source_seed}")
+        return 1
+    if not seed.symbol or not seed.period or seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
+        print(f"AVISO: seed sin symbol/timeframe inferible: {source_seed.name}; marcada como report_mismatch.")
+        if not args.dry_run:
+            memory.record_seed_score(seed, None, "report_mismatch", None)
+        return 1
+
+    output_root = Path(args.output_dir).expanduser()
+    retry_dir = output_root / "seed_retry" / datetime.now().strftime("retry_%Y%m%d_%H%M%S")
+    retry_dir.mkdir(parents=True, exist_ok=True)
+    used_names: set[str] = set()
+    retry_set = retry_dir / seed_eval_filename(1, seed, used_names)
+    shutil.copy2(source_seed, retry_set)
+
+    print(f"Retry seed: {source_seed}")
+    print(f"Set retry: {retry_set}")
+    batch_started_at = time.time()
+    code = run_backtests(args, retry_dir)
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    report = find_report_for_set(retry_set, min_mtime=batch_started_at - 1.0)
+    if not report:
+        memory.record_seed_score(seed, None, "no_report", None)
+        print("Retry seed terminado sin reporte fresco.")
+        return 1
+    status, result = evaluate_seed_report(
+        memory,
+        seed,
+        report,
+        score_config,
+        parse_symbol_map(args.symbol_map),
+        label=retry_set.name,
+    )
+    print(f"Retry seed estado={status}; score={result.score if result else 'n/a'}")
+    if status in {"accepted", "rejected", "no_trades", "report_mismatch", "parse_error"}:
+        return 0
+    return 1
 
 
 def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
@@ -1496,6 +1960,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
 
+    batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
@@ -1508,7 +1973,13 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     status_counts: dict[str, int] = {}
     symbol_map = parse_symbol_map(args.symbol_map)
     for variant in variants:
-        status, result = evaluate_variant(memory, variant, score_config, symbol_map)
+        status, result = evaluate_variant(
+            memory,
+            variant,
+            score_config,
+            symbol_map,
+            min_report_mtime=batch_started_at - 1.0,
+        )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
             accepted.append((variant, result))
@@ -1558,6 +2029,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
 
+    batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
@@ -1570,7 +2042,13 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     status_counts: dict[str, int] = {}
     symbol_map = parse_symbol_map(args.symbol_map)
     for row, variant in zip(rows, variants):
-        status, result = evaluate_variant(memory, variant, score_config, symbol_map)
+        status, result = evaluate_variant(
+            memory,
+            variant,
+            score_config,
+            symbol_map,
+            min_report_mtime=batch_started_at - 1.0,
+        )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
             generation = int(row["generation"] or 0)
@@ -1599,6 +2077,7 @@ def evaluate_generation(
     if not (args.execute_backtests or args.dry_run):
         return scored
     generation_dir = run_dir / f"gen_{generation:03d}"
+    batch_started_at = time.time()
     code = run_backtests(args, generation_dir)
     partial_failure = code != 0
     if code != 0:
@@ -1607,7 +2086,13 @@ def evaluate_generation(
             raise RuntimeError(f"run_tests.py termino con codigo {code}")
     if args.dry_run:
         return scored
-    scored = evaluate_variants(memory, variants, score_config, parse_symbol_map(args.symbol_map))
+    scored = evaluate_variants(
+        memory,
+        variants,
+        score_config,
+        parse_symbol_map(args.symbol_map),
+        min_report_mtime=batch_started_at - 1.0,
+    )
     survivors = select_survivors(scored, args.top_percent)
     copied = copy_accepted(survivors, run_dir / f"accepted_gen_{generation:03d}")
     print(f"Reportes puntuados gen {generation}: {len(scored)}; accepted/copied: {len(copied)}")
@@ -1744,6 +2229,11 @@ def run_agent(args: argparse.Namespace) -> int:
             return evaluate_seed_scores(args, memory, score_config)
         finally:
             memory.close()
+    if args.rescore_seeds_only:
+        try:
+            return rescore_seed_scores_only(args, memory, score_config)
+        finally:
+            memory.close()
     if args.continue_last_run:
         try:
             return resume_last_run(args, memory, score_config)
@@ -1752,6 +2242,11 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.retry_candidate_id:
         try:
             return retry_candidate(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.retry_seed_path:
+        try:
+            return retry_seed(args, memory, score_config)
         finally:
             memory.close()
     if args.retry_mismatch_run:
@@ -1781,7 +2276,7 @@ def run_agent(args: argparse.Namespace) -> int:
     )
     print(
         "Pass config: "
-        f"net>={score_config.min_net_profit}, "
+        f"net>{score_config.min_net_profit}, "
         f"pf>={score_config.min_profit_factor}, "
         f"trades>={score_config.min_trades}, "
         f"dd%<={score_config.max_drawdown_pct}, "
@@ -1834,6 +2329,7 @@ def run_agent(args: argparse.Namespace) -> int:
 
             scored: list[tuple[Variant, ScoreResult]] = []
             if args.execute_backtests or args.dry_run:
+                batch_started_at = time.time()
                 code = run_backtests(args, generation_dir)
                 partial_failure = code != 0
                 if code != 0:
@@ -1841,7 +2337,13 @@ def run_agent(args: argparse.Namespace) -> int:
                     if args.dry_run:
                         return code
                 if not args.dry_run:
-                    scored = evaluate_variants(memory, variants, score_config, parse_symbol_map(args.symbol_map))
+                    scored = evaluate_variants(
+                        memory,
+                        variants,
+                        score_config,
+                        parse_symbol_map(args.symbol_map),
+                        min_report_mtime=batch_started_at - 1.0,
+                    )
                     survivors = select_survivors(scored, args.top_percent)
                     copied = copy_accepted(survivors, accepted_dir)
                     print(f"Reportes puntuados: {len(scored)}; accepted/copied: {len(copied)}")

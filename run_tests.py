@@ -470,6 +470,17 @@ def expert_file_path(expert: str, experts_root: Path) -> Path:
     return experts_root / path
 
 
+def looks_like_ubs_expert_file(path: str | Path) -> bool:
+    stem = Path(str(path)).stem.lower()
+    tokens = [token for token in re.split(r"[^a-z0-9]+", stem) if token]
+    compact = "".join(tokens)
+    return (
+        "ubs" in tokens
+        or compact.startswith("ubs")
+        or ("ultimate" in tokens and "breakout" in tokens)
+    )
+
+
 def profile_expert_for_job(profile: TerminalProfile, job: BacktestJob, set_mode: bool) -> str:
     if set_mode and profile.ubs_ex5_file:
         return expert_from_cli_value(str(profile.ubs_ex5_file), profile.experts_root)
@@ -495,8 +506,11 @@ def validate_terminal_profiles(
         if set_mode:
             if not profile.ubs_ex5_file:
                 errors.append(f"{prefix}: falta ubs_ex5_file para Tester/Agente UBS.")
-            elif not dry_run and not profile.ubs_ex5_file.exists():
-                errors.append(f"{prefix}: no existe UBS .ex5: {profile.ubs_ex5_file}")
+            else:
+                if not looks_like_ubs_expert_file(profile.ubs_ex5_file):
+                    errors.append(f"{prefix}: UBS .ex5 no parece Ultimate Breakout System: {profile.ubs_ex5_file}")
+                if not dry_run and not profile.ubs_ex5_file.exists():
+                    errors.append(f"{prefix}: no existe UBS .ex5: {profile.ubs_ex5_file}")
             continue
         if dry_run:
             continue
@@ -914,6 +928,21 @@ def copy_reports_to_project(report_files: list[Path], logger: RunLogger) -> list
     return copied
 
 
+def filter_fresh_report_files(report_files: list[Path], started_at: float, logger: RunLogger) -> list[Path]:
+    fresh: list[Path] = []
+    cutoff = started_at - 1.0
+    for path in report_files:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= cutoff:
+            fresh.append(path)
+        else:
+            logger.write(f"  Reporte viejo ignorado: {path}")
+    return fresh
+
+
 def delete_existing_report_files(report_path: Path, terminal_data_dirs: list[Path], mt5_path: Path, logger: RunLogger) -> None:
     suffixes = {".htm", ".html", ".xml", ".png", ".set"}
     for path in find_report_files(report_path, terminal_data_dirs, mt5_path):
@@ -966,7 +995,11 @@ def run_test(
 
     time.sleep(settings.delay_seconds)
 
-    report_files = find_report_files(report_path, terminal_data_dirs, settings.mt5_path)
+    report_files = filter_fresh_report_files(
+        find_report_files(report_path, terminal_data_dirs, settings.mt5_path),
+        before,
+        logger,
+    )
     if report_files:
         logger.write("Reportes encontrados:")
         for path in report_files:

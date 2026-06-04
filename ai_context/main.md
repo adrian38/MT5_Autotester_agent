@@ -106,8 +106,20 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
 
 - MOTIVO column: shows each failed scoring criterion with its actual value
   (e.g. `net profit: -830 | PF: 0.69 | DD: 96.6%`), parsed from `metrics_json`.
-- Criteria bar: displays active scoring thresholds above the table, bound live
-  to the same `tk.StringVar` instances as the configuration panel.
+- Criteria bar: exposes editable seed-only scoring thresholds above the table.
+  These are persisted separately from UBS Agent thresholds; seed net profit
+  defaults to strict `net_profit > 0`.
+- Running seed evaluation re-scores existing `accepted`/`rejected` seed reports
+  with the current seed thresholds, without rerunning MT5 when files and
+  symbol/timeframe are unchanged.
+- Interrupted seed evaluations are resumable: before launching new MT5 jobs,
+  `--evaluate-seeds` reconciles completed reports from `seed_eval/eval_*` by
+  matching copied `.set` file content back to source seeds. The CLI also has
+  `--evaluate-seeds --reconcile-seed-eval-only` for report/SQLite recovery
+  without opening MT5.
+- "Aplicar criterios" in the Seeds tab persists seed thresholds and runs
+  `ubs_agent.py --rescore-seeds-only`, so existing reports are reclassified
+  without launching MT5.
 - Double-click a row to open the HTML report in the system viewer.
 - "Eliminar seed" and "Eliminar rechazadas" buttons delete files and DB rows,
   then refresh both the Seeds table and the Universe weights tab.
@@ -118,8 +130,25 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   weights explicitly.
 - Seed evaluation skip logic now detects symbol/TF override changes: saving a
   `seed_override` that changes symbol or TF triggers re-evaluation.
+- `report_mismatch` seed rows are treated as ready/quarantined for pending
+  counts; they are not re-run until the seed file or symbol/TF override changes.
+- MT5 seed reports with zero closed trades are classified as `no_trades`; the
+  Seeds tab exposes "Repetir backtest" to relaunch one selected seed directly.
+- Seeds and Universe tables have a SEL checkbox column. Seed actions use checked
+  rows when present, otherwise the selected row. Universe checked symbols can be
+  disabled/enabled; disabled symbols are persisted in
+  `outputs/ubs_disabled_symbols.json`, remain visible, and are excluded from
+  weights and agent target-symbol exploration.
 - Evaluation dialog shows the actual expected backtest count (pre-computed from
   DB state) alongside the total seed count.
+- Refresh buttons now refresh full panel state, and `_refresh_all()` isolates
+  section errors so one broken view does not block every tab.
+
+### Fresh MT5 report guard
+
+`run_tests.py` and `ubs_agent.py` ignore reports older than the current batch
+start time. This prevents MT5 history-cache failures or stale files from being
+scored as if they belonged to the current backtest.
 
 ### Multiterminal support
 
