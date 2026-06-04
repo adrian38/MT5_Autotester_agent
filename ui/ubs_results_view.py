@@ -15,7 +15,7 @@ class UBSResultsViewMixin:
         results = self._card(parent, "Resultados Agente UBS")
         results.grid(row=0, column=0, sticky="nsew")
         results.columnconfigure(0, weight=1)
-        results.rowconfigure(3, weight=1)
+        results.rowconfigure(4, weight=1)
 
         results_bar = tk.Frame(results, bg=self.colors["panel_alt"])
         results_bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
@@ -58,11 +58,28 @@ class UBSResultsViewMixin:
                       ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
-            row=2, column=0, sticky="w", padx=20, pady=(0, 6)
+            row=2, column=0, sticky="w", padx=20, pady=(0, 4)
         )
 
+        # ── Criterios de aceptación (read-only, refleja config del Agente) ──
+        crit = ttk.Frame(results, style="Panel.TFrame")
+        crit.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 6))
+        ttk.Label(crit, text="Criterios agente:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        _threshold_fields = [
+            ("Net profit >", self.ubs_pass_min_net_profit),
+            ("PF ≥",          self.ubs_pass_min_profit_factor),
+            ("Trades ≥",      self.ubs_pass_min_trades),
+            ("DD ≤ %",        self.ubs_pass_max_drawdown_pct),
+            ("Recovery ≥",    self.ubs_pass_min_recovery_factor),
+        ]
+        for col, (label, var) in enumerate(_threshold_fields, start=1):
+            ttk.Label(crit, text=label, style="Muted.TLabel").grid(row=0, column=col * 2 - 1, sticky="w", padx=(0, 4))
+            ttk.Entry(crit, textvariable=var, width=7, state="readonly").grid(
+                row=0, column=col * 2, sticky="w", padx=(0, 12)
+            )
+
         table_frame = ttk.Frame(results, style="Panel.TFrame")
-        table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         columns = ("mark", "run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "reason", "set")
