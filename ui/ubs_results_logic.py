@@ -1412,3 +1412,141 @@ class UBSResultsLogicMixin:
 
         dlg.after(40, _poll)
 
+    # ── History: eliminar run completo ────────────────────────────────────
+
+    def _delete_ubs_history_run(self) -> None:
+        if not hasattr(self, "ubs_history_runs_tree"):
+            return
+        selected = self.ubs_history_runs_tree.selection()
+        if not selected:
+            messagebox.showinfo("Eliminar run", "Selecciona un run primero.")
+            return
+        try:
+            run_id = int(selected[0])
+        except ValueError:
+            return
+
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return
+
+        try:
+            conn = sqlite3.connect(memory_path, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            run = conn.execute("select * from runs where id=?", (run_id,)).fetchone()
+            if run is None:
+                conn.close()
+                return
+            rows = conn.execute(
+                "select set_path, report_path from candidates where run_id=?",
+                (run_id,),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error al leer run", str(exc))
+            return
+
+        total = len(rows)
+        created = str(run["created_at"])
+        if not messagebox.askyesno(
+            "Eliminar run completo",
+            f"Run #{run_id}  —  {created}\n\n"
+            f"Esto eliminará:\n"
+            f"  • {total} candidatos de la DB y el run\n"
+            f"  • Sus archivos .set del disco\n"
+            f"  • Sus reportes (.htm + imágenes)\n\n"
+            "¿Continuar?",
+        ):
+            return
+
+        deleted_files = 0
+        for row in rows:
+            for f in self._report_related_files(str(row["report_path"] or "")):
+                try:
+                    f.unlink(missing_ok=True)
+                    deleted_files += 1
+                except OSError:
+                    pass
+            sp = Path(str(row["set_path"] or ""))
+            if sp.suffix.lower() == ".set" and sp.exists():
+                try:
+                    sp.unlink()
+                    deleted_files += 1
+                except OSError:
+                    pass
+
+        try:
+            conn = sqlite3.connect(memory_path, timeout=2.0)
+            conn.execute("delete from candidates where run_id=?", (run_id,))
+            conn.execute("delete from runs where id=?", (run_id,))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("Error al borrar de SQLite", str(exc))
+            return
+
+        self.ubs_history_run_checked.discard(str(run_id))
+        self.status_text.set(
+            f"Run #{run_id} eliminado — {total} candidatos, {deleted_files} archivos"
+        )
+        self._refresh_ubs_history_panel()
+
+    # ── History: eliminar set de candidato ────────────────────────────────
+
+    def _delete_ubs_history_candidate_set(self) -> None:
+        if not hasattr(self, "ubs_history_candidates_tree"):
+            return
+        checked = [
+            info for item, info in self.ubs_history_candidate_paths.items()
+            if info.get("id") in self.ubs_history_candidate_checked
+        ]
+        if not checked:
+            sel = self.ubs_history_candidates_tree.selection()
+            if not sel:
+                messagebox.showinfo("Eliminar set", "Selecciona un candidato primero.")
+                return
+            checked = [self.ubs_history_candidate_paths.get(sel[0], {})]
+
+        count = len(checked)
+        if not messagebox.askyesno(
+            "Eliminar set(s)",
+            f"Eliminar {count} set(s) del disco y poner su peso a 0 (score=NULL)?\n"
+            "El candidato queda en la DB como referencia histórica.",
+        ):
+            return
+
+        memory_path = self._ubs_memory_path()
+        deleted = 0
+        cids: list[str] = []
+
+        for info in checked:
+            sp = Path(str(info.get("set", "") or ""))
+            if sp.exists():
+                try:
+                    sp.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+            cid = info.get("id", "")
+            if cid:
+                cids.append(cid)
+
+        if cids and memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                ph = ",".join("?" for _ in cids)
+                conn.execute(
+                    f"update candidates set score=null, accepted=null where id in ({ph})",
+                    cids,
+                )
+                conn.commit()
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+        self.ubs_history_candidate_checked.clear()
+        self.status_text.set(
+            f"Sets eliminados: {deleted} | pesos limpiados: {len(cids)}"
+        )
+        self._refresh_ubs_history_candidates()

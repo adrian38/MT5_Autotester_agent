@@ -164,10 +164,17 @@ class UBSResultsViewMixin:
         bar.columnconfigure(0, weight=1)
         tk.Label(bar, textvariable=self.ubs_history_summary, bg=self.colors["panel_alt"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
         tk.Button(
+            bar, text="Eliminar run",
+            bg=self.colors["danger"], fg="#ffffff",
+            relief="flat", borderwidth=0, padx=8, pady=5,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._delete_ubs_history_run,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
+        tk.Button(
             bar, text="Actualizar", bg=self.colors["panel"], fg=self.colors["muted"],
             relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9),
             cursor="hand2", command=self._refresh_ubs_history_panel,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=5)
+        ).grid(row=0, column=2, sticky="e", padx=(0, 10), pady=5)
 
         # PanedWindow vertical: Runs (arriba) | Candidatos (abajo)
         vpaned = ttk.PanedWindow(panel, orient="vertical")
@@ -198,7 +205,17 @@ class UBSResultsViewMixin:
         candidates_panel.columnconfigure(0, weight=1)
         candidates_panel.rowconfigure(1, weight=1)
         vpaned.add(candidates_panel, weight=3)
-        ttk.Label(candidates_panel, textvariable=self.ubs_history_candidate_summary, style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        cand_header = ttk.Frame(candidates_panel, style="Panel.TFrame")
+        cand_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        cand_header.columnconfigure(0, weight=1)
+        ttk.Label(cand_header, textvariable=self.ubs_history_candidate_summary, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        tk.Button(
+            cand_header, text="Eliminar set",
+            bg=self.colors["danger"], fg="#ffffff",
+            relief="flat", borderwidth=0, padx=8, pady=4,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._delete_ubs_history_candidate_set,
+        ).grid(row=0, column=1, sticky="e", padx=(6, 0))
         cand_columns = ("mark", "id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
         self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings",
                                                          height=12, selectmode="extended")
