@@ -1491,6 +1491,7 @@ class UBSResultsLogicMixin:
             f"Run #{run_id} eliminado — {total} candidatos, {deleted_files} archivos"
         )
         self._refresh_ubs_history_panel()
+        self._safe_refresh("ubs_universe", self._refresh_ubs_universe)
 
     # ── History: eliminar set de candidato ────────────────────────────────
 
