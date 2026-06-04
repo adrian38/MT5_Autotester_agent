@@ -68,6 +68,58 @@ class UBSResultsLogicMixin:
         except Exception:
             return ""
 
+    def _on_ubs_history_run_click(self, event) -> None:
+        if not hasattr(self, "ubs_history_runs_tree"):
+            return
+        item, column = self._tree_item_from_event(self.ubs_history_runs_tree, event)
+        if not item or column != "#1":
+            return
+        if item in self.ubs_history_run_checked:
+            self.ubs_history_run_checked.remove(item)
+        else:
+            self.ubs_history_run_checked.add(item)
+        values = list(self.ubs_history_runs_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(item in self.ubs_history_run_checked)
+            self.ubs_history_runs_tree.item(item, values=values)
+        return "break"
+
+    def _on_ubs_history_candidate_click(self, event) -> None:
+        if not hasattr(self, "ubs_history_candidates_tree"):
+            return
+        item, column = self._tree_item_from_event(self.ubs_history_candidates_tree, event)
+        if not item or column != "#1":
+            return
+        info = self.ubs_history_candidate_paths.get(item, {})
+        cid = info.get("id", item)
+        if cid in self.ubs_history_candidate_checked:
+            self.ubs_history_candidate_checked.remove(cid)
+        else:
+            self.ubs_history_candidate_checked.add(cid)
+        values = list(self.ubs_history_candidates_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(cid in self.ubs_history_candidate_checked)
+            self.ubs_history_candidates_tree.item(item, values=values)
+        return "break"
+
+    def _on_ubs_compare_click(self, event) -> None:
+        if not hasattr(self, "ubs_compare_sets_tree"):
+            return
+        item, column = self._tree_item_from_event(self.ubs_compare_sets_tree, event)
+        if not item or column != "#1":
+            return
+        info = self.ubs_compare_paths.get(item, {})
+        cid = info.get("id", item)
+        if cid in self.ubs_compare_checked:
+            self.ubs_compare_checked.remove(cid)
+        else:
+            self.ubs_compare_checked.add(cid)
+        values = list(self.ubs_compare_sets_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(cid in self.ubs_compare_checked)
+            self.ubs_compare_sets_tree.item(item, values=values)
+        return "break"
+
     def _on_ubs_result_tree_click(self, event) -> None:
         if not hasattr(self, "ubs_results_tree"):
             return
@@ -449,11 +501,13 @@ class UBSResultsLogicMixin:
         if not hasattr(self, "ubs_history_runs_tree"):
             return
         for row in rows:
-            item = self.ubs_history_runs_tree.insert(
+            run_iid = str(row["id"])
+            self.ubs_history_runs_tree.insert(
                 "",
                 "end",
-                iid=str(row["id"]),
+                iid=run_iid,
                 values=(
+                    self._checkbox_text(run_iid in self.ubs_history_run_checked),
                     row["id"],
                     row["created_at"],
                     row["generations"],
@@ -528,10 +582,12 @@ class UBSResultsLogicMixin:
         for row in rows:
             metrics = self._parse_ubs_metrics(row["metrics_json"])
             status = str(row["status"] or "")
+            cid = str(row["id"] or "")
             item = self.ubs_history_candidates_tree.insert(
                 "",
                 "end",
                 values=(
+                    self._checkbox_text(cid in self.ubs_history_candidate_checked),
                     row["id"],
                     row["generation"],
                     self._format_ubs_status(status),
@@ -547,6 +603,7 @@ class UBSResultsLogicMixin:
                 tags=(self._ubs_result_tag(status),),
             )
             self.ubs_history_candidate_paths[item] = {
+                "id": cid,
                 "set": str(row["set_path"] or ""),
                 "seed": str(row["seed_path"] or ""),
                 "report": str(row["report_path"] or ""),
@@ -617,10 +674,12 @@ class UBSResultsLogicMixin:
         for row in rows:
             metrics = self._parse_ubs_metrics(row["metrics_json"])
             status = str(row["status"] or "")
+            cid = str(row["id"] or "")
             item = self.ubs_compare_sets_tree.insert(
                 "",
                 "end",
                 values=(
+                    self._checkbox_text(cid in self.ubs_compare_checked),
                     row["run_id"],
                     row["generation"],
                     self._format_ubs_status(status),
@@ -635,7 +694,8 @@ class UBSResultsLogicMixin:
                 tags=(self._ubs_result_tag(status),),
             )
             self.ubs_compare_paths[item] = {
-                "candidate_id": str(row["id"] or ""),
+                "id": cid,
+                "candidate_id": cid,
                 "set": str(row["set_path"] or ""),
                 "seed": str(row["seed_path"] or ""),
                 "mutated": str(row["mutated_keys"] or ""),

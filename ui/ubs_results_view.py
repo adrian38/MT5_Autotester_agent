@@ -172,30 +172,33 @@ class UBSResultsViewMixin:
         runs_frame = ttk.Frame(panel, style="Panel.TFrame")
         runs_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
         runs_frame.columnconfigure(0, weight=1)
-        run_columns = ("id", "created", "gens", "variants", "seeds", "backtests", "hidden", "total", "accepted", "rejected", "output")
-        self.ubs_history_runs_tree = ttk.Treeview(runs_frame, columns=run_columns, show="headings", height=6)
+        run_columns = ("mark", "id", "created", "gens", "variants", "seeds", "backtests", "hidden", "total", "accepted", "rejected", "output")
+        self.ubs_history_runs_tree = ttk.Treeview(runs_frame, columns=run_columns, show="headings",
+                                                   height=6, selectmode="extended")
         run_headings = {
-            "id": "RUN", "created": "FECHA", "gens": "GENS", "variants": "VAR/SET",
+            "mark": "SEL", "id": "RUN", "created": "FECHA", "gens": "GENS", "variants": "VAR/SET",
             "seeds": "SEEDS", "backtests": "BT", "hidden": "ARCH", "total": "TOTAL",
             "accepted": "OK", "rejected": "BAD", "output": "OUTPUT",
         }
-        run_widths = {"id": 56, "created": 150, "gens": 54, "variants": 70, "seeds": 70, "backtests": 50, "hidden": 55, "total": 70, "accepted": 55, "rejected": 55, "output": 380}
+        run_widths = {"mark": 48, "id": 50, "created": 148, "gens": 50, "variants": 66, "seeds": 66, "backtests": 46, "hidden": 52, "total": 66, "accepted": 52, "rejected": 52, "output": 360}
         for column in run_columns:
             self.ubs_history_runs_tree.heading(column, text=run_headings[column])
             self.ubs_history_runs_tree.column(column, width=run_widths[column], anchor="center", stretch=False)
         self._make_tree_sortable(self.ubs_history_runs_tree)
         self._attach_tree_scrollbars(runs_frame, self.ubs_history_runs_tree, 0, vertical=False)
         self.ubs_history_runs_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_history_candidates())
+        self.ubs_history_runs_tree.bind("<Button-1>", self._on_ubs_history_run_click)
 
         candidates_panel = ttk.Frame(panel, style="Panel.TFrame")
         candidates_panel.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
         candidates_panel.columnconfigure(0, weight=1)
         candidates_panel.rowconfigure(1, weight=1)
         ttk.Label(candidates_panel, textvariable=self.ubs_history_candidate_summary, style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        cand_columns = ("id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
-        self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings", height=12)
-        cand_headings = {"id": "ID", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
-        cand_widths = {"id": 60, "gen": 50, "status": 86, "symbol": 96, "period": 58, "score": 82, "profit": 90, "pf": 72, "dd": 72, "trades": 74, "set": 240}
+        cand_columns = ("mark", "id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
+        self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings",
+                                                         height=12, selectmode="extended")
+        cand_headings = {"mark": "SEL", "id": "ID", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
+        cand_widths = {"mark": 48, "id": 54, "gen": 46, "status": 82, "symbol": 90, "period": 54, "score": 78, "profit": 84, "pf": 66, "dd": 66, "trades": 68, "set": 220}
         for column in cand_columns:
             self.ubs_history_candidates_tree.heading(column, text=cand_headings[column])
             self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="center", stretch=False)
@@ -204,6 +207,7 @@ class UBSResultsViewMixin:
         self.ubs_history_candidates_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_history_candidates_tree)
         self._attach_tree_scrollbars(candidates_panel, self.ubs_history_candidates_tree, 1)
+        self.ubs_history_candidates_tree.bind("<Button-1>", self._on_ubs_history_candidate_click)
     def _build_ubs_comparison(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -249,10 +253,11 @@ class UBSResultsViewMixin:
         accepted_frame.columnconfigure(0, weight=1)
         accepted_frame.rowconfigure(1, weight=1)
         ttk.Label(accepted_frame, text="Resultados", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        accepted_columns = ("run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "set")
-        self.ubs_compare_sets_tree = ttk.Treeview(accepted_frame, columns=accepted_columns, show="headings", height=18)
-        accepted_headings = {"run": "RUN", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "set": "SET"}
-        accepted_widths = {"run": 50, "gen": 44, "status": 82, "symbol": 82, "period": 46, "score": 72, "profit": 82, "pf": 58, "dd": 62, "set": 220}
+        accepted_columns = ("mark", "run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "set")
+        self.ubs_compare_sets_tree = ttk.Treeview(accepted_frame, columns=accepted_columns, show="headings",
+                                                   height=18, selectmode="extended")
+        accepted_headings = {"mark": "SEL", "run": "RUN", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "set": "SET"}
+        accepted_widths = {"mark": 48, "run": 46, "gen": 40, "status": 78, "symbol": 78, "period": 44, "score": 68, "profit": 78, "pf": 54, "dd": 58, "set": 200}
         for column in accepted_columns:
             self.ubs_compare_sets_tree.heading(column, text=accepted_headings[column])
             self.ubs_compare_sets_tree.column(column, width=accepted_widths[column], anchor="center", stretch=False)
@@ -260,6 +265,7 @@ class UBSResultsViewMixin:
         self.ubs_compare_sets_tree.tag_configure("rejected", foreground=self.colors["danger"])
         self._make_tree_sortable(self.ubs_compare_sets_tree)
         self.ubs_compare_sets_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_ubs_comparison_diff())
+        self.ubs_compare_sets_tree.bind("<Button-1>", self._on_ubs_compare_click)
         self._attach_tree_scrollbars(accepted_frame, self.ubs_compare_sets_tree, 1)
 
         diff_panel = ttk.Frame(body, style="Panel.TFrame")

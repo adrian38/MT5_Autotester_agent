@@ -693,8 +693,11 @@ class MT5AutotesterUI(
         self.section_frames: dict[str, ttk.Frame] = {}
         self.ubs_result_paths: dict[str, dict[str, str]] = {}
         self.ubs_result_checked: set[str] = set()
+        self.ubs_history_run_checked: set[str] = set()
         self.ubs_history_candidate_paths: dict[str, dict[str, str]] = {}
+        self.ubs_history_candidate_checked: set[str] = set()
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
+        self.ubs_compare_checked: set[str] = set()
         self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()

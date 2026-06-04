@@ -78,12 +78,18 @@ class MultiterminalViewMixin:
         worker_spin.grid(row=0, column=4, sticky="e", padx=(0, 8), pady=8)
         worker_spin.bind("<FocusOut>", lambda _event: self._on_multiterminal_changed())
         worker_spin.bind("<Return>", lambda _event: self._on_multiterminal_changed())
-        ttk.Button(top, text="Validar", style="Tool.TButton", command=self._validate_multiterminal_profiles).grid(
-            row=0, column=5, sticky="e", padx=(0, 6), pady=8
-        )
-        ttk.Button(top, text="Guardar", style="Primary.TButton", command=self._save_multiterminal_clicked).grid(
-            row=0, column=6, sticky="e", padx=(0, 10), pady=8
-        )
+        tk.Button(top, text="Validar",
+                  bg=self.colors["panel"], fg=self.colors["muted"],
+                  relief="solid", borderwidth=1, padx=8, pady=5,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  command=self._validate_multiterminal_profiles,
+                  ).grid(row=0, column=5, sticky="e", padx=(0, 6), pady=5)
+        tk.Button(top, text="Guardar",
+                  bg=self.colors["accent"], fg="#ffffff",
+                  relief="flat", borderwidth=0, padx=10, pady=5,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self._save_multiterminal_clicked,
+                  ).grid(row=0, column=6, sticky="e", padx=(0, 10), pady=5)
 
         table_frame = ttk.Frame(panel, style="Panel.TFrame")
         table_frame.grid(row=2, column=0, sticky="nsew", padx=(20, 12), pady=(0, 10))
