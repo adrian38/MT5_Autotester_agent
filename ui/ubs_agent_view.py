@@ -75,7 +75,7 @@ class UBSAgentViewMixin:
             ttk.Label(agent, text=label, style="Panel.TLabel").grid(
                 row=1, column=column, sticky="w", padx=(left_pad, 10), pady=7
             )
-            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=10).grid(
+            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=8).grid(
                 row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
             )
 
@@ -163,7 +163,7 @@ class UBSAgentViewMixin:
                 row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
             )
             if kind == "spin":
-                ttk.Spinbox(pass_config, from_=0, to=100000, textvariable=variable, width=10).grid(
+                ttk.Spinbox(pass_config, from_=0, to=100000, textvariable=variable, width=8).grid(
                     row=row, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
                 )
             else:

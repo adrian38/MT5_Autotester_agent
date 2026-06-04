@@ -15,10 +15,15 @@ class FilesViewMixin:
         experts_panel = self._card(parent, "Expert Advisors detectados")
         experts_panel.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         experts_panel.columnconfigure(0, weight=1)
-        self.experts_tree = ttk.Treeview(experts_panel, columns=("name",), show="headings", height=6)
+        experts_frame = ttk.Frame(experts_panel, style="Panel.TFrame")
+        experts_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 18))
+        experts_frame.columnconfigure(0, weight=1)
+        self.experts_tree = ttk.Treeview(experts_frame, columns=("name",), show="headings", height=6)
         self.experts_tree.heading("name", text="ARCHIVO")
+        self.experts_tree.column("name", stretch=False, minwidth=200)
         self.experts_tree.tag_configure("odd", background=self.colors["tree_odd"])
-        self.experts_tree.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 18))
+        self._make_tree_sortable(self.experts_tree)
+        self._attach_tree_scrollbars(experts_frame, self.experts_tree, 0, horizontal=False)
 
         reports_panel = self._card(parent, "Generated Reports")
         reports_panel.grid(row=1, column=0, sticky="nsew")
@@ -33,25 +38,31 @@ class FilesViewMixin:
         tk.Button(actions_bar, text="📂  Abrir carpeta", bg=self.colors["panel"], fg=self.colors["muted"],
                   relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9), cursor="hand2",
                   command=lambda: subprocess.Popen(["explorer", str(REPORT_DIR)]) if REPORT_DIR.exists() else None
-                  ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+                  ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
         tk.Button(actions_bar, text="🗘  Actualizar", bg=self.colors["panel"], fg=self.colors["muted"],
                   relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9), cursor="hand2",
                   command=self._refresh_reports
-                  ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+                  ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=5)
         tk.Button(actions_bar, text="Borrar antiguos", bg=self.colors["danger"], fg="#ffffff",
-                  relief="solid", borderwidth=1, padx=8, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  relief="flat", borderwidth=0, padx=8, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
                   command=self._delete_old_reports
-                  ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=4)
+                  ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=5)
 
-        self.reports_tree = ttk.Treeview(reports_panel, columns=("name", "date", "size"), show="headings")
+        reports_frame = ttk.Frame(reports_panel, style="Panel.TFrame")
+        reports_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        reports_frame.columnconfigure(0, weight=1)
+        reports_frame.rowconfigure(0, weight=1)
+        self.reports_tree = ttk.Treeview(reports_frame, columns=("name", "date", "size"), show="headings", height=10)
         self.reports_tree.heading("name", text="REPORT NAME")
         self.reports_tree.heading("date", text="DATE")
         self.reports_tree.heading("size", text="SIZE (KB)")
-        self.reports_tree.column("date", width=160, anchor="center")
-        self.reports_tree.column("size", width=100, anchor="center")
+        self.reports_tree.column("name", stretch=False, minwidth=200)
+        self.reports_tree.column("date", width=160, anchor="center", stretch=False)
+        self.reports_tree.column("size", width=100, anchor="center", stretch=False)
         self.reports_tree.tag_configure("odd", background=self.colors["tree_odd"])
         self.reports_tree.tag_configure("even", background=self.colors["tree_even"])
-        self.reports_tree.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        self._make_tree_sortable(self.reports_tree)
+        self._attach_tree_scrollbars(reports_frame, self.reports_tree, 0)
     def _build_logs(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)

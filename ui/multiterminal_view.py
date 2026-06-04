@@ -28,7 +28,7 @@ class MultiterminalViewMixin:
             bar,
             from_=1,
             to=32,
-            width=5,
+            width=8,
             textvariable=self.multiterminal_workers,
             command=self._on_multiterminal_changed,
         )

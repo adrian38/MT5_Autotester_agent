@@ -63,8 +63,8 @@ class UBSResultsViewMixin:
             ("Abrir reporte", self._open_selected_ubs_report),
         ], start=1):
             tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
-                      relief="solid", borderwidth=1, padx=7, pady=3,
-                      font=("Segoe UI", 8), cursor="hand2", command=cmd,
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
                       ).grid(row=0, column=col, sticky="e", padx=(0, 4))
         tk.Label(row1, text="|", bg=self.colors["panel_alt"],
                  fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=4, padx=(4, 4))
@@ -73,8 +73,8 @@ class UBSResultsViewMixin:
             ("Reprobar run",      self._retry_visible_ubs_run_mismatches),
         ], start=5):
             tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
-                      relief="solid", borderwidth=1, padx=7, pady=3,
-                      font=("Segoe UI", 8), cursor="hand2", command=cmd,
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
                       ).grid(row=0, column=col, sticky="e", padx=(0, 4))
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
@@ -94,7 +94,7 @@ class UBSResultsViewMixin:
         ]
         for col, (label, var) in enumerate(_threshold_fields, start=1):
             ttk.Label(crit, text=label, style="Muted.TLabel").grid(row=0, column=col * 2 - 1, sticky="w", padx=(0, 4))
-            ttk.Entry(crit, textvariable=var, width=7, state="readonly").grid(
+            ttk.Entry(crit, textvariable=var, width=8, state="readonly").grid(
                 row=0, column=col * 2, sticky="w", padx=(0, 12)
             )
 

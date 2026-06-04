@@ -39,7 +39,7 @@ class UBSUniverseViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._refresh_ubs_universe_panel,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
         tk.Button(
             bar,
             text="Deshabilitar marcados",
@@ -52,7 +52,7 @@ class UBSUniverseViewMixin:
             font=("Segoe UI", 9, "bold"),
             cursor="hand2",
             command=lambda: self._set_checked_universe_symbols_enabled(False),
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=4)
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=5)
         tk.Button(
             bar,
             text="Habilitar marcados",
@@ -65,7 +65,7 @@ class UBSUniverseViewMixin:
             font=("Segoe UI", 9, "bold"),
             cursor="hand2",
             command=lambda: self._set_checked_universe_symbols_enabled(True),
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=4)
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=5)
         self._ubs_calc_weights_btn = tk.Button(
             bar,
             text="Calcular pesos",
@@ -73,13 +73,13 @@ class UBSUniverseViewMixin:
             fg="#ffffff",
             relief="flat",
             borderwidth=0,
-            padx=14,
-            pady=4,
+            padx=10,
+            pady=5,
             font=("Segoe UI", 9, "bold"),
             cursor="hand2",
             command=self._ubs_apply_weights,
         )
-        self._ubs_calc_weights_btn.grid(row=0, column=4, sticky="e", padx=(0, 10), pady=4)
+        self._ubs_calc_weights_btn.grid(row=0, column=4, sticky="e", padx=(0, 10), pady=5)
 
         body = ttk.Frame(panel, style="Panel.TFrame")
         body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))

@@ -76,6 +76,7 @@ batch wrappers.
 | [06-conventions.md](06-conventions.md) | Coding style, UI conventions, generated files, packaging notes. |
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
+| [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
 
 ## Common Entry Points
 

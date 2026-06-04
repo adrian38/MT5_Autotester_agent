@@ -17,45 +17,47 @@ class UBSSeedsViewMixin:
         card.columnconfigure(0, weight=1)
         card.rowconfigure(4, weight=1)
 
-        toolbar = ttk.Frame(card, style="Panel.TFrame")
-        toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 4))
+        # ── Barra de acción principal (Tipo B — panel_alt) ──────────────
+        toolbar = tk.Frame(card, bg=self.colors["panel_alt"])
+        toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         toolbar.columnconfigure(0, weight=1)
 
-        # Row 0: estado + acciones principales
-        ttk.Label(toolbar, textvariable=self.ubs_seed_eval_summary, style="Muted.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 10)
-        )
-        ttk.Button(toolbar, text="Evaluar semillas", style="Primary.TButton", command=self._run_ubs_seed_evaluation).grid(
-            row=0, column=1, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="Abrir seed", command=self._open_selected_ubs_seed).grid(
-            row=0, column=2, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="Abrir reporte", command=self._open_selected_ubs_seed_report).grid(
-            row=0, column=3, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="Repetir backtest", command=self._retry_selected_ubs_seed).grid(
-            row=0, column=4, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="Guardar Symbol/TF", command=self._save_ubs_seed_override).grid(
-            row=0, column=5, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="Actualizar", command=self._refresh_ubs_seeds_panel).grid(
-            row=0, column=6, sticky="e"
-        )
+        # Fila 0: resumen + acciones principales
+        tk.Label(toolbar, textvariable=self.ubs_seed_eval_summary,
+                 bg=self.colors["panel_alt"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        tk.Button(toolbar, text="Evaluar semillas",
+                  bg=self.colors["accent"], fg="#ffffff", relief="flat", borderwidth=0,
+                  padx=10, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self._run_ubs_seed_evaluation).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
+        for col, (label, cmd) in enumerate([
+            ("Abrir seed",      self._open_selected_ubs_seed),
+            ("Abrir reporte",   self._open_selected_ubs_seed_report),
+            ("Repetir backtest",self._retry_selected_ubs_seed),
+            ("Guardar Symbol/TF", self._save_ubs_seed_override),
+            ("Actualizar",      self._refresh_ubs_seeds_panel),
+        ], start=2):
+            padx = (0, 10) if col == 6 else (0, 6)
+            tk.Button(toolbar, text=label,
+                      bg=self.colors["panel"], fg=self.colors["muted"],
+                      relief="solid", borderwidth=1, padx=8, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
 
-        # Row 1: acciones destructivas (alineadas a la derecha)
-        danger_frame = ttk.Frame(toolbar, style="Panel.TFrame")
-        danger_frame.grid(row=1, column=0, columnspan=7, sticky="e", pady=(4, 0))
-        ttk.Button(danger_frame, text="Eliminar seed", style="Danger.TButton", command=self._delete_selected_ubs_seed).grid(
-            row=0, column=0, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(danger_frame, text="Eliminar rechazadas", style="Danger.TButton", command=self._delete_rejected_ubs_seeds).grid(
-            row=0, column=1, sticky="e", padx=(0, 6)
-        )
-        ttk.Button(danger_frame, text="Resetear evaluación", style="Danger.TButton", command=self._reset_ubs_seed_evaluation).grid(
-            row=0, column=2, sticky="e"
-        )
+        # Fila 1: acciones destructivas (derecha)
+        danger_frame = tk.Frame(toolbar, bg=self.colors["panel_alt"])
+        danger_frame.grid(row=1, column=0, columnspan=7, sticky="e", pady=(0, 5))
+        for col, (label, cmd) in enumerate([
+            ("Eliminar seed",        self._delete_selected_ubs_seed),
+            ("Eliminar rechazadas",  self._delete_rejected_ubs_seeds),
+            ("Resetear evaluación",  self._reset_ubs_seed_evaluation),
+        ]):
+            padx = (0, 10) if col == 2 else (0, 6)
+            tk.Button(danger_frame, text=label,
+                      bg=self.colors["danger"], fg="#ffffff",
+                      relief="flat", borderwidth=0, padx=8, pady=5,
+                      font=("Segoe UI", 9, "bold"), cursor="hand2", command=cmd,
+                      ).grid(row=0, column=col, sticky="e", padx=padx)
 
         criteria_bar = ttk.Frame(card, style="Panel.TFrame")
         criteria_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
@@ -74,7 +76,7 @@ class UBSSeedsViewMixin:
             field_col = col * 2
             ttk.Label(criteria_bar, text=label, style="Muted.TLabel").grid(row=0, column=label_col, sticky="w", padx=(0, 4))
             if kind == "spin":
-                ttk.Spinbox(criteria_bar, from_=0, to=100000, textvariable=var, width=7).grid(
+                ttk.Spinbox(criteria_bar, from_=0, to=100000, textvariable=var, width=8).grid(
                     row=0, column=field_col, sticky="ew", padx=(0, 10)
                 )
             else:
