@@ -48,6 +48,11 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.2.7** Broker symbols with a leading dot (e.g. `.US30Cash`) MUST be kept
   intact. Only trailing broker suffixes (e.g. `EURUSD.a`) MAY be stripped during
   normalization.
+- **FR-1.2.8** When a `.set` contains `ForceSymbol`, the tester `Symbol` MUST
+  preserve that literal broker symbol and casing unless an explicit symbol map
+  rewrites it. UBS-generated variant backtests MUST prefer the generated target
+  timeframe from the set path/name over inherited timeframe hints from the
+  source seed.
 
 ### 1.3 Multiterminal execution
 

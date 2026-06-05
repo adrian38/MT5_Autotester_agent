@@ -663,27 +663,33 @@ class AgentMemory:
     def run_by_id(self, run_id: int) -> sqlite3.Row | None:
         return self.conn.execute("select * from runs where id=?", (run_id,)).fetchone()
 
-    def mismatch_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
+    def retryable_problem_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
             select *
             from candidates
-            where run_id=? and generation=? and status='report_mismatch'
+            where run_id=? and generation=? and status in ('report_mismatch', 'no_report')
             order by id
             """,
             (run_id, generation),
         ).fetchall()
 
-    def mismatch_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
+    def retryable_problem_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
             select *
             from candidates
-            where run_id=? and status='report_mismatch'
+            where run_id=? and status in ('report_mismatch', 'no_report')
             order by generation, id
             """,
             (run_id,),
         ).fetchall()
+
+    def mismatch_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
+        return self.retryable_problem_candidates_for_generation(run_id, generation)
+
+    def mismatch_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
+        return self.retryable_problem_candidates_for_run(run_id)
 
 
 

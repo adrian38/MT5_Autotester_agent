@@ -732,6 +732,7 @@ class MT5AutotesterUI(
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
         self.ubs_robust_paths: dict[str, dict[str, str]] = {}
+        self.ubs_robust_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}
         self.ubs_universe_checked: set[str] = set()
         self.ubs_timeframe_checked: set[str] = set()

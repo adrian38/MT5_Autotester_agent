@@ -370,7 +370,6 @@ class UBSResultsLogicMixin:
                     end,
                     score desc,
                     id desc
-                limit 300
                 """,
                 (latest_run["id"],),
             ).fetchall()
@@ -403,8 +402,9 @@ class UBSResultsLogicMixin:
             extra.append(f"mismatch reporte {report_mismatch}")
         extra_text = f" | {', '.join(extra)}" if extra else ""
         backtests = "si" if latest_run["execute_backtests"] else "no"
+        shown = len(rows)
         self.ubs_results_status.set(
-            f"Output: {latest_run['output_dir']} | Backtests: {backtests}{extra_text}"
+            f"Output: {latest_run['output_dir']} | Backtests: {backtests} | mostrando {shown}/{total}{extra_text}"
         )
 
         if not hasattr(self, "ubs_results_tree"):
@@ -571,19 +571,26 @@ class UBSResultsLogicMixin:
         try:
             conn = sqlite3.connect(memory_path, timeout=1.0)
             conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
             rows = conn.execute(
                 """
-                select *
-                from candidates
-                where run_id=?
-                order by generation desc,
+                select
+                    c.*,
+                    cr.status as robust_status,
+                    cr.score as robust_score,
+                    cr.positive_bonus as robust_positive_bonus,
+                    cr.negative_bonus as robust_negative_bonus
+                from candidates c
+                left join candidate_robustness cr on cr.candidate_id = c.id
+                where c.run_id=?
+                order by c.generation desc,
                     case
-                        when status = 'accepted' then 0
-                        when score is not null then 1
+                        when c.status = 'accepted' then 0
+                        when c.score is not null then 1
                         else 2
                     end,
-                    score desc,
-                    id desc
+                    c.score desc,
+                    c.id desc
                 limit 1000
                 """,
                 (run_id,),
@@ -596,12 +603,26 @@ class UBSResultsLogicMixin:
         total = len(rows)
         accepted = sum(1 for row in rows if row["status"] == "accepted")
         rejected = sum(1 for row in rows if row["status"] == "rejected")
-        self.ubs_history_candidate_summary.set(f"Run #{run_id}: {total} candidatos | aceptados {accepted} | rechazados {rejected}")
+        robust_ok = sum(1 for row in rows if row["robust_status"] == "accepted")
+        robust_fail = sum(1 for row in rows if row["robust_status"] == "rejected")
+        self.ubs_history_candidate_summary.set(
+            f"Run #{run_id}: {total} candidatos | aceptados {accepted} | rechazados {rejected} | robust OK {robust_ok} FAIL {robust_fail}"
+        )
         if not hasattr(self, "ubs_history_candidates_tree"):
             return
         for row in rows:
             metrics = self._parse_ubs_metrics(row["metrics_json"])
             status = str(row["status"] or "")
+            robust_status = str(row["robust_status"] or "")
+            robust_label = (
+                self._format_ubs_robust_status(
+                    robust_status,
+                    row["robust_positive_bonus"],
+                    row["robust_negative_bonus"],
+                )
+                if robust_status or status == "accepted"
+                else "-"
+            )
             cid = str(row["id"] or "")
             item = self.ubs_history_candidates_tree.insert(
                 "",
@@ -611,6 +632,7 @@ class UBSResultsLogicMixin:
                     row["id"],
                     row["generation"],
                     self._format_ubs_status(status),
+                    robust_label,
                     row["target_symbol"] or row["symbol"],
                     row["period"],
                     self._format_ubs_number(row["score"]),
@@ -1065,6 +1087,31 @@ class UBSResultsLogicMixin:
         }
         return labels.get(status, status or "-")
 
+    def _format_ubs_robust_status(self, status: str, positive_bonus, negative_bonus) -> str:
+        if not status:
+            return "pendiente"
+        labels = {
+            "accepted": "OK",
+            "rejected": "FAIL",
+            "no_trades": "sin ops",
+            "no_report": "sin reporte",
+            "parse_error": "parse error",
+            "report_mismatch": "mismatch",
+        }
+        label = labels.get(status, status)
+        bonus = None
+        if status == "accepted":
+            bonus = positive_bonus
+        elif status == "rejected":
+            bonus = negative_bonus
+        if bonus in (None, ""):
+            return label
+        try:
+            bonus_value = float(bonus)
+        except (TypeError, ValueError):
+            return label
+        return f"{label} {bonus_value:+.0f}"
+
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
@@ -1115,8 +1162,11 @@ class UBSResultsLogicMixin:
         if not info:
             messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
             return
-        if info.get("status") != "report_mismatch":
-            messagebox.showinfo("Agente UBS", "Esta accion solo aplica a filas con estado mismatch reporte.")
+        if info.get("status") not in {"report_mismatch", "no_report"}:
+            messagebox.showinfo(
+                "Agente UBS",
+                "Esta accion solo aplica a filas con estado mismatch reporte o sin reporte.",
+            )
             return
         candidate_id = info.get("id", "").strip()
         set_path = Path(info.get("set", "")).expanduser()
@@ -1146,18 +1196,19 @@ class UBSResultsLogicMixin:
             if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
                 args.extend(["--symbol-map", self.symbol_map.get().strip()])
         except Exception as exc:
-            self._show_error("No se pudo preparar retry mismatch", str(exc))
+            self._show_error("No se pudo preparar retry de fila", str(exc))
             return
 
+        status_label = "sin reporte" if info.get("status") == "no_report" else "mismatch reporte"
         details = [
-            "Accion: Reprobar mismatch UBS",
+            f"Accion: Reprobar fila UBS ({status_label})",
             f"Candidate: #{candidate_id}",
             f"Objetivo: {info.get('symbol', '')} {info.get('period', '')}",
             f"Set: {set_path.name}",
             "Backtests previstos: 1",
         ]
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar retry mismatch", 1, details):
+        if self._confirm_execution_start("Confirmar retry fila", 1, details):
             self._run_script("ubs_agent.py", args)
 
     def _retry_visible_ubs_run_mismatches(self) -> None:
@@ -1166,9 +1217,9 @@ class UBSResultsLogicMixin:
             if run_id <= 0:
                 messagebox.showinfo("Agente UBS", "No hay run visible para reprobar.")
                 return
-            mismatch_count = self._count_ubs_run_mismatches(run_id)
-            if mismatch_count <= 0:
-                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch pendientes.")
+            problem_count = self._count_ubs_run_retryable_problems(run_id)
+            if problem_count <= 0:
+                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch/sin reporte pendientes.")
                 return
             args = [
                 "--memory", str(self._ubs_memory_path()),
@@ -1194,13 +1245,13 @@ class UBSResultsLogicMixin:
             return
 
         details = [
-            "Accion: Reprobar mismatches de run UBS",
+            "Accion: Reprobar mismatch/sin reporte de run UBS",
             f"Run: #{run_id}",
-            f"Backtests previstos: {mismatch_count}",
+            f"Backtests previstos: {problem_count}",
             "Al terminar actualiza esas mismas filas SQLite.",
         ]
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar retry run mismatch", mismatch_count, details):
+        if self._confirm_execution_start("Confirmar retry run", problem_count, details):
             self._run_script("ubs_agent.py", args)
 
     def _visible_ubs_run_id(self) -> int:
@@ -1215,6 +1266,9 @@ class UBSResultsLogicMixin:
             conn.close()
 
     def _count_ubs_run_mismatches(self, run_id: int) -> int:
+        return self._count_ubs_run_retryable_problems(run_id)
+
+    def _count_ubs_run_retryable_problems(self, run_id: int) -> int:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return 0
@@ -1224,7 +1278,7 @@ class UBSResultsLogicMixin:
                 """
                 select count(*) as total
                 from candidates
-                where run_id=? and status='report_mismatch'
+                where run_id=? and status in ('report_mismatch', 'no_report')
                 """,
                 (run_id,),
             ).fetchone()

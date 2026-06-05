@@ -91,6 +91,16 @@ class MultiterminalLogicMixin:
             "portable": bool(self.mt_profile_portable.get()),
         }
 
+    def _enforce_single_primary_multiterminal_profile(self) -> None:
+        idx = self.mt_selected_index
+        if idx is None or idx < 0 or idx >= len(self.multiterminal_profiles):
+            return
+        if not bool(self.multiterminal_profiles[idx].get("enabled")):
+            return
+        for i, profile in enumerate(self.multiterminal_profiles):
+            if i != idx:
+                profile["enabled"] = False
+
     def _multiterminal_tree_values(self, profile: dict[str, object], index: int) -> tuple:
         name = str(profile.get("name") or f"Terminal {index + 1}")
         return (
@@ -220,6 +230,7 @@ class MultiterminalLogicMixin:
     def _apply_multiterminal_editor(self) -> None:
         self._save_current_multiterminal_editor()
         idx = self.mt_selected_index
+        self._enforce_single_primary_multiterminal_profile()
         # Si esta terminal se marca como Principal, desactivar todas las demás
         if idx is not None and self.mt_profile_enabled.get():
             for i, p in enumerate(self.multiterminal_profiles):
@@ -291,6 +302,7 @@ class MultiterminalLogicMixin:
 
     def _validate_multiterminal_errors(self, *, require_ubs: bool = True) -> list[str]:
         self._save_current_multiterminal_editor()
+        self._enforce_single_primary_multiterminal_profile()
         errors: list[str] = []
         active = self._active_multiterminal_profiles()
         if not active:
@@ -337,6 +349,8 @@ class MultiterminalLogicMixin:
 
     def _save_multiterminal_clicked(self) -> None:
         try:
+            self._save_current_multiterminal_editor()
+            self._enforce_single_primary_multiterminal_profile()
             self._write_ui_settings()
         except Exception as exc:
             self._show_error("No se pudo guardar Multiterminales", str(exc))

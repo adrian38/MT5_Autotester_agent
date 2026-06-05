@@ -127,6 +127,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Rellena Symbol y Period del tester desde cada .set cuando sea posible.",
     )
+    parser.add_argument(
+        "--prefer-set-path-timeframe",
+        action="store_true",
+        help="Con --infer-tester-from-set, prefiere el timeframe del path/nombre del .set sobre parametros internos.",
+    )
     parser.add_argument("--delay", type=int, default=5, help="Pausa en segundos entre tests.")
     parser.add_argument("--recursive", action="store_true", help="Procesar todos los .ex5 de la carpeta indicada.")
     parser.add_argument(
@@ -776,7 +781,7 @@ def normalize_set_symbol(symbol: str) -> str:
 def infer_symbol_from_set(set_file: Path, params: dict[str, str]) -> str:
     force_symbol = params.get("ForceSymbol", "").strip()
     if force_symbol:
-        return normalize_set_symbol(force_symbol)
+        return force_symbol
 
     haystack = str(set_file).upper().replace("+", "_")
     for token in re.split(r"[^A-Z0-9]+", haystack):
@@ -820,6 +825,20 @@ def infer_period_from_set(set_file: Path, params: dict[str, str]) -> str:
         value = params.get(key, "")
         period = TIMEFRAME_ENUM.get(value)
         if period:
+            return period
+    return ""
+
+
+def infer_period_from_path(set_file: Path) -> str:
+    periods = {period.upper(): period for period in TIMEFRAME_ENUM.values()}
+    for part in (set_file.parent.name, set_file.stem):
+        for token in re.split(r"[^A-Z0-9]+", part.upper()):
+            period = periods.get(token)
+            if period:
+                return period
+    text = str(set_file)
+    for period, pattern in TIMEFRAME_PATTERNS:
+        if pattern.search(text):
             return period
     return ""
 
@@ -886,6 +905,7 @@ def create_ini(
     symbol_suffix: str = "",
     symbol_map: dict[str, str] | None = None,
     infer_tester_from_set: bool = False,
+    prefer_set_path_timeframe: bool = False,
     logger: RunLogger | None = None,
 ) -> tuple[Path, Path]:
     symbol_map = symbol_map or {}
@@ -902,6 +922,10 @@ def create_ini(
     config.read_dict({section: dict(template[section]) for section in template.sections()})
     config["Tester"]["Expert"] = normalize_expert_for_tester(expert_path)
     inferred_fields = infer_tester_fields_from_set(set_file) if infer_tester_from_set else {}
+    if set_file and infer_tester_from_set and prefer_set_path_timeframe:
+        path_period = infer_period_from_path(set_file)
+        if path_period:
+            inferred_fields["Period"] = path_period
     use_template_tester_fields = bool(set_file and infer_tester_from_set and "Symbol" not in inferred_fields)
     if use_template_tester_fields:
         inferred_fields = {}
@@ -1104,6 +1128,7 @@ def run_backtest_job(
             args.symbol_suffix,
             symbol_map,
             args.infer_tester_from_set,
+            args.prefer_set_path_timeframe,
             logger,
         )
     except ValueError as exc:
@@ -1390,6 +1415,7 @@ def main() -> int:
                     args.symbol_suffix,
                     symbol_map,
                     args.infer_tester_from_set,
+                    args.prefer_set_path_timeframe,
                     logger,
                 )
             except ValueError as exc:

@@ -12,6 +12,24 @@ if getattr(sys, "frozen", False):
 
 
 class UBSRobustnessLogicMixin:
+    def _on_ubs_robust_tree_click(self, event) -> str | None:
+        if not hasattr(self, "ubs_robust_tree"):
+            return None
+        item, column = self._tree_item_from_event(self.ubs_robust_tree, event)
+        if not item or column != "#1":
+            return None
+        info = self.ubs_robust_paths.get(item, {})
+        cid = info.get("id", item)
+        if cid in self.ubs_robust_checked:
+            self.ubs_robust_checked.remove(cid)
+        else:
+            self.ubs_robust_checked.add(cid)
+        values = list(self.ubs_robust_tree.item(item, "values"))
+        if values:
+            values[0] = self._checkbox_text(cid in self.ubs_robust_checked)
+            self.ubs_robust_tree.item(item, values=values)
+        return "break"
+
     def _refresh_ubs_robustness_panel(self) -> None:
         for label, callback in (
             ("ubs_robustness", self._refresh_ubs_robustness),
@@ -28,6 +46,41 @@ class UBSRobustnessLogicMixin:
         except (TypeError, ValueError):
             return None
         return None
+
+    def _ubs_robust_reason(self, status: str, metrics: dict) -> str:
+        if status == "pending":
+            return "pendiente"
+        if status == "no_report":
+            return "sin reporte OOS"
+        if status == "parse_error":
+            return "error al parsear reporte OOS"
+        if status == "report_mismatch":
+            return "mismatch symbol/TF OOS"
+        if status == "no_trades":
+            return "reporte OOS sin operaciones"
+        reasons = metrics.get("reasons") or []
+        if not reasons:
+            return ""
+        formats = {
+            "net_profit": ("net", ".0f", ""),
+            "profit_factor": ("PF", ".2f", ""),
+            "trades": ("trades", "d", ""),
+            "drawdown_pct": ("DD", ".1f", "%"),
+            "recovery_factor": ("RF", ".2f", ""),
+            "positive_month_ratio": ("meses+", ".0%", ""),
+        }
+        parts: list[str] = []
+        for reason in reasons:
+            label, fmt, suffix = formats.get(str(reason), (str(reason), "", ""))
+            value = metrics.get(reason)
+            if value is None:
+                parts.append(label)
+                continue
+            try:
+                parts.append(f"{label}: {value:{fmt}}{suffix}")
+            except (TypeError, ValueError):
+                parts.append(f"{label}: {value}")
+        return " | ".join(parts)
 
     def _latest_visible_ubs_run(self) -> sqlite3.Row | None:
         memory_path = self._ubs_memory_path()
@@ -218,6 +271,7 @@ class UBSRobustnessLogicMixin:
         if not hasattr(self, "ubs_robust_tree"):
             return
 
+        valid_ids: set[str] = set()
         for index, row in enumerate(rows):
             status = str(row["robust_status"] or "pending")
             metrics = self._parse_ubs_metrics(row["robust_metrics_json"])
@@ -225,14 +279,18 @@ class UBSRobustnessLogicMixin:
             date_range = ""
             if row["from_date"] or row["to_date"]:
                 date_range = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}"
+            cid = str(row["id"] or "")
+            valid_ids.add(cid)
             item = self.ubs_robust_tree.insert(
                 "",
                 "end",
                 values=(
+                    self._checkbox_text(cid in self.ubs_robust_checked),
                     row["run_id"],
                     row["id"],
                     row["generation"],
                     self._format_ubs_status(status),
+                    self._ubs_robust_reason(status, metrics),
                     row["target_symbol"] or row["symbol"],
                     row["period"],
                     self._format_ubs_number(row["train_score"]),
@@ -248,11 +306,12 @@ class UBSRobustnessLogicMixin:
                 tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
             )
             self.ubs_robust_paths[item] = {
-                "id": str(row["id"] or ""),
+                "id": cid,
                 "set": str(row["set_path"] or ""),
                 "report": str(row["robust_report_path"] or ""),
                 "status": status,
             }
+        self.ubs_robust_checked.intersection_update(valid_ids)
 
     def _selected_ubs_robust_info(self) -> dict[str, str]:
         if not hasattr(self, "ubs_robust_tree"):

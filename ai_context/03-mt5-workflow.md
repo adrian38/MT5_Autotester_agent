@@ -148,6 +148,13 @@ Exact path tokens are intentionally preferred over loose aliases. Example:
 `XAGUSD__D1__XAUUSD_MIX__...set` should infer `XAGUSD`, even though the name
 also contains `XAUUSD_MIX`.
 
+When UBS generated variants are executed, `ubs_agent.py` calls `run_tests.py`
+with `--prefer-set-path-timeframe`. This makes the tester `Period` come from
+the generated target folder/name instead of a timeframe still present in the
+source seed label or internal set parameters. `ForceSymbol` values read from a
+`.set` are preserved literally for the generated tester `Symbol`, so broker
+symbols such as `.JP225Cash` keep their exact casing.
+
 ## UBS Agent Report Validation
 
 The UBS agent does not trust filenames as proof that MT5 executed the intended

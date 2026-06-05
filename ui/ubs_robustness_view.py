@@ -115,15 +115,17 @@ class UBSRobustnessViewMixin:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         columns = (
-            "run", "id", "gen", "status", "symbol", "period", "train_score",
+            "mark", "run", "id", "gen", "status", "cause", "symbol", "period", "train_score",
             "robust_score", "bonus", "profit", "pf", "dd", "trades", "dates", "set",
         )
-        self.ubs_robust_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="browse")
+        self.ubs_robust_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
         headings = {
+            "mark": "SEL",
             "run": "RUN",
             "id": "ID",
             "gen": "GEN",
             "status": "ROBUST",
+            "cause": "CAUSA",
             "symbol": "SYMBOL",
             "period": "TF",
             "train_score": "SCORE GEN",
@@ -137,10 +139,12 @@ class UBSRobustnessViewMixin:
             "set": "SET",
         }
         widths = {
+            "mark": 48,
             "run": 50,
             "id": 58,
             "gen": 44,
             "status": 96,
+            "cause": 210,
             "symbol": 90,
             "period": 52,
             "train_score": 82,
@@ -160,5 +164,6 @@ class UBSRobustnessViewMixin:
         self.ubs_robust_tree.tag_configure("rejected", foreground=self.colors["danger"])
         self.ubs_robust_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_robust_tree)
+        self.ubs_robust_tree.bind("<Button-1>", self._on_ubs_robust_tree_click)
         self.ubs_robust_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_robust_report())
         self._attach_tree_scrollbars(table_frame, self.ubs_robust_tree, 0)

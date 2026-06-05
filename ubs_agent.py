@@ -632,6 +632,7 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         str(set_dir),
         "--recursive",
         "--infer-tester-from-set",
+        "--prefer-set-path-timeframe",
         "--delay",
         str(args.delay),
     ]
@@ -1501,7 +1502,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     rows = memory.mismatch_candidates_for_generation(run_id, generation)
     rows = [row for row in rows if Path(row["set_path"]).exists()]
     if not rows:
-        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch con .set existente")
+        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch/no_report con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
@@ -1509,7 +1510,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     retry_dir.mkdir(parents=True, exist_ok=True)
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry mismatches run #{run_id} gen {generation}: {len(rows)} candidato(s)")
+    print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])
@@ -1572,7 +1573,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     rows = memory.mismatch_candidates_for_run(run_id)
     rows = [row for row in rows if Path(row["set_path"]).exists()]
     if not rows:
-        print(f"ERROR: run #{run_id} no tiene report_mismatch con .set existente")
+        print(f"ERROR: run #{run_id} no tiene report_mismatch/no_report con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
@@ -1580,7 +1581,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     retry_dir.mkdir(parents=True, exist_ok=True)
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry mismatches run #{run_id}: {len(rows)} candidato(s)")
+    print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])

@@ -76,7 +76,7 @@ class UBSResultsViewMixin:
         tk.Label(row1, text="|", bg=self.colors["panel_alt"],
                  fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=4, padx=(4, 4))
         for col, (label, cmd) in enumerate([
-            ("Reprobar mismatch",  self._retry_selected_ubs_mismatch),
+            ("Reprobar fila",      self._retry_selected_ubs_mismatch),
             ("Reprobar run",       self._retry_visible_ubs_run_mismatches),
             ("Repetir sin ops",    self._retry_no_trades_result),
         ], start=5):
@@ -224,11 +224,11 @@ class UBSResultsViewMixin:
             font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._delete_ubs_history_candidate_set,
         ).grid(row=0, column=1, sticky="e", padx=(6, 0))
-        cand_columns = ("mark", "id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
+        cand_columns = ("mark", "id", "gen", "status", "robust", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
         self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings",
                                                          height=12, selectmode="extended")
-        cand_headings = {"mark": "SEL", "id": "ID", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
-        cand_widths = {"mark": 48, "id": 54, "gen": 46, "status": 82, "symbol": 90, "period": 54, "score": 78, "profit": 84, "pf": 66, "dd": 66, "trades": 68, "set": 220}
+        cand_headings = {"mark": "SEL", "id": "ID", "gen": "GEN", "status": "ESTADO", "robust": "ROBUST", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
+        cand_widths = {"mark": 48, "id": 54, "gen": 46, "status": 82, "robust": 88, "symbol": 90, "period": 54, "score": 78, "profit": 84, "pf": 66, "dd": 66, "trades": 68, "set": 220}
         for column in cand_columns:
             self.ubs_history_candidates_tree.heading(column, text=cand_headings[column])
             self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="center", stretch=False)
