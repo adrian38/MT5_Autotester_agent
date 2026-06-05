@@ -26,6 +26,7 @@ EXPERTS_ROOT_FILE = BASE_DIR / "experts_root.txt"
 TEMPLATE_FILE = BASE_DIR / "tester_template.ini"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+RUNNING_TERMINAL_EXIT_CODE = 3
 
 DEFAULT_MT5_PATHS = (
     Path(r"C:\Program Files\RoboForex MT5 Terminal\terminal64.exe"),
@@ -572,19 +573,61 @@ def load_set_files(set_dir: Path | None, set_files: list[str] | None, recursive:
     return sorted(set(files))
 
 
-def copy_set_file_to_tester_profiles(set_file: Path, terminal_data_dirs: list[Path], logger: RunLogger) -> None:
+def mapped_set_text_for_tester(set_file: Path, symbol_map: dict[str, str]) -> tuple[str | None, list[str]]:
+    if not symbol_map:
+        return None, []
+    text = read_set_text(set_file)
+    lines = text.splitlines()
+    changes: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip().lstrip("\ufeff")
+        if not stripped or stripped.startswith(";") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        key = key.strip()
+        if key not in {"ForceSymbol", "Symbol"}:
+            continue
+        current = raw_value.split("||", 1)[0].strip()
+        mapped = apply_symbol_map(current, symbol_map).strip()
+        if not current or mapped.upper() == current.upper():
+            continue
+        lhs = line.split("=", 1)[0]
+        if "||" in raw_value:
+            parts = raw_value.split("||")
+            parts[0] = mapped
+            lines[index] = f"{lhs}={'||'.join(parts)}"
+        else:
+            lines[index] = f"{lhs}={mapped}"
+        changes.append(f"{key}: {current} -> {mapped}")
+    if not changes:
+        return None, []
+    return "\n".join(lines) + ("\n" if text.endswith(("\n", "\r\n")) else ""), changes
+
+
+def copy_set_file_to_tester_profiles(
+    set_file: Path,
+    terminal_data_dirs: list[Path],
+    logger: RunLogger,
+    symbol_map: dict[str, str] | None = None,
+) -> None:
+    mapped_text, changes = mapped_set_text_for_tester(set_file, symbol_map or {})
     copied_to: list[Path] = []
     for data_dir in terminal_data_dirs:
         for target_dir in (data_dir / "MQL5" / "Profiles" / "Tester", data_dir / "tester"):
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 destination = target_dir / set_file.name
-                shutil.copy2(set_file, destination)
+                if mapped_text is None:
+                    shutil.copy2(set_file, destination)
+                else:
+                    destination.write_text(mapped_text, encoding="utf-8", newline="\n")
                 copied_to.append(destination)
             except OSError as exc:
                 logger.write(f"AVISO: no pude copiar {set_file.name} a {target_dir}: {exc}")
     if copied_to:
         logger.write(f"Set file preparado: {set_file.name}")
+        for change in changes:
+            logger.write(f"  Symbol map aplicado al .set: {change}")
         for destination in copied_to:
             logger.write(f"  {destination}")
 
@@ -1067,7 +1110,7 @@ def run_backtest_job(
         logger.write(f"[{profile.name}] ERROR: {exc}")
         return 1
     if job.set_file and not args.dry_run:
-        copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger)
+        copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
     return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
 
 
@@ -1227,7 +1270,7 @@ def main() -> int:
                 logger.write(f"  PID {process['pid']}: {process['path']}")
             logger.write("Cierra MT5 completamente y vuelve a ejecutar el script.")
             logger.write("MT5 puede ignorar /config si ya existe una instancia abierta con la misma carpeta de datos.")
-            return 1
+            return RUNNING_TERMINAL_EXIT_CODE
 
     template = load_template(template_path)
     if args.from_date.strip():
@@ -1299,7 +1342,7 @@ def main() -> int:
                     for process in running:
                         logger.write(f"  PID {process['pid']}: {process['path']}")
                     logger.write("Cierra esas terminales y vuelve a ejecutar.")
-                    return 1
+                    return RUNNING_TERMINAL_EXIT_CODE
     else:
         missing_experts = missing_experts_in_terminal_data_dirs(experts, terminal_data_dirs)
         if missing_experts and not args.dry_run:
@@ -1355,7 +1398,7 @@ def main() -> int:
                 failures += 1
                 continue
             if job.set_file and not args.dry_run:
-                copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger)
+                copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
             exit_code = run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
             if exit_code != 0:
                 failures += 1

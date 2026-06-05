@@ -1039,6 +1039,7 @@ class UBSResultsLogicMixin:
             "disabled_symbol": "deshabilitado",
             "parse_error": "parse error",
             "report_mismatch": "mismatch reporte",
+            "invalid_seed": "sin Symbol/TF",
             "pending": "pendiente",
             "sin_evaluar": "sin evaluar",
         }
@@ -1047,7 +1048,7 @@ class UBSResultsLogicMixin:
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
-        if status in {"rejected", "parse_error", "report_mismatch", "no_trades"}:
+        if status in {"rejected", "parse_error", "report_mismatch", "no_trades", "invalid_seed"}:
             return "rejected"
         if status == "disabled_symbol":
             return "pending"

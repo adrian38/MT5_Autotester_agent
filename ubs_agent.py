@@ -7,10 +7,12 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 from run_tests import (
+    RUNNING_TERMINAL_EXIT_CODE,
     TIMEFRAME_ENUM,
     apply_symbol_map,
     load_set_params,
@@ -23,7 +25,7 @@ from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
-from ubs.universe import disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
+from ubs.universe import canonical_symbol, disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,7 +37,7 @@ DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
-DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash"
+DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
 
@@ -293,13 +295,16 @@ def choose_seeds(
     asset_feedback: dict[str, float],
     timeframe_feedback: dict[str, float],
     rng: random.Random,
+    aliases: dict[str, str] | None = None,
 ) -> list[Seed]:
+    aliases = aliases or {}
     valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
     if not valid:
         valid = seeds
     scored = []
     for seed in valid:
-        prior = asset_feedback.get(seed.symbol.upper(), 0.0)
+        asset_key = canonical_symbol(seed.symbol, aliases).upper()
+        prior = asset_feedback.get(asset_key, 0.0)
         prior += timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
         diversity = rng.random() * 5.0
         scored.append((prior + diversity, seed))
@@ -681,6 +686,24 @@ def rescore_existing_seed_scores(
     return status_counts
 
 
+def format_disabled_seed_counts(seeds: list[Seed], symbol_map: dict[str, str]) -> str:
+    counts: Counter[tuple[str, str]] = Counter()
+    for seed in seeds:
+        raw = normalize_set_symbol(seed.symbol)
+        mapped = normalize_set_symbol(apply_symbol_map(seed.symbol, symbol_map))
+        counts[(raw or seed.symbol, mapped or raw or seed.symbol)] += 1
+    parts = []
+    shown_total = 0
+    for (raw, mapped), count in counts.most_common(5):
+        shown_total += count
+        label = raw if raw == mapped else f"{raw} -> {mapped}"
+        parts.append(f"{label}: {count}")
+    remaining = sum(counts.values()) - shown_total
+    if remaining > 0:
+        parts.append(f"otros: {remaining}")
+    return ", ".join(parts)
+
+
 def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = Path(args.source_dir).expanduser()
     output_root = Path(args.output_dir).expanduser()
@@ -718,19 +741,26 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     ]
     disabled_paths = {str(seed.path) for seed in disabled_pending}
     for seed in disabled_pending:
+        raw_symbol = normalize_set_symbol(seed.symbol)
+        mapped_symbol = normalize_set_symbol(apply_symbol_map(seed.symbol, symbol_map))
+        symbol_detail = raw_symbol if raw_symbol == mapped_symbol else f"{raw_symbol} -> {mapped_symbol}"
         print(
-            f"AVISO: seed con symbol deshabilitado: {seed.path.name} "
-            f"({seed.symbol}); marcada como disabled_symbol sin ejecutar backtest."
+            f"AVISO: seed omitida por symbol deshabilitado: {seed.path.name} "
+            f"({symbol_detail}); marcada como disabled_symbol sin abrir MT5."
         )
         memory.record_seed_score(seed, None, "disabled_symbol", None)
     pending = [seed for seed in pending if str(seed.path) not in disabled_paths]
     blocked_count += len(disabled_pending)
     print(f"Semillas detectadas: {len(seeds)}")
-    print(f"Semillas pendientes de evaluar: {len(pending)}")
+    print(f"Backtests de semillas pendientes: {len(pending)}")
     if invalid_pending:
         print(f"Semillas bloqueadas por symbol/timeframe no inferible: {len(invalid_pending)}")
     if disabled_pending:
-        print(f"Semillas bloqueadas por symbol deshabilitado: {len(disabled_pending)}")
+        print(
+            "Semillas omitidas por symbol deshabilitado en Universo global: "
+            f"{len(disabled_pending)} ({format_disabled_seed_counts(disabled_pending, symbol_map)})"
+        )
+        print("Estas seeds no abren MT5 y no aportan pesos; habilita el symbol en Universo si quieres evaluarlas.")
     print(f"Semillas ya evaluadas sin cambios: {unchanged_count}")
     reconciled_counts, reconciled_paths = reconcile_seed_eval_reports(
         memory,
@@ -763,7 +793,10 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
                 + ", ".join(f"{status}={count}" for status, count in sorted(rescored_counts.items()))
             )
         if blocked_count:
-            print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas bloqueadas.")
+            if invalid_pending:
+                print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas sin inferencia.")
+            elif disabled_pending:
+                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en Universo global.")
         else:
             print("Evaluacion de semillas al dia. No hay backtests pendientes.")
         return 0
@@ -781,6 +814,9 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     print(f"Directorio evaluacion: {eval_dir}")
     batch_started_at = time.time()
     code = run_backtests(args, eval_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se puntuaran los reportes disponibles")
         if args.dry_run:
@@ -1073,6 +1109,9 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -1102,7 +1141,12 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     if not args.expert and not args.multi_terminal:
         print("ERROR: retry seed requiere --expert o --multi-terminal")
         return 1
-    source_paths = [Path(value).expanduser() for value in args.retry_seed_path]
+    source_paths = []
+    for value in args.retry_seed_path:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        source_paths.append(path.resolve())
     if len(source_paths) > 1:
         seeds: list[Seed] = []
         for source_path in source_paths:
@@ -1134,6 +1178,9 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         print(f"Directorio retry: {retry_dir}")
         batch_started_at = time.time()
         code = run_backtests(args, retry_dir)
+        if code == RUNNING_TERMINAL_EXIT_CODE:
+            print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+            return 1
         if code != 0:
             print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
             if args.dry_run:
@@ -1189,6 +1236,9 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -1259,6 +1309,9 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
 
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -1328,6 +1381,9 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
 
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -1376,6 +1432,8 @@ def evaluate_generation(
     generation_dir = run_dir / f"gen_{generation:03d}"
     batch_started_at = time.time()
     code = run_backtests(args, generation_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        raise RuntimeError("run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta")
     partial_failure = code != 0
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
@@ -1464,9 +1522,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     for generation in range(next_generation, planned_generations + 1):
         generation_dir = run_dir / f"gen_{generation:03d}"
         mutation_feedback = memory.mutation_feedback()
-        asset_feedback = memory.asset_feedback()
+        asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
-        selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng)
+        selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
         variants: list[Variant] = []
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
         for seed_index, seed in enumerate(selected_seeds, start=1):
@@ -1605,9 +1663,9 @@ def run_agent(args: argparse.Namespace) -> int:
             generation_dir = run_dir / f"gen_{generation:03d}"
             accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
             mutation_feedback = memory.mutation_feedback()
-            asset_feedback = memory.asset_feedback()
+            asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
-            selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng)
+            selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
             variants: list[Variant] = []
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
             for seed_index, seed in enumerate(selected_seeds, start=1):
@@ -1636,6 +1694,9 @@ def run_agent(args: argparse.Namespace) -> int:
             if args.execute_backtests or args.dry_run:
                 batch_started_at = time.time()
                 code = run_backtests(args, generation_dir)
+                if code == RUNNING_TERMINAL_EXIT_CODE:
+                    print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+                    return code
                 partial_failure = code != 0
                 if code != 0:
                     print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")

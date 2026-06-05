@@ -140,7 +140,13 @@ class UBSSeedsViewMixin:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         columns = ("mark", "status", "symbol", "period", "score", "accepted", "override", "reason", "seed")
-        self.ubs_seeds_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
+        self.ubs_seeds_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=12,
+            selectmode="extended",
+        )
         headings = {
             "mark": "SEL",
             "status": "ESTADO",

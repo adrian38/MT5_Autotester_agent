@@ -109,6 +109,7 @@ class UBSUniverseLogicMixin:
         total_mismatch = 0
         total_seed_scored = 0
         total_seed_pending = 0
+        total_seed_mismatch = 0
 
         if memory_path.exists():
             try:
@@ -157,8 +158,9 @@ class UBSUniverseLogicMixin:
                     continue
                 score = float(row["score"])
                 accepted = bool(row["accepted"])
-                weight = score + (20.0 if accepted else 0.0)
-                for stat in (asset_stat, tf_stat):
+                asset_weight = score + (20.0 if accepted else 0.0)
+                tf_weight = score + (15.0 if accepted else 0.0)
+                for stat, weight in ((asset_stat, asset_weight), (tf_stat, tf_weight)):
                     stat["scores"].append(score)
                     stat["weights"].append(weight)
                     stat["tests"] = int(stat["tests"]) + 1
@@ -168,6 +170,8 @@ class UBSUniverseLogicMixin:
 
             for row in seed_rows:
                 status = str(row["status"] or "")
+                if status == "report_mismatch":
+                    total_seed_mismatch += 1
                 canonical = self._canonical_ubs_symbol(row["symbol"], aliases)
                 if canonical.upper() in disabled_symbols:
                     continue
@@ -182,8 +186,9 @@ class UBSUniverseLogicMixin:
                     continue
                 score = float(row["score"])
                 accepted = bool(row["accepted"])
-                weight = score + (20.0 if accepted else 0.0)
-                for stat in (asset_stat, tf_stat):
+                asset_weight = score + (20.0 if accepted else 0.0)
+                tf_weight = score + (15.0 if accepted else 0.0)
+                for stat, weight in ((asset_stat, asset_weight), (tf_stat, tf_weight)):
                     stat["scores"].append(score)
                     stat["weights"].append(weight)
                     stat["tests"] = int(stat["tests"]) + 1
@@ -267,10 +272,10 @@ class UBSUniverseLogicMixin:
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
-            f"mismatch ignorados: {total_mismatch} | deshabilitados: {len(disabled_symbols)}"
+            f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | deshabilitados: {len(disabled_symbols)}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO = promedio(score + bonus accepted). El agente prioriza TF buenos y explora M15/M30/H1/H4/D1 reemplazando claves de timeframe existentes."
+            "PESO activos = promedio(score +20 si accepted); PESO TF = promedio(score +15 si accepted). El agente usa esos pesos para priorizar."
         )
 
     def _disabled_symbols_path(self):

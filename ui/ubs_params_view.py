@@ -54,7 +54,7 @@ class UBSParamsViewMixin:
         tree_frame.rowconfigure(0, weight=1)
 
         cols = ("key", "description", "value", "range", "agent")
-        self.ubs_params_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
+        self.ubs_params_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=18, selectmode="browse")
         headings = {
             "key": "CLAVE", "description": "DESCRIPCIÓN", "value": "VALOR",
             "range": "RANGO", "agent": "AGENTE",
@@ -62,8 +62,8 @@ class UBSParamsViewMixin:
         widths = {"key": 230, "description": 420, "value": 120, "range": 140, "agent": 110}
         for col in cols:
             self.ubs_params_tree.heading(col, text=headings[col])
-            self.ubs_params_tree.column(col, width=widths[col], minwidth=40,
-                                        stretch=col == "description", anchor="center")
+            self.ubs_params_tree.column(col, width=widths[col], minwidth=42,
+                                        stretch=False, anchor="center")
         self.ubs_params_tree.tag_configure("section",
                                            background=self.colors["panel_alt"],
                                            foreground=self.colors["muted"],
@@ -72,6 +72,10 @@ class UBSParamsViewMixin:
         self.ubs_params_tree.tag_configure("frozen", foreground=self.colors["text"])
         self.ubs_params_tree.tag_configure("overridden_frozen", foreground=self.colors["danger"])
         self.ubs_params_tree.tag_configure("overridden_mutable", foreground="#f59e0b")
+        self.ubs_params_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
+        self.ubs_params_tree.tag_configure("rejected", foreground=self.colors["danger"])
+        self.ubs_params_tree.tag_configure("pending", foreground=self.colors["muted"])
+        self._make_tree_sortable(self.ubs_params_tree)
         self._attach_tree_scrollbars(tree_frame, self.ubs_params_tree, 0)
         self.ubs_params_tree.bind("<<TreeviewSelect>>", self._ubs_params_on_select)
         self.ubs_params_tree.bind("<Double-1>", lambda _e: self._ubs_params_edit_selected())

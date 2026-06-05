@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -14,7 +15,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk as _ttk
-from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, parse_symbol_map
+from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -32,10 +33,12 @@ class UBSSeedsLogicMixin:
             self._safe_refresh(label, callback)
 
     def _ubs_seed_reason(self, row: object, status: str) -> str:
-        if row is None:
-            return ""
         if status == "report_mismatch":
             return "mismatch symbol/TF"
+        if status == "invalid_seed":
+            return "no se pudo inferir Symbol; guarda override"
+        if row is None:
+            return ""
         if status == "parse_error":
             return "error al parsear reporte"
         if status == "no_report":
@@ -84,66 +87,101 @@ class UBSSeedsLogicMixin:
         files = load_set_files(source_dir, None, recursive=True)
         return len(files), str(source_dir)
 
-    def _count_ubs_seed_pending(self, seed_files: list) -> int:
-        """Estimate how many seeds will actually run backtests."""
+    def _active_ubs_symbol_map(self) -> dict[str, str]:
+        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+            return parse_symbol_map(self.symbol_map.get().strip())
+        return {}
+
+    def _format_disabled_seed_counts(self, counts: Counter[tuple[str, str]]) -> str:
+        parts = []
+        shown_total = 0
+        for (raw, mapped), count in counts.most_common(5):
+            shown_total += count
+            label = raw if raw == mapped else f"{raw} -> {mapped}"
+            parts.append(f"{label}: {count}")
+        remaining = sum(counts.values()) - shown_total
+        if remaining > 0:
+            parts.append(f"otros: {remaining}")
+        return ", ".join(parts)
+
+    def _ubs_seed_eval_plan(self, seed_files: list[Path]) -> dict[str, object]:
+        """Estimate real MT5 jobs and skipped seed categories for the confirmation dialog."""
         memory_path = self._ubs_memory_path()
         disabled_symbols = self._load_disabled_ubs_symbols()
-        try:
-            symbol_map = parse_symbol_map(self.symbol_map.get().strip())
-        except Exception:
-            symbol_map = {}
-        runnable_seed_files = []
-        for path in seed_files:
-            inferred_symbol, _ = self._inferred_ubs_seed_fields(path)
-            canonical = apply_symbol_map(inferred_symbol, symbol_map).strip().upper()
-            raw = inferred_symbol.strip().upper()
-            if raw in disabled_symbols or canonical in disabled_symbols:
-                continue
-            runnable_seed_files.append(path)
-        seed_files = runnable_seed_files
-        if not memory_path.exists():
-            return len(seed_files)
-        try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
-            conn.row_factory = sqlite3.Row
-            if not self._sqlite_table_exists(conn, "seed_scores"):
+        symbol_map = self._active_ubs_symbol_map()
+        rows: dict[str, sqlite3.Row] = {}
+        overrides: dict[str, tuple[str, str]] = {}
+        if memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn.row_factory = sqlite3.Row
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    rows = {str(r["seed_path"]): r for r in conn.execute("select * from seed_scores").fetchall()}
+                if self._sqlite_table_exists(conn, "seed_overrides"):
+                    overrides = {
+                        str(r["seed_path"]): (
+                            str(r["symbol"] or "").strip().upper(),
+                            str(r["period"] or "").strip().upper(),
+                        )
+                        for r in conn.execute("select seed_path, symbol, period from seed_overrides").fetchall()
+                    }
                 conn.close()
-                return len(seed_files)
-            rows = {str(r["seed_path"]): r for r in conn.execute("select * from seed_scores").fetchall()}
-            overrides = {
-                str(r["seed_path"]): (str(r["symbol"] or "").strip().upper(), str(r["period"] or "").strip().upper())
-                for r in conn.execute("select seed_path, symbol, period from seed_overrides").fetchall()
-            } if self._sqlite_table_exists(conn, "seed_overrides") else {}
-            conn.close()
-        except sqlite3.Error:
-            return len(seed_files)
-        pending = 0
+            except sqlite3.Error:
+                rows = {}
+                overrides = {}
+
+        stats: Counter[str] = Counter()
+        disabled_counts: Counter[tuple[str, str]] = Counter()
+        ready_statuses = {"accepted", "rejected", "report_mismatch"}
         for path in seed_files:
             path_text = str(path)
-            row = rows.get(path_text)
             try:
                 stat = path.stat()
             except OSError:
+                stats["missing"] += 1
                 continue
+            row = rows.get(path_text)
             inferred_symbol, inferred_period = self._inferred_ubs_seed_fields(path)
             ov_sym, ov_per = overrides.get(path_text, ("", ""))
             symbol = ov_sym or inferred_symbol
             period = ov_per or inferred_period
-            canonical = apply_symbol_map(symbol, symbol_map).strip().upper()
-            raw = symbol.strip().upper()
-            if raw in disabled_symbols or canonical in disabled_symbols:
+
+            if not symbol or not period or symbol == "UNKNOWN" or period == "UNKNOWN":
+                stats["invalid"] += 1
                 continue
+
+            raw = normalize_set_symbol(symbol)
+            mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
+            if raw in disabled_symbols or mapped in disabled_symbols:
+                stats["disabled"] += 1
+                disabled_counts[(raw or symbol, mapped or raw or symbol)] += 1
+                continue
+
             changed = (
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch", "disabled_symbol"}
+                or str(row["status"] or "") not in ready_statuses
                 or str(row["symbol"] or "").strip().upper() != symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != period.strip().upper()
             )
             if changed:
-                pending += 1
-        return pending
+                stats["pending"] += 1
+            else:
+                stats["unchanged"] += 1
+
+        return {
+            "pending": int(stats["pending"]),
+            "unchanged": int(stats["unchanged"]),
+            "disabled": int(stats["disabled"]),
+            "invalid": int(stats["invalid"]),
+            "missing": int(stats["missing"]),
+            "disabled_counts": disabled_counts,
+        }
+
+    def _count_ubs_seed_pending(self, seed_files: list) -> int:
+        """Estimate how many seeds will actually run backtests."""
+        return int(self._ubs_seed_eval_plan(seed_files)["pending"])
 
     def _ubs_seed_eval_args(self) -> list[str]:
         source_dir = self._ubs_generator_source_dir()
@@ -180,8 +218,13 @@ class UBSSeedsLogicMixin:
             seed_files = load_set_files(source_dir, None, recursive=True)
             total = len(seed_files)
             target = str(source_dir)
-            pending = self._count_ubs_seed_pending(seed_files)
-            already_ok = total - pending
+            plan = self._ubs_seed_eval_plan(seed_files)
+            pending = int(plan["pending"])
+            already_ok = int(plan["unchanged"])
+            disabled = int(plan["disabled"])
+            invalid = int(plan["invalid"])
+            missing = int(plan["missing"])
+            disabled_counts = plan["disabled_counts"]
         except Exception as exc:
             self._show_error("No se pudo preparar evaluacion de semillas", str(exc))
             return
@@ -189,12 +232,25 @@ class UBSSeedsLogicMixin:
             "Accion: Evaluar semillas UBS",
             f"Carpeta seeds: {target}",
             f"Seeds detectadas: {total}",
-            f"Backtests a ejecutar: {pending}  (ya evaluadas sin cambios: {already_ok})",
-            "Corren: sin reporte, sin score, con symbol/TF cambiado.",
-            "Las semillas borradas quedan inactivas para los pesos.",
+            f"Backtests reales a ejecutar: {pending}",
+            f"No se ejecutan: {already_ok} ya listas/sin cambios, {disabled} por symbol deshabilitado, {invalid} sin Symbol/TF.",
+            "Corren solo seeds nuevas/modificadas o retryables con symbol/TF valido.",
+        ]
+        if disabled:
+            details.append(
+                "Symbols deshabilitados (Universo global): "
+                f"{self._format_disabled_seed_counts(disabled_counts)}."
+            )
+            details.append("Ejemplo: XTIUSD cuenta como deshabilitado si el mapa activo lo traduce a WTI y WTI esta deshabilitado.")
+        if invalid:
+            details.append("Sin Symbol/TF: se marcaran como report_mismatch sin abrir MT5.")
+        if missing:
+            details.append(f"Archivos no accesibles y omitidos: {missing}.")
+        details.extend([
+            "Las semillas omitidas/deshabilitadas no aportan pesos al Universo.",
             f"Pass Seeds: net>{self.ubs_seed_pass_min_net_profit.get().strip()} | PF>={self.ubs_seed_pass_min_profit_factor.get().strip()} | DD<={self.ubs_seed_pass_max_drawdown_pct.get().strip()}%",
             f"Pass Seeds: trades>={self.ubs_seed_pass_min_trades.get()} | recovery>={self.ubs_seed_pass_min_recovery_factor.get().strip()}",
-        ]
+        ])
         details.extend(self._multiterminal_execution_details())
         if self._confirm_execution_start("Confirmar evaluacion de semillas", pending, details):
             self.ubs_seed_eval_summary.set("Evaluando semillas UBS...")
@@ -333,16 +389,19 @@ class UBSSeedsLogicMixin:
             symbol = override_symbol or (str(row["symbol"] or "").strip().upper() if row else inferred_symbol)
             period = override_period or (str(row["period"] or "").strip().upper() if row else inferred_period)
             status = str(row["status"] or "pending") if row else "pending"
+            display_status = status
+            if (not symbol or not period or symbol == "UNKNOWN" or period == "UNKNOWN") and not override_symbol:
+                display_status = "invalid_seed"
             accepted = ""
             if row and row["accepted"] is not None:
                 accepted = "si" if int(row["accepted"]) else "no"
-            reason = self._ubs_seed_reason(row, status)
+            reason = self._ubs_seed_reason(row, display_status)
             item = tree.insert(
                 "",
                 "end",
                 values=(
                     self._checkbox_text(path_text in current_checked),
-                    self._format_ubs_status(status),
+                    self._format_ubs_status(display_status),
                     symbol,
                     period,
                     self._format_ubs_number(row["score"] if row else None),
@@ -351,9 +410,9 @@ class UBSSeedsLogicMixin:
                     reason,
                     path.name,
                 ),
-                tags=(self._ubs_result_tag(status),),
+                tags=(self._ubs_result_tag(display_status),),
             )
-            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "1", "status": status, "has_row": "1" if row else "0"}
+            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "1", "status": display_status, "has_row": "1" if row else "0"}
             if not first_item:
                 first_item = item
 
@@ -676,9 +735,57 @@ class UBSSeedsLogicMixin:
         """Borra seed_scores y seed_overrides de esas seeds."""
         if not seed_paths:
             return
-        ph = ",".join("?" for _ in seed_paths)
-        conn.execute(f"delete from seed_scores   where seed_path in ({ph})", seed_paths)
-        conn.execute(f"delete from seed_overrides where seed_path in ({ph})", seed_paths)
+        keys: set[str] = set()
+        normalized_keys: set[str] = set()
+
+        def _add_key(value: object) -> None:
+            text = str(value)
+            if not text:
+                return
+            keys.add(text)
+            normalized_keys.add(text.replace("\\", "/").lower())
+
+        for raw_path in seed_paths:
+            if not raw_path:
+                continue
+            path = Path(raw_path).expanduser()
+            _add_key(path)
+            if not path.is_absolute():
+                _add_key((BASE_DIR / path).resolve())
+            try:
+                resolved = path.resolve()
+                _add_key(resolved)
+                try:
+                    _add_key(resolved.relative_to(BASE_DIR))
+                except ValueError:
+                    pass
+            except OSError:
+                pass
+        if not keys and not normalized_keys:
+            return
+        if keys:
+            params = sorted(keys)
+            ph = ",".join("?" for _ in params)
+            conn.execute(f"delete from seed_scores   where seed_path in ({ph})", params)
+            conn.execute(f"delete from seed_overrides where seed_path in ({ph})", params)
+        if normalized_keys:
+            params = sorted(normalized_keys)
+            ph = ",".join("?" for _ in params)
+            conn.execute(f"delete from seed_scores   where lower(replace(seed_path, '\\', '/')) in ({ph})", params)
+            conn.execute(f"delete from seed_overrides where lower(replace(seed_path, '\\', '/')) in ({ph})", params)
+        conn.execute("delete from seed_overrides where seed_path not in (select seed_path from seed_scores)")
+        conn.commit()
+
+    def _cleanup_obsolete_seed_db(self, conn) -> int:
+        rows = conn.execute("select seed_path from seed_scores where active=0").fetchall()
+        obsolete_paths = [str(row[0]) for row in rows]
+        if obsolete_paths:
+            self._cleanup_seed_db(conn, obsolete_paths)
+        return len(obsolete_paths)
+
+    def _cleanup_all_seed_db(self, conn) -> None:
+        conn.execute("delete from seed_scores")
+        conn.execute("delete from seed_overrides")
         conn.commit()
 
     def _delete_selected_ubs_seed(self) -> None:
@@ -686,13 +793,16 @@ class UBSSeedsLogicMixin:
         if not infos:
             self._show_error("Sin seleccion", "Selecciona una semilla para eliminar.")
             return
-        existing = [Path(info.get("seed_path", "")) for info in infos if Path(info.get("seed_path", "")).exists()]
-        if not existing:
-            messagebox.showinfo("Eliminar semilla", "No existe ningun archivo de las seeds marcadas.")
+        selected_paths = [info.get("seed_path", "") for info in infos if info.get("seed_path")]
+        existing = [Path(path).expanduser() for path in selected_paths if Path(path).expanduser().exists()]
+        missing = len(selected_paths) - len(existing)
+        if not selected_paths:
+            messagebox.showinfo("Eliminar semilla", "No hay rutas asociadas a las seeds marcadas.")
             return
         if not messagebox.askyesno(
             "Eliminar semilla",
-            f"Eliminar {len(existing)} seed(s) del disco?\nEsta accion no se puede deshacer.",
+            f"Eliminar {len(existing)} seed(s) del disco y {missing} registro(s) obsoleto(s) de memoria?\n"
+            "Esta accion no se puede deshacer.",
         ):
             return
         deleted_paths: list[str] = []
@@ -705,11 +815,10 @@ class UBSSeedsLogicMixin:
             except OSError as exc:
                 errors.append(f"{path.name}: {exc}")
         memory_path = self._ubs_memory_path()
-        if deleted_paths and memory_path.exists():
+        if selected_paths and memory_path.exists():
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
-                placeholders = ",".join("?" for _ in deleted_paths)
-                self._cleanup_seed_db(conn, deleted_paths)
+                self._cleanup_seed_db(conn, selected_paths)
                 conn.close()
             except sqlite3.Error:
                 pass
@@ -766,7 +875,6 @@ class UBSSeedsLogicMixin:
         if deleted_paths and memory_path.exists():
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
-                placeholders = ",".join("?" for _ in deleted_paths)
                 self._cleanup_seed_db(conn, deleted_paths)
                 conn.close()
             except sqlite3.Error:
@@ -784,12 +892,23 @@ class UBSSeedsLogicMixin:
         except Exception as exc:
             self._show_error("Sin carpeta de seeds", str(exc))
             return
-        if not all_paths:
-            messagebox.showinfo("Eliminar todas", "No hay seeds en la carpeta configurada.")
+        obsolete_count = 0
+        memory_path = self._ubs_memory_path()
+        if memory_path.exists():
+            try:
+                conn = sqlite3.connect(memory_path, timeout=1.0)
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    obsolete_count = int(conn.execute("select count(*) from seed_scores where active=0").fetchone()[0] or 0)
+                conn.close()
+            except sqlite3.Error:
+                obsolete_count = 0
+        if not all_paths and not obsolete_count:
+            messagebox.showinfo("Eliminar todas", "No hay seeds en la carpeta configurada ni registros obsoletos.")
             return
         if not messagebox.askyesno(
             "Eliminar TODAS las seeds",
-            f"Eliminar {len(all_paths)} seed(s) del disco?\n\n"
+            f"Eliminar {len(all_paths)} seed(s) del disco y limpiar toda la memoria de seeds?\n"
+            f"Registros obsoletos detectados: {obsolete_count}\n\n"
             f"Carpeta: {source_dir}\n\n"
             "Esta acción no se puede deshacer.",
         ):
@@ -802,12 +921,10 @@ class UBSSeedsLogicMixin:
                 deleted.append(str(path))
             except OSError as exc:
                 errors.append(f"{path.name}: {exc}")
-        memory_path = self._ubs_memory_path()
-        if deleted and memory_path.exists():
+        if memory_path.exists():
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
-                placeholders = ",".join("?" for _ in deleted)
-                self._cleanup_seed_db(conn, deleted)
+                self._cleanup_all_seed_db(conn)
                 conn.close()
             except sqlite3.Error:
                 pass
@@ -1001,5 +1118,3 @@ class UBSSeedsLogicMixin:
             self._show_error("No se pudieron aplicar criterios Seeds", str(exc))
             return
         self._run_script("ubs_agent.py", args)
-
-

@@ -418,7 +418,13 @@ class AgentMemory:
                     totals.setdefault(key, []).append(bonus)
         return {key: sum(values) / len(values) for key, values in totals.items()}
 
-    def asset_feedback(self) -> dict[str, float]:
+    def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
+        aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
+
+        def _canonical(symbol: object) -> str:
+            raw = str(symbol or "").upper()
+            return aliases.get(raw, raw)
+
         rows = self.conn.execute(
             """
             select target_symbol, score, accepted
@@ -429,7 +435,7 @@ class AgentMemory:
         totals: dict[str, list[float]] = {}
         for row in rows:
             value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["target_symbol"]).upper(), []).append(value)
+            totals.setdefault(_canonical(row["target_symbol"]), []).append(value)
         seed_rows = self.conn.execute(
             """
             select symbol, score, accepted
@@ -439,7 +445,7 @@ class AgentMemory:
         ).fetchall()
         for row in seed_rows:
             value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["symbol"]).upper(), []).append(value)
+            totals.setdefault(_canonical(row["symbol"]), []).append(value)
         return {symbol: sum(values) / len(values) for symbol, values in totals.items()}
 
     def timeframe_feedback(self) -> dict[str, float]:
@@ -597,5 +603,4 @@ def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
         missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
         policy=row["policy"] or "",
     )
-
 

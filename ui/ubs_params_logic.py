@@ -127,6 +127,7 @@ class UBSParamsLogicMixin:
         last_section = None
         iid_counter = 0
         frozen_ov, mutable_ov = load_mutation_overrides()
+        global_vals = load_global_params()
         for p in self.ubs_params_data:
             key = p["key"]
             mutable = is_agent_mutable_key(key)
@@ -149,7 +150,7 @@ class UBSParamsLogicMixin:
             if key in frozen_ov:
                 tag = "overridden_frozen"
                 agent_label = "✦ fijo global"
-                display_value = frozen_ov[key] if frozen_ov[key] else p["value"]
+                display_value = global_vals.get(key) or frozen_ov.get(key) or p["value"]
             elif key in mutable_ov:
                 tag = "overridden_mutable"
                 agent_label = "✦ forzado mutable"
@@ -186,7 +187,7 @@ class UBSParamsLogicMixin:
         else:
             default_mutable = is_agent_mutable_key(key)
             if default_mutable:
-                frozen_ov[key] = global_val
+                frozen_ov[key] = ""
                 msg = f"'{key}' = {global_val} fijado globalmente. El agente usará este valor en todas las variantes."
             else:
                 mutable_ov.add(key)
