@@ -44,16 +44,23 @@ class UBSResultsViewMixin:
             command=self._refresh_ubs_results_panel,
         ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
+            results_bar, text="Continuar a robustez",
+            bg=self.colors["primary"], fg=self.colors["primary_text"],
+            relief="flat", borderwidth=0, padx=10, pady=5,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._run_ubs_robustness_for_latest_run,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
             results_bar, text="Limpiar vista",
             bg=self.colors["panel"], fg=self.colors["muted"],
             relief="solid", borderwidth=1, padx=8, pady=5,
             font=("Segoe UI", 9), cursor="hand2",
             command=self._hide_latest_ubs_results,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=(5, 3))
+        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=(5, 3))
 
         # ── Fila 1: acciones sobre la fila seleccionada ──
         row1 = tk.Frame(results_bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 5))
+        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(0, weight=1)
         tk.Label(row1, text="Fila seleccionada:", bg=self.colors["panel_alt"],
                  fg=self.colors["muted"], font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")

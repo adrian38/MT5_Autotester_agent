@@ -114,10 +114,37 @@ class UBSAgentViewMixin:
         tk.Label(exec_text, text="Activa feedback real; apagado solo genera variantes.", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
         self._toggle_switch_cls(exec_row, variable=self.ubs_agent_execute, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
 
-        self._build_ubs_multiterminal_row(agent, row=4)
+        explore_row = tk.Frame(agent, bg=self.colors["panel"])
+        explore_row.grid(row=4, column=0, columnspan=6, sticky="ew", padx=20, pady=(6, 6))
+        explore_row.columnconfigure(0, weight=1)
+        explore_text = tk.Frame(explore_row, bg=self.colors["panel"])
+        explore_text.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            explore_text,
+            text="Poblar universo sin seed",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            explore_text,
+            text="Reserva exploracion para activos/TF del universo que no existen en las seeds actuales.",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w")
+        self._toggle_switch_cls(
+            explore_row,
+            variable=self.ubs_force_unseeded_universe,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+
+        self._build_ubs_multiterminal_row(agent, row=5)
 
         buttons = ttk.Frame(agent, style="Panel.TFrame")
-        buttons.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
+        buttons.grid(row=6, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
         buttons.columnconfigure(0, weight=1)
         buttons.columnconfigure(1, weight=1)
         buttons.columnconfigure(2, weight=1)
@@ -148,7 +175,7 @@ class UBSAgentViewMixin:
         )
         self.ubs_continue_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         ttk.Label(agent, textvariable=self.ubs_continue_status, style="Muted.TLabel").grid(
-            row=6, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
+            row=7, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
 
         # ── Filtros ─────────────────────────────────────────────────────────
@@ -190,4 +217,82 @@ class UBSAgentViewMixin:
             style="Primary.TButton",
             command=self._save_ubs_agent_clicked,
         ).grid(row=3, column=5, sticky="e", padx=20, pady=(4, 14))
+
+        robust = self._card(inner, "Robustez OOS")
+        robust.grid(row=3, column=0, sticky="ew", pady=(0, 24))
+        for column in (1, 3, 5):
+            robust.columnconfigure(column, weight=1)
+
+        robust_date_tip = (
+            "Formato: YYYY.MM.DD.\n"
+            "Ventana fuera de muestra para candidatos accepted del agente.\n"
+            "Dejar vacio para usar las fechas del template tester."
+        )
+        ttk.Label(robust, text="Desde", style="Panel.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(20, 10), pady=7
+        )
+        robust_from = ttk.Entry(robust, textvariable=self.ubs_robust_from_date, width=14)
+        robust_from.grid(row=1, column=1, sticky="ew", padx=(0, 10), pady=7)
+        self._tooltip_cls(robust_from, robust_date_tip)
+        ttk.Label(robust, text="Hasta", style="Panel.TLabel").grid(
+            row=1, column=2, sticky="w", padx=(10, 10), pady=7
+        )
+        robust_to = ttk.Entry(robust, textvariable=self.ubs_robust_to_date, width=14)
+        robust_to.grid(row=1, column=3, sticky="ew", padx=(0, 10), pady=7)
+        self._tooltip_cls(robust_to, robust_date_tip)
+
+        auto_row = tk.Frame(robust, bg=self.colors["panel"])
+        auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
+        auto_row.columnconfigure(0, weight=1)
+        tk.Label(
+            auto_row,
+            text="Auto robustez",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self._toggle_switch_cls(
+            auto_row,
+            variable=self.ubs_robust_auto,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="e")
+
+        robust_fields = [
+            ("Net min", self.ubs_robust_pass_min_net_profit, "entry"),
+            ("PF min", self.ubs_robust_pass_min_profit_factor, "entry"),
+            ("Trades min", self.ubs_robust_pass_min_trades, "spin"),
+            ("DD max %", self.ubs_robust_pass_max_drawdown_pct, "entry"),
+            ("Recovery min", self.ubs_robust_pass_min_recovery_factor, "entry"),
+            ("Bonus OK", self.ubs_robust_positive_bonus, "entry"),
+            ("Bonus FAIL", self.ubs_robust_negative_bonus, "entry"),
+        ]
+        for index, (label, variable, kind) in enumerate(robust_fields):
+            row = 2 + index // 3
+            column = (index % 3) * 2
+            left_pad = 20 if column == 0 else 10
+            ttk.Label(robust, text=label, style="Panel.TLabel").grid(
+                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            if kind == "spin":
+                ttk.Spinbox(robust, from_=0, to=100000, textvariable=variable, width=8).grid(
+                    row=row, column=column + 1, sticky="ew", padx=(0, 10), pady=7
+                )
+            else:
+                ttk.Entry(robust, textvariable=variable, width=8).grid(
+                    row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7
+                )
+
+        ttk.Label(
+            robust,
+            text="Solo los candidatos accepted del agente pasan a OOS. Accepted suma bonus; rejected suma bonus negativo; sin reporte/mismatch queda neutro.",
+            style="Muted.TLabel",
+        ).grid(row=5, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
+        ttk.Button(
+            robust,
+            text="Guardar robustez",
+            style="Primary.TButton",
+            command=self._save_ubs_agent_clicked,
+        ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))
 

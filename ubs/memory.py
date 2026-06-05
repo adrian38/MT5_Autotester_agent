@@ -79,6 +79,20 @@ class AgentMemory:
                 period text not null default '',
                 updated_at text not null
             );
+            create table if not exists candidate_robustness (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                report_path text,
+                score real,
+                accepted integer,
+                metrics_json text,
+                from_date text not null default '',
+                to_date text not null default '',
+                positive_bonus real not null default 30.0,
+                negative_bonus real not null default -30.0,
+                evaluated_at text not null
+            );
             """
         )
         self._ensure_column("runs", "hidden", "integer not null default 0")
@@ -402,17 +416,94 @@ class AgentMemory:
             (str(seed_path),),
         ).fetchone()
 
+    def accepted_candidates_for_robustness(self, run_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select c.*, cr.status as robust_status
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            where c.run_id=? and c.status='accepted'
+            order by c.generation, c.id
+            """,
+            (run_id,),
+        ).fetchall()
+
+    def record_candidate_robustness(
+        self,
+        candidate_id: int,
+        run_id: int,
+        result: ScoreResult | None,
+        status: str,
+        report_path: Path | None,
+        from_date: str,
+        to_date: str,
+        positive_bonus: float,
+        negative_bonus: float,
+    ) -> None:
+        accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
+        self.conn.execute(
+            """
+            insert into candidate_robustness (
+                candidate_id, run_id, status, report_path, score, accepted,
+                metrics_json, from_date, to_date, positive_bonus, negative_bonus, evaluated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(candidate_id) do update set
+                run_id=excluded.run_id,
+                status=excluded.status,
+                report_path=excluded.report_path,
+                score=excluded.score,
+                accepted=excluded.accepted,
+                metrics_json=excluded.metrics_json,
+                from_date=excluded.from_date,
+                to_date=excluded.to_date,
+                positive_bonus=excluded.positive_bonus,
+                negative_bonus=excluded.negative_bonus,
+                evaluated_at=excluded.evaluated_at
+            """,
+            (
+                candidate_id,
+                run_id,
+                status,
+                str(report_path) if report_path else (result.report_path if result else None),
+                result.score if result else None,
+                accepted,
+                result.to_json() if result else None,
+                from_date.strip(),
+                to_date.strip(),
+                float(positive_bonus),
+                float(negative_bonus),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        self.conn.commit()
+
+    def _candidate_robustness_bonus(self, row: sqlite3.Row) -> float:
+        status = str(row["robust_status"] or "")
+        try:
+            if status == "accepted":
+                return float(row["robust_positive_bonus"] or 0.0)
+            if status == "rejected":
+                return float(row["robust_negative_bonus"] or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0
+
     def mutation_feedback(self) -> dict[str, float]:
         rows = self.conn.execute(
             """
-            select mutated_keys, score, accepted
-            from candidates
-            where score is not null and mutated_keys != '' and status in ('accepted', 'rejected')
+            select
+                c.mutated_keys, c.score, c.accepted,
+                cr.status as robust_status,
+                cr.positive_bonus as robust_positive_bonus,
+                cr.negative_bonus as robust_negative_bonus
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            where c.score is not null and c.mutated_keys != '' and c.status in ('accepted', 'rejected')
             """
         ).fetchall()
         totals: dict[str, list[float]] = {}
         for row in rows:
-            bonus = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
+            bonus = float(row["score"]) + (15.0 if row["accepted"] else 0.0) + self._candidate_robustness_bonus(row)
             for key in str(row["mutated_keys"]).split(";"):
                 if key:
                     totals.setdefault(key, []).append(bonus)
@@ -427,14 +518,19 @@ class AgentMemory:
 
         rows = self.conn.execute(
             """
-            select target_symbol, score, accepted
-            from candidates
-            where score is not null and status in ('accepted', 'rejected')
+            select
+                c.target_symbol, c.score, c.accepted,
+                cr.status as robust_status,
+                cr.positive_bonus as robust_positive_bonus,
+                cr.negative_bonus as robust_negative_bonus
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            where c.score is not null and c.status in ('accepted', 'rejected')
             """
         ).fetchall()
         totals: dict[str, list[float]] = {}
         for row in rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
+            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0) + self._candidate_robustness_bonus(row)
             totals.setdefault(_canonical(row["target_symbol"]), []).append(value)
         seed_rows = self.conn.execute(
             """
@@ -451,14 +547,19 @@ class AgentMemory:
     def timeframe_feedback(self) -> dict[str, float]:
         rows = self.conn.execute(
             """
-            select period, score, accepted
-            from candidates
-            where score is not null and status in ('accepted', 'rejected')
+            select
+                c.period, c.score, c.accepted,
+                cr.status as robust_status,
+                cr.positive_bonus as robust_positive_bonus,
+                cr.negative_bonus as robust_negative_bonus
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            where c.score is not null and c.status in ('accepted', 'rejected')
             """
         ).fetchall()
         totals: dict[str, list[float]] = {}
         for row in rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
+            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0) + self._candidate_robustness_bonus(row)
             totals.setdefault(str(row["period"]).upper(), []).append(value)
         seed_rows = self.conn.execute(
             """
@@ -603,4 +704,3 @@ def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
         missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
         policy=row["policy"] or "",
     )
-

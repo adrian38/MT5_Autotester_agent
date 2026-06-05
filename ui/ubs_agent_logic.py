@@ -56,6 +56,8 @@ class UBSAgentLogicMixin:
             args.extend(["--to-date", self.ubs_agent_to_date.get().strip()])
         if continue_last:
             args.append("--continue-last-run")
+        if self.ubs_force_unseeded_universe.get():
+            args.append("--force-unseeded-universe")
         args.extend(self._ubs_score_args())
         should_execute_backtests = (
             bool(continuation_info.get("execute_backtests"))
@@ -104,6 +106,7 @@ class UBSAgentLogicMixin:
             f"Variantes por set: {shown_variants}",
             f"Max seeds/gen: {shown_max_seeds}",
             f"Backtests: {'si' if shown_backtests else 'no'}",
+            f"Explorar universo sin seed: {'si' if self.ubs_force_unseeded_universe.get() else 'no'}",
             f"Pass: PF>={self.ubs_pass_min_profit_factor.get().strip()} | DD<={self.ubs_pass_max_drawdown_pct.get().strip()}% | Trades>={self.ubs_pass_min_trades.get()}",
             f"Pass: Profit neto>{self.ubs_pass_min_net_profit.get().strip()} | Recovery>={self.ubs_pass_min_recovery_factor.get().strip()}",
             f"Backtests pendientes existentes: {pending_count}",
@@ -241,6 +244,25 @@ class UBSAgentLogicMixin:
             min_recovery_factor_var=self.ubs_seed_pass_min_recovery_factor,
             context="Seeds UBS",
         )
+
+    def _ubs_robust_score_args(self) -> list[str]:
+        return self._score_args_from_vars(
+            min_net_profit_var=self.ubs_robust_pass_min_net_profit,
+            min_profit_factor_var=self.ubs_robust_pass_min_profit_factor,
+            min_trades_var=self.ubs_robust_pass_min_trades,
+            max_drawdown_pct_var=self.ubs_robust_pass_max_drawdown_pct,
+            min_recovery_factor_var=self.ubs_robust_pass_min_recovery_factor,
+            context="Robustez UBS",
+        )
+
+    def _ubs_robust_bonus_values(self) -> tuple[float, float]:
+        positive = self._score_float(self.ubs_robust_positive_bonus, "Robustez bonus positivo")
+        negative = self._score_float(self.ubs_robust_negative_bonus, "Robustez bonus negativo")
+        if positive < 0:
+            raise ValueError("Robustez bonus positivo no puede ser negativo.")
+        if negative > 0:
+            raise ValueError("Robustez bonus negativo debe ser 0 o negativo.")
+        return positive, negative
 
     def _ubs_tester_args(self) -> list[str]:
         args = [

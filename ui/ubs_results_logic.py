@@ -154,6 +154,7 @@ class UBSResultsLogicMixin:
     def _refresh_ubs_results_panel(self) -> None:
         for label, callback in (
             ("ubs_results", self._refresh_ubs_results),
+            ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_comparison", self._refresh_ubs_comparison),
             ("ubs_continue", self._refresh_ubs_continue_state),
@@ -181,7 +182,25 @@ class UBSResultsLogicMixin:
         columns = {str(row["name"]) for row in conn.execute("pragma table_info(runs)")}
         if "hidden" not in columns:
             conn.execute("alter table runs add column hidden integer not null default 0")
-            conn.commit()
+        conn.execute(
+            """
+            create table if not exists candidate_robustness (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                report_path text,
+                score real,
+                accepted integer,
+                metrics_json text,
+                from_date text not null default '',
+                to_date text not null default '',
+                positive_bonus real not null default 30.0,
+                negative_bonus real not null default -30.0,
+                evaluated_at text not null
+            )
+            """
+        )
+        conn.commit()
 
     def _ubs_continuation_info(self) -> dict[str, object]:
         memory_path = self._ubs_memory_path()
@@ -456,6 +475,7 @@ class UBSResultsLogicMixin:
             return
         self.status_text.set("Resultados UBS archivados en memoria")
         self._refresh_ubs_results()
+        self._refresh_ubs_robustness()
         self._refresh_ubs_history()
         self._refresh_ubs_comparison()
 

@@ -18,7 +18,8 @@ MetaTrader 5. It automates three related workflows:
 3. Parse MT5 HTML reports and generate Excel portfolio workbooks with
    strategy metrics and drawdown analysis.
 4. Run a UBS-specific set-generation agent that mutates known-good `.set`
-   files, backtests variants, scores reports, and stores memory in SQLite.
+   files, backtests variants, scores reports, tests accepted candidates in an
+   optional out-of-sample robustness window, and stores memory in SQLite.
 
 The main user-facing entry point is the Tkinter desktop app in
 [`app_ui.py`](../app_ui.py). The same functionality is also available through
@@ -43,6 +44,12 @@ batch wrappers.
 - MT5 can silently ignore `/config` if the terminal is already open. The code
   has running-process checks; preserve them unless intentionally changing MT5
   launch behavior.
+- Backtests launched through `terminal64.exe /config:<ini>` are intentionally
+  one MT5 process per job. Do not keep a terminal open and push multiple configs
+  into it unless replacing the `/config` runner with a proven queue/control
+  integration. In multiterminal mode, each worker may open/close its assigned
+  terminal per job; the UI should only block terminals that were already open
+  before the batch starts or left behind by a previous failed job.
 - Portfolio parsing must support both English and Spanish MT5 HTML reports.
   Recent MT5 reports in this workspace use English labels (`Results`,
   `Orders`, `Deals`, `Symbol`, `Time`, etc.).
@@ -116,8 +123,50 @@ template untouched. `ubs_agent.py` accepts the same flags and forwards them to
 |-----|-------|
 | `self.ubs_agent_from_date` / `ubs_agent_to_date` | UBS Agent generation runs |
 | `self.ubs_seed_from_date` / `ubs_seed_to_date` | Seed evaluation runs |
+| `self.ubs_robust_from_date` / `ubs_robust_to_date` | UBS Robustness OOS runs |
 
-All four are persisted in `ui_settings.ini` `[General]`. Empty = uses template dates.
+All six are persisted in `ui_settings.ini` `[General]`. Empty = uses template dates.
+
+### UBS Robustez OOS
+
+Robustness is a second-stage UBS test for candidates that already passed normal
+generation scoring:
+
+- CLI: `ubs_agent.py --evaluate-robustness --robust-run-id <id>`.
+- UI:
+  - `UBS Agente UBS` has a **Robustez OOS** config block with separate dates,
+    separate scoring thresholds, positive/negative bonus values, and an
+    auto-run toggle.
+  - `UBS Resultados` has **Continuar a robustez** for the latest visible run.
+  - `UBS Robustez` shows accepted candidates from the visible run plus their
+    OOS status, score, bonus, report, and OOS metrics.
+- SQLite: results are stored in `candidate_robustness`, separate from base
+  `candidates` scores.
+- Weight rule: every base candidate still contributes as before. Robustness
+  adds only a bonus adjustment:
+  - robust `accepted`: add `positive_bonus` (default `+30`).
+  - robust `rejected`: add `negative_bonus` (default `-30`).
+  - `no_report`, `parse_error`, `report_mismatch`, and `no_trades`: neutral,
+    no robustness bonus.
+- `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
+  and the `UBS Universo` UI must apply the same robustness bonus logic.
+
+### UBS Unseeded Universe Exploration
+
+`UBS Agente UBS` has a **Poblar universo sin seed** toggle. It is off by
+default and persisted as `ubs_force_unseeded_universe` in `ui_settings.ini`.
+When enabled, the UI passes `--force-unseeded-universe` to `ubs_agent.py`.
+
+The option reserves part of generation for universe coverage:
+
+- Asset target selection gets a 40% early chance to choose a universe symbol
+  not represented by the current seed pool, preferring symbols with no feedback.
+- Timeframe target selection gets a 35% early chance to choose related
+  timeframes not represented by the current seed pool, preferring TFs with no
+  feedback.
+- If an explored asset/TF survives into the next generation as an internal
+  candidate seed, it is no longer considered unseeded for that generation.
+- Disabled universe symbols remain excluded.
 
 ### UBS Results tab — new columns, export and retry
 
