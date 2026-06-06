@@ -713,6 +713,8 @@ class MT5AutotesterUI(
         self.ubs_compare_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_compare_detail = tk.StringVar(value="Selecciona un resultado para comparar contra su seed.")
         self.ubs_compare_run_id = tk.StringVar(value="")
+        self.ubs_results_run_id = tk.StringVar(value="")
+        self.ubs_robust_run_id = tk.StringVar(value="")
         self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
         self.ubs_seed_override_symbol = tk.StringVar(value="")
         self.ubs_weights_locked = tk.BooleanVar(value=False)
@@ -745,6 +747,8 @@ class MT5AutotesterUI(
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_checked: set[str] = set()
         self._ubs_compare_latest_seen_run_id = 0
+        self._ubs_results_latest_seen_run_id = 0
+        self._ubs_robust_latest_seen_run_id = 0
         self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
@@ -892,6 +896,12 @@ class MT5AutotesterUI(
                   foreground=[("readonly", COLORS["text"]), ("disabled", COLORS["muted"])],
                   selectbackground=[("readonly", COLORS["entry_bg"])],
                   selectforeground=[("readonly", COLORS["text"])])
+        # Style the Listbox popup used by every Combobox dropdown
+        self.option_add("*TCombobox*Listbox.background", COLORS["entry_bg"])
+        self.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
+        self.option_add("*TCombobox*Listbox.selectBackground", COLORS["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        self.option_add("*TCombobox*Listbox.borderWidth", "0")
         style.configure("Treeview", background=COLORS["tree_bg"], fieldbackground=COLORS["tree_bg"],
                         foreground=COLORS["text"], rowheight=26, borderwidth=0)
         style.map("Treeview", background=[("selected", COLORS["accent"])], foreground=[("selected", "#ffffff")])

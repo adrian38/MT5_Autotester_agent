@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -84,6 +85,56 @@ class UBSRobustnessLogicMixin:
                 parts.append(f"{label}: {value}")
         return " | ".join(parts)
 
+    def _ubs_robust_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
+        rows = conn.execute(
+            """
+            select
+                r.id,
+                r.created_at,
+                r.hidden,
+                count(c.id) as total,
+                sum(case when c.status = 'accepted' then 1 else 0 end) as accepted
+            from runs r
+            left join candidates c on c.run_id = r.id
+            group by r.id
+            order by r.id desc
+            """
+        ).fetchall()
+        options: list[tuple[int, str]] = []
+        for row in rows:
+            run_id = int(row["id"])
+            created = str(row["created_at"] or "")[:16]
+            total = int(row["total"] or 0)
+            accepted = int(row["accepted"] or 0)
+            hidden_tag = " [arch]" if row["hidden"] else ""
+            options.append((run_id, f"#{run_id} | {created} | {total} ({accepted} ok){hidden_tag}"))
+        return options
+
+    def _selected_ubs_robust_run_id(self, options: list[tuple[int, str]]) -> int:
+        if not options:
+            return 0
+        newest_run_id = options[0][0]
+        latest_seen = int(getattr(self, "_ubs_robust_latest_seen_run_id", 0) or 0)
+        if newest_run_id > latest_seen:
+            self._ubs_robust_latest_seen_run_id = newest_run_id
+            return newest_run_id
+        selected = self.ubs_robust_run_id.get().strip()
+        match = re.search(r"#?(\d+)", selected)
+        if match:
+            run_id = int(match.group(1))
+            if any(option_id == run_id for option_id, _ in options):
+                return run_id
+        return newest_run_id
+
+    def _update_ubs_robust_run_combo(self, options: list[tuple[int, str]], selected_run_id: int) -> None:
+        if not hasattr(self, "ubs_robust_run_combo"):
+            return
+        labels = [label for _, label in options]
+        self.ubs_robust_run_combo.configure(values=labels)
+        selected_label = next((label for run_id, label in options if run_id == selected_run_id), "")
+        if selected_label and self.ubs_robust_run_id.get() != selected_label:
+            self.ubs_robust_run_id.set(selected_label)
+
     def _latest_visible_ubs_run(self) -> sqlite3.Row | None:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
@@ -92,6 +143,14 @@ class UBSRobustnessLogicMixin:
         conn.row_factory = sqlite3.Row
         try:
             self._ensure_ubs_memory_schema(conn)
+            # Use the run selected in the robustness combobox if set
+            import re
+            selected = self.ubs_robust_run_id.get().strip()
+            match = re.search(r"#?(\d+)", selected)
+            if match:
+                run = conn.execute("select * from runs where id=?", (int(match.group(1)),)).fetchone()
+                if run is not None:
+                    return run
             return conn.execute("select * from runs where hidden=0 order by id desc limit 1").fetchone()
         finally:
             conn.close()
@@ -240,7 +299,15 @@ class UBSRobustnessLogicMixin:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
-            run = conn.execute("select * from runs where hidden=0 order by id desc limit 1").fetchone()
+            run_options = self._ubs_robust_run_options(conn)
+            selected_run_id = self._selected_ubs_robust_run_id(run_options)
+            self._update_ubs_robust_run_combo(run_options, selected_run_id)
+            if selected_run_id <= 0:
+                conn.close()
+                self.ubs_robust_summary.set("Robustez: sin run visible")
+                self.ubs_robust_status.set("Limpiaste la vista de resultados; el historico conserva la memoria.")
+                return
+            run = conn.execute("select * from runs where id=?", (selected_run_id,)).fetchone()
             if run is None:
                 conn.close()
                 self.ubs_robust_summary.set("Robustez: sin run visible")

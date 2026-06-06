@@ -66,14 +66,22 @@ class UBSRobustnessViewMixin:
 
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
         row1.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 5))
-        row1.columnconfigure(0, weight=1)
+        row1.columnconfigure(2, weight=1)
         tk.Label(
             row1,
-            text="Fila seleccionada:",
+            text="Run:",
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
-            font=("Segoe UI", 8),
-        ).grid(row=0, column=0, sticky="w")
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self.ubs_robust_run_combo = ttk.Combobox(
+            row1,
+            textvariable=self.ubs_robust_run_id,
+            state="readonly",
+            width=36,
+        )
+        self.ubs_robust_run_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ubs_robust_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_robustness())
         tk.Button(
             row1,
             text="Abrir set",
@@ -86,7 +94,7 @@ class UBSRobustnessViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._open_selected_ubs_robust_set,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 4))
+        ).grid(row=0, column=3, sticky="e", padx=(0, 4))
         tk.Button(
             row1,
             text="Abrir reporte OOS",
@@ -99,7 +107,7 @@ class UBSRobustnessViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._open_selected_ubs_robust_report,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 4))
+        ).grid(row=0, column=4, sticky="e", padx=(0, 4))
 
         ttk.Label(panel, textvariable=self.ubs_robust_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(4, 4)

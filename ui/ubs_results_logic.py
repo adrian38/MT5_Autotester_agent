@@ -421,6 +421,58 @@ class UBSResultsLogicMixin:
             return
         self._run_ubs_continue()
 
+    def _ubs_results_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
+        rows = conn.execute(
+            """
+            select
+                r.id,
+                r.created_at,
+                r.hidden,
+                count(c.id) as total,
+                sum(case when c.status = 'accepted' then 1 else 0 end) as accepted,
+                sum(case when c.status = 'rejected' then 1 else 0 end) as rejected
+            from runs r
+            left join candidates c on c.run_id = r.id
+            group by r.id
+            order by r.id desc
+            """
+        ).fetchall()
+        options: list[tuple[int, str]] = []
+        for row in rows:
+            run_id = int(row["id"])
+            created = str(row["created_at"] or "")[:16]
+            total = int(row["total"] or 0)
+            accepted = int(row["accepted"] or 0)
+            rejected = int(row["rejected"] or 0)
+            hidden_tag = " [arch]" if row["hidden"] else ""
+            options.append((run_id, f"#{run_id} | {created} | {total} ({accepted}/{rejected}){hidden_tag}"))
+        return options
+
+    def _selected_ubs_results_run_id(self, options: list[tuple[int, str]]) -> int:
+        if not options:
+            return 0
+        newest_run_id = options[0][0]
+        latest_seen = int(getattr(self, "_ubs_results_latest_seen_run_id", 0) or 0)
+        if newest_run_id > latest_seen:
+            self._ubs_results_latest_seen_run_id = newest_run_id
+            return newest_run_id
+        selected = self.ubs_results_run_id.get().strip()
+        match = re.search(r"#?(\d+)", selected)
+        if match:
+            run_id = int(match.group(1))
+            if any(option_id == run_id for option_id, _label in options):
+                return run_id
+        return newest_run_id
+
+    def _update_ubs_results_run_combo(self, options: list[tuple[int, str]], selected_run_id: int) -> None:
+        if not hasattr(self, "ubs_results_run_combo"):
+            return
+        labels = [label for _run_id, label in options]
+        self.ubs_results_run_combo.configure(values=labels)
+        selected_label = next((label for run_id, label in options if run_id == selected_run_id), "")
+        if selected_label and self.ubs_results_run_id.get() != selected_label:
+            self.ubs_results_run_id.set(selected_label)
+
     def _refresh_ubs_results(self) -> None:
         if hasattr(self, "ubs_results_tree"):
             for item in self.ubs_results_tree.get_children():
@@ -440,8 +492,22 @@ class UBSResultsLogicMixin:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
+            run_options = self._ubs_results_run_options(conn)
+            selected_run_id = self._selected_ubs_results_run_id(run_options)
+            self._update_ubs_results_run_combo(run_options, selected_run_id)
+            if selected_run_id <= 0:
+                total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
+                self.ubs_results_summary.set("Sin resultados visibles")
+                if total_runs:
+                    self.ubs_results_status.set("Los resultados anteriores estan archivados; el agente conserva la memoria.")
+                else:
+                    self.ubs_results_status.set(f"Memoria: {memory_path}")
+                conn.close()
+                self._set_ubs_results_execute_backtests_enabled(False)
+                self._set_ubs_results_complete_run_enabled(False)
+                return
             latest_run = conn.execute(
-                "select * from runs where hidden=0 order by id desc limit 1"
+                "select * from runs where id=?", (selected_run_id,)
             ).fetchone()
             if latest_run is None:
                 total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
@@ -1390,6 +1456,10 @@ class UBSResultsLogicMixin:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return 0
+        selected = self.ubs_results_run_id.get().strip()
+        match = re.search(r"#?(\d+)", selected)
+        if match:
+            return int(match.group(1))
         conn = connect_memory(memory_path)
         try:
             row = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()

@@ -81,28 +81,36 @@ class UBSResultsViewMixin:
             command=self._hide_latest_ubs_results,
         ).grid(row=0, column=7, sticky="e", padx=(0, 10), pady=(5, 3))
 
-        # ── Fila 1: acciones sobre la fila seleccionada ──
+        # ── Fila 1: selector de run + acciones sobre la fila seleccionada ──
         row1 = tk.Frame(results_bar, bg=self.colors["panel_alt"])
         row1.grid(row=1, column=0, columnspan=8, sticky="ew", padx=10, pady=(0, 5))
-        row1.columnconfigure(0, weight=1)
-        tk.Label(row1, text="Fila seleccionada:", bg=self.colors["panel_alt"],
-                 fg=self.colors["muted"], font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")
+        row1.columnconfigure(2, weight=1)
+        tk.Label(row1, text="Run:", bg=self.colors["panel_alt"],
+                 fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self.ubs_results_run_combo = ttk.Combobox(
+            row1,
+            textvariable=self.ubs_results_run_id,
+            state="readonly",
+            width=36,
+        )
+        self.ubs_results_run_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ubs_results_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_results())
         for col, (label, cmd) in enumerate([
             ("Abrir output",  self._open_ubs_output_dir),
             ("Abrir set",     self._open_selected_ubs_set),
             ("Abrir reporte", self._open_selected_ubs_report),
-        ], start=1):
+        ], start=3):
             tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
                       relief="solid", borderwidth=1, padx=8, pady=5,
                       font=("Segoe UI", 9), cursor="hand2", command=cmd,
                       ).grid(row=0, column=col, sticky="e", padx=(0, 4))
         tk.Label(row1, text="|", bg=self.colors["panel_alt"],
-                 fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=4, padx=(4, 4))
+                 fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=6, padx=(4, 4))
         for col, (label, cmd) in enumerate([
             ("Reprobar fila",      self._retry_selected_ubs_mismatch),
             ("Reprobar run",       self._retry_visible_ubs_run_mismatches),
             ("Repetir sin ops",    self._retry_no_trades_result),
-        ], start=5):
+        ], start=7):
             tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
                       relief="solid", borderwidth=1, padx=8, pady=5,
                       font=("Segoe UI", 9), cursor="hand2", command=cmd,
