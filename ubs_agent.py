@@ -522,6 +522,15 @@ def replace_existing_plain_key(lines: list[str], key: str, value: str) -> bool:
     return False
 
 
+def replace_or_add_plain_key(lines: list[str], key: str, value: str) -> None:
+    if replace_existing_plain_key(lines, key, value):
+        return
+    insert_at = 0
+    while insert_at < len(lines) and (not lines[insert_at].strip() or lines[insert_at].lstrip().startswith(";")):
+        insert_at += 1
+    lines.insert(insert_at, f"{key}={value}")
+
+
 def replace_existing_current_value(lines: list[str], key: str, value: str) -> bool:
     for index, line in enumerate(lines):
         if "=" not in line or line.lstrip().startswith(";"):
@@ -571,7 +580,7 @@ def create_variant(
 ) -> Variant:
     text, encoding = read_set_with_encoding(seed.path)
     lines = text.splitlines()
-    replace_existing_plain_key(lines, "ForceSymbol", target_symbol)
+    replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
     # Apply user-defined frozen override values from the global params config
     frozen_ov, _ = load_mutation_overrides()

@@ -777,13 +777,20 @@ class UBSResultsLogicMixin:
         return options
 
     def _selected_ubs_compare_run_id(self, options: list[tuple[int, str]]) -> int:
+        if not options:
+            return 0
+        newest_run_id = options[0][0]
+        latest_seen = int(getattr(self, "_ubs_compare_latest_seen_run_id", 0) or 0)
+        if newest_run_id > latest_seen:
+            self._ubs_compare_latest_seen_run_id = newest_run_id
+            return newest_run_id
         selected = self.ubs_compare_run_id.get().strip()
         match = re.search(r"#?(\d+)", selected)
         if match:
             run_id = int(match.group(1))
             if any(option_id == run_id for option_id, _label in options):
                 return run_id
-        return options[0][0] if options else 0
+        return newest_run_id
 
     def _update_ubs_compare_run_combo(self, options: list[tuple[int, str]], selected_run_id: int) -> None:
         if not hasattr(self, "ubs_compare_run_combo"):

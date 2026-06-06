@@ -699,6 +699,7 @@ FOREX_SYMBOLS = {
 }
 
 SYMBOL_ALIASES = (
+    (".JP225Cash", re.compile(r"\.?JP225CASH|(?:^|[^A-Z0-9])JP225(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("XAUUSD", re.compile(r"XAUUSD|GOLD|GOLDTRADE|GOLDREAPER|GOLDBOT|PHANTOM", re.IGNORECASE)),
     ("XAGUSD", re.compile(r"XAGUSD|SILVER", re.IGNORECASE)),
     ("XAUEUR", re.compile(r"XAUEUR", re.IGNORECASE)),
