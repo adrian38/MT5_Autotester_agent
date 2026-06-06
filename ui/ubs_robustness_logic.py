@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from tkinter import messagebox
 
+from ubs.db import connect_memory
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
@@ -86,7 +88,7 @@ class UBSRobustnessLogicMixin:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return None
-        conn = sqlite3.connect(memory_path, timeout=1.0)
+        conn = connect_memory(memory_path)
         conn.row_factory = sqlite3.Row
         try:
             self._ensure_ubs_memory_schema(conn)
@@ -96,7 +98,7 @@ class UBSRobustnessLogicMixin:
 
     def _accepted_candidates_for_robustness(self, run_id: int) -> list[sqlite3.Row]:
         memory_path = self._ubs_memory_path()
-        conn = sqlite3.connect(memory_path, timeout=1.0)
+        conn = connect_memory(memory_path)
         conn.row_factory = sqlite3.Row
         try:
             self._ensure_ubs_memory_schema(conn)
@@ -214,7 +216,7 @@ class UBSRobustnessLogicMixin:
             self.ubs_robust_status.set(f"No existe memoria: {memory_path}")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             run = conn.execute("select * from runs where hidden=0 order by id desc limit 1").fetchone()

@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk as _ttk
 from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
+from ubs.db import connect_memory
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -113,7 +114,7 @@ class UBSSeedsLogicMixin:
         overrides: dict[str, tuple[str, str]] = {}
         if memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 conn.row_factory = sqlite3.Row
                 if self._sqlite_table_exists(conn, "seed_scores"):
                     rows = {str(r["seed_path"]): r for r in conn.execute("select * from seed_scores").fetchall()}
@@ -132,7 +133,7 @@ class UBSSeedsLogicMixin:
 
         stats: Counter[str] = Counter()
         disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected", "report_mismatch"}
+        ready_statuses = {"accepted", "rejected", "no_trades", "report_mismatch"}
         for path in seed_files:
             path_text = str(path)
             try:
@@ -271,7 +272,7 @@ class UBSSeedsLogicMixin:
             self.ubs_seed_eval_summary.set(f"Semillas: {seed_count} | evaluadas 0 | pendientes {seed_count}")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             seed_table = conn.execute(
                 "select name from sqlite_master where type='table' and name='seed_scores'"
@@ -284,10 +285,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch', 'disabled_symbol') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol') then 1
+                        when status not in ('accepted', 'rejected', 'no_trades', 'report_mismatch', 'disabled_symbol') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -363,7 +364,7 @@ class UBSSeedsLogicMixin:
         memory_path = self._ubs_memory_path()
         if memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 conn.row_factory = sqlite3.Row
                 self._ensure_ubs_seed_override_schema(conn)
                 if self._sqlite_table_exists(conn, "seed_scores"):
@@ -523,7 +524,7 @@ class UBSSeedsLogicMixin:
             messagebox.showinfo("Semillas UBS", "Sin memoria UBS. Evalua las semillas primero.")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             rows = []
             for info in infos:
@@ -817,7 +818,7 @@ class UBSSeedsLogicMixin:
         memory_path = self._ubs_memory_path()
         if selected_paths and memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 self._cleanup_seed_db(conn, selected_paths)
                 conn.close()
             except sqlite3.Error:
@@ -874,7 +875,7 @@ class UBSSeedsLogicMixin:
         memory_path = self._ubs_memory_path()
         if deleted_paths and memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 self._cleanup_seed_db(conn, deleted_paths)
                 conn.close()
             except sqlite3.Error:
@@ -896,7 +897,7 @@ class UBSSeedsLogicMixin:
         memory_path = self._ubs_memory_path()
         if memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 if self._sqlite_table_exists(conn, "seed_scores"):
                     obsolete_count = int(conn.execute("select count(*) from seed_scores where active=0").fetchone()[0] or 0)
                 conn.close()
@@ -923,7 +924,7 @@ class UBSSeedsLogicMixin:
                 errors.append(f"{path.name}: {exc}")
         if memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 self._cleanup_all_seed_db(conn)
                 conn.close()
             except sqlite3.Error:
@@ -943,7 +944,7 @@ class UBSSeedsLogicMixin:
             messagebox.showinfo("Resetear evaluación", "Sin memoria UBS. No hay nada que resetear.")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             rows = conn.execute("select seed_path, report_path from seed_scores where active=1").fetchall()
             conn.close()
@@ -970,7 +971,7 @@ class UBSSeedsLogicMixin:
                 except OSError:
                     pass
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.execute("""
                 update seed_scores
                 set status='pending', score=null, accepted=null,
@@ -999,13 +1000,13 @@ class UBSSeedsLogicMixin:
             messagebox.showinfo("Calcular pesos", "Sin memoria UBS. Evalúa las semillas primero.")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             seed_files = self._current_ubs_seed_files()
             current_paths = {str(path) for path in seed_files}
             known_paths: set[str] = set()
             pending = conn.execute(
-                "select count(*) as n from seed_scores where active=1 and status not in ('accepted','rejected','report_mismatch','disabled_symbol')"
+                "select count(*) as n from seed_scores where active=1 and status not in ('accepted','rejected','no_trades','report_mismatch','disabled_symbol')"
             ).fetchone()
             total = conn.execute(
                 "select count(*) as n from seed_scores where active=1"
@@ -1053,7 +1054,7 @@ class UBSSeedsLogicMixin:
         memory_path = self._ubs_memory_path()
         memory_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            conn = sqlite3.connect(memory_path, timeout=3.0)
+            conn = connect_memory(memory_path)
             self._ensure_ubs_seed_override_schema(conn)
             now = datetime.now().isoformat(timespec="seconds")
             for seed_path in seed_paths:

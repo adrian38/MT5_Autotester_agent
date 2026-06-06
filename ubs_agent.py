@@ -27,6 +27,7 @@ from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
 from ubs.universe import canonical_symbol, disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
+from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -244,8 +245,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
     parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
     parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
-    parser.add_argument("--robust-positive-bonus", type=float, default=30.0, help="Bonus de peso si el candidato pasa robustez.")
-    parser.add_argument("--robust-negative-bonus", type=float, default=-30.0, help="Bonus de peso si el candidato falla robustez.")
+    parser.add_argument("--robust-positive-bonus", type=float, default=DEFAULT_ROBUST_POSITIVE_BONUS, help="Bonus de peso si el candidato pasa robustez.")
+    parser.add_argument("--robust-negative-bonus", type=float, default=DEFAULT_ROBUST_NEGATIVE_BONUS, help="Bonus de peso si el candidato falla robustez.")
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
     parser.add_argument(
         "--reconcile-seed-eval-only",

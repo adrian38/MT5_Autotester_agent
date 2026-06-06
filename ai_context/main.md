@@ -139,17 +139,42 @@ generation scoring:
     auto-run toggle.
   - `UBS Resultados` has **Continuar a robustez** for the latest visible run.
   - `UBS Robustez` shows accepted candidates from the visible run plus their
-    OOS status, score, bonus, report, and OOS metrics.
+    OOS status, cause, score, bonus, report, and OOS metrics. Its table has a
+    `SEL` checkbox column and a `CAUSA` column derived from OOS
+    `metrics_json.reasons`.
 - SQLite: results are stored in `candidate_robustness`, separate from base
   `candidates` scores.
-- Weight rule: every base candidate still contributes as before. Robustness
-  adds only a bonus adjustment:
-  - robust `accepted`: add `positive_bonus` (default `+30`).
-  - robust `rejected`: add `negative_bonus` (default `-30`).
-  - `no_report`, `parse_error`, `report_mismatch`, and `no_trades`: neutral,
-    no robustness bonus.
-- `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
-  and the `UBS Universo` UI must apply the same robustness bonus logic.
+- Weight rule lives in `ubs/weights.py` and must be shared by
+  `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
+  and the `UBS Universo` UI:
+  - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).
+  - base `rejected`: score minus `REJECTED_BASE_PENALTY` and per-cause
+    penalties from `metrics_json.reasons`.
+  - base `no_trades`: fixed negative reliability penalty.
+  - `report_mismatch`, `no_report`, and `parse_error`: no weight.
+  - robust `accepted`: add `positive_bonus` (default `+70`).
+  - robust `rejected`: add `negative_bonus` (default `-70`) plus OOS
+    per-cause penalties.
+  - weights are grouped by correlated candidate source before averaging and
+    shrunk toward zero for small samples.
+  - active seed scores with scored reports contribute at full base strength,
+    the same as generated candidates. Seeds do not receive robustness bonus
+    unless a separate seed-date/robustness bonus is explicitly added.
+
+Current local memory was migrated in June 2026 from old robustness bonus
+defaults `+30/-30` to `+70/-70` for rows that still had the old exact defaults.
+
+Visible-run behavior:
+
+- `UBS Resultados` and `UBS Robustez` use the latest visible run:
+  `runs where hidden=0 order by id desc limit 1`.
+- New UBS generation runs are inserted with `hidden=0`, so they become the
+  visible run immediately.
+- `UBS Historico` lists all runs and its candidate table includes a `ROBUST`
+  column (`OK +bonus`, `FAIL -bonus`, neutral statuses, or `pendiente`).
+- `UBS Comparar` lists visible runs and auto-selects a newly created latest run
+  when it appears; if no newer run exists, it preserves the user's manual run
+  selection.
 
 ### UBS Unseeded Universe Exploration
 
@@ -186,6 +211,23 @@ The option reserves part of generation for universe coverage:
 - **"Repetir sin ops"** button: retries a `no_trades` candidate using
   `--retry-candidate-id`, same mechanism as "Reprobar mismatch". Only
   activates for rows with status `no_trades`. `_retry_no_trades_result()`.
+- **Retryable problem rows**: `report_mismatch` and `no_report` can be retried
+  individually or at run level. Once a retry updates the row to `accepted` or
+  `rejected`, it enters the normal weight pool. A `rejected` candidate now
+  contributes through `ubs.weights`: raw score minus the base rejection penalty
+  and per-cause penalties.
+
+### UBS symbol inference / ForceSymbol safety
+
+Generated UBS variants should always carry the intended target symbol:
+
+- `ubs_agent.py:create_variant()` uses `replace_or_add_plain_key()` so
+  `ForceSymbol=<target_symbol>` exists even when the source seed lacked that
+  key.
+- `run_tests.py` recognizes broker/index symbols such as `.JP225Cash` /
+  `JP225Cash` before broad aliases such as `GOLD -> XAUUSD`.
+- This prevents generated paths such as `JP225Cash/H4/...GOLD...set` from
+  being run on `XAUUSD` only because the original seed name contains `GOLD`.
 
 ### Design system
 
@@ -228,6 +270,14 @@ also call `self._safe_refresh("ubs_universe", self._refresh_ubs_universe)`.
 Operations already covered: seed deletion, run deletion, candidate-set deletion,
 limpiar-pesos buttons, reset seed evaluation.
 
+### UBS memory audit and SQLite defaults
+
+`ubs/db.py` centralizes UBS SQLite connections. `AgentMemory` enables WAL mode
+and UI memory reads/writes use the shared helper with a longer busy timeout.
+Use `python .\tools\ubs_memory_audit.py` after UBS runs, seed evaluation,
+robustness, or weight formula changes to verify run counts, seed readiness,
+stale/missing reports, robustness bonuses, JSON metrics, and current weights.
+
 ### UBS Seeds tab — new features
 
 - **SEL checkbox column** + `self.ubs_seed_checked`.
@@ -262,6 +312,8 @@ limpiar-pesos buttons, reset seed evaluation.
 
 - **PanedWindow vertical**: Runs | Candidatos drag-resizable.
 - **SEL column** on both Runs tree and Candidatos tree.
+- **ROBUST column** on Candidatos: shows `OK +bonus`, `FAIL -bonus`, neutral
+  robustness states, or `pendiente` for accepted rows not yet tested OOS.
 - **"Eliminar run"**: deletes run + ALL its candidates from DB + their `.set`
   files + report files (.htm + images). Also sets `seed_scores.score=NULL`
   for all active seeds so Universe weights drop to 0. Refreshes Universe.
@@ -272,6 +324,8 @@ limpiar-pesos buttons, reset seed evaluation.
 
 - **PanedWindow horizontal**: Resultados | Diff parámetros drag-resizable.
 - **SEL column** on Resultados tree + `self.ubs_compare_checked`.
+- Run selector lists visible runs and automatically switches to a newly created
+  latest visible run; manual selection is preserved while no newer run exists.
 
 ### Multiterminal tab — refactor
 
@@ -349,8 +403,10 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   weights explicitly.
 - Seed evaluation skip logic now detects symbol/TF override changes: saving a
   `seed_override` that changes symbol or TF triggers re-evaluation.
-- `report_mismatch` seed rows are treated as ready/quarantined for pending
-  counts; they are not re-run until the seed file or symbol/TF override changes.
+- `no_trades` and `report_mismatch` seed rows are treated as ready/quarantined
+  for pending counts; `no_trades` contributes the fixed negative reliability
+  weight, while `report_mismatch` contributes no weight. They are not re-run
+  until the seed file or symbol/TF override changes, except via explicit retry.
 - MT5 seed reports with zero closed trades are classified as `no_trades`; the
   Seeds tab exposes "Repetir backtest" to relaunch one selected seed directly.
 - Seeds and Universe tables have a SEL checkbox column. Seed actions use checked

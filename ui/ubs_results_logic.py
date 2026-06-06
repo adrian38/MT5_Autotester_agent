@@ -15,6 +15,8 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
 
+from ubs.db import connect_memory
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
@@ -194,8 +196,8 @@ class UBSResultsLogicMixin:
                 metrics_json text,
                 from_date text not null default '',
                 to_date text not null default '',
-                positive_bonus real not null default 30.0,
-                negative_bonus real not null default -30.0,
+                positive_bonus real not null default 70.0,
+                negative_bonus real not null default -70.0,
                 evaluated_at text not null
             )
             """
@@ -207,7 +209,7 @@ class UBSResultsLogicMixin:
         if not memory_path.exists():
             return {"available": False, "message": "Continuar: sin memoria UBS"}
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             run = conn.execute("select * from runs order by id desc limit 1").fetchone()
@@ -325,7 +327,7 @@ class UBSResultsLogicMixin:
             return
 
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             latest_run = conn.execute(
@@ -459,7 +461,7 @@ class UBSResultsLogicMixin:
         ):
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             latest_run = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()
@@ -494,7 +496,7 @@ class UBSResultsLogicMixin:
             self.ubs_history_candidate_summary.set(f"No existe: {memory_path}")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             rows = conn.execute(
@@ -569,7 +571,7 @@ class UBSResultsLogicMixin:
             return
         memory_path = self._ubs_memory_path()
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             rows = conn.execute(
@@ -666,7 +668,7 @@ class UBSResultsLogicMixin:
             self.ubs_compare_detail.set(f"No existe: {memory_path}")
             return
         try:
-            conn = sqlite3.connect(memory_path, timeout=1.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             run_options = self._ubs_compare_run_options(conn)
             selected_run_id = self._selected_ubs_compare_run_id(run_options)
@@ -837,7 +839,7 @@ class UBSResultsLogicMixin:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return 0, []
-        conn = sqlite3.connect(memory_path, timeout=1.0)
+        conn = connect_memory(memory_path)
         conn.row_factory = sqlite3.Row
         try:
             run_options = self._ubs_compare_run_options(conn)
@@ -1265,7 +1267,7 @@ class UBSResultsLogicMixin:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return 0
-        conn = sqlite3.connect(memory_path, timeout=1.0)
+        conn = connect_memory(memory_path)
         try:
             row = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()
             return int(row[0] or 0) if row else 0
@@ -1279,7 +1281,7 @@ class UBSResultsLogicMixin:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return 0
-        conn = sqlite3.connect(memory_path, timeout=1.0)
+        conn = connect_memory(memory_path)
         try:
             row = conn.execute(
                 """
@@ -1374,7 +1376,7 @@ class UBSResultsLogicMixin:
 
         # ── Leer candidatos ──────────────────────────────────────────────
         try:
-            conn = sqlite3.connect(memory_path, timeout=2.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             run = conn.execute(
@@ -1561,7 +1563,7 @@ class UBSResultsLogicMixin:
             return
 
         try:
-            conn = sqlite3.connect(memory_path, timeout=2.0)
+            conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             run = conn.execute("select * from runs where id=?", (run_id,)).fetchone()
@@ -1608,7 +1610,7 @@ class UBSResultsLogicMixin:
                     pass
 
         try:
-            conn = sqlite3.connect(memory_path, timeout=2.0)
+            conn = connect_memory(memory_path)
             conn.execute("delete from candidates where run_id=?", (run_id,))
             conn.execute("delete from runs where id=?", (run_id,))
             # Limpiar también los scores de seed_scores → los pesos del Universo van a 0
@@ -1671,7 +1673,7 @@ class UBSResultsLogicMixin:
 
         if cids and memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 ph = ",".join("?" for _ in cids)
                 conn.execute(
                     f"update candidates set score=null, accepted=null where id in ({ph})",

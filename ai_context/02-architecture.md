@@ -48,6 +48,7 @@
 |-- ubs/                         # UBS agent support library
 |   |-- __init__.py
 |   |-- models.py                # Shared Seed/Variant dataclasses
+|   |-- db.py                    # SQLite connection defaults for UBS memory
 |   |-- memory.py                # SQLite persistence and row mapping
 |   |-- score.py                 # Report scoring and pass/fail metrics
 |   |-- seeds.py                 # Seed file discovery/naming/hash helpers
@@ -163,7 +164,10 @@ Owns the UBS agent workflow:
   to `run_tests.py`, validates symbol/timeframe again, and stores results in
   `candidate_robustness` without overwriting the base candidate score.
 - Evaluate original UBS seeds with `--evaluate-seeds`. Seed scores are stored
-  in `seed_scores`, feed asset/timeframe feedback, and are surfaced in the UI.
+  in `seed_scores`, feed asset/timeframe feedback at the same base strength as
+  generated candidates when they have valid scored reports, and are surfaced in
+  the UI. Seeds do not receive robustness/date bonus unless a separate seed
+  bonus rule is explicitly added.
 - Store manual seed symbol/timeframe corrections in `seed_overrides`. Overrides
   are applied before seed evaluation and before normal generation.
 - Hard UBS seed rule: if a seed cannot infer both symbol and timeframe after
@@ -176,8 +180,16 @@ Owns the UBS agent workflow:
 UBS support code lives in the `ubs/` package:
 
 - `ubs/models.py`: shared `Seed` and `Variant` dataclasses.
+- `ubs/db.py`: shared SQLite connection helper for UBS memory. It applies a
+  longer busy timeout, and `AgentMemory` enables WAL mode so UI reads and agent
+  writes are less likely to collide.
 - `ubs/memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
   and conversion from candidate rows to `Variant`.
+- `ubs/weights.py`: shared weight formula for `AgentMemory` and `UBS Universo`.
+  It applies accepted bonuses, rejected/cause penalties, no-trades penalty,
+  robustness OOS adjustments, correlated-group averaging, and shrinkage toward
+  zero for small samples. Seed rows with valid scored reports use the same base
+  formula as candidates.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
 - `ubs/universe.py`: RoboForex universe parsing, common alias canonicalisation,
