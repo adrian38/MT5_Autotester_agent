@@ -61,7 +61,7 @@ class UBSSeedsLogicMixin:
             if not reasons:
                 return ""
             formats = {
-                "net_profit": ("net profit", ".0f", ""),
+                "net_profit": ("net norm", ".0f", ""),
                 "profit_factor": ("PF", ".2f", ""),
                 "trades": ("trades", "d", ""),
                 "drawdown_pct": ("DD", ".1f", "%"),
@@ -71,7 +71,7 @@ class UBSSeedsLogicMixin:
             parts = []
             for reason in reasons:
                 label, fmt, suffix = formats.get(reason, (reason, "", ""))
-                value = data.get(reason)
+                value = data.get("normalized_net_profit") if reason == "net_profit" else data.get(reason)
                 if value is None:
                     parts.append(label)
                     continue

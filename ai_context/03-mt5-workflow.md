@@ -225,11 +225,15 @@ fixed negative reliability penalty. The Seeds tab can relaunch a single selected
 
 Seed acceptance thresholds in the UI are independent from UBS Agent generation
 thresholds. The default seed net-profit threshold is `0`, which means strict
-`net_profit > 0` because the scorer rejects `net_profit <= min_net_profit`.
+`normalized_net_profit > 0` because the scorer rejects
+`normalized_net_profit <= min_net_profit`. The raw report `net_profit` remains
+stored for audit/display; current RoboForex scoring factors are configured in
+`assets/roboforex_normalization.json`.
 When `--evaluate-seeds` runs, already evaluated `accepted`/`rejected` seeds are
 re-scored from their stored reports using the current seed thresholds, without
 rerunning MT5 if the seed file and symbol/timeframe are unchanged.
-Use `ubs_agent.py --rescore-seeds-only` when only thresholds changed and MT5
+Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`, and
+`--rescore-robustness-only` when thresholds or normalization changed and MT5
 should not be launched.
 
 Seed evaluation is resumable after an interrupted MT5 batch. Before launching
@@ -282,13 +286,17 @@ Accepted UBS candidates can be sent to an out-of-sample robustness pass with
 as:
 
 - `UBS Agente UBS` -> `Robustez OOS` configuration block.
-- `UBS Resultados` -> `Continuar a robustez`.
-- `UBS Robustez` -> OOS result table and manual execute/refresh actions.
+- `UBS Resultados` -> `Continuar a robustez` for only accepted candidates
+  without stored OOS, plus `Reprobar robustez` to rerun all accepted candidates.
+- `UBS Robustez` -> OOS result table plus the same continue/rerun actions.
 
-The robustness run copies every accepted candidate `.set` from the selected run
-into `outputs/ubs_agent/<run>/robustness/run_<id>_<timestamp>/`, then calls
-`run_tests.py` on that folder. `--from-date` / `--to-date` are robustness-only
-dates when provided; empty values use the tester template.
+The full robustness run copies every accepted candidate `.set` from the
+selected run into `outputs/ubs_agent/<run>/robustness/run_<id>_<timestamp>/`,
+then calls `run_tests.py` on that folder. `--robust-pending-only` filters that
+queue to accepted candidates with no existing `candidate_robustness` row. The
+UI's "Continuar" action uses that flag; "Reprobar" intentionally omits it.
+`--from-date` / `--to-date` are robustness-only dates when provided; empty
+values use the tester template.
 
 Robustness has its own score thresholds and its own positive/negative weight
 bonus. The default bonus scale is `+70/-70`. The base candidate score in
@@ -302,7 +310,8 @@ bonus. The default bonus scale is `+70/-70`. The base candidate score in
 
 The agent and `UBS Universo` must use `ubs.weights` for the same formula:
 accepted rows get the accepted bonus, rejected rows get rejection/cause
-penalties, no-trades rows get a fixed reliability penalty, robust results apply
+penalties and are capped so they never add positive weight, no-trades rows get
+a fixed reliability penalty, robust results apply
 their OOS adjustment, correlated groups are averaged before aggregation, and
 small samples are shrunk toward zero. Seeds do not have a robustness bonus by
 default, but seeds with scored reports still contribute even when candidate
@@ -318,10 +327,10 @@ seed` in `UBS Agente UBS` or pass `ubs_agent.py --force-unseeded-universe`.
 When enabled:
 
 - `choose_target_symbol()` computes universe symbols not represented by the
-  current seed pool and gets a 40% early chance to choose one of them before
+  current seed pool and gets a 65% early chance to choose one of them before
   ordinary exploit/feedback logic.
 - `choose_target_period()` computes timeframes not represented by the current
-  seed pool and gets a 35% early chance to choose one if it is related to the
+  seed pool and gets a 50% early chance to choose one if it is related to the
   current seed timeframe.
 - The forced branch prefers items with no feedback yet. Items with negative
   feedback can still be explored if no unseen item remains.
@@ -342,3 +351,7 @@ When enabled:
   without checking encoding.
 - Broker symbols may start with a dot, for example `.US30Cash`; this leading
   dot is part of the symbol and must not be stripped by report parsing.
+- Broker symbols may contain internal dots, for example `BRK.B`. Report/config
+  names derived from `.set` stems must preserve those dots and the rest of the
+  stem; do not run `Path(stem).stem` on an already-extensionless stem, because
+  it turns `BRK.B_...` into `BRK` and causes report collisions.

@@ -96,7 +96,10 @@ def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
         value = score + accepted_bonus
     else:
         reasons = metric_reasons(row_get(row, "metrics_json"))
-        value = score - REJECTED_BASE_PENALTY - reason_penalty(reasons, REJECTED_REASON_PENALTIES)
+        reasons_penalty = reason_penalty(reasons, REJECTED_REASON_PENALTIES)
+        value = score - REJECTED_BASE_PENALTY - reasons_penalty
+        max_rejected_weight = -reasons_penalty if reasons else -REJECTED_BASE_PENALTY
+        value = min(value, max_rejected_weight)
 
     robust_status = row_text(row, "robust_status").lower()
     if robust_status == "accepted":

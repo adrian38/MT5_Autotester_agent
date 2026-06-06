@@ -64,7 +64,7 @@ class UBSRobustnessLogicMixin:
         if not reasons:
             return ""
         formats = {
-            "net_profit": ("net", ".0f", ""),
+            "net_profit": ("net norm", ".0f", ""),
             "profit_factor": ("PF", ".2f", ""),
             "trades": ("trades", "d", ""),
             "drawdown_pct": ("DD", ".1f", "%"),
@@ -74,7 +74,7 @@ class UBSRobustnessLogicMixin:
         parts: list[str] = []
         for reason in reasons:
             label, fmt, suffix = formats.get(str(reason), (str(reason), "", ""))
-            value = metrics.get(reason)
+            value = metrics.get("normalized_net_profit") if str(reason) == "net_profit" else metrics.get(reason)
             if value is None:
                 parts.append(label)
                 continue
@@ -104,8 +104,9 @@ class UBSRobustnessLogicMixin:
             self._ensure_ubs_memory_schema(conn)
             return conn.execute(
                 """
-                select c.*
+                select c.*, cr.status as robust_status
                 from candidates c
+                left join candidate_robustness cr on cr.candidate_id = c.id
                 where c.run_id=? and c.status='accepted'
                 order by c.generation, c.id
                 """,
@@ -114,7 +115,7 @@ class UBSRobustnessLogicMixin:
         finally:
             conn.close()
 
-    def _ubs_robustness_args(self, run_id: int) -> list[str]:
+    def _ubs_robustness_args(self, run_id: int, *, pending_only: bool = False) -> list[str]:
         output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
         positive_bonus, negative_bonus = self._ubs_robust_bonus_values()
         args = [
@@ -128,6 +129,8 @@ class UBSRobustnessLogicMixin:
             "--robust-negative-bonus", str(negative_bonus),
             "--delay", str(self.delay.get()),
         ]
+        if pending_only:
+            args.append("--robust-pending-only")
         if self.ubs_robust_from_date.get().strip():
             args.extend(["--from-date", self.ubs_robust_from_date.get().strip()])
         if self.ubs_robust_to_date.get().strip():
@@ -145,7 +148,13 @@ class UBSRobustnessLogicMixin:
             args.extend(["--symbol-map", self.symbol_map.get().strip()])
         return args
 
-    def _run_ubs_robustness_for_latest_run(self, *, confirm: bool = True, auto: bool = False) -> bool:
+    def _run_ubs_robustness_for_latest_run(
+        self,
+        *,
+        confirm: bool = True,
+        auto: bool = False,
+        pending_only: bool = True,
+    ) -> bool:
         try:
             run = self._latest_visible_ubs_run()
             if run is None:
@@ -155,14 +164,22 @@ class UBSRobustnessLogicMixin:
             run_id = int(run["id"])
             rows = self._accepted_candidates_for_robustness(run_id)
             rows = [row for row in rows if Path(row["set_path"]).exists()]
+            if pending_only:
+                rows = [row for row in rows if not str(row["robust_status"] or "").strip()]
             if not rows:
-                message = f"Run #{run_id} no tiene candidatos accepted con .set existente para robustez."
+                if pending_only:
+                    message = (
+                        f"Run #{run_id} no tiene accepted pendientes de robustez. "
+                        "Usa Reprobar robustez para repetir todos."
+                    )
+                else:
+                    message = f"Run #{run_id} no tiene candidatos accepted con .set existente para robustez."
                 self.ubs_robust_status.set(message)
                 if not auto:
                     messagebox.showinfo("Robustez UBS", message)
                 return False
             positive_bonus, negative_bonus = self._ubs_robust_bonus_values()
-            args = self._ubs_robustness_args(run_id)
+            args = self._ubs_robustness_args(run_id, pending_only=pending_only)
         except Exception as exc:
             if not auto:
                 self._show_error("No se pudo preparar robustez UBS", str(exc))
@@ -171,7 +188,8 @@ class UBSRobustnessLogicMixin:
             return False
 
         details = [
-            f"Accion: Robustez OOS UBS run #{run_id}",
+            f"Accion: {'Continuar robustez OOS UBS' if pending_only else 'Reprobar robustez OOS UBS'} run #{run_id}",
+            f"Modo: {'solo accepted sin OOS registrado' if pending_only else 'todos los accepted, reemplaza OOS existente'}",
             f"Candidatos accepted a testear: {len(rows)}",
             f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
             f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",
@@ -184,6 +202,9 @@ class UBSRobustnessLogicMixin:
         self._show_section("ubs_robustez")
         self._run_script("ubs_agent.py", args)
         return True
+
+    def _rerun_ubs_robustness_for_latest_run(self) -> bool:
+        return self._run_ubs_robustness_for_latest_run(pending_only=False)
 
     def _maybe_auto_run_ubs_robustness(self, script_name: str, args: list[str], code: int) -> bool:
         if code != 0 or script_name != "ubs_agent.py" or not self.ubs_robust_auto.get():
@@ -201,8 +222,8 @@ class UBSRobustnessLogicMixin:
             return False
         if "--execute-backtests" not in args:
             return False
-        self._append_console("\n[Robustez auto] Lanzando robustez OOS sobre accepted del run visible.\n", tag="info")
-        return self._run_ubs_robustness_for_latest_run(confirm=False, auto=True)
+        self._append_console("\n[Robustez auto] Lanzando robustez OOS sobre accepted pendientes sin OOS.\n", tag="info")
+        return self._run_ubs_robustness_for_latest_run(confirm=False, auto=True, pending_only=True)
 
     def _refresh_ubs_robustness(self) -> None:
         if hasattr(self, "ubs_robust_tree"):
@@ -299,6 +320,7 @@ class UBSRobustnessLogicMixin:
                     self._format_ubs_number(row["robust_score"]),
                     self._format_ubs_number(bonus),
                     self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("normalized_net_profit")),
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
                     self._format_ubs_int(metrics.get("trades")),

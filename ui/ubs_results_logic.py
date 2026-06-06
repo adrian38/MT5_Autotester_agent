@@ -48,7 +48,7 @@ class UBSResultsLogicMixin:
             if not reasons:
                 return ""
             formats = {
-                "net_profit": ("net profit", ".0f", ""),
+                "net_profit": ("net norm", ".0f", ""),
                 "profit_factor": ("PF", ".2f", ""),
                 "trades": ("trades", "d", ""),
                 "drawdown_pct": ("DD", ".1f", "%"),
@@ -58,7 +58,7 @@ class UBSResultsLogicMixin:
             parts = []
             for reason in reasons:
                 label, fmt, suffix = formats.get(reason, (reason, "", ""))
-                value = data.get(reason)
+                value = data.get("normalized_net_profit") if reason == "net_profit" else data.get(reason)
                 if value is None:
                     parts.append(label)
                     continue
@@ -313,6 +313,114 @@ class UBSResultsLogicMixin:
         if self.ubs_continue_button is not None:
             self.ubs_continue_button.set_disabled(not available)
 
+    def _set_ubs_results_execute_backtests_enabled(self, enabled: bool) -> None:
+        button = getattr(self, "ubs_results_execute_backtests_btn", None)
+        if button is None:
+            return
+        button.configure(state=("normal" if enabled else "disabled"), cursor=("hand2" if enabled else ""))
+
+    def _set_ubs_results_complete_run_enabled(self, enabled: bool) -> None:
+        button = getattr(self, "ubs_results_complete_run_btn", None)
+        if button is None:
+            return
+        button.configure(state=("normal" if enabled else "disabled"), cursor=("hand2" if enabled else ""))
+
+    def _visible_ubs_pending_backtests_info(self) -> dict[str, object]:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return {"available": False, "message": "No existe memoria UBS."}
+        try:
+            conn = connect_memory(memory_path)
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            run = conn.execute("select * from runs where hidden=0 order by id desc limit 1").fetchone()
+            if run is None:
+                conn.close()
+                return {"available": False, "message": "No hay run visible en Resultados."}
+            pending = int(conn.execute(
+                """
+                select count(*) as total
+                from candidates
+                where run_id=? and status='generated'
+                """,
+                (run["id"],),
+            ).fetchone()["total"] or 0)
+            conn.close()
+            return {
+                "available": pending > 0,
+                "message": (
+                    f"Run #{run['id']} tiene {pending} backtests pendientes."
+                    if pending > 0
+                    else f"Run #{run['id']} no tiene backtests pendientes."
+                ),
+                "run_id": int(run["id"]),
+                "pending_count": pending,
+            }
+        except sqlite3.Error as exc:
+            return {"available": False, "message": f"Error SQLite: {exc}"}
+
+    def _run_visible_ubs_pending_backtests(self) -> None:
+        visible_info = self._visible_ubs_pending_backtests_info()
+        if not visible_info.get("available"):
+            messagebox.showinfo("Ejecutar backtests", str(visible_info.get("message") or "No hay backtests pendientes."))
+            return
+        continuation_info = self._ubs_continuation_info()
+        if not continuation_info.get("available"):
+            messagebox.showwarning(
+                "Ejecutar backtests",
+                str(continuation_info.get("message") or "El run pendiente no se puede continuar."),
+            )
+            return
+        if int(visible_info.get("run_id") or 0) != int(continuation_info.get("run_id") or 0):
+            messagebox.showwarning(
+                "Ejecutar backtests",
+                "El run visible no coincide con el ultimo run continuable. Actualiza la vista antes de ejecutar.",
+            )
+            return
+        if int(continuation_info.get("pending_count") or 0) <= 0:
+            messagebox.showinfo("Ejecutar backtests", "El run continuable no tiene backtests pendientes.")
+            return
+        try:
+            args = self._ubs_generator_args(continue_last=True)
+        except Exception as exc:
+            self._show_error("No se pudo iniciar backtests pendientes", str(exc))
+            return
+        args.append("--backtest-pending-only")
+        pending_count = int(continuation_info.get("pending_count") or 0)
+        details = [
+            "Accion: Ejecutar backtests pendientes UBS",
+            f"Run: #{continuation_info.get('run_id')}",
+            f"Generacion pendiente: {continuation_info.get('pending_generation')}",
+            f"Backtests pendientes: {pending_count}",
+            "Generaciones nuevas: no",
+            f"Auto robustez: {'si' if self.ubs_robust_auto.get() else 'no'}",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar backtests pendientes UBS", pending_count, details):
+            self._run_script("ubs_agent.py", args)
+
+    def _run_visible_ubs_complete_run(self) -> None:
+        visible_info = self._visible_ubs_pending_backtests_info()
+        continuation_info = self._ubs_continuation_info()
+        if not continuation_info.get("available"):
+            messagebox.showinfo(
+                "Completar run",
+                str(continuation_info.get("message") or "No hay run pendiente para completar."),
+            )
+            return
+        if int(visible_info.get("run_id") or 0) != int(continuation_info.get("run_id") or 0):
+            messagebox.showwarning(
+                "Completar run",
+                "El run visible no coincide con el ultimo run continuable. Actualiza la vista antes de ejecutar.",
+            )
+            return
+        remaining = int(continuation_info.get("remaining") or 0)
+        pending_count = int(continuation_info.get("pending_count") or 0)
+        if remaining <= 0 and pending_count <= 0:
+            messagebox.showinfo("Completar run", "El run visible ya esta completo.")
+            return
+        self._run_ubs_continue()
+
     def _refresh_ubs_results(self) -> None:
         if hasattr(self, "ubs_results_tree"):
             for item in self.ubs_results_tree.get_children():
@@ -324,6 +432,8 @@ class UBSResultsLogicMixin:
         if not memory_path.exists():
             self.ubs_results_summary.set("Sin resultados UBS")
             self.ubs_results_status.set(f"No existe memoria: {memory_path}")
+            self._set_ubs_results_execute_backtests_enabled(False)
+            self._set_ubs_results_complete_run_enabled(False)
             return
 
         try:
@@ -341,6 +451,8 @@ class UBSResultsLogicMixin:
                 else:
                     self.ubs_results_status.set(f"Memoria: {memory_path}")
                 conn.close()
+                self._set_ubs_results_execute_backtests_enabled(False)
+                self._set_ubs_results_complete_run_enabled(False)
                 return
 
             counts = conn.execute(
@@ -379,6 +491,8 @@ class UBSResultsLogicMixin:
         except sqlite3.Error as exc:
             self.ubs_results_summary.set("No se pudieron leer resultados UBS")
             self.ubs_results_status.set(str(exc))
+            self._set_ubs_results_execute_backtests_enabled(False)
+            self._set_ubs_results_complete_run_enabled(False)
             return
 
         total = int(counts["total"] or 0)
@@ -408,6 +522,14 @@ class UBSResultsLogicMixin:
         self.ubs_results_status.set(
             f"Output: {latest_run['output_dir']} | Backtests: {backtests} | mostrando {shown}/{total}{extra_text}"
         )
+        self._set_ubs_results_execute_backtests_enabled(generated > 0)
+        continuation_info = self._ubs_continuation_info()
+        complete_enabled = (
+            bool(continuation_info.get("available"))
+            and int(continuation_info.get("run_id") or 0) == int(latest_run["id"])
+            and int(continuation_info.get("remaining") or 0) > 0
+        )
+        self._set_ubs_results_complete_run_enabled(complete_enabled)
 
         if not hasattr(self, "ubs_results_tree"):
             return
@@ -430,6 +552,7 @@ class UBSResultsLogicMixin:
                     row["period"],
                     self._format_ubs_number(row["score"]),
                     self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("normalized_net_profit")),
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
                     self._format_ubs_int(metrics.get("trades")),

@@ -551,7 +551,8 @@ def load_experts_root() -> Path | None:
 
 
 def safe_name(expert_path: str) -> str:
-    name = Path(expert_path).stem
+    path = Path(expert_path)
+    name = path.stem if path.suffix.lower() in {".ex5", ".mq5", ".set", ".ini", ".htm", ".html"} else path.name
     return "".join(char if char.isalnum() or char in "._-" else "_" for char in name)
 
 

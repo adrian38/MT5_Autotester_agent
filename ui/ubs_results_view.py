@@ -43,24 +43,47 @@ class UBSResultsViewMixin:
             font=("Segoe UI", 9), cursor="hand2",
             command=self._refresh_ubs_results_panel,
         ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
+        self.ubs_results_execute_backtests_btn = tk.Button(
+            results_bar, text="Ejecutar backtests",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            relief="solid", borderwidth=1, padx=8, pady=5,
+            font=("Segoe UI", 9), cursor="hand2",
+            command=self._run_visible_ubs_pending_backtests,
+        )
+        self.ubs_results_execute_backtests_btn.grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        self.ubs_results_complete_run_btn = tk.Button(
+            results_bar, text="Completar run",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            relief="solid", borderwidth=1, padx=8, pady=5,
+            font=("Segoe UI", 9), cursor="hand2",
+            command=self._run_visible_ubs_complete_run,
+        )
+        self.ubs_results_complete_run_btn.grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
             results_bar, text="Continuar a robustez",
             bg=self.colors["primary"], fg=self.colors["primary_text"],
             relief="flat", borderwidth=0, padx=10, pady=5,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._run_ubs_robustness_for_latest_run,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        ).grid(row=0, column=5, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            results_bar, text="Reprobar robustez",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            relief="solid", borderwidth=1, padx=8, pady=5,
+            font=("Segoe UI", 9), cursor="hand2",
+            command=self._rerun_ubs_robustness_for_latest_run,
+        ).grid(row=0, column=6, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
             results_bar, text="Limpiar vista",
             bg=self.colors["panel"], fg=self.colors["muted"],
             relief="solid", borderwidth=1, padx=8, pady=5,
             font=("Segoe UI", 9), cursor="hand2",
             command=self._hide_latest_ubs_results,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=(5, 3))
+        ).grid(row=0, column=7, sticky="e", padx=(0, 10), pady=(5, 3))
 
         # ── Fila 1: acciones sobre la fila seleccionada ──
         row1 = tk.Frame(results_bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
+        row1.grid(row=1, column=0, columnspan=8, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(0, weight=1)
         tk.Label(row1, text="Fila seleccionada:", bg=self.colors["panel_alt"],
                  fg=self.colors["muted"], font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")
@@ -110,7 +133,10 @@ class UBSResultsViewMixin:
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("mark", "run", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "reason", "set")
+        columns = (
+            "mark", "run", "gen", "status", "symbol", "period", "score",
+            "profit", "profit_norm", "pf", "dd", "trades", "reason", "set",
+        )
         self.ubs_results_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
         headings = {
             "mark": "SEL",
@@ -121,6 +147,7 @@ class UBSResultsViewMixin:
             "period": "TF",
             "score": "SCORE",
             "profit": "NET",
+            "profit_norm": "NET NORM",
             "pf": "PF",
             "dd": "DD %",
             "trades": "TRADES",
@@ -136,6 +163,7 @@ class UBSResultsViewMixin:
             "period": 52,
             "score": 78,
             "profit": 84,
+            "profit_norm": 92,
             "pf": 66,
             "dd": 66,
             "trades": 68,
@@ -307,4 +335,3 @@ class UBSResultsViewMixin:
             self.ubs_compare_diff_tree.column(column, width=width, anchor="center", stretch=False)
         self._make_tree_sortable(self.ubs_compare_diff_tree)
         self._attach_tree_scrollbars(diff_panel, self.ubs_compare_diff_tree, 1)
-

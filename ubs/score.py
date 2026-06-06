@@ -8,6 +8,7 @@ import re
 import statistics
 
 from portfolio_manager.mt5_report import StrategyReport, parse_report
+from ubs.normalization import net_profit_normalization
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,11 @@ class ScoreResult:
     score: float
     accepted: bool
     net_profit: float
+    raw_net_profit: float
+    normalized_net_profit: float
+    net_profit_factor: float
+    net_profit_basis: str
+    normalization_group: str
     profit_factor: float
     recovery_factor: float
     drawdown: float
@@ -72,9 +78,11 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
     avg_trade = net_profit / len(profits) if profits else 0.0
     deviation = statistics.pstdev(profits) if len(profits) > 1 else 0.0
     sqn = math.sqrt(len(profits)) * avg_trade / deviation if deviation else 0.0
+    net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol)
+    normalized_net_profit = round(net_profit * net_profit_factor, 2)
 
     score = _score_formula(
-        net_profit=net_profit,
+        net_profit=normalized_net_profit,
         profit_factor=profit_factor,
         recovery_factor=recovery_factor,
         drawdown_pct=drawdown_pct,
@@ -85,7 +93,7 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
     )
 
     reasons = []
-    if net_profit <= config.min_net_profit:
+    if normalized_net_profit <= config.min_net_profit:
         reasons.append("net_profit")
     if profit_factor < config.min_profit_factor:
         reasons.append("profit_factor")
@@ -106,6 +114,11 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
         score=round(score, 4),
         accepted=not reasons,
         net_profit=net_profit,
+        raw_net_profit=net_profit,
+        normalized_net_profit=normalized_net_profit,
+        net_profit_factor=round(net_profit_factor, 4),
+        net_profit_basis=net_profit_basis,
+        normalization_group=normalization_group,
         profit_factor=profit_factor,
         recovery_factor=recovery_factor,
         drawdown=round(drawdown, 2),

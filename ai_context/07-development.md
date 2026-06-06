@@ -36,7 +36,11 @@ python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Bre
 python .\ubs_agent.py --retry-run-id 1 --retry-mismatch-run --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --evaluate-seeds --source-dir ".\sets\ubs_ready" --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --from-date 2025.01.01 --to-date 2026.06.01 --dry-run
+python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --robust-pending-only --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --force-unseeded-universe --dry-run
+python .\ubs_agent.py --rescore-seeds-only --min-net-profit 0 --min-trades 50
+python .\ubs_agent.py --rescore-candidates-only --min-net-profit 100 --min-trades 49
+python .\ubs_agent.py --rescore-robustness-only --min-net-profit 20 --min-trades 50
 ```
 
 Audit current UBS memory and weights:
@@ -107,6 +111,10 @@ For UBS agent changes:
   strength as generated candidates. They should not be scaled down as a prior.
   They also should not receive robustness/date bonus unless an explicit seed
   bonus feature exists.
+- For scoring changes, confirm metrics JSON preserves raw `net_profit` and
+  includes `normalized_net_profit`, `net_profit_factor`, `net_profit_basis`, and
+  `normalization_group`. Pass/fail decisions for `net_profit` must use
+  normalized net, not raw net.
 - After retrying a `report_mismatch` or `no_report` candidate, confirm the
   original row is updated. If it becomes `rejected`, it should contribute
   through `ubs.weights`: raw score minus rejection/cause penalties and without

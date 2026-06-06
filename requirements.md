@@ -140,8 +140,8 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.9** When `--force-unseeded-universe` is enabled, target selection
   MUST reserve exploration for universe assets and timeframes not represented
   by the current seed pool. The forced branch MUST prefer assets/TFs with no
-  feedback yet, MUST remain disabled by default, and MUST continue excluding
-  disabled universe symbols.
+  feedback yet, use a stronger-than-default exploration quota, MUST remain
+  disabled by default, and MUST continue excluding disabled universe symbols.
 - **FR-1.6.10** Every generated UBS variant MUST contain
   `ForceSymbol=<target_symbol>`. If the source seed lacks `ForceSymbol`, the
   agent MUST add it to the generated `.set` so tester symbol inference cannot
@@ -164,17 +164,24 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.7.2** A candidate or seed is `accepted` if and only if ALL thresholds
   are met (empty `reasons` tuple). Any threshold failure produces `rejected` with
   the failing metric names in `reasons`.
-- **FR-1.7.3** The score formula MUST be:
+- **FR-1.7.3** UBS scoring MUST keep `net_profit` as the raw report result, but
+  the net-profit threshold and profit score component MUST use
+  `normalized_net_profit`. The current RoboForex-only normalization lives in
+  `assets/roboforex_normalization.json`: Forex/metals/crypto default to `1.0`,
+  indices/energies to `2.0`, and stocks to `5.0`. Metrics JSON MUST include the
+  raw net, normalized net, factor, basis, and asset group so old results can be
+  audited after rescoring.
+- **FR-1.7.4** The score formula MUST be:
   ```
   score = profit_component + pf_component + recovery_component
         + trades_component + monthly_component + sqn_component
         - dd_penalty - concentration_penalty
   ```
   where each component is capped/floored as defined in `ubs_score._score_formula`.
-- **FR-1.7.4** After scoring, the agent MUST validate the parsed report's
+- **FR-1.7.5** After scoring, the agent MUST validate the parsed report's
   `symbol`/`timeframe` against the candidate target (after applying `symbol_map`).
   A mismatch MUST set status `report_mismatch` regardless of score.
-- **FR-1.7.5** After each MT5 batch, reports older than the batch start time MUST
+- **FR-1.7.6** After each MT5 batch, reports older than the batch start time MUST
   be ignored. History-cache failures or stale files MUST NOT be scored as if
   they belonged to the current backtest.
 
@@ -186,7 +193,8 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.2** `accepted`, `rejected`, and `no_trades` candidates MUST
   contribute to Universe asset/timeframe feedback. `accepted` rows contribute
   score plus accepted bonus. `rejected` rows contribute score minus a fixed
-  rejection penalty and per-cause penalties from `metrics_json.reasons`.
+  rejection penalty and per-cause penalties from `metrics_json.reasons`, capped
+  so a rejected row can never contribute positive weight.
   `no_trades` contributes a fixed negative execution/reliability penalty.
   `report_mismatch`, `no_report`, and `parse_error` MUST NOT contribute to
   weights.
@@ -205,6 +213,9 @@ requirement changes or a debt item is opened/closed.
   `outputs/ubs_agent/<run>/robustness/...`, run `run_tests.py` on that folder,
   validate report symbol/timeframe using the same `symbol_map` rules, and store
   results in `candidate_robustness` without overwriting base `candidates.score`.
+  `--robust-pending-only` MUST limit the pass to accepted candidates with no
+  existing `candidate_robustness` row. Without that flag, robustness MUST rerun
+  all accepted candidates and replace their stored OOS row.
 - **FR-1.8.5** Robustness statuses MUST be one of: `accepted`, `rejected`,
   `no_report`, `parse_error`, `report_mismatch`, `no_trades`.
 - **FR-1.8.6** All base `accepted`/`rejected`/`no_trades` candidates MUST
@@ -257,14 +268,16 @@ requirement changes or a debt item is opened/closed.
   with the UI "Calcular pesos" action.
 - **FR-1.9.9** Seed acceptance thresholds MUST be independent from UBS agent
   generation thresholds in the UI. The default seed net-profit threshold MUST be
-  `0`, meaning a seed passes net profit only when `net_profit > 0`.
+  `0`, meaning a seed passes net profit only when `normalized_net_profit > 0`.
 - **FR-1.9.10** Running `--evaluate-seeds` MUST re-score already evaluated
   `accepted`/`rejected` seed rows from their stored reports using the current
   seed thresholds, without requiring another MT5 backtest when the seed file and
   symbol/TF are unchanged.
 - **FR-1.9.11** `ubs_agent.py --rescore-seeds-only` MUST re-score existing
-  active `accepted`/`rejected` seed rows from stored reports and MUST NOT require
-  an MT5 expert path or launch MT5.
+  active seed rows with stored reports and MUST NOT require an MT5 expert path
+  or launch MT5. `--rescore-candidates-only` and `--rescore-robustness-only`
+  MUST do the same for base candidates and OOS robustness rows. These commands
+  MUST be run with the correct threshold set for seeds, generation, and OOS.
 - **FR-1.9.12** Before launching new seed backtests, `--evaluate-seeds` MUST
   reconcile reports left by interrupted `outputs/ubs_agent/seed_eval/eval_*`
   batches. It MUST match copied `.set` files back to source seeds by file
@@ -384,8 +397,11 @@ requirement changes or a debt item is opened/closed.
   no saved setting exists; positive bonus `+70`; negative bonus `-70`; dates
   empty = template dates.
 - **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
-  for the latest visible run and must confirm the number of accepted candidates
-  before launching MT5.
+  for the latest visible run and must confirm the number of candidates before
+  launching MT5. This action MUST be incremental: it passes
+  `--robust-pending-only` and only runs accepted candidates without stored OOS.
+  The tab MUST also expose `Reprobar robustez`, which reruns all accepted
+  candidates for the visible run.
 - **FR-1.12.23** The UI MUST include a dedicated `UBS Robustez` tab showing
   accepted candidates from the visible run, SEL checkbox, OOS status, OOS
   rejection cause, OOS score, applied bonus, OOS metrics, date range, set path,
@@ -715,6 +731,12 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 - **2026-06** — Robustness/history polish: `UBS Robustez` gained SEL and CAUSA
   columns; `UBS Historico` candidates gained a ROBUST column; `UBS Comparar`
   auto-selects a newly created latest visible run.
+
+- **2026-06** - RoboForex net-profit normalization: UBS scoring keeps raw
+  report `net_profit` but uses `normalized_net_profit` for pass/fail and the
+  profit score component. Factors are configured in
+  `assets/roboforex_normalization.json`; existing seed, candidate, and OOS
+  reports were rescored offline so Universe weights use the updated metrics.
 
 - **2026-06** — Fixed UBS generated symbol safety: generated variants now add
   `ForceSymbol` when missing, and `run_tests.py` recognizes `.JP225Cash` /

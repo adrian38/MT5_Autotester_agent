@@ -708,6 +708,8 @@ class MT5AutotesterUI(
         self.ubs_robust_status = tk.StringVar(value="Sin resultados de robustez")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
+        self.ubs_universe_asset_search = tk.StringVar(value="")
+        self.ubs_universe_tf_search = tk.StringVar(value="")
         self.ubs_compare_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_compare_detail = tk.StringVar(value="Selecciona un resultado para comparar contra su seed.")
         self.ubs_compare_run_id = tk.StringVar(value="")

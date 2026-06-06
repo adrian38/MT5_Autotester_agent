@@ -56,6 +56,33 @@ class UBSUniverseLogicMixin:
             return "neutral"
         return "positive" if value >= 0 else "negative"
 
+    def _ubs_universe_search_terms(self, var_name: str) -> list[str]:
+        variable = getattr(self, var_name, None)
+        if variable is None:
+            return []
+        return [term for term in variable.get().strip().lower().split() if term]
+
+    def _ubs_universe_asset_matches_search(self, group: str, symbol: str, aliases: list[str], terms: list[str]) -> bool:
+        if not terms:
+            return True
+        haystack = " ".join([group, symbol, *aliases]).lower()
+        return all(term in haystack for term in terms)
+
+    def _ubs_universe_tf_matches_search(self, period: str, terms: list[str]) -> bool:
+        if not terms:
+            return True
+        haystack = period.lower()
+        return all(term in haystack for term in terms)
+
+    def _clear_ubs_universe_search(self) -> None:
+        changed = False
+        for variable in (getattr(self, "ubs_universe_asset_search", None), getattr(self, "ubs_universe_tf_search", None)):
+            if variable is not None and variable.get():
+                variable.set("")
+                changed = True
+        if not changed:
+            self._refresh_ubs_universe()
+
     def _on_ubs_universe_tree_click(self, event: tk.Event) -> None:
         item, column = self._tree_item_from_event(self.ubs_universe_assets_tree, event)
         if not item or column != "#1":
@@ -256,6 +283,13 @@ class UBSUniverseLogicMixin:
             avg_score = (sum(scores) / len(scores)) if scores else None
             ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, avg_score))
         ranked_assets.sort(key=lambda item: (item[0], item[4]["pending"]), reverse=True)
+        asset_total_before_filter = len(ranked_assets)
+        asset_search_terms = self._ubs_universe_search_terms("ubs_universe_asset_search")
+        if asset_search_terms:
+            ranked_assets = [
+                row for row in ranked_assets
+                if self._ubs_universe_asset_matches_search(row[1], row[2], row[3], asset_search_terms)
+            ]
 
         if hasattr(self, "ubs_universe_assets_tree"):
             for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
@@ -295,6 +329,10 @@ class UBSUniverseLogicMixin:
             avg_score = (sum(scores) / len(scores)) if scores else None
             tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, avg_score))
         tf_rows.sort(key=lambda item: item[0], reverse=True)
+        tf_total_before_filter = len(tf_rows)
+        tf_search_terms = self._ubs_universe_search_terms("ubs_universe_tf_search")
+        if tf_search_terms:
+            tf_rows = [row for row in tf_rows if self._ubs_universe_tf_matches_search(row[1], tf_search_terms)]
 
         if hasattr(self, "ubs_timeframes_tree"):
             valid_tfs: set[str] = set()
@@ -317,11 +355,19 @@ class UBSUniverseLogicMixin:
                 )
             self.ubs_timeframe_checked.intersection_update(valid_tfs)
 
+        asset_filter_text = (
+            f" | mostrando activos {len(ranked_assets)}/{asset_total_before_filter}"
+            if asset_search_terms else ""
+        )
+        tf_filter_text = (
+            f" | mostrando TF {len(tf_rows)}/{tf_total_before_filter}"
+            if tf_search_terms else ""
+        )
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
             f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | robust +/{total_robust_accepted} -/{total_robust_rejected} | "
-            f"deshabilitados: {len(disabled_symbols)}"
+            f"deshabilitados: {len(disabled_symbols)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
             "PESO = score aceptado + bonus; rechazados/no-ops restan por causa; robustez pesa mas; seeds con reporte valen como generadas."
