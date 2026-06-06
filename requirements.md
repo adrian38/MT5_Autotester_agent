@@ -48,6 +48,11 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.2.7** Broker symbols with a leading dot (e.g. `.US30Cash`) MUST be kept
   intact. Only trailing broker suffixes (e.g. `EURUSD.a`) MAY be stripped during
   normalization.
+- **FR-1.2.8** When a `.set` contains `ForceSymbol`, the tester `Symbol` MUST
+  preserve that literal broker symbol and casing unless an explicit symbol map
+  rewrites it. UBS-generated variant backtests MUST prefer the generated target
+  timeframe from the set path/name over inherited timeframe hints from the
+  source seed.
 
 ### 1.3 Multiterminal execution
 
@@ -62,6 +67,16 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.3.5** In UBS multiterminal mode, every enabled profile MUST point
   `ubs_ex5_file` to a UBS / Ultimate Breakout System `.ex5`. Profiles that
   point to another EA MUST fail validation before MT5 is launched.
+- **FR-1.3.6** Multiterminal workers MUST keep the same `/config` execution
+  contract as single-terminal mode: launch one MT5 process for one generated
+  `.ini`, wait for that process to exit, collect fresh reports, then move to the
+  next job. The runner MUST NOT assume a running MT5 instance can receive a new
+  `/config` reliably.
+- **FR-1.3.7** Running-terminal checks MUST block MT5 instances that are already
+  open before a batch starts, including every active multiterminal profile. The
+  UI MUST show a specific MT5-open alert for exit code
+  `RUNNING_TERMINAL_EXIT_CODE`. Checks MUST NOT interrupt terminal processes
+  opened by the currently active batch itself.
 
 ### 1.4 MT5 report parsing
 
@@ -118,6 +133,11 @@ requirement changes or a debt item is opened/closed.
   `outputs/ubs_mutation_overrides.json` `frozen_override`. This injects the
   globally configured fixed value into every generated variant regardless of
   what value the seed file holds for that key.
+- **FR-1.6.9** When `--force-unseeded-universe` is enabled, target selection
+  MUST reserve exploration for universe assets and timeframes not represented
+  by the current seed pool. The forced branch MUST prefer assets/TFs with no
+  feedback yet, MUST remain disabled by default, and MUST continue excluding
+  disabled universe symbols.
 
 ### 1.7 UBS agent — scoring
 
@@ -163,6 +183,21 @@ requirement changes or a debt item is opened/closed.
     original DB row.
   - Run-level: "Reprobar run" → copies all mismatches from the run, evaluates
     all produced reports. Partial failures leave failed candidates as `no_report`.
+
+- **FR-1.8.4** Accepted candidates MAY be evaluated in a separate OOS robustness
+  pass with `ubs_agent.py --evaluate-robustness --robust-run-id <id>`.
+  Robustness MUST copy accepted candidate `.set` files into
+  `outputs/ubs_agent/<run>/robustness/...`, run `run_tests.py` on that folder,
+  validate report symbol/timeframe using the same `symbol_map` rules, and store
+  results in `candidate_robustness` without overwriting base `candidates.score`.
+- **FR-1.8.5** Robustness statuses MUST be one of: `accepted`, `rejected`,
+  `no_report`, `parse_error`, `report_mismatch`, `no_trades`.
+- **FR-1.8.6** All base `accepted`/`rejected` candidates MUST continue
+  contributing to weights. Robustness only adds a bonus adjustment:
+  `accepted` adds `positive_bonus`; `rejected` adds `negative_bonus`;
+  `no_report`, `parse_error`, `report_mismatch`, and `no_trades` add no bonus.
+  `AgentMemory` feedback methods and the `UBS Universo` UI MUST use identical
+  bonus logic.
 
 ### 1.9 UBS agent — seed evaluation
 
@@ -324,6 +359,24 @@ requirement changes or a debt item is opened/closed.
   manually overridden symbol maps to a disabled Universe symbol. Skipped seeds
   MUST be recorded as `disabled_symbol`, MUST NOT launch MT5, MUST NOT count as
   pending after a reset, and MUST NOT contribute to weights.
+- **FR-1.12.21** The UI MUST expose robustness configuration in `UBS Agente UBS`:
+  independent OOS dates, independent thresholds, positive/negative bonus values,
+  and an auto-run toggle. Defaults: robust thresholds copy agent thresholds when
+  no saved setting exists; positive bonus `+30`; negative bonus `-30`; dates
+  empty = template dates.
+- **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
+  for the latest visible run and must confirm the number of accepted candidates
+  before launching MT5.
+- **FR-1.12.23** The UI MUST include a dedicated `UBS Robustez` tab showing
+  accepted candidates from the visible run, OOS status, OOS score, applied
+  bonus, OOS metrics, date range, set path, and report path.
+- **FR-1.12.24** If the robustness auto-run toggle is enabled, a successful
+  normal UBS agent run with backtests MUST launch robustness automatically for
+  accepted candidates. Auto-run MUST NOT trigger after seed evaluation, seed
+  rescoring, retry actions, or another robustness run.
+- **FR-1.12.25** The UI MUST expose a `Poblar universo sin seed` toggle in
+  `UBS Agente UBS`. It MUST persist as `ubs_force_unseeded_universe` and pass
+  `--force-unseeded-universe` to normal and continuation UBS agent runs.
 
 ### 1.13 Packaging & runtime
 
@@ -615,3 +668,15 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   when empty (via `trace_add` on `template_path`). No_trades on agent runs
   are classified identically to seeds: status `no_trades`, not contributing
   to Universe weights, retryable via "Repetir sin ops".
+
+- **2026-06** — UBS Robustez OOS: `ubs_agent.py --evaluate-robustness` tests
+  accepted candidates from a run in a separate date window, stores results in
+  `candidate_robustness`, and applies configurable positive/negative weight
+  bonuses only for robust `accepted`/`rejected`. UI adds `Robustez OOS`
+  configuration in `UBS Agente UBS`, `Continuar a robustez` in `UBS Resultados`,
+  a dedicated `UBS Robustez` tab, and an optional auto-run toggle.
+
+- **2026-06** — UBS Agent exploration: added `--force-unseeded-universe` and
+  the `Poblar universo sin seed` UI toggle. When enabled, generation reserves
+  part of asset/TF target selection for universe items not represented in the
+  current seed pool, preferring items with no feedback yet.

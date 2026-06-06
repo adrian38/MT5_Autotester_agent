@@ -35,6 +35,8 @@ python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Bre
 python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --retry-run-id 1 --retry-mismatch-run --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --evaluate-seeds --source-dir ".\sets\ubs_ready" --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --from-date 2025.01.01 --to-date 2026.06.01 --dry-run
+python .\ubs_agent.py --force-unseeded-universe --dry-run
 ```
 
 Compile then backtest:
@@ -85,6 +87,17 @@ For UBS agent changes:
   `no_report`, or `parse_error`.
 - Confirm `report_mismatch` rows do not feed `asset_feedback`,
   `timeframe_feedback`, seed feedback, or Universe tab weights.
+- For robustness changes, run `ubs_agent.py --evaluate-robustness --dry-run`
+  against a run with accepted candidates. Confirm copied sets are created under
+  `outputs/ubs_agent/<run>/robustness/...`, and confirm real/non-dry results
+  write `candidate_robustness` without modifying base candidate scores.
+- Confirm robustness bonus math is consistent in `AgentMemory` and `UBS
+  Universo`: robust `accepted` adds positive bonus, robust `rejected` adds
+  negative bonus, and `no_report`/`parse_error`/`report_mismatch`/`no_trades`
+  are neutral.
+- For unseeded-universe exploration changes, use a fixed `--random-seed` and
+  confirm generated candidates include policy labels `asset_unseeded_force` or
+  `tf_unseeded_force` when `--force-unseeded-universe` is active.
 - If testing real MT5 retry, close MT5 first, select a `mismatch reporte` row
   in the UI, and use `Reprobar mismatch` for one candidate or `Reprobar run`
   for all mismatches in the visible run.

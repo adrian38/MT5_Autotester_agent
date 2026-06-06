@@ -33,6 +33,17 @@ class UBSUniverseLogicMixin:
     def _empty_ubs_stat(self) -> dict[str, object]:
         return {"scores": [], "weights": [], "tests": 0, "accepted": 0, "pending": 0, "best": None}
 
+    def _candidate_robustness_bonus(self, row: sqlite3.Row) -> float:
+        status = str(row["robust_status"] or "")
+        try:
+            if status == "accepted":
+                return float(row["robust_positive_bonus"] or 0.0)
+            if status == "rejected":
+                return float(row["robust_negative_bonus"] or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0
+
     def _tag_for_weight(self, value: float | None) -> str:
         if value is None:
             return "neutral"
@@ -110,15 +121,24 @@ class UBSUniverseLogicMixin:
         total_seed_scored = 0
         total_seed_pending = 0
         total_seed_mismatch = 0
+        total_robust_accepted = 0
+        total_robust_rejected = 0
 
         if memory_path.exists():
             try:
                 conn = sqlite3.connect(memory_path, timeout=1.0)
                 conn.row_factory = sqlite3.Row
+                if hasattr(self, "_ensure_ubs_memory_schema"):
+                    self._ensure_ubs_memory_schema(conn)
                 rows = conn.execute(
                     """
-                    select target_symbol, symbol, period, score, accepted, status
-                    from candidates
+                    select
+                        c.target_symbol, c.symbol, c.period, c.score, c.accepted, c.status,
+                        cr.status as robust_status,
+                        cr.positive_bonus as robust_positive_bonus,
+                        cr.negative_bonus as robust_negative_bonus
+                    from candidates c
+                    left join candidate_robustness cr on cr.candidate_id = c.id
                     """
                 ).fetchall()
                 seed_table = conn.execute(
@@ -158,8 +178,14 @@ class UBSUniverseLogicMixin:
                     continue
                 score = float(row["score"])
                 accepted = bool(row["accepted"])
-                asset_weight = score + (20.0 if accepted else 0.0)
-                tf_weight = score + (15.0 if accepted else 0.0)
+                robust_status = str(row["robust_status"] or "")
+                robust_bonus = self._candidate_robustness_bonus(row)
+                if robust_status == "accepted":
+                    total_robust_accepted += 1
+                elif robust_status == "rejected":
+                    total_robust_rejected += 1
+                asset_weight = score + (20.0 if accepted else 0.0) + robust_bonus
+                tf_weight = score + (15.0 if accepted else 0.0) + robust_bonus
                 for stat, weight in ((asset_stat, asset_weight), (tf_stat, tf_weight)):
                     stat["scores"].append(score)
                     stat["weights"].append(weight)
@@ -272,10 +298,11 @@ class UBSUniverseLogicMixin:
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
-            f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | deshabilitados: {len(disabled_symbols)}"
+            f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | robust +/{total_robust_accepted} -/{total_robust_rejected} | "
+            f"deshabilitados: {len(disabled_symbols)}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO activos = promedio(score +20 si accepted); PESO TF = promedio(score +15 si accepted). El agente usa esos pesos para priorizar."
+            "PESO activos = promedio(score +20 si accepted + bonus robustez); PESO TF = promedio(score +15 si accepted + bonus robustez)."
         )
 
     def _disabled_symbols_path(self):

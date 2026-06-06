@@ -18,6 +18,7 @@ import telegram_notify
 from run_tests import (
     EXPERTS_ROOT_FILE,
     REPORT_DIR,
+    RUNNING_TERMINAL_EXIT_CODE,
     TEMPLATE_FILE,
     find_matching_running_terminals,
     find_mt5_path,
@@ -44,6 +45,8 @@ from ui.ubs_agent_logic import UBSAgentLogicMixin
 from ui.ubs_agent_view import UBSAgentViewMixin
 from ui.ubs_results_logic import UBSResultsLogicMixin
 from ui.ubs_results_view import UBSResultsViewMixin
+from ui.ubs_robustness_logic import UBSRobustnessLogicMixin
+from ui.ubs_robustness_view import UBSRobustnessViewMixin
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
@@ -553,6 +556,8 @@ class MT5AutotesterUI(
     UBSParamsLogicMixin,
     UBSResultsViewMixin,
     UBSResultsLogicMixin,
+    UBSRobustnessViewMixin,
+    UBSRobustnessLogicMixin,
     UBSSeedsViewMixin,
     UBSSeedsLogicMixin,
     UBSUniverseViewMixin,
@@ -617,6 +622,9 @@ class MT5AutotesterUI(
         self.ubs_variants_per_seed = tk.IntVar(value=self._saved_int(saved_general.get("ubs_variants_per_seed"), 3))
         self.ubs_max_seeds = tk.IntVar(value=self._saved_int(saved_general.get("ubs_max_seeds"), 50))
         self.ubs_agent_execute = tk.BooleanVar(value=saved_general.get("ubs_agent_execute", "0") in {"1", "true", "yes", "on"})
+        self.ubs_force_unseeded_universe = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_force_unseeded_universe"), False)
+        )
         self.ubs_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_pass_min_net_profit", "100"))
         self.ubs_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_profit_factor", "1.20"))
         self.ubs_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_pass_min_trades"), 50))
@@ -627,10 +635,30 @@ class MT5AutotesterUI(
         self.ubs_seed_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_seed_pass_min_trades"), 50))
         self.ubs_seed_pass_max_drawdown_pct = tk.StringVar(value=saved_general.get("ubs_seed_pass_max_drawdown_pct", "25"))
         self.ubs_seed_pass_min_recovery_factor = tk.StringVar(value=saved_general.get("ubs_seed_pass_min_recovery_factor", "1.0"))
+        self.ubs_robust_pass_min_net_profit = tk.StringVar(
+            value=saved_general.get("ubs_robust_pass_min_net_profit", self.ubs_pass_min_net_profit.get())
+        )
+        self.ubs_robust_pass_min_profit_factor = tk.StringVar(
+            value=saved_general.get("ubs_robust_pass_min_profit_factor", self.ubs_pass_min_profit_factor.get())
+        )
+        self.ubs_robust_pass_min_trades = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_robust_pass_min_trades"), self.ubs_pass_min_trades.get())
+        )
+        self.ubs_robust_pass_max_drawdown_pct = tk.StringVar(
+            value=saved_general.get("ubs_robust_pass_max_drawdown_pct", self.ubs_pass_max_drawdown_pct.get())
+        )
+        self.ubs_robust_pass_min_recovery_factor = tk.StringVar(
+            value=saved_general.get("ubs_robust_pass_min_recovery_factor", self.ubs_pass_min_recovery_factor.get())
+        )
+        self.ubs_robust_positive_bonus = tk.StringVar(value=saved_general.get("ubs_robust_positive_bonus", "30"))
+        self.ubs_robust_negative_bonus = tk.StringVar(value=saved_general.get("ubs_robust_negative_bonus", "-30"))
+        self.ubs_robust_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_robust_auto"), False))
         self.ubs_agent_from_date = tk.StringVar(value=saved_general.get("ubs_agent_from_date", ""))
         self.ubs_agent_to_date = tk.StringVar(value=saved_general.get("ubs_agent_to_date", ""))
         self.ubs_seed_from_date = tk.StringVar(value=saved_general.get("ubs_seed_from_date", ""))
         self.ubs_seed_to_date = tk.StringVar(value=saved_general.get("ubs_seed_to_date", ""))
+        self.ubs_robust_from_date = tk.StringVar(value=saved_general.get("ubs_robust_from_date", ""))
+        self.ubs_robust_to_date = tk.StringVar(value=saved_general.get("ubs_robust_to_date", ""))
         self.symbol_suffix_enabled = tk.BooleanVar(value=saved_general.get("symbol_suffix_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_suffix = tk.StringVar(value=saved_general.get("symbol_suffix", ""))
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
@@ -662,6 +690,8 @@ class MT5AutotesterUI(
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
         self.ubs_history_candidate_summary = tk.StringVar(value="Selecciona un run")
         self.ubs_seed_eval_summary = tk.StringVar(value="Semillas: sin evaluar")
+        self.ubs_robust_summary = tk.StringVar(value="Robustez: sin evaluar")
+        self.ubs_robust_status = tk.StringVar(value="Sin resultados de robustez")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
         self.ubs_compare_summary = tk.StringVar(value="Sin resultados UBS")
@@ -698,9 +728,12 @@ class MT5AutotesterUI(
         self.ubs_history_candidate_checked: set[str] = set()
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_checked: set[str] = set()
+        self._ubs_compare_latest_seen_run_id = 0
         self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
+        self.ubs_robust_paths: dict[str, dict[str, str]] = {}
+        self.ubs_robust_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}
         self.ubs_universe_checked: set[str] = set()
         self.ubs_timeframe_checked: set[str] = set()
@@ -917,7 +950,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -926,6 +959,7 @@ class MT5AutotesterUI(
         self._build_ubs_agent(self.section_frames["agente_ubs"])
         self._build_ubs_seeds(self.section_frames["ubs_seeds"])
         self._build_ubs_results(self.section_frames["ubs_resultados"])
+        self._build_ubs_robustness(self.section_frames["ubs_robustez"])
         self._build_ubs_history(self.section_frames["ubs_historico"])
         self._build_ubs_universe(self.section_frames["ubs_universo"])
         self._build_ubs_comparison(self.section_frames["ubs_comparar"])
@@ -966,6 +1000,7 @@ class MT5AutotesterUI(
             ("agente_ubs", "UBS  Agente UBS"),
             ("ubs_seeds", "UBS  Seeds"),
             ("ubs_resultados", "UBS  Resultados"),
+            ("ubs_robustez", "UBS  Robustez"),
             ("ubs_historico", "UBS  Historico"),
             ("ubs_universo", "UBS  Universo"),
             ("ubs_comparar", "UBS  Comparar"),
@@ -1218,6 +1253,7 @@ class MT5AutotesterUI(
             ("experts", self._refresh_experts),
             ("reports", self._refresh_reports),
             ("ubs_results", self._refresh_ubs_results),
+            ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
             ("ubs_seeds", self._refresh_ubs_seeds),
@@ -1248,10 +1284,12 @@ class MT5AutotesterUI(
         try:
             self._save_template()
             command = self._script_command(script_name, args)
+            self._running_script_name = script_name
+            self._running_script_args = list(args)
             self._append_console(f"\n> {self._format_command(command)}\n", tag="debug")
             self.status_text.set(f"Ejecutando {script_name}")
             self.running_text.set("Proceso activo")
-            self.active_task_text.set(self._script_label(script_name))
+            self.active_task_text.set(self._script_label(script_name, args))
             self.active_task_detail.set("0%")
             self.engine_status_text.set("Engine Running")
             if hasattr(self, "term_status_text"):
@@ -1296,12 +1334,16 @@ class MT5AutotesterUI(
             return False
         args = args or []
         if "--multi-terminal" in args:
-            return False
+            if "--skip-running-check" in args:
+                return False
+            return self._should_block_for_running_multiterminal_mt5()
         ubs_runs_backtests = (
             self.ubs_agent_execute.get()
             or "--execute-backtests" in args
             or "--evaluate-seeds" in args
+            or "--evaluate-robustness" in args
             or "--retry-candidate-id" in args
+            or "--retry-seed-path" in args
             or "--retry-mismatch-run" in args
             or "--retry-mismatch-generation" in args
         )
@@ -1323,6 +1365,29 @@ class MT5AutotesterUI(
         self.status_text.set("Backtest cancelado: MT5 ya esta abierto")
         return True
 
+    def _should_block_for_running_multiterminal_mt5(self) -> bool:
+        if not hasattr(self, "_active_multiterminal_profiles"):
+            return False
+        running_lines: list[str] = []
+        for profile in self._active_multiterminal_profiles():
+            name = str(profile.get("name") or "Terminal")
+            mt5_path = self._profile_path(profile, "mt5_path") if hasattr(self, "_profile_path") else None
+            if not mt5_path:
+                continue
+            running = find_matching_running_terminals(mt5_path)
+            for process in running:
+                running_lines.append(f"{name} | PID {process['pid']}: {process['path']}")
+        if not running_lines:
+            return False
+        messagebox.showerror(
+            "MT5 multiterminal ya abierto",
+            "Hay una o mas terminales MT5 de perfiles multiterminal abiertas.\n\n"
+            + "\n".join(running_lines)
+            + "\n\nCierra esas terminales completamente y vuelve a ejecutar.",
+        )
+        self.status_text.set("Backtest cancelado: MT5 multiterminal ya abierto")
+        return True
+
     def _read_process_output(self) -> None:
         assert self.process is not None
         assert self.process.stdout is not None
@@ -1337,6 +1402,8 @@ class MT5AutotesterUI(
                 item = self.output_queue.get_nowait()
                 if isinstance(item, tuple) and item[0] == "DONE":
                     code = item[1]
+                    finished_script_name = getattr(self, "_running_script_name", "")
+                    finished_script_args = list(getattr(self, "_running_script_args", []))
                     self.running_text.set("Sin proceso activo")
                     self.engine_status_text.set("Engine Ready")
                     self._progress_running = False
@@ -1376,9 +1443,24 @@ class MT5AutotesterUI(
                         self.term_status_icon.configure(fg=COLORS["log_info"] if code == 0 else COLORS["log_error"])
                         self.idle_label.configure(text="IDLE")
                     self._refresh_all()
+                    auto_followup_started = False
+                    if code == 0 and hasattr(self, "_maybe_auto_run_ubs_robustness"):
+                        auto_followup_started = self._maybe_auto_run_ubs_robustness(
+                            finished_script_name,
+                            finished_script_args,
+                            code,
+                        )
                     if code == 0:
-                        self._notify_telegram("MT5 Autotester: proceso finalizado correctamente.")
-                        messagebox.showinfo("Proceso terminado", "El proceso termino correctamente.")
+                        if not auto_followup_started:
+                            self._notify_telegram("MT5 Autotester: proceso finalizado correctamente.")
+                            messagebox.showinfo("Proceso terminado", "El proceso termino correctamente.")
+                    elif code == RUNNING_TERMINAL_EXIT_CODE:
+                        self._notify_telegram("MT5 Autotester: proceso cancelado porque MT5 ya estaba abierto.")
+                        messagebox.showerror(
+                            "MT5 ya esta abierto",
+                            "El proceso se cancelo porque una terminal MT5 ya estaba abierta.\n\n"
+                            "Cierra las terminales MT5 usadas por el proceso y vuelve a ejecutar.",
+                        )
                     else:
                         self._notify_telegram(f"MT5 Autotester: proceso terminado con error (codigo {code}).")
                         self._show_error(
@@ -1523,7 +1605,13 @@ class MT5AutotesterUI(
             return "info"
         return None
 
-    def _script_label(self, script_name: str) -> str:
+    def _script_label(self, script_name: str, args: list[str] | None = None) -> str:
+        args = args or []
+        if script_name == "ubs_agent.py":
+            if "--evaluate-robustness" in args:
+                return "Robustez UBS"
+            if "--evaluate-seeds" in args:
+                return "Evaluando seeds UBS"
         labels = {
             "compile_mq5.py": "Compilando .mq5",
             "run_tests.py": "Ejecutando backtests",

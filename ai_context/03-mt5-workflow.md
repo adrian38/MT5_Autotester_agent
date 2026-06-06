@@ -64,6 +64,14 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
 7. Locate reports in MT5 data/install report locations.
 8. Copy report files into `reports/`.
 
+`terminal64.exe /config:<ini>` is treated as a single-job launch contract. The
+runner opens MT5 for one generated `.ini`, waits for that MT5 process to exit,
+then reads fresh reports and moves to the next job. This open/close cycle is
+intentional: an already-open MT5 instance can silently ignore a new `/config`
+request or keep using its existing tester state. Do not change this into “keep
+MT5 open and send the next config” unless replacing the runner with a proven
+MT5-side queue/control mechanism.
+
 ## Multiterminal Backtests
 
 `run_tests.py` can distribute a backtest queue across multiple manually
@@ -83,6 +91,14 @@ configured MT5 terminals:
   enabled terminals and never more workers than jobs.
 - Compilation remains sequential. Multiterminal mode applies to backtest
   queues, including UBS Tester and UBS Agent backtest execution.
+- Multiterminal still follows the same one-job `/config` contract per profile:
+  a worker opens its terminal for the assigned job, waits for exit, collects the
+  report, then takes another job. It should not keep that terminal open and
+  inject multiple configs into the same running instance.
+- Running-terminal checks must block only terminal instances that are already
+  open before the batch starts, or that were left behind by a previous failed
+  job. They must not treat terminals opened by the current active batch as a
+  reason to stop that same batch.
 
 ## Template Contract
 
@@ -131,6 +147,13 @@ from the UI or `--symbol-map`.
 Exact path tokens are intentionally preferred over loose aliases. Example:
 `XAGUSD__D1__XAUUSD_MIX__...set` should infer `XAGUSD`, even though the name
 also contains `XAUUSD_MIX`.
+
+When UBS generated variants are executed, `ubs_agent.py` calls `run_tests.py`
+with `--prefer-set-path-timeframe`. This makes the tester `Period` come from
+the generated target folder/name instead of a timeframe still present in the
+source seed label or internal set parameters. `ForceSymbol` values read from a
+`.set` are preserved literally for the generated tester `Symbol`, so broker
+symbols such as `.JP225Cash` keep their exact casing.
 
 ## UBS Agent Report Validation
 
@@ -233,6 +256,54 @@ was produced; only candidates without a generated report should remain
 Normal UBS generations follow the same partial-failure rule. A non-zero
 `run_tests.py` exit does not discard reports already produced, but the agent
 must stop if the batch produced no puntuable reports.
+
+## UBS Robustness OOS
+
+Accepted UBS candidates can be sent to an out-of-sample robustness pass with
+`ubs_agent.py --evaluate-robustness --robust-run-id <id>`. The UI exposes this
+as:
+
+- `UBS Agente UBS` -> `Robustez OOS` configuration block.
+- `UBS Resultados` -> `Continuar a robustez`.
+- `UBS Robustez` -> OOS result table and manual execute/refresh actions.
+
+The robustness run copies every accepted candidate `.set` from the selected run
+into `outputs/ubs_agent/<run>/robustness/run_<id>_<timestamp>/`, then calls
+`run_tests.py` on that folder. `--from-date` / `--to-date` are robustness-only
+dates when provided; empty values use the tester template.
+
+Robustness has its own score thresholds and its own positive/negative weight
+bonus. The base candidate score in `candidates` remains unchanged. OOS results
+are stored in `candidate_robustness`:
+
+- `accepted`: add `positive_bonus` to asset/timeframe/mutation feedback.
+- `rejected`: add `negative_bonus` to asset/timeframe/mutation feedback.
+- `no_report`, `parse_error`, `report_mismatch`, `no_trades`: store the state
+  but apply no robustness bonus.
+
+The agent and `UBS Universo` must use the same formula: base candidate
+contribution plus robustness bonus if and only if robustness status is
+`accepted` or `rejected`. Seeds continue contributing exactly as before and do
+not have a robustness bonus.
+
+## UBS Unseeded Universe Exploration
+
+Normal target selection is intentionally biased toward the current seed symbol
+and toward assets/timeframes with positive feedback. To force coverage of
+assets or timeframes with no seed representation, enable `Poblar universo sin
+seed` in `UBS Agente UBS` or pass `ubs_agent.py --force-unseeded-universe`.
+
+When enabled:
+
+- `choose_target_symbol()` computes universe symbols not represented by the
+  current seed pool and gets a 40% early chance to choose one of them before
+  ordinary exploit/feedback logic.
+- `choose_target_period()` computes timeframes not represented by the current
+  seed pool and gets a 35% early chance to choose one if it is related to the
+  current seed timeframe.
+- The forced branch prefers items with no feedback yet. Items with negative
+  feedback can still be explored if no unseen item remains.
+- Disabled symbols are never selected by this branch.
 
 ## MT5 Gotchas
 

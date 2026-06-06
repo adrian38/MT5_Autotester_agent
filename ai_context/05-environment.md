@@ -70,8 +70,10 @@ The project also uses simple text files for source discovery:
   `last_compile.log`.
 - `reports/`: copied MT5 `.htm/.html` reports, images, and `.set` files.
 - `outputs/`: generated Excel workbooks.
-- `outputs/ubs_memory.sqlite`: UBS runs/candidates plus `seed_scores` and
-  `seed_overrides`.
+- `outputs/ubs_memory.sqlite`: UBS runs/candidates plus `seed_scores`,
+  `seed_overrides`, and `candidate_robustness`.
+- `outputs/ubs_agent/<run>/robustness/`: copied accepted candidate `.set` files
+  for out-of-sample robustness batches.
 - `outputs/ubs_global_params.json`: global UBS EA parameter values.
 - `outputs/ubs_mutation_overrides.json`: user mutability overrides for UBS
   parameters.

@@ -4,6 +4,7 @@ import argparse
 import json
 import random
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -234,8 +235,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-seeds", type=int, default=30)
     parser.add_argument("--mutations-per-variant", type=int, default=6)
     parser.add_argument("--top-percent", type=float, default=20.0)
+    parser.add_argument(
+        "--force-unseeded-universe",
+        action="store_true",
+        help="Reserva exploracion para activos/TF del universo que no existen en las seeds base.",
+    )
     parser.add_argument("--continue-last-run", action="store_true", help="Usa la ultima generacion registrada como seeds.")
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
+    parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
+    parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
+    parser.add_argument("--robust-positive-bonus", type=float, default=30.0, help="Bonus de peso si el candidato pasa robustez.")
+    parser.add_argument("--robust-negative-bonus", type=float, default=-30.0, help="Bonus de peso si el candidato falla robustez.")
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
     parser.add_argument(
         "--reconcile-seed-eval-only",
@@ -313,6 +323,31 @@ def choose_seeds(
     return [seed for _, seed in scored[:limit]]
 
 
+def unseeded_universe_targets(
+    seeds: list[Seed],
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    aliases = aliases or {}
+    seed_symbols = {
+        canonical_symbol(seed.symbol, aliases).upper()
+        for seed in seeds
+        if seed.symbol and seed.symbol != "UNKNOWN"
+    }
+    seed_timeframes = {
+        seed.period.upper()
+        for seed in seeds
+        if seed.period and seed.period != "UNKNOWN"
+    }
+    unseeded_symbols = tuple(
+        symbol
+        for symbol in dict.fromkeys(universe_symbols)
+        if canonical_symbol(symbol, aliases).upper() not in seed_symbols
+    )
+    unseeded_timeframes = tuple(period for period in TIMEFRAME_UNIVERSE if period.upper() not in seed_timeframes)
+    return unseeded_symbols, unseeded_timeframes
+
+
 def related_assets(symbol: str) -> tuple[str, ...]:
     symbol = symbol.upper()
     if symbol in {"XAUUSD", "XAGUSD", "XAUEUR"}:
@@ -338,6 +373,9 @@ def choose_target_symbol(
     rng: random.Random,
     universe_symbols: tuple[str, ...] = (),
     aliases: dict[str, str] | None = None,
+    *,
+    force_unseeded_universe: bool = False,
+    unseeded_universe_symbols: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     aliases = aliases or {}
     current = seed.symbol or "UNKNOWN"
@@ -354,6 +392,13 @@ def choose_target_symbol(
         symbol for symbol in dict.fromkeys(universe_symbols)
         if symbol.upper() != current.upper() and symbol.upper() not in disabled
     )
+    unseeded_choices = tuple(
+        symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
+        if symbol.upper() != current.upper() and symbol.upper() not in disabled
+    )
+    if force_unseeded_universe and unseeded_choices and rng.random() < 0.40:
+        unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
+        return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
     if rng.random() < 0.70:
         return current, "exploit"
@@ -388,11 +433,22 @@ def related_timeframes(period: str) -> tuple[str, ...]:
     return TIMEFRAME_UNIVERSE
 
 
-def choose_target_period(seed: Seed, timeframe_feedback: dict[str, float], rng: random.Random) -> tuple[str, str]:
+def choose_target_period(
+    seed: Seed,
+    timeframe_feedback: dict[str, float],
+    rng: random.Random,
+    *,
+    force_unseeded_timeframes: bool = False,
+    unseeded_timeframes: tuple[str, ...] = (),
+) -> tuple[str, str]:
     current = seed.period.upper()
     choices = tuple(dict.fromkeys(related_timeframes(current)))
     if not choices:
         return current, "tf_exploit"
+    forced_choices = tuple(period for period in choices if period.upper() in {tf.upper() for tf in unseeded_timeframes})
+    if force_unseeded_timeframes and forced_choices and rng.random() < 0.35:
+        unseen = [period for period in forced_choices if period.upper() not in timeframe_feedback]
+        return rng.choice(unseen or list(forced_choices)), "tf_unseeded_force"
     if current in choices and rng.random() < 0.60:
         return current, "tf_exploit"
     ranked = sorted(choices, key=lambda item: timeframe_feedback.get(item.upper(), -999999.0), reverse=True)
@@ -466,6 +522,15 @@ def replace_existing_plain_key(lines: list[str], key: str, value: str) -> bool:
     return False
 
 
+def replace_or_add_plain_key(lines: list[str], key: str, value: str) -> None:
+    if replace_existing_plain_key(lines, key, value):
+        return
+    insert_at = 0
+    while insert_at < len(lines) and (not lines[insert_at].strip() or lines[insert_at].lstrip().startswith(";")):
+        insert_at += 1
+    lines.insert(insert_at, f"{key}={value}")
+
+
 def replace_existing_current_value(lines: list[str], key: str, value: str) -> bool:
     for index, line in enumerate(lines):
         if "=" not in line or line.lstrip().startswith(";"):
@@ -515,7 +580,7 @@ def create_variant(
 ) -> Variant:
     text, encoding = read_set_with_encoding(seed.path)
     lines = text.splitlines()
-    replace_existing_plain_key(lines, "ForceSymbol", target_symbol)
+    replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
     # Apply user-defined frozen override values from the global params config
     frozen_ov, _ = load_mutation_overrides()
@@ -576,6 +641,7 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         str(set_dir),
         "--recursive",
         "--infer-tester-from-set",
+        "--prefer-set-path-timeframe",
         "--delay",
         str(args.delay),
     ]
@@ -1073,6 +1139,165 @@ def remove_report_artifacts(set_path: Path) -> None:
             path.unlink()
 
 
+def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.expert and not args.multi_terminal and not args.dry_run:
+        print("ERROR: robustez requiere --expert o --multi-terminal")
+        return 1
+
+    run = memory.run_by_id(args.robust_run_id) if args.robust_run_id else memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para robustez")
+        return 1
+
+    run_id = int(run["id"])
+    run_dir = Path(run["output_dir"])
+    rows = [
+        row
+        for row in memory.accepted_candidates_for_robustness(run_id)
+        if Path(row["set_path"]).exists()
+    ]
+    if not rows:
+        print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
+        return 0
+
+    robust_dir = run_dir / "robustness" / f"run_{run_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    robust_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[tuple[sqlite3.Row, Variant]] = []
+    used_names: set[str] = set()
+    for row in rows:
+        source_set = Path(row["set_path"])
+        name = f"robust_{int(row['id']):06d}_{source_set.name}"
+        if name in used_names:
+            print(f"ERROR: nombre duplicado en robustez: {name}")
+            return 1
+        used_names.add(name)
+        retry_set = robust_dir / name
+        shutil.copy2(source_set, retry_set)
+        if not args.dry_run:
+            remove_report_artifacts(retry_set)
+        original_variant = variant_from_candidate_row(row)
+        copied.append(
+            (
+                row,
+                Variant(
+                    path=retry_set,
+                    seed=original_variant.seed,
+                    target_symbol=original_variant.target_symbol,
+                    target_period=original_variant.target_period,
+                    mutated_keys=original_variant.mutated_keys,
+                    missing_lot_keys=original_variant.missing_lot_keys,
+                    policy=f"{original_variant.policy}+robustness",
+                ),
+            )
+        )
+
+    print(f"Robustez run #{run_id}: candidatos accepted={len(copied)}")
+    print(f"Directorio robustez: {robust_dir}")
+    print(f"Fechas robustez: {args.from_date or '(template)'} -> {args.to_date or '(template)'}")
+    print(
+        "Bonus robustez: "
+        f"accepted={args.robust_positive_bonus:+.2f}, rejected={args.robust_negative_bonus:+.2f}"
+    )
+    batch_started_at = time.time()
+    code = run_backtests(args, robust_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza robustez.")
+        return 1
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    symbol_map = parse_symbol_map(args.symbol_map)
+    status_counts: dict[str, int] = {}
+    for row, variant in copied:
+        candidate_id = int(row["id"])
+        report = find_report_for_set(variant.path, min_mtime=batch_started_at - 1.0)
+        if not report:
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                None,
+                "no_report",
+                None,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            continue
+        try:
+            result = score_report_file(report, config=score_config)
+        except Exception as exc:
+            print(f"AVISO: no pude parsear robustez {report}: {exc}")
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                None,
+                "parse_error",
+                report,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+            continue
+        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+        if not matches:
+            print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                result,
+                "report_mismatch",
+                report,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
+            continue
+        if result.trades <= 0:
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                result,
+                "no_trades",
+                report,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
+            continue
+        status = "accepted" if result.accepted else "rejected"
+        memory.record_candidate_robustness(
+            candidate_id,
+            run_id,
+            result,
+            status,
+            report,
+            args.from_date,
+            args.to_date,
+            args.robust_positive_bonus,
+            args.robust_negative_bonus,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    print(
+        "Robustez terminada: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        + f"; memoria={memory.path}"
+    )
+    return 0
+
+
 def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if not args.retry_candidate_id:
         print("ERROR: falta --retry-candidate-id")
@@ -1286,7 +1511,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     rows = memory.mismatch_candidates_for_generation(run_id, generation)
     rows = [row for row in rows if Path(row["set_path"]).exists()]
     if not rows:
-        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch con .set existente")
+        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch/no_report con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
@@ -1294,7 +1519,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     retry_dir.mkdir(parents=True, exist_ok=True)
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry mismatches run #{run_id} gen {generation}: {len(rows)} candidato(s)")
+    print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])
@@ -1357,7 +1582,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     rows = memory.mismatch_candidates_for_run(run_id)
     rows = [row for row in rows if Path(row["set_path"]).exists()]
     if not rows:
-        print(f"ERROR: run #{run_id} no tiene report_mismatch con .set existente")
+        print(f"ERROR: run #{run_id} no tiene report_mismatch/no_report con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
@@ -1365,7 +1590,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     retry_dir.mkdir(parents=True, exist_ok=True)
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry mismatches run #{run_id}: {len(rows)} candidato(s)")
+    print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])
@@ -1525,12 +1750,32 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
         selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+        unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
         variants: list[Variant] = []
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
+        if args.force_unseeded_universe:
+            print(
+                f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
+                f"TF={len(unseeded_timeframes)}"
+            )
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
-                target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng, universe_symbols, aliases)
-                target_period, period_policy = choose_target_period(seed, timeframe_feedback, rng)
+                target_symbol, policy = choose_target_symbol(
+                    seed,
+                    asset_feedback,
+                    rng,
+                    universe_symbols,
+                    aliases,
+                    force_unseeded_universe=args.force_unseeded_universe,
+                    unseeded_universe_symbols=unseeded_symbols,
+                )
+                target_period, period_policy = choose_target_period(
+                    seed,
+                    timeframe_feedback,
+                    rng,
+                    force_unseeded_timeframes=args.force_unseeded_universe,
+                    unseeded_timeframes=unseeded_timeframes,
+                )
                 variant = create_variant(
                     seed,
                     target_symbol,
@@ -1586,6 +1831,11 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.evaluate_seeds:
         try:
             return evaluate_seed_scores(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.evaluate_robustness:
+        try:
+            return evaluate_candidate_robustness(args, memory, score_config)
         finally:
             memory.close()
     if args.rescore_seeds_only:
@@ -1666,12 +1916,32 @@ def run_agent(args: argparse.Namespace) -> int:
             asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
             selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+            unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
             variants: list[Variant] = []
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
+            if args.force_unseeded_universe:
+                print(
+                    f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
+                    f"TF={len(unseeded_timeframes)}"
+                )
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
-                    target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng, universe_symbols, aliases)
-                    target_period, period_policy = choose_target_period(seed, timeframe_feedback, rng)
+                    target_symbol, policy = choose_target_symbol(
+                        seed,
+                        asset_feedback,
+                        rng,
+                        universe_symbols,
+                        aliases,
+                        force_unseeded_universe=args.force_unseeded_universe,
+                        unseeded_universe_symbols=unseeded_symbols,
+                    )
+                    target_period, period_policy = choose_target_period(
+                        seed,
+                        timeframe_feedback,
+                        rng,
+                        force_unseeded_timeframes=args.force_unseeded_universe,
+                        unseeded_timeframes=unseeded_timeframes,
+                    )
                     variant = create_variant(
                         seed,
                         target_symbol,

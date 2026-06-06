@@ -38,6 +38,8 @@
 |   |-- ubs_params_logic.py      # UBS Parameters/global params logic
 |   |-- ubs_results_view.py      # UBS Results/History/Compare layouts
 |   |-- ubs_results_logic.py     # UBS Results/History/Compare logic
+|   |-- ubs_robustness_view.py   # UBS Robustness OOS widget/layout mixin
+|   |-- ubs_robustness_logic.py  # UBS Robustness OOS launch/table logic
 |   |-- ubs_seeds_view.py        # UBS Seeds widget/layout mixin
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
@@ -102,8 +104,8 @@ Each substantial screen/tab uses a view/logic pair:
   database queries, path/report calculations, and long-running actions.
 
 Current pairs: Dashboard, Files/Logs, Multiterminal, Portfolio, Settings, UBS
-Agent, UBS Parameters, UBS Results/History/Compare, UBS Seeds, and UBS
-Universe. Shared cross-screen behavior may stay in `app_ui.py` only when it is
+Agent, UBS Parameters, UBS Results/History/Compare, UBS Robustness, UBS Seeds,
+and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py` only when it is
 genuinely shell-level or generic infrastructure.
 
 The CLI scripts can still run independently and should remain usable without
@@ -155,6 +157,11 @@ Owns the UBS agent workflow:
   `outputs/ubs_memory.sqlite`.
 - Validate parsed report `Symbol`/`Period` against the intended target after
   applying `symbol_map`; invalid executions become `report_mismatch`.
+- Evaluate out-of-sample robustness with `--evaluate-robustness` for accepted
+  candidates from a run. It copies candidate `.set` files into
+  `outputs/ubs_agent/<run>/robustness/...`, forwards robustness dates/criteria
+  to `run_tests.py`, validates symbol/timeframe again, and stores results in
+  `candidate_robustness` without overwriting the base candidate score.
 - Evaluate original UBS seeds with `--evaluate-seeds`. Seed scores are stored
   in `seed_scores`, feed asset/timeframe feedback, and are surfaced in the UI.
 - Store manual seed symbol/timeframe corrections in `seed_overrides`. Overrides
@@ -201,6 +208,15 @@ UBS support code lives in the `ubs/` package:
 - `report_mismatch`: report parsed, but actual symbol/timeframe does not match
   the candidate target. For `seed_scores`, this also covers UBS seeds that lack
   a resolvable symbol/timeframe before execution.
+
+**Important robustness states (`candidate_robustness`):**
+
+- `accepted`: OOS report passed robustness thresholds; adds positive bonus to
+  asset/timeframe/mutation feedback.
+- `rejected`: OOS report matched target but failed robustness thresholds; adds
+  negative bonus to asset/timeframe/mutation feedback.
+- `no_report`, `parse_error`, `report_mismatch`, `no_trades`: stored for
+  diagnosis, but neutral for weights.
 
 ### `ubs_score.py`
 
@@ -254,7 +270,7 @@ explicitly about packaging.
 | `reports/` | Copied MT5 HTML reports, `.set` files, chart images |
 | `outputs/` | Generated Excel workbooks |
 | `outputs/ubs_agent/` | Generated UBS variants and copied accepted sets |
-| `outputs/ubs_memory.sqlite` | UBS agent SQLite: candidates, runs, seed_scores, seed_overrides |
+| `outputs/ubs_memory.sqlite` | UBS agent SQLite: candidates, runs, seed_scores, seed_overrides, candidate_robustness |
 | `outputs/ubs_global_params.json` | Global EA parameter values edited in the UBS Parámetros tab |
 | `outputs/ubs_mutation_overrides.json` | User mutability overrides: `frozen_override` and `mutable_override` |
 

@@ -44,16 +44,23 @@ class UBSResultsViewMixin:
             command=self._refresh_ubs_results_panel,
         ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
+            results_bar, text="Continuar a robustez",
+            bg=self.colors["primary"], fg=self.colors["primary_text"],
+            relief="flat", borderwidth=0, padx=10, pady=5,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._run_ubs_robustness_for_latest_run,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
             results_bar, text="Limpiar vista",
             bg=self.colors["panel"], fg=self.colors["muted"],
             relief="solid", borderwidth=1, padx=8, pady=5,
             font=("Segoe UI", 9), cursor="hand2",
             command=self._hide_latest_ubs_results,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=(5, 3))
+        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=(5, 3))
 
         # ── Fila 1: acciones sobre la fila seleccionada ──
         row1 = tk.Frame(results_bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 5))
+        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(0, weight=1)
         tk.Label(row1, text="Fila seleccionada:", bg=self.colors["panel_alt"],
                  fg=self.colors["muted"], font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")
@@ -69,7 +76,7 @@ class UBSResultsViewMixin:
         tk.Label(row1, text="|", bg=self.colors["panel_alt"],
                  fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=4, padx=(4, 4))
         for col, (label, cmd) in enumerate([
-            ("Reprobar mismatch",  self._retry_selected_ubs_mismatch),
+            ("Reprobar fila",      self._retry_selected_ubs_mismatch),
             ("Reprobar run",       self._retry_visible_ubs_run_mismatches),
             ("Repetir sin ops",    self._retry_no_trades_result),
         ], start=5):
@@ -217,11 +224,11 @@ class UBSResultsViewMixin:
             font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._delete_ubs_history_candidate_set,
         ).grid(row=0, column=1, sticky="e", padx=(6, 0))
-        cand_columns = ("mark", "id", "gen", "status", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
+        cand_columns = ("mark", "id", "gen", "status", "robust", "symbol", "period", "score", "profit", "pf", "dd", "trades", "set")
         self.ubs_history_candidates_tree = ttk.Treeview(candidates_panel, columns=cand_columns, show="headings",
                                                          height=12, selectmode="extended")
-        cand_headings = {"mark": "SEL", "id": "ID", "gen": "GEN", "status": "ESTADO", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
-        cand_widths = {"mark": 48, "id": 54, "gen": 46, "status": 82, "symbol": 90, "period": 54, "score": 78, "profit": 84, "pf": 66, "dd": 66, "trades": 68, "set": 220}
+        cand_headings = {"mark": "SEL", "id": "ID", "gen": "GEN", "status": "ESTADO", "robust": "ROBUST", "symbol": "SYMBOL", "period": "TF", "score": "SCORE", "profit": "NET", "pf": "PF", "dd": "DD %", "trades": "TRADES", "set": "SET"}
+        cand_widths = {"mark": 48, "id": 54, "gen": 46, "status": 82, "robust": 88, "symbol": 90, "period": 54, "score": 78, "profit": 84, "pf": 66, "dd": 66, "trades": 68, "set": 220}
         for column in cand_columns:
             self.ubs_history_candidates_tree.heading(column, text=cand_headings[column])
             self.ubs_history_candidates_tree.column(column, width=cand_widths[column], anchor="center", stretch=False)
