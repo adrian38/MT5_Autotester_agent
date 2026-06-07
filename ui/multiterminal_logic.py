@@ -70,10 +70,14 @@ class MultiterminalLogicMixin:
     def _update_multiterminal_summary(self) -> None:
         if not hasattr(self, "multiterminal_summary"):
             return
-        active = len(self._active_multiterminal_profiles())
-        workers = min(self._multiterminal_worker_limit(), active) if active else 0
+        worker_limit = self._multiterminal_worker_limit()
+        if worker_limit > 1:
+            available = len(self.multiterminal_profiles)
+        else:
+            available = len(self._active_multiterminal_profiles())
+        workers = min(worker_limit, available) if available else 0
         mode = "on" if self.multiterminal_enabled.get() else "off"
-        self.multiterminal_summary.set(f"{active} activas / usando hasta {workers} / {mode}")
+        self.multiterminal_summary.set(f"{available} activas / usando hasta {workers} / {mode}")
 
     def _save_current_multiterminal_editor(self) -> None:
         if not hasattr(self, "mt_profile_name"):
@@ -390,11 +394,15 @@ class MultiterminalLogicMixin:
     def _multiterminal_execution_details(self) -> list[str]:
         if not self.multiterminal_enabled.get():
             return ["Multiterminal: no"]
-        active = len(self._active_multiterminal_profiles())
-        workers = min(self._multiterminal_worker_limit(), active) if active else 0
+        worker_limit = self._multiterminal_worker_limit()
+        if worker_limit > 1:
+            available = len(self.multiterminal_profiles)
+        else:
+            available = len(self._active_multiterminal_profiles())
+        workers = min(worker_limit, available) if available else 0
         return [
             "Multiterminal: si",
-            f"Terminales activas: {active}",
+            f"Terminales activas: {available}",
             f"Workers: {workers}",
         ]
 

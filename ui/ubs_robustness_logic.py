@@ -224,11 +224,15 @@ class UBSRobustnessLogicMixin:
             rows = self._accepted_candidates_for_robustness(run_id)
             rows = [row for row in rows if Path(row["set_path"]).exists()]
             if pending_only:
-                rows = [row for row in rows if not str(row["robust_status"] or "").strip()]
+                rows = [
+                    row for row in rows
+                    if not str(row["robust_status"] or "").strip()
+                    or str(row["robust_status"]) == "report_mismatch"
+                ]
             if not rows:
                 if pending_only:
                     message = (
-                        f"Run #{run_id} no tiene accepted pendientes de robustez. "
+                        f"Run #{run_id} no tiene accepted pendientes de robustez ni con mismatch OOS. "
                         "Usa Reprobar robustez para repetir todos."
                     )
                 else:
@@ -248,7 +252,7 @@ class UBSRobustnessLogicMixin:
 
         details = [
             f"Accion: {'Continuar robustez OOS UBS' if pending_only else 'Reprobar robustez OOS UBS'} run #{run_id}",
-            f"Modo: {'solo accepted sin OOS registrado' if pending_only else 'todos los accepted, reemplaza OOS existente'}",
+            f"Modo: {'accepted sin OOS + mismatch OOS' if pending_only else 'todos los accepted, reemplaza OOS existente'}",
             f"Candidatos accepted a testear: {len(rows)}",
             f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
             f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",

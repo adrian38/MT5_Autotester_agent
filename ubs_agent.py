@@ -1308,10 +1308,14 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
         if Path(row["set_path"]).exists()
     ]
     if args.robust_pending_only:
-        rows = [row for row in rows if not str(row["robust_status"] or "").strip()]
+        rows = [
+            row for row in rows
+            if not str(row["robust_status"] or "").strip()
+            or str(row["robust_status"]) == "report_mismatch"
+        ]
     if not rows:
         if args.robust_pending_only:
-            print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes de OOS.")
+            print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes de OOS ni con mismatch.")
         else:
             print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
         return 0

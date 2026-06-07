@@ -317,7 +317,7 @@ class UBSUniverseLogicMixin:
         valid_symbols = {info["symbol"] for info in self.ubs_universe_paths.values() if info.get("symbol")}
         self.ubs_universe_checked.intersection_update(valid_symbols)
 
-        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
+        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
         observed_timeframes = sorted(period for period in timeframe_stats if period not in timeframe_order)
         ordered_timeframes = timeframe_order + observed_timeframes
         tf_rows = []
@@ -501,7 +501,7 @@ class UBSUniverseLogicMixin:
                                    "Los pesos de TF volverán a 0. ¿Continuar?"):
             return
         import sqlite3
-        periods = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
+        periods = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
         conn = connect_memory(mem)
         n = self._clear_weights_sql(conn, periods=periods)
         conn.close()

@@ -1043,7 +1043,7 @@ class UBSSeedsLogicMixin:
             return
         symbol = self.ubs_seed_override_symbol.get().strip().upper()
         period = self.ubs_seed_override_period.get().strip().upper()
-        valid_periods = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"}
+        valid_periods = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"}
         if not symbol:
             self._show_error("Symbol invalido", "Indica el symbol correcto.")
             return
