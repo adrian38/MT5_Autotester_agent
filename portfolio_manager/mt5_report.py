@@ -284,7 +284,7 @@ def _parse_period(value: str) -> tuple[str, str, str]:
 
 
 def _normalize_timeframe(value: str) -> str:
-    mapping = {"Daily": "D1", "Weekly": "W1", "Monthly": "MN1"}
+    mapping = {"Daily": "D1", "Weekly": "W1", "Monthly": "MN"}
     return mapping.get(value, value)
 
 

@@ -1,0 +1,13 @@
+{
+  "broker": "RoboForex",
+  "basis": "roboforex_lot_0.01_net_profit_normalization",
+  "default_net_profit_factor": 1.0,
+  "group_net_profit_factors": {
+    "Forex": 1.0,
+    "Metals": 1.0,
+    "IndicesEnergies": 2.0,
+    "Crypto": 1.0,
+    "Stocks": 5.0
+  },
+  "symbol_net_profit_factors": {}
+}

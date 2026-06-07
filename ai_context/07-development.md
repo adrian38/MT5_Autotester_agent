@@ -35,6 +35,19 @@ python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Bre
 python .\ubs_agent.py --retry-candidate-id 262 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --retry-run-id 1 --retry-mismatch-run --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --evaluate-seeds --source-dir ".\sets\ubs_ready" --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --from-date 2025.01.01 --to-date 2026.06.01 --dry-run
+python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --robust-pending-only --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+python .\ubs_agent.py --force-unseeded-universe --dry-run
+python .\ubs_agent.py --rescore-seeds-only --min-net-profit 0 --min-trades 50
+python .\ubs_agent.py --rescore-candidates-only --min-net-profit 100 --min-trades 49
+python .\ubs_agent.py --rescore-robustness-only --min-net-profit 20 --min-trades 50
+```
+
+Audit current UBS memory and weights:
+
+```powershell
+python .\tools\ubs_memory_audit.py
+python .\tools\ubs_memory_audit.py --strict
 ```
 
 Compile then backtest:
@@ -63,8 +76,16 @@ For compile/backtest changes:
 For UBS agent changes:
 
 - Run `python -m py_compile run_tests.py ubs_agent.py app_ui.py`.
+- Run `python .\tools\ubs_memory_audit.py` after scoring, seed evaluation,
+  robustness, or weight changes. It checks run status counts, seed readiness,
+  stale/missing reports, old robustness bonus defaults, JSON metrics, and
+  current asset/timeframe/mutation weights using the same `AgentMemory`
+  formula as the app.
 - For symbol/timeframe inference changes, run a dry retry of a known mismatch
   and confirm the generated `.ini` has the intended `Symbol` and `Period`.
+  Include a case whose source seed name contains a loose alias, e.g.
+  `JP225Cash/H4/...GOLD...set`, and confirm the generated `.ini` uses
+  `Symbol=.JP225Cash`, not `XAUUSD`.
 - For seed evaluation changes, run `ubs_agent.py --evaluate-seeds --dry-run`
   against a small seed folder.
 - Confirm a UBS seed with missing/unknown symbol or timeframe is stored as
@@ -82,9 +103,34 @@ For UBS agent changes:
   --max-workers 2 --dry-run` and verify the queue splits without launching MT5.
 - Confirm `outputs/ubs_memory.sqlite` candidate statuses remain terminal after
   completed generations: `accepted`, `rejected`, `report_mismatch`,
-  `no_report`, or `parse_error`.
+  `no_report`, `parse_error`, or `no_trades`.
 - Confirm `report_mismatch` rows do not feed `asset_feedback`,
   `timeframe_feedback`, seed feedback, or Universe tab weights.
+- Confirm active seed rows with valid scored reports (`accepted`, `rejected`,
+  `no_trades`) feed `asset_feedback` and `timeframe_feedback` at the same base
+  strength as generated candidates. They should not be scaled down as a prior.
+  They also should not receive robustness/date bonus unless an explicit seed
+  bonus feature exists.
+- For scoring changes, confirm metrics JSON preserves raw `net_profit` and
+  includes `normalized_net_profit`, `net_profit_factor`, `net_profit_basis`, and
+  `normalization_group`. Pass/fail decisions for `net_profit` must use
+  normalized net, not raw net.
+- After retrying a `report_mismatch` or `no_report` candidate, confirm the
+  original row is updated. If it becomes `rejected`, it should contribute
+  through `ubs.weights`: raw score minus rejection/cause penalties and without
+  accepted bonus.
+- For robustness changes, run `ubs_agent.py --evaluate-robustness --dry-run`
+  against a run with accepted candidates. Confirm copied sets are created under
+  `outputs/ubs_agent/<run>/robustness/...`, and confirm real/non-dry results
+  write `candidate_robustness` without modifying base candidate scores.
+- Confirm robustness bonus math is consistent in `AgentMemory` and `UBS
+  Universo`: robust `accepted` adds positive bonus, robust `rejected` adds
+  negative bonus plus OOS cause penalties, and
+  `no_report`/`parse_error`/`report_mismatch`/`no_trades` are neutral for the
+  robustness adjustment.
+- For unseeded-universe exploration changes, use a fixed `--random-seed` and
+  confirm generated candidates include policy labels `asset_unseeded_force` or
+  `tf_unseeded_force` when `--force-unseeded-universe` is active.
 - If testing real MT5 retry, close MT5 first, select a `mismatch reporte` row
   in the UI, and use `Reprobar mismatch` for one candidate or `Reprobar run`
   for all mismatches in the visible run.
@@ -182,13 +228,17 @@ conn.close()
 '@ | python -
 ```
 
-Known current UBS memory after retry cleanup:
+Known UBS memory snapshot after run #4 on 2026-06-06:
 
-- `accepted`: 153
-- `rejected`: 146
-- `no_report`: 1
-- `report_mismatch`: 0
+- runs: `#2`, `#3`, `#4`; visible/latest run: `#4`.
+- total candidates: `900`; every run has `300` candidates.
+- run #4 candidates: `185 accepted`, `85 rejected`, `30 no_trades`,
+  `0 no_report/report_mismatch/parse_error`.
+- run #4 robustness: `185` accepted candidates evaluated, `143 OK`, `42 FAIL`.
+- active seeds: `318`; `303` have valid scored reports (`215 accepted`,
+  `88 rejected`), and `15` are `disabled_symbol`.
+- active seeds with valid scored reports contribute to weights at the same base
+  strength as generated candidates.
 
-This snapshot is historical only. Current work may include `seed_scores` rows
-and `report_mismatch` seed rows for source seeds that need manual Symbol/TF
-overrides.
+This snapshot is historical only; always query `outputs/ubs_memory.sqlite` for
+the current state before drawing conclusions.

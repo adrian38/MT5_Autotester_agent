@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-from ubs_set_utils import (
+from ubs.set_utils import (
     file_sha256,
     force_fixed_lot_text,
     read_set_with_encoding,

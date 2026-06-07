@@ -38,8 +38,9 @@ The UI exposes:
 - Compile-and-backtest actions.
 - Backtest execution with live logs.
 - Portfolio Manager Excel generators.
-- UBS agent tabs for configuration, results, SQLite history, asset/timeframe
-  universe weights, seed evaluation/overrides, and accepted-vs-seed comparison.
+- UBS agent tabs for configuration, results, robustness OOS, SQLite history,
+  asset/timeframe universe weights, seed evaluation/overrides, and
+  accepted-vs-seed comparison.
 - Multiterminal profile configuration for multiple MT5 installations/data
   folders.
 - Runtime file/log browsing.
@@ -52,8 +53,8 @@ The CLI scripts are the automation core:
 - `compile_mq5.py`: compile `.mq5` files with MetaEditor.
 - `run_tests.py`: generate Strategy Tester configs and launch MT5.
 - `compile_and_backtest.py`: orchestrate compile first, then backtest.
-- `ubs_agent.py`: generate UBS variants, run backtests, score reports, and
-  update `outputs/ubs_memory.sqlite`.
+- `ubs_agent.py`: generate UBS variants, run backtests, score reports, evaluate
+  robustness OOS for accepted candidates, and update `outputs/ubs_memory.sqlite`.
 
 Batch files call those scripts for double-click usage:
 
@@ -90,10 +91,24 @@ Main UI areas:
   seed evaluation actions, reset of seed scores/reports, and seed deletion.
 - `UBS Resultados`: latest run candidates, including `report_mismatch` rows,
   single-candidate retry, and run-level mismatch retry.
+- `UBS Robustez`: out-of-sample robustness results for candidates accepted by
+  the visible UBS run.
 - `UBS Historico`: SQLite run/candidate history.
 - `UBS Universo`: asset/timeframe weights used by the agent. After seed
   evaluation reset, weights stay blocked until the user presses `Calcular pesos`.
 - `UBS Comparar`: accepted set vs seed differences and HTML comparison report.
+
+Weight semantics:
+
+- Original seeds with valid scored reports (`accepted`, `rejected`, or
+  `no_trades`) contribute to asset/timeframe weights at the same base strength
+  as generated candidates.
+- Generated candidates can receive robustness OOS adjustments through
+  `candidate_robustness` (`+70/-70` defaults plus OOS cause penalties).
+- Seeds do not receive robustness/date bonus unless a future explicit seed bonus
+  rule is added.
+- `report_mismatch`, `no_report`, `parse_error`, `pending`, and disabled-symbol
+  rows do not contribute to weights.
 
 ## High-Level Data Flow
 
@@ -116,6 +131,7 @@ UBS agent flow:
 ```text
 sets/ubs_ready/*.set
     -> optional seed evaluation / seed_overrides
+    -> seed_scores rows at full base weight when reports are valid
     -> ubs_agent.py
     -> generated outputs/ubs_agent/<run>/gen_*/**/*.set
     -> run_tests.py + terminal64.exe
@@ -123,6 +139,9 @@ sets/ubs_ready/*.set
     -> ubs_score.py
     -> outputs/ubs_memory.sqlite
     -> accepted_gen_* or report_mismatch/rejected state
+    -> optional robustness OOS for accepted candidates
+    -> candidate_robustness rows + robustness bonus/penalty in weights
+    -> shared ubs.weights formula for agent feedback and UBS Universo
 ```
 
 ## Tech Stack

@@ -26,6 +26,7 @@ EXPERTS_ROOT_FILE = BASE_DIR / "experts_root.txt"
 TEMPLATE_FILE = BASE_DIR / "tester_template.ini"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+RUNNING_TERMINAL_EXIT_CODE = 3
 
 DEFAULT_MT5_PATHS = (
     Path(r"C:\Program Files\RoboForex MT5 Terminal\terminal64.exe"),
@@ -126,6 +127,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Rellena Symbol y Period del tester desde cada .set cuando sea posible.",
     )
+    parser.add_argument(
+        "--prefer-set-path-timeframe",
+        action="store_true",
+        help="Con --infer-tester-from-set, prefiere el timeframe del path/nombre del .set sobre parametros internos.",
+    )
     parser.add_argument("--delay", type=int, default=5, help="Pausa en segundos entre tests.")
     parser.add_argument("--recursive", action="store_true", help="Procesar todos los .ex5 de la carpeta indicada.")
     parser.add_argument(
@@ -158,6 +164,16 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Genera los .ini y muestra los comandos, pero no abre MT5.",
+    )
+    parser.add_argument(
+        "--from-date",
+        default="",
+        help="Fecha inicio backtest en formato YYYY.MM.DD. Sobreescribe FromDate del template.",
+    )
+    parser.add_argument(
+        "--to-date",
+        default="",
+        help="Fecha fin backtest en formato YYYY.MM.DD. Sobreescribe ToDate del template.",
     )
     return parser.parse_args()
 
@@ -320,7 +336,7 @@ def terminal_section_sort_key(section: str) -> tuple[int, str]:
         return (999999, section)
 
 
-def load_terminal_profiles(config_path: Path) -> list[TerminalProfile]:
+def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -> list[TerminalProfile]:
     if not config_path.exists():
         raise FileNotFoundError(f"No existe la configuracion multiterminal: {config_path}")
 
@@ -334,7 +350,7 @@ def load_terminal_profiles(config_path: Path) -> list[TerminalProfile]:
     )
     for index, section in enumerate(sections, start=1):
         values = parser[section]
-        if not parse_bool(values.get("enabled"), True):
+        if not ignore_enabled and not parse_bool(values.get("enabled"), True):
             continue
         mt5_raw = values.get("mt5_path", "").strip()
         experts_raw = values.get("experts_root", "").strip()
@@ -535,7 +551,8 @@ def load_experts_root() -> Path | None:
 
 
 def safe_name(expert_path: str) -> str:
-    name = Path(expert_path).stem
+    path = Path(expert_path)
+    name = path.stem if path.suffix.lower() in {".ex5", ".mq5", ".set", ".ini", ".htm", ".html"} else path.name
     return "".join(char if char.isalnum() or char in "._-" else "_" for char in name)
 
 
@@ -562,19 +579,61 @@ def load_set_files(set_dir: Path | None, set_files: list[str] | None, recursive:
     return sorted(set(files))
 
 
-def copy_set_file_to_tester_profiles(set_file: Path, terminal_data_dirs: list[Path], logger: RunLogger) -> None:
+def mapped_set_text_for_tester(set_file: Path, symbol_map: dict[str, str]) -> tuple[str | None, list[str]]:
+    if not symbol_map:
+        return None, []
+    text = read_set_text(set_file)
+    lines = text.splitlines()
+    changes: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip().lstrip("\ufeff")
+        if not stripped or stripped.startswith(";") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        key = key.strip()
+        if key not in {"ForceSymbol", "Symbol"}:
+            continue
+        current = raw_value.split("||", 1)[0].strip()
+        mapped = apply_symbol_map(current, symbol_map).strip()
+        if not current or mapped.upper() == current.upper():
+            continue
+        lhs = line.split("=", 1)[0]
+        if "||" in raw_value:
+            parts = raw_value.split("||")
+            parts[0] = mapped
+            lines[index] = f"{lhs}={'||'.join(parts)}"
+        else:
+            lines[index] = f"{lhs}={mapped}"
+        changes.append(f"{key}: {current} -> {mapped}")
+    if not changes:
+        return None, []
+    return "\n".join(lines) + ("\n" if text.endswith(("\n", "\r\n")) else ""), changes
+
+
+def copy_set_file_to_tester_profiles(
+    set_file: Path,
+    terminal_data_dirs: list[Path],
+    logger: RunLogger,
+    symbol_map: dict[str, str] | None = None,
+) -> None:
+    mapped_text, changes = mapped_set_text_for_tester(set_file, symbol_map or {})
     copied_to: list[Path] = []
     for data_dir in terminal_data_dirs:
         for target_dir in (data_dir / "MQL5" / "Profiles" / "Tester", data_dir / "tester"):
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 destination = target_dir / set_file.name
-                shutil.copy2(set_file, destination)
+                if mapped_text is None:
+                    shutil.copy2(set_file, destination)
+                else:
+                    destination.write_text(mapped_text, encoding="utf-8", newline="\n")
                 copied_to.append(destination)
             except OSError as exc:
                 logger.write(f"AVISO: no pude copiar {set_file.name} a {target_dir}: {exc}")
     if copied_to:
         logger.write(f"Set file preparado: {set_file.name}")
+        for change in changes:
+            logger.write(f"  Symbol map aplicado al .set: {change}")
         for destination in copied_to:
             logger.write(f"  {destination}")
 
@@ -641,6 +700,7 @@ FOREX_SYMBOLS = {
 }
 
 SYMBOL_ALIASES = (
+    (".JP225Cash", re.compile(r"\.?JP225CASH|(?:^|[^A-Z0-9])JP225(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("XAUUSD", re.compile(r"XAUUSD|GOLD|GOLDTRADE|GOLDREAPER|GOLDBOT|PHANTOM", re.IGNORECASE)),
     ("XAGUSD", re.compile(r"XAGUSD|SILVER", re.IGNORECASE)),
     ("XAUEUR", re.compile(r"XAUEUR", re.IGNORECASE)),
@@ -678,7 +738,8 @@ TIMEFRAME_PATTERNS = (
     ("H1", re.compile(r"(?:^|[^A-Z0-9])H1(?:[^A-Z0-9]|$)|SCALPH1", re.IGNORECASE)),
     ("H4", re.compile(r"(?:^|[^A-Z0-9])H4(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("D1", re.compile(r"(?:^|[^A-Z0-9])D1(?:[^A-Z0-9]|$)|\(D\)|\(DAILY\)|DAILY|DAYTRADE|LONGTERM", re.IGNORECASE)),
-    ("W1", re.compile(r"(?:^|[^A-Z0-9])W1(?:[^A-Z0-9]|$)|WEEKLY", re.IGNORECASE)),
+    ("W1",  re.compile(r"(?:^|[^A-Z0-9])W1(?:[^A-Z0-9]|$)|WEEKLY", re.IGNORECASE)),
+    ("MN", re.compile(r"(?:^|[^A-Z0-9])MN?(?:[^A-Z0-9]|$)|MONTHLY", re.IGNORECASE)),
 )
 
 TIMEFRAME_ENUM = {
@@ -690,6 +751,7 @@ TIMEFRAME_ENUM = {
     "16388": "H4",
     "16408": "D1",
     "32769": "W1",
+    "49153": "MN",
 }
 
 
@@ -723,7 +785,7 @@ def normalize_set_symbol(symbol: str) -> str:
 def infer_symbol_from_set(set_file: Path, params: dict[str, str]) -> str:
     force_symbol = params.get("ForceSymbol", "").strip()
     if force_symbol:
-        return normalize_set_symbol(force_symbol)
+        return force_symbol
 
     haystack = str(set_file).upper().replace("+", "_")
     for token in re.split(r"[^A-Z0-9]+", haystack):
@@ -767,6 +829,20 @@ def infer_period_from_set(set_file: Path, params: dict[str, str]) -> str:
         value = params.get(key, "")
         period = TIMEFRAME_ENUM.get(value)
         if period:
+            return period
+    return ""
+
+
+def infer_period_from_path(set_file: Path) -> str:
+    periods = {period.upper(): period for period in TIMEFRAME_ENUM.values()}
+    for part in (set_file.parent.name, set_file.stem):
+        for token in re.split(r"[^A-Z0-9]+", part.upper()):
+            period = periods.get(token)
+            if period:
+                return period
+    text = str(set_file)
+    for period, pattern in TIMEFRAME_PATTERNS:
+        if pattern.search(text):
             return period
     return ""
 
@@ -833,6 +909,7 @@ def create_ini(
     symbol_suffix: str = "",
     symbol_map: dict[str, str] | None = None,
     infer_tester_from_set: bool = False,
+    prefer_set_path_timeframe: bool = False,
     logger: RunLogger | None = None,
 ) -> tuple[Path, Path]:
     symbol_map = symbol_map or {}
@@ -849,6 +926,10 @@ def create_ini(
     config.read_dict({section: dict(template[section]) for section in template.sections()})
     config["Tester"]["Expert"] = normalize_expert_for_tester(expert_path)
     inferred_fields = infer_tester_fields_from_set(set_file) if infer_tester_from_set else {}
+    if set_file and infer_tester_from_set and prefer_set_path_timeframe:
+        path_period = infer_period_from_path(set_file)
+        if path_period:
+            inferred_fields["Period"] = path_period
     use_template_tester_fields = bool(set_file and infer_tester_from_set and "Symbol" not in inferred_fields)
     if use_template_tester_fields:
         inferred_fields = {}
@@ -1051,13 +1132,14 @@ def run_backtest_job(
             args.symbol_suffix,
             symbol_map,
             args.infer_tester_from_set,
+            args.prefer_set_path_timeframe,
             logger,
         )
     except ValueError as exc:
         logger.write(f"[{profile.name}] ERROR: {exc}")
         return 1
     if job.set_file and not args.dry_run:
-        copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger)
+        copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
     return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
 
 
@@ -1146,7 +1228,10 @@ def main() -> int:
     terminal_profiles: list[TerminalProfile] = []
     if args.multi_terminal:
         try:
-            configured_profiles = load_terminal_profiles(Path(args.terminals_config).expanduser())
+            configured_profiles = load_terminal_profiles(
+            Path(args.terminals_config).expanduser(),
+            ignore_enabled=args.max_workers > 1,
+        )
         except (OSError, ValueError) as exc:
             logger.write(f"ERROR: {exc}")
             return 1
@@ -1217,9 +1302,15 @@ def main() -> int:
                 logger.write(f"  PID {process['pid']}: {process['path']}")
             logger.write("Cierra MT5 completamente y vuelve a ejecutar el script.")
             logger.write("MT5 puede ignorar /config si ya existe una instancia abierta con la misma carpeta de datos.")
-            return 1
+            return RUNNING_TERMINAL_EXIT_CODE
 
     template = load_template(template_path)
+    if args.from_date.strip():
+        template.setdefault("Tester", {})
+        template["Tester"]["FromDate"] = args.from_date.strip()
+    if args.to_date.strip():
+        template.setdefault("Tester", {})
+        template["Tester"]["ToDate"] = args.to_date.strip()
     terminal_data_dirs = [] if args.multi_terminal else ([settings.data_dir] if settings.data_dir else [])
     if not args.multi_terminal and not terminal_data_dirs:
         terminal_data_dirs = discover_terminal_data_dirs(experts)
@@ -1283,7 +1374,7 @@ def main() -> int:
                     for process in running:
                         logger.write(f"  PID {process['pid']}: {process['path']}")
                     logger.write("Cierra esas terminales y vuelve a ejecutar.")
-                    return 1
+                    return RUNNING_TERMINAL_EXIT_CODE
     else:
         missing_experts = missing_experts_in_terminal_data_dirs(experts, terminal_data_dirs)
         if missing_experts and not args.dry_run:
@@ -1331,6 +1422,7 @@ def main() -> int:
                     args.symbol_suffix,
                     symbol_map,
                     args.infer_tester_from_set,
+                    args.prefer_set_path_timeframe,
                     logger,
                 )
             except ValueError as exc:
@@ -1339,7 +1431,7 @@ def main() -> int:
                 failures += 1
                 continue
             if job.set_file and not args.dry_run:
-                copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger)
+                copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
             exit_code = run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
             if exit_code != 0:
                 failures += 1

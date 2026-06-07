@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import configparser
-import csv
-import hashlib
 import json
 import random
 import shutil
@@ -11,22 +8,26 @@ import sqlite3
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 from run_tests import (
+    RUNNING_TERMINAL_EXIT_CODE,
     TIMEFRAME_ENUM,
     apply_symbol_map,
-    infer_period_from_set,
-    infer_symbol_from_set,
     load_set_params,
     normalize_set_symbol,
     parse_symbol_map,
 )
 from ubs_generate_sets import format_like, parse_numeric
-from ubs_score import ScoreConfig, ScoreResult, score_report_file
-from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs.memory import AgentMemory, variant_from_candidate_row
+from ubs.models import Seed, Variant
+from ubs.score import ScoreConfig, ScoreResult, score_report_file
+from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
+from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs.universe import canonical_symbol, disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
+from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,8 +38,8 @@ DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
 DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
-DEFAULT_DISABLED_SYMBOLS = BASE_DIR / "outputs" / "ubs_disabled_symbols.json"
-DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash"
+DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
+DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
 
@@ -215,597 +216,6 @@ def is_agent_mutable_key(key: str) -> bool:
     return key in ALLOWED_MUTATION_KEYS or any(key.startswith(p) for p in ALLOWED_MUTATION_PREFIXES)
 
 
-@dataclass(frozen=True)
-class Seed:
-    path: Path
-    symbol: str
-    period: str
-    family: str
-    run_strategy: str
-
-
-@dataclass(frozen=True)
-class Variant:
-    path: Path
-    seed: Seed
-    target_symbol: str
-    target_period: str
-    mutated_keys: tuple[str, ...]
-    missing_lot_keys: tuple[str, ...]
-    policy: str
-
-
-class AgentMemory:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
-        self._init()
-
-    def close(self) -> None:
-        self.conn.close()
-
-    def _init(self) -> None:
-        self.conn.executescript(
-            """
-            create table if not exists runs (
-                id integer primary key autoincrement,
-                created_at text not null,
-                source_dir text not null,
-                output_dir text not null,
-                generations integer not null,
-                variants_per_seed integer not null,
-                max_seeds integer not null,
-                execute_backtests integer not null,
-                dry_run integer not null,
-                hidden integer not null default 0
-            );
-            create table if not exists candidates (
-                id integer primary key autoincrement,
-                run_id integer not null,
-                generation integer not null,
-                seed_path text not null,
-                set_path text not null,
-                symbol text not null,
-                target_symbol text not null,
-                period text not null,
-                family text not null,
-                run_strategy text not null,
-                mutated_keys text not null,
-                missing_lot_keys text not null,
-                policy text not null,
-                report_path text,
-                score real,
-                accepted integer,
-                metrics_json text,
-                status text not null,
-                created_at text not null
-            );
-            create table if not exists seed_scores (
-                id integer primary key autoincrement,
-                seed_path text not null unique,
-                seed_mtime real not null,
-                seed_size integer not null,
-                symbol text not null,
-                period text not null,
-                family text not null,
-                run_strategy text not null,
-                report_path text,
-                score real,
-                accepted integer,
-                metrics_json text,
-                status text not null,
-                active integer not null default 1,
-                last_seen text not null,
-                evaluated_at text
-            );
-            create table if not exists seed_overrides (
-                seed_path text primary key,
-                symbol text not null default '',
-                period text not null default '',
-                updated_at text not null
-            );
-            """
-        )
-        self._ensure_column("runs", "hidden", "integer not null default 0")
-        self.conn.execute(
-            """
-            update seed_scores
-            set status='report_mismatch', accepted=null
-            where status in ('accepted', 'rejected')
-              and (upper(symbol)='UNKNOWN' or upper(period)='UNKNOWN')
-            """
-        )
-        self.conn.commit()
-
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")}
-        if column not in columns:
-            self.conn.execute(f"alter table {table} add column {column} {definition}")
-
-    def create_run(
-        self,
-        source_dir: Path,
-        output_dir: Path,
-        generations: int,
-        variants_per_seed: int,
-        max_seeds: int,
-        execute_backtests: bool,
-        dry_run: bool,
-    ) -> int:
-        cur = self.conn.execute(
-            """
-            insert into runs (
-                created_at, source_dir, output_dir, generations, variants_per_seed,
-                max_seeds, execute_backtests, dry_run
-            ) values (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                str(source_dir),
-                str(output_dir),
-                generations,
-                variants_per_seed,
-                max_seeds,
-                int(execute_backtests),
-                int(dry_run),
-            ),
-        )
-        self.conn.commit()
-        return int(cur.lastrowid)
-
-    def record_variant(self, run_id: int, generation: int, variant: Variant, status: str = "generated") -> None:
-        self.conn.execute(
-            """
-            insert into candidates (
-                run_id, generation, seed_path, set_path, symbol, target_symbol, period,
-                family, run_strategy, mutated_keys, missing_lot_keys, policy, status, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                generation,
-                str(variant.seed.path),
-                str(variant.path),
-                variant.seed.symbol,
-                variant.target_symbol,
-                variant.target_period,
-                variant.seed.family,
-                variant.seed.run_strategy,
-                ";".join(variant.mutated_keys),
-                ";".join(variant.missing_lot_keys),
-                variant.policy,
-                status,
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        self.conn.commit()
-
-    def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
-        accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
-        self.conn.execute(
-            """
-            update candidates
-            set report_path=?, score=?, accepted=?, metrics_json=?, status=?
-            where set_path=?
-            """,
-            (
-                str(report_path) if report_path else (result.report_path if result else None),
-                result.score if result else None,
-                accepted,
-                result.to_json() if result else None,
-                status,
-                str(set_path),
-            ),
-        )
-        self.conn.commit()
-
-    def prepare_seed_evaluation(self, seeds: list[Seed], *, force: bool = False) -> list[Seed]:
-        existing = {
-            str(row["seed_path"]): row
-            for row in self.conn.execute("select * from seed_scores").fetchall()
-        }
-        now = datetime.now().isoformat(timespec="seconds")
-        current_paths = {str(seed.path) for seed in seeds}
-        self.conn.execute(
-            "update seed_scores set active=0 where seed_path not in ({})".format(
-                ",".join("?" for _ in current_paths) if current_paths else "''"
-            ),
-            tuple(current_paths),
-        )
-        pending: list[Seed] = []
-        for seed in seeds:
-            try:
-                stat = seed.path.stat()
-            except OSError:
-                continue
-            path_text = str(seed.path)
-            row = existing.get(path_text)
-            changed = (
-                row is None
-                or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
-                or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch"}
-                or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
-                or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
-            )
-            should_eval = force or changed
-            if should_eval:
-                pending.append(seed)
-            if row is None:
-                self.conn.execute(
-                    """
-                    insert into seed_scores (
-                        seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
-                        status, active, last_seen
-                    ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
-                    """,
-                    (
-                        path_text,
-                        float(stat.st_mtime),
-                        int(stat.st_size),
-                        seed.symbol,
-                        seed.period,
-                        seed.family,
-                        seed.run_strategy,
-                        now,
-                    ),
-                )
-            else:
-                previous_status = str(row["status"] or "")
-                if should_eval and previous_status == "no_trades":
-                    self.conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                            active=1, last_seen=?
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            seed.symbol,
-                            seed.period,
-                            seed.family,
-                            seed.run_strategy,
-                            now,
-                            path_text,
-                        ),
-                    )
-                elif should_eval:
-                    self.conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                            report_path=null, score=null, accepted=null, metrics_json=null,
-                            status='pending', active=1, last_seen=?, evaluated_at=null
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            seed.symbol,
-                            seed.period,
-                            seed.family,
-                            seed.run_strategy,
-                            now,
-                            path_text,
-                        ),
-                    )
-                else:
-                    self.conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                            active=1, last_seen=?
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            seed.symbol,
-                            seed.period,
-                            seed.family,
-                            seed.run_strategy,
-                            now,
-                            path_text,
-                        ),
-                    )
-        self.conn.commit()
-        return pending
-
-    def prepare_single_seed_evaluation(self, seed: Seed, *, force: bool = False) -> bool:
-        try:
-            stat = seed.path.stat()
-        except OSError:
-            return False
-        path_text = str(seed.path)
-        row = self.conn.execute("select * from seed_scores where seed_path=?", (path_text,)).fetchone()
-        now = datetime.now().isoformat(timespec="seconds")
-        if row is None:
-            self.conn.execute(
-                """
-                insert into seed_scores (
-                    seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
-                    status, active, last_seen
-                ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
-                """,
-                (
-                    path_text,
-                    float(stat.st_mtime),
-                    int(stat.st_size),
-                    seed.symbol,
-                    seed.period,
-                    seed.family,
-                    seed.run_strategy,
-                    now,
-                ),
-            )
-        else:
-            self.conn.execute(
-                """
-                update seed_scores
-                set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                    report_path=null, score=null, accepted=null, metrics_json=null,
-                    status='pending', active=1, last_seen=?, evaluated_at=null
-                where seed_path=?
-                """
-                if force
-                else """
-                update seed_scores
-                set seed_mtime=?, seed_size=?, symbol=?, period=?, family=?, run_strategy=?,
-                    active=1, last_seen=?
-                where seed_path=?
-                """,
-                (
-                    float(stat.st_mtime),
-                    int(stat.st_size),
-                    seed.symbol,
-                    seed.period,
-                    seed.family,
-                    seed.run_strategy,
-                    now,
-                    path_text,
-                ),
-            )
-        self.conn.commit()
-        return True
-
-    def apply_seed_overrides(self, seeds: list[Seed]) -> list[Seed]:
-        rows = self.conn.execute("select seed_path, symbol, period from seed_overrides").fetchall()
-        overrides = {
-            str(row["seed_path"]): (
-                str(row["symbol"] or "").strip().upper(),
-                str(row["period"] or "").strip().upper(),
-            )
-            for row in rows
-        }
-        if not overrides:
-            return seeds
-        resolved: list[Seed] = []
-        for seed in seeds:
-            symbol_override, period_override = overrides.get(str(seed.path), ("", ""))
-            resolved.append(
-                Seed(
-                    path=seed.path,
-                    symbol=symbol_override or seed.symbol,
-                    period=period_override or seed.period,
-                    family=seed.family,
-                    run_strategy=seed.run_strategy,
-                )
-            )
-        return resolved
-
-    def record_seed_score(self, seed: Seed, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
-        accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
-        self.conn.execute(
-            """
-            update seed_scores
-            set symbol=?, period=?, family=?, run_strategy=?,
-                report_path=?, score=?, accepted=?, metrics_json=?, status=?, active=1,
-                evaluated_at=?
-            where seed_path=?
-            """,
-            (
-                seed.symbol,
-                seed.period,
-                seed.family,
-                seed.run_strategy,
-                str(report_path) if report_path else (result.report_path if result else None),
-                result.score if result else None,
-                accepted,
-                result.to_json() if result else None,
-                status,
-                datetime.now().isoformat(timespec="seconds"),
-                str(seed.path),
-            ),
-        )
-        self.conn.commit()
-
-    def seed_score_row(self, seed_path: Path) -> sqlite3.Row | None:
-        return self.conn.execute(
-            "select * from seed_scores where seed_path=? and active=1",
-            (str(seed_path),),
-        ).fetchone()
-
-    def mutation_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select mutated_keys, score, accepted
-            from candidates
-            where score is not null and mutated_keys != '' and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            bonus = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            for key in str(row["mutated_keys"]).split(";"):
-                if key:
-                    totals.setdefault(key, []).append(bonus)
-        return {key: sum(values) / len(values) for key, values in totals.items()}
-
-    def asset_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select target_symbol, score, accepted
-            from candidates
-            where score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["target_symbol"]).upper(), []).append(value)
-        seed_rows = self.conn.execute(
-            """
-            select symbol, score, accepted
-            from seed_scores
-            where active=1 and score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        for row in seed_rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["symbol"]).upper(), []).append(value)
-        return {symbol: sum(values) / len(values) for symbol, values in totals.items()}
-
-    def timeframe_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select period, score, accepted
-            from candidates
-            where score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["period"]).upper(), []).append(value)
-        seed_rows = self.conn.execute(
-            """
-            select period, score, accepted
-            from seed_scores
-            where active=1 and score is not null and status in ('accepted', 'rejected')
-            """
-        ).fetchall()
-        for row in seed_rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["period"]).upper(), []).append(value)
-        return {period: sum(values) / len(values) for period, values in totals.items()}
-
-    def continuation_seeds(self, limit: int = 0) -> tuple[int, int, list[Seed]]:
-        run = self.conn.execute("select id from runs order by id desc limit 1").fetchone()
-        if run is None:
-            return 0, 0, []
-        run_id = int(run["id"])
-        generation = self.conn.execute(
-            "select max(generation) as generation from candidates where run_id=?",
-            (run_id,),
-        ).fetchone()
-        latest_generation = int(generation["generation"] or 0)
-        if latest_generation <= 0:
-            return run_id, 0, []
-        rows = self.conn.execute(
-            """
-            select *
-            from candidates
-            where run_id=? and generation=? and status in ('accepted', 'rejected')
-            order by
-                case
-                    when status = 'accepted' then 0
-                    when score is not null then 1
-                    else 2
-                end,
-                score desc,
-                id desc
-            """,
-            (run_id, latest_generation),
-        ).fetchall()
-
-        seeds: list[Seed] = []
-        seen: set[str] = set()
-        for row in rows:
-            path = Path(row["set_path"])
-            key = str(path.resolve()) if path.exists() else str(path)
-            if key in seen or not path.exists():
-                continue
-            seen.add(key)
-            seeds.append(
-                Seed(
-                    path=path,
-                    symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
-                    period=row["period"] or "UNKNOWN",
-                    family=row["family"] or path.parent.name,
-                    run_strategy=row["run_strategy"] or "",
-                )
-            )
-            if limit > 0 and len(seeds) >= limit:
-                break
-        return run_id, latest_generation, seeds
-
-    def latest_run(self) -> sqlite3.Row | None:
-        return self.conn.execute("select * from runs order by id desc limit 1").fetchone()
-
-    def max_generation(self, run_id: int) -> int:
-        row = self.conn.execute(
-            "select max(generation) as generation from candidates where run_id=?",
-            (run_id,),
-        ).fetchone()
-        return int(row["generation"] or 0)
-
-    def pending_generated_generation(self, run_id: int) -> int:
-        row = self.conn.execute(
-            """
-            select min(generation) as generation
-            from candidates
-            where run_id=? and status='generated'
-            """,
-            (run_id,),
-        ).fetchone()
-        return int(row["generation"] or 0)
-
-    def variants_for_generation(self, run_id: int, generation: int, *, status: str | None = None) -> list[Variant]:
-        if status:
-            rows = self.conn.execute(
-                "select * from candidates where run_id=? and generation=? and status=? order by id",
-                (run_id, generation, status),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "select * from candidates where run_id=? and generation=? order by id",
-                (run_id, generation),
-            ).fetchall()
-        return [variant_from_candidate_row(row) for row in rows if Path(row["set_path"]).exists()]
-
-    def candidate_by_id(self, candidate_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()
-
-    def run_by_id(self, run_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("select * from runs where id=?", (run_id,)).fetchone()
-
-    def mismatch_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            """
-            select *
-            from candidates
-            where run_id=? and generation=? and status='report_mismatch'
-            order by id
-            """,
-            (run_id, generation),
-        ).fetchall()
-
-    def mismatch_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            """
-            select *
-            from candidates
-            where run_id=? and status='report_mismatch'
-            order by generation, id
-            """,
-            (run_id,),
-        ).fetchall()
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
@@ -826,9 +236,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-seeds", type=int, default=30)
     parser.add_argument("--mutations-per-variant", type=int, default=6)
     parser.add_argument("--top-percent", type=float, default=20.0)
+    parser.add_argument(
+        "--force-unseeded-universe",
+        action="store_true",
+        help="Reserva exploracion para activos/TF del universo que no existen en las seeds base.",
+    )
     parser.add_argument("--continue-last-run", action="store_true", help="Usa la ultima generacion registrada como seeds.")
+    parser.add_argument(
+        "--backtest-pending-only",
+        action="store_true",
+        help="Con --continue-last-run, ejecuta solo candidatos generated pendientes y no crea generaciones nuevas.",
+    )
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
+    parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
+    parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
+    parser.add_argument("--robust-pending-only", action="store_true", help="Con --evaluate-robustness, testea solo accepted sin robustez registrada.")
+    parser.add_argument("--robust-positive-bonus", type=float, default=DEFAULT_ROBUST_POSITIVE_BONUS, help="Bonus de peso si el candidato pasa robustez.")
+    parser.add_argument("--robust-negative-bonus", type=float, default=DEFAULT_ROBUST_NEGATIVE_BONUS, help="Bonus de peso si el candidato falla robustez.")
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
+    parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes con reporte sin abrir MT5.")
+    parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes con reporte sin abrir MT5.")
     parser.add_argument(
         "--reconcile-seed-eval-only",
         action="store_true",
@@ -847,102 +274,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-recovery-factor", type=float, default=score_defaults.min_recovery_factor)
     parser.add_argument("--min-positive-month-ratio", type=float, default=score_defaults.min_positive_month_ratio)
     parser.add_argument("--delay", type=int, default=1)
+    parser.add_argument("--from-date", default="", help="Fecha inicio YYYY.MM.DD. Sobreescribe FromDate del template.")
+    parser.add_argument("--to-date", default="", help="Fecha fin YYYY.MM.DD. Sobreescribe ToDate del template.")
     parser.add_argument("--execute-backtests", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
     return parser.parse_args()
-
-
-def load_disabled_symbols(path: Path = DEFAULT_DISABLED_SYMBOLS) -> set[str]:
-    if not path.exists():
-        return set()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    if isinstance(data, dict):
-        values = data.get("disabled") or []
-    elif isinstance(data, list):
-        values = data
-    else:
-        values = []
-    return {str(value).strip().upper() for value in values if str(value).strip()}
-
-
-def load_asset_universe(path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.optionxform = str
-    parser.read(path, encoding="utf-8-sig")
-    groups: dict[str, list[str]] = {}
-    aliases: dict[str, str] = {}
-    disabled = load_disabled_symbols()
-    for section in parser.sections():
-        if section == "CommonAliases":
-            aliases = {key.upper(): value for key, value in parser[section].items()}
-            continue
-        symbols = [item.strip() for item in parser[section].get("symbols", "").split(",") if item.strip()]
-        symbols = [symbol for symbol in symbols if symbol.upper() not in disabled]
-        groups[section] = symbols
-    return groups, aliases
-
-
-def load_seeds(source_dir: Path) -> list[Seed]:
-    manifest = source_dir / "_manifest.csv"
-    seeds: list[Seed] = []
-    seen_paths: set[str] = set()
-    if manifest.exists():
-        with manifest.open("r", encoding="utf-8-sig", newline="") as file:
-            for row in csv.DictReader(file):
-                path = Path(row["target_path"]).expanduser()
-                if not path.exists() and not path.is_absolute():
-                    path = (BASE_DIR / path).resolve()
-                if path.exists():
-                    seen_paths.add(str(path.resolve()))
-                    seeds.append(
-                        Seed(
-                            path=path,
-                            symbol=row.get("symbol") or "UNKNOWN",
-                            period=row.get("period") or "UNKNOWN",
-                            family=row.get("source_family") or path.parent.name,
-                            run_strategy=row.get("run_strategy") or "",
-                        )
-                    )
-
-    for path in sorted(source_dir.rglob("*.set")):
-        path_key = str(path.resolve())
-        if path_key in seen_paths:
-            continue
-        seen_paths.add(path_key)
-        params = load_set_params(path)
-        seeds.append(
-            Seed(
-                path=path,
-                symbol=infer_symbol_from_set(path, params) or "UNKNOWN",
-                period=infer_period_from_set(path, params) or "UNKNOWN",
-                family=path.parent.name,
-                run_strategy=params.get("Run_Strategy", ""),
-            )
-        )
-    return seeds
-
-
-def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
-    seed = Seed(
-        path=Path(row["seed_path"]),
-        symbol=row["symbol"] or "UNKNOWN",
-        period=row["period"] or "UNKNOWN",
-        family=row["family"] or Path(row["seed_path"]).parent.name,
-        run_strategy=row["run_strategy"] or "",
-    )
-    return Variant(
-        path=Path(row["set_path"]),
-        seed=seed,
-        target_symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
-        target_period=(row["period"] or seed.period or "UNKNOWN").upper(),
-        mutated_keys=tuple(key for key in str(row["mutated_keys"] or "").split(";") if key),
-        missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
-        policy=row["policy"] or "",
-    )
 
 
 def seeds_from_variants(variants: list[Variant]) -> list[Seed]:
@@ -977,19 +314,47 @@ def choose_seeds(
     asset_feedback: dict[str, float],
     timeframe_feedback: dict[str, float],
     rng: random.Random,
+    aliases: dict[str, str] | None = None,
 ) -> list[Seed]:
+    aliases = aliases or {}
     valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
     if not valid:
         valid = seeds
     scored = []
     for seed in valid:
-        prior = asset_feedback.get(seed.symbol.upper(), 0.0)
+        asset_key = canonical_symbol(seed.symbol, aliases).upper()
+        prior = asset_feedback.get(asset_key, 0.0)
         prior += timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
         diversity = rng.random() * 5.0
         scored.append((prior + diversity, seed))
     scored.sort(key=lambda item: item[0], reverse=True)
     limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
     return [seed for _, seed in scored[:limit]]
+
+
+def unseeded_universe_targets(
+    seeds: list[Seed],
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    aliases = aliases or {}
+    seed_symbols = {
+        canonical_symbol(seed.symbol, aliases).upper()
+        for seed in seeds
+        if seed.symbol and seed.symbol != "UNKNOWN"
+    }
+    seed_timeframes = {
+        seed.period.upper()
+        for seed in seeds
+        if seed.period and seed.period != "UNKNOWN"
+    }
+    unseeded_symbols = tuple(
+        symbol
+        for symbol in dict.fromkeys(universe_symbols)
+        if canonical_symbol(symbol, aliases).upper() not in seed_symbols
+    )
+    unseeded_timeframes = tuple(period for period in TIMEFRAME_UNIVERSE if period.upper() not in seed_timeframes)
+    return unseeded_symbols, unseeded_timeframes
 
 
 def related_assets(symbol: str) -> tuple[str, ...]:
@@ -1017,10 +382,13 @@ def choose_target_symbol(
     rng: random.Random,
     universe_symbols: tuple[str, ...] = (),
     aliases: dict[str, str] | None = None,
+    *,
+    force_unseeded_universe: bool = False,
+    unseeded_universe_symbols: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     aliases = aliases or {}
     current = seed.symbol or "UNKNOWN"
-    disabled = load_disabled_symbols()
+    disabled = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
@@ -1033,6 +401,13 @@ def choose_target_symbol(
         symbol for symbol in dict.fromkeys(universe_symbols)
         if symbol.upper() != current.upper() and symbol.upper() not in disabled
     )
+    unseeded_choices = tuple(
+        symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
+        if symbol.upper() != current.upper() and symbol.upper() not in disabled
+    )
+    if force_unseeded_universe and unseeded_choices and rng.random() < 0.65:
+        unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
+        return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
     if rng.random() < 0.70:
         return current, "exploit"
@@ -1067,11 +442,22 @@ def related_timeframes(period: str) -> tuple[str, ...]:
     return TIMEFRAME_UNIVERSE
 
 
-def choose_target_period(seed: Seed, timeframe_feedback: dict[str, float], rng: random.Random) -> tuple[str, str]:
+def choose_target_period(
+    seed: Seed,
+    timeframe_feedback: dict[str, float],
+    rng: random.Random,
+    *,
+    force_unseeded_timeframes: bool = False,
+    unseeded_timeframes: tuple[str, ...] = (),
+) -> tuple[str, str]:
     current = seed.period.upper()
     choices = tuple(dict.fromkeys(related_timeframes(current)))
     if not choices:
         return current, "tf_exploit"
+    forced_choices = tuple(period for period in choices if period.upper() in {tf.upper() for tf in unseeded_timeframes})
+    if force_unseeded_timeframes and forced_choices and rng.random() < 0.50:
+        unseen = [period for period in forced_choices if period.upper() not in timeframe_feedback]
+        return rng.choice(unseen or list(forced_choices)), "tf_unseeded_force"
     if current in choices and rng.random() < 0.60:
         return current, "tf_exploit"
     ranked = sorted(choices, key=lambda item: timeframe_feedback.get(item.upper(), -999999.0), reverse=True)
@@ -1145,6 +531,15 @@ def replace_existing_plain_key(lines: list[str], key: str, value: str) -> bool:
     return False
 
 
+def replace_or_add_plain_key(lines: list[str], key: str, value: str) -> None:
+    if replace_existing_plain_key(lines, key, value):
+        return
+    insert_at = 0
+    while insert_at < len(lines) and (not lines[insert_at].strip() or lines[insert_at].lstrip().startswith(";")):
+        insert_at += 1
+    lines.insert(insert_at, f"{key}={value}")
+
+
 def replace_existing_current_value(lines: list[str], key: str, value: str) -> bool:
     for index, line in enumerate(lines):
         if "=" not in line or line.lstrip().startswith(";"):
@@ -1194,7 +589,7 @@ def create_variant(
 ) -> Variant:
     text, encoding = read_set_with_encoding(seed.path)
     lines = text.splitlines()
-    replace_existing_plain_key(lines, "ForceSymbol", target_symbol)
+    replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
     # Apply user-defined frozen override values from the global params config
     frozen_ov, _ = load_mutation_overrides()
@@ -1255,6 +650,7 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         str(set_dir),
         "--recursive",
         "--infer-tester-from-set",
+        "--prefer-set-path-timeframe",
         "--delay",
         str(args.delay),
     ]
@@ -1273,41 +669,19 @@ def run_backtests(args: argparse.Namespace, set_dir: Path) -> int:
         command.extend(["--symbol-map", args.symbol_map])
     if args.dry_run:
         command.append("--dry-run")
+    if getattr(args, "from_date", ""):
+        command.extend(["--from-date", args.from_date])
+    if getattr(args, "to_date", ""):
+        command.extend(["--to-date", args.to_date])
     print("Ejecutando:", " ".join(f'"{part}"' if " " in part else part for part in command))
     process = subprocess.run(command, cwd=BASE_DIR, text=True)
     return process.returncode
-
-
-def seed_eval_filename(index: int, seed: Seed, used: set[str]) -> str:
-    symbol = "" if seed.symbol == "UNKNOWN" else safe_part(seed.symbol)
-    period = "" if seed.period == "UNKNOWN" else safe_part(seed.period)
-    prefix = "_".join(part for part in (symbol, period) if part)
-    label = compact_safe_part(seed.path.stem, 40)
-    stem = f"seed_{index:04d}_{prefix}_{label}" if prefix else f"seed_{index:04d}_{label}"
-    name = f"{stem}.set"
-    suffix = 2
-    while name.lower() in used:
-        name = f"{stem}_{suffix}.set"
-        suffix += 1
-    used.add(name.lower())
-    return name
 
 
 def _parse_eval_dir_timestamp(eval_dir: Path) -> datetime | None:
     try:
         return datetime.strptime(eval_dir.name, "eval_%Y%m%d_%H%M%S")
     except ValueError:
-        return None
-
-
-def _file_digest(path: Path) -> str | None:
-    try:
-        digest = hashlib.sha1()
-        with path.open("rb") as file:
-            for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
         return None
 
 
@@ -1327,7 +701,7 @@ def reconcile_seed_eval_reports(
         row = memory.seed_score_row(seed.path)
         if row is not None and str(row["status"] or "") == "no_trades":
             continue
-        digest = _file_digest(seed.path)
+        digest = file_digest(seed.path)
         if digest:
             pending_by_hash.setdefault(digest, []).append(seed)
     eval_dirs = sorted(
@@ -1345,7 +719,7 @@ def reconcile_seed_eval_reports(
             report = find_report_for_set(copied_set, min_mtime=eval_started.timestamp() - 1.0)
             if not report:
                 continue
-            copied_digest = _file_digest(copied_set)
+            copied_digest = file_digest(copied_set)
             if not copied_digest:
                 continue
             candidates = pending_by_hash.get(copied_digest, [])
@@ -1374,7 +748,7 @@ def rescore_existing_seed_scores(
         if str(seed.path) in exclude_paths:
             continue
         row = memory.seed_score_row(seed.path)
-        if row is None or str(row["status"] or "") not in {"accepted", "rejected"}:
+        if row is None or str(row["status"] or "") not in {"accepted", "rejected", "no_trades", "report_mismatch", "parse_error"}:
             continue
         report_raw = str(row["report_path"] or "").strip()
         if not report_raw:
@@ -1387,10 +761,28 @@ def rescore_existing_seed_scores(
     return status_counts
 
 
+def format_disabled_seed_counts(seeds: list[Seed], symbol_map: dict[str, str]) -> str:
+    counts: Counter[tuple[str, str]] = Counter()
+    for seed in seeds:
+        raw = normalize_set_symbol(seed.symbol)
+        mapped = normalize_set_symbol(apply_symbol_map(seed.symbol, symbol_map))
+        counts[(raw or seed.symbol, mapped or raw or seed.symbol)] += 1
+    parts = []
+    shown_total = 0
+    for (raw, mapped), count in counts.most_common(5):
+        shown_total += count
+        label = raw if raw == mapped else f"{raw} -> {mapped}"
+        parts.append(f"{label}: {count}")
+    remaining = sum(counts.values()) - shown_total
+    if remaining > 0:
+        parts.append(f"otros: {remaining}")
+    return ", ".join(parts)
+
+
 def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = Path(args.source_dir).expanduser()
     output_root = Path(args.output_dir).expanduser()
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
@@ -1417,10 +809,33 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     pending = [seed for seed in pending if seed not in invalid_pending]
     unchanged_count = len(seeds) - original_pending_count
     blocked_count = len(invalid_pending)
+    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    disabled_pending = [
+        seed for seed in pending
+        if seed_symbol_disabled(seed, disabled_symbols, symbol_map)
+    ]
+    disabled_paths = {str(seed.path) for seed in disabled_pending}
+    for seed in disabled_pending:
+        raw_symbol = normalize_set_symbol(seed.symbol)
+        mapped_symbol = normalize_set_symbol(apply_symbol_map(seed.symbol, symbol_map))
+        symbol_detail = raw_symbol if raw_symbol == mapped_symbol else f"{raw_symbol} -> {mapped_symbol}"
+        print(
+            f"AVISO: seed omitida por symbol deshabilitado: {seed.path.name} "
+            f"({symbol_detail}); marcada como disabled_symbol sin abrir MT5."
+        )
+        memory.record_seed_score(seed, None, "disabled_symbol", None)
+    pending = [seed for seed in pending if str(seed.path) not in disabled_paths]
+    blocked_count += len(disabled_pending)
     print(f"Semillas detectadas: {len(seeds)}")
-    print(f"Semillas pendientes de evaluar: {len(pending)}")
+    print(f"Backtests de semillas pendientes: {len(pending)}")
     if invalid_pending:
         print(f"Semillas bloqueadas por symbol/timeframe no inferible: {len(invalid_pending)}")
+    if disabled_pending:
+        print(
+            "Semillas omitidas por symbol deshabilitado en Universo global: "
+            f"{len(disabled_pending)} ({format_disabled_seed_counts(disabled_pending, symbol_map)})"
+        )
+        print("Estas seeds no abren MT5 y no aportan pesos; habilita el symbol en Universo si quieres evaluarlas.")
     print(f"Semillas ya evaluadas sin cambios: {unchanged_count}")
     reconciled_counts, reconciled_paths = reconcile_seed_eval_reports(
         memory,
@@ -1445,7 +860,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             seeds,
             score_config,
             symbol_map,
-            exclude_paths=original_pending_paths | invalid_paths,
+            exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
         )
         if rescored_counts:
             print(
@@ -1453,7 +868,10 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
                 + ", ".join(f"{status}={count}" for status, count in sorted(rescored_counts.items()))
             )
         if blocked_count:
-            print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas bloqueadas.")
+            if invalid_pending:
+                print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas sin inferencia.")
+            elif disabled_pending:
+                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en Universo global.")
         else:
             print("Evaluacion de semillas al dia. No hay backtests pendientes.")
         return 0
@@ -1471,6 +889,9 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     print(f"Directorio evaluacion: {eval_dir}")
     batch_started_at = time.time()
     code = run_backtests(args, eval_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se puntuaran los reportes disponibles")
         if args.dry_run:
@@ -1500,7 +921,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         seeds,
         score_config,
         symbol_map,
-        exclude_paths=original_pending_paths | invalid_paths,
+        exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
     )
     rescored_total = sum(rescored_counts.values())
 
@@ -1523,7 +944,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
 
 def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = Path(args.source_dir).expanduser()
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
@@ -1547,17 +968,136 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
     return 0
 
 
-def seed_from_path(path: Path) -> Seed:
-    params = load_set_params(path)
-    symbol = infer_symbol_from_set(path, params) or "UNKNOWN"
-    period = infer_period_from_set(path, params) or "UNKNOWN"
-    return Seed(
-        path=path,
-        symbol=symbol,
-        period=period,
-        family=path.parent.name,
-        run_strategy=params.get("Run_Strategy", "").strip(),
-    )
+def _stored_or_discovered_report(row: sqlite3.Row) -> Path | None:
+    report_raw = str(row["report_path"] or "").strip()
+    if report_raw:
+        report = Path(report_raw)
+        if report.exists():
+            return report
+    set_path = Path(str(row["set_path"] or ""))
+    if set_path.exists():
+        return find_report_for_set(set_path)
+    return None
+
+
+def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    symbol_map = parse_symbol_map(args.symbol_map)
+    rows = memory.conn.execute(
+        """
+        select *
+        from candidates
+        where status in (
+            'accepted', 'rejected', 'no_trades', 'report_mismatch',
+            'parse_error', 'no_report', 'generated'
+        )
+        order by run_id, generation, id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    skipped_no_report = 0
+    for row in rows:
+        report = _stored_or_discovered_report(row)
+        if report is None:
+            skipped_no_report += 1
+            continue
+        variant = variant_from_candidate_row(row)
+        status, _ = evaluate_variant_report(memory, variant, report, score_config, symbol_map)
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    total = sum(status_counts.values())
+    if status_counts:
+        print(
+            "Candidatos repuntuados con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            + f"; total={total}"
+        )
+    else:
+        print("No hay candidatos con reporte disponible para repuntuar.")
+    if skipped_no_report:
+        print(f"Candidatos sin reporte local omitidos: {skipped_no_report}")
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    symbol_map = parse_symbol_map(args.symbol_map)
+    rows = memory.conn.execute(
+        """
+        select
+            c.*,
+            cr.status as robust_status,
+            cr.report_path as robust_report_path,
+            cr.from_date as robust_from_date,
+            cr.to_date as robust_to_date,
+            cr.positive_bonus as robust_positive_bonus,
+            cr.negative_bonus as robust_negative_bonus
+        from candidate_robustness cr
+        join candidates c on c.id = cr.candidate_id
+        order by cr.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    skipped_no_report = 0
+    for row in rows:
+        report_raw = str(row["robust_report_path"] or "").strip()
+        report = Path(report_raw) if report_raw else None
+        if report is None or not report.exists():
+            skipped_no_report += 1
+            continue
+        candidate_id = int(row["id"])
+        run_id = int(row["run_id"])
+        variant = variant_from_candidate_row(row)
+        try:
+            result = score_report_file(report, config=score_config)
+        except Exception as exc:
+            print(f"AVISO: no pude parsear robustez candidate #{candidate_id}: {exc}")
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                None,
+                "parse_error",
+                report,
+                str(row["robust_from_date"] or ""),
+                str(row["robust_to_date"] or ""),
+                float(row["robust_positive_bonus"] or DEFAULT_ROBUST_POSITIVE_BONUS),
+                float(row["robust_negative_bonus"] or DEFAULT_ROBUST_NEGATIVE_BONUS),
+            )
+            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+            continue
+        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+        if not matches:
+            print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
+            status = "report_mismatch"
+        elif result.trades <= 0:
+            status = "no_trades"
+        else:
+            status = "accepted" if result.accepted else "rejected"
+        memory.record_candidate_robustness(
+            candidate_id,
+            run_id,
+            result,
+            status,
+            report,
+            str(row["robust_from_date"] or ""),
+            str(row["robust_to_date"] or ""),
+            float(row["robust_positive_bonus"] or DEFAULT_ROBUST_POSITIVE_BONUS),
+            float(row["robust_negative_bonus"] or DEFAULT_ROBUST_NEGATIVE_BONUS),
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    total = sum(status_counts.values())
+    if status_counts:
+        print(
+            "Robustez repuntuada con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            + f"; total={total}"
+        )
+    else:
+        print("No hay resultados de robustez con reporte disponible para repuntuar.")
+    if skipped_no_report:
+        print(f"Robustez sin reporte local omitida: {skipped_no_report}")
+    print(f"Memoria: {memory.path}")
+    return 0
 
 
 def _report_is_fresh(path: Path, min_mtime: float | None) -> bool:
@@ -1682,6 +1222,16 @@ def evaluate_variant(
     if not report:
         memory.record_score(variant.path, None, "no_report", None)
         return "no_report", None
+    return evaluate_variant_report(memory, variant, report, score_config, symbol_map)
+
+
+def evaluate_variant_report(
+    memory: AgentMemory,
+    variant: Variant,
+    report: Path,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+) -> tuple[str, ScoreResult | None]:
     try:
         result = score_report_file(report, config=score_config)
     except Exception as exc:
@@ -1740,6 +1290,175 @@ def remove_report_artifacts(set_path: Path) -> None:
             path.unlink()
 
 
+def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.expert and not args.multi_terminal and not args.dry_run:
+        print("ERROR: robustez requiere --expert o --multi-terminal")
+        return 1
+
+    run = memory.run_by_id(args.robust_run_id) if args.robust_run_id else memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para robustez")
+        return 1
+
+    run_id = int(run["id"])
+    run_dir = Path(run["output_dir"])
+    rows = [
+        row
+        for row in memory.accepted_candidates_for_robustness(run_id)
+        if Path(row["set_path"]).exists()
+    ]
+    if args.robust_pending_only:
+        rows = [
+            row for row in rows
+            if not str(row["robust_status"] or "").strip()
+            or str(row["robust_status"]) == "report_mismatch"
+        ]
+    if not rows:
+        if args.robust_pending_only:
+            print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes de OOS ni con mismatch.")
+        else:
+            print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
+        return 0
+
+    robust_dir = run_dir / "robustness" / f"run_{run_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    robust_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[tuple[sqlite3.Row, Variant]] = []
+    used_names: set[str] = set()
+    for row in rows:
+        source_set = Path(row["set_path"])
+        name = f"robust_{int(row['id']):06d}_{source_set.name}"
+        if name in used_names:
+            print(f"ERROR: nombre duplicado en robustez: {name}")
+            return 1
+        used_names.add(name)
+        retry_set = robust_dir / name
+        shutil.copy2(source_set, retry_set)
+        if not args.dry_run:
+            remove_report_artifacts(retry_set)
+        original_variant = variant_from_candidate_row(row)
+        copied.append(
+            (
+                row,
+                Variant(
+                    path=retry_set,
+                    seed=original_variant.seed,
+                    target_symbol=original_variant.target_symbol,
+                    target_period=original_variant.target_period,
+                    mutated_keys=original_variant.mutated_keys,
+                    missing_lot_keys=original_variant.missing_lot_keys,
+                    policy=f"{original_variant.policy}+robustness",
+                ),
+            )
+        )
+
+    mode_label = "pendientes sin OOS" if args.robust_pending_only else "todos los accepted"
+    print(f"Robustez run #{run_id}: modo={mode_label}; candidatos accepted={len(copied)}")
+    print(f"Directorio robustez: {robust_dir}")
+    print(f"Fechas robustez: {args.from_date or '(template)'} -> {args.to_date or '(template)'}")
+    print(
+        "Bonus robustez: "
+        f"accepted={args.robust_positive_bonus:+.2f}, rejected={args.robust_negative_bonus:+.2f}"
+    )
+    batch_started_at = time.time()
+    code = run_backtests(args, robust_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza robustez.")
+        return 1
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    symbol_map = parse_symbol_map(args.symbol_map)
+    status_counts: dict[str, int] = {}
+    for row, variant in copied:
+        candidate_id = int(row["id"])
+        report = find_report_for_set(variant.path, min_mtime=batch_started_at - 1.0)
+        if not report:
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                None,
+                "no_report",
+                None,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            continue
+        try:
+            result = score_report_file(report, config=score_config)
+        except Exception as exc:
+            print(f"AVISO: no pude parsear robustez {report}: {exc}")
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                None,
+                "parse_error",
+                report,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+            continue
+        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+        if not matches:
+            print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                result,
+                "report_mismatch",
+                report,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
+            continue
+        if result.trades <= 0:
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                result,
+                "no_trades",
+                report,
+                args.from_date,
+                args.to_date,
+                args.robust_positive_bonus,
+                args.robust_negative_bonus,
+            )
+            status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
+            continue
+        status = "accepted" if result.accepted else "rejected"
+        memory.record_candidate_robustness(
+            candidate_id,
+            run_id,
+            result,
+            status,
+            report,
+            args.from_date,
+            args.to_date,
+            args.robust_positive_bonus,
+            args.robust_negative_bonus,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    print(
+        "Robustez terminada: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        + f"; memoria={memory.path}"
+    )
+    return 0
+
+
 def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if not args.retry_candidate_id:
         print("ERROR: falta --retry-candidate-id")
@@ -1776,6 +1495,9 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -1805,7 +1527,12 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     if not args.expert and not args.multi_terminal:
         print("ERROR: retry seed requiere --expert o --multi-terminal")
         return 1
-    source_paths = [Path(value).expanduser() for value in args.retry_seed_path]
+    source_paths = []
+    for value in args.retry_seed_path:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        source_paths.append(path.resolve())
     if len(source_paths) > 1:
         seeds: list[Seed] = []
         for source_path in source_paths:
@@ -1837,6 +1564,9 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         print(f"Directorio retry: {retry_dir}")
         batch_started_at = time.time()
         code = run_backtests(args, retry_dir)
+        if code == RUNNING_TERMINAL_EXIT_CODE:
+            print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+            return 1
         if code != 0:
             print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
             if args.dry_run:
@@ -1892,6 +1622,9 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -1939,7 +1672,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     rows = memory.mismatch_candidates_for_generation(run_id, generation)
     rows = [row for row in rows if Path(row["set_path"]).exists()]
     if not rows:
-        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch con .set existente")
+        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch/no_report con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
@@ -1947,7 +1680,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     retry_dir.mkdir(parents=True, exist_ok=True)
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry mismatches run #{run_id} gen {generation}: {len(rows)} candidato(s)")
+    print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])
@@ -1962,6 +1695,9 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
 
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -2007,7 +1743,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     rows = memory.mismatch_candidates_for_run(run_id)
     rows = [row for row in rows if Path(row["set_path"]).exists()]
     if not rows:
-        print(f"ERROR: run #{run_id} no tiene report_mismatch con .set existente")
+        print(f"ERROR: run #{run_id} no tiene report_mismatch/no_report con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
@@ -2015,7 +1751,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     retry_dir.mkdir(parents=True, exist_ok=True)
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry mismatches run #{run_id}: {len(rows)} candidato(s)")
+    print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])
@@ -2031,6 +1767,9 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
 
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -2079,6 +1818,8 @@ def evaluate_generation(
     generation_dir = run_dir / f"gen_{generation:03d}"
     batch_started_at = time.time()
     code = run_backtests(args, generation_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        raise RuntimeError("run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta")
     partial_failure = code != 0
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
@@ -2121,7 +1862,11 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     pending_generation = memory.pending_generated_generation(run_id) if args.execute_backtests else 0
     current_seeds: list[Seed] = []
     did_work = False
-    asset_groups, aliases = load_asset_universe(Path(args.assets).expanduser())
+    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    asset_groups, aliases = load_asset_universe(
+        Path(args.assets).expanduser(),
+        disabled_symbols=disabled_symbols,
+    )
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
@@ -2146,8 +1891,16 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             current_seeds = seeds_from_survivors(select_survivors(scored, args.top_percent))
         else:
             current_seeds = seeds_from_variants(variants)
+        if args.backtest_pending_only:
+            print(f"Backtests pendientes completados en gen {pending_generation}; no se generan nuevas generaciones.")
+            print(f"Run dir: {run_dir}")
+            print(f"Memoria: {memory.path}")
+            return 0
         next_generation = pending_generation + 1
     else:
+        if args.backtest_pending_only:
+            print(f"Run #{run_id} no tiene candidatos generated pendientes para backtest.")
+            return 0
         if max_generation >= planned_generations:
             print(f"Run #{run_id} ya esta completo: {max_generation}/{planned_generations}")
             return 0
@@ -2163,15 +1916,35 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     for generation in range(next_generation, planned_generations + 1):
         generation_dir = run_dir / f"gen_{generation:03d}"
         mutation_feedback = memory.mutation_feedback()
-        asset_feedback = memory.asset_feedback()
+        asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
-        selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng)
+        selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+        unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
         variants: list[Variant] = []
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
+        if args.force_unseeded_universe:
+            print(
+                f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
+                f"TF={len(unseeded_timeframes)}"
+            )
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
-                target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng, universe_symbols, aliases)
-                target_period, period_policy = choose_target_period(seed, timeframe_feedback, rng)
+                target_symbol, policy = choose_target_symbol(
+                    seed,
+                    asset_feedback,
+                    rng,
+                    universe_symbols,
+                    aliases,
+                    force_unseeded_universe=args.force_unseeded_universe,
+                    unseeded_universe_symbols=unseeded_symbols,
+                )
+                target_period, period_policy = choose_target_period(
+                    seed,
+                    timeframe_feedback,
+                    rng,
+                    force_unseeded_timeframes=args.force_unseeded_universe,
+                    unseeded_timeframes=unseeded_timeframes,
+                )
                 variant = create_variant(
                     seed,
                     target_symbol,
@@ -2229,9 +2002,24 @@ def run_agent(args: argparse.Namespace) -> int:
             return evaluate_seed_scores(args, memory, score_config)
         finally:
             memory.close()
+    if args.evaluate_robustness:
+        try:
+            return evaluate_candidate_robustness(args, memory, score_config)
+        finally:
+            memory.close()
     if args.rescore_seeds_only:
         try:
             return rescore_seed_scores_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_candidates_only:
+        try:
+            return rescore_candidate_scores_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_robustness_only:
+        try:
+            return rescore_robustness_only(args, memory, score_config)
         finally:
             memory.close()
     if args.continue_last_run:
@@ -2261,11 +2049,15 @@ def run_agent(args: argparse.Namespace) -> int:
             memory.close()
 
     seed_source = str(source_dir)
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir))
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
-    asset_groups, aliases = load_asset_universe(Path(args.assets).expanduser())
+    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    asset_groups, aliases = load_asset_universe(
+        Path(args.assets).expanduser(),
+        disabled_symbols=disabled_symbols,
+    )
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
@@ -2300,15 +2092,35 @@ def run_agent(args: argparse.Namespace) -> int:
             generation_dir = run_dir / f"gen_{generation:03d}"
             accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
             mutation_feedback = memory.mutation_feedback()
-            asset_feedback = memory.asset_feedback()
+            asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
-            selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng)
+            selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+            unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
             variants: list[Variant] = []
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
+            if args.force_unseeded_universe:
+                print(
+                    f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
+                    f"TF={len(unseeded_timeframes)}"
+                )
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
-                    target_symbol, policy = choose_target_symbol(seed, asset_feedback, rng, universe_symbols, aliases)
-                    target_period, period_policy = choose_target_period(seed, timeframe_feedback, rng)
+                    target_symbol, policy = choose_target_symbol(
+                        seed,
+                        asset_feedback,
+                        rng,
+                        universe_symbols,
+                        aliases,
+                        force_unseeded_universe=args.force_unseeded_universe,
+                        unseeded_universe_symbols=unseeded_symbols,
+                    )
+                    target_period, period_policy = choose_target_period(
+                        seed,
+                        timeframe_feedback,
+                        rng,
+                        force_unseeded_timeframes=args.force_unseeded_universe,
+                        unseeded_timeframes=unseeded_timeframes,
+                    )
                     variant = create_variant(
                         seed,
                         target_symbol,
@@ -2331,6 +2143,9 @@ def run_agent(args: argparse.Namespace) -> int:
             if args.execute_backtests or args.dry_run:
                 batch_started_at = time.time()
                 code = run_backtests(args, generation_dir)
+                if code == RUNNING_TERMINAL_EXIT_CODE:
+                    print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+                    return code
                 partial_failure = code != 0
                 if code != 0:
                     print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")

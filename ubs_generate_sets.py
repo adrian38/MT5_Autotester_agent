@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from ubs_set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, write_set_text
+from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, write_set_text
 
 
 BASE_DIR = Path(__file__).resolve().parent
