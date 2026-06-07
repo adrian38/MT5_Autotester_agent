@@ -109,3 +109,77 @@ class SettingsViewMixin:
             command=self._save_template_clicked,
         ).grid(row=8, column=0, columnspan=4, sticky="ew", padx=20, pady=(8, 18))
 
+        telegram = self._card(content, "Telegram")
+        telegram.grid(row=2, column=0, sticky="ew", pady=(16, 0))
+        telegram.columnconfigure(1, weight=1)
+
+        tg_row = tk.Frame(telegram, bg=self.colors["panel"])
+        tg_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 6))
+        tg_row.columnconfigure(0, weight=1)
+        tg_text = tk.Frame(tg_row, bg=self.colors["panel"])
+        tg_text.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            tg_text,
+            text="Notificaciones Telegram",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            tg_text,
+            text="Se guardan en .env como TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w")
+        self._toggle_switch_cls(
+            tg_row,
+            variable=self.telegram_enabled,
+            command=self._write_ui_settings,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+
+        ttk.Label(telegram, text="Bot token", style="Panel.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(20, 10), pady=7
+        )
+        ttk.Entry(telegram, textvariable=self.telegram_bot_token).grid(
+            row=2, column=1, sticky="ew", padx=(0, 20), pady=7
+        )
+        ttk.Label(telegram, text="Chat ID", style="Panel.TLabel").grid(
+            row=3, column=0, sticky="w", padx=(20, 10), pady=7
+        )
+        ttk.Entry(telegram, textvariable=self.telegram_chat_id).grid(
+            row=3, column=1, sticky="ew", padx=(0, 20), pady=7
+        )
+
+        tg_buttons = ttk.Frame(telegram, style="Panel.TFrame")
+        tg_buttons.grid(row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(10, 18))
+        tg_buttons.columnconfigure(0, weight=1)
+        tg_buttons.columnconfigure(1, weight=1)
+        self._rounded_button_cls(
+            tg_buttons,
+            text="Probar Telegram",
+            bg=self.colors["primary_container"],
+            hover_bg=self.colors["primary"],
+            font=("Segoe UI", 10, "bold"),
+            radius=12,
+            padx=18,
+            pady=10,
+            parent_bg=self.colors["panel"],
+            command=self._test_telegram_clicked,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._rounded_button_cls(
+            tg_buttons,
+            text="Guardar Telegram",
+            bg=self.colors["accent"],
+            hover_bg=self.colors["accent_hover"],
+            font=("Segoe UI", 10, "bold"),
+            radius=12,
+            padx=18,
+            pady=10,
+            parent_bg=self.colors["panel"],
+            command=self._save_telegram_clicked,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+

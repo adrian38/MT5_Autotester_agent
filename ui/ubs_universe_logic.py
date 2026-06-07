@@ -6,7 +6,17 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
+from ubs.db import connect_memory
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
+from ubs.weights import (
+    ASSET_ACCEPTED_BONUS,
+    SEED_WEIGHT_SCALE,
+    TIMEFRAME_ACCEPTED_BONUS,
+    candidate_group_key,
+    feedback_weight,
+    grouped_shrunk_mean,
+    seed_group_key,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,23 +41,47 @@ class UBSUniverseLogicMixin:
         return canonical_symbol(symbol, aliases)
 
     def _empty_ubs_stat(self) -> dict[str, object]:
-        return {"scores": [], "weights": [], "tests": 0, "accepted": 0, "pending": 0, "best": None}
-
-    def _candidate_robustness_bonus(self, row: sqlite3.Row) -> float:
-        status = str(row["robust_status"] or "")
-        try:
-            if status == "accepted":
-                return float(row["robust_positive_bonus"] or 0.0)
-            if status == "rejected":
-                return float(row["robust_negative_bonus"] or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-        return 0.0
+        return {
+            "scores": [],
+            "weights": [],
+            "weight_groups": {},
+            "tests": 0,
+            "accepted": 0,
+            "pending": 0,
+            "best": None,
+        }
 
     def _tag_for_weight(self, value: float | None) -> str:
         if value is None:
             return "neutral"
         return "positive" if value >= 0 else "negative"
+
+    def _ubs_universe_search_terms(self, var_name: str) -> list[str]:
+        variable = getattr(self, var_name, None)
+        if variable is None:
+            return []
+        return [term for term in variable.get().strip().lower().split() if term]
+
+    def _ubs_universe_asset_matches_search(self, group: str, symbol: str, aliases: list[str], terms: list[str]) -> bool:
+        if not terms:
+            return True
+        haystack = " ".join([group, symbol, *aliases]).lower()
+        return all(term in haystack for term in terms)
+
+    def _ubs_universe_tf_matches_search(self, period: str, terms: list[str]) -> bool:
+        if not terms:
+            return True
+        haystack = period.lower()
+        return all(term in haystack for term in terms)
+
+    def _clear_ubs_universe_search(self) -> None:
+        changed = False
+        for variable in (getattr(self, "ubs_universe_asset_search", None), getattr(self, "ubs_universe_tf_search", None)):
+            if variable is not None and variable.get():
+                variable.set("")
+                changed = True
+        if not changed:
+            self._refresh_ubs_universe()
 
     def _on_ubs_universe_tree_click(self, event: tk.Event) -> None:
         item, column = self._tree_item_from_event(self.ubs_universe_assets_tree, event)
@@ -126,17 +160,19 @@ class UBSUniverseLogicMixin:
 
         if memory_path.exists():
             try:
-                conn = sqlite3.connect(memory_path, timeout=1.0)
+                conn = connect_memory(memory_path)
                 conn.row_factory = sqlite3.Row
                 if hasattr(self, "_ensure_ubs_memory_schema"):
                     self._ensure_ubs_memory_schema(conn)
                 rows = conn.execute(
                     """
                     select
-                        c.target_symbol, c.symbol, c.period, c.score, c.accepted, c.status,
+                        c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
+                        c.score, c.accepted, c.metrics_json, c.status,
                         cr.status as robust_status,
                         cr.positive_bonus as robust_positive_bonus,
-                        cr.negative_bonus as robust_negative_bonus
+                        cr.negative_bonus as robust_negative_bonus,
+                        cr.metrics_json as robust_metrics_json
                     from candidates c
                     left join candidate_robustness cr on cr.candidate_id = c.id
                     """
@@ -148,7 +184,7 @@ class UBSUniverseLogicMixin:
                 if seed_table:
                     seed_rows = conn.execute(
                         """
-                        select symbol, period, score, accepted, status, active
+                        select seed_path, symbol, period, score, accepted, metrics_json, status, active
                         from seed_scores
                         where active=1
                         """
@@ -174,21 +210,25 @@ class UBSUniverseLogicMixin:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_pending += 1
-                if row["score"] is None or status not in {"accepted", "rejected"}:
+                if status not in {"accepted", "rejected", "no_trades"}:
                     continue
-                score = float(row["score"])
+                score = float(row["score"] or 0.0)
                 accepted = bool(row["accepted"])
                 robust_status = str(row["robust_status"] or "")
-                robust_bonus = self._candidate_robustness_bonus(row)
                 if robust_status == "accepted":
                     total_robust_accepted += 1
                 elif robust_status == "rejected":
                     total_robust_rejected += 1
-                asset_weight = score + (20.0 if accepted else 0.0) + robust_bonus
-                tf_weight = score + (15.0 if accepted else 0.0) + robust_bonus
+                asset_weight = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
+                tf_weight = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
                 for stat, weight in ((asset_stat, asset_weight), (tf_stat, tf_weight)):
+                    if weight is None:
+                        continue
                     stat["scores"].append(score)
                     stat["weights"].append(weight)
+                    groups = stat["weight_groups"]
+                    if isinstance(groups, dict):
+                        groups.setdefault(candidate_group_key(row), []).append(weight)
                     stat["tests"] = int(stat["tests"]) + 1
                     stat["accepted"] = int(stat["accepted"]) + (1 if accepted else 0)
                     stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
@@ -204,19 +244,28 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
-                if status in {"pending", "no_report", "parse_error", "no_trades"}:
+                if status in {"pending", "no_report", "parse_error"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_seed_pending += 1
-                if row["score"] is None or status not in {"accepted", "rejected"}:
+                if status not in {"accepted", "rejected", "no_trades"}:
                     continue
-                score = float(row["score"])
+                score = float(row["score"] or 0.0)
                 accepted = bool(row["accepted"])
-                asset_weight = score + (20.0 if accepted else 0.0)
-                tf_weight = score + (15.0 if accepted else 0.0)
+                asset_weight = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
+                tf_weight = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
+                if asset_weight is not None:
+                    asset_weight *= SEED_WEIGHT_SCALE
+                if tf_weight is not None:
+                    tf_weight *= SEED_WEIGHT_SCALE
                 for stat, weight in ((asset_stat, asset_weight), (tf_stat, tf_weight)):
+                    if weight is None:
+                        continue
                     stat["scores"].append(score)
                     stat["weights"].append(weight)
+                    groups = stat["weight_groups"]
+                    if isinstance(groups, dict):
+                        groups.setdefault(seed_group_key(row), []).append(weight)
                     stat["tests"] = int(stat["tests"]) + 1
                     stat["accepted"] = int(stat["accepted"]) + (1 if accepted else 0)
                     stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
@@ -228,12 +277,19 @@ class UBSUniverseLogicMixin:
         ranked_assets = []
         for group, symbol, symbol_aliases in all_assets:
             stat = asset_stats.get(symbol.upper(), self._empty_ubs_stat())
-            weights = stat["weights"]
+            weight_groups = stat["weight_groups"]
             scores = stat["scores"]
-            weight_value = (sum(weights) / len(weights)) if weights else None
+            weight_value = grouped_shrunk_mean(weight_groups) if isinstance(weight_groups, dict) else None
             avg_score = (sum(scores) / len(scores)) if scores else None
             ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, avg_score))
         ranked_assets.sort(key=lambda item: (item[0], item[4]["pending"]), reverse=True)
+        asset_total_before_filter = len(ranked_assets)
+        asset_search_terms = self._ubs_universe_search_terms("ubs_universe_asset_search")
+        if asset_search_terms:
+            ranked_assets = [
+                row for row in ranked_assets
+                if self._ubs_universe_asset_matches_search(row[1], row[2], row[3], asset_search_terms)
+            ]
 
         if hasattr(self, "ubs_universe_assets_tree"):
             for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
@@ -261,18 +317,22 @@ class UBSUniverseLogicMixin:
         valid_symbols = {info["symbol"] for info in self.ubs_universe_paths.values() if info.get("symbol")}
         self.ubs_universe_checked.intersection_update(valid_symbols)
 
-        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
+        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
         observed_timeframes = sorted(period for period in timeframe_stats if period not in timeframe_order)
         ordered_timeframes = timeframe_order + observed_timeframes
         tf_rows = []
         for period in ordered_timeframes:
             stat = timeframe_stats.get(period, self._empty_ubs_stat())
-            weights = stat["weights"]
+            weight_groups = stat["weight_groups"]
             scores = stat["scores"]
-            weight_value = (sum(weights) / len(weights)) if weights else None
+            weight_value = grouped_shrunk_mean(weight_groups) if isinstance(weight_groups, dict) else None
             avg_score = (sum(scores) / len(scores)) if scores else None
             tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, avg_score))
         tf_rows.sort(key=lambda item: item[0], reverse=True)
+        tf_total_before_filter = len(tf_rows)
+        tf_search_terms = self._ubs_universe_search_terms("ubs_universe_tf_search")
+        if tf_search_terms:
+            tf_rows = [row for row in tf_rows if self._ubs_universe_tf_matches_search(row[1], tf_search_terms)]
 
         if hasattr(self, "ubs_timeframes_tree"):
             valid_tfs: set[str] = set()
@@ -295,14 +355,22 @@ class UBSUniverseLogicMixin:
                 )
             self.ubs_timeframe_checked.intersection_update(valid_tfs)
 
+        asset_filter_text = (
+            f" | mostrando activos {len(ranked_assets)}/{asset_total_before_filter}"
+            if asset_search_terms else ""
+        )
+        tf_filter_text = (
+            f" | mostrando TF {len(tf_rows)}/{tf_total_before_filter}"
+            if tf_search_terms else ""
+        )
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
             f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | robust +/{total_robust_accepted} -/{total_robust_rejected} | "
-            f"deshabilitados: {len(disabled_symbols)}"
+            f"deshabilitados: {len(disabled_symbols)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO activos = promedio(score +20 si accepted + bonus robustez); PESO TF = promedio(score +15 si accepted + bonus robustez)."
+            "PESO = score aceptado + bonus; rechazados/no-ops restan por causa; robustez pesa mas; seeds con reporte valen como generadas."
         )
 
     def _disabled_symbols_path(self):
@@ -396,7 +464,7 @@ class UBSUniverseLogicMixin:
                                    f"Esto pondrá score=NULL en todos los candidatos para:\n{chr(10).join(desc)}\n\nSus pesos volverán a 0. ¿Continuar?"):
             return
         import sqlite3
-        conn = sqlite3.connect(mem, timeout=2.0)
+        conn = connect_memory(mem)
         n = self._clear_weights_sql(conn, symbols=symbols, periods=periods)
         conn.close()
         self.ubs_universe_checked.clear()
@@ -414,7 +482,7 @@ class UBSUniverseLogicMixin:
                                    "Los pesos volverán a 0. ¿Continuar?"):
             return
         import sqlite3
-        conn = sqlite3.connect(mem, timeout=2.0)
+        conn = connect_memory(mem)
         conn.execute("update candidates set score=null, accepted=null where score is not null")
         conn.execute("update seed_scores  set score=null, accepted=null where score is not null")
         n = conn.execute("select changes()").fetchone()[0]
@@ -433,12 +501,10 @@ class UBSUniverseLogicMixin:
                                    "Los pesos de TF volverán a 0. ¿Continuar?"):
             return
         import sqlite3
-        periods = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
-        conn = sqlite3.connect(mem, timeout=2.0)
+        periods = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
+        conn = connect_memory(mem)
         n = self._clear_weights_sql(conn, periods=periods)
         conn.close()
         self.ubs_timeframe_checked.clear()
         self.status_text.set(f"Todos los pesos de TF limpiados: {n} candidatos afectados")
         self._refresh_ubs_universe()
-
-

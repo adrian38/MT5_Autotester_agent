@@ -28,6 +28,7 @@ from run_tests import (
     load_experts_root,
     looks_like_ubs_expert_file,
 )
+from ubs.db import connect_memory
 from ubs.set_utils import read_set_with_encoding
 from ui.dashboard_logic import DashboardLogicMixin
 from ui.dashboard_view import DashboardViewMixin
@@ -52,6 +53,7 @@ from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
 from ubs.universe import disabled_symbols_path, load_disabled_symbols, save_disabled_symbols
+from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -650,8 +652,18 @@ class MT5AutotesterUI(
         self.ubs_robust_pass_min_recovery_factor = tk.StringVar(
             value=saved_general.get("ubs_robust_pass_min_recovery_factor", self.ubs_pass_min_recovery_factor.get())
         )
-        self.ubs_robust_positive_bonus = tk.StringVar(value=saved_general.get("ubs_robust_positive_bonus", "30"))
-        self.ubs_robust_negative_bonus = tk.StringVar(value=saved_general.get("ubs_robust_negative_bonus", "-30"))
+        saved_robust_positive_bonus = saved_general.get(
+            "ubs_robust_positive_bonus", str(int(DEFAULT_ROBUST_POSITIVE_BONUS))
+        )
+        saved_robust_negative_bonus = saved_general.get(
+            "ubs_robust_negative_bonus", str(int(DEFAULT_ROBUST_NEGATIVE_BONUS))
+        )
+        if saved_robust_positive_bonus.strip() == "30":
+            saved_robust_positive_bonus = str(int(DEFAULT_ROBUST_POSITIVE_BONUS))
+        if saved_robust_negative_bonus.strip() == "-30":
+            saved_robust_negative_bonus = str(int(DEFAULT_ROBUST_NEGATIVE_BONUS))
+        self.ubs_robust_positive_bonus = tk.StringVar(value=saved_robust_positive_bonus)
+        self.ubs_robust_negative_bonus = tk.StringVar(value=saved_robust_negative_bonus)
         self.ubs_robust_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_robust_auto"), False))
         self.ubs_agent_from_date = tk.StringVar(value=saved_general.get("ubs_agent_from_date", ""))
         self.ubs_agent_to_date = tk.StringVar(value=saved_general.get("ubs_agent_to_date", ""))
@@ -665,6 +677,8 @@ class MT5AutotesterUI(
         self.symbol_map = tk.StringVar(value=saved_general.get("symbol_map", ""))
         _tg_default = "1" if (env_value("TELEGRAM_BOT_TOKEN") and env_value("TELEGRAM_CHAT_ID")) else "0"
         self.telegram_enabled = tk.BooleanVar(value=self._bool_setting(saved_general.get("telegram_enabled", _tg_default)))
+        self.telegram_bot_token = tk.StringVar(value=env_value("TELEGRAM_BOT_TOKEN") or "")
+        self.telegram_chat_id = tk.StringVar(value=env_value("TELEGRAM_CHAT_ID") or "")
         self.multiterminal_enabled = tk.BooleanVar(value=self._bool_setting(saved_multi.get("enabled"), False))
         self.multiterminal_workers = tk.IntVar(value=max(1, self._saved_int(saved_multi.get("workers"), 1)))
         self.multiterminal_profiles = self._read_multiterminal_profiles(ui_settings)
@@ -694,9 +708,13 @@ class MT5AutotesterUI(
         self.ubs_robust_status = tk.StringVar(value="Sin resultados de robustez")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
+        self.ubs_universe_asset_search = tk.StringVar(value="")
+        self.ubs_universe_tf_search = tk.StringVar(value="")
         self.ubs_compare_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_compare_detail = tk.StringVar(value="Selecciona un resultado para comparar contra su seed.")
         self.ubs_compare_run_id = tk.StringVar(value="")
+        self.ubs_results_run_id = tk.StringVar(value="")
+        self.ubs_robust_run_id = tk.StringVar(value="")
         self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
         self.ubs_seed_override_symbol = tk.StringVar(value="")
         self.ubs_weights_locked = tk.BooleanVar(value=False)
@@ -729,6 +747,8 @@ class MT5AutotesterUI(
         self.ubs_compare_paths: dict[str, dict[str, str]] = {}
         self.ubs_compare_checked: set[str] = set()
         self._ubs_compare_latest_seen_run_id = 0
+        self._ubs_results_latest_seen_run_id = 0
+        self._ubs_robust_latest_seen_run_id = 0
         self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
@@ -876,6 +896,12 @@ class MT5AutotesterUI(
                   foreground=[("readonly", COLORS["text"]), ("disabled", COLORS["muted"])],
                   selectbackground=[("readonly", COLORS["entry_bg"])],
                   selectforeground=[("readonly", COLORS["text"])])
+        # Style the Listbox popup used by every Combobox dropdown
+        self.option_add("*TCombobox*Listbox.background", COLORS["entry_bg"])
+        self.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
+        self.option_add("*TCombobox*Listbox.selectBackground", COLORS["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        self.option_add("*TCombobox*Listbox.borderWidth", "0")
         style.configure("Treeview", background=COLORS["tree_bg"], fieldbackground=COLORS["tree_bg"],
                         foreground=COLORS["text"], rowheight=26, borderwidth=0)
         style.map("Treeview", background=[("selected", COLORS["accent"])], foreground=[("selected", "#ffffff")])
@@ -1186,6 +1212,145 @@ class MT5AutotesterUI(
 
         telegram_notify.send_async(message, on_result=on_result)
 
+    def _arg_value(self, args: list[str], flag: str) -> str:
+        try:
+            index = args.index(flag)
+        except ValueError:
+            return ""
+        next_index = index + 1
+        return args[next_index] if next_index < len(args) else ""
+
+    def _ubs_notification_memory_path(self, args: list[str]) -> Path:
+        raw = self._arg_value(args, "--memory")
+        return Path(raw).expanduser() if raw else BASE_DIR / "outputs" / "ubs_memory.sqlite"
+
+    def _ubs_status_counts(self, conn: sqlite3.Connection, table: str, where: str = "", params: tuple = ()) -> dict[str, int]:
+        query = f"select status, count(*) as total from {table}"
+        if where:
+            query += f" where {where}"
+        query += " group by status"
+        return {str(row["status"] or "unknown"): int(row["total"] or 0) for row in conn.execute(query, params)}
+
+    def _ubs_agent_notification_message(self, code: int, args: list[str]) -> str:
+        prefix = "OK" if code == 0 else f"ERROR codigo {code}"
+        memory_path = self._ubs_notification_memory_path(args)
+        mode = "UBS Agente"
+        if "--evaluate-robustness" in args:
+            mode = "UBS Robustez OOS"
+        elif "--evaluate-seeds" in args:
+            mode = "UBS Seeds"
+        elif "--rescore-seeds-only" in args:
+            mode = "UBS Seeds rescore"
+        elif "--retry-candidate-id" in args:
+            mode = "UBS retry candidato"
+        elif "--retry-mismatch-run" in args:
+            mode = "UBS retry run"
+        elif "--continue-last-run" in args:
+            mode = "UBS continuar run"
+
+        if not memory_path.exists():
+            return f"MT5 Autotester: {mode} terminado ({prefix}).\nMemoria UBS no encontrada: {memory_path}"
+
+        conn = None
+        try:
+            conn = connect_memory(memory_path)
+            if "--evaluate-robustness" in args:
+                run_id = int(self._arg_value(args, "--robust-run-id") or 0)
+                if run_id <= 0:
+                    row = conn.execute("select id from runs order by id desc limit 1").fetchone()
+                    run_id = int(row["id"]) if row else 0
+                counts = conn.execute(
+                    """
+                    select
+                        count(*) as total,
+                        sum(case when cr.status is not null then 1 else 0 end) as evaluated,
+                        sum(case when cr.status='accepted' then 1 else 0 end) as ok,
+                        sum(case when cr.status='rejected' then 1 else 0 end) as fail
+                    from candidates c
+                    left join candidate_robustness cr on cr.candidate_id=c.id
+                    where c.run_id=? and c.status='accepted'
+                    """,
+                    (run_id,),
+                ).fetchone()
+                neutral = int(counts["evaluated"] or 0) - int(counts["ok"] or 0) - int(counts["fail"] or 0)
+                return (
+                    f"MT5 Autotester: {mode} terminado ({prefix}).\n"
+                    f"Run #{run_id} | accepted base: {int(counts['total'] or 0)} | "
+                    f"OOS evaluados: {int(counts['evaluated'] or 0)} | "
+                    f"OK: {int(counts['ok'] or 0)} | FAIL: {int(counts['fail'] or 0)} | neutros: {neutral}"
+                )
+
+            if "--evaluate-seeds" in args or "--rescore-seeds-only" in args:
+                counts = self._ubs_status_counts(conn, "seed_scores", "active=1")
+                total = sum(counts.values())
+                return (
+                    f"MT5 Autotester: {mode} terminado ({prefix}).\n"
+                    f"Seeds activas: {total} | accepted: {counts.get('accepted', 0)} | "
+                    f"rejected: {counts.get('rejected', 0)} | no_trades: {counts.get('no_trades', 0)} | "
+                    f"mismatch: {counts.get('report_mismatch', 0)} | pending: {counts.get('pending', 0)} | "
+                    f"no_report: {counts.get('no_report', 0)}"
+                )
+
+            if "--retry-candidate-id" in args:
+                candidate_id = int(self._arg_value(args, "--retry-candidate-id") or 0)
+                row = conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()
+                if row:
+                    metrics = {}
+                    try:
+                        metrics = json.loads(row["metrics_json"] or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        metrics = {}
+                    reasons = ", ".join(metrics.get("reasons") or []) or "-"
+                    return (
+                        f"MT5 Autotester: {mode} terminado ({prefix}).\n"
+                        f"Candidate #{candidate_id} | run #{row['run_id']} | {row['target_symbol']} {row['period']} | "
+                        f"estado: {row['status']} | score: {self._format_ubs_number(row['score'])} | motivo: {reasons}"
+                    )
+
+            run_id = int(self._arg_value(args, "--retry-run-id") or 0)
+            if run_id <= 0:
+                row = conn.execute("select id from runs where hidden=0 order by id desc limit 1").fetchone()
+                if row is None:
+                    row = conn.execute("select id from runs order by id desc limit 1").fetchone()
+                run_id = int(row["id"]) if row else 0
+            counts = self._ubs_status_counts(conn, "candidates", "run_id=?", (run_id,))
+            robust = conn.execute(
+                """
+                select
+                    sum(case when cr.status='accepted' then 1 else 0 end) as ok,
+                    sum(case when cr.status='rejected' then 1 else 0 end) as fail
+                from candidates c
+                left join candidate_robustness cr on cr.candidate_id=c.id
+                where c.run_id=? and c.status='accepted'
+                """,
+                (run_id,),
+            ).fetchone()
+            total = sum(counts.values())
+            return (
+                f"MT5 Autotester: {mode} terminado ({prefix}).\n"
+                f"Run #{run_id} | candidatos: {total} | accepted: {counts.get('accepted', 0)} | "
+                f"rejected: {counts.get('rejected', 0)} | no_trades: {counts.get('no_trades', 0)} | "
+                f"mismatch: {counts.get('report_mismatch', 0)} | no_report: {counts.get('no_report', 0)} | "
+                f"robust OK/FAIL: {int(robust['ok'] or 0)}/{int(robust['fail'] or 0)}"
+            )
+        except Exception as exc:
+            return f"MT5 Autotester: {mode} terminado ({prefix}).\nNo se pudo leer resumen UBS: {exc}"
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+
+    def _completion_notification_message(self, script_name: str, args: list[str], code: int) -> str:
+        if script_name == "ubs_agent.py":
+            return self._ubs_agent_notification_message(code, args)
+        if code == 0:
+            return "MT5 Autotester: proceso finalizado correctamente."
+        if code == RUNNING_TERMINAL_EXIT_CODE:
+            return "MT5 Autotester: proceso cancelado porque MT5 ya estaba abierto."
+        return f"MT5 Autotester: proceso terminado con error (codigo {code})."
+
     def _confirm_execution_start(self, title: str, total: int, details: list[str]) -> bool:
         if total <= 0:
             messagebox.showwarning(title, "No hay elementos para ejecutar.")
@@ -1443,6 +1608,11 @@ class MT5AutotesterUI(
                         self.term_status_icon.configure(fg=COLORS["log_info"] if code == 0 else COLORS["log_error"])
                         self.idle_label.configure(text="IDLE")
                     self._refresh_all()
+                    notification_message = self._completion_notification_message(
+                        finished_script_name,
+                        finished_script_args,
+                        code,
+                    )
                     auto_followup_started = False
                     if code == 0 and hasattr(self, "_maybe_auto_run_ubs_robustness"):
                         auto_followup_started = self._maybe_auto_run_ubs_robustness(
@@ -1451,18 +1621,18 @@ class MT5AutotesterUI(
                             code,
                         )
                     if code == 0:
+                        self._notify_telegram(notification_message)
                         if not auto_followup_started:
-                            self._notify_telegram("MT5 Autotester: proceso finalizado correctamente.")
                             messagebox.showinfo("Proceso terminado", "El proceso termino correctamente.")
                     elif code == RUNNING_TERMINAL_EXIT_CODE:
-                        self._notify_telegram("MT5 Autotester: proceso cancelado porque MT5 ya estaba abierto.")
+                        self._notify_telegram(notification_message)
                         messagebox.showerror(
                             "MT5 ya esta abierto",
                             "El proceso se cancelo porque una terminal MT5 ya estaba abierta.\n\n"
                             "Cierra las terminales MT5 usadas por el proceso y vuelve a ejecutar.",
                         )
                     else:
-                        self._notify_telegram(f"MT5 Autotester: proceso terminado con error (codigo {code}).")
+                        self._notify_telegram(notification_message)
                         self._show_error(
                             "Proceso terminado con error",
                             f"El proceso termino con codigo {code}.",
@@ -1651,5 +1821,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

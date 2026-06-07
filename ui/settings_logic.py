@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+import telegram_notify
 from mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR
 
@@ -88,6 +89,62 @@ class SettingsLogicMixin:
             return
         self.status_text.set("Configuracion guardada")
         messagebox.showinfo("Configuracion guardada", "La configuracion se guardo correctamente.")
+
+    def _telegram_values(self) -> tuple[str, str]:
+        token = self.telegram_bot_token.get().strip()
+        chat_id = self.telegram_chat_id.get().strip()
+        if not token:
+            raise ValueError("Indica TELEGRAM_BOT_TOKEN.")
+        if not chat_id:
+            raise ValueError("Indica TELEGRAM_CHAT_ID.")
+        return token, chat_id
+
+    def _save_telegram_settings(self) -> None:
+        self._update_env_vars(
+            {
+                "TELEGRAM_BOT_TOKEN": self.telegram_bot_token.get().strip(),
+                "TELEGRAM_CHAT_ID": self.telegram_chat_id.get().strip(),
+            }
+        )
+        self._write_ui_settings()
+        self.status_text.set("Telegram guardado")
+
+    def _save_telegram_clicked(self) -> None:
+        try:
+            self._save_telegram_settings()
+        except Exception as exc:
+            self._show_error("No se pudo guardar Telegram", str(exc))
+            return
+        messagebox.showinfo("Telegram guardado", f"Credenciales guardadas en:\n{ENV_FILE}")
+
+    def _test_telegram_clicked(self) -> None:
+        try:
+            token, chat_id = self._telegram_values()
+        except Exception as exc:
+            self._show_error("No se pudo probar Telegram", str(exc))
+            return
+        self.status_text.set("Probando Telegram...")
+        self._append_console("\n[Telegram] Enviando mensaje de prueba...\n", tag="telegram")
+
+        def on_result(error: str | None) -> None:
+            def finish() -> None:
+                if error:
+                    self.status_text.set("Telegram: error")
+                    self._append_console(f"[Telegram] {error}\n", tag="error")
+                    self._show_error("Prueba Telegram fallida", error)
+                    return
+                self.status_text.set("Telegram probado correctamente")
+                self._append_console("[Telegram] Mensaje de prueba enviado correctamente.\n", tag="telegram")
+                messagebox.showinfo("Telegram", "Mensaje de prueba enviado correctamente.")
+
+            self.after(0, finish)
+
+        telegram_notify.send_async(
+            "MT5 Autotester: mensaje de prueba de Telegram.",
+            token=token,
+            chat_id=chat_id,
+            on_result=on_result,
+        )
     def _delete_historical_data(self) -> None:
         if self.process and self.process.poll() is None:
             messagebox.showwarning("Proceso activo", "Hay un proceso en ejecucion. Detenlo antes de limpiar.")
@@ -422,4 +479,3 @@ class SettingsLogicMixin:
                 "Se eliminaron los datos historicos correctamente (tester, bases, history, .fxt, .tick)."
             )
         self._refresh_all()
-

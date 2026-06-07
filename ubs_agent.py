@@ -27,6 +27,7 @@ from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
 from ubs.universe import canonical_symbol, disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
+from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -241,12 +242,20 @@ def parse_args() -> argparse.Namespace:
         help="Reserva exploracion para activos/TF del universo que no existen en las seeds base.",
     )
     parser.add_argument("--continue-last-run", action="store_true", help="Usa la ultima generacion registrada como seeds.")
+    parser.add_argument(
+        "--backtest-pending-only",
+        action="store_true",
+        help="Con --continue-last-run, ejecuta solo candidatos generated pendientes y no crea generaciones nuevas.",
+    )
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
     parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
     parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
-    parser.add_argument("--robust-positive-bonus", type=float, default=30.0, help="Bonus de peso si el candidato pasa robustez.")
-    parser.add_argument("--robust-negative-bonus", type=float, default=-30.0, help="Bonus de peso si el candidato falla robustez.")
+    parser.add_argument("--robust-pending-only", action="store_true", help="Con --evaluate-robustness, testea solo accepted sin robustez registrada.")
+    parser.add_argument("--robust-positive-bonus", type=float, default=DEFAULT_ROBUST_POSITIVE_BONUS, help="Bonus de peso si el candidato pasa robustez.")
+    parser.add_argument("--robust-negative-bonus", type=float, default=DEFAULT_ROBUST_NEGATIVE_BONUS, help="Bonus de peso si el candidato falla robustez.")
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
+    parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes con reporte sin abrir MT5.")
+    parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes con reporte sin abrir MT5.")
     parser.add_argument(
         "--reconcile-seed-eval-only",
         action="store_true",
@@ -396,7 +405,7 @@ def choose_target_symbol(
         symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
         if symbol.upper() != current.upper() and symbol.upper() not in disabled
     )
-    if force_unseeded_universe and unseeded_choices and rng.random() < 0.40:
+    if force_unseeded_universe and unseeded_choices and rng.random() < 0.65:
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
         return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
@@ -446,7 +455,7 @@ def choose_target_period(
     if not choices:
         return current, "tf_exploit"
     forced_choices = tuple(period for period in choices if period.upper() in {tf.upper() for tf in unseeded_timeframes})
-    if force_unseeded_timeframes and forced_choices and rng.random() < 0.35:
+    if force_unseeded_timeframes and forced_choices and rng.random() < 0.50:
         unseen = [period for period in forced_choices if period.upper() not in timeframe_feedback]
         return rng.choice(unseen or list(forced_choices)), "tf_unseeded_force"
     if current in choices and rng.random() < 0.60:
@@ -739,7 +748,7 @@ def rescore_existing_seed_scores(
         if str(seed.path) in exclude_paths:
             continue
         row = memory.seed_score_row(seed.path)
-        if row is None or str(row["status"] or "") not in {"accepted", "rejected"}:
+        if row is None or str(row["status"] or "") not in {"accepted", "rejected", "no_trades", "report_mismatch", "parse_error"}:
             continue
         report_raw = str(row["report_path"] or "").strip()
         if not report_raw:
@@ -959,6 +968,138 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
     return 0
 
 
+def _stored_or_discovered_report(row: sqlite3.Row) -> Path | None:
+    report_raw = str(row["report_path"] or "").strip()
+    if report_raw:
+        report = Path(report_raw)
+        if report.exists():
+            return report
+    set_path = Path(str(row["set_path"] or ""))
+    if set_path.exists():
+        return find_report_for_set(set_path)
+    return None
+
+
+def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    symbol_map = parse_symbol_map(args.symbol_map)
+    rows = memory.conn.execute(
+        """
+        select *
+        from candidates
+        where status in (
+            'accepted', 'rejected', 'no_trades', 'report_mismatch',
+            'parse_error', 'no_report', 'generated'
+        )
+        order by run_id, generation, id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    skipped_no_report = 0
+    for row in rows:
+        report = _stored_or_discovered_report(row)
+        if report is None:
+            skipped_no_report += 1
+            continue
+        variant = variant_from_candidate_row(row)
+        status, _ = evaluate_variant_report(memory, variant, report, score_config, symbol_map)
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    total = sum(status_counts.values())
+    if status_counts:
+        print(
+            "Candidatos repuntuados con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            + f"; total={total}"
+        )
+    else:
+        print("No hay candidatos con reporte disponible para repuntuar.")
+    if skipped_no_report:
+        print(f"Candidatos sin reporte local omitidos: {skipped_no_report}")
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    symbol_map = parse_symbol_map(args.symbol_map)
+    rows = memory.conn.execute(
+        """
+        select
+            c.*,
+            cr.status as robust_status,
+            cr.report_path as robust_report_path,
+            cr.from_date as robust_from_date,
+            cr.to_date as robust_to_date,
+            cr.positive_bonus as robust_positive_bonus,
+            cr.negative_bonus as robust_negative_bonus
+        from candidate_robustness cr
+        join candidates c on c.id = cr.candidate_id
+        order by cr.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    skipped_no_report = 0
+    for row in rows:
+        report_raw = str(row["robust_report_path"] or "").strip()
+        report = Path(report_raw) if report_raw else None
+        if report is None or not report.exists():
+            skipped_no_report += 1
+            continue
+        candidate_id = int(row["id"])
+        run_id = int(row["run_id"])
+        variant = variant_from_candidate_row(row)
+        try:
+            result = score_report_file(report, config=score_config)
+        except Exception as exc:
+            print(f"AVISO: no pude parsear robustez candidate #{candidate_id}: {exc}")
+            memory.record_candidate_robustness(
+                candidate_id,
+                run_id,
+                None,
+                "parse_error",
+                report,
+                str(row["robust_from_date"] or ""),
+                str(row["robust_to_date"] or ""),
+                float(row["robust_positive_bonus"] or DEFAULT_ROBUST_POSITIVE_BONUS),
+                float(row["robust_negative_bonus"] or DEFAULT_ROBUST_NEGATIVE_BONUS),
+            )
+            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+            continue
+        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+        if not matches:
+            print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
+            status = "report_mismatch"
+        elif result.trades <= 0:
+            status = "no_trades"
+        else:
+            status = "accepted" if result.accepted else "rejected"
+        memory.record_candidate_robustness(
+            candidate_id,
+            run_id,
+            result,
+            status,
+            report,
+            str(row["robust_from_date"] or ""),
+            str(row["robust_to_date"] or ""),
+            float(row["robust_positive_bonus"] or DEFAULT_ROBUST_POSITIVE_BONUS),
+            float(row["robust_negative_bonus"] or DEFAULT_ROBUST_NEGATIVE_BONUS),
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    total = sum(status_counts.values())
+    if status_counts:
+        print(
+            "Robustez repuntuada con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            + f"; total={total}"
+        )
+    else:
+        print("No hay resultados de robustez con reporte disponible para repuntuar.")
+    if skipped_no_report:
+        print(f"Robustez sin reporte local omitida: {skipped_no_report}")
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
 def _report_is_fresh(path: Path, min_mtime: float | None) -> bool:
     if min_mtime is None:
         return True
@@ -1081,6 +1222,16 @@ def evaluate_variant(
     if not report:
         memory.record_score(variant.path, None, "no_report", None)
         return "no_report", None
+    return evaluate_variant_report(memory, variant, report, score_config, symbol_map)
+
+
+def evaluate_variant_report(
+    memory: AgentMemory,
+    variant: Variant,
+    report: Path,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+) -> tuple[str, ScoreResult | None]:
     try:
         result = score_report_file(report, config=score_config)
     except Exception as exc:
@@ -1156,8 +1307,17 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
         for row in memory.accepted_candidates_for_robustness(run_id)
         if Path(row["set_path"]).exists()
     ]
+    if args.robust_pending_only:
+        rows = [
+            row for row in rows
+            if not str(row["robust_status"] or "").strip()
+            or str(row["robust_status"]) == "report_mismatch"
+        ]
     if not rows:
-        print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
+        if args.robust_pending_only:
+            print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes de OOS ni con mismatch.")
+        else:
+            print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
         return 0
 
     robust_dir = run_dir / "robustness" / f"run_{run_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -1191,7 +1351,8 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             )
         )
 
-    print(f"Robustez run #{run_id}: candidatos accepted={len(copied)}")
+    mode_label = "pendientes sin OOS" if args.robust_pending_only else "todos los accepted"
+    print(f"Robustez run #{run_id}: modo={mode_label}; candidatos accepted={len(copied)}")
     print(f"Directorio robustez: {robust_dir}")
     print(f"Fechas robustez: {args.from_date or '(template)'} -> {args.to_date or '(template)'}")
     print(
@@ -1730,8 +1891,16 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             current_seeds = seeds_from_survivors(select_survivors(scored, args.top_percent))
         else:
             current_seeds = seeds_from_variants(variants)
+        if args.backtest_pending_only:
+            print(f"Backtests pendientes completados en gen {pending_generation}; no se generan nuevas generaciones.")
+            print(f"Run dir: {run_dir}")
+            print(f"Memoria: {memory.path}")
+            return 0
         next_generation = pending_generation + 1
     else:
+        if args.backtest_pending_only:
+            print(f"Run #{run_id} no tiene candidatos generated pendientes para backtest.")
+            return 0
         if max_generation >= planned_generations:
             print(f"Run #{run_id} ya esta completo: {max_generation}/{planned_generations}")
             return 0
@@ -1841,6 +2010,16 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.rescore_seeds_only:
         try:
             return rescore_seed_scores_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_candidates_only:
+        try:
+            return rescore_candidate_scores_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_robustness_only:
+        try:
+            return rescore_robustness_only(args, memory, score_config)
         finally:
             memory.close()
     if args.continue_last_run:

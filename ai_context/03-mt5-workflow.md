@@ -148,12 +148,22 @@ Exact path tokens are intentionally preferred over loose aliases. Example:
 `XAGUSD__D1__XAUUSD_MIX__...set` should infer `XAGUSD`, even though the name
 also contains `XAUUSD_MIX`.
 
+Broker/index symbols can appear with broker-specific casing or suffixes in
+generated paths. `run_tests.py` must recognize exact `*Cash` tokens such as
+`.JP225Cash` / `JP225Cash` before broad aliases like `GOLD -> XAUUSD`; otherwise
+a generated `JP225Cash/H4/...GOLD...set` can incorrectly run on `XAUUSD`.
+
 When UBS generated variants are executed, `ubs_agent.py` calls `run_tests.py`
 with `--prefer-set-path-timeframe`. This makes the tester `Period` come from
 the generated target folder/name instead of a timeframe still present in the
 source seed label or internal set parameters. `ForceSymbol` values read from a
 `.set` are preserved literally for the generated tester `Symbol`, so broker
 symbols such as `.JP225Cash` keep their exact casing.
+
+`ubs_agent.py:create_variant()` must ensure generated variants contain
+`ForceSymbol=<target_symbol>`. If the source seed lacks `ForceSymbol`, the agent
+adds it via `replace_or_add_plain_key()`; this makes future tester inference
+depend on the intended target, not on inherited seed names.
 
 ## UBS Agent Report Validation
 
@@ -169,6 +179,11 @@ If these do not match, the candidate is stored as `report_mismatch`, not
 `accepted` or `rejected`. Mismatches are excluded from agent feedback and from
 the Universe tab weights. The Results tab has `Reprobar mismatch` for one
 candidate and `Reprobar run` for all mismatches in the visible run.
+
+After a retry fixes a mismatch/no-report candidate and the original row becomes
+`accepted` or `rejected`, it enters the normal weight pool. `rejected` rows now
+use the shared `ubs.weights` formula: raw score minus the base rejection penalty
+and per-cause penalties from `metrics_json.reasons`.
 
 ## UBS Seed Evaluation
 
@@ -191,7 +206,10 @@ Hard rule: if a UBS seed cannot infer both symbol and timeframe after applying
 Do not copy it into the seed evaluation folder and do not run a backtest for
 it. The user must correct it in `UBS Seeds` before it can be evaluated.
 
-Accepted/rejected seed scores can feed Universe asset/timeframe weights.
+Accepted/rejected/no-trades seed scores with stored reports feed Universe
+asset/timeframe weights at full base strength, the same as generated candidates.
+Seeds do not receive robustness bonus unless a separate seed-date/robustness
+bonus is explicitly added.
 `report_mismatch`, `no_report`, and `parse_error` seed rows must not feed
 weights.
 For pending/backtest counts, `report_mismatch` is considered ready/quarantined:
@@ -201,17 +219,21 @@ symbol/timeframe override. Retryable states are `pending`, `no_report`,
 
 If a seed report parses successfully but has zero closed trades, classify it as
 `no_trades` instead of ordinary `rejected`. This usually means an MT5/history or
-session-filter execution problem, so it is retryable and does not feed Universe
-weights. The Seeds tab can relaunch a single selected seed through
+session-filter execution problem, so it is retryable and feeds only the shared
+fixed negative reliability penalty. The Seeds tab can relaunch a single selected seed through
 `ubs_agent.py --retry-seed-path`.
 
 Seed acceptance thresholds in the UI are independent from UBS Agent generation
 thresholds. The default seed net-profit threshold is `0`, which means strict
-`net_profit > 0` because the scorer rejects `net_profit <= min_net_profit`.
+`normalized_net_profit > 0` because the scorer rejects
+`normalized_net_profit <= min_net_profit`. The raw report `net_profit` remains
+stored for audit/display; current RoboForex scoring factors are configured in
+`assets/roboforex_normalization.json`.
 When `--evaluate-seeds` runs, already evaluated `accepted`/`rejected` seeds are
 re-scored from their stored reports using the current seed thresholds, without
 rerunning MT5 if the seed file and symbol/timeframe are unchanged.
-Use `ubs_agent.py --rescore-seeds-only` when only thresholds changed and MT5
+Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`, and
+`--rescore-robustness-only` when thresholds or normalization changed and MT5
 should not be launched.
 
 Seed evaluation is resumable after an interrupted MT5 batch. Before launching
@@ -229,7 +251,7 @@ The UI can reset seed evaluation from `UBS Seeds`:
 - After reset, Universe weights are locked/hidden until seed evaluation is run
   again and the user presses "Calcular pesos" in `UBS Universo`.
 - "Calcular pesos" only unlocks weights when active seeds are ready. Current UI
-  ready states are `accepted`, `rejected`, `report_mismatch`, and
+  ready states are `accepted`, `rejected`, `no_trades`, `report_mismatch`, and
   `disabled_symbol`.
 
 Seeds and Universe tables use a SEL checkbox column for multi-row operations.
@@ -264,27 +286,36 @@ Accepted UBS candidates can be sent to an out-of-sample robustness pass with
 as:
 
 - `UBS Agente UBS` -> `Robustez OOS` configuration block.
-- `UBS Resultados` -> `Continuar a robustez`.
-- `UBS Robustez` -> OOS result table and manual execute/refresh actions.
+- `UBS Resultados` -> `Continuar a robustez` for only accepted candidates
+  without stored OOS, plus `Reprobar robustez` to rerun all accepted candidates.
+- `UBS Robustez` -> OOS result table plus the same continue/rerun actions.
 
-The robustness run copies every accepted candidate `.set` from the selected run
-into `outputs/ubs_agent/<run>/robustness/run_<id>_<timestamp>/`, then calls
-`run_tests.py` on that folder. `--from-date` / `--to-date` are robustness-only
-dates when provided; empty values use the tester template.
+The full robustness run copies every accepted candidate `.set` from the
+selected run into `outputs/ubs_agent/<run>/robustness/run_<id>_<timestamp>/`,
+then calls `run_tests.py` on that folder. `--robust-pending-only` filters that
+queue to accepted candidates with no existing `candidate_robustness` row. The
+UI's "Continuar" action uses that flag; "Reprobar" intentionally omits it.
+`--from-date` / `--to-date` are robustness-only dates when provided; empty
+values use the tester template.
 
 Robustness has its own score thresholds and its own positive/negative weight
-bonus. The base candidate score in `candidates` remains unchanged. OOS results
-are stored in `candidate_robustness`:
+bonus. The default bonus scale is `+70/-70`. The base candidate score in
+`candidates` remains unchanged. OOS results are stored in
+`candidate_robustness`:
 
 - `accepted`: add `positive_bonus` to asset/timeframe/mutation feedback.
-- `rejected`: add `negative_bonus` to asset/timeframe/mutation feedback.
+- `rejected`: add `negative_bonus` plus per-cause OOS penalties.
 - `no_report`, `parse_error`, `report_mismatch`, `no_trades`: store the state
   but apply no robustness bonus.
 
-The agent and `UBS Universo` must use the same formula: base candidate
-contribution plus robustness bonus if and only if robustness status is
-`accepted` or `rejected`. Seeds continue contributing exactly as before and do
-not have a robustness bonus.
+The agent and `UBS Universo` must use `ubs.weights` for the same formula:
+accepted rows get the accepted bonus, rejected rows get rejection/cause
+penalties and are capped so they never add positive weight, no-trades rows get
+a fixed reliability penalty, robust results apply
+their OOS adjustment, correlated groups are averaged before aggregation, and
+small samples are shrunk toward zero. Seeds do not have a robustness bonus by
+default, but seeds with scored reports still contribute even when candidate
+evidence exists, at the same base strength as generated candidates.
 
 ## UBS Unseeded Universe Exploration
 
@@ -296,10 +327,10 @@ seed` in `UBS Agente UBS` or pass `ubs_agent.py --force-unseeded-universe`.
 When enabled:
 
 - `choose_target_symbol()` computes universe symbols not represented by the
-  current seed pool and gets a 40% early chance to choose one of them before
+  current seed pool and gets a 65% early chance to choose one of them before
   ordinary exploit/feedback logic.
 - `choose_target_period()` computes timeframes not represented by the current
-  seed pool and gets a 35% early chance to choose one if it is related to the
+  seed pool and gets a 50% early chance to choose one if it is related to the
   current seed timeframe.
 - The forced branch prefers items with no feedback yet. Items with negative
   feedback can still be explored if no unseen item remains.
@@ -320,3 +351,7 @@ When enabled:
   without checking encoding.
 - Broker symbols may start with a dot, for example `.US30Cash`; this leading
   dot is part of the symbol and must not be stripped by report parsing.
+- Broker symbols may contain internal dots, for example `BRK.B`. Report/config
+  names derived from `.set` stems must preserve those dots and the rest of the
+  stem; do not run `Path(stem).stem` on an already-extensionless stem, because
+  it turns `BRK.B_...` into `BRK` and causes report collisions.

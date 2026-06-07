@@ -26,7 +26,7 @@ class UBSRobustnessViewMixin:
         ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
         tk.Button(
             bar,
-            text="Ejecutar robustez",
+            text="Continuar robustez",
             bg=self.colors["accent"],
             fg="#ffffff",
             relief="flat",
@@ -39,6 +39,19 @@ class UBSRobustnessViewMixin:
         ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
             bar,
+            text="Reprobar robustez",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._rerun_ubs_robustness_for_latest_run,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            bar,
             text="Actualizar",
             bg=self.colors["panel"],
             fg=self.colors["muted"],
@@ -49,18 +62,26 @@ class UBSRobustnessViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._refresh_ubs_robustness_panel,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 10), pady=(5, 3))
+        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=(5, 3))
 
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 5))
-        row1.columnconfigure(0, weight=1)
+        row1.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 5))
+        row1.columnconfigure(2, weight=1)
         tk.Label(
             row1,
-            text="Fila seleccionada:",
+            text="Run:",
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
-            font=("Segoe UI", 8),
-        ).grid(row=0, column=0, sticky="w")
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self.ubs_robust_run_combo = ttk.Combobox(
+            row1,
+            textvariable=self.ubs_robust_run_id,
+            state="readonly",
+            width=36,
+        )
+        self.ubs_robust_run_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ubs_robust_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_robustness())
         tk.Button(
             row1,
             text="Abrir set",
@@ -73,7 +94,7 @@ class UBSRobustnessViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._open_selected_ubs_robust_set,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 4))
+        ).grid(row=0, column=3, sticky="e", padx=(0, 4))
         tk.Button(
             row1,
             text="Abrir reporte OOS",
@@ -86,7 +107,7 @@ class UBSRobustnessViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._open_selected_ubs_robust_report,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 4))
+        ).grid(row=0, column=4, sticky="e", padx=(0, 4))
 
         ttk.Label(panel, textvariable=self.ubs_robust_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(4, 4)
@@ -116,7 +137,7 @@ class UBSRobustnessViewMixin:
         table_frame.rowconfigure(0, weight=1)
         columns = (
             "mark", "run", "id", "gen", "status", "cause", "symbol", "period", "train_score",
-            "robust_score", "bonus", "profit", "pf", "dd", "trades", "dates", "set",
+            "robust_score", "bonus", "profit", "profit_norm", "pf", "dd", "trades", "dates", "set",
         )
         self.ubs_robust_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
         headings = {
@@ -132,6 +153,7 @@ class UBSRobustnessViewMixin:
             "robust_score": "SCORE OOS",
             "bonus": "BONUS",
             "profit": "NET OOS",
+            "profit_norm": "NET NORM",
             "pf": "PF",
             "dd": "DD %",
             "trades": "TRADES",
@@ -151,6 +173,7 @@ class UBSRobustnessViewMixin:
             "robust_score": 82,
             "bonus": 68,
             "profit": 84,
+            "profit_norm": 92,
             "pf": 66,
             "dd": 66,
             "trades": 68,

@@ -15,7 +15,7 @@ class UBSUniverseViewMixin:
         panel = self._card(parent, "Universo, scores y pesos UBS")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(2, weight=1)
+        panel.rowconfigure(3, weight=1)
 
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
@@ -50,8 +50,26 @@ class UBSUniverseViewMixin:
         )
         self._ubs_calc_weights_btn.grid(row=0, column=7, sticky="e", padx=(0, 10), pady=5)
 
+        filter_bar = ttk.Frame(panel, style="Panel.TFrame")
+        filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
+        filter_bar.columnconfigure(1, weight=1)
+        filter_bar.columnconfigure(4, weight=1)
+        ttk.Label(filter_bar, text="Buscar activos:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.ubs_universe_asset_search.trace_add("write", lambda *_: self._refresh_ubs_universe())
+        ttk.Entry(filter_bar, textvariable=self.ubs_universe_asset_search, width=28).grid(
+            row=0, column=1, sticky="ew", padx=(0, 14)
+        )
+        ttk.Label(filter_bar, text="Buscar TF:", style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        self.ubs_universe_tf_search.trace_add("write", lambda *_: self._refresh_ubs_universe())
+        ttk.Entry(filter_bar, textvariable=self.ubs_universe_tf_search, width=12).grid(
+            row=0, column=3, sticky="w", padx=(0, 14)
+        )
+        ttk.Button(filter_bar, text="Limpiar busqueda", style="Tool.TButton", command=self._clear_ubs_universe_search).grid(
+            row=0, column=4, sticky="w"
+        )
+
         body = ttk.PanedWindow(panel, orient="horizontal")
-        body.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        body.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
 
         asset_frame = ttk.Frame(body, style="Panel.TFrame")
         asset_frame.columnconfigure(0, weight=1)

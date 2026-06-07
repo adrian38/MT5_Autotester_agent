@@ -4,16 +4,30 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from ubs.db import connect_memory
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
+from ubs.weights import (
+    ASSET_ACCEPTED_BONUS,
+    MUTATION_ACCEPTED_BONUS,
+    SEED_WEIGHT_SCALE,
+    TIMEFRAME_ACCEPTED_BONUS,
+    candidate_group_key,
+    feedback_weight,
+    grouped_shrunk_mean,
+    seed_group_key,
+)
+
+
+def aggregate_feedback_value(groups: dict[object, list[float]]) -> float | None:
+    return grouped_shrunk_mean(groups)
 
 
 class AgentMemory:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
+        self.conn = connect_memory(self.path, enable_wal=True)
         self._init()
 
     def close(self) -> None:
@@ -89,8 +103,8 @@ class AgentMemory:
                 metrics_json text,
                 from_date text not null default '',
                 to_date text not null default '',
-                positive_bonus real not null default 30.0,
-                negative_bonus real not null default -30.0,
+                positive_bonus real not null default 70.0,
+                negative_bonus real not null default -70.0,
                 evaluated_at text not null
             );
             """
@@ -477,37 +491,36 @@ class AgentMemory:
         )
         self.conn.commit()
 
-    def _candidate_robustness_bonus(self, row: sqlite3.Row) -> float:
-        status = str(row["robust_status"] or "")
-        try:
-            if status == "accepted":
-                return float(row["robust_positive_bonus"] or 0.0)
-            if status == "rejected":
-                return float(row["robust_negative_bonus"] or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-        return 0.0
-
     def mutation_feedback(self) -> dict[str, float]:
         rows = self.conn.execute(
             """
             select
-                c.mutated_keys, c.score, c.accepted,
+                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
+                c.mutated_keys, c.score, c.accepted, c.metrics_json, c.status,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
-                cr.negative_bonus as robust_negative_bonus
+                cr.negative_bonus as robust_negative_bonus,
+                cr.metrics_json as robust_metrics_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.score is not null and c.mutated_keys != '' and c.status in ('accepted', 'rejected')
+            where c.mutated_keys != ''
+              and c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status='no_trades')
             """
         ).fetchall()
-        totals: dict[str, list[float]] = {}
+        totals: dict[str, dict[object, list[float]]] = {}
         for row in rows:
-            bonus = float(row["score"]) + (15.0 if row["accepted"] else 0.0) + self._candidate_robustness_bonus(row)
+            value = feedback_weight(row, accepted_bonus=MUTATION_ACCEPTED_BONUS)
+            if value is None:
+                continue
             for key in str(row["mutated_keys"]).split(";"):
                 if key:
-                    totals.setdefault(key, []).append(bonus)
-        return {key: sum(values) / len(values) for key, values in totals.items()}
+                    totals.setdefault(key, {}).setdefault(candidate_group_key(row, key), []).append(value)
+        return {
+            key: value
+            for key, groups in totals.items()
+            if (value := aggregate_feedback_value(groups)) is not None
+        }
 
     def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
@@ -519,59 +532,89 @@ class AgentMemory:
         rows = self.conn.execute(
             """
             select
-                c.target_symbol, c.score, c.accepted,
+                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
+                c.score, c.accepted, c.metrics_json, c.status,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
-                cr.negative_bonus as robust_negative_bonus
+                cr.negative_bonus as robust_negative_bonus,
+                cr.metrics_json as robust_metrics_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.score is not null and c.status in ('accepted', 'rejected')
+            where c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status='no_trades')
             """
         ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0) + self._candidate_robustness_bonus(row)
-            totals.setdefault(_canonical(row["target_symbol"]), []).append(value)
         seed_rows = self.conn.execute(
             """
-            select symbol, score, accepted
+            select seed_path, symbol, period, score, accepted, metrics_json, status
             from seed_scores
-            where active=1 and score is not null and status in ('accepted', 'rejected')
+            where active=1
+              and status in ('accepted', 'rejected', 'no_trades')
+              and (score is not null or status='no_trades')
             """
         ).fetchall()
+        totals: dict[str, dict[object, list[float]]] = {}
+        for row in rows:
+            value = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
+            if value is None:
+                continue
+            key = _canonical(row["target_symbol"])
+            totals.setdefault(key, {}).setdefault(candidate_group_key(row), []).append(value)
         for row in seed_rows:
-            value = float(row["score"]) + (20.0 if row["accepted"] else 0.0)
-            totals.setdefault(_canonical(row["symbol"]), []).append(value)
-        return {symbol: sum(values) / len(values) for symbol, values in totals.items()}
+            value = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
+            if value is None:
+                continue
+            key = _canonical(row["symbol"])
+            totals.setdefault(key, {}).setdefault(seed_group_key(row), []).append(value * SEED_WEIGHT_SCALE)
+        return {
+            symbol: value
+            for symbol, groups in totals.items()
+            if (value := grouped_shrunk_mean(groups)) is not None
+        }
 
     def timeframe_feedback(self) -> dict[str, float]:
         rows = self.conn.execute(
             """
             select
-                c.period, c.score, c.accepted,
+                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
+                c.score, c.accepted, c.metrics_json, c.status,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
-                cr.negative_bonus as robust_negative_bonus
+                cr.negative_bonus as robust_negative_bonus,
+                cr.metrics_json as robust_metrics_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.score is not null and c.status in ('accepted', 'rejected')
+            where c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status='no_trades')
             """
         ).fetchall()
-        totals: dict[str, list[float]] = {}
-        for row in rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0) + self._candidate_robustness_bonus(row)
-            totals.setdefault(str(row["period"]).upper(), []).append(value)
         seed_rows = self.conn.execute(
             """
-            select period, score, accepted
+            select seed_path, symbol, period, score, accepted, metrics_json, status
             from seed_scores
-            where active=1 and score is not null and status in ('accepted', 'rejected')
+            where active=1
+              and status in ('accepted', 'rejected', 'no_trades')
+              and (score is not null or status='no_trades')
             """
         ).fetchall()
+        totals: dict[str, dict[object, list[float]]] = {}
+        for row in rows:
+            value = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
+            if value is None:
+                continue
+            key = str(row["period"]).upper()
+            totals.setdefault(key, {}).setdefault(candidate_group_key(row), []).append(value)
         for row in seed_rows:
-            value = float(row["score"]) + (15.0 if row["accepted"] else 0.0)
-            totals.setdefault(str(row["period"]).upper(), []).append(value)
-        return {period: sum(values) / len(values) for period, values in totals.items()}
+            value = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
+            if value is None:
+                continue
+            key = str(row["period"]).upper()
+            totals.setdefault(key, {}).setdefault(seed_group_key(row), []).append(value * SEED_WEIGHT_SCALE)
+        return {
+            period: value
+            for period, groups in totals.items()
+            if (value := grouped_shrunk_mean(groups)) is not None
+        }
 
     def continuation_seeds(self, limit: int = 0) -> tuple[int, int, list[Seed]]:
         run = self.conn.execute("select id from runs order by id desc limit 1").fetchone()
