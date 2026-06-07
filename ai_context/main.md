@@ -269,6 +269,41 @@ Generated UBS variants should always carry the intended target symbol:
 - This prevents generated paths such as `JP225Cash/H4/...GOLD...set` from
   being run on `XAUUSD` only because the original seed name contains `GOLD`.
 
+### UBS Portafolio tab (new screen)
+
+Tab "UBS Portafolio" auto-builds live-trading portfolios from strategy sets that
+passed robustness (`candidate_robustness.status='accepted'`).
+
+**Inputs**: N symbols, portfolio type (Conservador/Equilibrado/Agresivo), DD
+valle %, DD puntual %, account capital $. All persisted in `ui_settings.ini`.
+
+**Lot calibration** (pure math in `portfolio_manager/ubs_portfolio.py`):
+
+1. Risk base = MT5 equity DD (`"Reducción máxima de la equidad"` scalar from
+   `report.metrics`). Closed-trade DD understates risk 6–100× for scalpers —
+   never use it for lot sizing.
+2. IS 2020–2024 report + OOS 2025–2026 report combined at 0.01 lots per
+   candidate.
+3. Risk-parity shape: `raw_w_i = (1/equityDD_i) * quality_i^gamma`; `gamma`:
+   conservative=0, balanced=1, aggressive=2.
+4. Scale `S = min(Tv/valley_shape, Tp/point_shape)`; `valley_shape` is the sum
+   of equity DDs (guaranteed upper bound); `point_shape` is the worst closed day.
+5. Lots = `floor(S * m_i) * 0.01`. Step = `ceil(capital/units * 100)/100` (UP).
+   EA applies `Lots = floor(balance / LotPerBalance_step) * 0.01` (Risk=2 mode).
+
+**Persistence**: `portfolios` + `portfolio_members` tables in
+`outputs/ubs_memory.sqlite`. A set in `portfolio_members` is globally excluded
+from future portfolios until its portfolio is deleted.
+
+**Export sets**: patches each .set with `Risk=2` + integer `LotPerBalance_step`,
+writes a human-readable `PORTAFOLIO_<id>_resumen.txt`, opens the folder.
+
+**Double-click a member row**: opens the OOS HTML report in the system viewer.
+
+Files: `portfolio_manager/ubs_portfolio.py` (math),
+`ui/ubs_portfolio_logic.py` (DB + thread + export),
+`ui/ubs_portfolio_view.py` (widgets).
+
 ### Design system
 
 `ai_context/09-design-system.md` defines three button types, the action-bar

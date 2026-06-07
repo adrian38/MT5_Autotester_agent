@@ -30,6 +30,8 @@
 |   |-- multiterminal_logic.py   # Multiterminal profiles/state/validation mixin
 |   |-- portfolio_view.py        # Portfolio tab widget/layout mixin
 |   |-- portfolio_logic.py       # Portfolio tab actions/workbook execution mixin
+|   |-- ubs_portfolio_view.py    # UBS Portfolio tab widget/layout mixin
+|   |-- ubs_portfolio_logic.py   # UBS Portfolio build/persist/export logic mixin
 |   |-- settings_view.py         # Settings widget/layout mixin
 |   |-- settings_logic.py        # Settings/template/path action logic
 |   |-- ubs_agent_view.py        # UBS Agent widget/layout mixin
@@ -56,12 +58,13 @@
 |   |-- universe.py              # Asset universe, aliases, disabled symbols
 |   `-- params_catalog.py        # Parameter labels/descriptions/format helpers
 |
-|-- portfolio_manager/           # MT5 HTML parsing and Excel workbook generation
+|-- portfolio_manager/           # MT5 HTML parsing, Excel workbooks, UBS portfolio math
 |   |-- __init__.py
 |   |-- generator.py             # Public workbook generator functions
 |   |-- mt5_report.py            # MT5 HTML parser and report dataclasses
 |   |-- excel.py                 # ALL_STRATEGIES workbook builder
-|   `-- dd_excel.py              # Drawdown/portfolio workbook builders
+|   |-- dd_excel.py              # Drawdown/portfolio workbook builders
+|   `-- ubs_portfolio.py         # UBS Portfolio lot-calibration math (pure, no Tkinter/sqlite)
 |
 |-- configs/                     # Generated tester .ini files
 |-- logs/                        # Run and compile logs
@@ -104,10 +107,10 @@ Each substantial screen/tab uses a view/logic pair:
 - `app_ui_<screen>_logic.py`: state transitions, validation, persistence,
   database queries, path/report calculations, and long-running actions.
 
-Current pairs: Dashboard, Files/Logs, Multiterminal, Portfolio, Settings, UBS
-Agent, UBS Parameters, UBS Results/History/Compare, UBS Robustness, UBS Seeds,
-and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py` only when it is
-genuinely shell-level or generic infrastructure.
+Current pairs: Dashboard, Files/Logs, Multiterminal, Portfolio, UBS Portfolio,
+Settings, UBS Agent, UBS Parameters, UBS Results/History/Compare, UBS Robustness,
+UBS Seeds, and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py`
+only when it is genuinely shell-level or generic infrastructure.
 
 The CLI scripts can still run independently and should remain usable without
 the UI.
@@ -287,7 +290,7 @@ explicitly about packaging.
 | `reports/` | Copied MT5 HTML reports, `.set` files, chart images |
 | `outputs/` | Generated Excel workbooks |
 | `outputs/ubs_agent/` | Generated UBS variants and copied accepted sets |
-| `outputs/ubs_memory.sqlite` | UBS agent SQLite: candidates, runs, seed_scores, seed_overrides, candidate_robustness |
+| `outputs/ubs_memory.sqlite` | UBS agent SQLite: candidates, runs, seed_scores, seed_overrides, candidate_robustness, portfolios, portfolio_members |
 | `outputs/ubs_global_params.json` | Global EA parameter values edited in the UBS Parámetros tab |
 | `outputs/ubs_mutation_overrides.json` | User mutability overrides: `frozen_override` and `mutable_override` |
 
