@@ -349,6 +349,11 @@ class SettingsLogicMixin:
             "symbol_map": self.symbol_map.get().strip(),
             "telegram_enabled": "1" if self.telegram_enabled.get() else "0",
             "portfolio_threshold": self.portfolio_threshold.get().strip(),
+            "ubs_portfolio_num_symbols": str(self.ubs_portfolio_num_symbols.get()),
+            "ubs_portfolio_type": self.ubs_portfolio_type.get().strip(),
+            "ubs_portfolio_valley_pct": self.ubs_portfolio_valley_pct.get().strip(),
+            "ubs_portfolio_point_pct": self.ubs_portfolio_point_pct.get().strip(),
+            "ubs_portfolio_capital": self.ubs_portfolio_capital.get().strip(),
             "theme": self.theme_mode.get(),
         }
         parser["Multiterminal"] = {
