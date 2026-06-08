@@ -354,6 +354,14 @@ class SettingsLogicMixin:
             "ubs_portfolio_valley_pct": self.ubs_portfolio_valley_pct.get().strip(),
             "ubs_portfolio_point_pct": self.ubs_portfolio_point_pct.get().strip(),
             "ubs_portfolio_capital": self.ubs_portfolio_capital.get().strip(),
+            "ubs_portfolio_top_k": str(self.ubs_portfolio_top_k.get()),
+            "ubs_portfolio_max_candidates": str(self.ubs_portfolio_max_candidates.get()),
+            "ubs_portfolio_min_trades": str(self.ubs_portfolio_min_trades.get()),
+            "ubs_portfolio_max_units_per_set": self.ubs_portfolio_max_units_per_set.get().strip(),
+            "ubs_portfolio_max_total_units": self.ubs_portfolio_max_total_units.get().strip(),
+            "ubs_portfolio_max_units_per_symbol": self.ubs_portfolio_max_units_per_symbol.get().strip(),
+            "ubs_portfolio_max_sets_per_symbol": str(self.ubs_portfolio_max_sets_per_symbol.get()),
+            "ubs_portfolio_run_local_search": "1" if self.ubs_portfolio_run_local_search.get() else "0",
             "theme": self.theme_mode.get(),
         }
         parser["Multiterminal"] = {

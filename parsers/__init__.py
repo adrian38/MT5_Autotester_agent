@@ -1,0 +1,2 @@
+"""Report parser adapters."""
+

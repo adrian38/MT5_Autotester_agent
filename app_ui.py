@@ -703,19 +703,52 @@ class MT5AutotesterUI(
         self.reports_count = tk.StringVar(value="0")
         self.portfolio_count = tk.StringVar(value="Reports encontrados: 0")
         self.portfolio_status = tk.StringVar(value="Selecciona una carpeta de reportes y genera el Excel.")
+        saved_portfolio_type = saved_general.get("ubs_portfolio_type", "Balanced")
+        saved_portfolio_type = {
+            "Conservador": "Conservative",
+            "Equilibrado": "Balanced",
+            "Agresivo": "Aggressive",
+        }.get(saved_portfolio_type, saved_portfolio_type)
         self.ubs_portfolio_num_symbols = tk.IntVar(value=self._saved_int(saved_general.get("ubs_portfolio_num_symbols"), 5))
-        self.ubs_portfolio_type = tk.StringVar(value=saved_general.get("ubs_portfolio_type", "Equilibrado"))
-        self.ubs_portfolio_valley_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_valley_pct", "20"))
-        self.ubs_portfolio_point_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_point_pct", "8"))
+        self.ubs_portfolio_type = tk.StringVar(value=saved_portfolio_type)
+        self.ubs_portfolio_valley_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_valley_pct", "10"))
+        self.ubs_portfolio_point_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_point_pct", "4"))
         self.ubs_portfolio_capital = tk.StringVar(value=saved_general.get("ubs_portfolio_capital", "10000"))
+        self.ubs_portfolio_top_k = tk.IntVar(value=self._saved_int(saved_general.get("ubs_portfolio_top_k"), 3))
+        self.ubs_portfolio_max_candidates = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_max_candidates"), 30)
+        )
+        self.ubs_portfolio_min_trades = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_min_trades"), 100)
+        )
+        self.ubs_portfolio_max_units_per_set = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_units_per_set", "")
+        )
+        self.ubs_portfolio_max_total_units = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_total_units", "")
+        )
+        self.ubs_portfolio_max_units_per_symbol = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_units_per_symbol", "")
+        )
+        self.ubs_portfolio_max_sets_per_symbol = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_max_sets_per_symbol"), 1)
+        )
+        self.ubs_portfolio_run_local_search = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_run_local_search"), True)
+        )
         self.ubs_portfolio_status = tk.StringVar(value="Sin portafolios generados todavia")
+        self.ubs_portfolio_availability = tk.StringVar(value="Disponibilidad: sin datos")
         self.ubs_portfolio_metric_net = tk.StringVar(value="—")
         self.ubs_portfolio_metric_valley = tk.StringVar(value="—")
         self.ubs_portfolio_metric_point = tk.StringVar(value="—")
         self.ubs_portfolio_metric_count = tk.StringVar(value="—")
+        self.ubs_portfolio_metric_lot = tk.StringVar(value="—")
+        self.ubs_portfolio_metric_units = tk.StringVar(value="—")
         self.ubs_portfolio_running = False
         self.ubs_portfolio_buttons: list = []
         self.ubs_portfolio_member_paths: dict[str, dict[str, str]] = {}
+        self.ubs_portfolio_pending_result = None
+        self.ubs_portfolio_pending_inputs = None
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
