@@ -150,6 +150,18 @@ class UnusedSetInfo:
     reason: str
 
 
+@dataclass(frozen=True)
+class CorrelationPair:
+    set_id_a: str
+    set_id_b: str
+    symbol_a: str
+    symbol_b: str
+    pearson_corr: float
+    downside_corr: float
+    dd_overlap: float
+    observations: int
+
+
 @dataclass
 class PortfolioResult:
     allocations: list[StrategyAllocation]
@@ -168,6 +180,7 @@ class PortfolioResult:
     warnings: list[str]
     decision_log: list[OptimizationDecision]
     unused_sets: list[UnusedSetInfo] = field(default_factory=list)
+    correlation_rejections: int = 0
 
 
 @dataclass(frozen=True)
@@ -205,6 +218,91 @@ def to_accumulated_curve(increments: list[float]) -> list[float]:
         total += change
         curve.append(total)
     return curve
+
+
+def daily_pnl_series(strategy: RobustStrategySet) -> dict[str, float]:
+    if strategy.curve_points_2020_2026_001:
+        previous = 0.0
+        series: dict[str, float] = {}
+        for timestamp, value in strategy.curve_points_2020_2026_001:
+            day = timestamp.date().isoformat()
+            series[day] = series.get(day, 0.0) + (value - previous)
+            previous = value
+        return series
+
+    increments = [
+        current - previous
+        for previous, current in zip(strategy.curve_2020_2026_001, strategy.curve_2020_2026_001[1:])
+    ]
+    return {str(index): value for index, value in enumerate(increments)}
+
+
+def pearson_correlation(values_a: Sequence[float], values_b: Sequence[float]) -> float:
+    if len(values_a) < 2 or len(values_b) < 2 or len(values_a) != len(values_b):
+        return 0.0
+    mean_a = sum(values_a) / len(values_a)
+    mean_b = sum(values_b) / len(values_b)
+    centered_a = [value - mean_a for value in values_a]
+    centered_b = [value - mean_b for value in values_b]
+    denom_a = math.sqrt(sum(value * value for value in centered_a))
+    denom_b = math.sqrt(sum(value * value for value in centered_b))
+    denom = denom_a * denom_b
+    if denom <= 0:
+        return 0.0
+    return float(sum(a * b for a, b in zip(centered_a, centered_b)) / denom)
+
+
+def curve_increment_correlation(curve_a: Sequence[float], curve_b: Sequence[float]) -> float:
+    increments_a = [current - previous for previous, current in zip(curve_a, curve_a[1:])]
+    increments_b = [current - previous for previous, current in zip(curve_b, curve_b[1:])]
+    length = max(len(increments_a), len(increments_b))
+    if length < 2:
+        return 0.0
+    padded_a = increments_a + [0.0] * (length - len(increments_a))
+    padded_b = increments_b + [0.0] * (length - len(increments_b))
+    return pearson_correlation(padded_a, padded_b)
+
+
+def strategy_correlation_pair(strategy_a: RobustStrategySet, strategy_b: RobustStrategySet) -> CorrelationPair:
+    series_a = daily_pnl_series(strategy_a)
+    series_b = daily_pnl_series(strategy_b)
+    keys = sorted(set(series_a) | set(series_b))
+    values_a = [series_a.get(key, 0.0) for key in keys]
+    values_b = [series_b.get(key, 0.0) for key in keys]
+    pearson = pearson_correlation(values_a, values_b)
+
+    downside_a: list[float] = []
+    downside_b: list[float] = []
+    overlap_losses = 0
+    loss_days = 0
+    for value_a, value_b in zip(values_a, values_b):
+        if value_a < 0 or value_b < 0:
+            downside_a.append(min(value_a, 0.0))
+            downside_b.append(min(value_b, 0.0))
+            loss_days += 1
+            if value_a < 0 and value_b < 0:
+                overlap_losses += 1
+
+    downside = pearson_correlation(downside_a, downside_b)
+    dd_overlap = overlap_losses / loss_days if loss_days else 0.0
+    return CorrelationPair(
+        set_id_a=strategy_a.set_id,
+        set_id_b=strategy_b.set_id,
+        symbol_a=strategy_a.symbol,
+        symbol_b=strategy_b.symbol,
+        pearson_corr=pearson,
+        downside_corr=downside,
+        dd_overlap=dd_overlap,
+        observations=len(keys),
+    )
+
+
+def build_correlation_pairs(sets: Sequence[RobustStrategySet]) -> list[CorrelationPair]:
+    pairs: list[CorrelationPair] = []
+    for left_index, strategy_a in enumerate(sets):
+        for strategy_b in sets[left_index + 1:]:
+            pairs.append(strategy_correlation_pair(strategy_a, strategy_b))
+    return pairs
 
 
 def calc_valley_dd(equity_curve: list[float]) -> float:
@@ -629,6 +727,32 @@ def can_add_unit(
     return True
 
 
+def violates_correlation_limits(
+    target_set: RobustStrategySet,
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    max_pair_corr: float | None,
+    max_downside_corr: float | None,
+    max_dd_overlap: float | None,
+) -> tuple[bool, str]:
+    if allocations.get(target_set.set_id, 0) > 0:
+        return False, ""
+    if max_pair_corr is None and max_downside_corr is None and max_dd_overlap is None:
+        return False, ""
+
+    for active in sets:
+        if active.set_id == target_set.set_id or allocations.get(active.set_id, 0) <= 0:
+            continue
+        pair = strategy_correlation_pair(target_set, active)
+        if max_pair_corr is not None and pair.pearson_corr > max_pair_corr:
+            return True, f"pair_corr>{max_pair_corr:.2f} vs {Path(active.set_id).name}"
+        if max_downside_corr is not None and pair.downside_corr > max_downside_corr:
+            return True, f"downside_corr>{max_downside_corr:.2f} vs {Path(active.set_id).name}"
+        if max_dd_overlap is not None and pair.dd_overlap > max_dd_overlap:
+            return True, f"dd_overlap>{max_dd_overlap:.2f} vs {Path(active.set_id).name}"
+    return False, ""
+
+
 def _allocations_respect_constraints(
     sets: list[RobustStrategySet],
     allocations: dict[str, int],
@@ -717,7 +841,12 @@ def build_portfolio_greedy(
     max_total_units: int | None = None,
     max_units_per_symbol: int | None = None,
     max_sets_per_symbol: int | None = 1,
-) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], str]:
+    max_pair_corr: float | None = None,
+    max_downside_corr: float | None = None,
+    max_dd_overlap: float | None = None,
+    existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
+    max_portfolio_corr: float | None = None,
+) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], str, int]:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
     allocations = {strategy.set_id: 0 for strategy in sets}
@@ -725,6 +854,8 @@ def build_portfolio_greedy(
     decision_log: list[OptimizationDecision] = []
     step = 0
     max_steps = max_total_units if max_total_units is not None else 10000
+    correlation_rejections = 0
+    portfolio_curves = list(existing_portfolio_curves or [])
 
     while step < max_steps:
         best_candidate: dict[str, object] | None = None
@@ -739,11 +870,64 @@ def build_portfolio_greedy(
                 max_sets_per_symbol=max_sets_per_symbol,
             ):
                 continue
+            rejected_by_corr, corr_reason = violates_correlation_limits(
+                strategy,
+                sets,
+                allocations,
+                max_pair_corr,
+                max_downside_corr,
+                max_dd_overlap,
+            )
+            if rejected_by_corr:
+                correlation_rejections += 1
+                decision_log.append(
+                    OptimizationDecision(
+                        step=step + 1,
+                        action="reject_corr",
+                        set_id=strategy.set_id,
+                        from_set_id=None,
+                        to_set_id=None,
+                        gain=0.0,
+                        valley_cost=0.0,
+                        point_cost=0.0,
+                        score=float("-inf"),
+                        portfolio_net_profit_after=current.total_net_profit,
+                        portfolio_valley_dd_after=current.valley_dd,
+                        portfolio_point_dd_after=current.point_dd,
+                        reason=corr_reason,
+                    )
+                )
+                continue
             temp_allocations = allocations.copy()
             temp_allocations[strategy.set_id] += 1
             temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
             if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
                 continue
+            if max_portfolio_corr is not None and portfolio_curves:
+                worst_portfolio_corr = max(
+                    curve_increment_correlation(temp.equity_curve_2020_2026, curve)
+                    for curve in portfolio_curves
+                )
+                if worst_portfolio_corr > max_portfolio_corr:
+                    correlation_rejections += 1
+                    decision_log.append(
+                        OptimizationDecision(
+                            step=step + 1,
+                            action="reject_portfolio_corr",
+                            set_id=strategy.set_id,
+                            from_set_id=None,
+                            to_set_id=None,
+                            gain=0.0,
+                            valley_cost=0.0,
+                            point_cost=0.0,
+                            score=float("-inf"),
+                            portfolio_net_profit_after=current.total_net_profit,
+                            portfolio_valley_dd_after=current.valley_dd,
+                            portfolio_point_dd_after=current.point_dd,
+                            reason=f"portfolio_corr>{max_portfolio_corr:.2f}",
+                        )
+                    )
+                    continue
             score = score_increment(current, temp, allocations[strategy.set_id], portfolio_type)
             if score == float("-inf"):
                 continue
@@ -785,7 +969,7 @@ def build_portfolio_greedy(
     else:
         stop_reason = "Max optimizer iterations reached"
 
-    return allocations, current, decision_log, stop_reason
+    return allocations, current, decision_log, stop_reason, correlation_rejections
 
 
 def improve_with_local_search(
@@ -798,10 +982,16 @@ def improve_with_local_search(
     max_total_units: int | None = None,
     max_units_per_symbol: int | None = None,
     max_sets_per_symbol: int | None = None,
+    max_pair_corr: float | None = None,
+    max_downside_corr: float | None = None,
+    max_dd_overlap: float | None = None,
+    existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
+    max_portfolio_corr: float | None = None,
     max_iterations: int = 1000,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision]]:
     decision_log: list[OptimizationDecision] = []
     iteration = 0
+    portfolio_curves = list(existing_portfolio_curves or [])
     while iteration < max_iterations:
         iteration += 1
         best_move: dict[str, object] | None = None
@@ -823,9 +1013,29 @@ def improve_with_local_search(
                     max_sets_per_symbol,
                 ):
                     continue
+                if allocations.get(to_set.set_id, 0) <= 0:
+                    corr_allocations = temp_allocations.copy()
+                    corr_allocations[to_set.set_id] = 0
+                    rejected_by_corr, _corr_reason = violates_correlation_limits(
+                        to_set,
+                        sets,
+                        corr_allocations,
+                        max_pair_corr,
+                        max_downside_corr,
+                        max_dd_overlap,
+                    )
+                    if rejected_by_corr:
+                        continue
                 temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
                 if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
                     continue
+                if max_portfolio_corr is not None and portfolio_curves:
+                    worst_portfolio_corr = max(
+                        curve_increment_correlation(temp.equity_curve_2020_2026, curve)
+                        for curve in portfolio_curves
+                    )
+                    if worst_portfolio_corr > max_portfolio_corr:
+                        continue
                 gain = temp.total_net_profit - current.total_net_profit
                 if gain <= 0:
                     continue
@@ -882,6 +1092,11 @@ def optimize_portfolio(
     max_units_per_symbol: int | None = None,
     max_sets_per_symbol: int | None = 1,
     run_local_search: bool = True,
+    max_pair_corr: float | None = None,
+    max_downside_corr: float | None = None,
+    max_dd_overlap: float | None = None,
+    existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
+    max_portfolio_corr: float | None = None,
 ) -> PortfolioResult:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
@@ -895,7 +1110,7 @@ def optimize_portfolio(
         max_total_candidates=max_total_candidates,
         min_trades_2020_2026=min_trades_2020_2026,
     )
-    allocations, current, greedy_log, stop_reason = build_portfolio_greedy(
+    allocations, current, greedy_log, stop_reason, correlation_rejections = build_portfolio_greedy(
         sets=selected,
         capital=capital,
         valley_dd_pct=valley_dd_pct,
@@ -905,6 +1120,11 @@ def optimize_portfolio(
         max_total_units=max_total_units,
         max_units_per_symbol=max_units_per_symbol,
         max_sets_per_symbol=max_sets_per_symbol,
+        max_pair_corr=max_pair_corr,
+        max_downside_corr=max_downside_corr,
+        max_dd_overlap=max_dd_overlap,
+        existing_portfolio_curves=existing_portfolio_curves,
+        max_portfolio_corr=max_portfolio_corr,
     )
 
     local_log: list[OptimizationDecision] = []
@@ -919,6 +1139,11 @@ def optimize_portfolio(
             max_total_units=max_total_units,
             max_units_per_symbol=max_units_per_symbol,
             max_sets_per_symbol=max_sets_per_symbol,
+            max_pair_corr=max_pair_corr,
+            max_downside_corr=max_downside_corr,
+            max_dd_overlap=max_dd_overlap,
+            existing_portfolio_curves=existing_portfolio_curves,
+            max_portfolio_corr=max_portfolio_corr,
         )
 
     executable_allocations, executable_steps = _execution_plan_allocations(selected, allocations, capital)
@@ -973,6 +1198,8 @@ def optimize_portfolio(
         warnings.append(
             "Lots were rounded down to match integer LotPerBalance_step export values."
         )
+    if correlation_rejections:
+        warnings.append(f"{correlation_rejections} increment candidate(s) rejected by correlation limits.")
 
     unused_sets = _build_unused_sets(raw_sets, eligible, selected, allocations, min_trades_2020_2026)
     return PortfolioResult(
@@ -992,6 +1219,7 @@ def optimize_portfolio(
         warnings=warnings,
         decision_log=greedy_log + local_log,
         unused_sets=unused_sets,
+        correlation_rejections=correlation_rejections,
     )
 
 

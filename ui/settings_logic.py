@@ -362,6 +362,11 @@ class SettingsLogicMixin:
             "ubs_portfolio_max_units_per_symbol": self.ubs_portfolio_max_units_per_symbol.get().strip(),
             "ubs_portfolio_max_sets_per_symbol": str(self.ubs_portfolio_max_sets_per_symbol.get()),
             "ubs_portfolio_run_local_search": "1" if self.ubs_portfolio_run_local_search.get() else "0",
+            "ubs_portfolio_use_correlation": "1" if self.ubs_portfolio_use_correlation.get() else "0",
+            "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
+            "ubs_portfolio_max_downside_corr": self.ubs_portfolio_max_downside_corr.get().strip(),
+            "ubs_portfolio_max_dd_overlap": self.ubs_portfolio_max_dd_overlap.get().strip(),
+            "ubs_portfolio_max_portfolio_corr": self.ubs_portfolio_max_portfolio_corr.get().strip(),
             "theme": self.theme_mode.get(),
         }
         parser["Multiterminal"] = {

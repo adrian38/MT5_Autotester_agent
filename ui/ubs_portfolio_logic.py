@@ -56,6 +56,11 @@ DEFAULT_PORTFOLIO_FORM = {
     "max_units_per_symbol": "",
     "max_sets_per_symbol": 1,
     "run_local_search": True,
+    "use_correlation": True,
+    "max_pair_corr": "0.35",
+    "max_downside_corr": "0.25",
+    "max_dd_overlap": "0.35",
+    "max_portfolio_corr": "0.50",
 }
 
 
@@ -507,7 +512,7 @@ class UBSPortfolioLogicMixin:
         )
         type_label = self.ubs_portfolio_type.get().strip()
         portfolio_type = PORTFOLIO_TYPE_LABELS.get(type_label, PortfolioType.BALANCED)
-        return {
+        values: dict[str, object] = {
             "capital": capital,
             "valley_dd_pct": valley_pct,
             "point_dd_pct": point_pct,
@@ -530,7 +535,46 @@ class UBSPortfolioLogicMixin:
             ),
             "max_sets_per_symbol": max_sets_per_symbol,
             "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
+            "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
+            "max_pair_corr": self._parse_optional_float_setting(
+                self.ubs_portfolio_max_pair_corr.get(),
+                "Max correlacion",
+            ),
+            "max_downside_corr": self._parse_optional_float_setting(
+                self.ubs_portfolio_max_downside_corr.get(),
+                "Max correlacion downside",
+            ),
+            "max_dd_overlap": self._parse_optional_float_setting(
+                self.ubs_portfolio_max_dd_overlap.get(),
+                "Max solapamiento DD",
+            ),
+            "max_portfolio_corr": self._parse_optional_float_setting(
+                self.ubs_portfolio_max_portfolio_corr.get(),
+                "Max corr portafolios",
+            ),
         }
+        if not values["use_correlation"]:
+            values["max_pair_corr"] = None
+            values["max_downside_corr"] = None
+            values["max_dd_overlap"] = None
+            values["max_portfolio_corr"] = None
+        for key, label in (
+            ("max_pair_corr", "Max correlacion"),
+            ("max_downside_corr", "Max correlacion downside"),
+            ("max_dd_overlap", "Max solapamiento DD"),
+            ("max_portfolio_corr", "Max corr portafolios"),
+        ):
+            value = values[key]
+            if value is not None and not (0 <= float(value) <= 1):
+                raise ValueError(f"{label} debe estar entre 0 y 1.")
+        return values
+
+    def _parse_optional_float_setting(self, value: str, label: str) -> float | None:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed = self._parse_float_setting(text, label)
+        return parsed
 
     def _set_ubs_portfolio_running(self, running: bool) -> None:
         self.ubs_portfolio_running = running
@@ -571,6 +615,11 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_max_units_per_symbol.set(DEFAULT_PORTFOLIO_FORM["max_units_per_symbol"])
         self.ubs_portfolio_max_sets_per_symbol.set(DEFAULT_PORTFOLIO_FORM["max_sets_per_symbol"])
         self.ubs_portfolio_run_local_search.set(DEFAULT_PORTFOLIO_FORM["run_local_search"])
+        self.ubs_portfolio_use_correlation.set(DEFAULT_PORTFOLIO_FORM["use_correlation"])
+        self.ubs_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
+        self.ubs_portfolio_max_downside_corr.set(DEFAULT_PORTFOLIO_FORM["max_downside_corr"])
+        self.ubs_portfolio_max_dd_overlap.set(DEFAULT_PORTFOLIO_FORM["max_dd_overlap"])
+        self.ubs_portfolio_max_portfolio_corr.set(DEFAULT_PORTFOLIO_FORM["max_portfolio_corr"])
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
         self._set_ubs_portfolio_save_enabled(False)
@@ -611,6 +660,7 @@ class UBSPortfolioLogicMixin:
             rows = self._robust_passed_candidates(conn)
             used = self._used_set_paths(conn)
             availability = summarize_robust_rows(rows, used)
+            existing_curves = self._saved_portfolio_curves(conn)
             if not rows:
                 self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con robustez accepted."})
                 return
@@ -634,6 +684,11 @@ class UBSPortfolioLogicMixin:
                 max_units_per_symbol=inputs["max_units_per_symbol"],  # type: ignore[arg-type]
                 max_sets_per_symbol=inputs["max_sets_per_symbol"],  # type: ignore[arg-type]
                 run_local_search=bool(inputs["run_local_search"]),
+                max_pair_corr=inputs["max_pair_corr"],  # type: ignore[arg-type]
+                max_downside_corr=inputs["max_downside_corr"],  # type: ignore[arg-type]
+                max_dd_overlap=inputs["max_dd_overlap"],  # type: ignore[arg-type]
+                existing_portfolio_curves=existing_curves,
+                max_portfolio_corr=inputs["max_portfolio_corr"],  # type: ignore[arg-type]
             )
             result.warnings[:0] = load_warnings
         except Exception as exc:
@@ -651,11 +706,27 @@ class UBSPortfolioLogicMixin:
             "result": result,
         })
 
+    def _saved_portfolio_curves(self, conn: sqlite3.Connection) -> list[list[float]]:
+        curves: list[list[float]] = []
+        for row in conn.execute("select metrics_json from portfolios where metrics_json is not null and metrics_json <> ''"):
+            try:
+                metrics = json.loads(row["metrics_json"])
+            except Exception:
+                continue
+            curve = metrics.get("equity_curve_2020_2026") if isinstance(metrics, dict) else None
+            if isinstance(curve, list) and len(curve) > 1:
+                try:
+                    curves.append([float(value) for value in curve])
+                except (TypeError, ValueError):
+                    continue
+        return curves
+
     def _ubs_portfolio_finished(self, info: dict) -> None:
         self._set_ubs_portfolio_running(False)
         if not info.get("ok"):
             message = info.get("error", "Error desconocido")
             self.ubs_portfolio_status.set(message)
+            self._notify_ubs_portfolio_event(f"Portfolio Builder fallido: {message}")
             messagebox.showerror("Portfolio Builder", message)
             return
 
@@ -668,6 +739,17 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_status.set(
             f"Portafolio generado: {result.total_units} unidades, "
             f"DD valle {result.valley_usage_pct:.1f}%, DD puntual {result.point_usage_pct:.1f}%."
+        )
+        self._notify_ubs_portfolio_event(
+            "Portfolio Builder generado: "
+            f"net {result.total_net_profit:,.2f}, "
+            f"lote {result.total_lot:.2f}, "
+            f"{result.total_units} unidades, "
+            f"{result.active_strategies} estrategias, "
+            f"DD valle {result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f} "
+            f"({result.valley_usage_pct:.1f}%), "
+            f"DD puntual {result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f} "
+            f"({result.point_usage_pct:.1f}%)."
         )
 
     def _save_pending_ubs_portfolio(self) -> None:
@@ -689,6 +771,16 @@ class UBSPortfolioLogicMixin:
         self._set_ubs_portfolio_save_enabled(False)
         self._refresh_ubs_portfolios(select_id=portfolio_id)
         self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} guardado.")
+        self._notify_ubs_portfolio_event(
+            f"Portfolio Builder guardado: #{portfolio_id}, "
+            f"net {result.total_net_profit:,.2f}, lote {result.total_lot:.2f}, "
+            f"{result.active_strategies} estrategias."
+        )
+
+    def _notify_ubs_portfolio_event(self, message: str) -> None:
+        notifier = getattr(self, "_notify_telegram", None)
+        if callable(notifier):
+            notifier(message)
 
     # ------------------------------------------------------------------ refresh/display
     def _refresh_ubs_portfolio_availability(self) -> None:

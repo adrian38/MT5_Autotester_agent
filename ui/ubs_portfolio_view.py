@@ -80,6 +80,28 @@ class UBSPortfolioViewMixin:
             variable=self.ubs_portfolio_run_local_search,
         ).grid(row=1, column=10, columnspan=2, sticky="w", padx=(8, 10), pady=5)
 
+        ttk.Checkbutton(
+            form,
+            text="Filtro correlacion",
+            variable=self.ubs_portfolio_use_correlation,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(10, 4), pady=5)
+        label(2, 2, "Max corr")
+        ttk.Entry(form, textvariable=self.ubs_portfolio_max_pair_corr, width=8).grid(
+            row=2, column=3, sticky="w", pady=5
+        )
+        label(2, 4, "Max downside")
+        ttk.Entry(form, textvariable=self.ubs_portfolio_max_downside_corr, width=8).grid(
+            row=2, column=5, sticky="w", pady=5
+        )
+        label(2, 6, "Max overlap DD")
+        ttk.Entry(form, textvariable=self.ubs_portfolio_max_dd_overlap, width=8).grid(
+            row=2, column=7, sticky="w", pady=5
+        )
+        label(2, 8, "Max corr portfolios")
+        ttk.Entry(form, textvariable=self.ubs_portfolio_max_portfolio_corr, width=8).grid(
+            row=2, column=9, sticky="w", pady=5
+        )
+
         actions = tk.Frame(panel, bg=colors["panel_alt"])
         actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
         actions.columnconfigure(0, weight=1)

@@ -8,8 +8,10 @@ from portfolio_manager.ubs_portfolio import (
     PortfolioType,
     RobustStrategySet,
     build_portfolio_greedy,
+    build_correlation_pairs,
     calc_point_dd,
     calc_valley_dd,
+    curve_increment_correlation,
     evaluate_portfolio,
     execution_units_from_step,
     filter_eligible_sets,
@@ -142,7 +144,7 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             make_strategy("s2", "GBPUSD", [0, 45, 43, 130]),
             make_strategy("s3", "XAUUSD", [0, 20, 19, 60]),
         ]
-        allocations, current, _log, _reason = build_portfolio_greedy(
+        allocations, current, _log, _reason, _corr_rejections = build_portfolio_greedy(
             sets,
             capital=1000,
             valley_dd_pct=10,
@@ -160,6 +162,54 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             current.target_point_dd,
         )
         self.assertGreaterEqual(improved.total_net_profit, before)
+
+    def test_correlation_pairs_detect_similar_curves(self) -> None:
+        sets = [
+            make_strategy("a", "US30", [0, 10, 5, 20, 15, 30]),
+            make_strategy("b", "DE40", [0, 20, 10, 40, 30, 60]),
+            make_strategy("c", "EURUSD", [0, -5, 5, -2, 8, 1]),
+        ]
+        pairs = build_correlation_pairs(sets)
+        pair_by_ids = {frozenset((pair.set_id_a, pair.set_id_b)): pair for pair in pairs}
+        self.assertGreater(pair_by_ids[frozenset(("a", "b"))].pearson_corr, 0.99)
+
+    def test_optimizer_rejects_new_strategy_above_correlation_limit(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "US30", [0, 10, 5, 20, 15, 30]),
+                make_strategy("b", "DE40", [0, 20, 10, 40, 30, 60]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            top_k_per_symbol=2,
+            max_sets_per_symbol=2,
+            max_total_units=4,
+            max_pair_corr=0.5,
+            max_downside_corr=0.5,
+            max_dd_overlap=1.0,
+        )
+        self.assertEqual(result.active_strategies, 1)
+        self.assertGreater(result.correlation_rejections, 0)
+
+    def test_curve_increment_correlation_for_saved_portfolio_curves(self) -> None:
+        self.assertGreater(
+            curve_increment_correlation([0, 10, 5, 20], [0, 20, 10, 40]),
+            0.99,
+        )
+
+    def test_optimizer_rejects_portfolio_too_correlated_with_saved_curve(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("a", "US30", [0, 10, 5, 20, 15, 30])],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=4,
+            existing_portfolio_curves=[[0, 20, 10, 40, 30, 60]],
+            max_portfolio_corr=0.5,
+        )
+        self.assertEqual(result.total_units, 0)
+        self.assertGreater(result.correlation_rejections, 0)
 
     def test_time_axis_preserves_duplicate_timestamp_drawdown(self) -> None:
         strategy = make_strategy("dup", "JP225CASH", [0, 100, 50, 120])
