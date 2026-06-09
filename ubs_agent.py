@@ -1333,6 +1333,13 @@ def count_valid_existing_reports(
     return valid
 
 
+def prepare_final_tick_exec_dir(path: Path, variants: list[Variant]) -> Path:
+    exec_dir = recreate_work_dir(path)
+    for variant in variants:
+        shutil.copy2(variant.path, exec_dir / variant.path.name)
+    return exec_dir
+
+
 def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if not args.expert and not args.multi_terminal and not args.dry_run:
         print("ERROR: robustez requiere --expert o --multi-terminal")
@@ -1690,9 +1697,10 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
 
     symbol_map = parse_symbol_map(args.symbol_map)
     ohlc_variants = [ohlc_variant for _, ohlc_variant, _ in copied]
+    real_tick_variants = [real_tick_variant for _, _, real_tick_variant in copied]
     skip_ohlc = False
     ohlc_min_report_mtime: float | None = None
-    if resume_pending_dir and not args.dry_run and ohlc_sets_unchanged:
+    if resume_pending_dir and ohlc_sets_unchanged:
         valid_ohlc_reports = count_valid_existing_reports(ohlc_variants, score_config, symbol_map)
         if valid_ohlc_reports == len(ohlc_variants):
             skip_ohlc = True
@@ -1705,17 +1713,23 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 "Final Tick resume: OHLC incompleto "
                 f"({valid_ohlc_reports}/{len(ohlc_variants)} reportes validos); se recalcula OHLC."
             )
+            if not args.dry_run:
+                for variant in ohlc_variants:
+                    remove_report_artifacts(variant.path)
+    elif resume_pending_dir:
+        print("Final Tick resume: los .set OHLC faltan o cambiaron; se recalcula OHLC.")
+        if not args.dry_run:
             for variant in ohlc_variants:
                 remove_report_artifacts(variant.path)
-    elif resume_pending_dir and not args.dry_run:
-        print("Final Tick resume: los .set OHLC faltan o cambiaron; se recalcula OHLC.")
-        for variant in ohlc_variants:
-            remove_report_artifacts(variant.path)
 
     if not skip_ohlc:
+        ohlc_backtest_dir = ohlc_dir
+        if args.final_tick_pending_only:
+            ohlc_backtest_dir = prepare_final_tick_exec_dir(final_dir / "_pending_ohlc_sets", ohlc_variants)
+            print(f"Final Tick pending: OHLC en cola={len(ohlc_variants)} set(s).")
         ohlc_started_at = time.time()
         ohlc_min_report_mtime = ohlc_started_at - 1.0
-        ohlc_code = run_backtests(args, ohlc_dir, model="1")
+        ohlc_code = run_backtests(args, ohlc_backtest_dir, model="1")
         if ohlc_code == RUNNING_TERMINAL_EXIT_CODE:
             print("ERROR: run_tests.py no ejecuto OHLC Final Tick porque hay una terminal MT5 abierta.")
             return 1
@@ -1724,9 +1738,13 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             if args.dry_run:
                 return ohlc_code
 
+    real_tick_backtest_dir = real_tick_dir
+    if args.final_tick_pending_only:
+        real_tick_backtest_dir = prepare_final_tick_exec_dir(final_dir / "_pending_real_tick_sets", real_tick_variants)
+        print(f"Final Tick pending: Every Tick en cola={len(real_tick_variants)} set(s).")
     real_tick_started_at = time.time()
     real_tick_min_report_mtime = real_tick_started_at - 1.0
-    real_tick_code = run_backtests(args, real_tick_dir, model="4")
+    real_tick_code = run_backtests(args, real_tick_backtest_dir, model="4")
     if real_tick_code == RUNNING_TERMINAL_EXIT_CODE:
         print("ERROR: run_tests.py no ejecuto Real Tick Final Tick porque hay una terminal MT5 abierta.")
         return 1
