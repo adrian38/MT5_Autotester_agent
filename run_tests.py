@@ -28,6 +28,13 @@ UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RUNNING_TERMINAL_EXIT_CODE = 3
 GENERATED_SET_ROOT_PREFIXES = ("accepted_gen_", "mismatch_gen_")
+
+# Lines in the MT5 tester journal that indicate MT5 is stuck waiting for tick download.
+# If the journal's last line matches one of these AND the file hasn't grown for two
+# consecutive 10-second checks, the process is killed and retried.
+TESTER_STUCK_MARKERS = (
+    "preliminary downloading of history ticks started",
+)
 GENERATED_SET_ROOT_NAMES = {"retry_mismatch", "robustness", "final_tick"}
 
 DEFAULT_MT5_PATHS = (
@@ -1157,6 +1164,55 @@ def tester_model_from_ini(ini_path: Path) -> str:
     return parser["Tester"].get("Model", "").strip()
 
 
+def find_tester_journal_log(terminal_data_dirs: list[Path], min_mtime: float = 0.0) -> Path | None:
+    """Return the most recently modified .log in <data_dir>/Tester/logs/ modified after min_mtime."""
+    best: Path | None = None
+    best_mtime = min_mtime
+    for data_dir in terminal_data_dirs:
+        logs_dir = data_dir / "Tester" / "logs"
+        if not logs_dir.is_dir():
+            continue
+        for log_file in logs_dir.glob("*.log"):
+            try:
+                mtime = log_file.stat().st_mtime
+                if mtime > best_mtime:
+                    best_mtime = mtime
+                    best = log_file
+            except OSError:
+                continue
+    return best
+
+
+def read_tester_journal_tail(log_path: Path) -> tuple[str, int]:
+    """Return (last_nonempty_line, file_byte_size). Reads only the last 4 KB."""
+    try:
+        size = log_path.stat().st_size
+        if size == 0:
+            return "", 0
+        read_bytes = min(size, 4096)
+        with log_path.open("rb") as f:
+            f.seek(size - read_bytes)
+            raw = f.read()
+        # MT5 journal files are UTF-16 LE (with or without BOM) or UTF-8
+        for enc in ("utf-16-le", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                break
+            except (UnicodeDecodeError, ValueError):
+                continue
+        else:
+            text = raw.decode("utf-8", errors="replace")
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return (lines[-1] if lines else ""), size
+    except OSError:
+        return "", 0
+
+
+def _tester_log_is_stuck(last_line: str) -> bool:
+    lower = last_line.lower()
+    return any(marker.lower() in lower for marker in TESTER_STUCK_MARKERS)
+
+
 def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None:
     if process.poll() is not None:
         return
@@ -1179,20 +1235,86 @@ def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None
         logger.write(f"No se pudo terminar MT5: {exc}")
 
 
+_LOG_CHECK_INTERVAL = 10  # seconds between tester journal polls
+
+
 def wait_for_mt5_process(
     process: subprocess.Popen,
     logger: RunLogger,
     *,
     kick_after_seconds: int = 0,
+    tester_log_dirs: list[Path] | None = None,
+    log_check_min_mtime: float = 0.0,
 ) -> tuple[int, bool, float]:
+    """Wait for MT5 to exit.
+
+    When kick_after_seconds > 0 and tester_log_dirs is provided, uses log-based
+    stuck detection: every 10 s the tester journal is read; if the last line is a
+    TESTER_STUCK_MARKERS entry AND the file has not grown since the previous check,
+    a stuck counter increments.  After 2 consecutive stuck checks (≈20 s idle) the
+    process is killed and restarted.
+
+    If tester_log_dirs is empty/None, falls back to the original fixed-timeout
+    behaviour (kill after kick_after_seconds of no exit).
+    """
     started = time.time()
     next_alive_log = 30.0
+
+    use_log_check = kick_after_seconds > 0 and bool(tester_log_dirs)
+    next_log_check = float(_LOG_CHECK_INTERVAL)
+    last_log_size: int = -1
+    last_log_path: Path | None = None
+    prev_was_stuck = False
+
     while True:
         exit_code = process.poll()
         elapsed = time.time() - started
         if exit_code is not None:
             return exit_code, False, elapsed
-        if kick_after_seconds > 0 and elapsed >= kick_after_seconds:
+
+        if use_log_check and elapsed >= next_log_check:
+            journal = find_tester_journal_log(tester_log_dirs, min_mtime=log_check_min_mtime)
+            if journal is not None:
+                last_line, current_size = read_tester_journal_tail(journal)
+                is_stuck_line = _tester_log_is_stuck(last_line)
+                log_unchanged = (journal == last_log_path and current_size == last_log_size)
+
+                if is_stuck_line and log_unchanged and prev_was_stuck:
+                    # Second consecutive check with no progress → kill
+                    logger.write(
+                        f"MT5 sigue activo tras {elapsed:.0f}s y el tester log no avanza "
+                        f"(2 checks sin cambio); se reinicia para destrabar descarga de ticks."
+                    )
+                    logger.write(f"  Ultima linea log: {last_line!r}")
+                    terminate_process_tree(process, logger)
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
+                    return process.returncode if process.returncode is not None else 1, True, elapsed
+
+                if is_stuck_line and log_unchanged:
+                    # First stuck check — warn and wait one more interval
+                    logger.write(
+                        f"MT5 tester log sin cambios ({elapsed:.0f}s): "
+                        f"ultima linea: {last_line!r}  — esperando {_LOG_CHECK_INTERVAL}s mas."
+                    )
+                    prev_was_stuck = True
+                else:
+                    if prev_was_stuck:
+                        logger.write("MT5 tester log avanzo, reset detector stuck.")
+                    prev_was_stuck = False
+
+                last_log_size = current_size
+                last_log_path = journal
+            else:
+                logger.write(f"MT5 activo ({elapsed:.0f}s): log del tester aun no encontrado.")
+                prev_was_stuck = False
+
+            next_log_check = elapsed + _LOG_CHECK_INTERVAL
+
+        elif not use_log_check and kick_after_seconds > 0 and elapsed >= kick_after_seconds:
+            # Fallback: original fixed-timeout when no log dirs available
             logger.write(
                 f"MT5 sigue activo tras {elapsed:.0f}s en Model=4; "
                 "se reinicia el proceso lanzado para destrabar descarga de ticks."
@@ -1203,6 +1325,7 @@ def wait_for_mt5_process(
             except subprocess.TimeoutExpired:
                 logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
             return process.returncode if process.returncode is not None else 1, True, elapsed
+
         if elapsed >= next_alive_log:
             logger.write(f"MT5 sigue activo: {int(elapsed)}s esperando resultado...")
             next_alive_log += 30.0
@@ -1248,6 +1371,8 @@ def run_test(
             process,
             logger,
             kick_after_seconds=attempt_kick_after,
+            tester_log_dirs=terminal_data_dirs,
+            log_check_min_mtime=before,
         )
         last_exit_code = exit_code
         logger.write(f"MT5 termino con codigo: {exit_code}")

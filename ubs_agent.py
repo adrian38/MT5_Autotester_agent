@@ -265,6 +265,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluate-final-tick", action="store_true", help="Compara OHLC vs Every tick based on real ticks para robustez accepted.")
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
+    parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, incluye filas pending_history_quality aunque las fechas no hayan cambiado.")
     parser.add_argument("--final-tick-min-history-quality", type=float, default=80.0, help="Calidad minima History Quality del reporte real tick.")
     parser.add_argument("--final-tick-min-ohlc-trades", type=int, default=5, help="Operaciones OHLC minimas para pasar a Every Tick.")
     parser.add_argument("--final-tick-ohlc-from-date", default="", help="Fecha alternativa para reintentar pendientes por pocas operaciones OHLC.")
@@ -1622,12 +1623,20 @@ def final_tick_dates_match(row: sqlite3.Row, from_date: str, to_date: str) -> bo
     return stored_from == str(from_date or "").strip() and stored_to == str(to_date or "").strip()
 
 
-def final_tick_row_pending_for_dates(row: sqlite3.Row, from_date: str, to_date: str) -> bool:
+def final_tick_row_pending_for_dates(
+    row: sqlite3.Row,
+    from_date: str,
+    to_date: str,
+    *,
+    force_quality_retry: bool = False,
+) -> bool:
     status = str(row["final_tick_status"] or "").strip()
     if not status:
         return True
     if status in FINAL_TICK_RETRYABLE_STATUSES:
         return True
+    if force_quality_retry and status == "pending_history_quality":
+        return True  # retry regardless of stored dates
     if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
         return not final_tick_dates_match(row, from_date, to_date)
     return False
@@ -1670,23 +1679,24 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         args.to_date = ohlc_retry_to
         using_ohlc_retry_dates = True
         print(f"Final Tick OHLC retry: usando fechas alternativas {args.from_date} -> {args.to_date}.")
+    retry_pending_quality = bool(getattr(args, "final_tick_retry_pending_quality", False))
     if args.final_tick_pending_only:
         if using_ohlc_retry_dates:
             rows = [
                 row for row in rows
                 if (
                     str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    and final_tick_row_pending_for_dates(row, args.from_date, args.to_date)
+                    and final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
                 )
                 or (
                     str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades"
-                    and final_tick_row_pending_for_dates(row, main_from_date, main_to_date)
+                    and final_tick_row_pending_for_dates(row, main_from_date, main_to_date, force_quality_retry=retry_pending_quality)
                 )
             ]
         else:
             rows = [
                 row for row in rows
-                if final_tick_row_pending_for_dates(row, args.from_date, args.to_date)
+                if final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
             ]
     if not rows:
         if args.final_tick_pending_only:

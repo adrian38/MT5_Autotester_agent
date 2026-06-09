@@ -206,7 +206,7 @@ class UBSFinalTickLogicMixin:
             return not self._final_tick_row_dates_match(row)
         return False
 
-    def _ubs_final_tick_args(self, run_id: int, *, pending_only: bool = False) -> list[str]:
+    def _ubs_final_tick_args(self, run_id: int, *, pending_only: bool = False, retry_pending_quality: bool = False) -> list[str]:
         from_date = self.ubs_final_tick_from_date.get().strip()
         to_date = self.ubs_final_tick_to_date.get().strip()
         if not from_date or not to_date:
@@ -241,6 +241,8 @@ class UBSFinalTickLogicMixin:
             ])
         if pending_only:
             args.append("--final-tick-pending-only")
+        if retry_pending_quality:
+            args.append("--final-tick-retry-pending-quality")
         if self.multiterminal_enabled.get():
             args.extend(self._multiterminal_args(require_ubs=True))
         else:
@@ -313,6 +315,46 @@ class UBSFinalTickLogicMixin:
 
     def _rerun_ubs_final_tick_for_latest_run(self) -> bool:
         return self._run_ubs_final_tick_for_latest_run(pending_only=False)
+
+    def _retry_ubs_final_tick_pending_quality(self) -> bool:
+        """Re-run only rows with status=pending_history_quality, ignoring stored dates."""
+        try:
+            run = self._latest_visible_ubs_run_for_final_tick()
+            if run is None:
+                messagebox.showinfo("Final Tick UBS", "No hay run visible para Final Tick.")
+                return False
+            run_id = int(run["id"])
+            rows = self._accepted_candidates_for_final_tick(run_id)
+            rows = [
+                row for row in rows
+                if Path(row["set_path"]).exists()
+                and str(row["final_tick_status"] or "").strip() == "pending_history_quality"
+            ]
+            if not rows:
+                msg = f"Run #{run_id}: no hay filas con calidad pendiente (pending_history_quality)."
+                self.ubs_final_tick_status.set(msg)
+                messagebox.showinfo("Final Tick UBS", msg)
+                return False
+            thresholds = self._ubs_final_tick_threshold_values()
+            args = self._ubs_final_tick_args(run_id, pending_only=True, retry_pending_quality=True)
+        except Exception as exc:
+            self._show_error("No se pudo preparar reintentar calidad baja", str(exc))
+            return False
+
+        details = [
+            f"Accion: Reintentar calidad baja — run #{run_id}",
+            "Modo: solo filas pending_history_quality (ignora si las fechas coinciden o no)",
+            f"Candidatos a reintentar: {len(rows)}",
+            f"Fechas: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}",
+            f"History Quality minima requerida: {thresholds['min_quality']:.2f}%",
+            f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if not self._confirm_execution_start("Confirmar reintentar calidad baja", len(rows), details):
+            return False
+        self._show_section("ubs_final_tick")
+        self._run_script("ubs_agent.py", args)
+        return True
 
     def _parse_ubs_final_tick_similarity(self, raw) -> dict:
         try:
