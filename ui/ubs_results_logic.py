@@ -1308,6 +1308,8 @@ class UBSResultsLogicMixin:
             "report_mismatch": "mismatch reporte",
             "invalid_seed": "sin Symbol/TF",
             "pending": "pendiente",
+            "pending_history_quality": "pend. calidad",
+            "pending_ohlc_trades": "pend. OHLC ops",
             "sin_evaluar": "sin evaluar",
         }
         return labels.get(status, status or "-")
@@ -1342,7 +1344,7 @@ class UBSResultsLogicMixin:
             return "accepted"
         if status in {"rejected", "parse_error", "report_mismatch", "no_trades", "invalid_seed"}:
             return "rejected"
-        if status == "disabled_symbol":
+        if status in {"disabled_symbol", "pending_history_quality", "pending_ohlc_trades"}:
             return "pending"
         return "pending"
 

@@ -471,7 +471,9 @@ class AgentMemory:
                 c.*,
                 cr.status as robust_status,
                 cr.report_path as robust_report_path,
-                ft.status as final_tick_status
+                ft.status as final_tick_status,
+                ft.from_date as final_tick_from_date,
+                ft.to_date as final_tick_to_date
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id

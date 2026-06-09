@@ -14,7 +14,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
-FINAL_TICK_RETRYABLE_STATUSES = {"no_report", "parse_error", "report_mismatch"}
+FINAL_TICK_RETRYABLE_STATUSES = {
+    "no_report",
+    "parse_error",
+    "report_mismatch",
+}
+FINAL_TICK_DATE_RETRYABLE_STATUSES = {
+    "pending_history_quality",
+    "pending_ohlc_trades",
+}
 
 
 class UBSFinalTickLogicMixin:
@@ -46,6 +54,13 @@ class UBSFinalTickLogicMixin:
                 "Final Tick calidad minima",
                 minimum=0.0,
                 maximum=100.0,
+            ),
+            "min_ohlc_trades": int(
+                self._score_float(
+                    self.ubs_final_tick_min_ohlc_trades,
+                    "Final Tick min ops OHLC",
+                    minimum=0.0,
+                )
             ),
             "net_delta": self._score_float(
                 self.ubs_final_tick_max_net_delta_pct,
@@ -149,7 +164,11 @@ class UBSFinalTickLogicMixin:
             self._ensure_ubs_memory_schema(conn)
             return conn.execute(
                 """
-                select c.*, ft.status as final_tick_status
+                select
+                    c.*,
+                    ft.status as final_tick_status,
+                    ft.from_date as final_tick_from_date,
+                    ft.to_date as final_tick_to_date
                 from candidates c
                 join candidate_robustness cr on cr.candidate_id = c.id
                 left join candidate_final_tick ft on ft.candidate_id = c.id
@@ -161,11 +180,41 @@ class UBSFinalTickLogicMixin:
         finally:
             conn.close()
 
+    def _final_tick_effective_dates_for_row(self, row: sqlite3.Row) -> tuple[str, str]:
+        status = str(row["final_tick_status"] or "").strip()
+        ohlc_from = self.ubs_final_tick_ohlc_from_date.get().strip()
+        ohlc_to = self.ubs_final_tick_ohlc_to_date.get().strip()
+        if status == "pending_ohlc_trades" and ohlc_from and ohlc_to:
+            return ohlc_from, ohlc_to
+        return self.ubs_final_tick_from_date.get().strip(), self.ubs_final_tick_to_date.get().strip()
+
+    def _final_tick_row_dates_match(self, row: sqlite3.Row) -> bool:
+        stored_from = str(row["final_tick_from_date"] or "").strip()
+        stored_to = str(row["final_tick_to_date"] or "").strip()
+        if not stored_from and not stored_to:
+            return False
+        from_date, to_date = self._final_tick_effective_dates_for_row(row)
+        return stored_from == from_date and stored_to == to_date
+
+    def _final_tick_row_pending_for_current_dates(self, row: sqlite3.Row) -> bool:
+        status = str(row["final_tick_status"] or "").strip()
+        if not status:
+            return True
+        if status in FINAL_TICK_RETRYABLE_STATUSES:
+            return True
+        if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
+            return not self._final_tick_row_dates_match(row)
+        return False
+
     def _ubs_final_tick_args(self, run_id: int, *, pending_only: bool = False) -> list[str]:
         from_date = self.ubs_final_tick_from_date.get().strip()
         to_date = self.ubs_final_tick_to_date.get().strip()
         if not from_date or not to_date:
             raise ValueError("Final Tick requiere fechas Desde y Hasta.")
+        ohlc_from_date = self.ubs_final_tick_ohlc_from_date.get().strip()
+        ohlc_to_date = self.ubs_final_tick_ohlc_to_date.get().strip()
+        if bool(ohlc_from_date) != bool(ohlc_to_date):
+            raise ValueError("Final Tick OHLC retry requiere rellenar OHLC desde y OHLC hasta.")
         output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
         thresholds = self._ubs_final_tick_threshold_values()
         args = [
@@ -178,12 +227,18 @@ class UBSFinalTickLogicMixin:
             "--from-date", from_date,
             "--to-date", to_date,
             "--final-tick-min-history-quality", str(thresholds["min_quality"]),
+            "--final-tick-min-ohlc-trades", str(thresholds["min_ohlc_trades"]),
             "--final-tick-max-net-delta-pct", str(thresholds["net_delta"]),
             "--final-tick-max-pf-delta-pct", str(thresholds["pf_delta"]),
             "--final-tick-max-dd-delta-pct", str(thresholds["dd_delta"]),
             "--final-tick-max-trades-delta-pct", str(thresholds["trades_delta"]),
             "--delay", str(self.delay.get()),
         ]
+        if ohlc_from_date and ohlc_to_date:
+            args.extend([
+                "--final-tick-ohlc-from-date", ohlc_from_date,
+                "--final-tick-ohlc-to-date", ohlc_to_date,
+            ])
         if pending_only:
             args.append("--final-tick-pending-only")
         if self.multiterminal_enabled.get():
@@ -215,8 +270,7 @@ class UBSFinalTickLogicMixin:
             if pending_only:
                 rows = [
                     row for row in rows
-                    if not str(row["final_tick_status"] or "").strip()
-                    or str(row["final_tick_status"]) in FINAL_TICK_RETRYABLE_STATUSES
+                    if self._final_tick_row_pending_for_current_dates(row)
                 ]
             if not rows:
                 if pending_only:
@@ -238,7 +292,13 @@ class UBSFinalTickLogicMixin:
             f"Candidatos robust accepted a testear: {len(rows)}",
             f"Fechas: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}",
             "Modelos: OHLC Model=1 vs Every tick based on real ticks Model=4",
-            f"History Quality > {thresholds['min_quality']:.2f}%",
+            f"History Quality >= {thresholds['min_quality']:.2f}%",
+            f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
+            (
+                "Fechas retry OHLC: "
+                f"{self.ubs_final_tick_ohlc_from_date.get().strip() or '(mismas)'} -> "
+                f"{self.ubs_final_tick_ohlc_to_date.get().strip() or '(mismas)'}"
+            ),
             (
                 f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {thresholds['pf_delta']:.2f}% | "
                 f"DD {thresholds['dd_delta']:.2f}% | trades {thresholds['trades_delta']:.2f}%"
@@ -264,6 +324,16 @@ class UBSFinalTickLogicMixin:
     def _ubs_final_tick_reason(self, status: str, similarity: dict) -> str:
         if status == "pending":
             return "pendiente"
+        if status == "pending_history_quality":
+            quality = similarity.get("history_quality")
+            minimum = similarity.get("min_history_quality")
+            return f"calidad pendiente: {self._format_ubs_number(quality)}% < {self._format_ubs_number(minimum)}%"
+        if status == "pending_ohlc_trades":
+            checks = similarity.get("checks") if isinstance(similarity.get("checks"), dict) else {}
+            check = checks.get("ohlc_trades", {}) if isinstance(checks, dict) else {}
+            trades = check.get("ohlc") if isinstance(check, dict) else None
+            minimum = check.get("min_trades") if isinstance(check, dict) else None
+            return f"OHLC pendiente: {self._format_ubs_int(trades)} ops < {self._format_ubs_int(minimum)}"
         if status == "no_report":
             return "sin reporte OHLC o real tick"
         if status == "parse_error":
@@ -284,6 +354,12 @@ class UBSFinalTickLogicMixin:
                 parts.append(
                     f"calidad: {self._format_ubs_number(quality)}% <= {self._format_ubs_number(minimum)}%"
                 )
+                continue
+            if reason == "ohlc_trades":
+                check = checks.get("ohlc_trades", {}) if isinstance(checks, dict) else {}
+                trades = check.get("ohlc") if isinstance(check, dict) else None
+                minimum = check.get("min_trades") if isinstance(check, dict) else None
+                parts.append(f"OHLC ops: {self._format_ubs_int(trades)} < {self._format_ubs_int(minimum)}")
                 continue
             check = checks.get(str(reason), {}) if isinstance(checks, dict) else {}
             delta = check.get("delta_pct") if isinstance(check, dict) else None

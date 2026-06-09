@@ -681,8 +681,13 @@ class MT5AutotesterUI(
         self.ubs_robust_to_date = tk.StringVar(value=saved_general.get("ubs_robust_to_date", ""))
         self.ubs_final_tick_from_date = tk.StringVar(value=saved_general.get("ubs_final_tick_from_date", "2026.05.01"))
         self.ubs_final_tick_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_to_date", "2026.05.31"))
+        self.ubs_final_tick_ohlc_from_date = tk.StringVar(value=saved_general.get("ubs_final_tick_ohlc_from_date", ""))
+        self.ubs_final_tick_ohlc_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_ohlc_to_date", ""))
         self.ubs_final_tick_min_history_quality = tk.StringVar(
             value=saved_general.get("ubs_final_tick_min_history_quality", "80")
+        )
+        self.ubs_final_tick_min_ohlc_trades = tk.StringVar(
+            value=saved_general.get("ubs_final_tick_min_ohlc_trades", "5")
         )
         self.ubs_final_tick_max_net_delta_pct = tk.StringVar(
             value=saved_general.get("ubs_final_tick_max_net_delta_pct", "35")
