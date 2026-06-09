@@ -43,6 +43,8 @@ class TesterSettings:
     delay_seconds: int
     portable: bool
     data_dir: Path | None
+    tester_kick_after_seconds: int = 0
+    terminal_cooldown_seconds: int = 0
 
 
 @dataclass(frozen=True)
@@ -184,6 +186,24 @@ def parse_args() -> argparse.Namespace:
             "Modo de modelado MT5. 0=Every tick, 1=1 minute OHLC, "
             "2=Open price only, 3=Math calculations, 4=Every tick based on real ticks. "
             "Vacio usa el template."
+        ),
+    )
+    parser.add_argument(
+        "--tester-kick-after",
+        type=int,
+        default=None,
+        help=(
+            "Solo para Model=4: si MT5 sigue activo tras N segundos, mata el proceso "
+            "lanzado y reintenta una vez. Por defecto lee [Multiterminal] tester_kick_after."
+        ),
+    )
+    parser.add_argument(
+        "--terminal-cooldown",
+        type=int,
+        default=None,
+        help=(
+            "Pausa en segundos despues de terminar/matar MT5 antes del siguiente intento. "
+            "Por defecto lee [Multiterminal] terminal_cooldown."
         ),
     )
     return parser.parse_args()
@@ -339,6 +359,40 @@ def parse_bool(value: str | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
 
 
+def parse_non_negative_int(value: object, default: int = 0) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def load_runner_tuning(
+    config_path: Path,
+    *,
+    tester_kick_after: int | None,
+    terminal_cooldown: int | None,
+) -> tuple[int, int]:
+    saved_kick_after = 30
+    saved_cooldown = 1
+    if config_path.exists():
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(config_path, encoding="utf-8-sig")
+        if parser.has_section("Multiterminal"):
+            saved_kick_after = parse_non_negative_int(
+                parser["Multiterminal"].get("tester_kick_after"),
+                saved_kick_after,
+            )
+            saved_cooldown = parse_non_negative_int(
+                parser["Multiterminal"].get("terminal_cooldown"),
+                saved_cooldown,
+            )
+    kick_after_value = saved_kick_after if tester_kick_after is None else parse_non_negative_int(tester_kick_after, 0)
+    cooldown_value = saved_cooldown if terminal_cooldown is None else parse_non_negative_int(terminal_cooldown, 0)
+    return kick_after_value, cooldown_value
+
+
 def terminal_section_sort_key(section: str) -> tuple[int, str]:
     suffix = section.split(".", 1)[1] if "." in section else section
     try:
@@ -394,12 +448,19 @@ def profile_data_dir(profile: TerminalProfile) -> Path | None:
     return profile.data_dir or (portable_terminal_data_dir(profile.mt5_path) if profile.portable else terminal_data_dir_from_origin(profile.mt5_path))
 
 
-def settings_from_profile(profile: TerminalProfile, delay_seconds: int) -> TesterSettings:
+def settings_from_profile(
+    profile: TerminalProfile,
+    delay_seconds: int,
+    tester_kick_after_seconds: int,
+    terminal_cooldown_seconds: int,
+) -> TesterSettings:
     return TesterSettings(
         mt5_path=profile.mt5_path,
         delay_seconds=delay_seconds,
         portable=profile.portable,
         data_dir=profile_data_dir(profile),
+        tester_kick_after_seconds=tester_kick_after_seconds,
+        terminal_cooldown_seconds=terminal_cooldown_seconds,
     )
 
 
@@ -1087,6 +1148,67 @@ def log_ini_content(ini_path: Path, logger: RunLogger, prefix: list[str] | None 
     logger.write_many(messages)
 
 
+def tester_model_from_ini(ini_path: Path) -> str:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(ini_path, encoding="utf-8-sig")
+    if not parser.has_section("Tester"):
+        return ""
+    return parser["Tester"].get("Model", "").strip()
+
+
+def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None:
+    if process.poll() is not None:
+        return
+    if sys.platform.startswith("win"):
+        result = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=NO_WINDOW,
+        )
+        if result.returncode == 0:
+            return
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            logger.write(f"taskkill no pudo cerrar MT5: {detail}")
+    try:
+        process.terminate()
+    except OSError as exc:
+        logger.write(f"No se pudo terminar MT5: {exc}")
+
+
+def wait_for_mt5_process(
+    process: subprocess.Popen,
+    logger: RunLogger,
+    *,
+    kick_after_seconds: int = 0,
+) -> tuple[int, bool, float]:
+    started = time.time()
+    next_alive_log = 30.0
+    while True:
+        exit_code = process.poll()
+        elapsed = time.time() - started
+        if exit_code is not None:
+            return exit_code, False, elapsed
+        if kick_after_seconds > 0 and elapsed >= kick_after_seconds:
+            logger.write(
+                f"MT5 sigue activo tras {elapsed:.0f}s en Model=4; "
+                "se reinicia el proceso lanzado para destrabar descarga de ticks."
+            )
+            terminate_process_tree(process, logger)
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
+            return process.returncode if process.returncode is not None else 1, True, elapsed
+        if elapsed >= next_alive_log:
+            logger.write(f"MT5 sigue activo: {int(elapsed)}s esperando resultado...")
+            next_alive_log += 30.0
+        time.sleep(1)
+
+
 def run_test(
     ini_path: Path,
     report_path: Path,
@@ -1109,36 +1231,64 @@ def run_test(
     if dry_run:
         return 0
 
-    delete_existing_report_files(report_path, terminal_data_dirs, settings.mt5_path, logger)
+    real_tick_model = tester_model_from_ini(ini_path) == "4"
+    kick_after_seconds = settings.tester_kick_after_seconds if real_tick_model else 0
+    max_attempts = 2 if kick_after_seconds > 0 else 1
+    last_exit_code = 1
 
-    before = time.time()
-    process = subprocess.Popen(command, creationflags=NO_WINDOW)
-    exit_code = process.wait()
-    elapsed = time.time() - before
-    logger.write(f"MT5 termino con codigo: {exit_code}")
-    logger.write(f"Duracion: {elapsed:.1f} segundos")
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            logger.write(f"Reintentando MT5 Model=4 tras reinicio automatico ({attempt}/{max_attempts}).")
+        delete_existing_report_files(report_path, terminal_data_dirs, settings.mt5_path, logger)
 
-    time.sleep(settings.delay_seconds)
+        before = time.time()
+        process = subprocess.Popen(command, creationflags=NO_WINDOW)
+        attempt_kick_after = kick_after_seconds if attempt < max_attempts else max(0, kick_after_seconds * 2)
+        exit_code, restarted, elapsed = wait_for_mt5_process(
+            process,
+            logger,
+            kick_after_seconds=attempt_kick_after,
+        )
+        last_exit_code = exit_code
+        logger.write(f"MT5 termino con codigo: {exit_code}")
+        logger.write(f"Duracion: {elapsed:.1f} segundos")
 
-    report_files = filter_fresh_report_files(
-        find_report_files(report_path, terminal_data_dirs, settings.mt5_path),
-        before,
-        logger,
-    )
-    if report_files:
-        logger.write("Reportes encontrados:")
-        for path in report_files:
-            logger.write(f"  {path} ({path.stat().st_size} bytes)")
-        copied_reports = copy_reports_to_project(report_files, logger)
-        if not copied_reports:
-            logger.write("ERROR: No quedo ningun reporte nuevo copiado a reports.")
+        if settings.terminal_cooldown_seconds > 0:
+            logger.write(f"Cooldown MT5: {settings.terminal_cooldown_seconds}s")
+            time.sleep(settings.terminal_cooldown_seconds)
+
+        if restarted and attempt < max_attempts:
+            continue
+        if restarted:
+            logger.write("ERROR: MT5 Model=4 volvio a bloquearse tras el reintento automatico.")
             return 1
-    else:
+
+        time.sleep(settings.delay_seconds)
+
+        report_files = filter_fresh_report_files(
+            find_report_files(report_path, terminal_data_dirs, settings.mt5_path),
+            before,
+            logger,
+        )
+        if report_files:
+            logger.write("Reportes encontrados:")
+            for path in report_files:
+                logger.write(f"  {path} ({path.stat().st_size} bytes)")
+            copied_reports = copy_reports_to_project(report_files, logger)
+            if not copied_reports:
+                logger.write("ERROR: No quedo ningun reporte nuevo copiado a reports.")
+                return 1
+            return exit_code
+
+        if real_tick_model and attempt < max_attempts:
+            logger.write("No se encontro reporte en Model=4; se reintentara una vez.")
+            continue
+
         logger.write("ERROR: No se encontro ningun reporte generado para este backtest.")
         logger.write("Revisa que el EA exista dentro de la carpeta MQL5 del terminal RoboForex y que el simbolo/fechas tengan datos.")
         return 1
 
-    return exit_code
+    return last_exit_code
 
 
 def terminal_data_dirs_for_profile(profile: TerminalProfile, settings: TesterSettings) -> list[Path]:
@@ -1207,7 +1357,12 @@ def run_jobs_parallel(
 
     def worker(profile: TerminalProfile) -> int:
         failures = 0
-        settings = settings_from_profile(profile, args.delay)
+        settings = settings_from_profile(
+            profile,
+            args.delay,
+            args.tester_kick_after_seconds,
+            args.terminal_cooldown_seconds,
+        )
         while True:
             try:
                 job = job_queue.get_nowait()
@@ -1263,12 +1418,21 @@ def main() -> int:
     except ValueError as exc:
         print(f"ERROR: {exc}")
         return 1
+    tester_kick_after_seconds, terminal_cooldown_seconds = load_runner_tuning(
+        Path(args.terminals_config).expanduser(),
+        tester_kick_after=args.tester_kick_after,
+        terminal_cooldown=args.terminal_cooldown,
+    )
+    args.tester_kick_after_seconds = tester_kick_after_seconds
+    args.terminal_cooldown_seconds = terminal_cooldown_seconds
     data_dir = explicit_data_dir or (portable_terminal_data_dir(mt5_path) if portable else terminal_data_dir_from_origin(mt5_path))
     settings = TesterSettings(
         mt5_path=mt5_path,
         delay_seconds=args.delay,
         portable=portable,
         data_dir=data_dir,
+        tester_kick_after_seconds=tester_kick_after_seconds,
+        terminal_cooldown_seconds=terminal_cooldown_seconds,
     )
 
     ensure_directories()
@@ -1381,6 +1545,13 @@ def main() -> int:
         else:
             logger.write("Aviso: no pude detectar la carpeta de datos exacta del terminal seleccionado.")
     logger.write(f"INI general: {template_path}")
+    if tester_kick_after_seconds > 0:
+        logger.write(
+            f"Model=4 auto-restart: kick_after={tester_kick_after_seconds}s, "
+            f"cooldown={terminal_cooldown_seconds}s"
+        )
+    else:
+        logger.write("Model=4 auto-restart: desactivado")
     logger.write(f"Origen EAs: {experts_dir if experts_dir else EXPERTS_FILE}")
     logger.write(f"Expert Advisors: {len(experts)}")
     if set_files:

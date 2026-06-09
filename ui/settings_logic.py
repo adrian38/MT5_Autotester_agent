@@ -296,6 +296,17 @@ class SettingsLogicMixin:
 
     def _write_ui_settings(self) -> None:
         self._save_current_multiterminal_editor()
+        saved_multiterminal_tuning = {
+            "terminal_cooldown": "1",
+            "tester_kick_after": "30",
+        }
+        if UI_SETTINGS_FILE.exists():
+            existing = configparser.ConfigParser(interpolation=None)
+            existing.optionxform = str
+            existing.read(UI_SETTINGS_FILE, encoding="utf-8-sig")
+            if existing.has_section("Multiterminal"):
+                for key, default in saved_multiterminal_tuning.items():
+                    saved_multiterminal_tuning[key] = existing["Multiterminal"].get(key, default).strip() or default
         parser = configparser.ConfigParser(interpolation=None)
         parser.optionxform = str
         parser["Paths"] = {
@@ -381,6 +392,8 @@ class SettingsLogicMixin:
         parser["Multiterminal"] = {
             "enabled": "1" if self.multiterminal_enabled.get() else "0",
             "workers": str(self._multiterminal_worker_limit()),
+            "terminal_cooldown": saved_multiterminal_tuning["terminal_cooldown"],
+            "tester_kick_after": saved_multiterminal_tuning["tester_kick_after"],
         }
         for index, profile in enumerate(self.multiterminal_profiles, start=1):
             parser[f"Terminal.{index}"] = {
