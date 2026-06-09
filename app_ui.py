@@ -703,19 +703,67 @@ class MT5AutotesterUI(
         self.reports_count = tk.StringVar(value="0")
         self.portfolio_count = tk.StringVar(value="Reports encontrados: 0")
         self.portfolio_status = tk.StringVar(value="Selecciona una carpeta de reportes y genera el Excel.")
+        saved_portfolio_type = saved_general.get("ubs_portfolio_type", "Balanced")
+        saved_portfolio_type = {
+            "Conservador": "Conservative",
+            "Equilibrado": "Balanced",
+            "Agresivo": "Aggressive",
+        }.get(saved_portfolio_type, saved_portfolio_type)
         self.ubs_portfolio_num_symbols = tk.IntVar(value=self._saved_int(saved_general.get("ubs_portfolio_num_symbols"), 5))
-        self.ubs_portfolio_type = tk.StringVar(value=saved_general.get("ubs_portfolio_type", "Equilibrado"))
-        self.ubs_portfolio_valley_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_valley_pct", "20"))
-        self.ubs_portfolio_point_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_point_pct", "8"))
+        self.ubs_portfolio_type = tk.StringVar(value=saved_portfolio_type)
+        self.ubs_portfolio_valley_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_valley_pct", "10"))
+        self.ubs_portfolio_point_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_point_pct", "4"))
         self.ubs_portfolio_capital = tk.StringVar(value=saved_general.get("ubs_portfolio_capital", "10000"))
+        self.ubs_portfolio_top_k = tk.IntVar(value=self._saved_int(saved_general.get("ubs_portfolio_top_k"), 3))
+        self.ubs_portfolio_max_candidates = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_max_candidates"), 30)
+        )
+        self.ubs_portfolio_min_trades = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_min_trades"), 100)
+        )
+        self.ubs_portfolio_max_units_per_set = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_units_per_set", "")
+        )
+        self.ubs_portfolio_max_total_units = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_total_units", "")
+        )
+        self.ubs_portfolio_max_units_per_symbol = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_units_per_symbol", "")
+        )
+        self.ubs_portfolio_max_sets_per_symbol = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_max_sets_per_symbol"), 1)
+        )
+        self.ubs_portfolio_run_local_search = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_run_local_search"), True)
+        )
+        self.ubs_portfolio_use_correlation = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_use_correlation"), True)
+        )
+        self.ubs_portfolio_max_pair_corr = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_pair_corr", "0.35")
+        )
+        self.ubs_portfolio_max_downside_corr = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_downside_corr", "0.25")
+        )
+        self.ubs_portfolio_max_dd_overlap = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_dd_overlap", "0.35")
+        )
+        self.ubs_portfolio_max_portfolio_corr = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_portfolio_corr", "0.50")
+        )
         self.ubs_portfolio_status = tk.StringVar(value="Sin portafolios generados todavia")
+        self.ubs_portfolio_availability = tk.StringVar(value="Disponibilidad: sin datos")
         self.ubs_portfolio_metric_net = tk.StringVar(value="—")
         self.ubs_portfolio_metric_valley = tk.StringVar(value="—")
         self.ubs_portfolio_metric_point = tk.StringVar(value="—")
         self.ubs_portfolio_metric_count = tk.StringVar(value="—")
+        self.ubs_portfolio_metric_lot = tk.StringVar(value="—")
+        self.ubs_portfolio_metric_units = tk.StringVar(value="—")
         self.ubs_portfolio_running = False
         self.ubs_portfolio_buttons: list = []
         self.ubs_portfolio_member_paths: dict[str, dict[str, str]] = {}
+        self.ubs_portfolio_pending_result = None
+        self.ubs_portfolio_pending_inputs = None
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
@@ -1041,6 +1089,11 @@ class MT5AutotesterUI(
         nav.columnconfigure(0, weight=1)
         items = [
             ("panel", "▦  Panel"),
+            ("multiterminal", "MT5  Multiterminales"),
+            ("portfolio", "▤  Portfolio"),
+            ("configuracion", "⚙  Configuracion"),
+            ("archivos", "▤  Archivos"),
+            ("logs", "≣  Logs"),
             ("agente_ubs", "UBS  Agente UBS"),
             ("ubs_seeds", "UBS  Seeds"),
             ("ubs_resultados", "UBS  Resultados"),
@@ -1049,12 +1102,7 @@ class MT5AutotesterUI(
             ("ubs_universo", "UBS  Universo"),
             ("ubs_comparar", "UBS  Comparar"),
             ("ubs_params", "UBS  Parámetros"),
-            ("multiterminal", "MT5  Multiterminales"),
-            ("portfolio", "▤  Portfolio"),
             ("portafolio_ubs", "UBS  Portafolio"),
-            ("configuracion", "⚙  Configuracion"),
-            ("archivos", "▤  Archivos"),
-            ("logs", "≣  Logs"),
         ]
         for index, (key, label) in enumerate(items):
             btn = RoundedButton(
@@ -1072,23 +1120,20 @@ class MT5AutotesterUI(
         bottom = ttk.Frame(sidebar, style="Sidebar.TFrame")
         bottom.grid(row=2, column=0, sticky="sew")
         bottom.columnconfigure(0, weight=1)
-        ttk.Button(
+        ttk.Label(
             bottom,
-            text="Compilar y backtest",
-            style="PrimaryDark.TButton",
-            command=self._run_full_flow,
-        ).grid(row=0, column=0, sticky="ew", pady=(8, 12))
-        self.theme_button = ttk.Button(
+            text="ESTADO DEL SISTEMA",
+            background=COLORS["sidebar_bg"],
+            foreground=COLORS["muted"],
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(8, 4))
+        ttk.Label(
             bottom,
-            text=self._theme_button_text(),
-            style="TButton",
-            command=self._toggle_theme,
-        )
-        self.theme_button.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        ttk.Label(bottom, text="ESTADO DEL SISTEMA", background=COLORS["sidebar_bg"], foreground=COLORS["muted"],
-                  font=("Segoe UI", 8, "bold")).grid(row=2, column=0, sticky="w", pady=(8, 4))
-        ttk.Label(bottom, text="● Engine Ready", background=COLORS["sidebar_bg"], foreground=COLORS["accent"],
-                  font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w")
+            text="● Engine Ready",
+            background=COLORS["sidebar_bg"],
+            foreground=COLORS["accent"],
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w")
 
     def _theme_button_text(self) -> str:
         return "Modo light" if self.theme_mode.get() == "dark" else "Modo dark"

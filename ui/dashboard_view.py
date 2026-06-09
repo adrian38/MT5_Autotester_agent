@@ -180,6 +180,14 @@ class DashboardViewMixin:
         self._toggle_switch_cls(tg_row, variable=self.telegram_enabled, command=self._write_ui_settings,
                      bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
 
+        self.theme_button = ttk.Button(
+            config_card,
+            text=self._theme_button_text(),
+            style="TButton",
+            command=self._toggle_theme,
+        )
+        self.theme_button.grid(row=9, column=0, sticky="ew", padx=20, pady=(16, 8))
+
         save_cfg = self._rounded_button_cls(
             config_card, text="Guardar configuracion",
             bg=self.colors["primary_container"], hover_bg=self.colors["primary"],
@@ -188,7 +196,7 @@ class DashboardViewMixin:
             parent_bg=self.colors["panel"],
             command=self._save_config_clicked,
         )
-        save_cfg.grid(row=9, column=0, sticky="ew", padx=20, pady=(16, 8))
+        save_cfg.grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 8))
 
         del_btn = self._rounded_button_cls(
             config_card, text="🗑  Eliminar datos historicos",
@@ -200,7 +208,6 @@ class DashboardViewMixin:
             parent_bg=self.colors["panel"],
             command=self._delete_historical_data,
         )
-        del_btn.grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 18))
+        del_btn.grid(row=11, column=0, sticky="ew", padx=20, pady=(0, 18))
 
     # ------------------------------------------------------------------
-
