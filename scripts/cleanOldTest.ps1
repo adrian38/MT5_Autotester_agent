@@ -2,34 +2,46 @@ Write-Host "========================================="
 Write-Host "LIMPIEZA GLOBAL META TRADER TESTER"
 Write-Host "========================================="
 
-# 1️⃣ Cerrar todas las instancias de MT4 y MT5
 Write-Host "Cerrando MetaTrader..."
 Get-Process terminal* -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
-# 2️⃣ Ruta base donde están todas las terminales
 $basePath = Join-Path $env:APPDATA "MetaQuotes\Terminal"
 
 if (!(Test-Path $basePath)) {
-    Write-Host "No se encontró carpeta MetaQuotes."
+    Write-Host "No se encontro carpeta MetaQuotes."
     exit
 }
 
-# 3️⃣ Recorrer todas las carpetas de terminal
+$reportPatterns = @("*.htm", "*.html", "*.xml", "*.png", "*.gif", "*.set")
+
 Get-ChildItem $basePath -Directory | ForEach-Object {
 
     $terminalPath = $_.FullName
     Write-Host ""
     Write-Host "Procesando terminal: $terminalPath"
 
-    # 🔹 Borrar carpeta tester si existe
     $testerPath = Join-Path $terminalPath "tester"
     if (Test-Path $testerPath) {
         Remove-Item $testerPath -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "Carpeta tester eliminada"
     }
 
-    # 🔹 Borrar bases tester MT5
+    $reportDirs = @(
+        $terminalPath,
+        (Join-Path $terminalPath "Reports"),
+        (Join-Path $terminalPath "MQL5\Files")
+    )
+    foreach ($reportDir in $reportDirs) {
+        if (Test-Path $reportDir) {
+            foreach ($pattern in $reportPatterns) {
+                Get-ChildItem -Path (Join-Path $reportDir $pattern) -File -ErrorAction SilentlyContinue |
+                    Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    Write-Host "Reportes eliminados"
+
     $basesPath = Join-Path $terminalPath "bases"
     if (Test-Path $basesPath) {
         Get-ChildItem $basesPath -Recurse -Include *.fxt,*.tick -ErrorAction SilentlyContinue |
@@ -37,7 +49,6 @@ Get-ChildItem $basePath -Directory | ForEach-Object {
         Write-Host "Archivos tester eliminados en bases"
     }
 
-    # 🔹 Borrar .fxt dentro de la terminal
     Get-ChildItem $terminalPath -Recurse -Include *.fxt -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
 

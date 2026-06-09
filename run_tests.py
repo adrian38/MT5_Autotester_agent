@@ -998,14 +998,33 @@ def install_dir_reports(report_name: str, mt5_path: Path) -> list[Path]:
 
 def copy_reports_to_project(report_files: list[Path], logger: RunLogger) -> list[Path]:
     copied: list[Path] = []
+    local_sources: list[Path] = []
+    external_sources: list[Path] = []
     for source in report_files:
         destination = REPORT_DIR / source.name
         if source.resolve() == destination.resolve():
-            copied.append(destination)
-            continue
+            local_sources.append(source)
+        else:
+            external_sources.append(source)
+    for source in external_sources:
+        destination = REPORT_DIR / source.name
         shutil.copy2(source, destination)
         copied.append(destination)
         logger.write(f"  Copiado a reports: {destination}")
+        try:
+            source.unlink()
+            logger.write(f"  Reporte origen eliminado: {source}")
+        except OSError as exc:
+            logger.write(f"  Aviso: no pude eliminar reporte origen {source}: {exc}")
+    copied_destinations = {path.resolve() for path in copied}
+    for source in local_sources:
+        if source.resolve() in copied_destinations:
+            continue
+        try:
+            source.unlink()
+            logger.write(f"  Reporte local previo eliminado: {source}")
+        except OSError as exc:
+            logger.write(f"  Aviso: no pude eliminar reporte local previo {source}: {exc}")
     return copied
 
 
@@ -1085,7 +1104,10 @@ def run_test(
         logger.write("Reportes encontrados:")
         for path in report_files:
             logger.write(f"  {path} ({path.stat().st_size} bytes)")
-        copy_reports_to_project(report_files, logger)
+        copied_reports = copy_reports_to_project(report_files, logger)
+        if not copied_reports:
+            logger.write("ERROR: No quedo ningun reporte nuevo copiado a reports.")
+            return 1
     else:
         logger.write("ERROR: No se encontro ningun reporte generado para este backtest.")
         logger.write("Revisa que el EA exista dentro de la carpeta MQL5 del terminal RoboForex y que el simbolo/fechas tengan datos.")

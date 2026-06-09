@@ -19,6 +19,7 @@ if getattr(sys, "frozen", False):
 COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+REPORT_SUFFIXES = {".htm", ".html", ".xml", ".png", ".gif", ".set"}
 
 
 class SettingsLogicMixin:
@@ -158,7 +159,8 @@ class SettingsLogicMixin:
             return
         if not messagebox.askyesno(
             "Eliminar datos historicos",
-            "Esto cerrara MetaTrader y borrara cache de tester/bases/history en TODAS las terminales.\n\n"
+            "Esto cerrara MetaTrader y borrara cache de tester/bases/history y reportes en TODAS las terminales.\n"
+            f"Tambien borrara los reportes locales en:\n{REPORT_DIR}\n\n"
             f"Se ejecutaran en orden:\n  - {scripts[0].name}\n  - {scripts[1].name}\n\nContinuar?"
         ):
             return
@@ -169,7 +171,7 @@ class SettingsLogicMixin:
         self.active_task_detail.set("0%")
         self._set_progress_color("accent")
         self._progress_running = True
-        self._progress_total = len(scripts)
+        self._progress_total = len(scripts) + 1
         self._progress_done = 0
         self._progress_target = 2.0
         try:
@@ -392,11 +394,7 @@ class SettingsLogicMixin:
         path.write_text(text, encoding="utf-8")
 
     def _delete_old_reports(self) -> None:
-        report_suffixes = {".htm", ".html", ".png", ".set"}
-        files = [
-            path for path in REPORT_DIR.iterdir()
-            if path.is_file() and path.suffix.lower() in report_suffixes
-        ]
+        files = self._project_report_files()
         if not files:
             messagebox.showinfo("Sin reportes", "No hay reportes generados para borrar.")
             return
@@ -424,6 +422,25 @@ class SettingsLogicMixin:
         else:
             messagebox.showinfo("Reportes borrados", f"Se borraron {deleted} reporte(s).")
 
+    def _project_report_files(self) -> list[Path]:
+        if not REPORT_DIR.exists():
+            return []
+        return [
+            path for path in REPORT_DIR.iterdir()
+            if path.is_file() and path.suffix.lower() in REPORT_SUFFIXES
+        ]
+
+    def _delete_project_reports_for_clean(self) -> tuple[int, list[str]]:
+        deleted = 0
+        failures: list[str] = []
+        for path in self._project_report_files():
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError as exc:
+                failures.append(f"{path.name}: {exc}")
+        return deleted, failures
+
     def _find_clean_scripts(self) -> list[Path]:
         candidates_dirs = [BASE_DIR / "scripts", BASE_DIR]
         if getattr(sys, "_MEIPASS", None):
@@ -436,7 +453,7 @@ class SettingsLogicMixin:
         return []
 
     def _run_clean_scripts(self, scripts: list[Path]) -> None:
-        total = max(1, len(scripts))
+        total = max(1, len(scripts) + 1)
         failures = 0
         for index, script in enumerate(scripts):
             self.output_queue.put(f"\n>>> Ejecutando {script.name}\n")
@@ -461,6 +478,16 @@ class SettingsLogicMixin:
                 self.output_queue.put(f"\nERROR ejecutando {script.name}: {exc}\n")
             slot_end = 100.0 * (index + 1) / total
             self.after(0, lambda v=slot_end: self._set_clean_progress(v))
+        self.output_queue.put("\n>>> Borrando reportes locales de reports/\n")
+        self.after(0, lambda: self._set_clean_progress(100.0 * len(scripts) / total))
+        deleted_reports, report_failures = self._delete_project_reports_for_clean()
+        self.output_queue.put(f"Reportes locales eliminados: {deleted_reports}\n")
+        if report_failures:
+            failures += 1
+            self.output_queue.put("No se pudieron borrar algunos reportes locales:\n")
+            for detail in report_failures[:20]:
+                self.output_queue.put(f"  {detail}\n")
+        self.after(0, lambda: self._set_clean_progress(100.0))
         self.output_queue.put("\n=== Limpieza terminada ===\n")
         self.after(0, self._finish_clean, failures)
 
@@ -494,6 +521,6 @@ class SettingsLogicMixin:
             self.status_text.set("Limpieza terminada correctamente")
             messagebox.showinfo(
                 "Limpieza completada",
-                "Se eliminaron los datos historicos correctamente (tester, bases, history, .fxt, .tick)."
+                "Se eliminaron los datos historicos correctamente (tester, bases, history, reports, .fxt, .tick)."
             )
         self._refresh_all()
