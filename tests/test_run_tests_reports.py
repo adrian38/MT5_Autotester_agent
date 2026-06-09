@@ -70,6 +70,24 @@ class CopyReportsToProjectTests(unittest.TestCase):
             self.assertEqual(local_source.read_text(encoding="utf-8"), "new")
             self.assertFalse(external_source.exists())
 
+    def test_recursive_set_loading_skips_run_auxiliary_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = run_tests.Path(temp_dir)
+            wanted = run_dir / "gen_001" / "XAUUSD" / "H1" / "candidate.set"
+            skipped_paths = [
+                run_dir / "accepted_gen_001" / "score_10__candidate.set",
+                run_dir / "retry_mismatch" / "run_1_all" / "candidate.set",
+                run_dir / "robustness" / "run_1_pending" / "candidate.set",
+                run_dir / "final_tick" / "run_1" / "real_tick_sets" / "candidate.set",
+            ]
+            for path in [wanted, *skipped_paths]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("set", encoding="utf-8")
+
+            loaded = run_tests.load_set_files(run_dir, None, recursive=True)
+
+            self.assertEqual(loaded, [wanted])
+
 
 if __name__ == "__main__":
     unittest.main()

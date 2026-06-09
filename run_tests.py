@@ -27,6 +27,8 @@ TEMPLATE_FILE = BASE_DIR / "tester_template.ini"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RUNNING_TERMINAL_EXIT_CODE = 3
+GENERATED_SET_ROOT_PREFIXES = ("accepted_gen_", "mismatch_gen_")
+GENERATED_SET_ROOT_NAMES = {"retry_mismatch", "robustness", "final_tick"}
 
 DEFAULT_MT5_PATHS = (
     Path(r"C:\Program Files\RoboForex MT5 Terminal\terminal64.exe"),
@@ -564,7 +566,7 @@ def load_set_files(set_dir: Path | None, set_files: list[str] | None, recursive:
         if not set_dir.is_dir():
             raise NotADirectoryError(f"No es una carpeta: {set_dir}")
         iterator = set_dir.rglob("*.set") if recursive else set_dir.glob("*.set")
-        files.extend(sorted(path for path in iterator if path.is_file()))
+        files.extend(sorted(path for path in iterator if path.is_file() and not _is_auxiliary_generated_set(set_dir, path)))
 
     for value in set_files or []:
         path = Path(value).expanduser()
@@ -577,6 +579,17 @@ def load_set_files(set_dir: Path | None, set_files: list[str] | None, recursive:
         files.append(path)
 
     return sorted(set(files))
+
+
+def _is_auxiliary_generated_set(set_dir: Path, path: Path) -> bool:
+    try:
+        relative_parts = path.relative_to(set_dir).parts
+    except ValueError:
+        return False
+    if len(relative_parts) < 2:
+        return False
+    root = relative_parts[0]
+    return root in GENERATED_SET_ROOT_NAMES or any(root.startswith(prefix) for prefix in GENERATED_SET_ROOT_PREFIXES)
 
 
 def mapped_set_text_for_tester(set_file: Path, symbol_map: dict[str, str]) -> tuple[str | None, list[str]]:

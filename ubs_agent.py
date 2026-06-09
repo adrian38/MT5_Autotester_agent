@@ -1268,10 +1268,22 @@ def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Pa
     accepted_dir.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
     for variant, result in survivors:
+        for previous in accepted_dir.glob(f"*__{variant.path.name}"):
+            if previous.is_file():
+                previous.unlink()
         destination = accepted_dir / f"score_{result.score:07.2f}__{variant.path.name}"
         shutil.copy2(variant.path, destination)
         copied.append(destination)
     return copied
+
+
+def recreate_work_dir(path: Path) -> Path:
+    if path.exists():
+        if not path.is_dir():
+            raise NotADirectoryError(path)
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def remove_candidate_copies(run_dir: Path, generation: int, set_name: str) -> None:
@@ -1320,8 +1332,8 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
         return 0
 
-    robust_dir = run_dir / "robustness" / f"run_{run_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    robust_dir.mkdir(parents=True, exist_ok=True)
+    robust_mode = "pending" if args.robust_pending_only else "all"
+    robust_dir = recreate_work_dir(run_dir / "robustness" / f"run_{run_id}_{robust_mode}")
     copied: list[tuple[sqlite3.Row, Variant]] = []
     used_names: set[str] = set()
     for row in rows:
@@ -1480,8 +1492,7 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     run = memory.run_by_id(int(row["run_id"]))
     run_dir = Path(run["output_dir"]) if run else DEFAULT_OUTPUT
     generation = int(row["generation"] or 0)
-    retry_dir = run_dir / "retry_mismatch" / f"candidate_{args.retry_candidate_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    retry_dir.mkdir(parents=True, exist_ok=True)
+    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{args.retry_candidate_id}")
     retry_set = retry_dir / set_path.name
     shutil.copy2(set_path, retry_set)
 
@@ -1676,8 +1687,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         return 1
 
     run_dir = Path(run["output_dir"])
-    retry_dir = run_dir / "retry_mismatch" / f"run_{run_id}_gen_{generation:03d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    retry_dir.mkdir(parents=True, exist_ok=True)
+    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_gen_{generation:03d}")
     variants = [variant_from_candidate_row(row) for row in rows]
 
     print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
@@ -1747,8 +1757,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         return 1
 
     run_dir = Path(run["output_dir"])
-    retry_dir = run_dir / "retry_mismatch" / f"run_{run_id}_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    retry_dir.mkdir(parents=True, exist_ok=True)
+    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_all")
     variants = [variant_from_candidate_row(row) for row in rows]
 
     print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
