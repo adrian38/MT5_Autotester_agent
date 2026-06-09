@@ -4,10 +4,18 @@ from pathlib import Path
 
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
-from ubs_agent import copy_accepted, recreate_work_dir
+from ubs_agent import copy_accepted, final_tick_similarity, recreate_work_dir
 
 
-def score(value: float) -> ScoreResult:
+def score(
+    value: float,
+    *,
+    net_profit: float = 100.0,
+    profit_factor: float = 2.0,
+    drawdown_pct: float = 1.0,
+    trades: int = 100,
+    history_quality: float | None = 100.0,
+) -> ScoreResult:
     return ScoreResult(
         report_path="report.htm",
         name="report",
@@ -15,17 +23,18 @@ def score(value: float) -> ScoreResult:
         timeframe="H1",
         score=value,
         accepted=True,
-        net_profit=100.0,
-        raw_net_profit=100.0,
-        normalized_net_profit=100.0,
+        net_profit=net_profit,
+        raw_net_profit=net_profit,
+        normalized_net_profit=net_profit,
         net_profit_factor=1.0,
         net_profit_basis="test",
         normalization_group="test",
-        profit_factor=2.0,
+        history_quality=history_quality,
+        profit_factor=profit_factor,
         recovery_factor=2.0,
         drawdown=10.0,
-        drawdown_pct=1.0,
-        trades=100,
+        drawdown_pct=drawdown_pct,
+        trades=trades,
         positive_month_ratio=1.0,
         max_month_concentration=0.1,
         avg_trade=1.0,
@@ -64,6 +73,34 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertEqual(recreated, path)
             self.assertTrue(path.exists())
             self.assertEqual(list(path.iterdir()), [])
+
+    def test_final_tick_similarity_requires_history_quality(self) -> None:
+        result = final_tick_similarity(
+            score(10.0),
+            score(10.0, history_quality=None),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+        )
+
+        self.assertFalse(result["accepted"])
+        self.assertIn("history_quality", result["reasons"])
+
+    def test_final_tick_similarity_rejects_large_metric_drift(self) -> None:
+        result = final_tick_similarity(
+            score(10.0, net_profit=100.0),
+            score(10.0, net_profit=200.0),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+        )
+
+        self.assertFalse(result["accepted"])
+        self.assertIn("net_profit", result["reasons"])
 
 
 if __name__ == "__main__":

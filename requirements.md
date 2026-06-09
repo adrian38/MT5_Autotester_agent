@@ -57,6 +57,10 @@ requirement changes or a debt item is opened/closed.
   `.JP225Cash` / `JP225Cash` before broad aliases such as `GOLD -> XAUUSD`.
   A generated path like `JP225Cash/H4/...GOLD...set` MUST run on `.JP225Cash`,
   not on `XAUUSD`.
+- **FR-1.2.10** The backtest runner MUST support a per-run tester model override
+  via CLI (`--model`). `--model 1` MUST generate 1 minute OHLC reports and
+  `--model 4` MUST generate `Every tick based on real ticks` reports without
+  editing `tester_template.ini`.
 
 ### 1.3 Multiterminal execution
 
@@ -225,6 +229,22 @@ requirement changes or a debt item is opened/closed.
   penalties; `no_report`, `parse_error`, `report_mismatch`, and OOS
   `no_trades` add no robustness bonus. `AgentMemory` feedback methods and the
   `UBS Universo` UI MUST use identical logic.
+- **FR-1.8.7** Robustness-accepted candidates MAY be evaluated in a Final Tick
+  pass with `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
+  Final Tick MUST only select rows where `candidates.status='accepted'` and
+  `candidate_robustness.status='accepted'`.
+- **FR-1.8.8** Final Tick MUST require an explicit date range and MUST compare
+  two reports for the same candidate and dates: an OHLC control report generated
+  with MT5 `Model=1`, and a real-tick report generated with `Model=4`.
+- **FR-1.8.9** Final Tick results MUST be stored in `candidate_final_tick`
+  without overwriting base candidate or robustness results. The table MUST store
+  both report paths, both metrics JSON blobs, `history_quality`, date range, and
+  a `similarity_json` payload explaining pass/fail causes.
+- **FR-1.8.10** A Final Tick row MUST be `accepted` only if the real-tick report
+  has `History Quality` strictly greater than the configured minimum (`80` by
+  default) and real-tick metrics remain close to the OHLC metrics within
+  configured deltas for net, profit factor, drawdown %, and trade count. Missing
+  `History Quality` MUST fail the row.
 
 ### 1.9 UBS agent — seed evaluation
 
@@ -422,6 +442,17 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.12.28** `UBS Comparar` MUST list visible runs and auto-select a newly
   created latest run when it appears. If no newer run exists, it MUST preserve
   the user's manual run selection.
+- **FR-1.12.29** The UI MUST include a dedicated `UBS Final Tick` tab showing
+  robust-accepted candidates from the selected/latest visible run, SEL checkbox,
+  final status, rejection cause, real-tick data quality, OHLC metrics, real-tick
+  metrics, date range, set path, and report open actions.
+- **FR-1.12.30** The `UBS Final Tick` tab MUST expose editable Final Tick dates
+  and similarity thresholds. Defaults MUST include `2026.05.01 -> 2026.05.31`
+  and minimum data quality `80`.
+- **FR-1.12.31** `UBS Robustez` MUST expose a continue action that sends only
+  robustness-accepted candidates into Final Tick. Incremental execution MUST
+  pass `--final-tick-pending-only`; rerun execution MUST replace existing Final
+  Tick rows for robust-accepted candidates.
 
 ### 1.13 Packaging & runtime
 

@@ -157,6 +157,7 @@ class UBSResultsLogicMixin:
         for label, callback in (
             ("ubs_results", self._refresh_ubs_results),
             ("ubs_robustness", self._refresh_ubs_robustness),
+            ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_comparison", self._refresh_ubs_comparison),
             ("ubs_continue", self._refresh_ubs_continue_state),
@@ -198,6 +199,32 @@ class UBSResultsLogicMixin:
                 to_date text not null default '',
                 positive_bonus real not null default 70.0,
                 negative_bonus real not null default -70.0,
+                evaluated_at text not null
+            )
+            """
+        )
+        conn.execute(
+            """
+            create table if not exists candidate_final_tick (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                accepted integer,
+                ohlc_report_path text,
+                real_tick_report_path text,
+                ohlc_score real,
+                real_tick_score real,
+                ohlc_metrics_json text,
+                real_tick_metrics_json text,
+                similarity_json text,
+                history_quality real,
+                min_history_quality real not null default 80.0,
+                from_date text not null default '',
+                to_date text not null default '',
+                max_net_delta_pct real not null default 35.0,
+                max_pf_delta_pct real not null default 35.0,
+                max_dd_delta_pct real not null default 35.0,
+                max_trades_delta_pct real not null default 35.0,
                 evaluated_at text not null
             )
             """

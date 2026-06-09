@@ -36,6 +36,7 @@ class UBSRobustnessLogicMixin:
     def _refresh_ubs_robustness_panel(self) -> None:
         for label, callback in (
             ("ubs_robustness", self._refresh_ubs_robustness),
+            ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_universe", self._refresh_ubs_universe),
         ):
             self._safe_refresh(label, callback)

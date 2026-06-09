@@ -42,6 +42,8 @@
 |   |-- ubs_results_logic.py     # UBS Results/History/Compare logic
 |   |-- ubs_robustness_view.py   # UBS Robustness OOS widget/layout mixin
 |   |-- ubs_robustness_logic.py  # UBS Robustness OOS launch/table logic
+|   |-- ubs_final_tick_view.py   # UBS Final Tick widget/layout mixin
+|   |-- ubs_final_tick_logic.py  # UBS Final Tick launch/table logic
 |   |-- ubs_seeds_view.py        # UBS Seeds widget/layout mixin
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
@@ -109,7 +111,7 @@ Each substantial screen/tab uses a view/logic pair:
 
 Current pairs: Dashboard, Files/Logs, Multiterminal, Portfolio, UBS Portfolio,
 Settings, UBS Agent, UBS Parameters, UBS Results/History/Compare, UBS Robustness,
-UBS Seeds, and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py`
+UBS Final Tick, UBS Seeds, and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py`
 only when it is genuinely shell-level or generic infrastructure.
 
 The CLI scripts can still run independently and should remain usable without
@@ -166,6 +168,10 @@ Owns the UBS agent workflow:
   `outputs/ubs_agent/<run>/robustness/...`, forwards robustness dates/criteria
   to `run_tests.py`, validates symbol/timeframe again, and stores results in
   `candidate_robustness` without overwriting the base candidate score.
+- Evaluate Final Tick with `--evaluate-final-tick` for robustness-accepted
+  candidates from a run. It runs OHLC (`Model=1`) and real-tick (`Model=4`)
+  reports over the same explicit final date range, compares similarity and
+  `History Quality`, and stores results in `candidate_final_tick`.
 - Evaluate original UBS seeds with `--evaluate-seeds`. Seed scores are stored
   in `seed_scores`, feed asset/timeframe feedback at the same base strength as
   generated candidates when they have valid scored reports, and are surfaced in

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import configparser
 from unittest.mock import patch
 
 import run_tests
@@ -87,6 +88,30 @@ class CopyReportsToProjectTests(unittest.TestCase):
             loaded = run_tests.load_set_files(run_dir, None, recursive=True)
 
             self.assertEqual(loaded, [wanted])
+
+    def test_create_ini_can_override_tester_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            configs_dir = root / "configs"
+            reports_dir = root / "reports"
+            configs_dir.mkdir()
+            reports_dir.mkdir()
+            template = configparser.ConfigParser(interpolation=None)
+            template.optionxform = str
+            template.read_dict({"Tester": {"Expert": "", "Symbol": "XAUUSD", "Period": "H1", "Model": "1"}})
+
+            with patch.object(run_tests, "CONFIG_DIR", configs_dir), patch.object(run_tests, "REPORT_DIR", reports_dir):
+                ini_path, _report_path = run_tests.create_ini(
+                    "Ultimate Breakout System_4.3.ex5",
+                    1,
+                    template,
+                    tester_model="4",
+                )
+
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.optionxform = str
+            parser.read(ini_path, encoding="utf-8")
+            self.assertEqual(parser["Tester"]["Model"], "4")
 
 
 if __name__ == "__main__":

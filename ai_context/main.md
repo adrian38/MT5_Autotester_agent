@@ -179,9 +179,30 @@ robustness rows (`accepted=500`, `rejected=161`). The audit still reports
 accepted candidates pending robustness because normalization promoted new base
 accepted rows that have not yet been sent to OOS.
 
+### UBS Final Tick
+
+Final Tick is the stage after robustness. Only rows with
+`candidates.status='accepted'` and `candidate_robustness.status='accepted'`
+enter this queue.
+
+- CLI: `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
+- The agent copies each robust-accepted `.set` twice under
+  `outputs/ubs_agent/<run>/final_tick/...`: one OHLC batch with `Model=1` and
+  one real-tick batch with `Model=4` (`Every tick based on real ticks`).
+- Final Tick requires explicit `--from-date` and `--to-date`; the UI defaults to
+  `2026.05.01 -> 2026.05.31` as the last robustness segment example.
+- Results are stored in `candidate_final_tick` with both report paths, both
+  metrics JSON blobs, `history_quality`, and `similarity_json`.
+- A row is final `accepted` only when the real-tick report has
+  `History Quality > 80` by default and its real-tick metrics are close to the
+  OHLC metrics within configured tolerances for net, PF, DD, and trades.
+- UI: `UBS Final Tick` shows robust-accepted candidates, final status, cause,
+  quality, OHLC metrics, real-tick metrics, date range, set path, and report
+  open actions. `UBS Robustez` also exposes `Continuar Final Tick`.
+
 Visible-run behavior:
 
-- `UBS Resultados` and `UBS Robustez` use the latest visible run:
+- `UBS Resultados`, `UBS Robustez`, and `UBS Final Tick` use the latest visible run:
   `runs where hidden=0 order by id desc limit 1`.
 - New UBS generation runs are inserted with `hidden=0`, so they become the
   visible run immediately.

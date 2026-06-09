@@ -52,6 +52,19 @@ class UBSRobustnessViewMixin:
         ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
             bar,
+            text="Continuar Final Tick",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._run_ubs_final_tick_for_latest_run,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            bar,
             text="Actualizar",
             bg=self.colors["panel"],
             fg=self.colors["muted"],
@@ -62,10 +75,10 @@ class UBSRobustnessViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._refresh_ubs_robustness_panel,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 10), pady=(5, 3))
+        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=(5, 3))
 
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 5))
+        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(2, weight=1)
         tk.Label(
             row1,

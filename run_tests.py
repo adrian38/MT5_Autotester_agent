@@ -177,6 +177,15 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Fecha fin backtest en formato YYYY.MM.DD. Sobreescribe ToDate del template.",
     )
+    parser.add_argument(
+        "--model",
+        default="",
+        help=(
+            "Modo de modelado MT5. 0=Every tick, 1=1 minute OHLC, "
+            "2=Open price only, 3=Math calculations, 4=Every tick based on real ticks. "
+            "Vacio usa el template."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -923,6 +932,7 @@ def create_ini(
     symbol_map: dict[str, str] | None = None,
     infer_tester_from_set: bool = False,
     prefer_set_path_timeframe: bool = False,
+    tester_model: str = "",
     logger: RunLogger | None = None,
 ) -> tuple[Path, Path]:
     symbol_map = symbol_map or {}
@@ -956,6 +966,8 @@ def create_ini(
     if set_file:
         config["Tester"]["ExpertParameters"] = set_file.name
     config["Tester"]["Report"] = report_name
+    if tester_model.strip():
+        config["Tester"]["Model"] = tester_model.strip()
 
     if infer_tester_from_set:
         if use_template_tester_fields and logger:
@@ -1168,6 +1180,7 @@ def run_backtest_job(
             symbol_map,
             args.infer_tester_from_set,
             args.prefer_set_path_timeframe,
+            args.model,
             logger,
         )
     except ValueError as exc:
@@ -1458,6 +1471,7 @@ def main() -> int:
                     symbol_map,
                     args.infer_tester_from_set,
                     args.prefer_set_path_timeframe,
+                    args.model,
                     logger,
                 )
             except ValueError as exc:
