@@ -42,6 +42,8 @@
 |   |-- ubs_results_logic.py     # UBS Results/History/Compare logic
 |   |-- ubs_robustness_view.py   # UBS Robustness OOS widget/layout mixin
 |   |-- ubs_robustness_logic.py  # UBS Robustness OOS launch/table logic
+|   |-- ubs_final_tick_view.py   # UBS Final Tick widget/layout mixin
+|   |-- ubs_final_tick_logic.py  # UBS Final Tick launch/table logic
 |   |-- ubs_seeds_view.py        # UBS Seeds widget/layout mixin
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
@@ -109,7 +111,7 @@ Each substantial screen/tab uses a view/logic pair:
 
 Current pairs: Dashboard, Files/Logs, Multiterminal, Portfolio, UBS Portfolio,
 Settings, UBS Agent, UBS Parameters, UBS Results/History/Compare, UBS Robustness,
-UBS Seeds, and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py`
+UBS Final Tick, UBS Seeds, and UBS Universe. Shared cross-screen behavior may stay in `app_ui.py`
 only when it is genuinely shell-level or generic infrastructure.
 
 The CLI scripts can still run independently and should remain usable without
@@ -166,6 +168,10 @@ Owns the UBS agent workflow:
   `outputs/ubs_agent/<run>/robustness/...`, forwards robustness dates/criteria
   to `run_tests.py`, validates symbol/timeframe again, and stores results in
   `candidate_robustness` without overwriting the base candidate score.
+- Evaluate Final Tick with `--evaluate-final-tick` for robustness-accepted
+  candidates from a run. It runs OHLC (`Model=1`) and real-tick (`Model=4`)
+  reports over the same explicit final date range, compares similarity and
+  `History Quality`, and stores results in `candidate_final_tick`.
 - Evaluate original UBS seeds with `--evaluate-seeds`. Seed scores are stored
   in `seed_scores`, feed asset/timeframe feedback at the same base strength as
   generated candidates when they have valid scored reports, and are surfaced in
@@ -177,8 +183,37 @@ Owns the UBS agent workflow:
   applying overrides, it is recorded as `report_mismatch` and must not be
   backtested.
 - Retry a single candidate with `--retry-candidate-id`.
-- Retry all `report_mismatch` candidates in a run with `--retry-run-id` and
-  `--retry-mismatch-run`.
+- Retry all `report_mismatch` / `no_report` candidates in a run with `--retry-run-id`
+  and `--retry-mismatch-run`. Retry a single seed with `--retry-seed-path`.
+- Rescore without backtesting via `--rescore-seeds-only`, `--rescore-candidates-only`,
+  `--rescore-robustness-only`.
+- Reconcile interrupted seed-eval batches with `--reconcile-seed-eval-only`.
+
+**Main CLI flags summary:**
+
+| Flag | Purpose |
+|------|---------|
+| `--generations` / `--variants-per-seed` / `--max-seeds` | Generation plan |
+| `--execute-backtests` | Run MT5 after generating |
+| `--continue-last-run` | Resume a pending run |
+| `--backtest-pending-only` | Only run generated-but-not-yet-tested candidates |
+| `--evaluate-seeds` | Score UBS seed files |
+| `--evaluate-robustness --robust-run-id <id>` | OOS robustness for a run's accepted candidates |
+| `--robust-pending-only` | Only accepted candidates without an OOS row |
+| `--evaluate-final-tick --final-tick-run-id <id>` | Final Tick dual-model for robust-accepted |
+| `--final-tick-pending-only` | Only rows with no Final Tick result or in a pending state |
+| `--final-tick-min-history-quality` (default 80) | Minimum real-tick history quality % |
+| `--final-tick-min-ohlc-trades` (default 5) | Min OHLC trades before attempting real tick |
+| `--final-tick-ohlc-from-date` / `--final-tick-ohlc-to-date` | Alternate OHLC date range for retry |
+| `--final-tick-max-net-delta-pct` (default 35) | Max net-profit divergence % |
+| `--final-tick-max-pf-delta-pct` (default 35) | Max PF divergence % |
+| `--final-tick-max-dd-delta-pct` (default 35) | Max DD divergence % |
+| `--final-tick-max-trades-delta-pct` (default 35) | Max trade count divergence % |
+| `--from-date` / `--to-date` | Override template dates for any run |
+| `--force-unseeded-universe` | Reserve generation quota for universe items not in seed pool |
+| `--retry-candidate-id` | Re-run one candidate |
+| `--retry-run-id` + `--retry-mismatch-run` | Re-run all problem candidates in a run |
+| `--rescore-seeds-only` / `--rescore-candidates-only` / `--rescore-robustness-only` | Rescore without MT5 |
 
 UBS support code lives in the `ubs/` package:
 
@@ -217,19 +252,23 @@ UBS support code lives in the `ubs/` package:
 | `CORE_MUTATION_KEYS` | Per-strategy preferred keys weighted 4× in sampling |
 | `MUTATION_OVERRIDES_FILE` | `outputs/ubs_mutation_overrides.json` |
 | `GLOBAL_PARAMS_FILE` | `outputs/ubs_global_params.json` |
+| `FINAL_TICK_RETRYABLE_STATUSES` | `{"no_report", "parse_error", "report_mismatch"}` — full retry |
+| `FINAL_TICK_DATE_RETRYABLE_STATUSES` | `{"pending_history_quality", "pending_ohlc_trades"}` — date-triggered retry |
 
-**Important candidate states:**
+**Important candidate states (`candidates.status` and `seed_scores.status`):**
 
 - `generated`: `.set` exists but no backtest result is stored yet.
 - `accepted`: report passed configured filters and matches target.
 - `rejected`: report matches target but failed score filters.
+- `no_trades`: MT5 produced a report but with zero closed trades; retryable,
+  contributes a fixed negative reliability penalty to weights.
 - `no_report`: MT5 did not produce a report for the expected name.
 - `parse_error`: report exists but could not be parsed.
 - `report_mismatch`: report parsed, but actual symbol/timeframe does not match
   the candidate target. For `seed_scores`, this also covers UBS seeds that lack
   a resolvable symbol/timeframe before execution.
 
-**Important robustness states (`candidate_robustness`):**
+**Important robustness states (`candidate_robustness.status`):**
 
 - `accepted`: OOS report passed robustness thresholds; adds positive bonus to
   asset/timeframe/mutation feedback.
@@ -237,6 +276,17 @@ UBS support code lives in the `ubs/` package:
   negative bonus to asset/timeframe/mutation feedback.
 - `no_report`, `parse_error`, `report_mismatch`, `no_trades`: stored for
   diagnosis, but neutral for weights.
+
+**Important Final Tick states (`candidate_final_tick.status`):**
+
+- `accepted`: real-tick report has sufficient history quality and metrics are
+  within configured deltas of the OHLC control report.
+- `rejected`: real-tick report failed quality or metric similarity checks.
+- `pending_history_quality`: real-tick report produced but history quality is
+  below threshold — retryable when real-tick data improves.
+- `pending_ohlc_trades`: OHLC batch produced fewer trades than the configured
+  minimum — retryable via the OHLC-retry date range.
+- `no_report`, `parse_error`, `report_mismatch`: diagnosis only.
 
 ### `ubs_score.py`
 
@@ -290,7 +340,9 @@ explicitly about packaging.
 | `reports/` | Copied MT5 HTML reports, `.set` files, chart images |
 | `outputs/` | Generated Excel workbooks |
 | `outputs/ubs_agent/` | Generated UBS variants and copied accepted sets |
-| `outputs/ubs_memory.sqlite` | UBS agent SQLite: candidates, runs, seed_scores, seed_overrides, candidate_robustness, portfolios, portfolio_members |
+| `outputs/ubs_agent/<run>/robustness/` | Copied `.set` files for OOS robustness batches |
+| `outputs/ubs_agent/<run>/final_tick/` | OHLC and real-tick `.set` copies for Final Tick evaluation |
+| `outputs/ubs_memory.sqlite` | UBS agent SQLite: `runs`, `candidates`, `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`, `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members` |
 | `outputs/ubs_global_params.json` | Global EA parameter values edited in the UBS Parámetros tab |
 | `outputs/ubs_mutation_overrides.json` | User mutability overrides: `frozen_override` and `mutable_override` |
 

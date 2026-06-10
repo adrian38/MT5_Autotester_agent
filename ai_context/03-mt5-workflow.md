@@ -317,6 +317,38 @@ small samples are shrunk toward zero. Seeds do not have a robustness bonus by
 default, but seeds with scored reports still contribute even when candidate
 evidence exists, at the same base strength as generated candidates.
 
+## UBS Final Tick
+
+Final Tick is the third UBS gate after robustness:
+
+1. Base generation/seeds use `Model=1` (1 minute OHLC) for the main historical
+   window.
+2. Robustness uses `Model=1` for the OOS robustness range.
+3. Final Tick takes only robust-accepted candidates and tests the last robustness
+   segment, for example `2026.05.01 -> 2026.05.31`.
+
+Final Tick runs two backtest batches for the same candidates and dates:
+
+- OHLC control batch: generated INI uses `Model=1`.
+- Real-tick batch: generated INI uses `Model=4`, which MetaTrader documents as
+  `Every tick based on real ticks`.
+
+`run_tests.py` accepts `--model` to override the template model per batch; do
+not edit `tester_template.ini` to switch between OHLC and real ticks.
+
+Results are stored in `candidate_final_tick`, not in `candidate_robustness`.
+The agent stores both report paths and both metrics JSON values. Acceptance is
+based on:
+
+- real-tick report `History Quality` strictly greater than the configured
+  minimum (`80` by default);
+- similarity of real-tick metrics to OHLC metrics within configured percentage
+  deltas for normalized net, PF, DD %, and trades.
+
+Missing `History Quality` is treated as not accepted because the real-tick data
+quality cannot be proven. `no_report`, `parse_error`, `report_mismatch`, and
+`no_trades` are diagnostic states and do not count as final accepted.
+
 ## UBS Unseeded Universe Exploration
 
 Normal target selection is intentionally biased toward the current seed symbol

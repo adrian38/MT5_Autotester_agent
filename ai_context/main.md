@@ -18,8 +18,9 @@ MetaTrader 5. It automates three related workflows:
 3. Parse MT5 HTML reports and generate Excel portfolio workbooks with
    strategy metrics and drawdown analysis.
 4. Run a UBS-specific set-generation agent that mutates known-good `.set`
-   files, backtests variants, scores reports, tests accepted candidates in an
-   optional out-of-sample robustness window, and stores memory in SQLite.
+   files, backtests variants, scores reports, tests accepted candidates through
+   an optional out-of-sample robustness window and a Final Tick dual-model
+   comparison, and stores all results in SQLite.
 
 The main user-facing entry point is the Tkinter desktop app in
 [`app_ui.py`](../app_ui.py). The same functionality is also available through
@@ -100,6 +101,27 @@ batch wrappers.
 - Build installer: `powershell -ExecutionPolicy Bypass -File tools/build_installer.ps1`
 - Portfolio workbook generation: functions in `portfolio_manager/generator.py`
 
+## UI Sidebar Tabs (section keys)
+
+| Key | Spanish label | View module | Logic module |
+|-----|--------------|-------------|--------------|
+| `panel` | Panel | `ui/dashboard_view.py` | `ui/dashboard_logic.py` |
+| `multiterminal` | MT5 Multiterminales | `ui/multiterminal_view.py` | `ui/multiterminal_logic.py` |
+| `portfolio` | Portfolio | `ui/portfolio_view.py` | `ui/portfolio_logic.py` |
+| `configuracion` | Configuracion | `ui/settings_view.py` | `ui/settings_logic.py` |
+| `archivos` | Archivos | `ui/files_view.py` | `ui/files_logic.py` |
+| `logs` | Logs | (part of files) | (part of files) |
+| `agente_ubs` | UBS Agente UBS | `ui/ubs_agent_view.py` | `ui/ubs_agent_logic.py` |
+| `ubs_seeds` | UBS Seeds | `ui/ubs_seeds_view.py` | `ui/ubs_seeds_logic.py` |
+| `ubs_resultados` | UBS Resultados | `ui/ubs_results_view.py` | `ui/ubs_results_logic.py` |
+| `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
+| `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
+| `ubs_historico` | UBS Historico | (part of ubs_results) | (part of ubs_results) |
+| `ubs_universo` | UBS Universo | `ui/ubs_universe_view.py` | `ui/ubs_universe_logic.py` |
+| `ubs_comparar` | UBS Comparar | (part of ubs_results) | (part of ubs_results) |
+| `ubs_params` | UBS Parámetros | `ui/ubs_params_view.py` | `ui/ubs_params_logic.py` |
+| `portafolio_ubs` | UBS Portafolio | `ui/ubs_portfolio_view.py` | `ui/ubs_portfolio_logic.py` |
+
 ## Recent Important Changes
 
 ### Package reorganisation (refactor branch)
@@ -179,9 +201,53 @@ robustness rows (`accepted=500`, `rejected=161`). The audit still reports
 accepted candidates pending robustness because normalization promoted new base
 accepted rows that have not yet been sent to OOS.
 
+### UBS Final Tick
+
+Final Tick is the stage after robustness. Only rows with
+`candidates.status='accepted'` and `candidate_robustness.status='accepted'`
+enter this queue.
+
+- CLI: `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
+  Additional flags:
+  - `--final-tick-pending-only` — only tests candidates without a stored Final Tick row.
+  - `--final-tick-min-history-quality` — minimum acceptable history quality % (default `80`).
+  - `--final-tick-min-ohlc-trades` — minimum OHLC trades required before attempting real tick (default `5`).
+  - `--final-tick-ohlc-from-date` / `--final-tick-ohlc-to-date` — alternative date range to
+    retry the OHLC batch when the primary range yielded too few trades.
+  - `--final-tick-max-net-delta-pct`, `--final-tick-max-pf-delta-pct`,
+    `--final-tick-max-dd-delta-pct`, `--final-tick-max-trades-delta-pct` — tolerances for
+    comparing real-tick metrics against OHLC control metrics (all default `35.0`).
+- The agent copies each robust-accepted `.set` twice under
+  `outputs/ubs_agent/<run>/final_tick/...`: one OHLC batch with `Model=1` and
+  one real-tick batch with `Model=4` (`Every tick based on real ticks`).
+- Final Tick requires explicit `--from-date` and `--to-date`; the UI defaults to
+  `2026.05.01 -> 2026.05.31` as the last robustness segment example.
+- Results are stored in `candidate_final_tick` with both report paths, both
+  metrics JSON blobs, `history_quality`, date range, and `similarity_json`.
+- **Pending states** (intermediate, not final): `pending_history_quality` — real-tick
+  report produced but history quality is below threshold; `pending_ohlc_trades` —
+  OHLC batch produced too few trades to make a valid comparison, OHLC retry dates
+  may be used to get a qualifying OHLC before re-running real tick.
+- A row is final `accepted` only when the real-tick report has
+  `History Quality > 80` by default and its real-tick metrics are close to the
+  OHLC metrics within configured tolerances for net, PF, DD, and trades.
+- UI: `UBS Final Tick` shows robust-accepted candidates, final status, cause,
+  history quality %, OHLC metrics, real-tick metrics, date range, set path, and
+  "Abrir set" / "Abrir OHLC" / "Abrir Real Tick" report actions.
+  Buttons: **Continuar Final Tick** (pending-only, incremental) and
+  **Reprobar Final Tick** (replaces all existing rows for the visible run).
+  A criteria configuration block exposes all thresholds (quality, min OHLC trades,
+  delta tolerances, primary and OHLC-retry date ranges) and a **Guardar config** button.
+  `UBS Robustez` also exposes `Continuar Final Tick`.
+- The UI variables `ubs_final_tick_from_date`, `ubs_final_tick_to_date`,
+  `ubs_final_tick_ohlc_from_date`, `ubs_final_tick_ohlc_to_date`,
+  `ubs_final_tick_min_history_quality`, `ubs_final_tick_min_ohlc_trades`,
+  and the four `ubs_final_tick_max_*_delta_pct` variables are persisted in
+  `ui_settings.ini`.
+
 Visible-run behavior:
 
-- `UBS Resultados` and `UBS Robustez` use the latest visible run:
+- `UBS Resultados`, `UBS Robustez`, and `UBS Final Tick` use the latest visible run:
   `runs where hidden=0 order by id desc limit 1`.
 - New UBS generation runs are inserted with `hidden=0`, so they become the
   visible run immediately.
@@ -278,7 +344,9 @@ passed robustness (`candidates.status='accepted'` and
 **Inputs**: capital, DD valle %, DD puntual %, portfolio type
 (Conservative/Balanced/Aggressive), top-K per symbol, max total candidates, min
 trades 2020-2026, optional unit caps (per set, total, per symbol), max sets per
-symbol, and optional local search. All are persisted in `ui_settings.ini`.
+symbol, optional local search, and optional correlation filters (max pair
+correlation, max downside correlation, max DD overlap, max portfolio correlation).
+All are persisted in `ui_settings.ini` under the `ubs_portfolio_*` keys.
 
 **Optimizer** (pure math in `portfolio_manager/ubs_portfolio.py`):
 

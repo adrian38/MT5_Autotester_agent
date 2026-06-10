@@ -57,6 +57,10 @@ requirement changes or a debt item is opened/closed.
   `.JP225Cash` / `JP225Cash` before broad aliases such as `GOLD -> XAUUSD`.
   A generated path like `JP225Cash/H4/...GOLD...set` MUST run on `.JP225Cash`,
   not on `XAUUSD`.
+- **FR-1.2.10** The backtest runner MUST support a per-run tester model override
+  via CLI (`--model`). `--model 1` MUST generate 1 minute OHLC reports and
+  `--model 4` MUST generate `Every tick based on real ticks` reports without
+  editing `tester_template.ini`.
 
 ### 1.3 Multiterminal execution
 
@@ -225,6 +229,34 @@ requirement changes or a debt item is opened/closed.
   penalties; `no_report`, `parse_error`, `report_mismatch`, and OOS
   `no_trades` add no robustness bonus. `AgentMemory` feedback methods and the
   `UBS Universo` UI MUST use identical logic.
+- **FR-1.8.7** Robustness-accepted candidates MAY be evaluated in a Final Tick
+  pass with `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
+  Final Tick MUST only select rows where `candidates.status='accepted'` and
+  `candidate_robustness.status='accepted'`.
+- **FR-1.8.8** Final Tick MUST require an explicit date range and MUST compare
+  two reports for the same candidate and dates: an OHLC control report generated
+  with MT5 `Model=1`, and a real-tick report generated with `Model=4`.
+  An optional separate OHLC-retry date range (`--final-tick-ohlc-from-date` /
+  `--final-tick-ohlc-to-date`) MAY be configured to re-run the OHLC batch when
+  the primary range produces fewer trades than `--final-tick-min-ohlc-trades`.
+- **FR-1.8.9** Final Tick results MUST be stored in `candidate_final_tick`
+  without overwriting base candidate or robustness results. The table MUST store
+  both report paths, both metrics JSON blobs, `history_quality`, date range, and
+  a `similarity_json` payload explaining pass/fail causes.
+- **FR-1.8.10** A Final Tick row MUST be `accepted` only if the real-tick report
+  has `History Quality` strictly greater than the configured minimum (`80` by
+  default) and real-tick metrics remain close to the OHLC metrics within
+  configured deltas for net, profit factor, drawdown %, and trade count. Missing
+  `History Quality` MUST fail the row.
+- **FR-1.8.11** Final Tick MUST support two intermediate pending states:
+  `pending_history_quality` — real-tick report produced but history quality is
+  below threshold (retryable when data improves); `pending_ohlc_trades` — the
+  OHLC batch produced fewer trades than `--final-tick-min-ohlc-trades` (retryable
+  via OHLC-retry date range). Rows in pending states MUST NOT be treated as
+  final `accepted` or `rejected`.
+- **FR-1.8.12** `--final-tick-pending-only` MUST limit the Final Tick pass to
+  rows that have no stored result or are in a pending state. Without that flag,
+  Final Tick MUST rerun all robust-accepted candidates and replace existing rows.
 
 ### 1.9 UBS agent — seed evaluation
 
@@ -422,6 +454,28 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.12.28** `UBS Comparar` MUST list visible runs and auto-select a newly
   created latest run when it appears. If no newer run exists, it MUST preserve
   the user's manual run selection.
+- **FR-1.12.29** The UI MUST include a dedicated `UBS Final Tick` tab showing
+  robust-accepted candidates from the selected/latest visible run with 21 columns:
+  SEL checkbox, run, candidate ID, generation, status, cause, symbol, TF, history
+  quality %, OHLC score, OHLC net/PF/DD/trades, real-tick score, real-tick
+  net/PF/DD/trades, date range, and set filename. Report open actions MUST include
+  **Abrir set**, **Abrir OHLC**, and **Abrir Real Tick**.
+- **FR-1.12.30** The `UBS Final Tick` tab MUST expose a criteria configuration
+  block with editable: primary date range, OHLC-retry date range, min history
+  quality, min OHLC trades, and delta tolerances (net, PF, DD, trades). All values
+  MUST be persisted in `ui_settings.ini`. Defaults: primary range `2026.05.01 →
+  2026.05.31`, min history quality `80`.
+- **FR-1.12.30a** The `UBS Final Tick` tab MUST expose:
+  - **Continuar Final Tick** (incremental, `--final-tick-pending-only`): runs only
+    candidates with no stored row or in a pending state.
+  - **Reprobar Final Tick**: reruns all robust-accepted candidates and replaces
+    existing rows.
+  - **Guardar config**: persists current criteria block values.
+  - **Actualizar**: refreshes the results tree from the database.
+- **FR-1.12.31** `UBS Robustez` MUST expose a continue action that sends only
+  robustness-accepted candidates into Final Tick. Incremental execution MUST
+  pass `--final-tick-pending-only`; rerun execution MUST replace existing Final
+  Tick rows for robust-accepted candidates.
 
 ### 1.13 Packaging & runtime
 
@@ -746,3 +800,14 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   the `Poblar universo sin seed` UI toggle. When enabled, generation reserves
   part of asset/TF target selection for universe items not represented in the
   current seed pool, preferring items with no feedback yet.
+
+- **2026-06** — UBS Final Tick implemented end-to-end: `candidate_final_tick`
+  DB table, `ubs_agent.py --evaluate-final-tick` with flags
+  `--final-tick-pending-only`, `--final-tick-min-history-quality`,
+  `--final-tick-min-ohlc-trades`, OHLC-retry date range, and four delta-tolerance
+  flags. Pending states `pending_history_quality` and `pending_ohlc_trades` added.
+  `UBS Final Tick` tab with 21-column tree, criteria configuration block,
+  **Continuar Final Tick**, **Reprobar Final Tick**, **Guardar config**, and
+  **Actualizar** buttons, plus per-row "Abrir set / OHLC / Real Tick" actions.
+  Ten new `ubs_final_tick_*` variables persisted in `ui_settings.ini`.
+  `_refresh_all()` now also refreshes the Final Tick panel.

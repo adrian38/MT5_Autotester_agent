@@ -40,15 +40,43 @@ keys include:
 
 ### `[General]`
 
-- `recursive`
-- `delay`
-- `symbol_suffix_enabled`
-- `symbol_suffix`
-- `symbol_map_enabled`
-- `symbol_map`
+- `recursive`, `delay`, `theme`
+- `symbol_suffix_enabled`, `symbol_suffix`, `symbol_map_enabled`, `symbol_map`
 - `telegram_enabled`
 - `portfolio_threshold`
-- `theme`
+- `ubs_generation_count`, `ubs_variants_per_seed`, `ubs_max_seeds`
+- `ubs_agent_execute`, `ubs_force_unseeded_universe`
+- `ubs_pass_min_net_profit`, `ubs_pass_min_profit_factor`, `ubs_pass_min_trades`,
+  `ubs_pass_max_drawdown_pct`, `ubs_pass_min_recovery_factor`
+- `ubs_seed_pass_min_net_profit`, `ubs_seed_pass_min_profit_factor`, `ubs_seed_pass_min_trades`,
+  `ubs_seed_pass_max_drawdown_pct`, `ubs_seed_pass_min_recovery_factor`
+- `ubs_robust_pass_min_net_profit`, `ubs_robust_pass_min_profit_factor`, `ubs_robust_pass_min_trades`,
+  `ubs_robust_pass_max_drawdown_pct`, `ubs_robust_pass_min_recovery_factor`
+- `ubs_robust_positive_bonus`, `ubs_robust_negative_bonus`, `ubs_robust_auto`
+- `ubs_agent_from_date`, `ubs_agent_to_date`
+- `ubs_seed_from_date`, `ubs_seed_to_date`
+- `ubs_robust_from_date`, `ubs_robust_to_date`
+- `ubs_final_tick_from_date`, `ubs_final_tick_to_date`
+- `ubs_final_tick_ohlc_from_date`, `ubs_final_tick_ohlc_to_date`
+- `ubs_final_tick_min_history_quality`, `ubs_final_tick_min_ohlc_trades`
+- `ubs_final_tick_max_net_delta_pct`, `ubs_final_tick_max_pf_delta_pct`,
+  `ubs_final_tick_max_dd_delta_pct`, `ubs_final_tick_max_trades_delta_pct`
+- UBS Portfolio: `ubs_portfolio_num_symbols`, `ubs_portfolio_type`,
+  `ubs_portfolio_valley_pct`, `ubs_portfolio_point_pct`, `ubs_portfolio_capital`,
+  `ubs_portfolio_top_k`, `ubs_portfolio_max_candidates`, `ubs_portfolio_min_trades`,
+  `ubs_portfolio_max_units_per_set`, `ubs_portfolio_max_total_units`,
+  `ubs_portfolio_max_units_per_symbol`, `ubs_portfolio_max_sets_per_symbol`,
+  `ubs_portfolio_run_local_search`, `ubs_portfolio_use_correlation`,
+  `ubs_portfolio_max_pair_corr`, `ubs_portfolio_max_downside_corr`,
+  `ubs_portfolio_max_dd_overlap`, `ubs_portfolio_max_portfolio_corr`
+
+### `[Multiterminal]`
+
+- `enabled`, `workers`, `terminal_cooldown`, `tester_kick_after`
+
+### `[Terminal.N]` (one section per profile, N = 0, 1, 2, …)
+
+- `enabled`, `name`, `mt5_path`, `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`
 
 Be careful when editing docs or defaults around this file: it may contain
 machine-specific absolute paths.
@@ -70,10 +98,13 @@ The project also uses simple text files for source discovery:
   `last_compile.log`.
 - `reports/`: copied MT5 `.htm/.html` reports, images, and `.set` files.
 - `outputs/`: generated Excel workbooks.
-- `outputs/ubs_memory.sqlite`: UBS runs/candidates plus `seed_scores`,
-  `seed_overrides`, and `candidate_robustness`.
+- `outputs/ubs_memory.sqlite`: UBS SQLite database; tables: `runs`, `candidates`,
+  `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`,
+  `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members`.
 - `outputs/ubs_agent/<run>/robustness/`: copied accepted candidate `.set` files
   for out-of-sample robustness batches.
+- `outputs/ubs_agent/<run>/final_tick/`: OHLC and real-tick `.set` copies for
+  Final Tick evaluation batches.
 - `outputs/ubs_global_params.json`: global UBS EA parameter values.
 - `outputs/ubs_mutation_overrides.json`: user mutability overrides for UBS
   parameters.

@@ -107,6 +107,28 @@ class AgentMemory:
                 negative_bonus real not null default -70.0,
                 evaluated_at text not null
             );
+            create table if not exists candidate_final_tick (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                accepted integer,
+                ohlc_report_path text,
+                real_tick_report_path text,
+                ohlc_score real,
+                real_tick_score real,
+                ohlc_metrics_json text,
+                real_tick_metrics_json text,
+                similarity_json text,
+                history_quality real,
+                min_history_quality real not null default 80.0,
+                from_date text not null default '',
+                to_date text not null default '',
+                max_net_delta_pct real not null default 35.0,
+                max_pf_delta_pct real not null default 35.0,
+                max_dd_delta_pct real not null default 35.0,
+                max_trades_delta_pct real not null default 35.0,
+                evaluated_at text not null
+            );
             """
         )
         self._ensure_column("runs", "hidden", "integer not null default 0")
@@ -227,7 +249,7 @@ class AgentMemory:
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch"}
+                or str(row["status"] or "") not in {"accepted", "rejected"}
                 or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
             )
@@ -442,6 +464,27 @@ class AgentMemory:
             (run_id,),
         ).fetchall()
 
+    def accepted_candidates_for_final_tick(self, run_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select
+                c.*,
+                cr.status as robust_status,
+                cr.report_path as robust_report_path,
+                ft.status as final_tick_status,
+                ft.from_date as final_tick_from_date,
+                ft.to_date as final_tick_to_date,
+                ft.ohlc_report_path as ft_ohlc_report_path,
+                ft.ohlc_metrics_json as ft_ohlc_metrics_json
+            from candidates c
+            join candidate_robustness cr on cr.candidate_id = c.id
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            where c.run_id=? and c.status='accepted' and cr.status='accepted'
+            order by c.generation, c.id
+            """,
+            (run_id,),
+        ).fetchall()
+
     def record_candidate_robustness(
         self,
         candidate_id: int,
@@ -491,6 +534,85 @@ class AgentMemory:
         )
         self.conn.commit()
 
+    def record_candidate_final_tick(
+        self,
+        candidate_id: int,
+        run_id: int,
+        status: str,
+        ohlc_result: ScoreResult | None,
+        real_tick_result: ScoreResult | None,
+        ohlc_report_path: Path | None,
+        real_tick_report_path: Path | None,
+        similarity_json: str | None,
+        history_quality: float | None,
+        min_history_quality: float,
+        from_date: str,
+        to_date: str,
+        max_net_delta_pct: float,
+        max_pf_delta_pct: float,
+        max_dd_delta_pct: float,
+        max_trades_delta_pct: float,
+    ) -> None:
+        accepted = int(status == "accepted")
+        self.conn.execute(
+            """
+            insert into candidate_final_tick (
+                candidate_id, run_id, status, accepted,
+                ohlc_report_path, real_tick_report_path,
+                ohlc_score, real_tick_score,
+                ohlc_metrics_json, real_tick_metrics_json, similarity_json,
+                history_quality, min_history_quality, from_date, to_date,
+                max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
+                evaluated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(candidate_id) do update set
+                run_id=excluded.run_id,
+                status=excluded.status,
+                accepted=excluded.accepted,
+                ohlc_report_path=excluded.ohlc_report_path,
+                real_tick_report_path=excluded.real_tick_report_path,
+                ohlc_score=excluded.ohlc_score,
+                real_tick_score=excluded.real_tick_score,
+                ohlc_metrics_json=excluded.ohlc_metrics_json,
+                real_tick_metrics_json=excluded.real_tick_metrics_json,
+                similarity_json=excluded.similarity_json,
+                history_quality=excluded.history_quality,
+                min_history_quality=excluded.min_history_quality,
+                from_date=excluded.from_date,
+                to_date=excluded.to_date,
+                max_net_delta_pct=excluded.max_net_delta_pct,
+                max_pf_delta_pct=excluded.max_pf_delta_pct,
+                max_dd_delta_pct=excluded.max_dd_delta_pct,
+                max_trades_delta_pct=excluded.max_trades_delta_pct,
+                evaluated_at=excluded.evaluated_at
+            """,
+            (
+                candidate_id,
+                run_id,
+                status,
+                accepted,
+                str(ohlc_report_path) if ohlc_report_path else (ohlc_result.report_path if ohlc_result else None),
+                str(real_tick_report_path) if real_tick_report_path else (
+                    real_tick_result.report_path if real_tick_result else None
+                ),
+                ohlc_result.score if ohlc_result else None,
+                real_tick_result.score if real_tick_result else None,
+                ohlc_result.to_json() if ohlc_result else None,
+                real_tick_result.to_json() if real_tick_result else None,
+                similarity_json,
+                history_quality,
+                float(min_history_quality),
+                from_date.strip(),
+                to_date.strip(),
+                float(max_net_delta_pct),
+                float(max_pf_delta_pct),
+                float(max_dd_delta_pct),
+                float(max_trades_delta_pct),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        self.conn.commit()
+
     def mutation_feedback(self) -> dict[str, float]:
         rows = self.conn.execute(
             """
@@ -500,12 +622,15 @@ class AgentMemory:
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
+            left join candidate_final_tick ft on ft.candidate_id = c.id
             where c.mutated_keys != ''
-              and c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status='no_trades')
+              and c.status in ('accepted', 'rejected')
+              and c.score is not null
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}
@@ -537,11 +662,14 @@ class AgentMemory:
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status='no_trades')
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            where c.status in ('accepted', 'rejected')
+              and c.score is not null
             """
         ).fetchall()
         seed_rows = self.conn.execute(
@@ -549,8 +677,8 @@ class AgentMemory:
             select seed_path, symbol, period, score, accepted, metrics_json, status
             from seed_scores
             where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status='no_trades')
+              and status in ('accepted', 'rejected')
+              and score is not null
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}
@@ -581,11 +709,14 @@ class AgentMemory:
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status='no_trades')
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            where c.status in ('accepted', 'rejected')
+              and c.score is not null
             """
         ).fetchall()
         seed_rows = self.conn.execute(
@@ -593,8 +724,8 @@ class AgentMemory:
             select seed_path, symbol, period, score, accepted, metrics_json, status
             from seed_scores
             where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status='no_trades')
+              and status in ('accepted', 'rejected')
+              and score is not null
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}

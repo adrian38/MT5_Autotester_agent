@@ -172,9 +172,12 @@ class UBSUniverseLogicMixin:
                         cr.status as robust_status,
                         cr.positive_bonus as robust_positive_bonus,
                         cr.negative_bonus as robust_negative_bonus,
-                        cr.metrics_json as robust_metrics_json
+                        cr.metrics_json as robust_metrics_json,
+                        ft.status as final_tick_status,
+                        ft.similarity_json as final_tick_similarity_json
                     from candidates c
                     left join candidate_robustness cr on cr.candidate_id = c.id
+                    left join candidate_final_tick ft on ft.candidate_id = c.id
                     """
                 ).fetchall()
                 seed_table = conn.execute(
@@ -206,11 +209,10 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
-                if status == "generated":
+                if status not in {"accepted", "rejected"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_pending += 1
-                if status not in {"accepted", "rejected", "no_trades"}:
                     continue
                 score = float(row["score"] or 0.0)
                 accepted = bool(row["accepted"])
@@ -221,6 +223,11 @@ class UBSUniverseLogicMixin:
                     total_robust_rejected += 1
                 asset_weight = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
                 tf_weight = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
+                if asset_weight is None and tf_weight is None:
+                    asset_stat["pending"] = int(asset_stat["pending"]) + 1
+                    tf_stat["pending"] = int(tf_stat["pending"]) + 1
+                    total_pending += 1
+                    continue
                 for stat, weight in ((asset_stat, asset_weight), (tf_stat, tf_weight)):
                     if weight is None:
                         continue
@@ -244,16 +251,20 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
-                if status in {"pending", "no_report", "parse_error"}:
+                if status not in {"accepted", "rejected"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_seed_pending += 1
-                if status not in {"accepted", "rejected", "no_trades"}:
                     continue
                 score = float(row["score"] or 0.0)
                 accepted = bool(row["accepted"])
                 asset_weight = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
                 tf_weight = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
+                if asset_weight is None and tf_weight is None:
+                    asset_stat["pending"] = int(asset_stat["pending"]) + 1
+                    tf_stat["pending"] = int(tf_stat["pending"]) + 1
+                    total_seed_pending += 1
+                    continue
                 if asset_weight is not None:
                     asset_weight *= SEED_WEIGHT_SCALE
                 if tf_weight is not None:
@@ -365,12 +376,12 @@ class UBSUniverseLogicMixin:
         )
         self.ubs_universe_summary.set(
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
-            f"semillas puntuadas: {total_seed_scored} | pendientes sin backtest: {total_pending + total_seed_pending} | "
+            f"semillas puntuadas: {total_seed_scored} | pendientes/neutros: {total_pending + total_seed_pending} | "
             f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | robust +/{total_robust_accepted} -/{total_robust_rejected} | "
             f"deshabilitados: {len(disabled_symbols)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO = score aceptado + bonus; rechazados/no-ops restan por causa; robustez pesa mas; seeds con reporte valen como generadas."
+            "PESO = solo aceptados y rechazados; pendientes/no-ops no aportan; robustez y Final Tick solo pesan si terminan OK/FAIL."
         )
 
     def _disabled_symbols_path(self):

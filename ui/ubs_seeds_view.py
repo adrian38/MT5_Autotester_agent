@@ -41,8 +41,10 @@ class UBSSeedsViewMixin:
             ("Repetir backtest",self._retry_selected_ubs_seed),
             ("Guardar Symbol/TF", self._save_ubs_seed_override),
             ("Actualizar",      self._refresh_ubs_seeds_panel),
+            ("Manual OK",       self._manual_accept_selected_ubs_seeds),
+            ("Manual FAIL",     self._manual_reject_selected_ubs_seeds),
         ], start=3):
-            padx = (0, 10) if col == 7 else (0, 6)
+            padx = (0, 10) if col == 9 else (0, 6)
             tk.Button(toolbar, text=label,
                       bg=self.colors["panel"], fg=self.colors["muted"],
                       relief="solid", borderwidth=1, padx=8, pady=5,
@@ -51,7 +53,7 @@ class UBSSeedsViewMixin:
 
         # Fila 1: acciones destructivas (derecha)
         danger_frame = tk.Frame(toolbar, bg=self.colors["panel_alt"])
-        danger_frame.grid(row=1, column=0, columnspan=8, sticky="e", pady=(0, 5))
+        danger_frame.grid(row=1, column=0, columnspan=10, sticky="e", pady=(0, 5))
         for col, (label, cmd) in enumerate([
             ("Eliminar seed",        self._delete_selected_ubs_seed),
             ("Eliminar rechazadas",  self._delete_rejected_ubs_seeds),
@@ -193,4 +195,3 @@ class UBSSeedsViewMixin:
         ttk.Button(editor, text="Guardar override", style="Primary.TButton", command=self._save_ubs_seed_override).grid(
             row=1, column=4, sticky="e"
         )
-

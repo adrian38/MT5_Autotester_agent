@@ -35,6 +35,7 @@ class ScoreResult:
     net_profit_factor: float
     net_profit_basis: str
     normalization_group: str
+    history_quality: float | None
     profit_factor: float
     recovery_factor: float
     drawdown: float
@@ -80,6 +81,7 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
     sqn = math.sqrt(len(profits)) * avg_trade / deviation if deviation else 0.0
     net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol)
     normalized_net_profit = round(net_profit * net_profit_factor, 2)
+    history_quality = _history_quality(report)
 
     score = _score_formula(
         net_profit=normalized_net_profit,
@@ -119,6 +121,7 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
         net_profit_factor=round(net_profit_factor, 4),
         net_profit_basis=net_profit_basis,
         normalization_group=normalization_group,
+        history_quality=history_quality,
         profit_factor=profit_factor,
         recovery_factor=recovery_factor,
         drawdown=round(drawdown, 2),
@@ -172,6 +175,26 @@ def _drawdown_amount(report: StrategyReport) -> float:
     )
     amount, _ = _extract_drawdown(value)
     return amount
+
+
+def _history_quality(report: StrategyReport) -> float | None:
+    value = _first_metric(
+        report,
+        "History Quality",
+        "Calidad del historial",
+        "Calidad de historial",
+        "Calidad historial",
+    )
+    if value == "":
+        for key, candidate in report.metrics.items():
+            normalized_key = _ascii_key(str(key)).casefold()
+            if "history quality" in normalized_key or "calidad del historial" in normalized_key:
+                value = candidate
+                break
+        else:
+            return None
+    match = re.search(r"([-+]?\d+(?:[.,]\d+)?)\s*%", value)
+    return round(_to_float(match.group(1) if match else value), 4)
 
 
 def _drawdown_pct(report: StrategyReport) -> float:
