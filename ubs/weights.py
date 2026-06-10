@@ -15,6 +15,7 @@ TIMEFRAME_ACCEPTED_BONUS = 15.0
 MUTATION_ACCEPTED_BONUS = 15.0
 
 REJECTED_BASE_PENALTY = 50.0
+NO_TRADES_WEIGHT = -40.0
 WEIGHT_SHRINKAGE_K = 20.0
 SEED_WEIGHT_SCALE = 1.0
 
@@ -104,6 +105,12 @@ def final_tick_bonus(row: object) -> float:
 
 def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
     status = row_text(row, "status").lower()
+    if status == "no_trades":
+        # Solo aporta peso un no_trades con reporte real verificado;
+        # filas manuales o huerfanas sin report_path no penalizan.
+        if not row_text(row, "report_path"):
+            return None
+        return NO_TRADES_WEIGHT
     if status not in {"accepted", "rejected"}:
         return None
     if row_get(row, "score") in (None, ""):

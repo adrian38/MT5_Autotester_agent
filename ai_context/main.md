@@ -180,7 +180,9 @@ generation scoring:
   - base `rejected`: score minus `REJECTED_BASE_PENALTY` and per-cause
     penalties from `metrics_json.reasons`, capped so rejected rows never add
     positive weight.
-  - base `no_trades`: fixed negative reliability penalty.
+  - base `no_trades`: fixed negative reliability penalty (`NO_TRADES_WEIGHT = -40`),
+    applied only when the row has a stored `report_path` (a real verified report);
+    manual or orphaned `no_trades` rows without report contribute no weight.
   - `report_mismatch`, `no_report`, and `parse_error`: no weight.
   - robust `accepted`: add `positive_bonus` (default `+70`).
   - robust `rejected`: add `negative_bonus` (default `-70`) plus OOS
