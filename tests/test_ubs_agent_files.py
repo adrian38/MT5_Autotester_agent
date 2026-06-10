@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
-from ubs_agent import copy_accepted, final_tick_similarity, recreate_work_dir
+from ubs_agent import copy_accepted, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry
 
 
 def score(
@@ -116,6 +116,12 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertFalse(result["accepted"])
         self.assertIn("profit_factor", result["reasons"])
+
+    def test_robust_pending_retry_includes_diagnostic_statuses(self) -> None:
+        for status in ("", None, "no_report", "parse_error", "report_mismatch", "no_trades"):
+            self.assertTrue(robust_status_pending_for_retry(status))
+        for status in ("accepted", "rejected"):
+            self.assertFalse(robust_status_pending_for_retry(status))
 
 
 if __name__ == "__main__":

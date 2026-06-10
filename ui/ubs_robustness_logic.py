@@ -228,12 +228,12 @@ class UBSRobustnessLogicMixin:
                 rows = [
                     row for row in rows
                     if not str(row["robust_status"] or "").strip()
-                    or str(row["robust_status"]) == "report_mismatch"
+                    or str(row["robust_status"]) in {"no_report", "parse_error", "report_mismatch", "no_trades"}
                 ]
             if not rows:
                 if pending_only:
                     message = (
-                        f"Run #{run_id} no tiene accepted pendientes de robustez ni con mismatch OOS. "
+                        f"Run #{run_id} no tiene accepted pendientes ni retryables de robustez OOS. "
                         "Usa Reprobar robustez para repetir todos."
                     )
                 else:
@@ -253,7 +253,7 @@ class UBSRobustnessLogicMixin:
 
         details = [
             f"Accion: {'Continuar robustez OOS UBS' if pending_only else 'Reprobar robustez OOS UBS'} run #{run_id}",
-            f"Modo: {'accepted sin OOS + mismatch OOS' if pending_only else 'todos los accepted, reemplaza OOS existente'}",
+            f"Modo: {'accepted sin OOS + OOS retryable' if pending_only else 'todos los accepted, reemplaza OOS existente'}",
             f"Candidatos accepted a testear: {len(rows)}",
             f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
             f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",

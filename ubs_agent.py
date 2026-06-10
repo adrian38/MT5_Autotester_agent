@@ -1354,6 +1354,14 @@ def prepare_final_tick_exec_dir(path: Path, variants: list[Variant]) -> Path:
     return exec_dir
 
 
+ROBUST_RETRYABLE_STATUSES = {"no_report", "parse_error", "report_mismatch", "no_trades"}
+
+
+def robust_status_pending_for_retry(status: object) -> bool:
+    value = str(status or "").strip()
+    return not value or value in ROBUST_RETRYABLE_STATUSES
+
+
 def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if not args.expert and not args.multi_terminal and not args.dry_run:
         print("ERROR: robustez requiere --expert o --multi-terminal")
@@ -1374,12 +1382,11 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
     if args.robust_pending_only:
         rows = [
             row for row in rows
-            if not str(row["robust_status"] or "").strip()
-            or str(row["robust_status"]) == "report_mismatch"
+            if robust_status_pending_for_retry(row["robust_status"])
         ]
     if not rows:
         if args.robust_pending_only:
-            print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes de OOS ni con mismatch.")
+            print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes ni retryables de OOS.")
         else:
             print(f"Robustez run #{run_id}: no hay candidatos accepted con .set existente.")
         return 0
