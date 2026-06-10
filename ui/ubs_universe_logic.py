@@ -381,7 +381,8 @@ class UBSUniverseLogicMixin:
             f"deshabilitados: {len(disabled_symbols)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO = solo aceptados y rechazados; pendientes/no-ops no aportan; robustez y Final Tick solo pesan si terminan OK/FAIL."
+            "PESO = aceptados, rechazados y sin-ops con reporte (-40 fijo); pendientes/mismatch no aportan; "
+            "robustez y Final Tick solo pesan si terminan OK/FAIL."
         )
 
     def _disabled_symbols_path(self):
