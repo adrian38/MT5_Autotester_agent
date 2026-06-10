@@ -419,7 +419,7 @@ class UBSUniverseLogicMixin:
     # ── Limpiar pesos (score=NULL en candidates/seed_scores) ─────────────────
 
     def _weight_memory_path(self):
-        return BASE_DIR / "outputs" / "ubs_memory.sqlite"
+        return self._ubs_memory_path()
 
     def _clear_weights_sql(self, conn, *, symbols=None, periods=None) -> int:
         """Set score=NULL for candidates matching symbols and/or periods.

@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
 
+from ubs.account import account_memory_path, normalize_account_type
 from ubs.db import connect_memory
 from ubs.manual_status import mark_candidates
 
@@ -215,7 +216,11 @@ class UBSResultsLogicMixin:
             self._safe_refresh(label, callback)
 
     def _ubs_memory_path(self) -> Path:
-        return BASE_DIR / "outputs" / "ubs_memory.sqlite"
+        return account_memory_path(BASE_DIR, self._ubs_account_type())
+
+    def _ubs_account_type(self) -> str:
+        variable = getattr(self, "ubs_account_type", None)
+        return normalize_account_type(variable.get() if variable is not None else "")
 
     def _ensure_ubs_memory_schema(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"]) for row in conn.execute("pragma table_info(runs)")}
@@ -1398,7 +1403,7 @@ class UBSResultsLogicMixin:
         return self.ubs_result_paths.get(selected[0], {})
 
     def _open_ubs_output_dir(self) -> None:
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent")).expanduser()
+        output_dir = self._ubs_generation_output_dir().expanduser()
         if not output_dir.exists():
             messagebox.showinfo("Agente UBS", f"No existe la carpeta:\n{output_dir}")
             return
@@ -1440,6 +1445,7 @@ class UBSResultsLogicMixin:
         try:
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-candidate-id", candidate_id,
                 "--delay", str(self.delay.get()),
@@ -1484,6 +1490,7 @@ class UBSResultsLogicMixin:
                 return
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-run-id", str(run_id),
                 "--retry-mismatch-run",
@@ -1568,6 +1575,7 @@ class UBSResultsLogicMixin:
         try:
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-candidate-id", candidate_id,
                 "--delay", str(self.delay.get()),

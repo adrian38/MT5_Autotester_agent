@@ -6,6 +6,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from run_tests import infer_tester_fields_from_set, load_set_files
+from ubs.account import account_output_dir, account_seed_dir
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,15 +15,72 @@ if getattr(sys, "frozen", False):
 
 
 class UBSAgentLogicMixin:
+    def _account_scoped_path(self, raw: str, *, legacy: Path, scoped: Path) -> Path:
+        text = str(raw or "").strip()
+        if not text:
+            return scoped
+        path = Path(text).expanduser()
+        try:
+            if path.resolve() == legacy.resolve():
+                return scoped
+        except OSError:
+            pass
+        return path
+
+    def _ubs_default_source_dir(self) -> Path:
+        return account_seed_dir(BASE_DIR, self._ubs_account_type())
+
+    def _ubs_default_output_dir(self) -> Path:
+        return account_output_dir(BASE_DIR, self._ubs_account_type())
+
+    def _ubs_generation_output_dir(self) -> Path:
+        return self._account_scoped_path(
+            self.ubs_generation_output.get(),
+            legacy=BASE_DIR / "outputs" / "ubs_agent",
+            scoped=self._ubs_default_output_dir(),
+        )
+
+    def _sync_ubs_account_paths(self) -> None:
+        source = self._account_scoped_path(
+            self.set_files_root.get(),
+            legacy=BASE_DIR / "sets" / "ubs_ready",
+            scoped=self._ubs_default_source_dir(),
+        )
+        output = self._account_scoped_path(
+            self.ubs_generation_output.get(),
+            legacy=BASE_DIR / "outputs" / "ubs_agent",
+            scoped=self._ubs_default_output_dir(),
+        )
+        if not self.set_files_root.get().strip() or source == self._ubs_default_source_dir():
+            self.set_files_root.set(str(source))
+        if not self.ubs_generation_output.get().strip() or output == self._ubs_default_output_dir():
+            self.ubs_generation_output.set(str(output))
+
+    def _on_ubs_account_type_changed(self) -> None:
+        self._sync_ubs_account_paths()
+        self._write_ui_settings()
+        self.status_text.set(f"Cuenta UBS activa: {self._ubs_account_type()}")
+        for label, callback_name in (
+            ("ubs_seeds", "_refresh_ubs_seeds_panel"),
+            ("ubs_results", "_refresh_ubs_results_panel"),
+            ("ubs_robustness", "_refresh_ubs_robustness_panel"),
+            ("ubs_final_tick", "_refresh_ubs_final_tick_panel"),
+            ("ubs_universe", "_refresh_ubs_universe_panel"),
+            ("ubs_portfolio", "_refresh_ubs_portfolio"),
+        ):
+            callback = getattr(self, callback_name, None)
+            if callback is not None:
+                self._safe_refresh(label, callback)
+
     def _ubs_generator_args(self, *, continue_last: bool = False) -> list[str]:
         source_dir = (
-            Path(self.set_files_root.get().strip()).expanduser()
+            self._ubs_generator_source_dir()
             if self.set_files_root.get().strip()
-            else BASE_DIR / "sets" / "ubs_ready"
+            else self._ubs_default_source_dir()
         )
         if not continue_last:
             source_dir = self._ubs_generator_source_dir()
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        output_dir = self._ubs_generation_output_dir()
         generations = int(self.ubs_generation_count.get())
         variants = int(self.ubs_variants_per_seed.get())
         max_seeds = int(self.ubs_max_seeds.get())
@@ -43,7 +101,8 @@ class UBSAgentLogicMixin:
         args = [
             "--source-dir", str(source_dir),
             "--output-dir", str(output_dir),
-            "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+            "--memory", str(self._ubs_memory_path()),
+            "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--generations", str(generations),
             "--variants-per-seed", str(variants),
@@ -137,8 +196,11 @@ class UBSAgentLogicMixin:
         return 1, self._required_ubs_set_file()
 
     def _ubs_generator_source_dir(self) -> Path:
-        set_dir = self.set_files_root.get().strip() or str(BASE_DIR / "sets" / "ubs_ready")
-        source_dir = Path(set_dir).expanduser()
+        source_dir = self._account_scoped_path(
+            self.set_files_root.get(),
+            legacy=BASE_DIR / "sets" / "ubs_ready",
+            scoped=self._ubs_default_source_dir(),
+        )
         if not source_dir.exists() or not source_dir.is_dir():
             raise ValueError(f"No existe la carpeta de seeds UBS: {source_dir}")
         return source_dir
@@ -275,10 +337,8 @@ class UBSAgentLogicMixin:
         else:
             args.extend(["--expert", self._required_ubs_ex5_file()])
         if self.recursive.get():
-            set_dir = self.set_files_root.get().strip()
-            if not set_dir:
-                raise ValueError("Indica la carpeta .set antes de ejecutar Tester UBS en modo recursivo.")
-            args.extend(["--set-dir", set_dir])
+            set_dir = self._ubs_generator_source_dir()
+            args.extend(["--set-dir", str(set_dir)])
             args.append("--recursive")
         else:
             set_file = self._required_ubs_set_file()
@@ -317,10 +377,7 @@ class UBSAgentLogicMixin:
 
     def _ubs_set_paths(self) -> list[Path]:
         if self.recursive.get():
-            set_dir = self.set_files_root.get().strip()
-            if not set_dir:
-                raise ValueError("Indica la carpeta .set antes de ejecutar Tester UBS en modo recursivo.")
-            return load_set_files(Path(set_dir).expanduser(), None, recursive=True)
+            return load_set_files(self._ubs_generator_source_dir(), None, recursive=True)
 
         set_file = Path(self._required_ubs_set_file()).expanduser()
         if not set_file.exists():
@@ -365,4 +422,3 @@ class UBSAgentLogicMixin:
         if Path(set_file).suffix.lower() != ".set":
             raise ValueError("Archivo .set UBS debe ser un archivo .set.")
         return set_file
-

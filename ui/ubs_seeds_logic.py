@@ -187,12 +187,13 @@ class UBSSeedsLogicMixin:
 
     def _ubs_seed_eval_args(self) -> list[str]:
         source_dir = self._ubs_generator_source_dir()
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        output_dir = self._ubs_generation_output_dir()
         args = [
             "--evaluate-seeds",
             "--source-dir", str(source_dir),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--delay", str(self.delay.get()),
         ]
@@ -617,9 +618,10 @@ class UBSSeedsLogicMixin:
             return
         paths = [Path(info["seed_path"]).expanduser() for info in active_infos]
         try:
-            output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+            output_dir = self._ubs_generation_output_dir()
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
                 "--output-dir", str(output_dir),
                 "--template", self.template_path.get(),
                 "--delay", str(self.delay.get()),
@@ -664,7 +666,7 @@ class UBSSeedsLogicMixin:
         try:
             output_dir = self._ubs_generator_source_dir()
         except Exception:
-            output_dir = BASE_DIR / "sets" / "ubs_ready"
+            output_dir = self._ubs_default_source_dir()
 
         set_files = sorted(source_dir.rglob("*.set"))
         total = len(set_files)
@@ -1181,7 +1183,8 @@ class UBSSeedsLogicMixin:
             args = [
                 "--rescore-seeds-only",
                 "--source-dir", str(self._ubs_generator_source_dir()),
-                "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+                "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
             ]
             args.extend(self._ubs_seed_score_args())
             if self.symbol_map_enabled.get() and self.symbol_map.get().strip():

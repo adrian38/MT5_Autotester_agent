@@ -22,6 +22,14 @@ from run_tests import (
     parse_symbol_map,
 )
 from ubs_generate_sets import format_like, parse_numeric
+from ubs.account import (
+    ACCOUNT_TYPES,
+    DEFAULT_ACCOUNT_TYPE,
+    account_memory_path,
+    account_output_dir,
+    account_seed_dir,
+    normalize_account_type,
+)
 from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
@@ -36,7 +44,7 @@ MUTATION_OVERRIDES_FILE = BASE_DIR / "outputs" / "ubs_mutation_overrides.json"
 GLOBAL_PARAMS_FILE = BASE_DIR / "outputs" / "ubs_global_params.json"
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
 DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
-DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
+DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
@@ -229,6 +237,7 @@ def is_agent_mutable_key(key: str) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
+    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS: ECN o PRO.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--memory", default=str(DEFAULT_MEMORY))
@@ -302,7 +311,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute-backtests", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.account_type = normalize_account_type(args.account_type)
+    if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
+        args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type))
+    if Path(args.output_dir).expanduser() == DEFAULT_OUTPUT:
+        args.output_dir = str(account_output_dir(BASE_DIR, args.account_type))
+    legacy_memory = BASE_DIR / "outputs" / "ubs_memory.sqlite"
+    if Path(args.memory).expanduser() in {DEFAULT_MEMORY, legacy_memory}:
+        args.memory = str(account_memory_path(BASE_DIR, args.account_type))
+    return args
 
 
 def seeds_from_variants(variants: list[Variant]) -> list[Seed]:

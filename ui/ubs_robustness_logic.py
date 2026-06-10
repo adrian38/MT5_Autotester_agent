@@ -230,12 +230,13 @@ class UBSRobustnessLogicMixin:
             conn.close()
 
     def _ubs_robustness_args(self, run_id: int, *, pending_only: bool = False) -> list[str]:
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        output_dir = self._ubs_generation_output_dir()
         positive_bonus, negative_bonus = self._ubs_robust_bonus_values()
         args = [
-            "--source-dir", self.set_files_root.get().strip() or str(BASE_DIR / "sets" / "ubs_ready"),
+            "--source-dir", str(self._ubs_generator_source_dir()),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--evaluate-robustness",
             "--robust-run-id", str(run_id),

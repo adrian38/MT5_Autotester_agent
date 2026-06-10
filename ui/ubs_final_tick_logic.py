@@ -276,12 +276,13 @@ class UBSFinalTickLogicMixin:
         ohlc_to_date = self.ubs_final_tick_ohlc_to_date.get().strip()
         if bool(ohlc_from_date) != bool(ohlc_to_date):
             raise ValueError("Final Tick OHLC retry requiere rellenar OHLC desde y OHLC hasta.")
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        output_dir = self._ubs_generation_output_dir()
         thresholds = self._ubs_final_tick_threshold_values()
         args = [
-            "--source-dir", self.set_files_root.get().strip() or str(BASE_DIR / "sets" / "ubs_ready"),
+            "--source-dir", str(self._ubs_generator_source_dir()),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--evaluate-final-tick",
             "--final-tick-run-id", str(run_id),

@@ -4,6 +4,8 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk
 
+from ubs.account import ACCOUNT_TYPES
+
 from run_tests import REPORT_DIR
 
 
@@ -41,11 +43,23 @@ class UBSAgentViewMixin:
         paths = self._card(inner, "Rutas Agente UBS")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
-        self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 1, self._browse_ex5_file)
-        self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 2, self._browse_dir)
-        self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 3, self._browse_dir)
+        ttk.Label(paths, text="Tipo de cuenta", style="CardDesc.TLabel").grid(
+            row=1, column=0, sticky="w", padx=20, pady=7
+        )
+        account_combo = ttk.Combobox(
+            paths,
+            textvariable=self.ubs_account_type,
+            values=ACCOUNT_TYPES,
+            width=10,
+            state="readonly",
+        )
+        account_combo.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=7)
+        account_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_ubs_account_type_changed())
+        self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 2, self._browse_ex5_file)
+        self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 3, self._browse_dir)
+        self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 4, self._browse_dir)
         seed_eval_row = ttk.Frame(paths, style="Panel.TFrame")
-        seed_eval_row.grid(row=4, column=0, columnspan=3, sticky="ew", padx=20, pady=(10, 18))
+        seed_eval_row.grid(row=5, column=0, columnspan=3, sticky="ew", padx=20, pady=(10, 18))
         seed_eval_row.columnconfigure(0, weight=1)
         ttk.Label(seed_eval_row, textvariable=self.ubs_seed_eval_summary, style="Muted.TLabel").grid(
             row=0, column=0, sticky="w", padx=(0, 10)
@@ -295,4 +309,3 @@ class UBSAgentViewMixin:
             style="Primary.TButton",
             command=self._save_ubs_agent_clicked,
         ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))
-

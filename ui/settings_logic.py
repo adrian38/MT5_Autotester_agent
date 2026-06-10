@@ -332,6 +332,7 @@ class SettingsLogicMixin:
             "ubs_max_seeds": str(self.ubs_max_seeds.get()),
             "ubs_agent_execute": "1" if self.ubs_agent_execute.get() else "0",
             "ubs_force_unseeded_universe": "1" if self.ubs_force_unseeded_universe.get() else "0",
+            "ubs_account_type": self.ubs_account_type.get().strip().upper(),
             "ubs_pass_min_net_profit": self.ubs_pass_min_net_profit.get().strip(),
             "ubs_pass_min_profit_factor": self.ubs_pass_min_profit_factor.get().strip(),
             "ubs_pass_min_trades": str(self.ubs_pass_min_trades.get()),
