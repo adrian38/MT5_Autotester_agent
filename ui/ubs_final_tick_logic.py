@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.manual_status import mark_candidate_final_tick
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -45,7 +46,67 @@ class UBSFinalTickLogicMixin:
         return "break"
 
     def _refresh_ubs_final_tick_panel(self) -> None:
-        self._safe_refresh("ubs_final_tick", self._refresh_ubs_final_tick)
+        for label, callback in (
+            ("ubs_final_tick", self._refresh_ubs_final_tick),
+            ("ubs_universe", self._refresh_ubs_universe),
+        ):
+            self._safe_refresh(label, callback)
+
+    def _checked_ubs_final_tick_infos(self, *, fallback_selected: bool = True) -> list[dict[str, str]]:
+        checked = [
+            info for info in self.ubs_final_tick_paths.values()
+            if info.get("id") in self.ubs_final_tick_checked
+        ]
+        if checked or not fallback_selected:
+            return checked
+        selected = self._selected_ubs_final_tick_info()
+        return [selected] if selected else []
+
+    def _manual_mark_selected_ubs_final_tick(self, status: str) -> None:
+        infos = self._checked_ubs_final_tick_infos()
+        ids = [info.get("id", "") for info in infos]
+        if not ids:
+            messagebox.showinfo("Estado manual", "Selecciona una o mas filas de Final Tick primero.")
+            return
+        label = "OK" if status == "accepted" else "FAIL"
+        if not messagebox.askyesno(
+            "Estado manual",
+            f"Marcar {len(ids)} fila(s) de Final Tick como {label} manual?\n\n"
+            "Si el candidato base tiene score, el peso se actualiza.",
+        ):
+            return
+        try:
+            thresholds = self._ubs_final_tick_threshold_values()
+            conn = connect_memory(self._ubs_memory_path())
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            updated = mark_candidate_final_tick(
+                conn,
+                ids,
+                status,
+                min_history_quality=thresholds["min_quality"],
+                from_date=self.ubs_final_tick_from_date.get().strip(),
+                to_date=self.ubs_final_tick_to_date.get().strip(),
+                max_net_delta_pct=thresholds["net_delta"],
+                max_pf_delta_pct=thresholds["pf_delta"],
+                max_dd_delta_pct=thresholds["dd_delta"],
+                max_trades_delta_pct=thresholds["trades_delta"],
+            )
+            conn.commit()
+            conn.close()
+        except (sqlite3.Error, ValueError) as exc:
+            self._show_error("No se pudo aplicar estado manual", str(exc))
+            return
+        self.ubs_final_tick_checked.clear()
+        self.ubs_weights_locked.set(False)
+        self.status_text.set(f"Estado manual aplicado a {updated} fila(s) de Final Tick")
+        self._refresh_ubs_final_tick_panel()
+
+    def _manual_accept_selected_ubs_final_tick(self) -> None:
+        self._manual_mark_selected_ubs_final_tick("accepted")
+
+    def _manual_reject_selected_ubs_final_tick(self) -> None:
+        self._manual_mark_selected_ubs_final_tick("rejected")
 
     def _ubs_final_tick_threshold_values(self) -> dict[str, float]:
         return {
@@ -506,15 +567,15 @@ class UBSFinalTickLogicMixin:
             return
 
         total = len(rows)
-        evaluated = sum(1 for row in rows if row["final_status"])
         accepted = sum(1 for row in rows if row["final_status"] == "accepted")
         rejected = sum(1 for row in rows if row["final_status"] == "rejected")
-        neutral = evaluated - accepted - rejected
+        settled = accepted + rejected
+        neutral = total - settled
         self.ubs_final_tick_summary.set(
-            f"Run #{run['id']} | robust accepted {total} | final evaluados {evaluated} | OK {accepted} | FAIL {rejected}"
+            f"Run #{run['id']} | robust accepted {total} | final resueltos {settled} | OK {accepted} | FAIL {rejected}"
         )
         self.ubs_final_tick_status.set(
-            f"Neutros: {neutral} | Fechas config: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}"
+            f"Pendientes/neutros: {neutral} | Fechas config: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}"
         )
         if not hasattr(self, "ubs_final_tick_tree"):
             return

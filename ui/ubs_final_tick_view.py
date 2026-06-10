@@ -147,6 +147,32 @@ class UBSFinalTickViewMixin:
             cursor="hand2",
             command=self._open_selected_ubs_final_tick_real_report,
         ).grid(row=0, column=5, sticky="e", padx=(0, 4))
+        tk.Button(
+            row1,
+            text="Manual OK",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._manual_accept_selected_ubs_final_tick,
+        ).grid(row=0, column=6, sticky="e", padx=(0, 4))
+        tk.Button(
+            row1,
+            text="Manual FAIL",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._manual_reject_selected_ubs_final_tick,
+        ).grid(row=0, column=7, sticky="e", padx=(0, 4))
 
         ttk.Label(panel, textvariable=self.ubs_final_tick_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(4, 4)

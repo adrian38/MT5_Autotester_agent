@@ -110,6 +110,8 @@ class UBSResultsViewMixin:
             ("Reprobar fila",      self._retry_selected_ubs_mismatch),
             ("Reprobar run",       self._retry_visible_ubs_run_mismatches),
             ("Repetir sin ops",    self._retry_no_trades_result),
+            ("Manual OK",          self._manual_accept_selected_ubs_results),
+            ("Manual FAIL",        self._manual_reject_selected_ubs_results),
         ], start=7):
             tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
                       relief="solid", borderwidth=1, padx=8, pady=5,

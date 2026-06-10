@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ubs.db import connect_memory
+from ubs.manual_status import mark_candidates
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -158,11 +159,46 @@ class UBSResultsLogicMixin:
             ("ubs_results", self._refresh_ubs_results),
             ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
+            ("ubs_universe", self._refresh_ubs_universe),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_comparison", self._refresh_ubs_comparison),
             ("ubs_continue", self._refresh_ubs_continue_state),
         ):
             self._safe_refresh(label, callback)
+
+    def _manual_mark_selected_ubs_results(self, status: str) -> None:
+        infos = self._checked_ubs_result_infos()
+        ids = [info.get("id", "") for info in infos]
+        if not ids:
+            messagebox.showinfo("Estado manual", "Selecciona uno o mas resultados primero.")
+            return
+        label = "aceptado" if status == "accepted" else "rechazado"
+        if not messagebox.askyesno(
+            "Estado manual",
+            f"Marcar {len(ids)} resultado(s) como {label} manual?\n\n"
+            "Si la fila no tiene score, se desbloquea el flujo siguiente pero no aporta al peso.",
+        ):
+            return
+        try:
+            conn = connect_memory(self._ubs_memory_path())
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            updated = mark_candidates(conn, ids, status)
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("No se pudo aplicar estado manual", str(exc))
+            return
+        self.ubs_result_checked.clear()
+        self.ubs_weights_locked.set(False)
+        self.status_text.set(f"Estado manual aplicado a {updated} resultado(s)")
+        self._refresh_ubs_results_panel()
+
+    def _manual_accept_selected_ubs_results(self) -> None:
+        self._manual_mark_selected_ubs_results("accepted")
+
+    def _manual_reject_selected_ubs_results(self) -> None:
+        self._manual_mark_selected_ubs_results("rejected")
 
     def _refresh_ubs_history_panel(self) -> None:
         for label, callback in (
@@ -552,7 +588,7 @@ class UBSResultsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when score is not null then 1 else 0 end) as scored,
+                    sum(case when status in ('accepted', 'rejected') and score is not null then 1 else 0 end) as scored,
                     sum(case when status = 'accepted' then 1 else 0 end) as accepted,
                     sum(case when status = 'rejected' then 1 else 0 end) as rejected,
                     sum(case when status = 'generated' then 1 else 0 end) as generated,
@@ -572,7 +608,7 @@ class UBSResultsLogicMixin:
                 order by
                     case
                         when status = 'accepted' then 0
-                        when score is not null then 1
+                        when status = 'rejected' then 1
                         else 2
                     end,
                     score desc,
@@ -598,7 +634,7 @@ class UBSResultsLogicMixin:
         report_mismatch = int(counts["report_mismatch"] or 0)
         self.ubs_results_summary.set(
             f"Run #{latest_run['id']} | {latest_run['created_at']} | "
-            f"candidatos {total} | puntuados {scored} | aceptados {accepted} | rechazados {rejected}"
+            f"candidatos {total} | puntuados validos {scored} | aceptados {accepted} | rechazados {rejected}"
         )
         extra = []
         if generated:
@@ -1301,12 +1337,12 @@ class UBSResultsLogicMixin:
             "accepted": "aceptado",
             "rejected": "rechazado",
             "generated": "generado",
-            "no_report": "sin reporte",
-            "no_trades": "sin operaciones",
+            "no_report": "pend. reporte",
+            "no_trades": "pend. sin ops",
             "disabled_symbol": "deshabilitado",
-            "parse_error": "parse error",
-            "report_mismatch": "mismatch reporte",
-            "invalid_seed": "sin Symbol/TF",
+            "parse_error": "pend. parse",
+            "report_mismatch": "pend. mismatch",
+            "invalid_seed": "pend. Symbol/TF",
             "pending": "pendiente",
             "pending_history_quality": "pend. calidad",
             "pending_ohlc_trades": "pend. OHLC ops",
@@ -1320,10 +1356,10 @@ class UBSResultsLogicMixin:
         labels = {
             "accepted": "OK",
             "rejected": "FAIL",
-            "no_trades": "sin ops",
-            "no_report": "sin reporte",
-            "parse_error": "parse error",
-            "report_mismatch": "mismatch",
+            "no_trades": "pend. sin ops",
+            "no_report": "pend. reporte",
+            "parse_error": "pend. parse",
+            "report_mismatch": "pend. mismatch",
         }
         label = labels.get(status, status)
         bonus = None
@@ -1342,10 +1378,8 @@ class UBSResultsLogicMixin:
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
-        if status in {"rejected", "parse_error", "report_mismatch", "no_trades", "invalid_seed"}:
+        if status == "rejected":
             return "rejected"
-        if status in {"disabled_symbol", "pending_history_quality", "pending_ohlc_trades"}:
-            return "pending"
         return "pending"
 
     def _selected_ubs_result_path(self, kind: str):
@@ -1669,7 +1703,7 @@ class UBSResultsLogicMixin:
                     ok = _copy_candidate(accept_dir, cid, set_path, rep_path, symbol, period)
                     counts["aceptados" if ok else "sin_archivo"] += 1
 
-                elif status in ("rejected", "no_trades"):
+                elif status == "rejected":
                     net_profit = 0.0
                     try:
                         data = json.loads(row["metrics_json"] or "{}")

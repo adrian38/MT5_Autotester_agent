@@ -17,6 +17,7 @@ from tkinter import filedialog
 from tkinter import ttk as _ttk
 from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
 from ubs.db import connect_memory
+from ubs.manual_status import mark_seed_scores
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -133,7 +134,7 @@ class UBSSeedsLogicMixin:
 
         stats: Counter[str] = Counter()
         disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected", "no_trades", "report_mismatch"}
+        ready_statuses = {"accepted", "rejected"}
         for path in seed_files:
             path_text = str(path)
             try:
@@ -285,10 +286,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch', 'disabled_symbol') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'disabled_symbol') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'no_trades', 'report_mismatch', 'disabled_symbol') then 1
+                        when status not in ('accepted', 'rejected', 'disabled_symbol') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -473,6 +474,68 @@ class UBSSeedsLogicMixin:
             return infos
         selected = self._selected_ubs_seed_info()
         return [selected] if selected else []
+
+    def _manual_mark_selected_ubs_seeds(self, status: str) -> None:
+        infos = self._checked_ubs_seed_infos()
+        seed_paths = [info.get("seed_path", "") for info in infos if info.get("active") == "1"]
+        if not seed_paths:
+            messagebox.showinfo("Estado manual", "Selecciona una o mas seeds activas primero.")
+            return
+        label = "aceptada" if status == "accepted" else "rechazada"
+        if not messagebox.askyesno(
+            "Estado manual",
+            f"Marcar {len(seed_paths)} seed(s) como {label} manual?\n\n"
+            "Si la seed no tiene score, se guarda el estado pero no aporta al peso.",
+        ):
+            return
+        try:
+            conn = connect_memory(self._ubs_memory_path())
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_seed_override_schema(conn)
+            now = datetime.now().isoformat(timespec="seconds")
+            for seed_path in seed_paths:
+                if conn.execute("select 1 from seed_scores where seed_path=?", (seed_path,)).fetchone():
+                    continue
+                path = Path(seed_path).expanduser()
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                symbol, period = self._inferred_ubs_seed_fields(path)
+                conn.execute(
+                    """
+                    insert into seed_scores (
+                        seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
+                        status, active, last_seen
+                    ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
+                    """,
+                    (
+                        seed_path,
+                        float(stat.st_mtime),
+                        int(stat.st_size),
+                        symbol,
+                        period,
+                        path.parent.name or "manual",
+                        "manual",
+                        now,
+                    ),
+                )
+            updated = mark_seed_scores(conn, seed_paths, status)
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            self._show_error("No se pudo aplicar estado manual", str(exc))
+            return
+        self.ubs_seed_checked.clear()
+        self.ubs_weights_locked.set(False)
+        self.status_text.set(f"Estado manual aplicado a {updated} seed(s)")
+        self._refresh_ubs_seeds_panel()
+
+    def _manual_accept_selected_ubs_seeds(self) -> None:
+        self._manual_mark_selected_ubs_seeds("accepted")
+
+    def _manual_reject_selected_ubs_seeds(self) -> None:
+        self._manual_mark_selected_ubs_seeds("rejected")
 
     def _on_ubs_seed_tree_click(self, event: tk.Event) -> None:
         item, column = self._tree_item_from_event(self.ubs_seeds_tree, event)
@@ -1006,7 +1069,15 @@ class UBSSeedsLogicMixin:
             current_paths = {str(path) for path in seed_files}
             known_paths: set[str] = set()
             pending = conn.execute(
-                "select count(*) as n from seed_scores where active=1 and status not in ('accepted','rejected','no_trades','report_mismatch','disabled_symbol')"
+                """
+                select count(*) as n
+                from seed_scores
+                where active=1
+                  and (
+                    status not in ('accepted','rejected','disabled_symbol')
+                    or (status in ('accepted','rejected') and score is null)
+                  )
+                """
             ).fetchone()
             total = conn.execute(
                 "select count(*) as n from seed_scores where active=1"
@@ -1076,11 +1147,11 @@ class UBSSeedsLogicMixin:
                     update seed_scores
                     set symbol=?,
                         period=?,
-                        report_path=case when status in ('accepted', 'rejected', 'no_trades') then null else report_path end,
-                        score=case when status in ('accepted', 'rejected', 'no_trades') then null else score end,
-                        accepted=case when status in ('accepted', 'rejected', 'no_trades') then null else accepted end,
-                        metrics_json=case when status in ('accepted', 'rejected', 'no_trades') then null else metrics_json end,
-                        status=case when status in ('accepted', 'rejected', 'no_trades') then 'pending' else status end
+                        report_path=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else report_path end,
+                        score=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else score end,
+                        accepted=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else accepted end,
+                        metrics_json=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else metrics_json end,
+                        status=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then 'pending' else status end
                     where seed_path in ({placeholders})
                     """,
                     (symbol, period, *seed_paths),

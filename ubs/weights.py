@@ -7,13 +7,14 @@ import json
 
 DEFAULT_ROBUST_POSITIVE_BONUS = 70.0
 DEFAULT_ROBUST_NEGATIVE_BONUS = -70.0
+DEFAULT_FINAL_TICK_ACCEPTED_BONUS = 120.0
+DEFAULT_FINAL_TICK_REJECTED_PENALTY = -160.0
 
 ASSET_ACCEPTED_BONUS = 20.0
 TIMEFRAME_ACCEPTED_BONUS = 15.0
 MUTATION_ACCEPTED_BONUS = 15.0
 
 REJECTED_BASE_PENALTY = 50.0
-NO_TRADES_WEIGHT = -40.0
 WEIGHT_SHRINKAGE_K = 20.0
 SEED_WEIGHT_SCALE = 1.0
 
@@ -33,6 +34,13 @@ ROBUST_REASON_PENALTIES = {
     "drawdown_pct": 45.0,
     "recovery_factor": 35.0,
     "positive_month_ratio": 20.0,
+}
+
+FINAL_TICK_REASON_PENALTIES = {
+    "profit_factor": 45.0,
+    "drawdown_pct": 55.0,
+    "trades": 45.0,
+    "history_quality": 60.0,
 }
 
 
@@ -84,11 +92,21 @@ def robust_bonus(row: object) -> float:
     return 0.0
 
 
+def final_tick_bonus(row: object) -> float:
+    status = row_text(row, "final_tick_status").lower()
+    if status == "accepted":
+        return DEFAULT_FINAL_TICK_ACCEPTED_BONUS
+    if status == "rejected":
+        reasons = metric_reasons(row_get(row, "final_tick_similarity_json"))
+        return DEFAULT_FINAL_TICK_REJECTED_PENALTY - reason_penalty(reasons, FINAL_TICK_REASON_PENALTIES)
+    return 0.0
+
+
 def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
     status = row_text(row, "status").lower()
-    if status == "no_trades":
-        return NO_TRADES_WEIGHT
     if status not in {"accepted", "rejected"}:
+        return None
+    if row_get(row, "score") in (None, ""):
         return None
 
     score = row_float(row, "score", 0.0)
@@ -107,6 +125,7 @@ def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
     elif robust_status == "rejected":
         reasons = metric_reasons(row_get(row, "robust_metrics_json"))
         value += robust_bonus(row) - reason_penalty(reasons, ROBUST_REASON_PENALTIES)
+    value += final_tick_bonus(row)
     return value
 
 

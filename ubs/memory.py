@@ -249,7 +249,7 @@ class AgentMemory:
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected", "report_mismatch"}
+                or str(row["status"] or "") not in {"accepted", "rejected"}
                 or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
             )
@@ -622,12 +622,15 @@ class AgentMemory:
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
+            left join candidate_final_tick ft on ft.candidate_id = c.id
             where c.mutated_keys != ''
-              and c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status='no_trades')
+              and c.status in ('accepted', 'rejected')
+              and c.score is not null
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}
@@ -659,11 +662,14 @@ class AgentMemory:
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status='no_trades')
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            where c.status in ('accepted', 'rejected')
+              and c.score is not null
             """
         ).fetchall()
         seed_rows = self.conn.execute(
@@ -671,8 +677,8 @@ class AgentMemory:
             select seed_path, symbol, period, score, accepted, metrics_json, status
             from seed_scores
             where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status='no_trades')
+              and status in ('accepted', 'rejected')
+              and score is not null
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}
@@ -703,11 +709,14 @@ class AgentMemory:
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status='no_trades')
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            where c.status in ('accepted', 'rejected')
+              and c.score is not null
             """
         ).fetchall()
         seed_rows = self.conn.execute(
@@ -715,8 +724,8 @@ class AgentMemory:
             select seed_path, symbol, period, score, accepted, metrics_json, status
             from seed_scores
             where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status='no_trades')
+              and status in ('accepted', 'rejected')
+              and score is not null
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}

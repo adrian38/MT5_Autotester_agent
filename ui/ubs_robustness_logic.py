@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.manual_status import mark_candidate_robustness
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -40,6 +41,59 @@ class UBSRobustnessLogicMixin:
             ("ubs_universe", self._refresh_ubs_universe),
         ):
             self._safe_refresh(label, callback)
+
+    def _checked_ubs_robust_infos(self, *, fallback_selected: bool = True) -> list[dict[str, str]]:
+        checked = [
+            info for info in self.ubs_robust_paths.values()
+            if info.get("id") in self.ubs_robust_checked
+        ]
+        if checked or not fallback_selected:
+            return checked
+        selected = self._selected_ubs_robust_info()
+        return [selected] if selected else []
+
+    def _manual_mark_selected_ubs_robust(self, status: str) -> None:
+        infos = self._checked_ubs_robust_infos()
+        ids = [info.get("id", "") for info in infos]
+        if not ids:
+            messagebox.showinfo("Estado manual", "Selecciona una o mas filas de robustez primero.")
+            return
+        label = "OK" if status == "accepted" else "FAIL"
+        if not messagebox.askyesno(
+            "Estado manual",
+            f"Marcar {len(ids)} fila(s) de robustez como {label} manual?\n\n"
+            "Si la fila base tiene score, el peso se actualiza. OK la deja disponible para Final Tick.",
+        ):
+            return
+        try:
+            positive_bonus, negative_bonus = self._ubs_robust_bonus_values()
+            conn = connect_memory(self._ubs_memory_path())
+            conn.row_factory = sqlite3.Row
+            self._ensure_ubs_memory_schema(conn)
+            updated = mark_candidate_robustness(
+                conn,
+                ids,
+                status,
+                from_date=self.ubs_robust_from_date.get().strip(),
+                to_date=self.ubs_robust_to_date.get().strip(),
+                positive_bonus=positive_bonus,
+                negative_bonus=negative_bonus,
+            )
+            conn.commit()
+            conn.close()
+        except (sqlite3.Error, ValueError) as exc:
+            self._show_error("No se pudo aplicar estado manual", str(exc))
+            return
+        self.ubs_robust_checked.clear()
+        self.ubs_weights_locked.set(False)
+        self.status_text.set(f"Estado manual aplicado a {updated} fila(s) de robustez")
+        self._refresh_ubs_robustness_panel()
+
+    def _manual_accept_selected_ubs_robust(self) -> None:
+        self._manual_mark_selected_ubs_robust("accepted")
+
+    def _manual_reject_selected_ubs_robust(self) -> None:
+        self._manual_mark_selected_ubs_robust("rejected")
 
     def _robustness_bonus_for_status(self, status: str, positive: object, negative: object) -> float | None:
         try:
@@ -353,15 +407,15 @@ class UBSRobustnessLogicMixin:
             return
 
         total = len(rows)
-        evaluated = sum(1 for row in rows if row["robust_status"])
         accepted = sum(1 for row in rows if row["robust_status"] == "accepted")
         rejected = sum(1 for row in rows if row["robust_status"] == "rejected")
-        neutral = evaluated - accepted - rejected
+        settled = accepted + rejected
+        neutral = total - settled
         self.ubs_robust_summary.set(
-            f"Run #{run['id']} | candidatos accepted {total} | robust evaluados {evaluated} | OK {accepted} | FAIL {rejected}"
+            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | OK {accepted} | FAIL {rejected}"
         )
         self.ubs_robust_status.set(
-            f"Neutros sin bonus: {neutral} | Fechas config: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}"
+            f"Pendientes/neutros sin bonus: {neutral} | Fechas config: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}"
         )
         if not hasattr(self, "ubs_robust_tree"):
             return
