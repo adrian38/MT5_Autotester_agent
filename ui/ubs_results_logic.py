@@ -1347,7 +1347,7 @@ class UBSResultsLogicMixin:
             "disabled_symbol": "deshabilitado",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
-            "invalid_seed": "pend. Symbol/TF",
+            "invalid_seed": "set invalido",
             "pending": "pendiente",
             "pending_history_quality": "pend. calidad",
             "pending_ohlc_trades": "pend. OHLC ops",

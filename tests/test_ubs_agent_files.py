@@ -4,7 +4,9 @@ from pathlib import Path
 
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
-from ubs_agent import copy_accepted, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry
+from ubs.universe import seed_symbol_disabled
+from ubs_agent import copy_accepted, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, validate_seed_backtest_set, write_set_force_symbol
+from run_tests import parse_symbol_map
 
 
 def score(
@@ -44,6 +46,61 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_crudeoil_seed_is_disabled_when_wti_is_disabled(self) -> None:
+        seed = Seed(Path("Crude_D__CrudeOil_Optimization.set"), "CRUDEOIL", "D1", "family", "1")
+        symbol_map = parse_symbol_map("CRUDEOIL=WTI,XTIUSD=WTI")
+
+        self.assertTrue(seed_symbol_disabled(seed, {"WTI"}, symbol_map))
+
+    def test_seed_validation_rejects_incomplete_ubs_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bad.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=60||5||0||16385||N",
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            seed = Seed(path, "XAUUSD", "H1", "family", "")
+
+            issues = validate_seed_backtest_set(seed)
+
+            self.assertIn("sin ForceSymbol", issues)
+            self.assertIn("sin Run_Strategy valido", issues)
+            self.assertIn("Entry_Timing=60 no es timeframe MT5 valido", issues)
+
+    def test_seed_validation_accepts_bound_ubs_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "good.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ForceSymbol=XAUUSD",
+                        "Run_Strategy=1||1||0||2||N",
+                        "ST1_Timeframe=16385||0||0||49153||N",
+                        "Entry_Timing=16385||5||0||16385||N",
+                        "ATR_Timeframe=16385||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            seed = Seed(path, "XAUUSD", "H1", "family", "1")
+
+            self.assertEqual(validate_seed_backtest_set(seed), [])
+
+    def test_write_set_force_symbol_adds_missing_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "seed.set"
+            path.write_text("Run_Strategy=1||1||0||2||N\nST1_Timeframe=16385||0||0||49153||N", encoding="utf-8")
+
+            write_set_force_symbol(path, path, "XAUUSD")
+
+            self.assertIn("ForceSymbol=XAUUSD", path.read_text(encoding="utf-8"))
+
     def test_copy_accepted_replaces_previous_copy_for_same_set(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = recreate_work_dir(Path(temp_dir))

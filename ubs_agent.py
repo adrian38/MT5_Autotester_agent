@@ -48,7 +48,7 @@ DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
-DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
+DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
 FINAL_TICK_RETRYABLE_STATUSES = {
@@ -615,6 +615,56 @@ def replace_timeframe_keys(lines: list[str], run_strategy: str, target_period: s
     return changed
 
 
+def write_set_force_symbol(source: Path, destination: Path, symbol: str) -> bool:
+    text, encoding = read_set_with_encoding(source)
+    lines = text.splitlines()
+    normalized_symbol = str(symbol or "").strip().upper()
+    changed = not replace_existing_current_value(lines, "ForceSymbol", normalized_symbol)
+    if changed:
+        replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
+    write_set_text(destination, "\n".join(lines), encoding)
+    return changed
+
+
+def validate_seed_backtest_set(seed: Seed) -> list[str]:
+    try:
+        params = load_set_params(seed.path)
+    except OSError as exc:
+        return [f"no se pudo leer .set: {exc}"]
+    if not params:
+        return ["set vacio o no parseable"]
+
+    issues: list[str] = []
+    force_symbol = normalize_set_symbol(params.get("ForceSymbol", ""))
+    expected_symbol = normalize_set_symbol(seed.symbol)
+    strategy_keys = {"ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"}
+    has_strategy_keys = any(key in params for key in strategy_keys)
+    if has_strategy_keys and not force_symbol:
+        issues.append("sin ForceSymbol")
+    elif force_symbol and expected_symbol and force_symbol != expected_symbol:
+        issues.append(f"ForceSymbol={force_symbol} != {expected_symbol}")
+
+    run_strategy = str(params.get("Run_Strategy") or seed.run_strategy or "").strip()
+    if has_strategy_keys and run_strategy not in {"1", "2"}:
+        issues.append("sin Run_Strategy valido")
+
+    valid_timeframes = set(TIMEFRAME_ENUM)
+    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+        raw = str(params.get(key, "")).strip()
+        if raw and raw != "0" and raw not in valid_timeframes:
+            issues.append(f"{key}={raw} no es timeframe MT5 valido")
+    return issues
+
+
+def record_invalid_seed(memory: AgentMemory, seed: Seed, reasons: list[str]) -> None:
+    memory.record_seed_score(seed, None, "invalid_seed", None)
+    memory.conn.execute(
+        "update seed_scores set metrics_json=? where seed_path=?",
+        (json.dumps({"reasons": reasons}, ensure_ascii=False), str(seed.path)),
+    )
+    memory.conn.commit()
+
+
 def create_variant(
     seed: Seed,
     target_symbol: str,
@@ -728,6 +778,22 @@ def _parse_eval_dir_timestamp(eval_dir: Path) -> datetime | None:
         return None
 
 
+def _seed_override_updated_at(memory: AgentMemory, seed_path: Path) -> datetime | None:
+    try:
+        row = memory.conn.execute(
+            "select updated_at from seed_overrides where seed_path=?",
+            (str(seed_path),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(row["updated_at"] or ""))
+    except (TypeError, ValueError):
+        return None
+
+
 def reconcile_seed_eval_reports(
     memory: AgentMemory,
     pending: list[Seed],
@@ -768,6 +834,9 @@ def reconcile_seed_eval_reports(
             candidates = pending_by_hash.get(copied_digest, [])
             seed = next((candidate for candidate in candidates if str(candidate.path) not in processed_paths), None)
             if seed is None:
+                continue
+            override_updated_at = _seed_override_updated_at(memory, seed.path)
+            if override_updated_at is not None and eval_started <= override_updated_at:
                 continue
             seed_path = str(seed.path)
             status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
@@ -869,10 +938,26 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         memory.record_seed_score(seed, None, "disabled_symbol", None)
     pending = [seed for seed in pending if str(seed.path) not in disabled_paths]
     blocked_count += len(disabled_pending)
+    invalid_set_reasons: dict[str, list[str]] = {}
+    for seed in pending:
+        reasons = validate_seed_backtest_set(seed)
+        if reasons:
+            invalid_set_reasons[str(seed.path)] = reasons
+            print(
+                f"AVISO: seed con .set invalido para MT5: {seed.path.name}; "
+                + " | ".join(reasons)
+                + ". Marcada como invalid_seed sin abrir MT5."
+            )
+            record_invalid_seed(memory, seed, reasons)
+    if invalid_set_reasons:
+        pending = [seed for seed in pending if str(seed.path) not in invalid_set_reasons]
+        blocked_count += len(invalid_set_reasons)
     print(f"Semillas detectadas: {len(seeds)}")
     print(f"Backtests de semillas pendientes: {len(pending)}")
     if invalid_pending:
         print(f"Semillas bloqueadas por symbol/timeframe no inferible: {len(invalid_pending)}")
+    if invalid_set_reasons:
+        print(f"Semillas bloqueadas por .set invalido: {len(invalid_set_reasons)}")
     if disabled_pending:
         print(
             "Semillas omitidas por symbol deshabilitado en Universo global: "
@@ -903,7 +988,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             seeds,
             score_config,
             symbol_map,
-            exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
+            exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
         )
         if rescored_counts:
             print(
@@ -964,7 +1049,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         seeds,
         score_config,
         symbol_map,
-        exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
+        exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
     )
     rescored_total = sum(rescored_counts.values())
 
@@ -2345,6 +2430,17 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
                     memory.prepare_single_seed_evaluation(seed, force=True)
                     memory.record_seed_score(seed, None, "report_mismatch", None)
                 continue
+            invalid_reasons = validate_seed_backtest_set(seed)
+            if invalid_reasons:
+                print(
+                    f"AVISO: seed con .set invalido para MT5: {source_path.name}; "
+                    + " | ".join(invalid_reasons)
+                    + ". Marcada como invalid_seed."
+                )
+                if not args.dry_run:
+                    memory.prepare_single_seed_evaluation(seed, force=True)
+                    record_invalid_seed(memory, seed, invalid_reasons)
+                continue
             if not args.dry_run:
                 memory.prepare_single_seed_evaluation(seed, force=True)
             seeds.append(seed)
@@ -2408,6 +2504,16 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         print(f"AVISO: seed sin symbol/timeframe inferible: {source_seed.name}; marcada como report_mismatch.")
         if not args.dry_run:
             memory.record_seed_score(seed, None, "report_mismatch", None)
+        return 1
+    invalid_reasons = validate_seed_backtest_set(seed)
+    if invalid_reasons:
+        print(
+            f"AVISO: seed con .set invalido para MT5: {source_seed.name}; "
+            + " | ".join(invalid_reasons)
+            + ". Marcada como invalid_seed."
+        )
+        if not args.dry_run:
+            record_invalid_seed(memory, seed, invalid_reasons)
         return 1
 
     output_root = Path(args.output_dir).expanduser()

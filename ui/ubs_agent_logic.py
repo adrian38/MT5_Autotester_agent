@@ -6,7 +6,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from run_tests import infer_tester_fields_from_set, load_set_files
-from ubs.account import account_output_dir, account_seed_dir
+from ubs.account import ACCOUNT_TYPES, account_output_dir, account_seed_dir
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -15,6 +15,21 @@ if getattr(sys, "frozen", False):
 
 
 class UBSAgentLogicMixin:
+    def _relative_to_or_none(self, path: Path, root: Path) -> Path | None:
+        try:
+            return path.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            return None
+
+    def _is_account_default_path(self, path: Path, root: Path) -> bool:
+        try:
+            resolved = path.resolve()
+            resolved_root = root.resolve()
+        except OSError:
+            resolved = path
+            resolved_root = root
+        return resolved.parent == resolved_root and resolved.name.upper() in ACCOUNT_TYPES
+
     def _account_scoped_path(self, raw: str, *, legacy: Path, scoped: Path) -> Path:
         text = str(raw or "").strip()
         if not text:
@@ -25,7 +40,23 @@ class UBSAgentLogicMixin:
                 return scoped
         except OSError:
             pass
+        if self._is_account_default_path(path, legacy):
+            return scoped
         return path
+
+    def _account_scoped_set_file_path(self, raw: str) -> Path | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        path = Path(text).expanduser()
+        root = BASE_DIR / "sets" / "ubs_ready"
+        rel = self._relative_to_or_none(path, root)
+        if rel is None:
+            return path
+        parts = rel.parts
+        if parts and parts[0].upper() in ACCOUNT_TYPES:
+            rel = Path(*parts[1:]) if len(parts) > 1 else Path()
+        return self._ubs_default_source_dir() / rel
 
     def _ubs_default_source_dir(self) -> Path:
         return account_seed_dir(BASE_DIR, self._ubs_account_type())
@@ -40,24 +71,36 @@ class UBSAgentLogicMixin:
             scoped=self._ubs_default_output_dir(),
         )
 
-    def _sync_ubs_account_paths(self) -> None:
-        source = self._account_scoped_path(
+    def _sync_ubs_account_paths(self, *, force: bool = False) -> None:
+        source_default = self._ubs_default_source_dir()
+        output_default = self._ubs_default_output_dir()
+        source = source_default if force else self._account_scoped_path(
             self.set_files_root.get(),
             legacy=BASE_DIR / "sets" / "ubs_ready",
-            scoped=self._ubs_default_source_dir(),
+            scoped=source_default,
         )
-        output = self._account_scoped_path(
+        output = output_default if force else self._account_scoped_path(
             self.ubs_generation_output.get(),
             legacy=BASE_DIR / "outputs" / "ubs_agent",
-            scoped=self._ubs_default_output_dir(),
+            scoped=output_default,
         )
-        if not self.set_files_root.get().strip() or source == self._ubs_default_source_dir():
+        if force or not self.set_files_root.get().strip() or source == source_default:
             self.set_files_root.set(str(source))
-        if not self.ubs_generation_output.get().strip() or output == self._ubs_default_output_dir():
+        if force or not self.ubs_generation_output.get().strip() or output == output_default:
             self.ubs_generation_output.set(str(output))
+        set_file_var = getattr(self, "ubs_set_file", None)
+        if set_file_var is not None:
+            raw_set_file = set_file_var.get()
+            set_file = self._account_scoped_set_file_path(raw_set_file)
+            current = Path(str(raw_set_file or "").strip()).expanduser() if str(raw_set_file or "").strip() else None
+            if set_file is not None and current is not None and set_file != current:
+                if set_file.exists():
+                    set_file_var.set(str(set_file))
+                elif force:
+                    set_file_var.set("")
 
-    def _on_ubs_account_type_changed(self) -> None:
-        self._sync_ubs_account_paths()
+    def _refresh_ubs_account_context(self, *, force: bool = False) -> None:
+        self._sync_ubs_account_paths(force=force)
         self._write_ui_settings()
         self.status_text.set(f"Cuenta UBS activa: {self._ubs_account_type()}")
         for label, callback_name in (
@@ -71,6 +114,12 @@ class UBSAgentLogicMixin:
             callback = getattr(self, callback_name, None)
             if callback is not None:
                 self._safe_refresh(label, callback)
+
+    def _on_ubs_account_type_changed(self) -> None:
+        self._refresh_ubs_account_context()
+
+    def _apply_ubs_account_type_to_app(self) -> None:
+        self._refresh_ubs_account_context(force=True)
 
     def _ubs_generator_args(self, *, continue_last: bool = False) -> list[str]:
         source_dir = (

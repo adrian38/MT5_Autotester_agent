@@ -55,6 +55,11 @@ class UBSAgentViewMixin:
         )
         account_combo.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=7)
         account_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_ubs_account_type_changed())
+        ttk.Button(
+            paths,
+            text="Ajustar cuenta",
+            command=self._apply_ubs_account_type_to_app,
+        ).grid(row=1, column=2, sticky="w", padx=(0, 20), pady=7)
         self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 2, self._browse_ex5_file)
         self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 3, self._browse_dir)
         self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 4, self._browse_dir)
