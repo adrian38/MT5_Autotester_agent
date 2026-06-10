@@ -35,7 +35,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertTrue(any("Reporte origen eliminado" in message for message in logger.messages))
 
-    def test_removes_local_project_report_when_it_was_not_copied_now(self) -> None:
+    def test_keeps_local_project_report_when_it_was_generated_there(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             reports_dir = run_tests.Path(temp_dir) / "reports"
             reports_dir.mkdir()
@@ -46,9 +46,10 @@ class CopyReportsToProjectTests(unittest.TestCase):
             with patch.object(run_tests, "REPORT_DIR", reports_dir):
                 copied = run_tests.copy_reports_to_project([source], logger)
 
-            self.assertEqual(copied, [])
-            self.assertFalse(source.exists())
-            self.assertTrue(any("Reporte local previo eliminado" in message for message in logger.messages))
+            self.assertEqual(copied, [source])
+            self.assertTrue(source.exists())
+            self.assertEqual(source.read_text(encoding="utf-8"), "report")
+            self.assertTrue(any("Reporte ya estaba en reports" in message for message in logger.messages))
 
     def test_keeps_destination_when_external_report_overwrites_local_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -70,6 +71,34 @@ class CopyReportsToProjectTests(unittest.TestCase):
             self.assertTrue(local_source.exists())
             self.assertEqual(local_source.read_text(encoding="utf-8"), "new")
             self.assertFalse(external_source.exists())
+
+    def test_delete_existing_reports_keeps_active_tester_set_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            reports_dir = root / "reports"
+            data_dir = root / "data"
+            tester_dir = data_dir / "tester"
+            reports_dir.mkdir()
+            tester_dir.mkdir(parents=True)
+            report_path = reports_dir / "sample"
+            active_set = tester_dir / "sample.set"
+            old_report = tester_dir / "sample.htm"
+            active_set.write_text("params", encoding="utf-8")
+            old_report.write_text("old", encoding="utf-8")
+            logger = ListLogger()
+
+            with patch.object(run_tests, "REPORT_DIR", reports_dir):
+                run_tests.delete_existing_report_files(
+                    report_path,
+                    [data_dir],
+                    root / "terminal64.exe",
+                    logger,
+                    protected_set_name=active_set.name,
+                )
+
+            self.assertTrue(active_set.exists())
+            self.assertFalse(old_report.exists())
+            self.assertTrue(any("Set activo conservado" in message for message in logger.messages))
 
     def test_recursive_set_loading_skips_run_auxiliary_folders(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

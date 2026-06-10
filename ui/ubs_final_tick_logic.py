@@ -243,6 +243,7 @@ class UBSFinalTickLogicMixin:
             args.append("--final-tick-pending-only")
         if retry_pending_quality:
             args.append("--final-tick-retry-pending-quality")
+            args.append("--final-tick-skip-ohlc")
         if self.multiterminal_enabled.get():
             args.extend(self._multiterminal_args(require_ubs=True))
         else:
@@ -274,6 +275,18 @@ class UBSFinalTickLogicMixin:
                     row for row in rows
                     if self._final_tick_row_pending_for_current_dates(row)
                 ]
+                ohlc_from = self.ubs_final_tick_ohlc_from_date.get().strip()
+                ohlc_to = self.ubs_final_tick_ohlc_to_date.get().strip()
+                has_ohlc_retry = bool(ohlc_from and ohlc_to)
+                has_ohlc_pending = any(
+                    str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+                    for row in rows
+                )
+                if has_ohlc_retry and has_ohlc_pending:
+                    rows = [
+                        row for row in rows
+                        if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+                    ]
             if not rows:
                 if pending_only:
                     message = f"Run #{run_id} no tiene robust accepted pendientes de Final Tick."

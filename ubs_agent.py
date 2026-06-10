@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -266,6 +267,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
     parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, incluye filas pending_history_quality aunque las fechas no hayan cambiado.")
+    parser.add_argument("--final-tick-skip-ohlc", action="store_true", help="Salta el backtest OHLC y reutiliza ohlc_metrics_json guardado en DB; solo ejecuta Every Tick.")
     parser.add_argument("--final-tick-min-history-quality", type=float, default=80.0, help="Calidad minima History Quality del reporte real tick.")
     parser.add_argument("--final-tick-min-ohlc-trades", type=int, default=5, help="Operaciones OHLC minimas para pasar a Every Tick.")
     parser.add_argument("--final-tick-ohlc-from-date", default="", help="Fecha alternativa para reintentar pendientes por pocas operaciones OHLC.")
@@ -1540,56 +1542,91 @@ def final_tick_similarity(
     max_dd_delta_pct: float,
     max_trades_delta_pct: float,
 ) -> dict[str, object]:
+    """Decide si OHLC y real-tick son suficientemente parecidos.
+
+    Es la MISMA estrategia ejecutada con dos modelos de datos distintos.
+    La pregunta es: ¿dan resultados similares? No cuál es mejor.
+
+    Criterios activos (contribuyen a accepted/rejected):
+      - profit_factor  : diferencia relativa simétrica; cap [0,10]; piso 1.0
+      - drawdown_pct   : diferencia relativa simétrica; piso 2pp evita falsos fallos en DDs pequeños
+      - trades         : diferencia relativa simétrica
+
+    net_profit se guarda como informacional pero NO bloquea la aceptación.
+    La escala de normalized_net_profit depende del grupo de normalización y produce
+    falsos fallos cuando los valores son pequeños en comparación absoluta.
+    """
     reasons: list[str] = []
     checks: dict[str, dict[str, object]] = {}
 
+    # 1. History quality
     history_quality = real_tick_result.history_quality
     quality_ok = history_quality is not None and history_quality >= min_history_quality
     if not quality_ok:
         reasons.append("history_quality")
 
-    metric_specs = (
-        (
-            "net_profit",
-            float(ohlc_result.normalized_net_profit),
-            float(real_tick_result.normalized_net_profit),
-            max_net_delta_pct,
-            1.0,
-        ),
-        (
-            "profit_factor",
-            _bounded_profit_factor(ohlc_result.profit_factor),
-            _bounded_profit_factor(real_tick_result.profit_factor),
-            max_pf_delta_pct,
-            1.0,
-        ),
-        (
-            "drawdown_pct",
-            float(ohlc_result.drawdown_pct),
-            float(real_tick_result.drawdown_pct),
-            max_dd_delta_pct,
-            1.0,
-        ),
-        (
-            "trades",
-            float(ohlc_result.trades),
-            float(real_tick_result.trades),
-            max_trades_delta_pct,
-            1.0,
-        ),
-    )
-    for name, ohlc_value, real_value, max_delta, floor in metric_specs:
-        delta = _relative_delta_pct(ohlc_value, real_value, floor=floor)
-        accepted = delta <= max_delta
-        if not accepted:
-            reasons.append(name)
-        checks[name] = {
-            "ohlc": round(ohlc_value, 4),
-            "real_tick": round(real_value, 4),
-            "delta_pct": round(delta, 4),
-            "max_delta_pct": round(float(max_delta), 4),
-            "accepted": accepted,
-        }
+    # 2. Net profit — informacional, no bloquea aceptación
+    ohlc_net = float(ohlc_result.normalized_net_profit)
+    tick_net  = float(real_tick_result.normalized_net_profit)
+    net_denom = max(abs(ohlc_net), abs(tick_net), 1.0)
+    net_delta = abs(tick_net - ohlc_net) / net_denom * 100.0
+    checks["net_profit"] = {
+        "ohlc": round(ohlc_net, 4),
+        "real_tick": round(tick_net, 4),
+        "delta_pct": round(net_delta, 4),
+        "max_delta_pct": round(float(max_net_delta_pct), 4),
+        "accepted": True,   # informacional: no bloquea
+        "checked": False,
+    }
+
+    # 3. Profit factor — simétrico, cap [0, 10], piso 1.0
+    ohlc_pf   = _bounded_profit_factor(ohlc_result.profit_factor)
+    tick_pf   = _bounded_profit_factor(real_tick_result.profit_factor)
+    pf_delta  = _relative_delta_pct(ohlc_pf, tick_pf, floor=1.0)
+    pf_accepted = pf_delta <= max_pf_delta_pct
+    if not pf_accepted:
+        reasons.append("profit_factor")
+    checks["profit_factor"] = {
+        "ohlc": round(ohlc_pf, 4),
+        "real_tick": round(tick_pf, 4),
+        "delta_pct": round(pf_delta, 4),
+        "max_delta_pct": round(float(max_pf_delta_pct), 4),
+        "accepted": pf_accepted,
+        "checked": True,
+    }
+
+    # 4. Drawdown — simétrico, piso 2pp
+    ohlc_dd   = float(ohlc_result.drawdown_pct)
+    tick_dd   = float(real_tick_result.drawdown_pct)
+    dd_floor  = max(ohlc_dd, tick_dd, 2.0)
+    dd_delta  = abs(tick_dd - ohlc_dd) / dd_floor * 100.0
+    dd_accepted = dd_delta <= max_dd_delta_pct
+    if not dd_accepted:
+        reasons.append("drawdown_pct")
+    checks["drawdown_pct"] = {
+        "ohlc": round(ohlc_dd, 4),
+        "real_tick": round(tick_dd, 4),
+        "delta_pct": round(dd_delta, 4),
+        "max_delta_pct": round(float(max_dd_delta_pct), 4),
+        "accepted": dd_accepted,
+        "checked": True,
+    }
+
+    # 5. Trades — simétrico
+    ohlc_trades   = float(ohlc_result.trades)
+    tick_trades   = float(real_tick_result.trades)
+    trades_delta  = _relative_delta_pct(ohlc_trades, tick_trades, floor=1.0)
+    trades_accepted = trades_delta <= max_trades_delta_pct
+    if not trades_accepted:
+        reasons.append("trades")
+    checks["trades"] = {
+        "ohlc": round(ohlc_trades, 4),
+        "real_tick": round(tick_trades, 4),
+        "delta_pct": round(trades_delta, 4),
+        "max_delta_pct": round(float(max_trades_delta_pct), 4),
+        "accepted": trades_accepted,
+        "checked": True,
+    }
 
     return {
         "accepted": not reasons,
@@ -1613,6 +1650,26 @@ def final_tick_ohlc_trades_pending_payload(ohlc_result: ScoreResult, min_ohlc_tr
             }
         },
     }
+
+
+def _read_ohlc_report_cfg_dates(report_path: Path) -> tuple[str, str]:
+    """Read the configured FromDate/ToDate from an MT5 Strategy Tester HTML report.
+
+    Parses the Period cell which looks like 'H4 (2026.05.01 - 2026.05.31)'.
+    Returns empty strings if the file cannot be read or the pattern is not found.
+    """
+    for encoding in ("utf-16-le", "utf-8", "utf-16"):
+        try:
+            content = report_path.read_text(encoding=encoding)
+            break
+        except (UnicodeDecodeError, UnicodeError, OSError):
+            continue
+    else:
+        return "", ""
+    match = re.search(r"\((\d{4}\.\d{2}\.\d{2})\s*-\s*(\d{4}\.\d{2}\.\d{2})\)", content)
+    if match:
+        return match.group(1), match.group(2)
+    return "", ""
 
 
 def final_tick_dates_match(row: sqlite3.Row, from_date: str, to_date: str) -> bool:
@@ -1682,17 +1739,22 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     retry_pending_quality = bool(getattr(args, "final_tick_retry_pending_quality", False))
     if args.final_tick_pending_only:
         if using_ohlc_retry_dates:
+            deferred_main_rows = [
+                row for row in rows
+                if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades"
+                and final_tick_row_pending_for_dates(row, main_from_date, main_to_date, force_quality_retry=retry_pending_quality)
+            ]
             rows = [
                 row for row in rows
-                if (
-                    str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    and final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
-                )
-                or (
-                    str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades"
-                    and final_tick_row_pending_for_dates(row, main_from_date, main_to_date, force_quality_retry=retry_pending_quality)
-                )
+                if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+                and final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
             ]
+            if deferred_main_rows:
+                print(
+                    "Final Tick OHLC retry: "
+                    f"{len(deferred_main_rows)} fila(s) pendientes de fechas principales "
+                    f"{main_from_date} -> {main_to_date} se dejan para la siguiente continuacion."
+                )
         else:
             rows = [
                 row for row in rows
@@ -1789,14 +1851,63 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     real_tick_variants = [real_tick_variant for _, _, real_tick_variant in copied]
     skip_ohlc = False
     ohlc_min_report_mtime: float | None = None
-    if resume_pending_dir and ohlc_sets_unchanged and stored_dates_match:
+    skip_ohlc_flag = bool(getattr(args, "final_tick_skip_ohlc", False))
+    if skip_ohlc_flag:
+        missing_metrics = [int(row["id"]) for row, _, _ in copied if not row["ft_ohlc_metrics_json"]]
+        if missing_metrics:
+            ids = ", ".join(f"#{i}" for i in missing_metrics)
+            print(f"ERROR: --final-tick-skip-ohlc pero faltan ohlc_metrics_json para candidates {ids}.")
+            return 1
+        # Read the configured dates directly from the OHLC report file (ground truth).
+        # The DB's from_date/to_date can be stale if a previous tick retry used a
+        # different UI date and overwrote the stored value.
+        first_ohlc_path_str = str(copied[0][0]["ft_ohlc_report_path"] or "")
+        if first_ohlc_path_str:
+            ohlc_cfg_from, ohlc_cfg_to = _read_ohlc_report_cfg_dates(Path(first_ohlc_path_str))
+        else:
+            ohlc_cfg_from, ohlc_cfg_to = "", ""
+        if ohlc_cfg_from and ohlc_cfg_to:
+            if ohlc_cfg_from != str(args.from_date or "").strip() or ohlc_cfg_to != str(args.to_date or "").strip():
+                print(
+                    f"Final Tick skip-ohlc: fechas leidas del reporte OHLC "
+                    f"{ohlc_cfg_from} -> {ohlc_cfg_to} "
+                    f"(UI: {args.from_date} -> {args.to_date}); se usan las del reporte."
+                )
+            args.from_date = ohlc_cfg_from
+            args.to_date = ohlc_cfg_to
+        else:
+            print(
+                f"AVISO: no se pudo leer fecha del reporte OHLC '{first_ohlc_path_str}'; "
+                f"se usa fecha del UI ({args.from_date} -> {args.to_date})."
+            )
+        skip_ohlc = True
+        print(
+            f"Final Tick skip-ohlc: usando OHLC guardado en DB; "
+            f"solo se ejecuta Every Tick ({len(copied)} candidatos)."
+        )
+    elif resume_pending_dir and ohlc_sets_unchanged and stored_dates_match:
         valid_ohlc_reports = count_valid_existing_reports(ohlc_variants, score_config, symbol_map)
         if valid_ohlc_reports == len(ohlc_variants):
-            skip_ohlc = True
-            print(
-                "Final Tick resume: OHLC existente completo; "
-                "se salta OHLC y se continua con Every Tick."
-            )
+            # Verify the OHLC reports on disk have the expected dates.
+            # A previous interrupted run may have overwritten the files with different dates
+            # without updating the DB, so stored_dates_match=True is insufficient.
+            first_rep = find_report_for_set(ohlc_variants[0].path, min_mtime=None) if ohlc_variants else None
+            ohlc_disk_from, ohlc_disk_to = _read_ohlc_report_cfg_dates(first_rep) if first_rep else ("", "")
+            if ohlc_disk_from and ohlc_disk_from != str(args.from_date or "").strip():
+                print(
+                    f"Final Tick resume: reporte OHLC en disco tiene fechas "
+                    f"{ohlc_disk_from} -> {ohlc_disk_to} pero UI={args.from_date} -> {args.to_date}; "
+                    f"se recalcula OHLC."
+                )
+                if not args.dry_run:
+                    for variant in ohlc_variants:
+                        remove_report_artifacts(variant.path)
+            else:
+                skip_ohlc = True
+                print(
+                    "Final Tick resume: OHLC existente completo; "
+                    "se salta OHLC y se continua con Every Tick."
+                )
         else:
             print(
                 "Final Tick resume: OHLC incompleto "
@@ -1838,105 +1949,128 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     ohlc_results: dict[int, tuple[Path, ScoreResult]] = {}
     min_ohlc_trades = max(0, int(args.final_tick_min_ohlc_trades))
 
-    for row, ohlc_variant, real_tick_variant in copied:
-        candidate_id = int(row["id"])
-        ohlc_report = find_report_for_set(ohlc_variant.path, min_mtime=ohlc_min_report_mtime)
-        if not ohlc_report:
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "no_report",
-                None,
-                None,
-                ohlc_report,
-                None,
-                None,
-                None,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
-            continue
+    if skip_ohlc_flag:
+        for row, ohlc_variant, real_tick_variant in copied:
+            candidate_id = int(row["id"])
+            try:
+                data = json.loads(str(row["ft_ohlc_metrics_json"]))
+                data["reasons"] = tuple(data.get("reasons", []))
+                ohlc_result = ScoreResult(**data)
+            except Exception as exc:
+                print(f"AVISO: no pude reconstruir OHLC metrics para candidate #{candidate_id}: {exc}")
+                memory.record_candidate_final_tick(
+                    candidate_id, run_id, "parse_error", None, None,
+                    None, None, None, None,
+                    args.final_tick_min_history_quality, args.from_date, args.to_date,
+                    args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+                    args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+                )
+                status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+                continue
+            stored_path = row["ft_ohlc_report_path"]
+            ohlc_report = Path(stored_path) if stored_path else ohlc_variant.path
+            ready_for_tick.append((row, ohlc_variant, real_tick_variant))
+            ohlc_results[candidate_id] = (ohlc_report, ohlc_result)
+    else:
+        for row, ohlc_variant, real_tick_variant in copied:
+            candidate_id = int(row["id"])
+            ohlc_report = find_report_for_set(ohlc_variant.path, min_mtime=ohlc_min_report_mtime)
+            if not ohlc_report:
+                memory.record_candidate_final_tick(
+                    candidate_id,
+                    run_id,
+                    "no_report",
+                    None,
+                    None,
+                    ohlc_report,
+                    None,
+                    None,
+                    None,
+                    args.final_tick_min_history_quality,
+                    args.from_date,
+                    args.to_date,
+                    args.final_tick_max_net_delta_pct,
+                    args.final_tick_max_pf_delta_pct,
+                    args.final_tick_max_dd_delta_pct,
+                    args.final_tick_max_trades_delta_pct,
+                )
+                status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+                continue
 
-        try:
-            ohlc_result = score_report_file(ohlc_report, config=score_config)
-        except Exception as exc:
-            print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "parse_error",
-                None,
-                None,
-                ohlc_report,
-                None,
-                None,
-                None,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
-            continue
+            try:
+                ohlc_result = score_report_file(ohlc_report, config=score_config)
+            except Exception as exc:
+                print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
+                memory.record_candidate_final_tick(
+                    candidate_id,
+                    run_id,
+                    "parse_error",
+                    None,
+                    None,
+                    ohlc_report,
+                    None,
+                    None,
+                    None,
+                    args.final_tick_min_history_quality,
+                    args.from_date,
+                    args.to_date,
+                    args.final_tick_max_net_delta_pct,
+                    args.final_tick_max_pf_delta_pct,
+                    args.final_tick_max_dd_delta_pct,
+                    args.final_tick_max_trades_delta_pct,
+                )
+                status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+                continue
 
-        ohlc_matches, ohlc_mismatch = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
-        if not ohlc_matches:
-            print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "report_mismatch",
-                ohlc_result,
-                None,
-                ohlc_report,
-                None,
-                None,
-                None,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-            continue
+            ohlc_matches, ohlc_mismatch = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+            if not ohlc_matches:
+                print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
+                memory.record_candidate_final_tick(
+                    candidate_id,
+                    run_id,
+                    "report_mismatch",
+                    ohlc_result,
+                    None,
+                    ohlc_report,
+                    None,
+                    None,
+                    None,
+                    args.final_tick_min_history_quality,
+                    args.from_date,
+                    args.to_date,
+                    args.final_tick_max_net_delta_pct,
+                    args.final_tick_max_pf_delta_pct,
+                    args.final_tick_max_dd_delta_pct,
+                    args.final_tick_max_trades_delta_pct,
+                )
+                status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
+                continue
 
-        if ohlc_result.trades < min_ohlc_trades:
-            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "pending_ohlc_trades",
-                ohlc_result,
-                None,
-                ohlc_report,
-                None,
-                json.dumps(payload, ensure_ascii=True, sort_keys=True),
-                None,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
-            continue
+            if ohlc_result.trades < min_ohlc_trades:
+                payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
+                memory.record_candidate_final_tick(
+                    candidate_id,
+                    run_id,
+                    "pending_ohlc_trades",
+                    ohlc_result,
+                    None,
+                    ohlc_report,
+                    None,
+                    json.dumps(payload, ensure_ascii=True, sort_keys=True),
+                    None,
+                    args.final_tick_min_history_quality,
+                    args.from_date,
+                    args.to_date,
+                    args.final_tick_max_net_delta_pct,
+                    args.final_tick_max_pf_delta_pct,
+                    args.final_tick_max_dd_delta_pct,
+                    args.final_tick_max_trades_delta_pct,
+                )
+                status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
+                continue
 
-        ready_for_tick.append((row, ohlc_variant, real_tick_variant))
-        ohlc_results[candidate_id] = (ohlc_report, ohlc_result)
+            ready_for_tick.append((row, ohlc_variant, real_tick_variant))
+            ohlc_results[candidate_id] = (ohlc_report, ohlc_result)
 
     if not ready_for_tick:
         print("Final Tick: ningun OHLC cumple el minimo de operaciones; no se lanza Every Tick.")

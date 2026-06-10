@@ -473,7 +473,9 @@ class AgentMemory:
                 cr.report_path as robust_report_path,
                 ft.status as final_tick_status,
                 ft.from_date as final_tick_from_date,
-                ft.to_date as final_tick_to_date
+                ft.to_date as final_tick_to_date,
+                ft.ohlc_report_path as ft_ohlc_report_path,
+                ft.ohlc_metrics_json as ft_ohlc_metrics_json
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id

@@ -88,7 +88,7 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertIn("history_quality", result["reasons"])
 
-    def test_final_tick_similarity_rejects_large_metric_drift(self) -> None:
+    def test_final_tick_similarity_keeps_net_profit_drift_informational(self) -> None:
         result = final_tick_similarity(
             score(10.0, net_profit=100.0),
             score(10.0, net_profit=200.0),
@@ -99,8 +99,23 @@ class UBSSetsFileTests(unittest.TestCase):
             max_trades_delta_pct=35.0,
         )
 
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("net_profit", result["reasons"])
+        self.assertFalse(result["checks"]["net_profit"]["checked"])
+
+    def test_final_tick_similarity_rejects_large_profit_factor_drift(self) -> None:
+        result = final_tick_similarity(
+            score(10.0, profit_factor=2.0),
+            score(10.0, profit_factor=1.0),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+        )
+
         self.assertFalse(result["accepted"])
-        self.assertIn("net_profit", result["reasons"])
+        self.assertIn("profit_factor", result["reasons"])
 
 
 if __name__ == "__main__":

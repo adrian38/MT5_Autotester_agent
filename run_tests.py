@@ -1113,11 +1113,8 @@ def copy_reports_to_project(report_files: list[Path], logger: RunLogger) -> list
     for source in local_sources:
         if source.resolve() in copied_destinations:
             continue
-        try:
-            source.unlink()
-            logger.write(f"  Reporte local previo eliminado: {source}")
-        except OSError as exc:
-            logger.write(f"  Aviso: no pude eliminar reporte local previo {source}: {exc}")
+        copied.append(source)
+        logger.write(f"  Reporte ya estaba en reports: {source}")
     return copied
 
 
@@ -1136,10 +1133,20 @@ def filter_fresh_report_files(report_files: list[Path], started_at: float, logge
     return fresh
 
 
-def delete_existing_report_files(report_path: Path, terminal_data_dirs: list[Path], mt5_path: Path, logger: RunLogger) -> None:
+def delete_existing_report_files(
+    report_path: Path,
+    terminal_data_dirs: list[Path],
+    mt5_path: Path,
+    logger: RunLogger,
+    *,
+    protected_set_name: str = "",
+) -> None:
     suffixes = {".htm", ".html", ".xml", ".png", ".set"}
     for path in find_report_files(report_path, terminal_data_dirs, mt5_path):
         if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        if protected_set_name and path.suffix.lower() == ".set" and path.name.lower() == protected_set_name.lower():
+            logger.write(f"  Set activo conservado: {path}")
             continue
         try:
             path.unlink()
@@ -1339,6 +1346,7 @@ def run_test(
     dry_run: bool,
     logger: RunLogger,
     terminal_data_dirs: list[Path],
+    protected_set_name: str = "",
 ) -> int:
     command = [str(settings.mt5_path)]
     if settings.portable:
@@ -1362,7 +1370,13 @@ def run_test(
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
             logger.write(f"Reintentando MT5 Model=4 tras reinicio automatico ({attempt}/{max_attempts}).")
-        delete_existing_report_files(report_path, terminal_data_dirs, settings.mt5_path, logger)
+        delete_existing_report_files(
+            report_path,
+            terminal_data_dirs,
+            settings.mt5_path,
+            logger,
+            protected_set_name=protected_set_name,
+        )
 
         before = time.time()
         process = subprocess.Popen(command, creationflags=NO_WINDOW)
@@ -1463,7 +1477,8 @@ def run_backtest_job(
         return 1
     if job.set_file and not args.dry_run:
         copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
-    return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
+    protected_set_name = job.set_file.name if job.set_file else ""
+    return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs, protected_set_name)
 
 
 def run_jobs_parallel(
