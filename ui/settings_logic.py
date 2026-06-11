@@ -351,6 +351,7 @@ class SettingsLogicMixin:
             "ubs_robust_positive_bonus": self.ubs_robust_positive_bonus.get().strip(),
             "ubs_robust_negative_bonus": self.ubs_robust_negative_bonus.get().strip(),
             "ubs_robust_auto": "1" if self.ubs_robust_auto.get() else "0",
+            "ubs_final_tick_auto": "1" if self.ubs_final_tick_auto.get() else "0",
             "ubs_agent_from_date": self.ubs_agent_from_date.get().strip(),
             "ubs_agent_to_date": self.ubs_agent_to_date.get().strip(),
             "ubs_seed_from_date": self.ubs_seed_from_date.get().strip(),

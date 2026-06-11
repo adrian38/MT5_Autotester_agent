@@ -276,6 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
     parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, incluye filas pending_history_quality aunque las fechas no hayan cambiado.")
+    parser.add_argument("--final-tick-reconcile-only", action="store_true", help="Con --evaluate-final-tick, concilia reportes OHLC/Every Tick ya existentes en disco sin abrir MT5.")
     parser.add_argument("--final-tick-skip-ohlc", action="store_true", help="Salta el backtest OHLC y reutiliza ohlc_metrics_json guardado en DB; solo ejecuta Every Tick.")
     parser.add_argument("--final-tick-min-history-quality", type=float, default=80.0, help="Calidad minima History Quality del reporte real tick.")
     parser.add_argument("--final-tick-min-ohlc-trades", type=int, default=5, help="Operaciones OHLC minimas para pasar a Every Tick.")
@@ -1836,6 +1837,32 @@ def final_tick_row_pending_for_dates(
 
 
 def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if getattr(args, "final_tick_reconcile_only", False):
+        run = memory.run_by_id(args.final_tick_run_id) if args.final_tick_run_id else memory.latest_run()
+        if run is None:
+            print("ERROR: no hay run SQLite disponible para Final Tick")
+            return 1
+        counts = reconcile_final_tick_reports(
+            memory,
+            int(run["id"]),
+            score_config,
+            parse_symbol_map(args.symbol_map),
+            min_history_quality=args.final_tick_min_history_quality,
+            min_ohlc_trades=args.final_tick_min_ohlc_trades,
+            max_net_delta_pct=args.final_tick_max_net_delta_pct,
+            max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
+            max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
+            max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+        )
+        if counts:
+            print(
+                "Final Tick reconciliado desde disco: "
+                + ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+            )
+        else:
+            print("Final Tick reconcile: no hay reportes en disco utilizables para filas pendientes.")
+        print(f"Memoria: {memory.path}")
+        return 0
     if not args.expert and not args.multi_terminal and not args.dry_run:
         print("ERROR: Final Tick requiere --expert o --multi-terminal")
         return 1
@@ -2208,8 +2235,39 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             ready_for_tick.append((row, ohlc_variant, real_tick_variant))
             ohlc_results[candidate_id] = (ohlc_report, ohlc_result)
 
+    reconciled_tick = 0
+    if resume_pending_dir and ready_for_tick:
+        # Reconciliar reportes Real Tick ya existentes en disco (p. ej. de un
+        # proceso interrumpido manualmente) antes de relanzar MT5. Solo se
+        # reutiliza un reporte si su rango de fechas coincide con el del OHLC
+        # de control y el symbol/TF es el esperado.
+        still_pending = []
+        for row, ohlc_variant, real_tick_variant in ready_for_tick:
+            candidate_id = int(row["id"])
+            ohlc_report, ohlc_result = ohlc_results[candidate_id]
+            existing_tick = find_report_for_set(real_tick_variant.path)
+            reused = False
+            if existing_tick is not None:
+                tick_dates = _read_ohlc_report_cfg_dates(existing_tick)
+                ohlc_dates = _read_ohlc_report_cfg_dates(Path(ohlc_report))
+                if tick_dates[0] and tick_dates == ohlc_dates:
+                    reused = _evaluate_final_tick_tick_report(
+                        memory, args, score_config, symbol_map, run_id,
+                        candidate_id, real_tick_variant, ohlc_report, ohlc_result,
+                        existing_tick, status_counts, reconcile=True,
+                    )
+            if reused:
+                reconciled_tick += 1
+                print(f"Final Tick resume: reporte Real Tick existente reutilizado para candidate #{candidate_id}.")
+            else:
+                still_pending.append((row, ohlc_variant, real_tick_variant))
+        ready_for_tick = still_pending
+
     if not ready_for_tick:
-        print("Final Tick: ningun OHLC cumple el minimo de operaciones; no se lanza Every Tick.")
+        if reconciled_tick:
+            print(f"Final Tick: {reconciled_tick} reporte(s) Real Tick reconciliados desde disco; no hay nada que ejecutar.")
+        else:
+            print("Final Tick: ningun OHLC cumple el minimo de operaciones; no se lanza Every Tick.")
         print(
             "Final Tick terminado: "
             + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
@@ -2257,110 +2315,19 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             status_counts["no_report"] = status_counts.get("no_report", 0) + 1
             continue
 
-        try:
-            real_tick_result = score_report_file(real_tick_report, config=score_config)
-        except Exception as exc:
-            print(f"AVISO: no pude parsear Real Tick Final Tick candidate #{candidate_id}: {exc}")
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "parse_error",
-                ohlc_result,
-                None,
-                ohlc_report,
-                real_tick_report,
-                None,
-                None,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
-            continue
-
-        real_matches, real_mismatch = report_matches_variant(real_tick_variant, real_tick_result, symbol_map)
-        if not real_matches:
-            print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{candidate_id}: {real_mismatch}")
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "report_mismatch",
-                ohlc_result,
-                real_tick_result,
-                ohlc_report,
-                real_tick_report,
-                None,
-                real_tick_result.history_quality,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-            continue
-
-        if real_tick_result.trades <= 0:
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "no_trades",
-                ohlc_result,
-                real_tick_result,
-                ohlc_report,
-                real_tick_report,
-                None,
-                real_tick_result.history_quality,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
-            continue
-
-        similarity = final_tick_similarity(
-            ohlc_result,
-            real_tick_result,
-            min_history_quality=args.final_tick_min_history_quality,
-            max_net_delta_pct=args.final_tick_max_net_delta_pct,
-            max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
-            max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
-            max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
-        )
-        reasons = set(str(reason) for reason in (similarity.get("reasons") or []))
-        if "history_quality" in reasons:
-            status = "pending_history_quality"
-        else:
-            status = "accepted" if bool(similarity.get("accepted")) else "rejected"
-        memory.record_candidate_final_tick(
-            candidate_id,
+        _evaluate_final_tick_tick_report(
+            memory,
+            args,
+            score_config,
+            symbol_map,
             run_id,
-            status,
-            ohlc_result,
-            real_tick_result,
+            candidate_id,
+            real_tick_variant,
             ohlc_report,
+            ohlc_result,
             real_tick_report,
-            json.dumps(similarity, ensure_ascii=True, sort_keys=True),
-            real_tick_result.history_quality,
-            args.final_tick_min_history_quality,
-            args.from_date,
-            args.to_date,
-            args.final_tick_max_net_delta_pct,
-            args.final_tick_max_pf_delta_pct,
-            args.final_tick_max_dd_delta_pct,
-            args.final_tick_max_trades_delta_pct,
+            status_counts,
         )
-        status_counts[status] = status_counts.get(status, 0) + 1
 
     print(
         "Final Tick terminado: "
@@ -2368,6 +2335,196 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         + f"; memoria={memory.path}"
     )
     return 0
+
+
+def _evaluate_final_tick_tick_report(
+    memory: AgentMemory,
+    args: argparse.Namespace,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    run_id: int,
+    candidate_id: int,
+    real_tick_variant: Variant,
+    ohlc_report: Path,
+    ohlc_result: ScoreResult,
+    real_tick_report: Path,
+    status_counts: dict[str, int],
+    *,
+    reconcile: bool = False,
+) -> bool:
+    """Evalua un reporte Real Tick contra su OHLC y registra el resultado.
+
+    Con reconcile=True solo registra cuando el reporte es utilizable
+    (parseable, symbol/TF correctos); si no lo es devuelve False sin tocar
+    memoria, para que el candidato vuelva a la cola de ejecucion.
+    """
+    try:
+        real_tick_result = score_report_file(real_tick_report, config=score_config)
+    except Exception as exc:
+        if reconcile:
+            return False
+        print(f"AVISO: no pude parsear Real Tick Final Tick candidate #{candidate_id}: {exc}")
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "parse_error", ohlc_result, None,
+            ohlc_report, real_tick_report, None, None,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+        return True
+
+    real_matches, real_mismatch = report_matches_variant(real_tick_variant, real_tick_result, symbol_map)
+    if not real_matches:
+        if reconcile:
+            return False
+        print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{candidate_id}: {real_mismatch}")
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "report_mismatch", ohlc_result, real_tick_result,
+            ohlc_report, real_tick_report, None, real_tick_result.history_quality,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
+        return True
+
+    if real_tick_result.trades <= 0:
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "no_trades", ohlc_result, real_tick_result,
+            ohlc_report, real_tick_report, None, real_tick_result.history_quality,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
+        return True
+
+    similarity = final_tick_similarity(
+        ohlc_result,
+        real_tick_result,
+        min_history_quality=args.final_tick_min_history_quality,
+        max_net_delta_pct=args.final_tick_max_net_delta_pct,
+        max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
+        max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
+        max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+    )
+    reasons = set(str(reason) for reason in (similarity.get("reasons") or []))
+    if "history_quality" in reasons:
+        status = "pending_history_quality"
+    else:
+        status = "accepted" if bool(similarity.get("accepted")) else "rejected"
+    memory.record_candidate_final_tick(
+        candidate_id, run_id, status, ohlc_result, real_tick_result,
+        ohlc_report, real_tick_report,
+        json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+        real_tick_result.history_quality,
+        args.final_tick_min_history_quality, args.from_date, args.to_date,
+        args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+        args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+    )
+    status_counts[status] = status_counts.get(status, 0) + 1
+    return True
+
+
+def reconcile_final_tick_reports(
+    memory: AgentMemory,
+    run_id: int,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    *,
+    min_history_quality: float = 80.0,
+    min_ohlc_trades: int = 5,
+    max_net_delta_pct: float = 35.0,
+    max_pf_delta_pct: float = 35.0,
+    max_dd_delta_pct: float = 35.0,
+    max_trades_delta_pct: float = 35.0,
+) -> dict[str, int]:
+    """Concilia desde disco los reportes Final Tick ya generados, sin abrir MT5.
+
+    Para cada candidato robust-accepted sin estado final, busca su par de
+    reportes `ohlc_*`/`tick_*` en `reports/`. El par solo se registra cuando el
+    OHLC coincide con el target del candidato y ambos reportes comparten el
+    mismo rango de fechas (verdad de disco, no la DB ni la UI). Permite
+    recuperar el trabajo completado de un proceso interrumpido manualmente.
+    """
+    rows = [
+        row
+        for row in memory.accepted_candidates_for_final_tick(run_id)
+        if Path(row["set_path"]).exists()
+    ]
+    status_counts: dict[str, int] = {}
+    for row in rows:
+        if str(row["final_tick_status"] or "").strip() in {"accepted", "rejected"}:
+            continue
+        candidate_id = int(row["id"])
+        source_set = Path(row["set_path"])
+        ohlc_report = find_report_for_set(Path(f"ohlc_{candidate_id:06d}_{source_set.name}"))
+        if ohlc_report is None:
+            continue
+        ohlc_dates = _read_ohlc_report_cfg_dates(ohlc_report)
+        if not ohlc_dates[0] or not ohlc_dates[1]:
+            continue
+        try:
+            ohlc_result = score_report_file(ohlc_report, config=score_config)
+        except Exception:
+            continue
+        original_variant = variant_from_candidate_row(row)
+        ohlc_variant = Variant(
+            path=Path(f"ohlc_{candidate_id:06d}_{source_set.name}"),
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_ohlc",
+        )
+        ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+        if not ohlc_matches:
+            continue
+        thresholds = argparse.Namespace(
+            final_tick_min_history_quality=float(min_history_quality),
+            from_date=ohlc_dates[0],
+            to_date=ohlc_dates[1],
+            final_tick_max_net_delta_pct=float(max_net_delta_pct),
+            final_tick_max_pf_delta_pct=float(max_pf_delta_pct),
+            final_tick_max_dd_delta_pct=float(max_dd_delta_pct),
+            final_tick_max_trades_delta_pct=float(max_trades_delta_pct),
+        )
+        if ohlc_result.trades < int(min_ohlc_trades):
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, int(min_ohlc_trades))
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "pending_ohlc_trades", ohlc_result, None,
+                ohlc_report, None,
+                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
+                thresholds.final_tick_min_history_quality,
+                thresholds.from_date, thresholds.to_date,
+                float(max_net_delta_pct), float(max_pf_delta_pct),
+                float(max_dd_delta_pct), float(max_trades_delta_pct),
+            )
+            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
+            continue
+        tick_report = find_report_for_set(Path(f"tick_{candidate_id:06d}_{source_set.name}"))
+        if tick_report is None:
+            continue
+        if _read_ohlc_report_cfg_dates(tick_report) != ohlc_dates:
+            continue
+        real_tick_variant = Variant(
+            path=Path(f"tick_{candidate_id:06d}_{source_set.name}"),
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_real",
+        )
+        if _evaluate_final_tick_tick_report(
+            memory, thresholds, score_config, symbol_map, run_id,
+            candidate_id, real_tick_variant, ohlc_report, ohlc_result,
+            tick_report, status_counts, reconcile=True,
+        ):
+            print(f"Final Tick reconcile: candidate #{candidate_id} registrado desde reportes en disco.")
+    return status_counts
 
 
 def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:

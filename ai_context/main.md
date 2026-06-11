@@ -163,6 +163,15 @@ generation scoring:
   - `UBS Agente UBS` has a **Robustez OOS** config block with separate dates,
     separate scoring thresholds, positive/negative bonus values, and an
     auto-run toggle.
+  - `UBS Agente UBS` also has a **Final Tick (Every Tick)** config block
+    mirroring the Final Tick tab settings (dates, OHLC retry dates, min history
+    quality, min OHLC trades, delta tolerances) plus an **Auto Final Tick**
+    toggle (`ubs_final_tick_auto` in `ui_settings.ini`). When enabled, finishing
+    a robustness OOS evaluation successfully auto-launches Final Tick
+    pending-only for the latest visible run
+    (`_maybe_auto_run_ubs_final_tick()` in `ui/ubs_final_tick_logic.py`,
+    chained after `_maybe_auto_run_ubs_robustness` in the process-finished
+    hook). Full auto chain: generation -> Auto robustez -> Auto Final Tick.
   - `UBS Resultados` has **Continuar a robustez** for the latest visible run.
     This is incremental and passes `--robust-pending-only`, so it only sends
     accepted candidates without OOS already stored. **Reprobar robustez**

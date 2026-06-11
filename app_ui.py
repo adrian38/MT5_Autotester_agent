@@ -677,6 +677,7 @@ class MT5AutotesterUI(
         self.ubs_robust_positive_bonus = tk.StringVar(value=saved_robust_positive_bonus)
         self.ubs_robust_negative_bonus = tk.StringVar(value=saved_robust_negative_bonus)
         self.ubs_robust_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_robust_auto"), False))
+        self.ubs_final_tick_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_final_tick_auto"), False))
         self.ubs_agent_from_date = tk.StringVar(value=saved_general.get("ubs_agent_from_date", ""))
         self.ubs_agent_to_date = tk.StringVar(value=saved_general.get("ubs_agent_to_date", ""))
         self.ubs_seed_from_date = tk.StringVar(value=saved_general.get("ubs_seed_from_date", ""))
@@ -1750,6 +1751,16 @@ class MT5AutotesterUI(
                     auto_followup_started = False
                     if code == 0 and hasattr(self, "_maybe_auto_run_ubs_robustness"):
                         auto_followup_started = self._maybe_auto_run_ubs_robustness(
+                            finished_script_name,
+                            finished_script_args,
+                            code,
+                        )
+                    if (
+                        code == 0
+                        and not auto_followup_started
+                        and hasattr(self, "_maybe_auto_run_ubs_final_tick")
+                    ):
+                        auto_followup_started = self._maybe_auto_run_ubs_final_tick(
                             finished_script_name,
                             finished_script_args,
                             code,
