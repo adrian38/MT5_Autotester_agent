@@ -662,6 +662,8 @@ class UBSSeedsLogicMixin:
         ]
         details.extend(self._multiterminal_execution_details())
         if self._confirm_execution_start("Confirmar retry seed", len(paths), details):
+            self.ubs_seed_checked.clear()
+            self._safe_refresh("ubs_seeds", self._refresh_ubs_seeds)
             self._run_script("ubs_agent.py", args)
 
     def _import_ubs_seeds(self) -> None:
@@ -1138,10 +1140,32 @@ class UBSSeedsLogicMixin:
             conn = connect_memory(memory_path)
             self._ensure_ubs_seed_override_schema(conn)
             now = datetime.now().isoformat(timespec="seconds")
-            from ubs_agent import write_set_force_symbol
+            from ubs_agent import load_set_params, write_set_force_symbol
 
+            # Un override que no cambia symbol/TF ni ForceSymbol no debe invalidar
+            # evaluaciones existentes: solo se resetean los seeds con cambio real.
+            changed_paths: list[str] = []
             for seed_path in seed_paths:
-                write_set_force_symbol(Path(seed_path), Path(seed_path), symbol)
+                row = None
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    row = conn.execute(
+                        "select symbol, period from seed_scores where seed_path=?",
+                        (seed_path,),
+                    ).fetchone()
+                same_target = (
+                    row is not None
+                    and str(row["symbol"] or "").strip().upper() == symbol
+                    and str(row["period"] or "").strip().upper() == period
+                )
+                try:
+                    params = load_set_params(Path(seed_path))
+                except OSError:
+                    params = {}
+                force_ok = str(params.get("ForceSymbol", "")).strip().upper() == symbol
+                if not force_ok:
+                    write_set_force_symbol(Path(seed_path), Path(seed_path), symbol)
+                if not (same_target and force_ok):
+                    changed_paths.append(seed_path)
                 conn.execute(
                     """
                     insert into seed_overrides (seed_path, symbol, period, updated_at)
@@ -1153,6 +1177,8 @@ class UBSSeedsLogicMixin:
                     """,
                     (seed_path, symbol, period, now),
                 )
+            unchanged_count = len(seed_paths) - len(changed_paths)
+            seed_paths = changed_paths
             if self._sqlite_table_exists(conn, "seed_scores") and seed_paths:
                 placeholders = ",".join("?" for _ in seed_paths)
                 conn.execute(
@@ -1223,7 +1249,12 @@ class UBSSeedsLogicMixin:
         except (sqlite3.Error, OSError) as exc:
             self._show_error("Error guardando seed", str(exc))
             return
-        self.status_text.set(f"Override aplicado a {len(seed_paths)} seed(s); estado recalculado")
+        self.ubs_seed_checked.clear()
+        if seed_paths:
+            extra = f" ({unchanged_count} sin cambios, evaluacion conservada)" if unchanged_count else ""
+            self.status_text.set(f"Override aplicado a {len(seed_paths)} seed(s); estado recalculado{extra}")
+        else:
+            self.status_text.set(f"Override sin cambios en {unchanged_count} seed(s); evaluacion conservada")
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 

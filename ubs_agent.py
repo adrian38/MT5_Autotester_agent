@@ -837,7 +837,28 @@ def reconcile_seed_eval_reports(
                 continue
             override_updated_at = _seed_override_updated_at(memory, seed.path)
             if override_updated_at is not None and eval_started <= override_updated_at:
-                continue
+                # Override guardado despues de la evaluacion: el reporte solo es
+                # reutilizable si coincide con el target efectivo actual (caso
+                # tipico: override que no cambia symbol/TF). Si no coincide, se
+                # deja pendiente para re-ejecutar en MT5.
+                if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
+                    continue
+                try:
+                    probe = score_report_file(report, config=score_config)
+                except Exception:
+                    continue
+                probe_variant = Variant(
+                    path=Path(copied_set.name),
+                    seed=seed,
+                    target_symbol=seed.symbol,
+                    target_period=seed.period,
+                    mutated_keys=(),
+                    missing_lot_keys=(),
+                    policy="seed_eval",
+                )
+                matches, _ = report_matches_variant(probe_variant, probe, symbol_map)
+                if not matches:
+                    continue
             seed_path = str(seed.path)
             status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
             status_counts[status] = status_counts.get(status, 0) + 1
