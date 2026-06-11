@@ -294,7 +294,12 @@ def parse_args() -> argparse.Namespace:
         help="Con --evaluate-seeds, clasifica reportes de evaluaciones seed incompletas sin abrir MT5.",
     )
     parser.add_argument("--reevaluate-seeds", action="store_true", help="Con --evaluate-seeds, vuelve a testear todas las semillas activas.")
-    parser.add_argument("--retry-candidate-id", type=int, help="Relanza un candidato concreto y actualiza su estado en memoria.")
+    parser.add_argument(
+        "--retry-candidate-id",
+        type=int,
+        action="append",
+        help="Relanza un candidato concreto y actualiza su estado en memoria. Puede repetirse para varios candidatos.",
+    )
     parser.add_argument("--retry-seed-path", action="append", help="Relanza una semilla concreta y actualiza seed_scores. Puede repetirse.")
     parser.add_argument("--retry-run-id", type=int, help="Run SQLite para retry de mismatches. Si se omite usa el ultimo run.")
     parser.add_argument("--retry-mismatch-run", action="store_true", help="Relanza todos los report_mismatch de un run.")
@@ -2366,16 +2371,34 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
 
 
 def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
-    if not args.retry_candidate_id:
+    candidate_ids = [int(value) for value in (args.retry_candidate_id or [])]
+    if not candidate_ids:
         print("ERROR: falta --retry-candidate-id")
         return 1
     if not args.expert and not args.multi_terminal:
         print("ERROR: retry requiere --expert")
         return 1
 
-    row = memory.candidate_by_id(args.retry_candidate_id)
+    exit_code = 0
+    for candidate_id in candidate_ids:
+        code = _retry_single_candidate(candidate_id, args, memory, score_config)
+        if code == RUNNING_TERMINAL_EXIT_CODE:
+            print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+            return 1
+        if code != 0:
+            exit_code = code
+    return exit_code
+
+
+def _retry_single_candidate(
+    candidate_id: int,
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
+    row = memory.candidate_by_id(candidate_id)
     if row is None:
-        print(f"ERROR: no existe candidate id {args.retry_candidate_id}")
+        print(f"ERROR: no existe candidate id {candidate_id}")
         return 1
 
     set_path = Path(row["set_path"])
@@ -2386,7 +2409,7 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     run = memory.run_by_id(int(row["run_id"]))
     run_dir = Path(run["output_dir"]) if run else DEFAULT_OUTPUT
     generation = int(row["generation"] or 0)
-    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{args.retry_candidate_id}")
+    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{candidate_id}")
     retry_set = retry_dir / set_path.name
     shutil.copy2(set_path, retry_set)
 
@@ -2395,14 +2418,13 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
         remove_report_artifacts(set_path)
         remove_candidate_copies(run_dir, generation, set_path.name)
 
-    print(f"Retry candidate #{args.retry_candidate_id}")
+    print(f"Retry candidate #{candidate_id}")
     print(f"Set original: {set_path}")
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
     if code == RUNNING_TERMINAL_EXIT_CODE:
-        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
-        return 1
+        return code
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:

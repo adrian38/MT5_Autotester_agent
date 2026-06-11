@@ -1423,33 +1423,41 @@ class UBSResultsLogicMixin:
             return
         self._open_local_file(path)
 
-    def _retry_selected_ubs_mismatch(self) -> None:
-        info = self._selected_ubs_result_info()
-        if not info:
-            messagebox.showinfo("Agente UBS", "Selecciona un resultado primero.")
+    def _retry_ubs_result_candidates(
+        self,
+        *,
+        eligible_statuses: set[str],
+        dialog_title: str,
+        action_label: str,
+        not_eligible_message: str,
+        error_label: str,
+    ) -> None:
+        infos = [info for info in self._checked_ubs_result_infos() if info]
+        if not infos:
+            messagebox.showinfo(dialog_title, "Selecciona o marca un resultado primero.")
             return
-        if info.get("status") not in {"report_mismatch", "no_report"}:
-            messagebox.showinfo(
-                "Agente UBS",
-                "Esta accion solo aplica a filas con estado mismatch reporte o sin reporte.",
-            )
+        rows = [info for info in infos if info.get("status") in eligible_statuses]
+        if not rows:
+            messagebox.showinfo(dialog_title, not_eligible_message)
             return
-        candidate_id = info.get("id", "").strip()
-        set_path = Path(info.get("set", "")).expanduser()
-        if not candidate_id:
-            messagebox.showinfo("Agente UBS", "La fila seleccionada no tiene candidate id.")
-            return
-        if not set_path.exists():
-            messagebox.showinfo("Agente UBS", f"No existe el set:\n{set_path}")
-            return
+        for info in rows:
+            candidate_id = str(info.get("id", "")).strip()
+            set_path = Path(str(info.get("set", ""))).expanduser()
+            if not candidate_id:
+                messagebox.showinfo(dialog_title, "Una fila marcada no tiene candidate id.")
+                return
+            if not set_path.exists():
+                messagebox.showinfo(dialog_title, f"No existe el set:\n{set_path}")
+                return
         try:
             args = [
                 "--memory", str(self._ubs_memory_path()),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
-                "--retry-candidate-id", candidate_id,
                 "--delay", str(self.delay.get()),
             ]
+            for info in rows:
+                args.extend(["--retry-candidate-id", str(info.get("id", "")).strip()])
             if self.multiterminal_enabled.get():
                 args.extend(self._multiterminal_args(require_ubs=True))
             else:
@@ -1463,20 +1471,31 @@ class UBSResultsLogicMixin:
             if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
                 args.extend(["--symbol-map", self.symbol_map.get().strip()])
         except Exception as exc:
-            self._show_error("No se pudo preparar retry de fila", str(exc))
+            self._show_error(error_label, str(exc))
             return
 
-        status_label = "sin reporte" if info.get("status") == "no_report" else "mismatch reporte"
+        first = rows[0]
         details = [
-            f"Accion: Reprobar fila UBS ({status_label})",
-            f"Candidate: #{candidate_id}",
-            f"Objetivo: {info.get('symbol', '')} {info.get('period', '')}",
-            f"Set: {set_path.name}",
-            "Backtests previstos: 1",
+            f"Accion: {action_label}",
+            f"Candidatos: {', '.join('#' + str(info.get('id', '')).strip() for info in rows)}",
+            f"Primero: {first.get('symbol', '')} {first.get('period', '')} ({Path(str(first.get('set', ''))).name})",
+            f"Backtests previstos: {len(rows)}",
         ]
+        if len(infos) > len(rows):
+            details.append(f"Filas marcadas ignoradas por estado no aplicable: {len(infos) - len(rows)}")
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar retry fila", 1, details):
+        if self._confirm_execution_start(f"Confirmar {dialog_title.lower()}", len(rows), details):
+            self.ubs_result_checked.clear()
             self._run_script("ubs_agent.py", args)
+
+    def _retry_selected_ubs_mismatch(self) -> None:
+        self._retry_ubs_result_candidates(
+            eligible_statuses={"report_mismatch", "no_report"},
+            dialog_title="Reprobar fila",
+            action_label="Reprobar fila UBS (mismatch reporte / sin reporte)",
+            not_eligible_message="Esta accion solo aplica a filas con estado mismatch reporte o sin reporte.",
+            error_label="No se pudo preparar retry de fila",
+        )
 
     def _retry_visible_ubs_run_mismatches(self) -> None:
         try:
@@ -1559,53 +1578,13 @@ class UBSResultsLogicMixin:
             conn.close()
 
     def _retry_no_trades_result(self) -> None:
-        info = self._selected_ubs_result_info()
-        if not info:
-            messagebox.showinfo("Repetir sin ops", "Selecciona un resultado primero.")
-            return
-        if info.get("status") != "no_trades":
-            messagebox.showinfo("Repetir sin ops",
-                                "Esta acción solo aplica a filas con estado 'sin operaciones'.")
-            return
-        candidate_id = info.get("id", "").strip()
-        set_path = info.get("set", "")
-        if not candidate_id:
-            messagebox.showinfo("Repetir sin ops", "La fila seleccionada no tiene candidate id.")
-            return
-        try:
-            args = [
-                "--memory", str(self._ubs_memory_path()),
-                "--account-type", self._ubs_account_type(),
-                "--template", self.template_path.get(),
-                "--retry-candidate-id", candidate_id,
-                "--delay", str(self.delay.get()),
-            ]
-            if self.multiterminal_enabled.get():
-                args.extend(self._multiterminal_args(require_ubs=True))
-            else:
-                args.extend(["--expert", self._required_ubs_ex5_file()])
-            args.extend(self._ubs_score_args())
-            if not self.multiterminal_enabled.get():
-                if self.mt5_path.get().strip():
-                    args.extend(["--mt5-path", self.mt5_path.get()])
-                if self.mt5_data_root.get().strip():
-                    args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
-        except Exception as exc:
-            self._show_error("No se pudo preparar retry sin ops", str(exc))
-            return
-
-        details = [
-            "Accion: Repetir candidato sin operaciones",
-            f"Candidate: #{candidate_id}",
-            f"Objetivo: {info.get('symbol', '')} {info.get('period', '')}",
-            f"Set: {Path(set_path).name if set_path else '-'}",
-            "Backtests previstos: 1",
-        ]
-        details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar repetir sin ops", 1, details):
-            self._run_script("ubs_agent.py", args)
+        self._retry_ubs_result_candidates(
+            eligible_statuses={"no_trades"},
+            dialog_title="Repetir sin ops",
+            action_label="Repetir candidato sin operaciones",
+            not_eligible_message="Esta acción solo aplica a filas con estado 'sin operaciones'.",
+            error_label="No se pudo preparar retry sin ops",
+        )
 
     # ──────────────────────────────────────────────────────────────────────
     # Export
