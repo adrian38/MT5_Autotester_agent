@@ -38,7 +38,15 @@ class UBSSeedsLogicMixin:
         if status == "report_mismatch":
             return "mismatch symbol/TF"
         if status == "invalid_seed":
-            return "no se pudo inferir Symbol; guarda override"
+            try:
+                metrics_json = row["metrics_json"] if row is not None else None
+                data = json.loads(metrics_json) if metrics_json else {}
+                reasons = data.get("reasons") or []
+                if reasons:
+                    return " | ".join(str(reason) for reason in reasons)
+            except Exception:
+                pass
+            return "set invalido/deshabilitado"
         if row is None:
             return ""
         if status == "parse_error":
@@ -134,7 +142,7 @@ class UBSSeedsLogicMixin:
 
         stats: Counter[str] = Counter()
         disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected"}
+        ready_statuses = {"accepted", "rejected", "invalid_seed"}
         for path in seed_files:
             path_text = str(path)
             try:
@@ -187,12 +195,13 @@ class UBSSeedsLogicMixin:
 
     def _ubs_seed_eval_args(self) -> list[str]:
         source_dir = self._ubs_generator_source_dir()
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        output_dir = self._ubs_generation_output_dir()
         args = [
             "--evaluate-seeds",
             "--source-dir", str(source_dir),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--delay", str(self.delay.get()),
         ]
@@ -235,8 +244,8 @@ class UBSSeedsLogicMixin:
             f"Carpeta seeds: {target}",
             f"Seeds detectadas: {total}",
             f"Backtests reales a ejecutar: {pending}",
-            f"No se ejecutan: {already_ok} ya listas/sin cambios, {disabled} por symbol deshabilitado, {invalid} sin Symbol/TF.",
-            "Corren solo seeds nuevas/modificadas o retryables con symbol/TF valido.",
+            f"No se ejecutan: {already_ok} ya listas/sin cambios, {disabled} por symbol deshabilitado, {invalid} por set invalido/Symbol-TF.",
+            "Corren solo seeds nuevas/modificadas o retryables con set y symbol/TF validos.",
         ]
         if disabled:
             details.append(
@@ -245,7 +254,7 @@ class UBSSeedsLogicMixin:
             )
             details.append("Ejemplo: XTIUSD cuenta como deshabilitado si el mapa activo lo traduce a WTI y WTI esta deshabilitado.")
         if invalid:
-            details.append("Sin Symbol/TF: se marcaran como report_mismatch sin abrir MT5.")
+            details.append("Sets invalidos o sin Symbol/TF: se marcaran sin abrir MT5.")
         if missing:
             details.append(f"Archivos no accesibles y omitidos: {missing}.")
         details.extend([
@@ -286,10 +295,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'disabled_symbol') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'disabled_symbol', 'invalid_seed') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'disabled_symbol') then 1
+                        when status not in ('accepted', 'rejected', 'disabled_symbol', 'invalid_seed') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -617,9 +626,10 @@ class UBSSeedsLogicMixin:
             return
         paths = [Path(info["seed_path"]).expanduser() for info in active_infos]
         try:
-            output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+            output_dir = self._ubs_generation_output_dir()
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
                 "--output-dir", str(output_dir),
                 "--template", self.template_path.get(),
                 "--delay", str(self.delay.get()),
@@ -652,6 +662,8 @@ class UBSSeedsLogicMixin:
         ]
         details.extend(self._multiterminal_execution_details())
         if self._confirm_execution_start("Confirmar retry seed", len(paths), details):
+            self.ubs_seed_checked.clear()
+            self._safe_refresh("ubs_seeds", self._refresh_ubs_seeds)
             self._run_script("ubs_agent.py", args)
 
     def _import_ubs_seeds(self) -> None:
@@ -664,7 +676,7 @@ class UBSSeedsLogicMixin:
         try:
             output_dir = self._ubs_generator_source_dir()
         except Exception:
-            output_dir = BASE_DIR / "sets" / "ubs_ready"
+            output_dir = self._ubs_default_source_dir()
 
         set_files = sorted(source_dir.rglob("*.set"))
         total = len(set_files)
@@ -1074,7 +1086,7 @@ class UBSSeedsLogicMixin:
                 from seed_scores
                 where active=1
                   and (
-                    status not in ('accepted','rejected','disabled_symbol')
+                    status not in ('accepted','rejected','disabled_symbol','invalid_seed')
                     or (status in ('accepted','rejected') and score is null)
                   )
                 """
@@ -1128,7 +1140,32 @@ class UBSSeedsLogicMixin:
             conn = connect_memory(memory_path)
             self._ensure_ubs_seed_override_schema(conn)
             now = datetime.now().isoformat(timespec="seconds")
+            from ubs_agent import load_set_params, write_set_force_symbol
+
+            # Un override que no cambia symbol/TF ni ForceSymbol no debe invalidar
+            # evaluaciones existentes: solo se resetean los seeds con cambio real.
+            changed_paths: list[str] = []
             for seed_path in seed_paths:
+                row = None
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    row = conn.execute(
+                        "select symbol, period from seed_scores where seed_path=?",
+                        (seed_path,),
+                    ).fetchone()
+                same_target = (
+                    row is not None
+                    and str(row["symbol"] or "").strip().upper() == symbol
+                    and str(row["period"] or "").strip().upper() == period
+                )
+                try:
+                    params = load_set_params(Path(seed_path))
+                except OSError:
+                    params = {}
+                force_ok = str(params.get("ForceSymbol", "")).strip().upper() == symbol
+                if not force_ok:
+                    write_set_force_symbol(Path(seed_path), Path(seed_path), symbol)
+                if not (same_target and force_ok):
+                    changed_paths.append(seed_path)
                 conn.execute(
                     """
                     insert into seed_overrides (seed_path, symbol, period, updated_at)
@@ -1140,6 +1177,8 @@ class UBSSeedsLogicMixin:
                     """,
                     (seed_path, symbol, period, now),
                 )
+            unchanged_count = len(seed_paths) - len(changed_paths)
+            seed_paths = changed_paths
             if self._sqlite_table_exists(conn, "seed_scores") and seed_paths:
                 placeholders = ",".join("?" for _ in seed_paths)
                 conn.execute(
@@ -1156,12 +1195,66 @@ class UBSSeedsLogicMixin:
                     """,
                     (symbol, period, *seed_paths),
                 )
+                from ubs_agent import validate_seed_backtest_set
+                from ubs.models import Seed
+
+                for seed_path in seed_paths:
+                    row = conn.execute(
+                        "select family, run_strategy from seed_scores where seed_path=?",
+                        (seed_path,),
+                    ).fetchone()
+                    seed = Seed(
+                        Path(seed_path),
+                        symbol,
+                        period,
+                        str(row["family"] or "") if row else "",
+                        str(row["run_strategy"] or "") if row else "",
+                    )
+                    reasons = validate_seed_backtest_set(seed)
+                    if reasons:
+                        conn.execute(
+                            """
+                            update seed_scores
+                            set status='invalid_seed',
+                                report_path=null,
+                                score=null,
+                                accepted=null,
+                                metrics_json=?,
+                                evaluated_at=?
+                            where seed_path=?
+                            """,
+                            (
+                                json.dumps({"reasons": reasons}, ensure_ascii=False),
+                                now,
+                                seed_path,
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            update seed_scores
+                            set status='pending',
+                                report_path=null,
+                                score=null,
+                                accepted=null,
+                                metrics_json=null,
+                                evaluated_at=null
+                            where seed_path=?
+                              and status not in ('accepted', 'rejected')
+                            """,
+                            (seed_path,),
+                        )
             conn.commit()
             conn.close()
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError) as exc:
             self._show_error("Error guardando seed", str(exc))
             return
-        self.status_text.set(f"Override aplicado a {len(seed_paths)} seed(s)")
+        self.ubs_seed_checked.clear()
+        if seed_paths:
+            extra = f" ({unchanged_count} sin cambios, evaluacion conservada)" if unchanged_count else ""
+            self.status_text.set(f"Override aplicado a {len(seed_paths)} seed(s); estado recalculado{extra}")
+        else:
+            self.status_text.set(f"Override sin cambios en {unchanged_count} seed(s); evaluacion conservada")
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 
@@ -1181,7 +1274,8 @@ class UBSSeedsLogicMixin:
             args = [
                 "--rescore-seeds-only",
                 "--source-dir", str(self._ubs_generator_source_dir()),
-                "--memory", str(BASE_DIR / "outputs" / "ubs_memory.sqlite"),
+                "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
             ]
             args.extend(self._ubs_seed_score_args())
             if self.symbol_map_enabled.get() and self.symbol_map.get().strip():

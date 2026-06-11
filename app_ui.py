@@ -56,6 +56,7 @@ from ui.ubs_universe_logic import UBSUniverseLogicMixin
 from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
+from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_memory_path, normalize_account_type
 from ubs.universe import disabled_symbols_path, load_disabled_symbols, save_disabled_symbols
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
@@ -635,6 +636,9 @@ class MT5AutotesterUI(
         self.ubs_force_unseeded_universe = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_force_unseeded_universe"), False)
         )
+        self.ubs_account_type = tk.StringVar(
+            value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE))
+        )
         self.ubs_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_pass_min_net_profit", "100"))
         self.ubs_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_profit_factor", "1.20"))
         self.ubs_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_pass_min_trades"), 50))
@@ -673,6 +677,7 @@ class MT5AutotesterUI(
         self.ubs_robust_positive_bonus = tk.StringVar(value=saved_robust_positive_bonus)
         self.ubs_robust_negative_bonus = tk.StringVar(value=saved_robust_negative_bonus)
         self.ubs_robust_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_robust_auto"), False))
+        self.ubs_final_tick_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_final_tick_auto"), False))
         self.ubs_agent_from_date = tk.StringVar(value=saved_general.get("ubs_agent_from_date", ""))
         self.ubs_agent_to_date = tk.StringVar(value=saved_general.get("ubs_agent_to_date", ""))
         self.ubs_seed_from_date = tk.StringVar(value=saved_general.get("ubs_seed_from_date", ""))
@@ -858,6 +863,7 @@ class MT5AutotesterUI(
         self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"
 
+        self._sync_ubs_account_paths()
         self._configure_style()
         self._build_ui()
         try:
@@ -1320,7 +1326,7 @@ class MT5AutotesterUI(
 
     def _ubs_notification_memory_path(self, args: list[str]) -> Path:
         raw = self._arg_value(args, "--memory")
-        return Path(raw).expanduser() if raw else BASE_DIR / "outputs" / "ubs_memory.sqlite"
+        return Path(raw).expanduser() if raw else account_memory_path(BASE_DIR, self.ubs_account_type.get())
 
     def _ubs_status_counts(self, conn: sqlite3.Connection, table: str, where: str = "", params: tuple = ()) -> dict[str, int]:
         query = f"select status, count(*) as total from {table}"
@@ -1745,6 +1751,16 @@ class MT5AutotesterUI(
                     auto_followup_started = False
                     if code == 0 and hasattr(self, "_maybe_auto_run_ubs_robustness"):
                         auto_followup_started = self._maybe_auto_run_ubs_robustness(
+                            finished_script_name,
+                            finished_script_args,
+                            code,
+                        )
+                    if (
+                        code == 0
+                        and not auto_followup_started
+                        and hasattr(self, "_maybe_auto_run_ubs_final_tick")
+                    ):
+                        auto_followup_started = self._maybe_auto_run_ubs_final_tick(
                             finished_script_name,
                             finished_script_args,
                             code,

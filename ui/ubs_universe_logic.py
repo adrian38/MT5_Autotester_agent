@@ -168,7 +168,7 @@ class UBSUniverseLogicMixin:
                     """
                     select
                         c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                        c.score, c.accepted, c.metrics_json, c.status,
+                        c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                         cr.status as robust_status,
                         cr.positive_bonus as robust_positive_bonus,
                         cr.negative_bonus as robust_negative_bonus,
@@ -187,7 +187,7 @@ class UBSUniverseLogicMixin:
                 if seed_table:
                     seed_rows = conn.execute(
                         """
-                        select seed_path, symbol, period, score, accepted, metrics_json, status, active
+                        select seed_path, symbol, period, score, accepted, metrics_json, status, active, report_path
                         from seed_scores
                         where active=1
                         """
@@ -209,7 +209,7 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
-                if status not in {"accepted", "rejected"}:
+                if status not in {"accepted", "rejected", "no_trades"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_pending += 1
@@ -251,7 +251,7 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
-                if status not in {"accepted", "rejected"}:
+                if status not in {"accepted", "rejected", "no_trades"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
                     total_seed_pending += 1
@@ -381,7 +381,8 @@ class UBSUniverseLogicMixin:
             f"deshabilitados: {len(disabled_symbols)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO = solo aceptados y rechazados; pendientes/no-ops no aportan; robustez y Final Tick solo pesan si terminan OK/FAIL."
+            "PESO = aceptados, rechazados y sin-ops con reporte (-40 fijo); pendientes/mismatch no aportan; "
+            "robustez y Final Tick solo pesan si terminan OK/FAIL."
         )
 
     def _disabled_symbols_path(self):
@@ -419,7 +420,7 @@ class UBSUniverseLogicMixin:
     # ── Limpiar pesos (score=NULL en candidates/seed_scores) ─────────────────
 
     def _weight_memory_path(self):
-        return BASE_DIR / "outputs" / "ubs_memory.sqlite"
+        return self._ubs_memory_path()
 
     def _clear_weights_sql(self, conn, *, symbols=None, periods=None) -> int:
         """Set score=NULL for candidates matching symbols and/or periods.

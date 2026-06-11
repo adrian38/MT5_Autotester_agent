@@ -249,7 +249,7 @@ class AgentMemory:
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected"}
+                or str(row["status"] or "") not in {"accepted", "rejected", "invalid_seed"}
                 or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
             )
@@ -618,7 +618,7 @@ class AgentMemory:
             """
             select
                 c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.mutated_keys, c.score, c.accepted, c.metrics_json, c.status,
+                c.mutated_keys, c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
@@ -629,8 +629,8 @@ class AgentMemory:
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
             where c.mutated_keys != ''
-              and c.status in ('accepted', 'rejected')
-              and c.score is not null
+              and c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status = 'no_trades')
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}
@@ -658,7 +658,7 @@ class AgentMemory:
             """
             select
                 c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.score, c.accepted, c.metrics_json, c.status,
+                c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
@@ -668,17 +668,17 @@ class AgentMemory:
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
-            where c.status in ('accepted', 'rejected')
-              and c.score is not null
+            where c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status = 'no_trades')
             """
         ).fetchall()
         seed_rows = self.conn.execute(
             """
-            select seed_path, symbol, period, score, accepted, metrics_json, status
+            select seed_path, symbol, period, score, accepted, metrics_json, status, report_path
             from seed_scores
             where active=1
-              and status in ('accepted', 'rejected')
-              and score is not null
+              and status in ('accepted', 'rejected', 'no_trades')
+              and (score is not null or status = 'no_trades')
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}
@@ -705,7 +705,7 @@ class AgentMemory:
             """
             select
                 c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.score, c.accepted, c.metrics_json, c.status,
+                c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
@@ -715,17 +715,17 @@ class AgentMemory:
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
-            where c.status in ('accepted', 'rejected')
-              and c.score is not null
+            where c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status = 'no_trades')
             """
         ).fetchall()
         seed_rows = self.conn.execute(
             """
-            select seed_path, symbol, period, score, accepted, metrics_json, status
+            select seed_path, symbol, period, score, accepted, metrics_json, status, report_path
             from seed_scores
             where active=1
-              and status in ('accepted', 'rejected')
-              and score is not null
+              and status in ('accepted', 'rejected', 'no_trades')
+              and (score is not null or status = 'no_trades')
             """
         ).fetchall()
         totals: dict[str, dict[object, list[float]]] = {}

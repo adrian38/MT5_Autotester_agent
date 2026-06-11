@@ -4,6 +4,8 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk
 
+from ubs.account import ACCOUNT_TYPES
+
 from run_tests import REPORT_DIR
 
 
@@ -41,11 +43,28 @@ class UBSAgentViewMixin:
         paths = self._card(inner, "Rutas Agente UBS")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
-        self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 1, self._browse_ex5_file)
-        self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 2, self._browse_dir)
-        self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 3, self._browse_dir)
+        ttk.Label(paths, text="Tipo de cuenta", style="CardDesc.TLabel").grid(
+            row=1, column=0, sticky="w", padx=20, pady=7
+        )
+        account_combo = ttk.Combobox(
+            paths,
+            textvariable=self.ubs_account_type,
+            values=ACCOUNT_TYPES,
+            width=10,
+            state="readonly",
+        )
+        account_combo.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=7)
+        account_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_ubs_account_type_changed())
+        ttk.Button(
+            paths,
+            text="Ajustar cuenta",
+            command=self._apply_ubs_account_type_to_app,
+        ).grid(row=1, column=2, sticky="w", padx=(0, 20), pady=7)
+        self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 2, self._browse_ex5_file)
+        self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 3, self._browse_dir)
+        self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 4, self._browse_dir)
         seed_eval_row = ttk.Frame(paths, style="Panel.TFrame")
-        seed_eval_row.grid(row=4, column=0, columnspan=3, sticky="ew", padx=20, pady=(10, 18))
+        seed_eval_row.grid(row=5, column=0, columnspan=3, sticky="ew", padx=20, pady=(10, 18))
         seed_eval_row.columnconfigure(0, weight=1)
         ttk.Label(seed_eval_row, textvariable=self.ubs_seed_eval_summary, style="Muted.TLabel").grid(
             row=0, column=0, sticky="w", padx=(0, 10)
@@ -296,3 +315,96 @@ class UBSAgentViewMixin:
             command=self._save_ubs_agent_clicked,
         ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))
 
+        final_tick = self._card(inner, "Final Tick (Every Tick)")
+        final_tick.grid(row=4, column=0, sticky="ew", pady=(0, 24))
+        for column in (1, 3, 5):
+            final_tick.columnconfigure(column, weight=1)
+
+        ft_date_tip = (
+            "Formato: YYYY.MM.DD.\n"
+            "Mismo tramo para OHLC (Model=1) y Every Tick real (Model=4).\n"
+            "Las fechas retry OHLC se usan si el tramo principal da pocas operaciones."
+        )
+        ttk.Label(final_tick, text="Desde", style="Panel.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(20, 10), pady=7
+        )
+        ft_from = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_from_date, width=14)
+        ft_from.grid(row=1, column=1, sticky="ew", padx=(0, 10), pady=7)
+        self._tooltip_cls(ft_from, ft_date_tip)
+        ttk.Label(final_tick, text="Hasta", style="Panel.TLabel").grid(
+            row=1, column=2, sticky="w", padx=(10, 10), pady=7
+        )
+        ft_to = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_to_date, width=14)
+        ft_to.grid(row=1, column=3, sticky="ew", padx=(0, 10), pady=7)
+        self._tooltip_cls(ft_to, ft_date_tip)
+
+        ft_auto_row = tk.Frame(final_tick, bg=self.colors["panel"])
+        ft_auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
+        ft_auto_row.columnconfigure(0, weight=1)
+        tk.Label(
+            ft_auto_row,
+            text="Auto Final Tick",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self._toggle_switch_cls(
+            ft_auto_row,
+            variable=self.ubs_final_tick_auto,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="e")
+        self._tooltip_cls(
+            ft_auto_row,
+            "Al terminar la robustez OOS, lanza Final Tick automaticamente\nsobre los robust accepted pendientes.",
+        )
+
+        ttk.Label(final_tick, text="Retry OHLC desde", style="Panel.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(20, 10), pady=7
+        )
+        ft_retry_from = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_ohlc_from_date, width=14)
+        ft_retry_from.grid(row=2, column=1, sticky="ew", padx=(0, 10), pady=7)
+        self._tooltip_cls(ft_retry_from, ft_date_tip)
+        ttk.Label(final_tick, text="Retry OHLC hasta", style="Panel.TLabel").grid(
+            row=2, column=2, sticky="w", padx=(10, 10), pady=7
+        )
+        ft_retry_to = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_ohlc_to_date, width=14)
+        ft_retry_to.grid(row=2, column=3, sticky="ew", padx=(0, 10), pady=7)
+        self._tooltip_cls(ft_retry_to, ft_date_tip)
+
+        final_tick_fields = [
+            ("HQ min %", self.ubs_final_tick_min_history_quality, "entry"),
+            ("Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, "spin"),
+            ("Net delta %", self.ubs_final_tick_max_net_delta_pct, "entry"),
+            ("PF delta %", self.ubs_final_tick_max_pf_delta_pct, "entry"),
+            ("DD delta %", self.ubs_final_tick_max_dd_delta_pct, "entry"),
+            ("Trades delta %", self.ubs_final_tick_max_trades_delta_pct, "entry"),
+        ]
+        for index, (label, variable, kind) in enumerate(final_tick_fields):
+            row = 3 + index // 3
+            column = (index % 3) * 2
+            left_pad = 20 if column == 0 else 10
+            ttk.Label(final_tick, text=label, style="Panel.TLabel").grid(
+                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            if kind == "spin":
+                ttk.Spinbox(final_tick, from_=0, to=100000, textvariable=variable, width=8).grid(
+                    row=row, column=column + 1, sticky="ew", padx=(0, 10), pady=7
+                )
+            else:
+                ttk.Entry(final_tick, textvariable=variable, width=8).grid(
+                    row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7
+                )
+
+        ttk.Label(
+            final_tick,
+            text="Compara OHLC vs Every Tick real en el mismo tramo. PF/DD/trades son los criterios activos; net es informativo. Accepted +120 al peso; rejected -160 menos causas.",
+            style="Muted.TLabel",
+        ).grid(row=5, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
+        ttk.Button(
+            final_tick,
+            text="Guardar Final Tick",
+            style="Primary.TButton",
+            command=self._save_ubs_agent_clicked,
+        ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))

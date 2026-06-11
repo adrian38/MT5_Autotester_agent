@@ -22,6 +22,14 @@ from run_tests import (
     parse_symbol_map,
 )
 from ubs_generate_sets import format_like, parse_numeric
+from ubs.account import (
+    ACCOUNT_TYPES,
+    DEFAULT_ACCOUNT_TYPE,
+    account_memory_path,
+    account_output_dir,
+    account_seed_dir,
+    normalize_account_type,
+)
 from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
@@ -36,11 +44,11 @@ MUTATION_OVERRIDES_FILE = BASE_DIR / "outputs" / "ubs_mutation_overrides.json"
 GLOBAL_PARAMS_FILE = BASE_DIR / "outputs" / "ubs_global_params.json"
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
 DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
-DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
+DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
-DEFAULT_SYMBOL_MAP = "XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
+DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
 FINAL_TICK_RETRYABLE_STATUSES = {
@@ -229,6 +237,7 @@ def is_agent_mutable_key(key: str) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
+    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS: ECN o PRO.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--memory", default=str(DEFAULT_MEMORY))
@@ -267,6 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
     parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, incluye filas pending_history_quality aunque las fechas no hayan cambiado.")
+    parser.add_argument("--final-tick-reconcile-only", action="store_true", help="Con --evaluate-final-tick, concilia reportes OHLC/Every Tick ya existentes en disco sin abrir MT5.")
     parser.add_argument("--final-tick-skip-ohlc", action="store_true", help="Salta el backtest OHLC y reutiliza ohlc_metrics_json guardado en DB; solo ejecuta Every Tick.")
     parser.add_argument("--final-tick-min-history-quality", type=float, default=80.0, help="Calidad minima History Quality del reporte real tick.")
     parser.add_argument("--final-tick-min-ohlc-trades", type=int, default=5, help="Operaciones OHLC minimas para pasar a Every Tick.")
@@ -285,7 +295,12 @@ def parse_args() -> argparse.Namespace:
         help="Con --evaluate-seeds, clasifica reportes de evaluaciones seed incompletas sin abrir MT5.",
     )
     parser.add_argument("--reevaluate-seeds", action="store_true", help="Con --evaluate-seeds, vuelve a testear todas las semillas activas.")
-    parser.add_argument("--retry-candidate-id", type=int, help="Relanza un candidato concreto y actualiza su estado en memoria.")
+    parser.add_argument(
+        "--retry-candidate-id",
+        type=int,
+        action="append",
+        help="Relanza un candidato concreto y actualiza su estado en memoria. Puede repetirse para varios candidatos.",
+    )
     parser.add_argument("--retry-seed-path", action="append", help="Relanza una semilla concreta y actualiza seed_scores. Puede repetirse.")
     parser.add_argument("--retry-run-id", type=int, help="Run SQLite para retry de mismatches. Si se omite usa el ultimo run.")
     parser.add_argument("--retry-mismatch-run", action="store_true", help="Relanza todos los report_mismatch de un run.")
@@ -302,7 +317,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute-backtests", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.account_type = normalize_account_type(args.account_type)
+    if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
+        args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type))
+    if Path(args.output_dir).expanduser() == DEFAULT_OUTPUT:
+        args.output_dir = str(account_output_dir(BASE_DIR, args.account_type))
+    legacy_memory = BASE_DIR / "outputs" / "ubs_memory.sqlite"
+    if Path(args.memory).expanduser() in {DEFAULT_MEMORY, legacy_memory}:
+        args.memory = str(account_memory_path(BASE_DIR, args.account_type))
+    return args
 
 
 def seeds_from_variants(variants: list[Variant]) -> list[Seed]:
@@ -597,6 +621,56 @@ def replace_timeframe_keys(lines: list[str], run_strategy: str, target_period: s
     return changed
 
 
+def write_set_force_symbol(source: Path, destination: Path, symbol: str) -> bool:
+    text, encoding = read_set_with_encoding(source)
+    lines = text.splitlines()
+    normalized_symbol = str(symbol or "").strip().upper()
+    changed = not replace_existing_current_value(lines, "ForceSymbol", normalized_symbol)
+    if changed:
+        replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
+    write_set_text(destination, "\n".join(lines), encoding)
+    return changed
+
+
+def validate_seed_backtest_set(seed: Seed) -> list[str]:
+    try:
+        params = load_set_params(seed.path)
+    except OSError as exc:
+        return [f"no se pudo leer .set: {exc}"]
+    if not params:
+        return ["set vacio o no parseable"]
+
+    issues: list[str] = []
+    force_symbol = normalize_set_symbol(params.get("ForceSymbol", ""))
+    expected_symbol = normalize_set_symbol(seed.symbol)
+    strategy_keys = {"ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"}
+    has_strategy_keys = any(key in params for key in strategy_keys)
+    if has_strategy_keys and not force_symbol:
+        issues.append("sin ForceSymbol")
+    elif force_symbol and expected_symbol and force_symbol != expected_symbol:
+        issues.append(f"ForceSymbol={force_symbol} != {expected_symbol}")
+
+    run_strategy = str(params.get("Run_Strategy") or seed.run_strategy or "").strip()
+    if has_strategy_keys and run_strategy not in {"1", "2"}:
+        issues.append("sin Run_Strategy valido")
+
+    valid_timeframes = set(TIMEFRAME_ENUM)
+    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+        raw = str(params.get(key, "")).strip()
+        if raw and raw != "0" and raw not in valid_timeframes:
+            issues.append(f"{key}={raw} no es timeframe MT5 valido")
+    return issues
+
+
+def record_invalid_seed(memory: AgentMemory, seed: Seed, reasons: list[str]) -> None:
+    memory.record_seed_score(seed, None, "invalid_seed", None)
+    memory.conn.execute(
+        "update seed_scores set metrics_json=? where seed_path=?",
+        (json.dumps({"reasons": reasons}, ensure_ascii=False), str(seed.path)),
+    )
+    memory.conn.commit()
+
+
 def create_variant(
     seed: Seed,
     target_symbol: str,
@@ -710,6 +784,22 @@ def _parse_eval_dir_timestamp(eval_dir: Path) -> datetime | None:
         return None
 
 
+def _seed_override_updated_at(memory: AgentMemory, seed_path: Path) -> datetime | None:
+    try:
+        row = memory.conn.execute(
+            "select updated_at from seed_overrides where seed_path=?",
+            (str(seed_path),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(row["updated_at"] or ""))
+    except (TypeError, ValueError):
+        return None
+
+
 def reconcile_seed_eval_reports(
     memory: AgentMemory,
     pending: list[Seed],
@@ -751,6 +841,30 @@ def reconcile_seed_eval_reports(
             seed = next((candidate for candidate in candidates if str(candidate.path) not in processed_paths), None)
             if seed is None:
                 continue
+            override_updated_at = _seed_override_updated_at(memory, seed.path)
+            if override_updated_at is not None and eval_started <= override_updated_at:
+                # Override guardado despues de la evaluacion: el reporte solo es
+                # reutilizable si coincide con el target efectivo actual (caso
+                # tipico: override que no cambia symbol/TF). Si no coincide, se
+                # deja pendiente para re-ejecutar en MT5.
+                if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
+                    continue
+                try:
+                    probe = score_report_file(report, config=score_config)
+                except Exception:
+                    continue
+                probe_variant = Variant(
+                    path=Path(copied_set.name),
+                    seed=seed,
+                    target_symbol=seed.symbol,
+                    target_period=seed.period,
+                    mutated_keys=(),
+                    missing_lot_keys=(),
+                    policy="seed_eval",
+                )
+                matches, _ = report_matches_variant(probe_variant, probe, symbol_map)
+                if not matches:
+                    continue
             seed_path = str(seed.path)
             status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
             status_counts[status] = status_counts.get(status, 0) + 1
@@ -851,10 +965,26 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         memory.record_seed_score(seed, None, "disabled_symbol", None)
     pending = [seed for seed in pending if str(seed.path) not in disabled_paths]
     blocked_count += len(disabled_pending)
+    invalid_set_reasons: dict[str, list[str]] = {}
+    for seed in pending:
+        reasons = validate_seed_backtest_set(seed)
+        if reasons:
+            invalid_set_reasons[str(seed.path)] = reasons
+            print(
+                f"AVISO: seed con .set invalido para MT5: {seed.path.name}; "
+                + " | ".join(reasons)
+                + ". Marcada como invalid_seed sin abrir MT5."
+            )
+            record_invalid_seed(memory, seed, reasons)
+    if invalid_set_reasons:
+        pending = [seed for seed in pending if str(seed.path) not in invalid_set_reasons]
+        blocked_count += len(invalid_set_reasons)
     print(f"Semillas detectadas: {len(seeds)}")
     print(f"Backtests de semillas pendientes: {len(pending)}")
     if invalid_pending:
         print(f"Semillas bloqueadas por symbol/timeframe no inferible: {len(invalid_pending)}")
+    if invalid_set_reasons:
+        print(f"Semillas bloqueadas por .set invalido: {len(invalid_set_reasons)}")
     if disabled_pending:
         print(
             "Semillas omitidas por symbol deshabilitado en Universo global: "
@@ -885,7 +1015,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             seeds,
             score_config,
             symbol_map,
-            exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
+            exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
         )
         if rescored_counts:
             print(
@@ -946,7 +1076,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         seeds,
         score_config,
         symbol_map,
-        exclude_paths=original_pending_paths | invalid_paths | disabled_paths,
+        exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
     )
     rescored_total = sum(rescored_counts.values())
 
@@ -1707,6 +1837,32 @@ def final_tick_row_pending_for_dates(
 
 
 def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if getattr(args, "final_tick_reconcile_only", False):
+        run = memory.run_by_id(args.final_tick_run_id) if args.final_tick_run_id else memory.latest_run()
+        if run is None:
+            print("ERROR: no hay run SQLite disponible para Final Tick")
+            return 1
+        counts = reconcile_final_tick_reports(
+            memory,
+            int(run["id"]),
+            score_config,
+            parse_symbol_map(args.symbol_map),
+            min_history_quality=args.final_tick_min_history_quality,
+            min_ohlc_trades=args.final_tick_min_ohlc_trades,
+            max_net_delta_pct=args.final_tick_max_net_delta_pct,
+            max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
+            max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
+            max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+        )
+        if counts:
+            print(
+                "Final Tick reconciliado desde disco: "
+                + ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+            )
+        else:
+            print("Final Tick reconcile: no hay reportes en disco utilizables para filas pendientes.")
+        print(f"Memoria: {memory.path}")
+        return 0
     if not args.expert and not args.multi_terminal and not args.dry_run:
         print("ERROR: Final Tick requiere --expert o --multi-terminal")
         return 1
@@ -1730,10 +1886,24 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     main_to_date = str(args.to_date or "").strip()
     ohlc_retry_from = str(getattr(args, "final_tick_ohlc_from_date", "") or "").strip()
     ohlc_retry_to = str(getattr(args, "final_tick_ohlc_to_date", "") or "").strip()
-    has_ohlc_trades_pending = any(
-        str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-        for row in rows
-    )
+    def _row_uses_retry_dates(row: sqlite3.Row) -> bool:
+        # Una fila que ya quedo registrada con el rango retry OHLC (p. ej. un
+        # mismatch ocurrido durante un retry) debe re-ejecutarse con ese mismo
+        # rango, no con las fechas principales.
+        if not ohlc_retry_from or not ohlc_retry_to:
+            return False
+        return (
+            str(row["final_tick_from_date"] or "").strip() == ohlc_retry_from
+            and str(row["final_tick_to_date"] or "").strip() == ohlc_retry_to
+        )
+
+    def _row_in_retry_scope(row: sqlite3.Row) -> bool:
+        return (
+            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+            or _row_uses_retry_dates(row)
+        )
+
+    has_ohlc_trades_pending = any(_row_in_retry_scope(row) for row in rows)
     using_ohlc_retry_dates = False
     if args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
@@ -1748,12 +1918,12 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         if using_ohlc_retry_dates:
             deferred_main_rows = [
                 row for row in rows
-                if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades"
+                if not _row_in_retry_scope(row)
                 and final_tick_row_pending_for_dates(row, main_from_date, main_to_date, force_quality_retry=retry_pending_quality)
             ]
             rows = [
                 row for row in rows
-                if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+                if _row_in_retry_scope(row)
                 and final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
             ]
             if deferred_main_rows:
@@ -2079,8 +2249,39 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             ready_for_tick.append((row, ohlc_variant, real_tick_variant))
             ohlc_results[candidate_id] = (ohlc_report, ohlc_result)
 
+    reconciled_tick = 0
+    if resume_pending_dir and ready_for_tick:
+        # Reconciliar reportes Real Tick ya existentes en disco (p. ej. de un
+        # proceso interrumpido manualmente) antes de relanzar MT5. Solo se
+        # reutiliza un reporte si su rango de fechas coincide con el del OHLC
+        # de control y el symbol/TF es el esperado.
+        still_pending = []
+        for row, ohlc_variant, real_tick_variant in ready_for_tick:
+            candidate_id = int(row["id"])
+            ohlc_report, ohlc_result = ohlc_results[candidate_id]
+            existing_tick = find_report_for_set(real_tick_variant.path)
+            reused = False
+            if existing_tick is not None:
+                tick_dates = _read_ohlc_report_cfg_dates(existing_tick)
+                ohlc_dates = _read_ohlc_report_cfg_dates(Path(ohlc_report))
+                if tick_dates[0] and tick_dates == ohlc_dates:
+                    reused = _evaluate_final_tick_tick_report(
+                        memory, args, score_config, symbol_map, run_id,
+                        candidate_id, real_tick_variant, ohlc_report, ohlc_result,
+                        existing_tick, status_counts, reconcile=True,
+                    )
+            if reused:
+                reconciled_tick += 1
+                print(f"Final Tick resume: reporte Real Tick existente reutilizado para candidate #{candidate_id}.")
+            else:
+                still_pending.append((row, ohlc_variant, real_tick_variant))
+        ready_for_tick = still_pending
+
     if not ready_for_tick:
-        print("Final Tick: ningun OHLC cumple el minimo de operaciones; no se lanza Every Tick.")
+        if reconciled_tick:
+            print(f"Final Tick: {reconciled_tick} reporte(s) Real Tick reconciliados desde disco; no hay nada que ejecutar.")
+        else:
+            print("Final Tick: ningun OHLC cumple el minimo de operaciones; no se lanza Every Tick.")
         print(
             "Final Tick terminado: "
             + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
@@ -2128,110 +2329,19 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             status_counts["no_report"] = status_counts.get("no_report", 0) + 1
             continue
 
-        try:
-            real_tick_result = score_report_file(real_tick_report, config=score_config)
-        except Exception as exc:
-            print(f"AVISO: no pude parsear Real Tick Final Tick candidate #{candidate_id}: {exc}")
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "parse_error",
-                ohlc_result,
-                None,
-                ohlc_report,
-                real_tick_report,
-                None,
-                None,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
-            continue
-
-        real_matches, real_mismatch = report_matches_variant(real_tick_variant, real_tick_result, symbol_map)
-        if not real_matches:
-            print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{candidate_id}: {real_mismatch}")
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "report_mismatch",
-                ohlc_result,
-                real_tick_result,
-                ohlc_report,
-                real_tick_report,
-                None,
-                real_tick_result.history_quality,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-            continue
-
-        if real_tick_result.trades <= 0:
-            memory.record_candidate_final_tick(
-                candidate_id,
-                run_id,
-                "no_trades",
-                ohlc_result,
-                real_tick_result,
-                ohlc_report,
-                real_tick_report,
-                None,
-                real_tick_result.history_quality,
-                args.final_tick_min_history_quality,
-                args.from_date,
-                args.to_date,
-                args.final_tick_max_net_delta_pct,
-                args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct,
-                args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
-            continue
-
-        similarity = final_tick_similarity(
-            ohlc_result,
-            real_tick_result,
-            min_history_quality=args.final_tick_min_history_quality,
-            max_net_delta_pct=args.final_tick_max_net_delta_pct,
-            max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
-            max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
-            max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
-        )
-        reasons = set(str(reason) for reason in (similarity.get("reasons") or []))
-        if "history_quality" in reasons:
-            status = "pending_history_quality"
-        else:
-            status = "accepted" if bool(similarity.get("accepted")) else "rejected"
-        memory.record_candidate_final_tick(
-            candidate_id,
+        _evaluate_final_tick_tick_report(
+            memory,
+            args,
+            score_config,
+            symbol_map,
             run_id,
-            status,
-            ohlc_result,
-            real_tick_result,
+            candidate_id,
+            real_tick_variant,
             ohlc_report,
+            ohlc_result,
             real_tick_report,
-            json.dumps(similarity, ensure_ascii=True, sort_keys=True),
-            real_tick_result.history_quality,
-            args.final_tick_min_history_quality,
-            args.from_date,
-            args.to_date,
-            args.final_tick_max_net_delta_pct,
-            args.final_tick_max_pf_delta_pct,
-            args.final_tick_max_dd_delta_pct,
-            args.final_tick_max_trades_delta_pct,
+            status_counts,
         )
-        status_counts[status] = status_counts.get(status, 0) + 1
 
     print(
         "Final Tick terminado: "
@@ -2241,17 +2351,225 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     return 0
 
 
+def _evaluate_final_tick_tick_report(
+    memory: AgentMemory,
+    args: argparse.Namespace,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    run_id: int,
+    candidate_id: int,
+    real_tick_variant: Variant,
+    ohlc_report: Path,
+    ohlc_result: ScoreResult,
+    real_tick_report: Path,
+    status_counts: dict[str, int],
+    *,
+    reconcile: bool = False,
+) -> bool:
+    """Evalua un reporte Real Tick contra su OHLC y registra el resultado.
+
+    Con reconcile=True solo registra cuando el reporte es utilizable
+    (parseable, symbol/TF correctos); si no lo es devuelve False sin tocar
+    memoria, para que el candidato vuelva a la cola de ejecucion.
+    """
+    try:
+        real_tick_result = score_report_file(real_tick_report, config=score_config)
+    except Exception as exc:
+        if reconcile:
+            return False
+        print(f"AVISO: no pude parsear Real Tick Final Tick candidate #{candidate_id}: {exc}")
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "parse_error", ohlc_result, None,
+            ohlc_report, real_tick_report, None, None,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+        return True
+
+    real_matches, real_mismatch = report_matches_variant(real_tick_variant, real_tick_result, symbol_map)
+    if not real_matches:
+        if reconcile:
+            return False
+        print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{candidate_id}: {real_mismatch}")
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "report_mismatch", ohlc_result, real_tick_result,
+            ohlc_report, real_tick_report, None, real_tick_result.history_quality,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
+        return True
+
+    if real_tick_result.trades <= 0:
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "no_trades", ohlc_result, real_tick_result,
+            ohlc_report, real_tick_report, None, real_tick_result.history_quality,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
+        return True
+
+    similarity = final_tick_similarity(
+        ohlc_result,
+        real_tick_result,
+        min_history_quality=args.final_tick_min_history_quality,
+        max_net_delta_pct=args.final_tick_max_net_delta_pct,
+        max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
+        max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
+        max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+    )
+    reasons = set(str(reason) for reason in (similarity.get("reasons") or []))
+    if "history_quality" in reasons:
+        status = "pending_history_quality"
+    else:
+        status = "accepted" if bool(similarity.get("accepted")) else "rejected"
+    memory.record_candidate_final_tick(
+        candidate_id, run_id, status, ohlc_result, real_tick_result,
+        ohlc_report, real_tick_report,
+        json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+        real_tick_result.history_quality,
+        args.final_tick_min_history_quality, args.from_date, args.to_date,
+        args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+        args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+    )
+    status_counts[status] = status_counts.get(status, 0) + 1
+    return True
+
+
+def reconcile_final_tick_reports(
+    memory: AgentMemory,
+    run_id: int,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    *,
+    min_history_quality: float = 80.0,
+    min_ohlc_trades: int = 5,
+    max_net_delta_pct: float = 35.0,
+    max_pf_delta_pct: float = 35.0,
+    max_dd_delta_pct: float = 35.0,
+    max_trades_delta_pct: float = 35.0,
+) -> dict[str, int]:
+    """Concilia desde disco los reportes Final Tick ya generados, sin abrir MT5.
+
+    Para cada candidato robust-accepted sin estado final, busca su par de
+    reportes `ohlc_*`/`tick_*` en `reports/`. El par solo se registra cuando el
+    OHLC coincide con el target del candidato y ambos reportes comparten el
+    mismo rango de fechas (verdad de disco, no la DB ni la UI). Permite
+    recuperar el trabajo completado de un proceso interrumpido manualmente.
+    """
+    rows = [
+        row
+        for row in memory.accepted_candidates_for_final_tick(run_id)
+        if Path(row["set_path"]).exists()
+    ]
+    status_counts: dict[str, int] = {}
+    for row in rows:
+        if str(row["final_tick_status"] or "").strip() in {"accepted", "rejected"}:
+            continue
+        candidate_id = int(row["id"])
+        source_set = Path(row["set_path"])
+        ohlc_report = find_report_for_set(Path(f"ohlc_{candidate_id:06d}_{source_set.name}"))
+        if ohlc_report is None:
+            continue
+        ohlc_dates = _read_ohlc_report_cfg_dates(ohlc_report)
+        if not ohlc_dates[0] or not ohlc_dates[1]:
+            continue
+        try:
+            ohlc_result = score_report_file(ohlc_report, config=score_config)
+        except Exception:
+            continue
+        original_variant = variant_from_candidate_row(row)
+        ohlc_variant = Variant(
+            path=Path(f"ohlc_{candidate_id:06d}_{source_set.name}"),
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_ohlc",
+        )
+        ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+        if not ohlc_matches:
+            continue
+        thresholds = argparse.Namespace(
+            final_tick_min_history_quality=float(min_history_quality),
+            from_date=ohlc_dates[0],
+            to_date=ohlc_dates[1],
+            final_tick_max_net_delta_pct=float(max_net_delta_pct),
+            final_tick_max_pf_delta_pct=float(max_pf_delta_pct),
+            final_tick_max_dd_delta_pct=float(max_dd_delta_pct),
+            final_tick_max_trades_delta_pct=float(max_trades_delta_pct),
+        )
+        if ohlc_result.trades < int(min_ohlc_trades):
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, int(min_ohlc_trades))
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "pending_ohlc_trades", ohlc_result, None,
+                ohlc_report, None,
+                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
+                thresholds.final_tick_min_history_quality,
+                thresholds.from_date, thresholds.to_date,
+                float(max_net_delta_pct), float(max_pf_delta_pct),
+                float(max_dd_delta_pct), float(max_trades_delta_pct),
+            )
+            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
+            continue
+        tick_report = find_report_for_set(Path(f"tick_{candidate_id:06d}_{source_set.name}"))
+        if tick_report is None:
+            continue
+        if _read_ohlc_report_cfg_dates(tick_report) != ohlc_dates:
+            continue
+        real_tick_variant = Variant(
+            path=Path(f"tick_{candidate_id:06d}_{source_set.name}"),
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_real",
+        )
+        if _evaluate_final_tick_tick_report(
+            memory, thresholds, score_config, symbol_map, run_id,
+            candidate_id, real_tick_variant, ohlc_report, ohlc_result,
+            tick_report, status_counts, reconcile=True,
+        ):
+            print(f"Final Tick reconcile: candidate #{candidate_id} registrado desde reportes en disco.")
+    return status_counts
+
+
 def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
-    if not args.retry_candidate_id:
+    candidate_ids = [int(value) for value in (args.retry_candidate_id or [])]
+    if not candidate_ids:
         print("ERROR: falta --retry-candidate-id")
         return 1
     if not args.expert and not args.multi_terminal:
         print("ERROR: retry requiere --expert")
         return 1
 
-    row = memory.candidate_by_id(args.retry_candidate_id)
+    exit_code = 0
+    for candidate_id in candidate_ids:
+        code = _retry_single_candidate(candidate_id, args, memory, score_config)
+        if code == RUNNING_TERMINAL_EXIT_CODE:
+            print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+            return 1
+        if code != 0:
+            exit_code = code
+    return exit_code
+
+
+def _retry_single_candidate(
+    candidate_id: int,
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
+    row = memory.candidate_by_id(candidate_id)
     if row is None:
-        print(f"ERROR: no existe candidate id {args.retry_candidate_id}")
+        print(f"ERROR: no existe candidate id {candidate_id}")
         return 1
 
     set_path = Path(row["set_path"])
@@ -2262,7 +2580,7 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     run = memory.run_by_id(int(row["run_id"]))
     run_dir = Path(run["output_dir"]) if run else DEFAULT_OUTPUT
     generation = int(row["generation"] or 0)
-    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{args.retry_candidate_id}")
+    retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{candidate_id}")
     retry_set = retry_dir / set_path.name
     shutil.copy2(set_path, retry_set)
 
@@ -2271,14 +2589,13 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
         remove_report_artifacts(set_path)
         remove_candidate_copies(run_dir, generation, set_path.name)
 
-    print(f"Retry candidate #{args.retry_candidate_id}")
+    print(f"Retry candidate #{candidate_id}")
     print(f"Set original: {set_path}")
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
     code = run_backtests(args, retry_dir)
     if code == RUNNING_TERMINAL_EXIT_CODE:
-        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
-        return 1
+        return code
     if code != 0:
         print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
         if args.dry_run:
@@ -2326,6 +2643,17 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
                 if not args.dry_run:
                     memory.prepare_single_seed_evaluation(seed, force=True)
                     memory.record_seed_score(seed, None, "report_mismatch", None)
+                continue
+            invalid_reasons = validate_seed_backtest_set(seed)
+            if invalid_reasons:
+                print(
+                    f"AVISO: seed con .set invalido para MT5: {source_path.name}; "
+                    + " | ".join(invalid_reasons)
+                    + ". Marcada como invalid_seed."
+                )
+                if not args.dry_run:
+                    memory.prepare_single_seed_evaluation(seed, force=True)
+                    record_invalid_seed(memory, seed, invalid_reasons)
                 continue
             if not args.dry_run:
                 memory.prepare_single_seed_evaluation(seed, force=True)
@@ -2390,6 +2718,16 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         print(f"AVISO: seed sin symbol/timeframe inferible: {source_seed.name}; marcada como report_mismatch.")
         if not args.dry_run:
             memory.record_seed_score(seed, None, "report_mismatch", None)
+        return 1
+    invalid_reasons = validate_seed_backtest_set(seed)
+    if invalid_reasons:
+        print(
+            f"AVISO: seed con .set invalido para MT5: {source_seed.name}; "
+            + " | ".join(invalid_reasons)
+            + ". Marcada como invalid_seed."
+        )
+        if not args.dry_run:
+            record_invalid_seed(memory, seed, invalid_reasons)
         return 1
 
     output_root = Path(args.output_dir).expanduser()

@@ -46,11 +46,59 @@ class UBSFinalTickLogicMixin:
         return "break"
 
     def _refresh_ubs_final_tick_panel(self) -> None:
+        self._safe_refresh("ubs_final_tick_reconcile", self._reconcile_ubs_final_tick_from_disk)
         for label, callback in (
             ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_universe", self._refresh_ubs_universe),
         ):
             self._safe_refresh(label, callback)
+
+    def _reconcile_ubs_final_tick_from_disk(self) -> None:
+        """Concilia reportes OHLC/Every Tick ya generados en disco (p. ej. tras
+        cortar el proceso manualmente) antes de repintar la tabla. No abre MT5."""
+        if self.process and self.process.poll() is None:
+            return  # hay un proceso activo escribiendo; no competir con el
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return
+        from ubs_agent import reconcile_final_tick_reports
+        from ubs.memory import AgentMemory
+        from ubs.score import ScoreConfig
+        from run_tests import parse_symbol_map
+
+        run = self._latest_visible_ubs_run_for_final_tick()
+        if run is None:
+            return
+        thresholds = self._ubs_final_tick_threshold_values()
+        score_config = ScoreConfig(
+            min_net_profit=float(self.ubs_pass_min_net_profit.get() or 100),
+            min_profit_factor=float(self.ubs_pass_min_profit_factor.get() or 1.2),
+            min_trades=int(float(self.ubs_pass_min_trades.get() or 50)),
+            max_drawdown_pct=float(self.ubs_pass_max_drawdown_pct.get() or 25),
+            min_recovery_factor=float(self.ubs_pass_min_recovery_factor.get() or 1.0),
+        )
+        symbol_map = {}
+        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+            symbol_map = parse_symbol_map(self.symbol_map.get().strip())
+        memory = AgentMemory(memory_path)
+        try:
+            counts = reconcile_final_tick_reports(
+                memory,
+                int(run["id"]),
+                score_config,
+                symbol_map,
+                min_history_quality=thresholds["min_quality"],
+                min_ohlc_trades=thresholds["min_ohlc_trades"],
+                max_net_delta_pct=thresholds["net_delta"],
+                max_pf_delta_pct=thresholds["pf_delta"],
+                max_dd_delta_pct=thresholds["dd_delta"],
+                max_trades_delta_pct=thresholds["trades_delta"],
+            )
+        finally:
+            memory.close()
+        if counts:
+            resumen = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+            self.status_text.set(f"Final Tick reconciliado desde disco: {resumen}")
 
     def _checked_ubs_final_tick_infos(self, *, fallback_selected: bool = True) -> list[dict[str, str]]:
         checked = [
@@ -276,12 +324,13 @@ class UBSFinalTickLogicMixin:
         ohlc_to_date = self.ubs_final_tick_ohlc_to_date.get().strip()
         if bool(ohlc_from_date) != bool(ohlc_to_date):
             raise ValueError("Final Tick OHLC retry requiere rellenar OHLC desde y OHLC hasta.")
-        output_dir = Path(self.ubs_generation_output.get().strip() or str(BASE_DIR / "outputs" / "ubs_agent"))
+        output_dir = self._ubs_generation_output_dir()
         thresholds = self._ubs_final_tick_threshold_values()
         args = [
-            "--source-dir", self.set_files_root.get().strip() or str(BASE_DIR / "sets" / "ubs_ready"),
+            "--source-dir", str(self._ubs_generator_source_dir()),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--evaluate-final-tick",
             "--final-tick-run-id", str(run_id),
@@ -321,12 +370,14 @@ class UBSFinalTickLogicMixin:
         self,
         *,
         confirm: bool = True,
+        auto: bool = False,
         pending_only: bool = True,
     ) -> bool:
         try:
             run = self._latest_visible_ubs_run_for_final_tick()
             if run is None:
-                messagebox.showinfo("Final Tick UBS", "No hay run visible para Final Tick.")
+                if not auto:
+                    messagebox.showinfo("Final Tick UBS", "No hay run visible para Final Tick.")
                 return False
             run_id = int(run["id"])
             rows = self._accepted_candidates_for_final_tick(run_id)
@@ -339,27 +390,37 @@ class UBSFinalTickLogicMixin:
                 ohlc_from = self.ubs_final_tick_ohlc_from_date.get().strip()
                 ohlc_to = self.ubs_final_tick_ohlc_to_date.get().strip()
                 has_ohlc_retry = bool(ohlc_from and ohlc_to)
-                has_ohlc_pending = any(
-                    str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    for row in rows
-                )
+
+                def _row_in_retry_scope(row) -> bool:
+                    # pending_ohlc_trades o filas ya registradas con el rango retry
+                    # (p. ej. mismatch durante un retry): van con las fechas retry.
+                    if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
+                        return True
+                    return (
+                        has_ohlc_retry
+                        and str(row["final_tick_from_date"] or "").strip() == ohlc_from
+                        and str(row["final_tick_to_date"] or "").strip() == ohlc_to
+                    )
+
+                has_ohlc_pending = any(_row_in_retry_scope(row) for row in rows)
                 if has_ohlc_retry and has_ohlc_pending:
-                    rows = [
-                        row for row in rows
-                        if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    ]
+                    rows = [row for row in rows if _row_in_retry_scope(row)]
             if not rows:
                 if pending_only:
                     message = f"Run #{run_id} no tiene robust accepted pendientes de Final Tick."
                 else:
                     message = f"Run #{run_id} no tiene candidatos robust accepted con .set existente."
                 self.ubs_final_tick_status.set(message)
-                messagebox.showinfo("Final Tick UBS", message)
+                if not auto:
+                    messagebox.showinfo("Final Tick UBS", message)
                 return False
             thresholds = self._ubs_final_tick_threshold_values()
             args = self._ubs_final_tick_args(run_id, pending_only=pending_only)
         except Exception as exc:
-            self._show_error("No se pudo preparar Final Tick UBS", str(exc))
+            if not auto:
+                self._show_error("No se pudo preparar Final Tick UBS", str(exc))
+            else:
+                self._append_console(f"\n[Final Tick auto] No se pudo preparar: {exc}\n", tag="error")
             return False
 
         details = [
@@ -389,6 +450,17 @@ class UBSFinalTickLogicMixin:
 
     def _rerun_ubs_final_tick_for_latest_run(self) -> bool:
         return self._run_ubs_final_tick_for_latest_run(pending_only=False)
+
+    def _maybe_auto_run_ubs_final_tick(self, script_name: str, args: list[str], code: int) -> bool:
+        """Encadena robustez -> Final Tick: al terminar una evaluacion de
+        robustez OOS con exito y con el toggle Auto Final Tick activo, lanza
+        Final Tick sobre los robust accepted pendientes."""
+        if code != 0 or script_name != "ubs_agent.py" or not self.ubs_final_tick_auto.get():
+            return False
+        if "--evaluate-robustness" not in args:
+            return False
+        self._append_console("\n[Final Tick auto] Lanzando Final Tick sobre robust accepted pendientes.\n", tag="info")
+        return self._run_ubs_final_tick_for_latest_run(confirm=False, auto=True, pending_only=True)
 
     def _retry_ubs_final_tick_pending_quality(self) -> bool:
         """Re-run only rows with status=pending_history_quality, ignoring stored dates."""

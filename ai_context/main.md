@@ -67,8 +67,12 @@ batch wrappers.
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
 - `app_ui.py` is the composition/layout root. Screen mixins live in `ui/`
   (`ui/dashboard_view.py`, `ui/dashboard_logic.py`, etc.) and UBS support
-  modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, etc.). Do NOT grow
-  `app_ui.py` or `ubs_agent.py` with logic that belongs in a domain module.
+  modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, `ubs/account.py`,
+  `ubs/manual_status.py`, etc.). Do NOT grow `app_ui.py` or `ubs_agent.py`
+  with logic that belongs in a domain module.
+- **Account-type isolation**: ECN and PRO use completely separate SQLite DBs,
+  seed dirs, and output dirs. All path resolution goes through `ubs/account.py`
+  helpers. Never hardcode `ubs_memory.sqlite` — always call `account_memory_path()`.
 - For every substantial UI screen/tab use a view/logic pair inside `ui/`:
   `ui/<screen>_view.py` for widgets/layout and `ui/<screen>_logic.py` for
   behavior/state/persistence. This is the mandatory structure for all tabs.
@@ -159,6 +163,15 @@ generation scoring:
   - `UBS Agente UBS` has a **Robustez OOS** config block with separate dates,
     separate scoring thresholds, positive/negative bonus values, and an
     auto-run toggle.
+  - `UBS Agente UBS` also has a **Final Tick (Every Tick)** config block
+    mirroring the Final Tick tab settings (dates, OHLC retry dates, min history
+    quality, min OHLC trades, delta tolerances) plus an **Auto Final Tick**
+    toggle (`ubs_final_tick_auto` in `ui_settings.ini`). When enabled, finishing
+    a robustness OOS evaluation successfully auto-launches Final Tick
+    pending-only for the latest visible run
+    (`_maybe_auto_run_ubs_final_tick()` in `ui/ubs_final_tick_logic.py`,
+    chained after `_maybe_auto_run_ubs_robustness` in the process-finished
+    hook). Full auto chain: generation -> Auto robustez -> Auto Final Tick.
   - `UBS Resultados` has **Continuar a robustez** for the latest visible run.
     This is incremental and passes `--robust-pending-only`, so it only sends
     accepted candidates without OOS already stored. **Reprobar robustez**
@@ -176,11 +189,18 @@ generation scoring:
   - base `rejected`: score minus `REJECTED_BASE_PENALTY` and per-cause
     penalties from `metrics_json.reasons`, capped so rejected rows never add
     positive weight.
-  - base `no_trades`: fixed negative reliability penalty.
+  - base `no_trades`: fixed negative reliability penalty (`NO_TRADES_WEIGHT = -40`),
+    applied only when the row has a stored `report_path` (a real verified report);
+    manual or orphaned `no_trades` rows without report contribute no weight.
   - `report_mismatch`, `no_report`, and `parse_error`: no weight.
   - robust `accepted`: add `positive_bonus` (default `+70`).
   - robust `rejected`: add `negative_bonus` (default `-70`) plus OOS
-    per-cause penalties.
+    per-cause penalties from `ROBUST_REASON_PENALTIES`.
+  - **final_tick `accepted`**: add `DEFAULT_FINAL_TICK_ACCEPTED_BONUS` (`+120`).
+  - **final_tick `rejected`**: add `DEFAULT_FINAL_TICK_REJECTED_PENALTY` (`−160`)
+    minus per-cause penalties from `FINAL_TICK_REASON_PENALTIES`
+    (`history_quality: 60`, `drawdown_pct: 55`, `profit_factor: 45`, `trades: 45`).
+  - final_tick `pending_*` or no row: `+0` (neutral, no penalty).
   - weights are grouped by correlated candidate source before averaging and
     shrunk toward zero for small samples.
   - active seed scores with scored reports contribute at full base strength,
@@ -210,6 +230,12 @@ enter this queue.
 - CLI: `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
   Additional flags:
   - `--final-tick-pending-only` — only tests candidates without a stored Final Tick row.
+  - `--final-tick-retry-pending-quality` — retries only `pending_history_quality` rows
+    (UI button "Reintentar calidad baja"). Implies `--final-tick-skip-ohlc`.
+  - `--final-tick-skip-ohlc` — skips the OHLC backtest and reuses `ohlc_metrics_json`
+    already stored in `candidate_final_tick`; only re-runs the Every Tick (Model=4).
+    When set, dates are read from the OHLC report file on disk (ground truth) rather
+    than from `args.from_date`, so the tick always runs against the correct period.
   - `--final-tick-min-history-quality` — minimum acceptable history quality % (default `80`).
   - `--final-tick-min-ohlc-trades` — minimum OHLC trades required before attempting real tick (default `5`).
   - `--final-tick-ohlc-from-date` / `--final-tick-ohlc-to-date` — alternative date range to
@@ -228,14 +254,15 @@ enter this queue.
   report produced but history quality is below threshold; `pending_ohlc_trades` —
   OHLC batch produced too few trades to make a valid comparison, OHLC retry dates
   may be used to get a qualifying OHLC before re-running real tick.
-- A row is final `accepted` only when the real-tick report has
-  `History Quality > 80` by default and its real-tick metrics are close to the
-  OHLC metrics within configured tolerances for net, PF, DD, and trades.
+- A row is final `accepted` when history quality ≥ threshold AND the three active
+  similarity checks pass (see below). `net_profit` is **not** an active check.
 - UI: `UBS Final Tick` shows robust-accepted candidates, final status, cause,
   history quality %, OHLC metrics, real-tick metrics, date range, set path, and
   "Abrir set" / "Abrir OHLC" / "Abrir Real Tick" report actions.
-  Buttons: **Continuar Final Tick** (pending-only, incremental) and
-  **Reprobar Final Tick** (replaces all existing rows for the visible run).
+  Buttons: **Continuar Final Tick** (pending-only, incremental),
+  **Reprobar Final Tick** (replaces all existing rows for the visible run), and
+  **Reintentar calidad baja** (re-runs only `pending_history_quality` rows with
+  `--final-tick-retry-pending-quality --final-tick-skip-ohlc`).
   A criteria configuration block exposes all thresholds (quality, min OHLC trades,
   delta tolerances, primary and OHLC-retry date ranges) and a **Guardar config** button.
   `UBS Robustez` also exposes `Continuar Final Tick`.
@@ -244,6 +271,34 @@ enter this queue.
   `ubs_final_tick_min_history_quality`, `ubs_final_tick_min_ohlc_trades`,
   and the four `ubs_final_tick_max_*_delta_pct` variables are persisted in
   `ui_settings.ini`.
+
+#### Final Tick similarity logic (`final_tick_similarity()` in `ubs_agent.py`)
+
+The same strategy is run twice (OHLC Model=1 and Every Tick Model=4) with the same
+date range. The goal is to verify the results are similar enough, not to determine
+which is better. All three active checks are **symmetric**.
+
+| Check | Formula | Notes |
+|-------|---------|-------|
+| `profit_factor` | `\|tick_pf − ohlc_pf\| / max(ohlc_pf, 1.0) × 100` | PF capped [0,10]; floor 1.0 |
+| `drawdown_pct` | `\|tick_dd − ohlc_dd\| / max(ohlc_dd, tick_dd, 2.0) × 100` | 2 pp floor prevents false fails on tiny DDs |
+| `trades` | `\|tick_tr − ohlc_tr\| / max(ohlc_tr, 1.0) × 100` | Symmetric count |
+
+`net_profit` is stored in `checks["net_profit"]` with `"checked": false` and
+`"accepted": true` always — visible in UI/DB for inspection only. It was removed from
+active criteria because `normalized_net_profit` depends on the normalization group and
+produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
+delta, but PF/DD/trades practically identical).
+
+#### `from_date` / `to_date` consistency guard
+
+When the disk-based `skip_ohlc=True` optimization is active (resume pending dir, sets
+unchanged, stored dates match), the code now verifies that the first OHLC report on disk
+has dates matching `args.from_date` before committing to `skip_ohlc=True`.
+`_read_ohlc_report_cfg_dates(path)` parses the Period cell `(YYYY.MM.DD - YYYY.MM.DD)`
+from the MT5 HTML (UTF-16-LE encoding). If dates differ, it forces OHLC re-run and
+removes stale reports. This prevents the corruption scenario where a previous interrupted
+run overwrote the OHLC file with new dates but never updated the DB entry.
 
 Visible-run behavior:
 
@@ -373,7 +428,8 @@ calibration, StartLots validation, or automatic lot normalization in this module
 
 **Persistence**: `portfolios`, `portfolio_allocations`,
 `portfolio_decision_log`, plus legacy-compatible `portfolio_members` in
-`outputs/ubs_memory.sqlite`. A set in saved allocations/members is globally
+`outputs/ubs_memory_{ECN|PRO}.sqlite` (account-scoped; resolved via
+`account_memory_path()`). A set in saved allocations/members is globally
 excluded from future portfolios until its portfolio is deleted.
 
 **Export sets**: patches each .set with `Risk=2` + integer
@@ -505,6 +561,15 @@ Removed duplicate paths from Config Rutas (they exist in other tabs):
 Config Rutas now only shows: MetaEditor (compilation), Carpeta/Archivo .mq5,
 Carpeta .ex5, Archivo .set UBS (single-set mode), Template tester.
 
+The Settings tab also has two maintenance actions:
+- **Borrar reportes locales**: deletes all `.htm`/`.html` files from the project
+  `reports/` directory (quick cleanup without touching MT5).
+- **Eliminar datos históricos MT5**: runs `scripts/cleanOldTest.ps1` then
+  `scripts/cleanOlddata.ps1` in sequence with a progress bar. Closes MT5, clears
+  tester cache, history, bases, and `.fxt`/`.tick` files in **all configured terminals**,
+  and also deletes local project reports. Use before switching brokers or when
+  history is corrupted. Blocked while any process is running.
+
 ### UBS Parámetros tab and global parameter system
 
 A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
@@ -572,11 +637,122 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
 - Refresh buttons now refresh full panel state, and `_refresh_all()` isolates
   section errors so one broken view does not block every tab.
 
+### Account type system (ECN / PRO)
+
+`ubs/account.py` centralises account-type path resolution. Each account type gets
+completely separate storage and execution paths — they share no SQLite DB, seed
+directory, or output directory.
+
+```
+ACCOUNT_TYPES = ("ECN", "PRO")
+DEFAULT_ACCOUNT_TYPE = "ECN"
+```
+
+| Helper | Returns |
+|--------|---------|
+| `normalize_account_type(value)` | `"ECN"` or `"PRO"` (defaults to ECN) |
+| `account_memory_path(base_dir, account_type)` | `outputs/ubs_memory_{ECN\|PRO}.sqlite` |
+| `account_output_dir(base_dir, account_type)` | `outputs/ubs_agent/{ECN\|PRO}/` |
+| `account_seed_dir(base_dir, account_type)` | `sets/ubs_ready/{ECN\|PRO}/` |
+
+**CLI**: `ubs_agent.py --account-type ECN|PRO` (default `ECN`). When `--source-dir`,
+`--output-dir`, and `--memory` are not explicitly provided, `ubs_agent.py` auto-derives
+them from `--account-type` using the helpers above.
+
+**UI**: "UBS Agente UBS" has a **Tipo de cuenta** combobox (ECN/PRO) in the paths
+block. Changing it triggers `_on_ubs_account_type_changed()` in
+`ui/ubs_agent_logic.py`, which:
+1. Calls `_sync_ubs_account_paths()` — updates seed/output/memory path vars if
+   they still point to legacy (pre-separation) paths.
+2. Saves settings.
+3. Calls `_refresh_all()` to reload all panels with the new account's data.
+
+`app_ui.py` holds `self.ubs_account_type = tk.StringVar(...)` persisted in
+`ui_settings.ini` under `[General]`.
+
+### Manual status override
+
+`ubs/manual_status.py` allows operators to manually force `accepted` or `rejected`
+on any UBS pipeline row without re-running MT5. `MANUAL_STATUSES = {"accepted", "rejected"}`.
+
+| Function | Table updated | Called from |
+|----------|--------------|-------------|
+| `mark_seed_scores(conn, seed_paths, status)` | `seed_scores` | Seeds tab |
+| `mark_candidates(conn, candidate_ids, status)` | `candidates` | Results tab |
+| `mark_candidate_robustness(conn, candidate_ids, status, *, from_date, to_date, positive_bonus, negative_bonus)` | `candidate_robustness` | Robustness tab |
+| `mark_candidate_final_tick(conn, candidate_ids, status, *, min_history_quality, from_date, to_date, max_*_delta_pct)` | `candidate_final_tick` | Final Tick tab |
+
+All functions use `INSERT … ON CONFLICT DO UPDATE` for robustness/final_tick rows
+(upsert preserves existing report paths, scores, metrics, and dates). For `candidates`
+and `seed_scores` they use `UPDATE`. All set `accepted=1|0` to match the new status.
+
+UI buttons: each relevant tab has **Aceptar seleccionadas** / **Rechazar seleccionadas**
+(Type B bar buttons) that act on checked rows and then call
+`self._safe_refresh("ubs_universe", ...)` so weights update immediately.
+
+### `run_tests.py` — Model=4 stuck detection and restart
+
+When running `Model=4` (Every Tick based on real ticks), MT5 can get stuck
+indefinitely waiting to download tick history. The stuck-detection subsystem
+automatically kills and retries MT5 in this case.
+
+**`TESTER_STUCK_MARKERS`**: tuple of journal log substrings that indicate MT5 is
+stuck. Currently:
+```python
+TESTER_STUCK_MARKERS = (
+    "preliminary downloading of history ticks started",
+)
+```
+
+**Detection logic** (`_wait_for_process` / `wait_for_mt5_exit`):
+- Every 10 s the tester journal (`Tester.log` in MT5 data dir) is read.
+- If the last line matches a `TESTER_STUCK_MARKERS` entry AND the file has not
+  grown since the previous check → stuck counter increments.
+- After 2 consecutive stuck checks (≈20 s idle), the process is killed and the
+  run is retried once. On the second attempt the kick timeout is doubled before
+  giving up.
+- `kick_after_seconds` only applies when `real_tick_model=True`; OHLC/other
+  models are never killed early.
+
+**New CLI arguments for `run_tests.py`**:
+
+| Flag | Config key | Default | Description |
+|------|-----------|---------|-------------|
+| `--model N` | — | from INI | Override `Model` in the generated INI |
+| `--tester-kick-after N` | `[Multiterminal] tester_kick_after` | `30` | Seconds before killing a stuck Model=4 process |
+| `--terminal-cooldown N` | `[Multiterminal] terminal_cooldown` | `0` | Pause in seconds after MT5 exits (prevents rapid restart) |
+
+`load_runner_tuning(terminals_config_path, tester_kick_after, terminal_cooldown)`
+reads `[Multiterminal]` from `ui_settings.ini` for saved defaults, overridden by
+explicit CLI flags. Set `--tester-kick-after 0` to disable auto-restart entirely.
+
+`ubs_agent.py` forwards these flags to `run_tests.py` for Final Tick (`--model 4`)
+and seed evaluation runs.
+
+### Manual status buttons in UI tabs
+
+All manual status changes use `ubs/manual_status.py` helpers and immediately
+refresh the Universe tab (weights change when `accepted` flips):
+
+- **UBS Seeds**: Aceptar / Rechazar selected seeds via `mark_seed_scores()`.
+- **UBS Resultados**: Aceptar / Rechazar selected candidates via `mark_candidates()`.
+- **UBS Robustez**: Aceptar / Rechazar selected OOS rows via `mark_candidate_robustness()`.
+  Preserves existing `positive_bonus`/`negative_bonus` from the DB row.
+
+`UBS Universo` now includes `final_tick_status` and `final_tick_similarity_json` in
+its asset/timeframe weight queries so final-tick data is reflected in exploration weights.
+
 ### Fresh MT5 report guard
 
 `run_tests.py` and `ubs_agent.py` ignore reports older than the current batch
 start time. This prevents MT5 history-cache failures or stale files from being
 scored as if they belonged to the current backtest.
+
+Additionally, `delete_existing_report_files()` in `run_tests.py` pre-clears
+stale `.htm`/`.html`/`.xml`/`.png`/`.set` files from the MT5 report directories
+before each job. The active `.set` file (`protected_set_name`) is always preserved.
+This prevents a stale report from a previous crashed run from being picked up by
+the fresh-report filter if it happens to have a newer mtime than the batch start.
 
 ### Multiterminal support
 
