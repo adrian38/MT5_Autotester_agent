@@ -1220,6 +1220,33 @@ def _tester_log_is_stuck(last_line: str) -> bool:
     return any(marker.lower() in lower for marker in TESTER_STUCK_MARKERS)
 
 
+def _tick_bases_progress_signature(terminal_data_dirs: list[Path]) -> tuple[int, int, float]:
+    """Firma de progreso de la descarga de ticks: (n_archivos, bytes, mtime max)
+    de los .tkc bajo <data>/bases/<server>/ticks/<symbol>/.
+
+    MT5 bufferea el journal del tester durante la descarga de ticks: el log
+    puede quedarse sin volcar a disco minutos enteros mientras la descarga
+    avanza. Los .tkc en cambio crecen en tiempo real: si esta firma cambia
+    entre chequeos hay progreso aunque el journal calle."""
+    count = 0
+    total = 0
+    newest = 0.0
+    for data_dir in terminal_data_dirs:
+        bases = data_dir / "bases"
+        if not bases.is_dir():
+            continue
+        for tkc in bases.glob("*/ticks/*/*.tkc"):
+            try:
+                st = tkc.stat()
+            except OSError:
+                continue
+            count += 1
+            total += int(st.st_size)
+            if st.st_mtime > newest:
+                newest = st.st_mtime
+    return count, total, newest
+
+
 def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None:
     if process.poll() is not None:
         return
@@ -1272,6 +1299,7 @@ def wait_for_mt5_process(
     last_log_size: int = -1
     last_log_path: Path | None = None
     prev_was_stuck = False
+    last_bases_signature: tuple[int, int, float] | None = None
 
     while True:
         exit_code = process.poll()
@@ -1280,42 +1308,57 @@ def wait_for_mt5_process(
             return exit_code, False, elapsed
 
         if use_log_check and elapsed >= next_log_check:
+            # Progreso real de descarga de ticks: MT5 bufferea el journal del
+            # tester mientras descarga, asi que el log puede no existir o no
+            # crecer durante minutos aunque la descarga avance. Los .tkc de
+            # bases/ si crecen en tiempo real.
+            bases_signature = _tick_bases_progress_signature(tester_log_dirs)
+            bases_progress = last_bases_signature is not None and bases_signature != last_bases_signature
+            first_bases_check = last_bases_signature is None
+            last_bases_signature = bases_signature
+
             journal = find_tester_journal_log(tester_log_dirs, min_mtime=log_check_min_mtime)
             if journal is not None:
                 last_line, current_size = read_tester_journal_tail(journal)
                 is_stuck_line = _tester_log_is_stuck(last_line)
                 log_unchanged = (journal == last_log_path and current_size == last_log_size)
-
-                if is_stuck_line and log_unchanged and prev_was_stuck:
-                    # Second consecutive check with no progress → kill
-                    logger.write(
-                        f"MT5 sigue activo tras {elapsed:.0f}s y el tester log no avanza "
-                        f"(2 checks sin cambio); se reinicia para destrabar descarga de ticks."
-                    )
-                    logger.write(f"  Ultima linea log: {last_line!r}")
-                    terminate_process_tree(process, logger)
-                    try:
-                        process.wait(timeout=15)
-                    except subprocess.TimeoutExpired:
-                        logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
-                    return process.returncode if process.returncode is not None else 1, True, elapsed
-
-                if is_stuck_line and log_unchanged:
-                    # First stuck check — warn and wait one more interval
-                    logger.write(
-                        f"MT5 tester log sin cambios ({elapsed:.0f}s): "
-                        f"ultima linea: {last_line!r}  — esperando {_LOG_CHECK_INTERVAL}s mas."
-                    )
-                    prev_was_stuck = True
-                else:
-                    if prev_was_stuck:
-                        logger.write("MT5 tester log avanzo, reset detector stuck.")
-                    prev_was_stuck = False
-
+                stuck_now = is_stuck_line and log_unchanged and not bases_progress
+                stuck_detail = f"ultima linea log: {last_line!r}"
                 last_log_size = current_size
                 last_log_path = journal
             else:
-                logger.write(f"MT5 activo ({elapsed:.0f}s): log del tester aun no encontrado.")
+                # Sin journal volcado a disco: si los .tkc tampoco avanzan tras
+                # el primer chequeo, MT5 esta colgado sin escribir nada.
+                stuck_now = not bases_progress and not first_bases_check and elapsed >= kick_after_seconds
+                stuck_detail = "journal del tester sin volcar a disco"
+                if not stuck_now:
+                    logger.write(
+                        f"MT5 activo ({elapsed:.0f}s): journal sin volcar; "
+                        f"ticks {'descargando' if bases_progress else 'sin datos aun'} "
+                        f"({bases_signature[0]} .tkc / {bases_signature[1] / 1048576:.1f} MB)."
+                    )
+
+            if stuck_now and prev_was_stuck:
+                logger.write(
+                    f"MT5 sigue activo tras {elapsed:.0f}s sin progreso de journal ni de descarga de ticks "
+                    f"(2 checks sin cambio); se reinicia para destrabar."
+                )
+                logger.write(f"  {stuck_detail}")
+                terminate_process_tree(process, logger)
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
+                return process.returncode if process.returncode is not None else 1, True, elapsed
+
+            if stuck_now:
+                logger.write(
+                    f"MT5 sin progreso ({elapsed:.0f}s): {stuck_detail} — esperando {_LOG_CHECK_INTERVAL}s mas."
+                )
+                prev_was_stuck = True
+            else:
+                if prev_was_stuck:
+                    logger.write("MT5 volvio a avanzar (journal o descarga de ticks), reset detector stuck.")
                 prev_was_stuck = False
 
             next_log_check = elapsed + _LOG_CHECK_INTERVAL

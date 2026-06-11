@@ -390,15 +390,21 @@ class UBSFinalTickLogicMixin:
                 ohlc_from = self.ubs_final_tick_ohlc_from_date.get().strip()
                 ohlc_to = self.ubs_final_tick_ohlc_to_date.get().strip()
                 has_ohlc_retry = bool(ohlc_from and ohlc_to)
-                has_ohlc_pending = any(
-                    str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    for row in rows
-                )
+
+                def _row_in_retry_scope(row) -> bool:
+                    # pending_ohlc_trades o filas ya registradas con el rango retry
+                    # (p. ej. mismatch durante un retry): van con las fechas retry.
+                    if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
+                        return True
+                    return (
+                        has_ohlc_retry
+                        and str(row["final_tick_from_date"] or "").strip() == ohlc_from
+                        and str(row["final_tick_to_date"] or "").strip() == ohlc_to
+                    )
+
+                has_ohlc_pending = any(_row_in_retry_scope(row) for row in rows)
                 if has_ohlc_retry and has_ohlc_pending:
-                    rows = [
-                        row for row in rows
-                        if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    ]
+                    rows = [row for row in rows if _row_in_retry_scope(row)]
             if not rows:
                 if pending_only:
                     message = f"Run #{run_id} no tiene robust accepted pendientes de Final Tick."

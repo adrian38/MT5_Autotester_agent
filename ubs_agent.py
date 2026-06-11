@@ -1886,10 +1886,24 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     main_to_date = str(args.to_date or "").strip()
     ohlc_retry_from = str(getattr(args, "final_tick_ohlc_from_date", "") or "").strip()
     ohlc_retry_to = str(getattr(args, "final_tick_ohlc_to_date", "") or "").strip()
-    has_ohlc_trades_pending = any(
-        str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-        for row in rows
-    )
+    def _row_uses_retry_dates(row: sqlite3.Row) -> bool:
+        # Una fila que ya quedo registrada con el rango retry OHLC (p. ej. un
+        # mismatch ocurrido durante un retry) debe re-ejecutarse con ese mismo
+        # rango, no con las fechas principales.
+        if not ohlc_retry_from or not ohlc_retry_to:
+            return False
+        return (
+            str(row["final_tick_from_date"] or "").strip() == ohlc_retry_from
+            and str(row["final_tick_to_date"] or "").strip() == ohlc_retry_to
+        )
+
+    def _row_in_retry_scope(row: sqlite3.Row) -> bool:
+        return (
+            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+            or _row_uses_retry_dates(row)
+        )
+
+    has_ohlc_trades_pending = any(_row_in_retry_scope(row) for row in rows)
     using_ohlc_retry_dates = False
     if args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
@@ -1904,12 +1918,12 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         if using_ohlc_retry_dates:
             deferred_main_rows = [
                 row for row in rows
-                if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades"
+                if not _row_in_retry_scope(row)
                 and final_tick_row_pending_for_dates(row, main_from_date, main_to_date, force_quality_retry=retry_pending_quality)
             ]
             rows = [
                 row for row in rows
-                if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+                if _row_in_retry_scope(row)
                 and final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
             ]
             if deferred_main_rows:
