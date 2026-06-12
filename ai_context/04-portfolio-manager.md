@@ -98,16 +98,19 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 
 ### Key design decisions
 
-- **Robust set input**: only uses rows where the base candidate and robustness
-  result are both accepted. The base report (`candidates.report_path`) covers
-  2020-2024 and the robustness report (`candidate_robustness.report_path`)
-  covers 2025-2026.
+- **Final Tick-gated input**: UBS Portafolio reads both ECN and PRO memories
+  and only offers rows where the base candidate, robustness result, and Final
+  Tick result are all accepted. The portfolio curve still uses the base report
+  (`candidates.report_path`) plus the robustness report
+  (`candidate_robustness.report_path`) as the 2020-2026 history; Final Tick is
+  the eligibility gate, not the curve source.
 - **Historical curve**: both periods are treated as consecutive parts of one
   2020-2026 history. The module reconstructs accumulated P/L from closed trades,
   validates net profit against report metrics when available, and merges the
   two curves.
-- **Eligibility filters**: accepted, unused, parseable curve, minimum combined
-  trades, and positive combined net. Do not add OOS/degradation filters here.
+- **Eligibility filters**: Final Tick accepted, not locked by a non-aggressive
+  portfolio, parseable curve, minimum combined trades, and positive combined
+  net. Do not add OOS/degradation filters here.
 - **Ranking and selection**: candidates are ranked, then limited by top-K per
   symbol before optimization.
 - **Discrete lot model**: `1 unit = 0.01 lot`. The optimizer assigns integer
@@ -144,7 +147,10 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   increments and optional local-search swaps.
 - `portfolio_members`: legacy-compatible per-strategy table. `set_path` remains
   part of the global exclusion key and is freed automatically when the portfolio
-  is deleted.
+  is deleted. Aggressive portfolios are exploratory for Conservative/Balanced
+  generation and do not lock their selected sets there, but they do lock sets
+  for later Aggressive generations. Conservative and Balanced portfolios lock
+  selected sets for every portfolio type.
 
 ### Export
 

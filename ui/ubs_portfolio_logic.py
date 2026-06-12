@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+from ubs.account import ACCOUNT_TYPES, account_memory_path
 from ubs.db import connect_memory
 from ubs.set_utils import read_set_with_encoding, write_set_text
 from portfolio_manager.ubs_portfolio import (
@@ -202,13 +203,24 @@ class UBSPortfolioLogicMixin:
         if column not in columns:
             conn.execute(f"alter table {table} add column {column} {definition}")
 
-    def _ubs_portfolio_conn(self) -> sqlite3.Connection:
-        conn = connect_memory(self._ubs_memory_path())
+    def _ubs_portfolio_conn_for_memory(self, memory_path: Path) -> sqlite3.Connection:
+        conn = connect_memory(memory_path)
         conn.row_factory = sqlite3.Row
         self._ensure_ubs_base_tables_for_portfolio(conn)
         self._ensure_ubs_memory_schema(conn)
         self._ensure_portfolio_schema(conn)
         return conn
+
+    def _ubs_portfolio_conn(self) -> sqlite3.Connection:
+        return self._ubs_portfolio_conn_for_memory(self._ubs_memory_path())
+
+    def _ubs_portfolio_source_paths(self) -> list[tuple[str, Path]]:
+        paths: list[tuple[str, Path]] = []
+        for account_type in ACCOUNT_TYPES:
+            path = account_memory_path(BASE_DIR, account_type)
+            if path.exists():
+                paths.append((account_type, path))
+        return paths
 
     def _ensure_ubs_base_tables_for_portfolio(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -251,32 +263,94 @@ class UBSPortfolioLogicMixin:
         conn.commit()
 
     # ------------------------------------------------------------------ SQL
-    def _robust_passed_candidates(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    def _final_tick_passed_candidates(
+        self,
+        conn: sqlite3.Connection,
+        account_type: str,
+    ) -> list[sqlite3.Row]:
         return conn.execute(
             """
-            select c.id as candidate_id, c.set_path, c.symbol, c.target_symbol,
+            select ? as account_type,
+                   ? || ':' || c.id as candidate_id,
+                   c.id as source_candidate_id,
+                   c.set_path, c.symbol, c.target_symbol,
                    c.period, c.family,
-                   c.report_path as is_report_path, cr.report_path as oos_report_path
+                   c.report_path as is_report_path,
+                   cr.report_path as oos_report_path,
+                   ft.ohlc_report_path as final_ohlc_report_path,
+                   ft.real_tick_report_path as final_tick_report_path
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
-            where c.status = 'accepted' and cr.status = 'accepted'
+            join candidate_final_tick ft on ft.candidate_id = c.id
+            where c.status = 'accepted'
+              and cr.status = 'accepted'
+              and ft.status = 'accepted'
             order by c.id
-            """
+            """,
+            (account_type, account_type),
         ).fetchall()
 
-    def _used_set_paths(self, conn: sqlite3.Connection) -> list[str]:
+    def _final_tick_passed_candidates_all_accounts(self) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for account_type, memory_path in self._ubs_portfolio_source_paths():
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                rows.extend(dict(row) for row in self._final_tick_passed_candidates(conn, account_type))
+            finally:
+                conn.close()
+        return rows
+
+    def _portfolio_type_from_label(self, value: object) -> PortfolioType:
+        text = str(value or "").strip()
+        if text in PORTFOLIO_TYPE_LABELS:
+            return PORTFOLIO_TYPE_LABELS[text]
+        try:
+            return PortfolioType(text.lower())
+        except ValueError:
+            return PortfolioType.BALANCED
+
+    def _used_set_paths(self, conn: sqlite3.Connection, target_portfolio_type: PortfolioType) -> list[str]:
+        type_filter = ""
+        if target_portfolio_type != PortfolioType.AGGRESSIVE:
+            type_filter = (
+                "and lower(coalesce(nullif(p.portfolio_type, ''), nullif(p.type, ''), '')) <> 'aggressive'"
+            )
         rows = conn.execute(
-            """
-            select set_path from portfolio_allocations where set_path is not null and set_path <> ''
+            f"""
+            select pa.set_path
+            from portfolio_allocations pa
+            join portfolios p on p.id = pa.portfolio_id
+            where pa.set_path is not null and pa.set_path <> ''
+              {type_filter}
             union
-            select set_path from portfolio_members where set_path is not null and set_path <> ''
+            select pm.set_path
+            from portfolio_members pm
+            join portfolios p on p.id = pm.portfolio_id
+            where pm.set_path is not null and pm.set_path <> ''
+              {type_filter}
             """
         ).fetchall()
         return [str(row["set_path"]) for row in rows]
 
-    def _portfolio_availability(self, conn: sqlite3.Connection) -> PortfolioAvailability:
-        rows = self._robust_passed_candidates(conn)
-        used = self._used_set_paths(conn)
+    def _used_set_paths_all_accounts(self, target_portfolio_type: PortfolioType) -> list[str]:
+        used: set[str] = set()
+        for _account_type, memory_path in self._ubs_portfolio_source_paths():
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                used.update(self._used_set_paths(conn, target_portfolio_type))
+            finally:
+                conn.close()
+        return sorted(used)
+
+    def _portfolio_availability(
+        self,
+        _conn: sqlite3.Connection | None = None,
+        *,
+        target_portfolio_type: PortfolioType | None = None,
+    ) -> PortfolioAvailability:
+        target_portfolio_type = target_portfolio_type or self._portfolio_type_from_label(self.ubs_portfolio_type.get())
+        rows = self._final_tick_passed_candidates_all_accounts()
+        used = self._used_set_paths_all_accounts(target_portfolio_type)
         return summarize_robust_rows(rows, used)
 
     def _insert_portfolio(
@@ -647,22 +721,22 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_pending_inputs = None
         self._set_ubs_portfolio_save_enabled(False)
         self._set_ubs_portfolio_running(True)
-        self.ubs_portfolio_status.set("Analizando sets robustos...")
+        self.ubs_portfolio_status.set("Analizando sets Final Tick accepted...")
         threading.Thread(target=self._ubs_portfolio_worker, args=(inputs,), daemon=True).start()
 
     def _ubs_portfolio_worker(self, inputs: dict[str, object]) -> None:
         try:
-            conn = self._ubs_portfolio_conn()
+            target_portfolio_type = PortfolioType(str(inputs["portfolio_type"]))
+            rows = self._final_tick_passed_candidates_all_accounts()
+            used = self._used_set_paths_all_accounts(target_portfolio_type)
+            availability = summarize_robust_rows(rows, used)
+            existing_curves = self._saved_portfolio_curves_all_accounts(target_portfolio_type)
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"No pude abrir la memoria UBS: {exc}"})
             return
         try:
-            rows = self._robust_passed_candidates(conn)
-            used = self._used_set_paths(conn)
-            availability = summarize_robust_rows(rows, used)
-            existing_curves = self._saved_portfolio_curves(conn)
             if not rows:
-                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con robustez accepted."})
+                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick accepted en ECN/PRO."})
                 return
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
@@ -675,7 +749,7 @@ class UBSPortfolioLogicMixin:
                 capital=float(inputs["capital"]),
                 valley_dd_pct=float(inputs["valley_dd_pct"]),
                 point_dd_pct=float(inputs["point_dd_pct"]),
-                portfolio_type=PortfolioType(str(inputs["portfolio_type"])),
+                portfolio_type=target_portfolio_type,
                 min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
                 top_k_per_symbol=int(inputs["top_k_per_symbol"]),
                 max_total_candidates=int(inputs["max_total_candidates"]),
@@ -694,11 +768,6 @@ class UBSPortfolioLogicMixin:
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
             return
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
         self.after(0, self._ubs_portfolio_finished, {
             "ok": True,
             "inputs": inputs,
@@ -706,9 +775,18 @@ class UBSPortfolioLogicMixin:
             "result": result,
         })
 
-    def _saved_portfolio_curves(self, conn: sqlite3.Connection) -> list[list[float]]:
+    def _saved_portfolio_curves(self, conn: sqlite3.Connection, target_portfolio_type: PortfolioType) -> list[list[float]]:
         curves: list[list[float]] = []
-        for row in conn.execute("select metrics_json from portfolios where metrics_json is not null and metrics_json <> ''"):
+        type_filter = ""
+        if target_portfolio_type != PortfolioType.AGGRESSIVE:
+            type_filter = "and lower(coalesce(nullif(portfolio_type, ''), nullif(type, ''), '')) <> 'aggressive'"
+        for row in conn.execute(
+            f"""
+            select metrics_json from portfolios
+            where metrics_json is not null and metrics_json <> ''
+              {type_filter}
+            """
+        ):
             try:
                 metrics = json.loads(row["metrics_json"])
             except Exception:
@@ -719,6 +797,16 @@ class UBSPortfolioLogicMixin:
                     curves.append([float(value) for value in curve])
                 except (TypeError, ValueError):
                     continue
+        return curves
+
+    def _saved_portfolio_curves_all_accounts(self, target_portfolio_type: PortfolioType) -> list[list[float]]:
+        curves: list[list[float]] = []
+        for _account_type, memory_path in self._ubs_portfolio_source_paths():
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                curves.extend(self._saved_portfolio_curves(conn, target_portfolio_type))
+            finally:
+                conn.close()
         return curves
 
     def _ubs_portfolio_finished(self, info: dict) -> None:
@@ -786,16 +874,18 @@ class UBSPortfolioLogicMixin:
     def _refresh_ubs_portfolio_availability(self) -> None:
         if not hasattr(self, "ubs_portfolio_availability_tree"):
             return
-        memory_path = self._ubs_memory_path()
-        if not memory_path.exists():
-            self.ubs_portfolio_availability.set("Memoria UBS no encontrada.")
+        if not self._ubs_portfolio_source_paths():
+            self.ubs_portfolio_availability.set("Memorias UBS ECN/PRO no encontradas.")
             self._populate_ubs_portfolio_availability(None)
             return
-        conn = self._ubs_portfolio_conn()
         try:
-            availability = self._portfolio_availability(conn)
-        finally:
-            conn.close()
+            availability = self._portfolio_availability(
+                target_portfolio_type=self._portfolio_type_from_label(self.ubs_portfolio_type.get())
+            )
+        except Exception as exc:
+            self.ubs_portfolio_availability.set(f"Disponibilidad: error leyendo memorias ({exc})")
+            self._populate_ubs_portfolio_availability(None)
+            return
         self._populate_ubs_portfolio_availability(availability)
 
     def _populate_ubs_portfolio_availability(self, availability: PortfolioAvailability | None) -> None:
@@ -808,8 +898,8 @@ class UBSPortfolioLogicMixin:
             self.ubs_portfolio_availability.set("Disponibilidad: sin datos")
             return
         self.ubs_portfolio_availability.set(
-            f"Sets robustos accepted: {availability.robust_accepted} | "
-            f"Sets ya usados: {availability.already_used} | "
+            f"Sets Final Tick OK ECN/PRO: {availability.robust_accepted} | "
+            f"Sets bloqueados: {availability.already_used} | "
             f"Sets disponibles: {availability.available} | "
             f"Simbolos disponibles: {availability.symbols_available}"
         )
@@ -942,6 +1032,25 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_metric_lot.set(f"{result.total_lot:.2f}")
         self.ubs_portfolio_metric_units.set(str(result.total_units))
 
+    def _ubs_portfolio_member_account(self, member: dict[str, object]) -> str:
+        account = str(member.get("account_type") or "").strip().upper()
+        if account in ACCOUNT_TYPES:
+            return account
+        candidate_id = str(member.get("candidate_id") or "").strip()
+        if ":" in candidate_id:
+            prefix = candidate_id.split(":", 1)[0].strip().upper()
+            if prefix in ACCOUNT_TYPES:
+                return prefix
+        return ""
+
+    def _ubs_portfolio_member_candidate_label(self, member: dict[str, object]) -> str:
+        candidate_id = str(member.get("candidate_id") or "").strip()
+        if ":" in candidate_id:
+            prefix, value = candidate_id.split(":", 1)
+            if prefix.strip().upper() in ACCOUNT_TYPES:
+                return value
+        return candidate_id
+
     def _populate_ubs_portfolio_allocations(self, members: list[dict[str, object]]) -> None:
         if not hasattr(self, "ubs_portfolio_members_tree"):
             return
@@ -957,7 +1066,8 @@ class UBSPortfolioLogicMixin:
             step = member.get("lot_size_step")
             values = (
                 Path(set_id).name,
-                str(member.get("candidate_id") or ""),
+                self._ubs_portfolio_member_account(member),
+                self._ubs_portfolio_member_candidate_label(member),
                 str(member.get("symbol") or ""),
                 str(member.get("timeframe") or member.get("period") or ""),
                 units,
@@ -1124,7 +1234,7 @@ class UBSPortfolioLogicMixin:
             return
 
         capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
-        exported: list[tuple[str, str, float, int, str]] = []
+        exported: list[tuple[str, str, str, float, int, str]] = []
         missing: list[str] = []
         not_found_key: list[str] = []
         for member in members:
@@ -1149,6 +1259,7 @@ class UBSPortfolioLogicMixin:
             out_path = dest / set_path.name
             write_set_text(out_path, new_text, encoding)
             exported.append((
+                self._ubs_portfolio_member_account(member),
                 str(member.get("symbol") or ""),
                 str(member.get("timeframe") or member.get("period") or ""),
                 real_lot,
@@ -1171,10 +1282,10 @@ class UBSPortfolioLogicMixin:
             "El EA aplica Lots = floor(AccountBalance / LotPerBalance_step) * 0.01",
             f"Calculado para balance {capital:,.0f}.",
             "",
-            f"{'SIMBOLO':12s} {'TF':5s} {'LOTE':>7s} {'LotPerBalance_step':>20s}   SET",
+            f"{'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'LOTE':>7s} {'LotPerBalance_step':>20s}   SET",
         ]
-        for symbol, period, real_lot, step_int, name in exported:
-            lines.append(f"{symbol:12s} {period:5s} {real_lot:7.2f} {step_int:20d}   {name}")
+        for account, symbol, period, real_lot, step_int, name in exported:
+            lines.append(f"{account:7s} {symbol:12s} {period:5s} {real_lot:7.2f} {step_int:20d}   {name}")
         if missing:
             lines.append("")
             lines.append("OMITIDOS (set no encontrado): " + ", ".join(missing))
