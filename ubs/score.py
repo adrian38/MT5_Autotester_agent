@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import hashlib
 import json
 import math
 import re
@@ -9,6 +10,9 @@ import statistics
 
 from portfolio_manager.mt5_report import StrategyReport, parse_report
 from ubs.normalization import net_profit_normalization
+
+
+SCORE_FORMULA_VERSION = "1"
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,13 @@ class ScoreConfig:
     max_drawdown_pct: float = 25.0
     min_recovery_factor: float = 1.0
     min_positive_month_ratio: float = 0.0
+
+    def to_dict(self) -> dict[str, float | int]:
+        return asdict(self)
+
+    def stable_hash(self) -> str:
+        payload = json.dumps(self.to_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -46,6 +57,9 @@ class ScoreResult:
     avg_trade: float
     sqn: float
     reasons: tuple[str, ...]
+    score_formula_version: str = SCORE_FORMULA_VERSION
+    score_config: dict[str, float | int] = field(default_factory=dict)
+    score_config_hash: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=True, sort_keys=True)
@@ -132,6 +146,9 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
         avg_trade=round(avg_trade, 4),
         sqn=round(sqn, 4),
         reasons=tuple(reasons),
+        score_formula_version=SCORE_FORMULA_VERSION,
+        score_config=config.to_dict(),
+        score_config_hash=config.stable_hash(),
     )
 
 

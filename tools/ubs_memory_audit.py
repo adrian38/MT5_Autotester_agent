@@ -10,9 +10,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_disabled_symbols_path, account_memory_path
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
-from ubs.universe import disabled_symbols_path, load_asset_universe, load_disabled_symbols
+from ubs.universe import load_asset_universe, load_disabled_symbols
 from ubs.weights import (
     DEFAULT_ROBUST_NEGATIVE_BONUS,
     DEFAULT_ROBUST_POSITIVE_BONUS,
@@ -20,13 +21,13 @@ from ubs.weights import (
 )
 
 
-DEFAULT_MEMORY = BASE_DIR / "outputs" / "ubs_memory.sqlite"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audita la memoria UBS SQLite y sus pesos.")
-    parser.add_argument("--memory", default=str(DEFAULT_MEMORY), help="Ruta a outputs/ubs_memory.sqlite.")
+    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Cuenta UBS a auditar.")
+    parser.add_argument("--memory", default="", help="Ruta SQLite. Si se omite, usa la memoria de --account-type.")
     parser.add_argument("--assets", default=str(DEFAULT_ASSETS), help="Ruta al universo de activos.")
     parser.add_argument("--top", type=int, default=12, help="Cantidad de pesos top/bottom a mostrar.")
     parser.add_argument("--strict", action="store_true", help="Devuelve codigo 1 si hay avisos.")
@@ -193,7 +194,7 @@ def audit_seeds(conn, audit: Audit) -> None:
         select count(*)
         from seed_scores
         where active=1
-          and status not in ('accepted','rejected','no_trades','report_mismatch','disabled_symbol')
+          and status not in ('accepted','rejected','no_trades','report_mismatch','disabled_symbol','invalid_seed')
         """,
     )
     if not_ready:
@@ -312,9 +313,69 @@ def audit_robustness(conn, audit: Audit) -> None:
         audit.warn(f"{orphans} fila(s) candidate_robustness no tienen candidato padre.")
 
 
-def audit_weights(memory_path: Path, assets_path: Path) -> None:
+def audit_final_tick(conn, audit: Audit) -> None:
+    print_heading("Final Tick")
+    if not table_exists(conn, "candidate_final_tick"):
+        audit.warn("No existe tabla candidate_final_tick.")
+        return
+    rows = conn.execute(
+        """
+        select ft.status, count(*) n
+        from candidate_final_tick ft
+        group by ft.status
+        order by n desc, ft.status
+        """
+    ).fetchall()
+    if rows:
+        for row in rows:
+            print(f"{row['status']}: {row['n']}")
+    else:
+        print("sin resultados Final Tick")
+
+    pending = conn.execute(
+        """
+        select ft.status, count(*) n
+        from candidate_final_tick ft
+        where ft.status in ('pending_history_quality','pending_ohlc_trades')
+        group by ft.status
+        order by ft.status
+        """
+    ).fetchall()
+    for row in pending:
+        audit.warn(f"Final Tick conserva {row['n']} fila(s) {row['status']} retryable(s).")
+
+    robust_ready_without_final = scalar(
+        conn,
+        """
+        select count(*)
+        from candidates c
+        join candidate_robustness cr on cr.candidate_id=c.id and cr.status='accepted'
+        left join candidate_final_tick ft on ft.candidate_id=c.id
+        where c.status='accepted' and ft.candidate_id is null
+        """,
+    )
+    print(f"robust accepted sin Final Tick: {robust_ready_without_final}")
+    if robust_ready_without_final:
+        audit.warn(f"{robust_ready_without_final} candidato(s) robust accepted no tienen Final Tick.")
+
+    portfolio_eligible = scalar(
+        conn,
+        """
+        select count(*)
+        from candidates c
+        join candidate_robustness cr on cr.candidate_id=c.id
+        join candidate_final_tick ft on ft.candidate_id=c.id
+        where c.status='accepted'
+          and cr.status='accepted'
+          and ft.status='accepted'
+        """,
+    )
+    print(f"elegibles por gate duro base+robust+final_tick: {portfolio_eligible}")
+
+
+def audit_weights(memory_path: Path, assets_path: Path, account_type: str) -> None:
     print_heading("Pesos")
-    disabled = load_disabled_symbols(disabled_symbols_path(BASE_DIR))
+    disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type))
     _groups, aliases = load_asset_universe(assets_path, disabled_symbols=disabled)
     memory = AgentMemory(memory_path)
     try:
@@ -366,7 +427,7 @@ def audit_json_metrics(conn, audit: Audit) -> None:
 
 def main() -> int:
     args = parse_args()
-    memory_path = Path(args.memory).expanduser()
+    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, args.account_type)
     assets_path = Path(args.assets).expanduser()
     if not memory_path.exists():
         print(f"ERROR: no existe memoria UBS: {memory_path}")
@@ -381,11 +442,12 @@ def main() -> int:
         audit_candidates(conn, audit)
         audit_seeds(conn, audit)
         audit_robustness(conn, audit)
+        audit_final_tick(conn, audit)
         audit_json_metrics(conn, audit)
     finally:
         conn.close()
 
-    audit_weights(memory_path, assets_path)
+    audit_weights(memory_path, assets_path, args.account_type)
 
     print_heading("Resultado")
     if audit.warnings:

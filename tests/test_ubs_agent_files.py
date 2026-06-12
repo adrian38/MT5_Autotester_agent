@@ -7,7 +7,7 @@ from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
 from ubs.account import account_disabled_symbols_path
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
-from ubs_agent import copy_accepted, choose_target_symbol, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, validate_seed_backtest_set, write_set_force_symbol
+from ubs_agent import copy_accepted, choose_target_period, choose_target_symbol, create_variant, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, unseeded_asset_force_probability, unseeded_timeframe_force_probability, validate_seed_backtest_set, variant_as_next_seed, write_set_force_symbol
 from run_tests import parse_symbol_map
 
 
@@ -165,6 +165,98 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertEqual(len(second), 1)
             self.assertEqual(files, second)
             self.assertEqual(files[0].name, "score_0020.00__candidate.set")
+
+    def test_variant_as_next_seed_preserves_target_timeframe(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+        variant = Variant(Path("candidate.set"), seed, "XAUUSD", "D1", ("Exit_stop",), (), "tf_feedback")
+
+        next_seed = variant_as_next_seed(variant)
+
+        self.assertEqual(next_seed.path, variant.path)
+        self.assertEqual(next_seed.symbol, "XAUUSD")
+        self.assertEqual(next_seed.period, "D1")
+        self.assertEqual(next_seed.family, seed.family)
+        self.assertEqual(next_seed.run_strategy, seed.run_strategy)
+
+    def test_unseeded_force_probabilities_drop_after_generation_one(self) -> None:
+        self.assertEqual(unseeded_asset_force_probability(1, 10), 0.35)
+        self.assertEqual(unseeded_asset_force_probability(2, 10), 0.25)
+        self.assertEqual(unseeded_asset_force_probability(3, 10), 0.15)
+        self.assertEqual(unseeded_asset_force_probability(1, 0), 0.0)
+        self.assertEqual(unseeded_timeframe_force_probability(1, 2), 0.20)
+        self.assertEqual(unseeded_timeframe_force_probability(3, 2), 0.08)
+
+    def test_zero_unseeded_probability_disables_forced_symbol_branch(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        for idx in range(20):
+            _target, policy = choose_target_symbol(
+                seed,
+                {},
+                random.Random(idx),
+                ("EURUSD", "GBPUSD"),
+                {},
+                force_unseeded_universe=True,
+                unseeded_universe_symbols=("EURUSD", "GBPUSD"),
+                force_unseeded_probability=0.0,
+            )
+            self.assertNotEqual(policy, "asset_unseeded_force")
+
+    def test_zero_unseeded_probability_disables_forced_timeframe_branch(self) -> None:
+        seed = Seed(Path("seed.set"), "MYSTERY", "H1", "family", "1")
+
+        for idx in range(20):
+            _target, policy = choose_target_period(
+                seed,
+                {},
+                random.Random(idx),
+                force_unseeded_timeframes=True,
+                unseeded_timeframes=("D1",),
+                force_unseeded_probability=0.0,
+            )
+            self.assertNotEqual(policy, "tf_unseeded_force")
+
+    def test_create_variant_separates_timeframe_keys_from_mutated_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seed.set"
+            source.write_text(
+                "\n".join(
+                    [
+                        "ForceSymbol=XAUUSD",
+                        "Run_Strategy=1||1||0||2||N",
+                        "ST1_Timeframe=16385||0||1||16408||Y",
+                        "Entry_Timing=16385||0||1||16408||Y",
+                        "ATR_Timeframe=16385||0||1||16408||Y",
+                        "Exit_stop=100||50||10||150||Y",
+                        "Risk=2||2||0||10||N",
+                        "StartLots=0.01||0.01||0.01||1||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            seed = Seed(source, "XAUUSD", "H1", "family", "1")
+
+            variant = create_variant(
+                seed,
+                "XAUUSD",
+                "D1",
+                Path(temp_dir) / "out",
+                1,
+                1,
+                1,
+                1,
+                {},
+                {},
+                "test",
+                random.Random(2),
+            )
+
+            self.assertIn("ST1_Timeframe", variant.timeframe_keys)
+            self.assertIn("Entry_Timing", variant.timeframe_keys)
+            self.assertIn("ATR_Timeframe", variant.timeframe_keys)
+            self.assertNotIn("ST1_Timeframe", variant.mutated_keys)
+            self.assertEqual(len(variant.mutated_keys), 1)
+            self.assertEqual(variant.mutation_details[0]["key"], variant.mutated_keys[0])
 
     def test_recreate_work_dir_removes_previous_contents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

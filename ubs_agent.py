@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -58,6 +59,10 @@ DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOU
 DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
+ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
+ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
+TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
+TF_UNSEEDED_FORCE_PROB_LATE = 0.08
 FINAL_TICK_RETRYABLE_STATUSES = {
     "no_report",
     "parse_error",
@@ -296,6 +301,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
     parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes con reporte sin abrir MT5.")
     parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes con reporte sin abrir MT5.")
+    parser.add_argument("--rescore-final-tick-only", action="store_true", help="Recalcula Final Tick existente desde reportes guardados sin abrir MT5.")
     parser.add_argument(
         "--reconcile-seed-eval-only",
         action="store_true",
@@ -337,29 +343,45 @@ def parse_args() -> argparse.Namespace:
 
 
 def seeds_from_variants(variants: list[Variant]) -> list[Seed]:
-    return [
-        Seed(
-            path=variant.path,
-            symbol=variant.target_symbol,
-            period=variant.target_period,
-            family=variant.seed.family,
-            run_strategy=variant.seed.run_strategy,
-        )
-        for variant in variants
-    ]
+    return [variant_as_next_seed(variant) for variant in variants]
 
 
 def seeds_from_survivors(survivors: list[tuple[Variant, ScoreResult]]) -> list[Seed]:
-    return [
-        Seed(
-            path=variant.path,
-            symbol=variant.target_symbol,
-            period=variant.target_period,
-            family=variant.seed.family,
-            run_strategy=variant.seed.run_strategy,
-        )
-        for variant, _ in survivors
-    ]
+    return [variant_as_next_seed(variant) for variant, _ in survivors]
+
+
+def variant_as_next_seed(variant: Variant) -> Seed:
+    return Seed(
+        path=variant.path,
+        symbol=variant.target_symbol,
+        period=variant.target_period,
+        family=variant.seed.family,
+        run_strategy=variant.seed.run_strategy,
+    )
+
+
+def ranked_seed_selection(
+    seeds: list[Seed],
+    max_seeds: int,
+    asset_feedback: dict[str, float],
+    timeframe_feedback: dict[str, float],
+    rng: random.Random,
+    aliases: dict[str, str] | None = None,
+) -> list[tuple[float, Seed, float, float, float]]:
+    aliases = aliases or {}
+    valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
+    if not valid:
+        valid = seeds
+    scored: list[tuple[float, Seed, float, float, float]] = []
+    for seed in valid:
+        asset_key = canonical_symbol(seed.symbol, aliases).upper()
+        asset_weight = asset_feedback.get(asset_key, 0.0)
+        timeframe_weight = timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
+        diversity = rng.random() * 5.0
+        scored.append((asset_weight + timeframe_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
+    return scored[:limit]
 
 
 def choose_seeds(
@@ -370,20 +392,19 @@ def choose_seeds(
     rng: random.Random,
     aliases: dict[str, str] | None = None,
 ) -> list[Seed]:
-    aliases = aliases or {}
-    valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
-    if not valid:
-        valid = seeds
-    scored = []
-    for seed in valid:
-        asset_key = canonical_symbol(seed.symbol, aliases).upper()
-        prior = asset_feedback.get(asset_key, 0.0)
-        prior += timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
-        diversity = rng.random() * 5.0
-        scored.append((prior + diversity, seed))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
-    return [seed for _, seed in scored[:limit]]
+    return [seed for _, seed, _, _, _ in ranked_seed_selection(seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases)]
+
+
+def unseeded_asset_force_probability(generation: int, unseeded_count: int) -> float:
+    if unseeded_count <= 0:
+        return 0.0
+    return ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION.get(generation, ASSET_UNSEEDED_FORCE_PROB_LATE)
+
+
+def unseeded_timeframe_force_probability(generation: int, unseeded_count: int) -> float:
+    if unseeded_count <= 0:
+        return 0.0
+    return TF_UNSEEDED_FORCE_PROB_BY_GENERATION.get(generation, TF_UNSEEDED_FORCE_PROB_LATE)
 
 
 def generation_source_seeds(
@@ -459,6 +480,7 @@ def choose_target_symbol(
     disabled_symbols: set[str] | None = None,
     force_unseeded_universe: bool = False,
     unseeded_universe_symbols: tuple[str, ...] = (),
+    force_unseeded_probability: float = 0.65,
 ) -> tuple[str, str]:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
@@ -488,7 +510,7 @@ def choose_target_symbol(
         symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
         if symbol.upper() != current.upper() and not target_disabled(symbol)
     )
-    if force_unseeded_universe and unseeded_choices and rng.random() < 0.65:
+    if force_unseeded_universe and unseeded_choices and rng.random() < force_unseeded_probability:
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
         return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
@@ -534,13 +556,14 @@ def choose_target_period(
     *,
     force_unseeded_timeframes: bool = False,
     unseeded_timeframes: tuple[str, ...] = (),
+    force_unseeded_probability: float = 0.50,
 ) -> tuple[str, str]:
     current = seed.period.upper()
     choices = tuple(dict.fromkeys(related_timeframes(current)))
     if not choices:
         return current, "tf_exploit"
     forced_choices = tuple(period for period in choices if period.upper() in {tf.upper() for tf in unseeded_timeframes})
-    if force_unseeded_timeframes and forced_choices and rng.random() < 0.50:
+    if force_unseeded_timeframes and forced_choices and rng.random() < force_unseeded_probability:
         unseen = [period for period in forced_choices if period.upper() not in timeframe_feedback]
         return rng.choice(unseen or list(forced_choices)), "tf_unseeded_force"
     if current in choices and rng.random() < 0.60:
@@ -555,15 +578,24 @@ def choose_target_period(
     return rng.choice(choices), "tf_explore"
 
 
-def line_candidates(text: str, run_strategy: str, mutation_feedback: dict[str, float]) -> dict[str, tuple[int, list[str], float]]:
+def line_candidates(
+    text: str,
+    run_strategy: str,
+    mutation_feedback: dict[str, float],
+    *,
+    excluded_keys: Iterable[str] = (),
+) -> dict[str, tuple[int, list[str], float]]:
     lines = text.splitlines()
     preferred = set(CORE_MUTATION_KEYS.get(run_strategy, CORE_MUTATION_KEYS[""]))
+    excluded = {str(key) for key in excluded_keys}
     candidates: dict[str, tuple[int, list[str], float]] = {}
     for index, line in enumerate(lines):
         if "=" not in line or line.lstrip().startswith(";"):
             continue
         key, raw_value = line.split("=", 1)
         key = key.strip()
+        if key in excluded:
+            continue
         if not is_agent_mutable_key(key):
             continue
         if "||" not in raw_value:
@@ -719,6 +751,7 @@ def create_variant(
     variant_index: int,
     mutations_per_variant: int,
     mutation_feedback: dict[str, float],
+    mutation_direction_feedback: dict[str, float],
     policy: str,
     rng: random.Random,
 ) -> Variant:
@@ -735,30 +768,47 @@ def create_variant(
             if fvalue:
                 replace_existing_current_value(lines, fkey, fvalue)
     text = "\n".join(lines)
-    candidates = line_candidates(text, seed.run_strategy, mutation_feedback)
+    candidates = line_candidates(text, seed.run_strategy, mutation_feedback, excluded_keys=timeframe_keys)
     selected = weighted_sample(candidates, mutations_per_variant, rng)
     lines = text.splitlines()
     changed: list[str] = []
+    mutation_details: list[dict[str, object]] = []
     for key in selected:
         line_index, parts, _ = candidates[key]
         current = float(parts[0])
         start = float(parts[1])
         step = float(parts[2])
         stop = float(parts[3])
-        direction_bias = mutation_feedback.get(key, 0.0)
-        if direction_bias > 0 and rng.random() < 0.60:
-            direction = rng.choice([-1, 1])
+        direction_bias = mutation_direction_feedback.get(key, 0.0)
+        if direction_bias > 0 and rng.random() < 0.70:
+            direction = rng.choice([1, 2])
+        elif direction_bias < 0 and rng.random() < 0.70:
+            direction = rng.choice([-2, -1])
         else:
             direction = rng.choice([-2, -1, 1, 2])
         value = current + direction * step
+        wrapped = False
         if value < start or value > stop:
             slots = int((stop - start) / step)
             value = start + rng.randint(0, max(0, slots)) * step
-        parts[0] = format_like(parts[0], max(start, min(stop, value)))
+            wrapped = True
+        new_value = max(start, min(stop, value))
+        parts[0] = format_like(parts[0], new_value)
         lhs = lines[line_index].split("=", 1)[0]
         lines[line_index] = f"{lhs}={'||'.join(parts)}"
         changed.append(key)
-    changed.extend(timeframe_keys)
+        mutation_details.append(
+            {
+                "key": key,
+                "old": current,
+                "new": new_value,
+                "delta": new_value - current,
+                "step": step,
+                "direction": direction,
+                "direction_bias": round(float(direction_bias), 4),
+                "wrapped": wrapped,
+            }
+        )
 
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
     seed_label = compact_safe_part(seed.path.stem, 24)
@@ -769,7 +819,17 @@ def create_variant(
     )
     target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
     write_set_text(target, normalized, encoding)
-    return Variant(target, seed, target_symbol, target_period, tuple(changed), tuple(sorted(missing)), policy)
+    return Variant(
+        target,
+        seed,
+        target_symbol,
+        target_period,
+        tuple(changed),
+        tuple(sorted(missing)),
+        policy,
+        tuple(timeframe_keys),
+        tuple(mutation_details),
+    )
 
 
 def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -> int:
@@ -2587,6 +2647,144 @@ def reconcile_final_tick_reports(
     return status_counts
 
 
+def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    symbol_map = parse_symbol_map(args.symbol_map)
+    rows = memory.conn.execute(
+        """
+        select
+            c.*,
+            ft.run_id as ft_run_id,
+            ft.ohlc_report_path as ft_ohlc_report_path,
+            ft.real_tick_report_path as ft_real_tick_report_path,
+            ft.from_date as ft_from_date,
+            ft.to_date as ft_to_date
+        from candidate_final_tick ft
+        join candidates c on c.id = ft.candidate_id
+        order by ft.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    skipped_missing = 0
+    for row in rows:
+        candidate_id = int(row["id"])
+        run_id = int(row["ft_run_id"] or row["run_id"])
+        ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
+        real_tick_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
+        ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
+        real_tick_report = Path(real_tick_report_raw) if real_tick_report_raw else None
+        if ohlc_report is None or not ohlc_report.exists():
+            skipped_missing += 1
+            continue
+        from_date, to_date = _read_ohlc_report_cfg_dates(ohlc_report)
+        from_date = from_date or str(row["ft_from_date"] or args.from_date or "")
+        to_date = to_date or str(row["ft_to_date"] or args.to_date or "")
+        thresholds = argparse.Namespace(
+            final_tick_min_history_quality=float(args.final_tick_min_history_quality),
+            from_date=from_date,
+            to_date=to_date,
+            final_tick_max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
+            final_tick_max_pf_delta_pct=float(args.final_tick_max_pf_delta_pct),
+            final_tick_max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
+            final_tick_max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+        )
+        try:
+            ohlc_result = score_report_file(ohlc_report, config=score_config)
+        except Exception as exc:
+            print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "parse_error", None, None,
+                ohlc_report, real_tick_report,
+                None, None,
+                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
+                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
+                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
+            )
+            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
+            continue
+        original_variant = variant_from_candidate_row(row)
+        ohlc_variant = Variant(
+            path=ohlc_report,
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_ohlc_rescore",
+        )
+        ohlc_matches, ohlc_mismatch = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+        if not ohlc_matches:
+            print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "report_mismatch", ohlc_result, None,
+                ohlc_report, real_tick_report,
+                None, ohlc_result.history_quality,
+                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
+                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
+                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
+            )
+            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
+            continue
+        if ohlc_result.trades < int(args.final_tick_min_ohlc_trades):
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, int(args.final_tick_min_ohlc_trades))
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "pending_ohlc_trades", ohlc_result, None,
+                ohlc_report, real_tick_report,
+                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
+                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
+                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
+                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
+            )
+            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
+            continue
+        if real_tick_report is None or not real_tick_report.exists():
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "no_report", ohlc_result, None,
+                ohlc_report, real_tick_report,
+                None, None,
+                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
+                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
+                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
+            )
+            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            continue
+        real_tick_variant = Variant(
+            path=real_tick_report,
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_real_rescore",
+        )
+        _evaluate_final_tick_tick_report(
+            memory,
+            thresholds,
+            score_config,
+            symbol_map,
+            run_id,
+            candidate_id,
+            real_tick_variant,
+            ohlc_report,
+            ohlc_result,
+            real_tick_report,
+            status_counts,
+        )
+
+    total = sum(status_counts.values())
+    if status_counts:
+        print(
+            "Final Tick repuntuado con criterios actuales: "
+            + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            + f"; total={total}"
+        )
+    else:
+        print("No hay Final Tick con reportes guardados para repuntuar.")
+    if skipped_missing:
+        print(f"Final Tick sin OHLC local omitidos: {skipped_missing}")
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
 def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     candidate_ids = [int(value) for value in (args.retry_candidate_id or [])]
     if not candidate_ids:
@@ -3095,16 +3293,22 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     for generation in range(next_generation, planned_generations + 1):
         generation_dir = run_dir / f"gen_{generation:03d}"
         mutation_feedback = memory.mutation_feedback()
+        mutation_direction_feedback = memory.mutation_direction_feedback()
         asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
-        selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+        selected_seed_rankings = ranked_seed_selection(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+        selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
+        memory.record_seed_selection(run_id, generation, selected_seed_rankings)
         unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
+        asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
+        tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
         variants: list[Variant] = []
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
         if args.force_unseeded_universe:
             print(
                 f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
-                f"TF={len(unseeded_timeframes)}"
+                f"TF={len(unseeded_timeframes)} | "
+                f"prob_activo={asset_unseeded_probability:.0%}, prob_TF={tf_unseeded_probability:.0%}"
             )
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
@@ -3118,6 +3322,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     disabled_symbols=disabled_symbols,
                     force_unseeded_universe=args.force_unseeded_universe,
                     unseeded_universe_symbols=unseeded_symbols,
+                    force_unseeded_probability=asset_unseeded_probability,
                 )
                 target_period, period_policy = choose_target_period(
                     seed,
@@ -3125,6 +3330,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     rng,
                     force_unseeded_timeframes=args.force_unseeded_universe,
                     unseeded_timeframes=unseeded_timeframes,
+                    force_unseeded_probability=tf_unseeded_probability,
                 )
                 variant = create_variant(
                     seed,
@@ -3136,6 +3342,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     variant_index,
                     args.mutations_per_variant,
                     mutation_feedback,
+                    mutation_direction_feedback,
                     f"{policy}+{period_policy}",
                     rng,
                 )
@@ -3206,6 +3413,11 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.rescore_robustness_only:
         try:
             return rescore_robustness_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_final_tick_only:
+        try:
+            return rescore_final_tick_only(args, memory, score_config)
         finally:
             memory.close()
     if args.continue_last_run:
@@ -3298,16 +3510,22 @@ def run_agent(args: argparse.Namespace) -> int:
             generation_dir = run_dir / f"gen_{generation:03d}"
             accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
             mutation_feedback = memory.mutation_feedback()
+            mutation_direction_feedback = memory.mutation_direction_feedback()
             asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
-            selected_seeds = choose_seeds(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+            selected_seed_rankings = ranked_seed_selection(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+            selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
+            memory.record_seed_selection(run_id, generation, selected_seed_rankings)
             unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
+            asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
+            tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
             variants: list[Variant] = []
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
             if args.force_unseeded_universe:
                 print(
                     f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
-                    f"TF={len(unseeded_timeframes)}"
+                    f"TF={len(unseeded_timeframes)} | "
+                    f"prob_activo={asset_unseeded_probability:.0%}, prob_TF={tf_unseeded_probability:.0%}"
                 )
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
@@ -3321,6 +3539,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         disabled_symbols=disabled_symbols,
                         force_unseeded_universe=args.force_unseeded_universe,
                         unseeded_universe_symbols=unseeded_symbols,
+                        force_unseeded_probability=asset_unseeded_probability,
                     )
                     target_period, period_policy = choose_target_period(
                         seed,
@@ -3328,6 +3547,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         rng,
                         force_unseeded_timeframes=args.force_unseeded_universe,
                         unseeded_timeframes=unseeded_timeframes,
+                        force_unseeded_probability=tf_unseeded_probability,
                     )
                     variant = create_variant(
                         seed,
@@ -3339,6 +3559,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         variant_index,
                         args.mutations_per_variant,
                         mutation_feedback,
+                        mutation_direction_feedback,
                         f"{policy}+{period_policy}",
                         rng,
                     )
@@ -3376,27 +3597,9 @@ def run_agent(args: argparse.Namespace) -> int:
 
             if scored:
                 survivors = select_survivors(scored, args.top_percent)
-                current_seeds = [
-                    Seed(
-                        path=variant.path,
-                        symbol=variant.target_symbol,
-                        period=variant.seed.period,
-                        family=variant.seed.family,
-                        run_strategy=variant.seed.run_strategy,
-                    )
-                    for variant, _ in survivors
-                ]
+                current_seeds = [variant_as_next_seed(variant) for variant, _ in survivors]
             else:
-                current_seeds = [
-                    Seed(
-                        path=variant.path,
-                        symbol=variant.target_symbol,
-                        period=variant.seed.period,
-                        family=variant.seed.family,
-                        run_strategy=variant.seed.run_strategy,
-                    )
-                    for variant in variants
-                ]
+                current_seeds = [variant_as_next_seed(variant) for variant in variants]
 
         print(f"Run dir: {run_dir}")
         print(f"Memoria: {memory.path}")

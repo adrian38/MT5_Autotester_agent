@@ -22,3 +22,5 @@ class Variant:
     mutated_keys: tuple[str, ...]
     missing_lot_keys: tuple[str, ...]
     policy: str
+    timeframe_keys: tuple[str, ...] = ()
+    mutation_details: tuple[dict[str, object], ...] = ()

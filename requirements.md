@@ -144,8 +144,9 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.9** When `--force-unseeded-universe` is enabled, target selection
   MUST reserve exploration for universe assets and timeframes not represented
   by the current seed pool. The forced branch MUST prefer assets/TFs with no
-  feedback yet, use a stronger-than-default exploration quota, MUST remain
-  disabled by default, and MUST continue excluding disabled universe symbols.
+  feedback yet, use an adaptive exploration quota that decreases after early
+  generations, MUST remain disabled by default, and MUST continue excluding
+  disabled universe symbols.
 - **FR-1.6.9a** Disabled universe symbols MUST NOT be selected as generated
   candidate targets. If a disabled symbol has `SEEDS=si`, its `.set` files MAY
   still be used as mutation sources, but generated variants MUST target an
@@ -154,6 +155,13 @@ requirement changes or a debt item is opened/closed.
   `ForceSymbol=<target_symbol>`. If the source seed lacks `ForceSymbol`, the
   agent MUST add it to the generated `.set` so tester symbol inference cannot
   fall back to inherited source-seed aliases.
+- **FR-1.6.11** Generation MUST persist the selected source seeds for each
+  generation, including rank and the asset/timeframe/diversity components used
+  to choose them, so missing or skipped generation slots can be audited.
+- **FR-1.6.12** Parameter mutation feedback MUST separate true mutated
+  parameters from target-timeframe patch keys (`ST1_Timeframe`, `VolTimeframe`,
+  `Entry_Timing`, `ATR_Timeframe`). Timeframe patch keys MAY be stored for
+  audit, but MUST NOT pollute parameter-mutation weights.
 
 ### 1.7 UBS agent — scoring
 
@@ -248,10 +256,17 @@ requirement changes or a debt item is opened/closed.
   both report paths, both metrics JSON blobs, `history_quality`, date range, and
   a `similarity_json` payload explaining pass/fail causes.
 - **FR-1.8.10** A Final Tick row MUST be `accepted` only if the real-tick report
-  has `History Quality` strictly greater than the configured minimum (`80` by
-  default) and real-tick metrics remain close to the OHLC metrics within
-  configured deltas for net, profit factor, drawdown %, and trade count. Missing
-  `History Quality` MUST fail the row.
+  has `History Quality` greater than or equal to the configured minimum (`80` by
+  default) and the active similarity checks (`profit_factor`, `drawdown_pct`,
+  and trade count) remain close to the OHLC metrics within configured deltas.
+  Missing `History Quality` MUST fail the row. `net_profit` MUST be stored in
+  `similarity_json` for inspection only and MUST NOT block acceptance, because
+  Final Tick validates operational similarity between data models rather than
+  absolute profitability.
+- **FR-1.8.10a** Final Tick is an eligibility gate for live-use workflows:
+  `candidate_final_tick.status='accepted'` makes a base+robust accepted strategy
+  eligible for portfolio/export consideration; `rejected` excludes it from
+  live-use pools; `pending_*` rows are not eligible until resolved.
 - **FR-1.8.11** Final Tick MUST support two intermediate pending states:
   `pending_history_quality` — real-tick report produced but history quality is
   below threshold (retryable when data improves); `pending_ohlc_trades` — the

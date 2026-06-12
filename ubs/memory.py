@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -60,6 +61,8 @@ class AgentMemory:
                 family text not null,
                 run_strategy text not null,
                 mutated_keys text not null,
+                timeframe_keys text not null default '',
+                mutation_details_json text not null default '',
                 missing_lot_keys text not null,
                 policy text not null,
                 report_path text,
@@ -129,9 +132,27 @@ class AgentMemory:
                 max_trades_delta_pct real not null default 35.0,
                 evaluated_at text not null
             );
+            create table if not exists generation_seed_selection (
+                run_id integer not null,
+                generation integer not null,
+                rank integer not null,
+                seed_path text not null,
+                symbol text not null,
+                period text not null,
+                family text not null,
+                run_strategy text not null,
+                selection_score real not null,
+                asset_weight real not null,
+                timeframe_weight real not null,
+                diversity real not null,
+                created_at text not null,
+                primary key (run_id, generation, rank)
+            );
             """
         )
         self._ensure_column("runs", "hidden", "integer not null default 0")
+        self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
+        self._ensure_column("candidates", "mutation_details_json", "text not null default ''")
         self.conn.execute(
             """
             update seed_scores
@@ -183,8 +204,9 @@ class AgentMemory:
             """
             insert into candidates (
                 run_id, generation, seed_path, set_path, symbol, target_symbol, period,
-                family, run_strategy, mutated_keys, missing_lot_keys, policy, status, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                family, run_strategy, mutated_keys, timeframe_keys, mutation_details_json,
+                missing_lot_keys, policy, status, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -197,11 +219,53 @@ class AgentMemory:
                 variant.seed.family,
                 variant.seed.run_strategy,
                 ";".join(variant.mutated_keys),
+                ";".join(variant.timeframe_keys),
+                json.dumps(tuple(variant.mutation_details), ensure_ascii=True, sort_keys=True),
                 ";".join(variant.missing_lot_keys),
                 variant.policy,
                 status,
                 datetime.now().isoformat(timespec="seconds"),
             ),
+        )
+        self.conn.commit()
+
+    def record_seed_selection(
+        self,
+        run_id: int,
+        generation: int,
+        ranked_seeds: list[tuple[float, Seed, float, float, float]],
+    ) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        self.conn.execute(
+            "delete from generation_seed_selection where run_id=? and generation=?",
+            (run_id, generation),
+        )
+        self.conn.executemany(
+            """
+            insert into generation_seed_selection (
+                run_id, generation, rank, seed_path, symbol, period, family, run_strategy,
+                selection_score, asset_weight, timeframe_weight, diversity, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    run_id,
+                    generation,
+                    rank,
+                    str(seed.path),
+                    seed.symbol,
+                    seed.period,
+                    seed.family,
+                    seed.run_strategy,
+                    float(selection_score),
+                    float(asset_weight),
+                    float(timeframe_weight),
+                    float(diversity),
+                    now,
+                )
+                for rank, (selection_score, seed, asset_weight, timeframe_weight, diversity)
+                in enumerate(ranked_seeds, start=1)
+            ],
         )
         self.conn.commit()
 
@@ -647,6 +711,57 @@ class AgentMemory:
             if (value := aggregate_feedback_value(groups)) is not None
         }
 
+    def mutation_direction_feedback(self) -> dict[str, float]:
+        rows = self.conn.execute(
+            """
+            select
+                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
+                c.mutation_details_json, c.score, c.accepted, c.metrics_json, c.status, c.report_path,
+                cr.status as robust_status,
+                cr.positive_bonus as robust_positive_bonus,
+                cr.negative_bonus as robust_negative_bonus,
+                cr.metrics_json as robust_metrics_json,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            where coalesce(c.mutation_details_json, '') != ''
+              and c.status in ('accepted', 'rejected', 'no_trades')
+              and (c.score is not null or c.status = 'no_trades')
+            """
+        ).fetchall()
+        totals: dict[str, dict[object, list[float]]] = {}
+        for row in rows:
+            value = feedback_weight(row, accepted_bonus=MUTATION_ACCEPTED_BONUS)
+            if value is None:
+                continue
+            try:
+                details = json.loads(str(row["mutation_details_json"] or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(details, list):
+                continue
+            for detail in details:
+                if not isinstance(detail, dict):
+                    continue
+                key = str(detail.get("key") or "").strip()
+                if not key:
+                    continue
+                try:
+                    delta = float(detail.get("delta") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if delta == 0.0:
+                    continue
+                contribution = value if delta > 0 else -value
+                totals.setdefault(key, {}).setdefault(candidate_group_key(row, key, "direction"), []).append(contribution)
+        return {
+            key: value
+            for key, groups in totals.items()
+            if (value := aggregate_feedback_value(groups)) is not None
+        }
+
     def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
 
@@ -883,4 +998,5 @@ def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
         mutated_keys=tuple(key for key in str(row["mutated_keys"] or "").split(";") if key),
         missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
         policy=row["policy"] or "",
+        timeframe_keys=tuple(key for key in str(row["timeframe_keys"] if "timeframe_keys" in row.keys() else "").split(";") if key),
     )

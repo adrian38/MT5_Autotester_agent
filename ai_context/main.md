@@ -290,6 +290,11 @@ active criteria because `normalized_net_profit` depends on the normalization gro
 produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
 delta, but PF/DD/trades practically identical).
 
+Final Tick is a hard live-use eligibility gate: only `candidate_final_tick.status='accepted'`
+can enter portfolio/export/live-use pools; `rejected` is a hard no for live use, and
+`pending_*` remains non-eligible until resolved. The weight bonus/penalty only teaches
+future exploration and does not override this gate.
+
 #### `from_date` / `to_date` consistency guard
 
 When the disk-based `skip_ohlc=True` optimization is active (resume pending dir, sets
@@ -320,14 +325,21 @@ When enabled, the UI passes `--force-unseeded-universe` to `ubs_agent.py`.
 
 The option reserves part of generation for universe coverage:
 
-- Asset target selection gets a 65% early chance to choose a universe symbol
-  not represented by the current seed pool, preferring symbols with no feedback.
-- Timeframe target selection gets a 50% early chance to choose related
-  timeframes not represented by the current seed pool, preferring TFs with no
-  feedback.
+- Asset target selection gets an adaptive chance to choose a universe symbol
+  not represented by the current seed pool, preferring symbols with no feedback:
+  generation 1 = 35%, generation 2 = 25%, later generations = 15%.
+- Timeframe target selection gets a smaller adaptive chance to choose related
+  timeframes not represented by the current seed pool: generation 1 = 20%,
+  generation 2 = 12%, later generations = 8%.
 - If an explored asset/TF survives into the next generation as an internal
   candidate seed, it is no longer considered unseeded for that generation.
 - Disabled universe symbols remain excluded.
+- Selected source seeds are persisted in `generation_seed_selection` with rank,
+  asset weight, timeframe weight, diversity, and total selection score.
+- Generated candidates store true parameter mutations in `mutated_keys` and
+  target-timeframe patch keys separately in `timeframe_keys`. The
+  `mutation_details_json` payload stores old/new/delta values for future
+  directional feedback; timeframe patch keys must not pollute mutation weights.
 
 `UBS Universo` has live search filters for the displayed tables:
 
