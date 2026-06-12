@@ -25,6 +25,7 @@ from ubs_generate_sets import format_like, parse_numeric
 from ubs.account import (
     ACCOUNT_TYPES,
     DEFAULT_ACCOUNT_TYPE,
+    account_disabled_symbols_path,
     account_memory_path,
     account_output_dir,
     account_seed_dir,
@@ -35,7 +36,13 @@ from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
-from ubs.universe import canonical_symbol, disabled_symbols_path, load_asset_universe, load_disabled_symbols, seed_symbol_disabled
+from ubs.universe import (
+    canonical_symbol,
+    load_asset_universe,
+    load_disabled_symbols,
+    load_seed_enabled_disabled_symbols,
+    seed_symbol_disabled,
+)
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
@@ -47,7 +54,7 @@ DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
 DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
-DEFAULT_DISABLED_SYMBOLS = disabled_symbols_path(BASE_DIR)
+DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
@@ -379,6 +386,24 @@ def choose_seeds(
     return [seed for _, seed in scored[:limit]]
 
 
+def generation_source_seeds(
+    seeds: list[Seed],
+    symbol_map: dict[str, str],
+    disabled_symbols: set[str],
+    seed_enabled_when_disabled: set[str],
+) -> tuple[list[Seed], int]:
+    allowed = [
+        seed
+        for seed in seeds
+        if not seed_symbol_disabled(seed, disabled_symbols, symbol_map, seed_enabled_when_disabled)
+    ]
+    return allowed, len(seeds) - len(allowed)
+
+
+def disabled_symbols_file_for_account(account_type: object) -> Path:
+    return account_disabled_symbols_path(BASE_DIR, account_type)
+
+
 def unseeded_universe_targets(
     seeds: list[Seed],
     universe_symbols: tuple[str, ...],
@@ -430,33 +455,44 @@ def choose_target_symbol(
     universe_symbols: tuple[str, ...] = (),
     aliases: dict[str, str] | None = None,
     *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
     force_unseeded_universe: bool = False,
     unseeded_universe_symbols: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     aliases = aliases or {}
+    symbol_map = symbol_map or {}
     current = seed.symbol or "UNKNOWN"
-    disabled = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    disabled = {symbol.upper() for symbol in (disabled_symbols or load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS))}
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
 
+    def target_disabled(symbol: str) -> bool:
+        normalized = normalize_set_symbol(symbol)
+        resolved = exact_by_key.get(normalized, symbol)
+        mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
+        return normalized in disabled or resolved.upper() in disabled or mapped in disabled
+
+    current_disabled = target_disabled(current)
+
     related = tuple(
         symbol for symbol in dict.fromkeys(exact_by_key.get(symbol.upper(), symbol) for symbol in related_assets(current))
-        if symbol.upper() not in disabled
+        if not target_disabled(symbol)
     )
     universe_choices = tuple(
         symbol for symbol in dict.fromkeys(universe_symbols)
-        if symbol.upper() != current.upper() and symbol.upper() not in disabled
+        if symbol.upper() != current.upper() and not target_disabled(symbol)
     )
     unseeded_choices = tuple(
         symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
-        if symbol.upper() != current.upper() and symbol.upper() not in disabled
+        if symbol.upper() != current.upper() and not target_disabled(symbol)
     )
     if force_unseeded_universe and unseeded_choices and rng.random() < 0.65:
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
         return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
-    if rng.random() < 0.70:
+    if not current_disabled and rng.random() < 0.70:
         return current, "exploit"
     if universe_choices and rng.random() < 0.65:
         ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
@@ -467,6 +503,8 @@ def choose_target_symbol(
 
     choices = tuple(symbol for symbol in related if symbol.upper() != current.upper())
     if not choices:
+        if universe_choices:
+            return rng.choice(universe_choices), "asset_universe_fallback"
         return seed.symbol, "exploit"
     ranked = sorted(choices, key=lambda item: asset_feedback.get(item.upper(), 0.0), reverse=True)
     if ranked and rng.random() < 0.50:
@@ -948,10 +986,13 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     pending = [seed for seed in pending if seed not in invalid_pending]
     unchanged_count = len(seeds) - original_pending_count
     blocked_count = len(invalid_pending)
-    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_symbols = load_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled &= disabled_symbols
     disabled_pending = [
         seed for seed in pending
-        if seed_symbol_disabled(seed, disabled_symbols, symbol_map)
+        if seed_symbol_disabled(seed, disabled_symbols, symbol_map, seed_enabled_when_disabled)
     ]
     disabled_paths = {str(seed.path) for seed in disabled_pending}
     for seed in disabled_pending:
@@ -990,7 +1031,9 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             "Semillas omitidas por symbol deshabilitado en Universo global: "
             f"{len(disabled_pending)} ({format_disabled_seed_counts(disabled_pending, symbol_map)})"
         )
-        print("Estas seeds no abren MT5 y no aportan pesos; habilita el symbol en Universo si quieres evaluarlas.")
+        print("Estas seeds no abren MT5 ni aportan pesos; activa SEEDS para usarlas sin habilitar generacion.")
+    if seed_enabled_when_disabled:
+        print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
     print(f"Semillas ya evaluadas sin cambios: {unchanged_count}")
     reconciled_counts, reconciled_paths = reconcile_seed_eval_reports(
         memory,
@@ -1903,7 +1946,10 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             or _row_uses_retry_dates(row)
         )
 
-    has_ohlc_trades_pending = any(_row_in_retry_scope(row) for row in rows)
+    has_ohlc_trades_pending = any(
+        str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+        for row in rows
+    )
     using_ohlc_retry_dates = False
     if args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
@@ -2979,12 +3025,19 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     pending_generation = memory.pending_generated_generation(run_id) if args.execute_backtests else 0
     current_seeds: list[Seed] = []
     did_work = False
-    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_symbols = load_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled &= disabled_symbols
+    symbol_map = parse_symbol_map(args.symbol_map)
     asset_groups, aliases = load_asset_universe(
         Path(args.assets).expanduser(),
         disabled_symbols=disabled_symbols,
     )
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
+    if not universe_symbols:
+        print("ERROR: no hay simbolos activos en Universo para generar targets")
+        return 1
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
     print(f"Continuando run #{run_id}: plan={planned_generations}, ultima_gen={max_generation}")
@@ -3023,10 +3076,19 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             return 0
         seed_limit = args.max_seeds if args.max_seeds > 0 else 0
         _, latest_generation, current_seeds = memory.continuation_seeds(seed_limit)
-        if not current_seeds:
-            print("ERROR: no hay seeds disponibles para continuar")
-            return 1
         next_generation = latest_generation + 1
+
+    current_seeds, blocked_source_count = generation_source_seeds(
+        current_seeds,
+        symbol_map,
+        disabled_symbols,
+        seed_enabled_when_disabled,
+    )
+    if blocked_source_count:
+        print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
+    if not current_seeds:
+        print("ERROR: no hay seeds disponibles para generar con la politica actual del Universo")
+        return 1
 
     all_generated = 0
     rng = random.Random(args.random_seed)
@@ -3052,6 +3114,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     rng,
                     universe_symbols,
                     aliases,
+                    symbol_map=symbol_map,
+                    disabled_symbols=disabled_symbols,
                     force_unseeded_universe=args.force_unseeded_universe,
                     unseeded_universe_symbols=unseeded_symbols,
                 )
@@ -3175,13 +3239,33 @@ def run_agent(args: argparse.Namespace) -> int:
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
-    disabled_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_symbols = load_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled &= disabled_symbols
+    symbol_map = parse_symbol_map(args.symbol_map)
+    source_seeds, blocked_source_count = generation_source_seeds(
+        seeds,
+        symbol_map,
+        disabled_symbols,
+        seed_enabled_when_disabled,
+    )
+    if not source_seeds:
+        print("ERROR: no hay seeds disponibles como fuente con la politica actual del Universo")
+        return 1
     asset_groups, aliases = load_asset_universe(
         Path(args.assets).expanduser(),
         disabled_symbols=disabled_symbols,
     )
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
+    if not universe_symbols:
+        print("ERROR: no hay simbolos activos en Universo para generar targets")
+        return 1
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
+    if blocked_source_count:
+        print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
+    if seed_enabled_when_disabled:
+        print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
@@ -3207,7 +3291,7 @@ def run_agent(args: argparse.Namespace) -> int:
         args.dry_run,
     )
 
-    current_seeds = seeds
+    current_seeds = source_seeds
     all_generated = 0
     try:
         for generation in range(1, args.generations + 1):
@@ -3233,6 +3317,8 @@ def run_agent(args: argparse.Namespace) -> int:
                         rng,
                         universe_symbols,
                         aliases,
+                        symbol_map=symbol_map,
+                        disabled_symbols=disabled_symbols,
                         force_unseeded_universe=args.force_unseeded_universe,
                         unseeded_universe_symbols=unseeded_symbols,
                     )

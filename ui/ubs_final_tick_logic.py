@@ -202,7 +202,9 @@ class UBSFinalTickLogicMixin:
                 r.hidden,
                 count(c.id) as total,
                 sum(case when c.status='accepted' and cr.status='accepted' then 1 else 0 end) as robust_ok,
-                sum(case when ft.status='accepted' then 1 else 0 end) as final_ok
+                sum(case when ft.status in ('accepted', 'rejected') then 1 else 0 end) as final_done,
+                sum(case when ft.status='accepted' then 1 else 0 end) as final_ok,
+                sum(case when ft.status='rejected' then 1 else 0 end) as final_fail
             from runs r
             left join candidates c on c.run_id = r.id
             left join candidate_robustness cr on cr.candidate_id = c.id
@@ -217,9 +219,14 @@ class UBSFinalTickLogicMixin:
             created = str(row["created_at"] or "")[:16]
             total = int(row["total"] or 0)
             robust_ok = int(row["robust_ok"] or 0)
+            final_done = int(row["final_done"] or 0)
             final_ok = int(row["final_ok"] or 0)
+            final_fail = int(row["final_fail"] or 0)
             hidden_tag = " [arch]" if row["hidden"] else ""
-            options.append((run_id, f"#{run_id} | {created} | {total} | robust {robust_ok} | final {final_ok}{hidden_tag}"))
+            options.append((
+                run_id,
+                f"#{run_id} | {created} | cand {total} | robust {robust_ok} | FT {final_done} OK {final_ok} FAIL {final_fail}{hidden_tag}",
+            ))
         return options
 
     def _selected_ubs_final_tick_run_id(self, options: list[tuple[int, str]]) -> int:
@@ -402,7 +409,10 @@ class UBSFinalTickLogicMixin:
                         and str(row["final_tick_to_date"] or "").strip() == ohlc_to
                     )
 
-                has_ohlc_pending = any(_row_in_retry_scope(row) for row in rows)
+                has_ohlc_pending = any(
+                    str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+                    for row in rows
+                )
                 if has_ohlc_retry and has_ohlc_pending:
                     rows = [row for row in rows if _row_in_retry_scope(row)]
             if not rows:
@@ -445,7 +455,13 @@ class UBSFinalTickLogicMixin:
         if confirm and not self._confirm_execution_start("Confirmar Final Tick UBS", len(rows), details):
             return False
         self._show_section("ubs_final_tick")
-        self._run_script("ubs_agent.py", args)
+        self.ubs_final_tick_status.set(f"Lanzando Final Tick run #{run_id}: {len(rows)} candidato(s)...")
+        self.status_text.set("Preparando Final Tick UBS")
+        self._append_console(
+            f"\n[Final Tick] Lanzando run #{run_id} con {len(rows)} candidato(s).\n",
+            tag="info",
+        )
+        self.after(10, lambda: self._run_script("ubs_agent.py", args))
         return True
 
     def _rerun_ubs_final_tick_for_latest_run(self) -> bool:

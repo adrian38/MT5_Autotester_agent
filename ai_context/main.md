@@ -627,10 +627,15 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   Seeds tab exposes "Repetir backtest" to relaunch one selected seed directly.
 - Seeds and Universe tables have a SEL checkbox column. Seed actions use checked
   rows when present, otherwise the selected row. Universe checked symbols can be
-  disabled/enabled; disabled symbols are persisted in
-  `outputs/ubs_disabled_symbols.json`, remain visible, and are excluded from
-  weights, seed backtest execution, pending counts after reset, and agent
-  target-symbol exploration. Seed evaluation records skipped disabled symbols as
+  disabled/enabled; disabled symbols are persisted per account type in
+  `outputs/ubs_disabled_symbols_ECN.json` / `outputs/ubs_disabled_symbols_PRO.json`,
+  remain visible, and are excluded from agent target-symbol exploration for that
+  account. The same JSON can store
+  `seed_enabled_when_disabled`: these symbols remain `GEN=no` for generation but
+  `SEEDS=si` lets their seeds run, score, contribute weights, and act as
+  mutation sources. Disabled symbols without `SEEDS=si` remain excluded from
+  weights, seed backtest execution, pending counts after reset, and source-seed
+  selection. Seed evaluation records skipped disabled symbols as
   `disabled_symbol` without launching MT5.
 - Evaluation dialog shows the actual expected backtest count (pre-computed from
   DB state) alongside the total seed count.

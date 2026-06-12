@@ -146,6 +146,10 @@ requirement changes or a debt item is opened/closed.
   by the current seed pool. The forced branch MUST prefer assets/TFs with no
   feedback yet, use a stronger-than-default exploration quota, MUST remain
   disabled by default, and MUST continue excluding disabled universe symbols.
+- **FR-1.6.9a** Disabled universe symbols MUST NOT be selected as generated
+  candidate targets. If a disabled symbol has `SEEDS=si`, its `.set` files MAY
+  still be used as mutation sources, but generated variants MUST target an
+  enabled symbol.
 - **FR-1.6.10** Every generated UBS variant MUST contain
   `ForceSymbol=<target_symbol>`. If the source seed lacks `ForceSymbol`, the
   agent MUST add it to the generated `.set` so tester symbol inference cannot
@@ -262,10 +266,10 @@ requirement changes or a debt item is opened/closed.
 
 - **FR-1.9.1** `--evaluate-seeds` MUST run a dedicated backtest for each seed
   that is new, modified (different mtime/size), has a changed symbol/TF (via
-  override), or has a retryable status (`pending`, `no_report`, `parse_error`).
-  Seeds already evaluated without changes MUST be skipped. `report_mismatch` is
-  a quarantined ready state and MUST NOT be re-run unless the seed file or its
-  symbol/TF override changes.
+  override), or has a retryable status (`pending`, `no_report`, `parse_error`,
+  `report_mismatch`, `no_trades`). Seeds already evaluated without changes MUST
+  be skipped. `invalid_seed` is a ready blocked state and MUST NOT be re-run
+  automatically unless the seed file or symbol/TF override changes.
 - **FR-1.9.1a** If `_manifest.csv` exists in the seed directory, it MAY provide
   metadata for listed seeds, but it MUST NOT hide additional `.set` files present
   under the source directory. Unlisted `.set` files MUST still be loaded,
@@ -275,7 +279,7 @@ requirement changes or a debt item is opened/closed.
   before launching any backtest. No backtest job MUST be created for it.
 - **FR-1.9.3** Seed statuses in `seed_scores` table MUST be one of:
   `pending` | `accepted` | `rejected` | `report_mismatch` | `no_report` |
-  `parse_error` | `no_trades`.
+  `parse_error` | `no_trades` | `disabled_symbol` | `invalid_seed`.
 - **FR-1.9.4** `accepted`, `rejected`, and `no_trades` seeds with stored reports
   MUST contribute to Universe weights at full base strength, the same as
   generated candidates. Seeds MUST NOT receive robustness/date bonus unless a
@@ -285,6 +289,13 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.9.4a** A parsed MT5 report with zero closed trades MUST be stored as
   `no_trades`, not as ordinary `rejected`. `no_trades` is retryable and MUST
   contribute only the shared fixed negative execution/reliability penalty.
+- **FR-1.9.4b** A disabled universe symbol MAY be marked `SEEDS=si`. In that
+  case, active seeds for that symbol MUST be evaluated, scored, included in
+  Universe weights, and allowed as mutation sources. This MUST NOT re-enable
+  generated candidate targets for the symbol; target generation still follows
+  the normal enabled universe only. The `GEN/SEEDS` policy MUST be account-scoped
+  by `--account-type` (`outputs/ubs_disabled_symbols_ECN.json` /
+  `outputs/ubs_disabled_symbols_PRO.json`).
 - **FR-1.9.5** Seeds deleted from the source directory MUST be marked `active=0`
   in the DB and excluded from the UI active count, but their rows MUST be kept
   for historical reference.
@@ -416,13 +427,17 @@ requirement changes or a debt item is opened/closed.
   when any are checked, and fall back to the selected row otherwise.
 - **FR-1.12.19** The UBS Universo tab MUST expose a SEL checkbox column and
   controls to disable/enable checked symbols. Disabled symbols MUST be persisted
-  in `outputs/ubs_disabled_symbols.json`, remain visible as disabled in the UI,
-  be excluded from Universe weights, and be excluded from UBS agent target-symbol
-  exploration.
+  per account type in `outputs/ubs_disabled_symbols_ECN.json` /
+  `outputs/ubs_disabled_symbols_PRO.json`, remain visible as disabled in the UI,
+  be excluded from generated candidate targets, and be excluded from seed
+  evaluation/weights unless `SEEDS=si` is set for that symbol in the active
+  account.
 - **FR-1.12.20** UBS seed evaluation MUST skip any seed whose inferred or
   manually overridden symbol maps to a disabled Universe symbol. Skipped seeds
   MUST be recorded as `disabled_symbol`, MUST NOT launch MT5, MUST NOT count as
-  pending after a reset, and MUST NOT contribute to weights.
+  pending after a reset, and MUST NOT contribute to weights. If the disabled
+  Universe symbol has `SEEDS=si`, the seed MUST run and contribute normally while
+  the symbol remains blocked for generated candidate targets.
 - **FR-1.12.21** The UI MUST expose robustness configuration in `UBS Agente UBS`:
   independent OOS dates, independent thresholds, positive/negative bonus values,
   and an auto-run toggle. Defaults: robust thresholds copy agent thresholds when

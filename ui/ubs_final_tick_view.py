@@ -91,8 +91,8 @@ class UBSFinalTickViewMixin:
         ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
 
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
-        row1.columnconfigure(2, weight=1)
+        row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
+        row1.columnconfigure(1, weight=1)
         tk.Label(
             row1,
             text="Run:",
@@ -104,9 +104,9 @@ class UBSFinalTickViewMixin:
             row1,
             textvariable=self.ubs_final_tick_run_id,
             state="readonly",
-            width=36,
+            width=58,
         )
-        self.ubs_final_tick_run_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ubs_final_tick_run_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
         self.ubs_final_tick_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_final_tick())
         tk.Button(
             row1,
@@ -183,7 +183,7 @@ class UBSFinalTickViewMixin:
         fields = [
             (0, "Desde", self.ubs_final_tick_from_date, 14),
             (0, "Hasta", self.ubs_final_tick_to_date, 14),
-            (0, "Calidad >", self.ubs_final_tick_min_history_quality, 8),
+            (0, "Calidad >=", self.ubs_final_tick_min_history_quality, 8),
             (0, "Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, 8),
             (1, "OHLC desde", self.ubs_final_tick_ohlc_from_date, 14),
             (1, "OHLC hasta", self.ubs_final_tick_ohlc_to_date, 14),

@@ -118,6 +118,8 @@ class UBSSeedsLogicMixin:
         """Estimate real MT5 jobs and skipped seed categories for the confirmation dialog."""
         memory_path = self._ubs_memory_path()
         disabled_symbols = self._load_disabled_ubs_symbols()
+        seed_enabled_when_disabled = self._load_seed_enabled_disabled_ubs_symbols()
+        seed_enabled_when_disabled &= disabled_symbols
         symbol_map = self._active_ubs_symbol_map()
         rows: dict[str, sqlite3.Row] = {}
         overrides: dict[str, tuple[str, str]] = {}
@@ -162,7 +164,9 @@ class UBSSeedsLogicMixin:
 
             raw = normalize_set_symbol(symbol)
             mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
-            if raw in disabled_symbols or mapped in disabled_symbols:
+            symbol_disabled = raw in disabled_symbols or mapped in disabled_symbols
+            seed_allowed = raw in seed_enabled_when_disabled or mapped in seed_enabled_when_disabled
+            if symbol_disabled and not seed_allowed:
                 stats["disabled"] += 1
                 disabled_counts[(raw or symbol, mapped or raw or symbol)] += 1
                 continue
@@ -258,7 +262,7 @@ class UBSSeedsLogicMixin:
         if missing:
             details.append(f"Archivos no accesibles y omitidos: {missing}.")
         details.extend([
-            "Las semillas omitidas/deshabilitadas no aportan pesos al Universo.",
+            "Las semillas deshabilitadas solo aportan pesos si el activo tiene SEEDS=si en Universo.",
             f"Pass Seeds: net>{self.ubs_seed_pass_min_net_profit.get().strip()} | PF>={self.ubs_seed_pass_min_profit_factor.get().strip()} | DD<={self.ubs_seed_pass_max_drawdown_pct.get().strip()}%",
             f"Pass Seeds: trades>={self.ubs_seed_pass_min_trades.get()} | recovery>={self.ubs_seed_pass_min_recovery_factor.get().strip()}",
         ])

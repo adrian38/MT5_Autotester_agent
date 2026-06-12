@@ -1,11 +1,13 @@
+import random
 import tempfile
 import unittest
 from pathlib import Path
 
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
-from ubs.universe import seed_symbol_disabled
-from ubs_agent import copy_accepted, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, validate_seed_backtest_set, write_set_force_symbol
+from ubs.account import account_disabled_symbols_path
+from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
+from ubs_agent import copy_accepted, choose_target_symbol, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, validate_seed_backtest_set, write_set_force_symbol
 from run_tests import parse_symbol_map
 
 
@@ -51,6 +53,51 @@ class UBSSetsFileTests(unittest.TestCase):
         symbol_map = parse_symbol_map("CRUDEOIL=WTI,XTIUSD=WTI")
 
         self.assertTrue(seed_symbol_disabled(seed, {"WTI"}, symbol_map))
+
+    def test_seed_enabled_symbol_allows_disabled_seed(self) -> None:
+        seed = Seed(Path("Crude_D__CrudeOil_Optimization.set"), "CRUDEOIL", "D1", "family", "1")
+        symbol_map = parse_symbol_map("CRUDEOIL=WTI,XTIUSD=WTI")
+
+        self.assertFalse(seed_symbol_disabled(seed, {"WTI"}, symbol_map, {"WTI"}))
+
+    def test_disabled_symbols_json_preserves_seed_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "ubs_disabled_symbols.json"
+
+            save_disabled_symbols(path, {"WTI", "XAUUSD"}, {"WTI"})
+
+            self.assertEqual(load_disabled_symbols(path), {"WTI", "XAUUSD"})
+            self.assertEqual(load_seed_enabled_disabled_symbols(path), {"WTI"})
+
+    def test_disabled_seed_source_generates_enabled_target(self) -> None:
+        seed = Seed(Path("Crude_D__CrudeOil_Optimization.set"), "CRUDEOIL", "D1", "family", "1")
+        symbol_map = parse_symbol_map("CRUDEOIL=WTI")
+
+        target, policy = choose_target_symbol(
+            seed,
+            {},
+            random.Random(1),
+            ("EURUSD", "WTI"),
+            {},
+            symbol_map=symbol_map,
+            disabled_symbols={"WTI"},
+        )
+
+        self.assertEqual(target, "EURUSD")
+        self.assertNotEqual(policy, "exploit")
+
+    def test_disabled_symbols_policy_is_account_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir)
+
+            self.assertEqual(
+                account_disabled_symbols_path(base_dir, "ECN"),
+                base_dir / "outputs" / "ubs_disabled_symbols_ECN.json",
+            )
+            self.assertEqual(
+                account_disabled_symbols_path(base_dir, "PRO"),
+                base_dir / "outputs" / "ubs_disabled_symbols_PRO.json",
+            )
 
     def test_seed_validation_rejects_incomplete_ubs_set(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

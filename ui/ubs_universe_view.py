@@ -31,11 +31,13 @@ class UBSUniverseViewMixin:
             ("Actualizar",          self.colors["muted"],          False, self._refresh_ubs_universe_panel),
             ("Deshabilitar marcados", self.colors["danger"],        True,  lambda: self._set_checked_universe_symbols_enabled(False)),
             ("Habilitar marcados",  self.colors["accent_soft_text"], True, lambda: self._set_checked_universe_symbols_enabled(True)),
+            ("Permitir seeds",      self.colors["accent_soft_text"], False, lambda: self._set_checked_universe_symbols_seed_enabled(True)),
+            ("Bloquear seeds",      self.colors["muted"],          False, lambda: self._set_checked_universe_symbols_seed_enabled(False)),
             ("Limpiar marcados",    self.colors["muted"],          False, self._clear_selected_weights),
             ("Reset pesos activos", self.colors["muted"],          False, self._clear_all_asset_weights),
             ("Reset pesos TF",      self.colors["muted"],          False, self._clear_all_tf_weights),
         ], start=1):
-            padx = (0, 10) if col == 6 else (0, 6)
+            padx = (0, 10) if col == 8 else (0, 6)
             font = ("Segoe UI", 9, "bold") if bold else ("Segoe UI", 9)
             tk.Button(bar, text=label, bg=self.colors["panel"], fg=fg,
                       relief="solid", borderwidth=1, padx=8, pady=5,
@@ -48,7 +50,7 @@ class UBSUniverseViewMixin:
             font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._ubs_apply_weights,
         )
-        self._ubs_calc_weights_btn.grid(row=0, column=7, sticky="e", padx=(0, 10), pady=5)
+        self._ubs_calc_weights_btn.grid(row=0, column=9, sticky="e", padx=(0, 10), pady=5)
 
         filter_bar = ttk.Frame(panel, style="Panel.TFrame")
         filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
@@ -76,11 +78,12 @@ class UBSUniverseViewMixin:
         asset_frame.rowconfigure(1, weight=1)
         body.add(asset_frame, weight=3)
         ttk.Label(asset_frame, text="Activos RoboForex", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        asset_columns = ("mark", "enabled", "group", "symbol", "aliases", "weight", "avg", "best", "tests", "accepted", "pending")
+        asset_columns = ("mark", "enabled", "seed_enabled", "group", "symbol", "aliases", "weight", "avg", "best", "tests", "accepted", "pending")
         self.ubs_universe_assets_tree = ttk.Treeview(asset_frame, columns=asset_columns, show="headings", height=18, selectmode="extended")
         asset_headings = {
             "mark": "SEL",
-            "enabled": "ON",
+            "enabled": "GEN",
+            "seed_enabled": "SEEDS",
             "group": "GRUPO",
             "symbol": "ACTIVO",
             "aliases": "ALIAS",
@@ -91,7 +94,7 @@ class UBSUniverseViewMixin:
             "accepted": "OK",
             "pending": "PEND",
         }
-        asset_widths = {"mark": 48, "enabled": 48, "group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
+        asset_widths = {"mark": 48, "enabled": 50, "seed_enabled": 58, "group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
         for column in asset_columns:
             self.ubs_universe_assets_tree.heading(column, text=asset_headings[column])
             self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="center", stretch=False)
@@ -123,4 +126,3 @@ class UBSUniverseViewMixin:
         self._make_tree_sortable(self.ubs_timeframes_tree)
         self.ubs_timeframes_tree.bind("<Button-1>", self._on_ubs_timeframe_tree_click)
         self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 2)
-

@@ -125,6 +125,41 @@ class UBSUniverseLogicMixin:
         self.status_text.set(f"Simbolos {action}: {len(symbols)}")
         self._refresh_ubs_universe()
 
+    def _set_checked_universe_symbols_seed_enabled(self, enabled: bool) -> None:
+        symbols = set(self.ubs_universe_checked)
+        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
+            selected = self.ubs_universe_assets_tree.selection()
+            symbols = {
+                self.ubs_universe_paths.get(item, {}).get("symbol", "")
+                for item in selected
+            }
+            symbols.discard("")
+        if not symbols:
+            messagebox.showinfo("Universo UBS", "Marca uno o mas simbolos primero.")
+            return
+        disabled = self._load_disabled_ubs_symbols()
+        seed_enabled = self._load_seed_enabled_disabled_ubs_symbols()
+        if enabled:
+            eligible = {symbol for symbol in symbols if symbol in disabled}
+            if not eligible:
+                messagebox.showinfo("Universo UBS", "SEEDS solo aplica a simbolos con GEN=no.")
+                return
+            seed_enabled.update(eligible)
+            action = "permitidas como seeds"
+            changed_count = len(eligible)
+        else:
+            eligible = {symbol for symbol in symbols if symbol in disabled}
+            if not eligible:
+                messagebox.showinfo("Universo UBS", "Los simbolos con GEN=si ya permiten seeds por defecto.")
+                return
+            seed_enabled.difference_update(eligible)
+            action = "bloqueadas como seeds"
+            changed_count = len(eligible)
+        self._save_disabled_ubs_symbols(disabled, seed_enabled)
+        self.ubs_universe_checked.clear()
+        self.status_text.set(f"Simbolos {action}: {changed_count}")
+        self._refresh_ubs_universe()
+
     def _refresh_ubs_universe(self) -> None:
         if hasattr(self, "ubs_universe_assets_tree"):
             for item in self.ubs_universe_assets_tree.get_children():
@@ -145,6 +180,8 @@ class UBSUniverseLogicMixin:
 
         assets, aliases = self._load_ubs_asset_universe()
         disabled_symbols = self._load_disabled_ubs_symbols()
+        seed_enabled_when_disabled = self._load_seed_enabled_disabled_ubs_symbols()
+        seed_enabled_when_disabled &= disabled_symbols
         checked_symbols = set(self.ubs_universe_checked)
         memory_path = self._ubs_memory_path()
         asset_stats: dict[str, dict[str, object]] = {}
@@ -246,7 +283,8 @@ class UBSUniverseLogicMixin:
                 if status == "report_mismatch":
                     total_seed_mismatch += 1
                 canonical = self._canonical_ubs_symbol(row["symbol"], aliases)
-                if canonical.upper() in disabled_symbols:
+                is_disabled = canonical.upper() in disabled_symbols
+                if is_disabled and canonical.upper() not in seed_enabled_when_disabled:
                     continue
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
@@ -305,12 +343,14 @@ class UBSUniverseLogicMixin:
         if hasattr(self, "ubs_universe_assets_tree"):
             for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
                 is_disabled = symbol.upper() in disabled_symbols
+                seed_enabled = (not is_disabled) or symbol.upper() in seed_enabled_when_disabled
                 item = self.ubs_universe_assets_tree.insert(
                     "",
                     "end",
                     values=(
                         self._checkbox_text(symbol.upper() in checked_symbols),
                         "no" if is_disabled else "si",
+                        "si" if seed_enabled else "no",
                         group,
                         symbol,
                         ", ".join(symbol_aliases),
@@ -378,24 +418,28 @@ class UBSUniverseLogicMixin:
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes/neutros: {total_pending + total_seed_pending} | "
             f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | robust +/{total_robust_accepted} -/{total_robust_rejected} | "
-            f"deshabilitados: {len(disabled_symbols)}{asset_filter_text}{tf_filter_text}"
+            f"deshabilitados: {len(disabled_symbols)} | seeds en deshab.: {len(seed_enabled_when_disabled)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
             "PESO = aceptados, rechazados y sin-ops con reporte (-40 fijo); pendientes/mismatch no aportan; "
-            "robustez y Final Tick solo pesan si terminan OK/FAIL."
+            "GEN=no bloquea generacion; SEEDS=si permite usar seeds de ese simbolo."
         )
 
     def _disabled_symbols_path(self):
-        from ubs.universe import disabled_symbols_path
-        return disabled_symbols_path(BASE_DIR)
+        from ubs.account import account_disabled_symbols_path
+        return account_disabled_symbols_path(BASE_DIR, self._ubs_account_type())
 
     def _load_disabled_ubs_symbols(self) -> set:
         from ubs.universe import load_disabled_symbols
         return load_disabled_symbols(self._disabled_symbols_path())
 
-    def _save_disabled_ubs_symbols(self, symbols: set) -> None:
+    def _load_seed_enabled_disabled_ubs_symbols(self) -> set:
+        from ubs.universe import load_seed_enabled_disabled_symbols
+        return load_seed_enabled_disabled_symbols(self._disabled_symbols_path())
+
+    def _save_disabled_ubs_symbols(self, symbols: set, seed_enabled_when_disabled: set | None = None) -> None:
         from ubs.universe import save_disabled_symbols
-        save_disabled_symbols(self._disabled_symbols_path(), symbols)
+        save_disabled_symbols(self._disabled_symbols_path(), symbols, seed_enabled_when_disabled)
 
     # ── SEL en Timeframes ────────────────────────────────────────────────────
 

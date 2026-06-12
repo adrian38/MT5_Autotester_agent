@@ -25,3 +25,8 @@ def account_output_dir(base_dir: Path, account_type: object) -> Path:
 def account_seed_dir(base_dir: Path, account_type: object) -> Path:
     account = normalize_account_type(account_type)
     return base_dir / "sets" / "ubs_ready" / account
+
+
+def account_disabled_symbols_path(base_dir: Path, account_type: object) -> Path:
+    account = normalize_account_type(account_type)
+    return base_dir / "outputs" / f"ubs_disabled_symbols_{account}.json"

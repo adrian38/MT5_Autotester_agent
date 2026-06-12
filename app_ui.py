@@ -57,7 +57,6 @@ from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
 from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_memory_path, normalize_account_type
-from ubs.universe import disabled_symbols_path, load_disabled_symbols, save_disabled_symbols
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
@@ -1007,7 +1006,7 @@ class MT5AutotesterUI(
         self.option_add("*TCombobox*Listbox.borderWidth", "0")
         style.configure("Treeview", background=COLORS["tree_bg"], fieldbackground=COLORS["tree_bg"],
                         foreground=COLORS["text"], rowheight=26, borderwidth=0)
-        style.map("Treeview", background=[("selected", COLORS["accent"])], foreground=[("selected", "#ffffff")])
+        style.map("Treeview", background=[("selected", COLORS["panel_highest"])], foreground=[("selected", COLORS["text"])])
         style.configure("Treeview.Heading", background=COLORS["panel_alt"], foreground=COLORS["muted"], font=("Segoe UI", 8, "bold"), padding=(6, 4))
         style.configure("TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
@@ -1642,6 +1641,7 @@ class MT5AutotesterUI(
             or "--execute-backtests" in args
             or "--evaluate-seeds" in args
             or "--evaluate-robustness" in args
+            or "--evaluate-final-tick" in args
             or "--retry-candidate-id" in args
             or "--retry-seed-path" in args
             or "--retry-mismatch-run" in args
