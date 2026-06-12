@@ -526,9 +526,14 @@ def load_robust_sets_from_rows(
         set_path = str(_row_value(row, "set_path", default=""))
         if not set_path:
             continue
+        account_type = str(_row_value(row, "account_type", default="")).strip().upper()
         stem = _logical_stem(set_path)
+        if account_type:
+            stem = f"{account_type}:{stem}"
         current = latest_by_stem.get(stem)
-        if current is None or _row_int(row, "candidate_id") > _row_int(current, "candidate_id"):
+        if current is None or _row_int(row, "source_candidate_id", "candidate_id") > _row_int(
+            current, "source_candidate_id", "candidate_id"
+        ):
             latest_by_stem[stem] = row
 
     loaded: list[RobustStrategySet] = []
@@ -540,7 +545,7 @@ def load_robust_sets_from_rows(
         if _norm_path(set_path) in used:
             continue
         if progress:
-            progress(f"Analizando set robusto {index}/{len(candidates)}")
+            progress(f"Analizando set Final Tick OK {index}/{len(candidates)}")
         is_path = Path(str(_row_value(row, "is_report_path", "report_path", default="")))
         oos_path = Path(str(_row_value(row, "oos_report_path", "robust_report_path", default="")))
         if not is_path.is_file() or not oos_path.is_file():
@@ -571,7 +576,7 @@ def load_robust_sets_from_rows(
             continue
 
     if skipped_missing:
-        warnings.append(f"{skipped_missing} candidato(s) omitido(s): faltan reportes 2020-2024 o 2025-2026.")
+        warnings.append(f"{skipped_missing} candidato(s) omitido(s): faltan reportes base o robustez.")
     if skipped_parse:
         warnings.append(f"{skipped_parse} candidato(s) omitido(s): reporte ilegible o curva invalida.")
     return loaded, warnings
@@ -1414,9 +1419,9 @@ def _row_value(row: object, *keys: str, default: object = "") -> object:
     return default
 
 
-def _row_int(row: object, key: str) -> int:
+def _row_int(row: object, *keys: str) -> int:
     try:
-        return int(_row_value(row, key, default=0) or 0)
+        return int(_row_value(row, *keys, default=0) or 0)
     except (TypeError, ValueError):
         return 0
 

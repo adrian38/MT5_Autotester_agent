@@ -297,17 +297,17 @@ class UBSPortfolioViewMixin:
         members_frame.grid(row=1, column=0, sticky="nsew")
         members_frame.columnconfigure(0, weight=1)
         members_frame.rowconfigure(0, weight=1)
-        member_columns = ("set", "candidate", "symbol", "tf", "units", "lot", "net", "valley", "point", "step")
+        member_columns = ("set", "account", "candidate", "symbol", "tf", "units", "lot", "net", "valley", "point", "step")
         self.ubs_portfolio_members_tree = ttk.Treeview(
             members_frame, columns=member_columns, show="headings", height=8, selectmode="browse"
         )
         member_headings = {
-            "set": "SET ID", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
+            "set": "SET ID", "account": "CUENTA", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
             "units": "UNID.", "lot": "LOTE", "net": "NET", "valley": "DD VALLE",
             "point": "DD PUNT.", "step": "$/0.01",
         }
         member_widths = {
-            "set": 230, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
+            "set": 230, "account": 70, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
             "lot": 62, "net": 90, "valley": 82, "point": 82, "step": 88,
         }
         for column in member_columns:

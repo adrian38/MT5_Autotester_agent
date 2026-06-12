@@ -491,6 +491,14 @@ requirement changes or a debt item is opened/closed.
   robustness-accepted candidates into Final Tick. Incremental execution MUST
   pass `--final-tick-pending-only`; rerun execution MUST replace existing Final
   Tick rows for robust-accepted candidates.
+- **FR-1.12.32** `UBS Portafolio` MUST build its candidate pool from both ECN
+  and PRO memories, but only from strategies where base candidate, robustness,
+  and Final Tick are all `accepted`. Portfolio history MUST still be built from
+  the base report plus the robustness report; Final Tick is an eligibility gate,
+  not the curve source. Saved Conservative/Balanced portfolios MUST lock their
+  selected sets for every future portfolio. Saved Aggressive portfolios MUST
+  lock their selected sets only for future Aggressive portfolios; they MUST NOT
+  block Conservative/Balanced generation.
 
 ### 1.13 Packaging & runtime
 
