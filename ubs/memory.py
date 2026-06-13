@@ -47,7 +47,8 @@ class AgentMemory:
                 max_seeds integer not null,
                 execute_backtests integer not null,
                 dry_run integer not null,
-                hidden integer not null default 0
+                hidden integer not null default 0,
+                config_json text not null default ''
             );
             create table if not exists candidates (
                 id integer primary key autoincrement,
@@ -151,6 +152,7 @@ class AgentMemory:
             """
         )
         self._ensure_column("runs", "hidden", "integer not null default 0")
+        self._ensure_column("runs", "config_json", "text not null default ''")
         self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
         self._ensure_column("candidates", "mutation_details_json", "text not null default ''")
         self.conn.execute(
@@ -177,13 +179,15 @@ class AgentMemory:
         max_seeds: int,
         execute_backtests: bool,
         dry_run: bool,
+        config: dict[str, object] | None = None,
     ) -> int:
+        config_json = json.dumps(config or {}, ensure_ascii=True, sort_keys=True)
         cur = self.conn.execute(
             """
             insert into runs (
                 created_at, source_dir, output_dir, generations, variants_per_seed,
-                max_seeds, execute_backtests, dry_run
-            ) values (?, ?, ?, ?, ?, ?, ?, ?)
+                max_seeds, execute_backtests, dry_run, config_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().isoformat(timespec="seconds"),
@@ -194,6 +198,7 @@ class AgentMemory:
                 max_seeds,
                 int(execute_backtests),
                 int(dry_run),
+                config_json,
             ),
         )
         self.conn.commit()

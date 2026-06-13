@@ -336,6 +336,15 @@ The option reserves part of generation for universe coverage:
 - Disabled universe symbols remain excluded.
 - Selected source seeds are persisted in `generation_seed_selection` with rank,
   asset weight, timeframe weight, diversity, and total selection score.
+- New generation runs persist launch metadata in `runs.config_json`, including
+  `force_unseeded_universe`, score thresholds, execution dates, universe counts,
+  adaptive exploration probabilities, and the serialized CLI args. Use this to
+  audit how a run was launched instead of inferring the flag from policies.
+- Target selection has per-generation anti-concentration caps: max 45% per
+  canonical symbol and max 30% per canonical symbol+timeframe. Capped choices
+  are rerolled and then replaced with an enabled universe fallback when needed;
+  policies may include `diversity_reroll`, `diversity_fallback`, or
+  `diversity_overflow`.
 - Generated candidates store true parameter mutations in `mutated_keys` and
   target-timeframe patch keys separately in `timeframe_keys`. The
   `mutation_details_json` payload stores old/new/delta values for future

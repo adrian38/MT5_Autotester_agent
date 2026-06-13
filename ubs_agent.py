@@ -63,6 +63,9 @@ ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
 ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
 TF_UNSEEDED_FORCE_PROB_LATE = 0.08
+TARGET_PAIR_CAP_RATIO = 0.30
+TARGET_SYMBOL_CAP_RATIO = 0.45
+DIVERSITY_REROLL_ATTEMPTS = 24
 FINAL_TICK_RETRYABLE_STATUSES = {
     "no_report",
     "parse_error",
@@ -407,6 +410,45 @@ def unseeded_timeframe_force_probability(generation: int, unseeded_count: int) -
     return TF_UNSEEDED_FORCE_PROB_BY_GENERATION.get(generation, TF_UNSEEDED_FORCE_PROB_LATE)
 
 
+def capped_count(total: int, ratio: float) -> int:
+    if total <= 0:
+        return 0
+    return max(1, int(total * ratio + 0.999999))
+
+
+class TargetDiversityLimiter:
+    def __init__(
+        self,
+        planned_variants: int,
+        aliases: dict[str, str] | None = None,
+        *,
+        pair_cap_ratio: float = TARGET_PAIR_CAP_RATIO,
+        symbol_cap_ratio: float = TARGET_SYMBOL_CAP_RATIO,
+    ) -> None:
+        self.aliases = aliases or {}
+        self.pair_cap = capped_count(planned_variants, pair_cap_ratio)
+        self.symbol_cap = capped_count(planned_variants, symbol_cap_ratio)
+        self.pair_counts: Counter[tuple[str, str]] = Counter()
+        self.symbol_counts: Counter[str] = Counter()
+
+    def symbol_key(self, symbol: str) -> str:
+        return canonical_symbol(symbol, self.aliases).upper()
+
+    def pair_key(self, symbol: str, period: str) -> tuple[str, str]:
+        return self.symbol_key(symbol), str(period or "").upper()
+
+    def allows(self, symbol: str, period: str) -> bool:
+        if self.pair_cap and self.pair_counts[self.pair_key(symbol, period)] >= self.pair_cap:
+            return False
+        if self.symbol_cap and self.symbol_counts[self.symbol_key(symbol)] >= self.symbol_cap:
+            return False
+        return True
+
+    def record(self, symbol: str, period: str) -> None:
+        self.pair_counts[self.pair_key(symbol, period)] += 1
+        self.symbol_counts[self.symbol_key(symbol)] += 1
+
+
 def generation_source_seeds(
     seeds: list[Seed],
     symbol_map: dict[str, str],
@@ -469,6 +511,26 @@ def related_assets(symbol: str) -> tuple[str, ...]:
     return (symbol,)
 
 
+def target_symbol_disabled(
+    symbol: str,
+    universe_symbols: tuple[str, ...] = (),
+    aliases: dict[str, str] | None = None,
+    *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
+) -> bool:
+    aliases = aliases or {}
+    symbol_map = symbol_map or {}
+    disabled = {symbol.upper() for symbol in (disabled_symbols or load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS))}
+    exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
+    for alias, target in aliases.items():
+        exact_by_key[str(alias).upper()] = target
+    normalized = normalize_set_symbol(symbol)
+    resolved = exact_by_key.get(normalized, symbol)
+    mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
+    return normalized in disabled or resolved.upper() in disabled or mapped in disabled
+
+
 def choose_target_symbol(
     seed: Seed,
     asset_feedback: dict[str, float],
@@ -485,16 +547,18 @@ def choose_target_symbol(
     aliases = aliases or {}
     symbol_map = symbol_map or {}
     current = seed.symbol or "UNKNOWN"
-    disabled = {symbol.upper() for symbol in (disabled_symbols or load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS))}
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
 
     def target_disabled(symbol: str) -> bool:
-        normalized = normalize_set_symbol(symbol)
-        resolved = exact_by_key.get(normalized, symbol)
-        mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
-        return normalized in disabled or resolved.upper() in disabled or mapped in disabled
+        return target_symbol_disabled(
+            symbol,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+        )
 
     current_disabled = target_disabled(current)
 
@@ -576,6 +640,116 @@ def choose_target_period(
     if unexplored and rng.random() < 0.70:
         return rng.choice(unexplored), "tf_explore_new"
     return rng.choice(choices), "tf_explore"
+
+
+def diverse_target_fallback(
+    seed: Seed,
+    asset_feedback: dict[str, float],
+    timeframe_feedback: dict[str, float],
+    rng: random.Random,
+    limiter: TargetDiversityLimiter,
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+    *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
+) -> tuple[str, str] | None:
+    aliases = aliases or {}
+    symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_assets(seed.symbol), *universe_symbols)))
+    period_candidates = tuple(dict.fromkeys((*related_timeframes(seed.period), *TIMEFRAME_UNIVERSE)))
+    scored: list[tuple[float, str, str]] = []
+    for symbol in symbol_candidates:
+        if not symbol or symbol == "UNKNOWN":
+            continue
+        if target_symbol_disabled(
+            symbol,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+        ):
+            continue
+        asset_key = canonical_symbol(symbol, aliases).upper()
+        asset_weight = asset_feedback.get(asset_key, 0.0)
+        for period in period_candidates:
+            if not period or period == "UNKNOWN":
+                continue
+            if not limiter.allows(symbol, period):
+                continue
+            timeframe_weight = timeframe_feedback.get(period.upper(), 0.0) * 0.50
+            scored.append((asset_weight + timeframe_weight + rng.random() * 5.0, symbol, period))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    _, symbol, period = scored[0]
+    return symbol, period
+
+
+def choose_diverse_target(
+    seed: Seed,
+    asset_feedback: dict[str, float],
+    timeframe_feedback: dict[str, float],
+    rng: random.Random,
+    limiter: TargetDiversityLimiter,
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+    *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
+    force_unseeded_universe: bool = False,
+    unseeded_universe_symbols: tuple[str, ...] = (),
+    unseeded_timeframes: tuple[str, ...] = (),
+    asset_unseeded_probability: float = 0.0,
+    timeframe_unseeded_probability: float = 0.0,
+) -> tuple[str, str, str]:
+    last_symbol = seed.symbol
+    last_period = seed.period
+    last_policy = "exploit+tf_exploit"
+    for attempt in range(DIVERSITY_REROLL_ATTEMPTS + 1):
+        target_symbol, policy = choose_target_symbol(
+            seed,
+            asset_feedback,
+            rng,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+            force_unseeded_universe=force_unseeded_universe,
+            unseeded_universe_symbols=unseeded_universe_symbols,
+            force_unseeded_probability=asset_unseeded_probability,
+        )
+        target_period, period_policy = choose_target_period(
+            seed,
+            timeframe_feedback,
+            rng,
+            force_unseeded_timeframes=force_unseeded_universe,
+            unseeded_timeframes=unseeded_timeframes,
+            force_unseeded_probability=timeframe_unseeded_probability,
+        )
+        full_policy = f"{policy}+{period_policy}"
+        last_symbol = target_symbol
+        last_period = target_period
+        last_policy = full_policy
+        if limiter.allows(target_symbol, target_period):
+            if attempt:
+                full_policy = f"{full_policy}+diversity_reroll"
+            return target_symbol, target_period, full_policy
+
+    fallback = diverse_target_fallback(
+        seed,
+        asset_feedback,
+        timeframe_feedback,
+        rng,
+        limiter,
+        universe_symbols,
+        aliases,
+        symbol_map=symbol_map,
+        disabled_symbols=disabled_symbols,
+    )
+    if fallback is not None:
+        target_symbol, target_period = fallback
+        return target_symbol, target_period, "diversity_fallback"
+    return last_symbol, last_period, f"{last_policy}+diversity_overflow"
 
 
 def line_candidates(
@@ -3203,6 +3377,100 @@ def evaluate_generation(
     return scored
 
 
+def json_safe(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    return str(value)
+
+
+def build_run_config(
+    args: argparse.Namespace,
+    score_config: ScoreConfig,
+    *,
+    source_dir: Path,
+    output_root: Path,
+    run_dir: Path,
+    universe_symbol_count: int,
+    universe_alias_count: int,
+    disabled_symbol_count: int,
+    seed_enabled_disabled_symbol_count: int,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "created_by": "ubs_agent.py",
+        "account_type": normalize_account_type(args.account_type),
+        "paths": {
+            "source_dir": str(source_dir),
+            "output_root": str(output_root),
+            "run_dir": str(run_dir),
+            "memory": str(Path(args.memory).expanduser()),
+            "template": str(Path(args.template).expanduser()),
+            "assets": str(Path(args.assets).expanduser()),
+        },
+        "generation": {
+            "generations": int(args.generations),
+            "variants_per_seed": int(args.variants_per_seed),
+            "max_seeds": int(args.max_seeds),
+            "mutations_per_variant": int(args.mutations_per_variant),
+            "top_percent": float(args.top_percent),
+            "force_unseeded_universe": bool(args.force_unseeded_universe),
+            "asset_unseeded_force_probability": {
+                "generation_1": ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
+                "generation_2": ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
+                "late": ASSET_UNSEEDED_FORCE_PROB_LATE,
+            },
+            "timeframe_unseeded_force_probability": {
+                "generation_1": TF_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
+                "generation_2": TF_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
+                "late": TF_UNSEEDED_FORCE_PROB_LATE,
+            },
+            "target_diversity_caps": {
+                "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
+                "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
+                "reroll_attempts": DIVERSITY_REROLL_ATTEMPTS,
+            },
+        },
+        "execution": {
+            "execute_backtests": bool(args.execute_backtests),
+            "dry_run": bool(args.dry_run),
+            "multi_terminal": bool(args.multi_terminal),
+            "max_workers": int(args.max_workers),
+            "delay": int(args.delay),
+            "random_seed": args.random_seed,
+            "from_date": str(args.from_date or ""),
+            "to_date": str(args.to_date or ""),
+            "symbol_map": str(args.symbol_map or ""),
+        },
+        "universe": {
+            "symbols": int(universe_symbol_count),
+            "aliases": int(universe_alias_count),
+            "disabled_symbols": int(disabled_symbol_count),
+            "seed_enabled_disabled_symbols": int(seed_enabled_disabled_symbol_count),
+        },
+        "score": score_config.to_dict(),
+        "robustness_defaults": {
+            "positive_bonus": float(args.robust_positive_bonus),
+            "negative_bonus": float(args.robust_negative_bonus),
+            "robust_run_id": args.robust_run_id,
+        },
+        "final_tick_defaults": {
+            "min_history_quality": float(args.final_tick_min_history_quality),
+            "min_ohlc_trades": int(args.final_tick_min_ohlc_trades),
+            "max_net_delta_pct": float(args.final_tick_max_net_delta_pct),
+            "max_pf_delta_pct": float(args.final_tick_max_pf_delta_pct),
+            "max_dd_delta_pct": float(args.final_tick_max_dd_delta_pct),
+            "max_trades_delta_pct": float(args.final_tick_max_trades_delta_pct),
+        },
+        "args": {key: json_safe(value) for key, value in sorted(vars(args).items())},
+    }
+
+
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
@@ -3302,8 +3570,13 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
         asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
         tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
+        target_limiter = TargetDiversityLimiter(len(selected_seeds) * args.variants_per_seed, aliases)
         variants: list[Variant] = []
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
+        print(
+            "Caps diversidad target: "
+            f"simbolo<={target_limiter.symbol_cap}, simbolo+TF<={target_limiter.pair_cap}"
+        )
         if args.force_unseeded_universe:
             print(
                 f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
@@ -3312,25 +3585,21 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             )
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
-                target_symbol, policy = choose_target_symbol(
+                target_symbol, target_period, policy = choose_diverse_target(
                     seed,
                     asset_feedback,
+                    timeframe_feedback,
                     rng,
+                    target_limiter,
                     universe_symbols,
                     aliases,
                     symbol_map=symbol_map,
                     disabled_symbols=disabled_symbols,
                     force_unseeded_universe=args.force_unseeded_universe,
                     unseeded_universe_symbols=unseeded_symbols,
-                    force_unseeded_probability=asset_unseeded_probability,
-                )
-                target_period, period_policy = choose_target_period(
-                    seed,
-                    timeframe_feedback,
-                    rng,
-                    force_unseeded_timeframes=args.force_unseeded_universe,
                     unseeded_timeframes=unseeded_timeframes,
-                    force_unseeded_probability=tf_unseeded_probability,
+                    asset_unseeded_probability=asset_unseeded_probability,
+                    timeframe_unseeded_probability=tf_unseeded_probability,
                 )
                 variant = create_variant(
                     seed,
@@ -3343,10 +3612,11 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     args.mutations_per_variant,
                     mutation_feedback,
                     mutation_direction_feedback,
-                    f"{policy}+{period_policy}",
+                    policy,
                     rng,
                 )
                 memory.record_variant(run_id, generation, variant)
+                target_limiter.record(target_symbol, target_period)
                 variants.append(variant)
         all_generated += len(variants)
         did_work = True
@@ -3501,6 +3771,17 @@ def run_agent(args: argparse.Namespace) -> int:
         args.max_seeds,
         args.execute_backtests,
         args.dry_run,
+        config=build_run_config(
+            args,
+            score_config,
+            source_dir=source_dir,
+            output_root=output_root,
+            run_dir=run_dir,
+            universe_symbol_count=len(universe_symbols),
+            universe_alias_count=len(aliases),
+            disabled_symbol_count=len(disabled_symbols),
+            seed_enabled_disabled_symbol_count=len(seed_enabled_when_disabled),
+        ),
     )
 
     current_seeds = source_seeds
@@ -3519,8 +3800,13 @@ def run_agent(args: argparse.Namespace) -> int:
             unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
             asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
             tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
+            target_limiter = TargetDiversityLimiter(len(selected_seeds) * args.variants_per_seed, aliases)
             variants: list[Variant] = []
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
+            print(
+                "Caps diversidad target: "
+                f"simbolo<={target_limiter.symbol_cap}, simbolo+TF<={target_limiter.pair_cap}"
+            )
             if args.force_unseeded_universe:
                 print(
                     f"Exploracion forzada sin seed: activos={len(unseeded_symbols)}, "
@@ -3529,25 +3815,21 @@ def run_agent(args: argparse.Namespace) -> int:
                 )
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
-                    target_symbol, policy = choose_target_symbol(
+                    target_symbol, target_period, policy = choose_diverse_target(
                         seed,
                         asset_feedback,
+                        timeframe_feedback,
                         rng,
+                        target_limiter,
                         universe_symbols,
                         aliases,
                         symbol_map=symbol_map,
                         disabled_symbols=disabled_symbols,
                         force_unseeded_universe=args.force_unseeded_universe,
                         unseeded_universe_symbols=unseeded_symbols,
-                        force_unseeded_probability=asset_unseeded_probability,
-                    )
-                    target_period, period_policy = choose_target_period(
-                        seed,
-                        timeframe_feedback,
-                        rng,
-                        force_unseeded_timeframes=args.force_unseeded_universe,
                         unseeded_timeframes=unseeded_timeframes,
-                        force_unseeded_probability=tf_unseeded_probability,
+                        asset_unseeded_probability=asset_unseeded_probability,
+                        timeframe_unseeded_probability=tf_unseeded_probability,
                     )
                     variant = create_variant(
                         seed,
@@ -3560,10 +3842,11 @@ def run_agent(args: argparse.Namespace) -> int:
                         args.mutations_per_variant,
                         mutation_feedback,
                         mutation_direction_feedback,
-                        f"{policy}+{period_policy}",
+                        policy,
                         rng,
                     )
                     memory.record_variant(run_id, generation, variant)
+                    target_limiter.record(target_symbol, target_period)
                     variants.append(variant)
             all_generated += len(variants)
             print(f"Generados: {len(variants)} en {generation_dir}")

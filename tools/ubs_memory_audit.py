@@ -50,6 +50,10 @@ def table_exists(conn, table: str) -> bool:
     return row is not None
 
 
+def table_columns(conn, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"pragma table_info({table})")}
+
+
 def scalar(conn, sql: str, params: tuple = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     if row is None:
@@ -63,6 +67,37 @@ def format_count_map(rows) -> str:
     return ", ".join(f"{row['status']}={row['n']}" for row in rows)
 
 
+def run_config_summary(run) -> str:
+    try:
+        raw = str(run["config_json"] or "").strip()
+    except (IndexError, KeyError):
+        return "config=legacy"
+    if not raw:
+        return "config=legacy"
+    try:
+        config = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "config=invalida"
+    generation = config.get("generation", {}) if isinstance(config, dict) else {}
+    execution = config.get("execution", {}) if isinstance(config, dict) else {}
+    score = config.get("score", {}) if isinstance(config, dict) else {}
+    force = bool(generation.get("force_unseeded_universe")) if isinstance(generation, dict) else False
+    from_date = str(execution.get("from_date") or "") if isinstance(execution, dict) else ""
+    to_date = str(execution.get("to_date") or "") if isinstance(execution, dict) else ""
+    min_pf = score.get("min_profit_factor") if isinstance(score, dict) else None
+    min_trades = score.get("min_trades") if isinstance(score, dict) else None
+    caps = generation.get("target_diversity_caps", {}) if isinstance(generation, dict) else {}
+    dates = f" fechas={from_date or '-'}..{to_date or '-'}"
+    score_text = f" pf>={min_pf} trades>={min_trades}" if min_pf is not None or min_trades is not None else ""
+    cap_text = ""
+    if isinstance(caps, dict) and caps:
+        cap_text = (
+            f" cap_sym={caps.get('symbol_ratio')}"
+            f" cap_pair={caps.get('symbol_timeframe_ratio')}"
+        )
+    return f"force_unseeded={'si' if force else 'no'}{dates}{score_text}{cap_text}"
+
+
 def print_heading(title: str) -> None:
     print()
     print(title)
@@ -74,12 +109,15 @@ def audit_runs(conn, audit: Audit) -> None:
         audit.warn("No existe tabla runs.")
         return
 
+    run_columns = table_columns(conn, "runs")
     rows = conn.execute("select * from runs order by id").fetchall()
     visible = conn.execute("select * from runs where hidden=0 order by id desc limit 1").fetchone()
     print_heading("Runs")
     print(f"runs totales: {len(rows)}")
     if visible:
         print(f"run visible/latest: #{visible['id']} creado={visible['created_at']}")
+        if "config_json" in run_columns:
+            print(f"config latest: {run_config_summary(visible)}")
     for run in rows:
         counts = conn.execute(
             "select status, count(*) n from candidates where run_id=? group by status order by status",
@@ -91,7 +129,7 @@ def audit_runs(conn, audit: Audit) -> None:
         print(
             f"#{run['id']} hidden={run['hidden']} gens={run['generations']} "
             f"vps={run['variants_per_seed']} max_seeds={run['max_seeds']} "
-            f"candidatos={total}{expected_text} | {format_count_map(counts)}"
+            f"candidatos={total}{expected_text} | {format_count_map(counts)} | {run_config_summary(run)}"
         )
         generated = scalar(conn, "select count(*) from candidates where run_id=? and status='generated'", (run["id"],))
         if generated:

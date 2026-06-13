@@ -162,6 +162,18 @@ requirement changes or a debt item is opened/closed.
   parameters from target-timeframe patch keys (`ST1_Timeframe`, `VolTimeframe`,
   `Entry_Timing`, `ATR_Timeframe`). Timeframe patch keys MAY be stored for
   audit, but MUST NOT pollute parameter-mutation weights.
+- **FR-1.6.13** New generation runs MUST persist their launch configuration in
+  `runs.config_json`. The JSON MUST include the account type, paths, generation
+  flags such as `force_unseeded_universe`, exploration probabilities, execution
+  dates, score thresholds, universe counts, and the serialized CLI arguments so
+  later audits can verify how the run was created without inferring from
+  candidate policies.
+- **FR-1.6.14** Target selection MUST apply per-generation diversity caps to
+  avoid over-concentrating candidates in one target. A single symbol+timeframe
+  pair SHOULD be capped at 30% of the planned generation, and a single symbol
+  SHOULD be capped at 45%. When a proposed target is capped, the agent MUST
+  reroll and then fall back to an enabled universe target before allowing a
+  diversity overflow.
 
 ### 1.7 UBS agent — scoring
 

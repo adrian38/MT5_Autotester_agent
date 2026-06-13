@@ -7,7 +7,7 @@ from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
 from ubs.account import account_disabled_symbols_path
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
-from ubs_agent import copy_accepted, choose_target_period, choose_target_symbol, create_variant, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, unseeded_asset_force_probability, unseeded_timeframe_force_probability, validate_seed_backtest_set, variant_as_next_seed, write_set_force_symbol
+from ubs_agent import TargetDiversityLimiter, choose_diverse_target, copy_accepted, choose_target_period, choose_target_symbol, create_variant, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, unseeded_asset_force_probability, unseeded_timeframe_force_probability, validate_seed_backtest_set, variant_as_next_seed, write_set_force_symbol
 from run_tests import parse_symbol_map
 
 
@@ -215,6 +215,39 @@ class UBSSetsFileTests(unittest.TestCase):
                 force_unseeded_probability=0.0,
             )
             self.assertNotEqual(policy, "tf_unseeded_force")
+
+    def test_target_diversity_limiter_caps_pair_and_symbol(self) -> None:
+        limiter = TargetDiversityLimiter(10)
+
+        for _ in range(3):
+            self.assertTrue(limiter.allows("META", "H4"))
+            limiter.record("META", "H4")
+
+        self.assertFalse(limiter.allows("META", "H4"))
+        self.assertTrue(limiter.allows("META", "H1"))
+        limiter.record("META", "H1")
+        limiter.record("META", "D1")
+        self.assertFalse(limiter.allows("META", "M30"))
+        self.assertTrue(limiter.allows("AMZN", "H4"))
+
+    def test_choose_diverse_target_avoids_capped_symbol(self) -> None:
+        seed = Seed(Path("seed.set"), "META", "H4", "family", "1")
+        limiter = TargetDiversityLimiter(4)
+        limiter.record("META", "H4")
+        limiter.record("META", "H1")
+
+        target_symbol, target_period, _policy = choose_diverse_target(
+            seed,
+            {"META": 100.0, "AMZN": 10.0, "MSFT": 8.0},
+            {"H4": 10.0, "H1": 8.0},
+            random.Random(3),
+            limiter,
+            ("META", "AMZN", "MSFT"),
+            {},
+        )
+
+        self.assertNotEqual(target_symbol, "META")
+        self.assertTrue(limiter.allows(target_symbol, target_period))
 
     def test_create_variant_separates_timeframe_keys_from_mutated_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
