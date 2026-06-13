@@ -125,8 +125,13 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.3** Lot sizing in every generated variant MUST be normalised via
   `force_fixed_lot_text` before use.
 - **FR-1.6.4** Timeframe exploration MUST draw on SQLite feedback
-  (`asset_feedback`, `timeframe_feedback`) and limit exploration to
-  M15 / M30 / H1 / H4 / D1 unless the seed itself specifies otherwise.
+  (`asset_feedback`, `timeframe_feedback`) and target the normal generation
+  universe M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN MUST remain opt-in
+  experimental targets behind `--experimental-long-timeframes`.
+- **FR-1.6.4a** When W1/MN experimentation is enabled, accepted/rejected scoring
+  in generation and robustness MUST use timeframe-specific minimum trade counts:
+  `--min-trades-w1` for W1 and `--min-trades-mn` for MN. Other timeframes MUST
+  keep using the normal `--min-trades` threshold.
 - **FR-1.6.5** When `--execute-backtests` is set, the agent MUST invoke
   `run_tests.py` (or the multiterminal equivalent) for the generated variants.
 - **FR-1.6.6** After backtests, every produced report MUST be scored and
@@ -174,6 +179,11 @@ requirement changes or a debt item is opened/closed.
   SHOULD be capped at 45%. When a proposed target is capped, the agent MUST
   reroll and then fall back to an enabled universe target before allowing a
   diversity overflow.
+- **FR-1.6.15** Generation run metadata MUST persist the effective target
+  timeframe universe and whether W1/MN experimentation was enabled, so audits
+  can distinguish normal runs from long-timeframe experiments.
+- **FR-1.6.16** Generation run metadata MUST persist W1/MN base/robust minimum
+  trades and W1/MN Final Tick minimum trades.
 
 ### 1.7 UBS agent — scoring
 
@@ -487,6 +497,14 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.12.25** The UI MUST expose a `Poblar universo sin seed` toggle in
   `UBS Agente UBS`. It MUST persist as `ubs_force_unseeded_universe` and pass
   `--force-unseeded-universe` to normal and continuation UBS agent runs.
+- **FR-1.12.25a** The UI MUST expose an `Experimentar W1/MN` toggle in
+  `UBS Agente UBS`. It MUST persist as `ubs_experimental_long_timeframes` and
+  pass `--experimental-long-timeframes` to normal and continuation UBS agent
+  runs only when enabled.
+- **FR-1.12.25b** The `Experimentar W1/MN` UI row MUST expose four numeric
+  inputs: W1 base min trades, MN base min trades, W1 Final Tick min trades, and
+  MN Final Tick min trades. Defaults: W1 base `12`, MN base `4`, W1 Final Tick
+  `2`, MN Final Tick `1`.
 - **FR-1.12.26** `UBS Resultados` and `UBS Robustez` MUST display the latest
   visible run (`hidden=0 order by id desc limit 1`). New UBS generation runs
   MUST become visible immediately because `runs.hidden` defaults to `0`.

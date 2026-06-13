@@ -11,6 +11,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -58,7 +59,9 @@ DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
-TIMEFRAME_UNIVERSE = ("M15", "M30", "H1", "H4", "D1")
+BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
+TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
 ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
 ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
@@ -275,6 +278,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reserva exploracion para activos/TF del universo que no existen en las seeds base.",
     )
+    parser.add_argument(
+        "--experimental-long-timeframes",
+        action="store_true",
+        help="Incluye W1/MN como targets experimentales de generacion.",
+    )
     parser.add_argument("--continue-last-run", action="store_true", help="Usa la ultima generacion registrada como seeds.")
     parser.add_argument(
         "--backtest-pending-only",
@@ -295,6 +303,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-skip-ohlc", action="store_true", help="Salta el backtest OHLC y reutiliza ohlc_metrics_json guardado en DB; solo ejecuta Every Tick.")
     parser.add_argument("--final-tick-min-history-quality", type=float, default=80.0, help="Calidad minima History Quality del reporte real tick.")
     parser.add_argument("--final-tick-min-ohlc-trades", type=int, default=5, help="Operaciones OHLC minimas para pasar a Every Tick.")
+    parser.add_argument("--final-tick-min-trades-w1", type=int, default=2, help="Operaciones minimas Final Tick para W1.")
+    parser.add_argument("--final-tick-min-trades-mn", type=int, default=1, help="Operaciones minimas Final Tick para MN.")
     parser.add_argument("--final-tick-ohlc-from-date", default="", help="Fecha alternativa para reintentar pendientes por pocas operaciones OHLC.")
     parser.add_argument("--final-tick-ohlc-to-date", default="", help="Fecha alternativa final para reintentar pendientes por pocas operaciones OHLC.")
     parser.add_argument("--final-tick-max-net-delta-pct", type=float, default=35.0, help="Diferencia maxima de net normalizado vs OHLC.")
@@ -324,6 +334,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-net-profit", type=float, default=score_defaults.min_net_profit)
     parser.add_argument("--min-profit-factor", type=float, default=score_defaults.min_profit_factor)
     parser.add_argument("--min-trades", type=int, default=score_defaults.min_trades)
+    parser.add_argument("--min-trades-w1", type=int, default=12, help="Trades minimos para W1 en score base/robustez.")
+    parser.add_argument("--min-trades-mn", type=int, default=4, help="Trades minimos para MN en score base/robustez.")
     parser.add_argument("--max-drawdown-pct", type=float, default=score_defaults.max_drawdown_pct)
     parser.add_argument("--min-recovery-factor", type=float, default=score_defaults.min_recovery_factor)
     parser.add_argument("--min-positive-month-ratio", type=float, default=score_defaults.min_positive_month_ratio)
@@ -467,10 +479,54 @@ def disabled_symbols_file_for_account(account_type: object) -> Path:
     return account_disabled_symbols_path(BASE_DIR, account_type)
 
 
+def target_timeframe_universe(include_experimental_long: bool = False) -> tuple[str, ...]:
+    if include_experimental_long:
+        return tuple(dict.fromkeys((*TIMEFRAME_UNIVERSE, *EXPERIMENTAL_LONG_TIMEFRAMES)))
+    return TIMEFRAME_UNIVERSE
+
+
+def min_trades_for_period(period: str, default_min_trades: int, w1_min_trades: int, mn_min_trades: int) -> int:
+    period = str(period or "").upper()
+    if period == "W1":
+        return max(0, int(w1_min_trades))
+    if period == "MN":
+        return max(0, int(mn_min_trades))
+    return max(0, int(default_min_trades))
+
+
+def score_config_for_period(
+    score_config: ScoreConfig,
+    period: str,
+    *,
+    min_trades_w1: int,
+    min_trades_mn: int,
+) -> ScoreConfig:
+    min_trades = min_trades_for_period(period, score_config.min_trades, min_trades_w1, min_trades_mn)
+    if min_trades == score_config.min_trades:
+        return score_config
+    return replace(score_config, min_trades=min_trades)
+
+
+def score_config_for_variant(
+    score_config: ScoreConfig,
+    variant: Variant,
+    *,
+    min_trades_w1: int,
+    min_trades_mn: int,
+) -> ScoreConfig:
+    return score_config_for_period(
+        score_config,
+        variant.target_period,
+        min_trades_w1=min_trades_w1,
+        min_trades_mn=min_trades_mn,
+    )
+
+
 def unseeded_universe_targets(
     seeds: list[Seed],
     universe_symbols: tuple[str, ...],
     aliases: dict[str, str] | None = None,
+    timeframe_universe: tuple[str, ...] = TIMEFRAME_UNIVERSE,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     aliases = aliases or {}
     seed_symbols = {
@@ -488,7 +544,7 @@ def unseeded_universe_targets(
         for symbol in dict.fromkeys(universe_symbols)
         if canonical_symbol(symbol, aliases).upper() not in seed_symbols
     )
-    unseeded_timeframes = tuple(period for period in TIMEFRAME_UNIVERSE if period.upper() not in seed_timeframes)
+    unseeded_timeframes = tuple(period for period in timeframe_universe if period.upper() not in seed_timeframes)
     return unseeded_symbols, unseeded_timeframes
 
 
@@ -598,19 +654,38 @@ def choose_target_symbol(
     return rng.choice(choices), "asset_explore"
 
 
-def related_timeframes(period: str) -> tuple[str, ...]:
+def filter_timeframe_universe(periods: tuple[str, ...], timeframe_universe: tuple[str, ...]) -> tuple[str, ...]:
+    allowed = {period.upper() for period in timeframe_universe}
+    return tuple(period for period in dict.fromkeys(periods) if period.upper() in allowed)
+
+
+def related_timeframes(
+    period: str,
+    timeframe_universe: tuple[str, ...] = TIMEFRAME_UNIVERSE,
+) -> tuple[str, ...]:
     period = period.upper()
+    related: tuple[str, ...]
     if period == "M15":
-        return ("M15", "M30", "H1")
-    if period == "M30":
-        return ("M15", "M30", "H1", "H4")
-    if period == "H1":
-        return ("M30", "H1", "H4", "D1")
-    if period == "H4":
-        return ("H1", "H4", "D1")
-    if period == "D1":
-        return ("H4", "D1")
-    return TIMEFRAME_UNIVERSE
+        related = ("M5", "M15", "M30", "H1")
+    elif period == "M30":
+        related = ("M15", "M30", "H1", "H4")
+    elif period == "H1":
+        related = ("M30", "H1", "H4", "D1")
+    elif period == "H4":
+        related = ("H1", "H4", "D1")
+    elif period == "D1":
+        related = ("H4", "D1", "W1", "MN")
+    elif period == "M1":
+        related = ("M1", "M5", "M15")
+    elif period == "M5":
+        related = ("M1", "M5", "M15", "M30")
+    elif period == "W1":
+        related = ("D1", "W1", "MN")
+    elif period == "MN":
+        related = ("D1", "W1", "MN")
+    else:
+        related = timeframe_universe
+    return filter_timeframe_universe(related, timeframe_universe)
 
 
 def choose_target_period(
@@ -618,12 +693,13 @@ def choose_target_period(
     timeframe_feedback: dict[str, float],
     rng: random.Random,
     *,
+    timeframe_universe: tuple[str, ...] = TIMEFRAME_UNIVERSE,
     force_unseeded_timeframes: bool = False,
     unseeded_timeframes: tuple[str, ...] = (),
     force_unseeded_probability: float = 0.50,
 ) -> tuple[str, str]:
     current = seed.period.upper()
-    choices = tuple(dict.fromkeys(related_timeframes(current)))
+    choices = tuple(dict.fromkeys(related_timeframes(current, timeframe_universe)))
     if not choices:
         return current, "tf_exploit"
     forced_choices = tuple(period for period in choices if period.upper() in {tf.upper() for tf in unseeded_timeframes})
@@ -651,12 +727,13 @@ def diverse_target_fallback(
     universe_symbols: tuple[str, ...],
     aliases: dict[str, str] | None = None,
     *,
+    timeframe_universe: tuple[str, ...] = TIMEFRAME_UNIVERSE,
     symbol_map: dict[str, str] | None = None,
     disabled_symbols: set[str] | None = None,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
     symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_assets(seed.symbol), *universe_symbols)))
-    period_candidates = tuple(dict.fromkeys((*related_timeframes(seed.period), *TIMEFRAME_UNIVERSE)))
+    period_candidates = tuple(dict.fromkeys((*related_timeframes(seed.period, timeframe_universe), *timeframe_universe)))
     scored: list[tuple[float, str, str]] = []
     for symbol in symbol_candidates:
         if not symbol or symbol == "UNKNOWN":
@@ -694,6 +771,7 @@ def choose_diverse_target(
     universe_symbols: tuple[str, ...],
     aliases: dict[str, str] | None = None,
     *,
+    timeframe_universe: tuple[str, ...] = TIMEFRAME_UNIVERSE,
     symbol_map: dict[str, str] | None = None,
     disabled_symbols: set[str] | None = None,
     force_unseeded_universe: bool = False,
@@ -722,6 +800,7 @@ def choose_diverse_target(
             seed,
             timeframe_feedback,
             rng,
+            timeframe_universe=timeframe_universe,
             force_unseeded_timeframes=force_unseeded_universe,
             unseeded_timeframes=unseeded_timeframes,
             force_unseeded_probability=timeframe_unseeded_probability,
@@ -743,6 +822,7 @@ def choose_diverse_target(
         limiter,
         universe_symbols,
         aliases,
+        timeframe_universe=timeframe_universe,
         symbol_map=symbol_map,
         disabled_symbols=disabled_symbols,
     )
@@ -1433,7 +1513,15 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             skipped_no_report += 1
             continue
         variant = variant_from_candidate_row(row)
-        status, _ = evaluate_variant_report(memory, variant, report, score_config, symbol_map)
+        status, _ = evaluate_variant_report(
+            memory,
+            variant,
+            report,
+            score_config,
+            symbol_map,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
         status_counts[status] = status_counts.get(status, 0) + 1
 
     total = sum(status_counts.values())
@@ -1480,7 +1568,13 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
         run_id = int(row["run_id"])
         variant = variant_from_candidate_row(row)
         try:
-            result = score_report_file(report, config=score_config)
+            period_score_config = score_config_for_variant(
+                score_config,
+                variant,
+                min_trades_w1=args.min_trades_w1,
+                min_trades_mn=args.min_trades_mn,
+            )
+            result = score_report_file(report, config=period_score_config)
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez candidate #{candidate_id}: {exc}")
             memory.record_candidate_robustness(
@@ -1632,10 +1726,20 @@ def evaluate_variants(
     symbol_map: dict[str, str],
     *,
     min_report_mtime: float | None = None,
+    min_trades_w1: int = 12,
+    min_trades_mn: int = 4,
 ) -> list[tuple[Variant, ScoreResult]]:
     scored: list[tuple[Variant, ScoreResult]] = []
     for variant in variants:
-        status, result = evaluate_variant(memory, variant, score_config, symbol_map, min_report_mtime=min_report_mtime)
+        status, result = evaluate_variant(
+            memory,
+            variant,
+            score_config,
+            symbol_map,
+            min_report_mtime=min_report_mtime,
+            min_trades_w1=min_trades_w1,
+            min_trades_mn=min_trades_mn,
+        )
         if status not in {"accepted", "rejected"} or result is None:
             continue
         scored.append((variant, result))
@@ -1649,12 +1753,22 @@ def evaluate_variant(
     symbol_map: dict[str, str],
     *,
     min_report_mtime: float | None = None,
+    min_trades_w1: int = 12,
+    min_trades_mn: int = 4,
 ) -> tuple[str, ScoreResult | None]:
     report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
         memory.record_score(variant.path, None, "no_report", None)
         return "no_report", None
-    return evaluate_variant_report(memory, variant, report, score_config, symbol_map)
+    return evaluate_variant_report(
+        memory,
+        variant,
+        report,
+        score_config,
+        symbol_map,
+        min_trades_w1=min_trades_w1,
+        min_trades_mn=min_trades_mn,
+    )
 
 
 def evaluate_variant_report(
@@ -1663,9 +1777,18 @@ def evaluate_variant_report(
     report: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    *,
+    min_trades_w1: int = 12,
+    min_trades_mn: int = 4,
 ) -> tuple[str, ScoreResult | None]:
+    period_score_config = score_config_for_variant(
+        score_config,
+        variant,
+        min_trades_w1=min_trades_w1,
+        min_trades_mn=min_trades_mn,
+    )
     try:
-        result = score_report_file(report, config=score_config)
+        result = score_report_file(report, config=period_score_config)
     except Exception as exc:
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
@@ -1738,6 +1861,9 @@ def count_valid_existing_reports(
     variants: list[Variant],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    *,
+    min_trades_w1: int = 12,
+    min_trades_mn: int = 4,
 ) -> int:
     valid = 0
     for variant in variants:
@@ -1745,7 +1871,15 @@ def count_valid_existing_reports(
         if not report:
             continue
         try:
-            result = score_report_file(report, config=score_config)
+            result = score_report_file(
+                report,
+                config=score_config_for_variant(
+                    score_config,
+                    variant,
+                    min_trades_w1=min_trades_w1,
+                    min_trades_mn=min_trades_mn,
+                ),
+            )
         except Exception:
             continue
         matches, _ = report_matches_variant(variant, result, symbol_map)
@@ -1868,8 +2002,14 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             )
             status_counts["no_report"] = status_counts.get("no_report", 0) + 1
             continue
+        period_score_config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
         try:
-            result = score_report_file(report, config=score_config)
+            result = score_report_file(report, config=period_score_config)
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez {report}: {exc}")
             memory.record_candidate_robustness(
@@ -2343,7 +2483,13 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             f"solo se ejecuta Every Tick ({len(copied)} candidatos)."
         )
     elif resume_pending_dir and ohlc_sets_unchanged and stored_dates_match:
-        valid_ohlc_reports = count_valid_existing_reports(ohlc_variants, score_config, symbol_map)
+        valid_ohlc_reports = count_valid_existing_reports(
+            ohlc_variants,
+            score_config,
+            symbol_map,
+            min_trades_w1=args.final_tick_min_trades_w1,
+            min_trades_mn=args.final_tick_min_trades_mn,
+        )
         if valid_ohlc_reports == len(ohlc_variants):
             # Verify the OHLC reports on disk have the expected dates.
             # A previous interrupted run may have overwritten the files with different dates
@@ -2404,7 +2550,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     status_counts: dict[str, int] = {}
     ready_for_tick: list[tuple[sqlite3.Row, Variant, Variant]] = []
     ohlc_results: dict[int, tuple[Path, ScoreResult]] = {}
-    min_ohlc_trades = max(0, int(args.final_tick_min_ohlc_trades))
+    default_min_ohlc_trades = max(0, int(args.final_tick_min_ohlc_trades))
 
     if skip_ohlc_flag:
         for row, ohlc_variant, real_tick_variant in copied:
@@ -2454,8 +2600,14 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 status_counts["no_report"] = status_counts.get("no_report", 0) + 1
                 continue
 
+            ohlc_score_config = score_config_for_variant(
+                score_config,
+                ohlc_variant,
+                min_trades_w1=args.final_tick_min_trades_w1,
+                min_trades_mn=args.final_tick_min_trades_mn,
+            )
             try:
-                ohlc_result = score_report_file(ohlc_report, config=score_config)
+                ohlc_result = score_report_file(ohlc_report, config=ohlc_score_config)
             except Exception as exc:
                 print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
                 memory.record_candidate_final_tick(
@@ -2503,6 +2655,12 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
                 continue
 
+            min_ohlc_trades = min_trades_for_period(
+                ohlc_variant.target_period,
+                default_min_ohlc_trades,
+                args.final_tick_min_trades_w1,
+                args.final_tick_min_trades_mn,
+            )
             if ohlc_result.trades < min_ohlc_trades:
                 payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
                 memory.record_candidate_final_tick(
@@ -2652,8 +2810,14 @@ def _evaluate_final_tick_tick_report(
     (parseable, symbol/TF correctos); si no lo es devuelve False sin tocar
     memoria, para que el candidato vuelva a la cola de ejecucion.
     """
+    tick_score_config = score_config_for_variant(
+        score_config,
+        real_tick_variant,
+        min_trades_w1=args.final_tick_min_trades_w1,
+        min_trades_mn=args.final_tick_min_trades_mn,
+    )
     try:
-        real_tick_result = score_report_file(real_tick_report, config=score_config)
+        real_tick_result = score_report_file(real_tick_report, config=tick_score_config)
     except Exception as exc:
         if reconcile:
             return False
@@ -2729,6 +2893,8 @@ def reconcile_final_tick_reports(
     *,
     min_history_quality: float = 80.0,
     min_ohlc_trades: int = 5,
+    min_trades_w1: int = 2,
+    min_trades_mn: int = 1,
     max_net_delta_pct: float = 35.0,
     max_pf_delta_pct: float = 35.0,
     max_dd_delta_pct: float = 35.0,
@@ -2759,10 +2925,6 @@ def reconcile_final_tick_reports(
         ohlc_dates = _read_ohlc_report_cfg_dates(ohlc_report)
         if not ohlc_dates[0] or not ohlc_dates[1]:
             continue
-        try:
-            ohlc_result = score_report_file(ohlc_report, config=score_config)
-        except Exception:
-            continue
         original_variant = variant_from_candidate_row(row)
         ohlc_variant = Variant(
             path=Path(f"ohlc_{candidate_id:06d}_{source_set.name}"),
@@ -2773,6 +2935,18 @@ def reconcile_final_tick_reports(
             missing_lot_keys=original_variant.missing_lot_keys,
             policy=f"{original_variant.policy}+final_tick_ohlc",
         )
+        try:
+            ohlc_result = score_report_file(
+                ohlc_report,
+                config=score_config_for_variant(
+                    score_config,
+                    ohlc_variant,
+                    min_trades_w1=min_trades_w1,
+                    min_trades_mn=min_trades_mn,
+                ),
+            )
+        except Exception:
+            continue
         ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
         if not ohlc_matches:
             continue
@@ -2784,9 +2958,17 @@ def reconcile_final_tick_reports(
             final_tick_max_pf_delta_pct=float(max_pf_delta_pct),
             final_tick_max_dd_delta_pct=float(max_dd_delta_pct),
             final_tick_max_trades_delta_pct=float(max_trades_delta_pct),
+            final_tick_min_trades_w1=int(min_trades_w1),
+            final_tick_min_trades_mn=int(min_trades_mn),
         )
-        if ohlc_result.trades < int(min_ohlc_trades):
-            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, int(min_ohlc_trades))
+        period_min_ohlc_trades = min_trades_for_period(
+            ohlc_variant.target_period,
+            int(min_ohlc_trades),
+            int(min_trades_w1),
+            int(min_trades_mn),
+        )
+        if ohlc_result.trades < period_min_ohlc_trades:
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, period_min_ohlc_trades)
             memory.record_candidate_final_tick(
                 candidate_id, run_id, "pending_ohlc_trades", ohlc_result, None,
                 ohlc_report, None,
@@ -2852,6 +3034,16 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
         from_date, to_date = _read_ohlc_report_cfg_dates(ohlc_report)
         from_date = from_date or str(row["ft_from_date"] or args.from_date or "")
         to_date = to_date or str(row["ft_to_date"] or args.to_date or "")
+        original_variant = variant_from_candidate_row(row)
+        ohlc_variant = Variant(
+            path=ohlc_report,
+            seed=original_variant.seed,
+            target_symbol=original_variant.target_symbol,
+            target_period=original_variant.target_period,
+            mutated_keys=original_variant.mutated_keys,
+            missing_lot_keys=original_variant.missing_lot_keys,
+            policy=f"{original_variant.policy}+final_tick_ohlc_rescore",
+        )
         thresholds = argparse.Namespace(
             final_tick_min_history_quality=float(args.final_tick_min_history_quality),
             from_date=from_date,
@@ -2860,9 +3052,19 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             final_tick_max_pf_delta_pct=float(args.final_tick_max_pf_delta_pct),
             final_tick_max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
             final_tick_max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+            final_tick_min_trades_w1=int(args.final_tick_min_trades_w1),
+            final_tick_min_trades_mn=int(args.final_tick_min_trades_mn),
         )
         try:
-            ohlc_result = score_report_file(ohlc_report, config=score_config)
+            ohlc_result = score_report_file(
+                ohlc_report,
+                config=score_config_for_variant(
+                    score_config,
+                    ohlc_variant,
+                    min_trades_w1=args.final_tick_min_trades_w1,
+                    min_trades_mn=args.final_tick_min_trades_mn,
+                ),
+            )
         except Exception as exc:
             print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
             memory.record_candidate_final_tick(
@@ -2875,16 +3077,6 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             )
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
-        original_variant = variant_from_candidate_row(row)
-        ohlc_variant = Variant(
-            path=ohlc_report,
-            seed=original_variant.seed,
-            target_symbol=original_variant.target_symbol,
-            target_period=original_variant.target_period,
-            mutated_keys=original_variant.mutated_keys,
-            missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_ohlc_rescore",
-        )
         ohlc_matches, ohlc_mismatch = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
         if not ohlc_matches:
             print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
@@ -2898,8 +3090,14 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             )
             status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
             continue
-        if ohlc_result.trades < int(args.final_tick_min_ohlc_trades):
-            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, int(args.final_tick_min_ohlc_trades))
+        period_min_ohlc_trades = min_trades_for_period(
+            ohlc_variant.target_period,
+            int(args.final_tick_min_ohlc_trades),
+            int(args.final_tick_min_trades_w1),
+            int(args.final_tick_min_trades_mn),
+        )
+        if ohlc_result.trades < period_min_ohlc_trades:
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, period_min_ohlc_trades)
             memory.record_candidate_final_tick(
                 candidate_id, run_id, "pending_ohlc_trades", ohlc_result, None,
                 ohlc_report, real_tick_report,
@@ -3021,13 +3219,15 @@ def _retry_single_candidate(
     if args.dry_run:
         return 0
 
-    status, result = evaluate_variant(
-        memory,
-        variant,
-        score_config,
-        parse_symbol_map(args.symbol_map),
-        min_report_mtime=batch_started_at - 1.0,
-    )
+        status, result = evaluate_variant(
+            memory,
+            variant,
+            score_config,
+            parse_symbol_map(args.symbol_map),
+            min_report_mtime=batch_started_at - 1.0,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
     if status == "accepted" and result is not None:
         copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
         print(f"Retry aceptado; copias accepted: {len(copied)}")
@@ -3251,6 +3451,8 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
             score_config,
             symbol_map,
             min_report_mtime=batch_started_at - 1.0,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -3322,6 +3524,8 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
             score_config,
             symbol_map,
             min_report_mtime=batch_started_at - 1.0,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -3368,6 +3572,8 @@ def evaluate_generation(
         score_config,
         parse_symbol_map(args.symbol_map),
         min_report_mtime=batch_started_at - 1.0,
+        min_trades_w1=args.min_trades_w1,
+        min_trades_mn=args.min_trades_mn,
     )
     survivors = select_survivors(scored, args.top_percent)
     copied = copy_accepted(survivors, run_dir / f"accepted_gen_{generation:03d}")
@@ -3401,6 +3607,7 @@ def build_run_config(
     disabled_symbol_count: int,
     seed_enabled_disabled_symbol_count: int,
 ) -> dict[str, object]:
+    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
     return {
         "schema_version": 1,
         "created_by": "ubs_agent.py",
@@ -3420,6 +3627,12 @@ def build_run_config(
             "mutations_per_variant": int(args.mutations_per_variant),
             "top_percent": float(args.top_percent),
             "force_unseeded_universe": bool(args.force_unseeded_universe),
+            "experimental_long_timeframes": bool(args.experimental_long_timeframes),
+            "timeframe_universe": list(timeframe_universe),
+            "long_timeframe_min_trades": {
+                "W1": int(args.min_trades_w1),
+                "MN": int(args.min_trades_mn),
+            },
             "asset_unseeded_force_probability": {
                 "generation_1": ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
                 "generation_2": ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
@@ -3462,6 +3675,8 @@ def build_run_config(
         "final_tick_defaults": {
             "min_history_quality": float(args.final_tick_min_history_quality),
             "min_ohlc_trades": int(args.final_tick_min_ohlc_trades),
+            "min_trades_w1": int(args.final_tick_min_trades_w1),
+            "min_trades_mn": int(args.final_tick_min_trades_mn),
             "max_net_delta_pct": float(args.final_tick_max_net_delta_pct),
             "max_pf_delta_pct": float(args.final_tick_max_pf_delta_pct),
             "max_dd_delta_pct": float(args.final_tick_max_dd_delta_pct),
@@ -3558,6 +3773,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
 
     all_generated = 0
     rng = random.Random(args.random_seed)
+    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    print(f"Universo TF target: {', '.join(timeframe_universe)}")
     for generation in range(next_generation, planned_generations + 1):
         generation_dir = run_dir / f"gen_{generation:03d}"
         mutation_feedback = memory.mutation_feedback()
@@ -3567,7 +3784,12 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         selected_seed_rankings = ranked_seed_selection(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
         memory.record_seed_selection(run_id, generation, selected_seed_rankings)
-        unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
+        unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
+            current_seeds,
+            universe_symbols,
+            aliases,
+            timeframe_universe,
+        )
         asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
         tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
         target_limiter = TargetDiversityLimiter(len(selected_seeds) * args.variants_per_seed, aliases)
@@ -3593,6 +3815,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     target_limiter,
                     universe_symbols,
                     aliases,
+                    timeframe_universe=timeframe_universe,
                     symbol_map=symbol_map,
                     disabled_symbols=disabled_symbols,
                     force_unseeded_universe=args.force_unseeded_universe,
@@ -3743,12 +3966,14 @@ def run_agent(args: argparse.Namespace) -> int:
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
+    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
     if blocked_source_count:
         print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
     if seed_enabled_when_disabled:
         print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
     print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
+    print(f"Universo TF target: {', '.join(timeframe_universe)}")
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
         if score_config.min_positive_month_ratio > 0
@@ -3797,7 +4022,12 @@ def run_agent(args: argparse.Namespace) -> int:
             selected_seed_rankings = ranked_seed_selection(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
             memory.record_seed_selection(run_id, generation, selected_seed_rankings)
-            unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(current_seeds, universe_symbols, aliases)
+            unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
+                current_seeds,
+                universe_symbols,
+                aliases,
+                timeframe_universe,
+            )
             asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
             tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
             target_limiter = TargetDiversityLimiter(len(selected_seeds) * args.variants_per_seed, aliases)
@@ -3823,6 +4053,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         target_limiter,
                         universe_symbols,
                         aliases,
+                        timeframe_universe=timeframe_universe,
                         symbol_map=symbol_map,
                         disabled_symbols=disabled_symbols,
                         force_unseeded_universe=args.force_unseeded_universe,
@@ -3870,6 +4101,8 @@ def run_agent(args: argparse.Namespace) -> int:
                         score_config,
                         parse_symbol_map(args.symbol_map),
                         min_report_mtime=batch_started_at - 1.0,
+                        min_trades_w1=args.min_trades_w1,
+                        min_trades_mn=args.min_trades_mn,
                     )
                     survivors = select_survivors(scored, args.top_percent)
                     copied = copy_accepted(survivors, accepted_dir)
@@ -3899,6 +4132,12 @@ def main() -> int:
         return 1
     if args.min_trades < 0:
         print("ERROR: --min-trades no puede ser negativo")
+        return 1
+    if args.min_trades_w1 < 0 or args.min_trades_mn < 0:
+        print("ERROR: --min-trades-w1 y --min-trades-mn no pueden ser negativos")
+        return 1
+    if args.final_tick_min_ohlc_trades < 0 or args.final_tick_min_trades_w1 < 0 or args.final_tick_min_trades_mn < 0:
+        print("ERROR: minimos de operaciones Final Tick no pueden ser negativos")
         return 1
     if args.min_profit_factor < 0 or args.max_drawdown_pct < 0:
         print("ERROR: profit factor y drawdown deben ser mayores o iguales a 0")

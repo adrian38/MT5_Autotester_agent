@@ -323,6 +323,21 @@ Visible-run behavior:
 default and persisted as `ubs_force_unseeded_universe` in `ui_settings.ini`.
 When enabled, the UI passes `--force-unseeded-universe` to `ubs_agent.py`.
 
+Normal generation targets M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN are
+available only through the explicit **Experimentar W1/MN** toggle, persisted
+as `ubs_experimental_long_timeframes` and passed as
+`--experimental-long-timeframes`. MT5 supports W1/MN, but they are kept opt-in
+because their trade frequency and validation cadence differ from normal
+intraday/daily generation.
+
+The experimental W1/MN row also exposes timeframe-specific minimum trade
+counts. Generation/base scoring and robustness use `--min-trades-w1` and
+`--min-trades-mn` for W1/MN only; other timeframes continue using the normal
+`--min-trades`. Defaults: W1 base/robust = 12, MN base/robust = 4. Final Tick
+uses separate short-window minimums through `--final-tick-min-trades-w1` and
+`--final-tick-min-trades-mn` for both scoring and the OHLC pre-check; defaults:
+W1 Final Tick = 2, MN Final Tick = 1.
+
 The option reserves part of generation for universe coverage:
 
 - Asset target selection gets an adaptive chance to choose a universe symbol
@@ -337,9 +352,11 @@ The option reserves part of generation for universe coverage:
 - Selected source seeds are persisted in `generation_seed_selection` with rank,
   asset weight, timeframe weight, diversity, and total selection score.
 - New generation runs persist launch metadata in `runs.config_json`, including
-  `force_unseeded_universe`, score thresholds, execution dates, universe counts,
-  adaptive exploration probabilities, and the serialized CLI args. Use this to
-  audit how a run was launched instead of inferring the flag from policies.
+  `force_unseeded_universe`, `experimental_long_timeframes`, the effective
+  `timeframe_universe`, W1/MN base minimum trades, W1/MN Final Tick minimum
+  trades, score thresholds, execution dates, universe counts, adaptive
+  exploration probabilities, and the serialized CLI args. Use this to audit how
+  a run was launched instead of inferring the flag from policies.
 - Target selection has per-generation anti-concentration caps: max 45% per
   canonical symbol and max 30% per canonical symbol+timeframe. Capped choices
   are rerolled and then replaced with an enabled universe fallback when needed;

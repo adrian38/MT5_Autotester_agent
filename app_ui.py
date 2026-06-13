@@ -635,6 +635,11 @@ class MT5AutotesterUI(
         self.ubs_force_unseeded_universe = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_force_unseeded_universe"), False)
         )
+        self.ubs_experimental_long_timeframes = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_experimental_long_timeframes"), False)
+        )
+        self.ubs_long_tf_min_trades_w1 = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_w1", "12"))
+        self.ubs_long_tf_min_trades_mn = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_mn", "4"))
         self.ubs_account_type = tk.StringVar(
             value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE))
         )
@@ -692,6 +697,12 @@ class MT5AutotesterUI(
         )
         self.ubs_final_tick_min_ohlc_trades = tk.StringVar(
             value=saved_general.get("ubs_final_tick_min_ohlc_trades", "5")
+        )
+        self.ubs_final_tick_min_trades_w1 = tk.StringVar(
+            value=saved_general.get("ubs_final_tick_min_trades_w1", "2")
+        )
+        self.ubs_final_tick_min_trades_mn = tk.StringVar(
+            value=saved_general.get("ubs_final_tick_min_trades_mn", "1")
         )
         self.ubs_final_tick_max_net_delta_pct = tk.StringVar(
             value=saved_general.get("ubs_final_tick_max_net_delta_pct", "35")

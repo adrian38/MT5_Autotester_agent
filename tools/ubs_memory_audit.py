@@ -82,6 +82,10 @@ def run_config_summary(run) -> str:
     execution = config.get("execution", {}) if isinstance(config, dict) else {}
     score = config.get("score", {}) if isinstance(config, dict) else {}
     force = bool(generation.get("force_unseeded_universe")) if isinstance(generation, dict) else False
+    long_tf = bool(generation.get("experimental_long_timeframes")) if isinstance(generation, dict) else False
+    timeframe_universe = generation.get("timeframe_universe", ()) if isinstance(generation, dict) else ()
+    long_min_trades = generation.get("long_timeframe_min_trades", {}) if isinstance(generation, dict) else {}
+    final_tick = config.get("final_tick_defaults", {}) if isinstance(config, dict) else {}
     from_date = str(execution.get("from_date") or "") if isinstance(execution, dict) else ""
     to_date = str(execution.get("to_date") or "") if isinstance(execution, dict) else ""
     min_pf = score.get("min_profit_factor") if isinstance(score, dict) else None
@@ -95,7 +99,16 @@ def run_config_summary(run) -> str:
             f" cap_sym={caps.get('symbol_ratio')}"
             f" cap_pair={caps.get('symbol_timeframe_ratio')}"
         )
-    return f"force_unseeded={'si' if force else 'no'}{dates}{score_text}{cap_text}"
+    tf_text = ""
+    if isinstance(timeframe_universe, list) and timeframe_universe:
+        tf_text = f" tf={','.join(str(tf) for tf in timeframe_universe)}"
+    long_min_text = ""
+    if isinstance(long_min_trades, dict) and long_min_trades:
+        long_min_text = f" W1/MN_base={long_min_trades.get('W1')}/{long_min_trades.get('MN')}"
+    ft_long_text = ""
+    if isinstance(final_tick, dict) and ("min_trades_w1" in final_tick or "min_trades_mn" in final_tick):
+        ft_long_text = f" W1/MN_FT={final_tick.get('min_trades_w1')}/{final_tick.get('min_trades_mn')}"
+    return f"force_unseeded={'si' if force else 'no'} long_tf={'si' if long_tf else 'no'}{tf_text}{long_min_text}{ft_long_text}{dates}{score_text}{cap_text}"
 
 
 def print_heading(title: str) -> None:

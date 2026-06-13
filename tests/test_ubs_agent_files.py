@@ -4,10 +4,29 @@ import unittest
 from pathlib import Path
 
 from ubs.models import Seed, Variant
-from ubs.score import ScoreResult
+from ubs.score import ScoreConfig, ScoreResult
 from ubs.account import account_disabled_symbols_path
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
-from ubs_agent import TargetDiversityLimiter, choose_diverse_target, copy_accepted, choose_target_period, choose_target_symbol, create_variant, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, unseeded_asset_force_probability, unseeded_timeframe_force_probability, validate_seed_backtest_set, variant_as_next_seed, write_set_force_symbol
+from ubs_agent import (
+    TargetDiversityLimiter,
+    choose_diverse_target,
+    choose_target_period,
+    choose_target_symbol,
+    copy_accepted,
+    create_variant,
+    final_tick_similarity,
+    recreate_work_dir,
+    related_timeframes,
+    robust_status_pending_for_retry,
+    score_config_for_period,
+    target_timeframe_universe,
+    min_trades_for_period,
+    unseeded_asset_force_probability,
+    unseeded_timeframe_force_probability,
+    validate_seed_backtest_set,
+    variant_as_next_seed,
+    write_set_force_symbol,
+)
 from run_tests import parse_symbol_map
 
 
@@ -185,6 +204,60 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(unseeded_asset_force_probability(1, 0), 0.0)
         self.assertEqual(unseeded_timeframe_force_probability(1, 2), 0.20)
         self.assertEqual(unseeded_timeframe_force_probability(3, 2), 0.08)
+
+    def test_target_timeframe_universe_keeps_long_timeframes_experimental(self) -> None:
+        normal = target_timeframe_universe(False)
+        experimental = target_timeframe_universe(True)
+
+        self.assertIn("M1", normal)
+        self.assertIn("M5", normal)
+        self.assertNotIn("W1", normal)
+        self.assertNotIn("MN", normal)
+        self.assertEqual(experimental[-2:], ("W1", "MN"))
+
+    def test_related_timeframes_filter_experimental_long_timeframes(self) -> None:
+        self.assertEqual(related_timeframes("D1", target_timeframe_universe(False)), ("H4", "D1"))
+        self.assertEqual(related_timeframes("D1", target_timeframe_universe(True)), ("H4", "D1", "W1", "MN"))
+
+    def test_choose_target_period_does_not_emit_long_timeframes_by_default(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "D1", "family", "1")
+
+        for idx in range(40):
+            target, _policy = choose_target_period(
+                seed,
+                {},
+                random.Random(idx),
+                timeframe_universe=target_timeframe_universe(False),
+            )
+            self.assertNotIn(target, {"W1", "MN"})
+
+    def test_choose_target_period_can_force_experimental_long_timeframes(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "D1", "family", "1")
+
+        target, policy = choose_target_period(
+            seed,
+            {},
+            random.Random(1),
+            timeframe_universe=target_timeframe_universe(True),
+            force_unseeded_timeframes=True,
+            unseeded_timeframes=("W1", "MN"),
+            force_unseeded_probability=1.0,
+        )
+
+        self.assertIn(target, {"W1", "MN"})
+        self.assertEqual(policy, "tf_unseeded_force")
+
+    def test_long_timeframe_min_trades_only_overrides_w1_mn(self) -> None:
+        config = ScoreConfig(min_trades=48)
+
+        self.assertEqual(score_config_for_period(config, "H4", min_trades_w1=12, min_trades_mn=4).min_trades, 48)
+        self.assertEqual(score_config_for_period(config, "W1", min_trades_w1=12, min_trades_mn=4).min_trades, 12)
+        self.assertEqual(score_config_for_period(config, "MN", min_trades_w1=12, min_trades_mn=4).min_trades, 4)
+
+    def test_final_tick_min_trades_can_be_lower_for_long_timeframes(self) -> None:
+        self.assertEqual(min_trades_for_period("H1", 5, 2, 1), 5)
+        self.assertEqual(min_trades_for_period("W1", 5, 2, 1), 2)
+        self.assertEqual(min_trades_for_period("MN", 5, 2, 1), 1)
 
     def test_zero_unseeded_probability_disables_forced_symbol_branch(self) -> None:
         seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")

@@ -166,6 +166,8 @@ class UBSAgentLogicMixin:
             args.append("--continue-last-run")
         if self.ubs_force_unseeded_universe.get():
             args.append("--force-unseeded-universe")
+        if self.ubs_experimental_long_timeframes.get():
+            args.append("--experimental-long-timeframes")
         args.extend(self._ubs_score_args())
         should_execute_backtests = (
             bool(continuation_info.get("execute_backtests"))
@@ -215,6 +217,9 @@ class UBSAgentLogicMixin:
             f"Max seeds/gen: {shown_max_seeds}",
             f"Backtests: {'si' if shown_backtests else 'no'}",
             f"Explorar universo sin seed: {'si' if self.ubs_force_unseeded_universe.get() else 'no'}",
+            f"Experimentar W1/MN: {'si' if self.ubs_experimental_long_timeframes.get() else 'no'}",
+            f"Trades W1/MN base: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
+            f"Trades W1/MN Final Tick: W1>={self.ubs_final_tick_min_trades_w1.get().strip()} | MN>={self.ubs_final_tick_min_trades_mn.get().strip()}",
             f"Pass: PF>={self.ubs_pass_min_profit_factor.get().strip()} | DD<={self.ubs_pass_max_drawdown_pct.get().strip()}% | Trades>={self.ubs_pass_min_trades.get()}",
             f"Pass: Profit neto>{self.ubs_pass_min_net_profit.get().strip()} | Recovery>={self.ubs_pass_min_recovery_factor.get().strip()}",
             f"Backtests pendientes existentes: {pending_count}",
@@ -337,7 +342,7 @@ class UBSAgentLogicMixin:
         ]
 
     def _ubs_score_args(self) -> list[str]:
-        return self._score_args_from_vars(
+        args = self._score_args_from_vars(
             min_net_profit_var=self.ubs_pass_min_net_profit,
             min_profit_factor_var=self.ubs_pass_min_profit_factor,
             min_trades_var=self.ubs_pass_min_trades,
@@ -345,6 +350,8 @@ class UBSAgentLogicMixin:
             min_recovery_factor_var=self.ubs_pass_min_recovery_factor,
             context="Agente UBS",
         )
+        args.extend(self._ubs_long_timeframe_score_args())
+        return args
 
     def _ubs_seed_score_args(self) -> list[str]:
         return self._score_args_from_vars(
@@ -357,7 +364,7 @@ class UBSAgentLogicMixin:
         )
 
     def _ubs_robust_score_args(self) -> list[str]:
-        return self._score_args_from_vars(
+        args = self._score_args_from_vars(
             min_net_profit_var=self.ubs_robust_pass_min_net_profit,
             min_profit_factor_var=self.ubs_robust_pass_min_profit_factor,
             min_trades_var=self.ubs_robust_pass_min_trades,
@@ -365,6 +372,13 @@ class UBSAgentLogicMixin:
             min_recovery_factor_var=self.ubs_robust_pass_min_recovery_factor,
             context="Robustez UBS",
         )
+        args.extend(self._ubs_long_timeframe_score_args())
+        return args
+
+    def _ubs_long_timeframe_score_args(self) -> list[str]:
+        w1 = int(self._score_float(self.ubs_long_tf_min_trades_w1, "W1 trades min", minimum=0))
+        mn = int(self._score_float(self.ubs_long_tf_min_trades_mn, "MN trades min", minimum=0))
+        return ["--min-trades-w1", str(w1), "--min-trades-mn", str(mn)]
 
     def _ubs_robust_bonus_values(self) -> tuple[float, float]:
         positive = self._score_float(self.ubs_robust_positive_bonus, "Robustez bonus positivo")

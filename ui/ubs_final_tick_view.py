@@ -191,6 +191,8 @@ class UBSFinalTickViewMixin:
             (1, "DD delta %", self.ubs_final_tick_max_dd_delta_pct, 8),
             (2, "Net delta %", self.ubs_final_tick_max_net_delta_pct, 8),
             (2, "Trades delta %", self.ubs_final_tick_max_trades_delta_pct, 8),
+            (2, "W1 FT ops", self.ubs_final_tick_min_trades_w1, 8),
+            (2, "MN FT ops", self.ubs_final_tick_min_trades_mn, 8),
         ]
         ttk.Label(crit, text="Final Tick:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         per_row_counts = {0: 0, 1: 0, 2: 0}
