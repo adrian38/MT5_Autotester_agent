@@ -1194,16 +1194,24 @@ class UBSPortfolioLogicMixin:
         self._refresh_ubs_portfolios()
         self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} borrado.")
 
-    def _open_selected_ubs_portfolio_member(self) -> None:
+    def _selected_ubs_portfolio_member_paths(self) -> dict[str, str] | None:
         if not hasattr(self, "ubs_portfolio_members_tree"):
-            return
+            return None
         selection = self.ubs_portfolio_members_tree.selection()
         if not selection:
+            messagebox.showinfo("Portafolio UBS", "Selecciona una asignacion del portafolio.")
+            return None
+        return getattr(self, "ubs_portfolio_member_paths", {}).get(selection[0], {})
+
+    def _open_selected_ubs_portfolio_member(self) -> None:
+        paths = self._selected_ubs_portfolio_member_paths()
+        if not paths:
             return
-        paths = getattr(self, "ubs_portfolio_member_paths", {}).get(selection[0], {})
         report = paths.get("oos") or paths.get("is")
         if report:
             self._open_local_file(Path(report))
+            return
+        messagebox.showinfo("Abrir reporte", "La asignacion seleccionada no tiene reporte guardado.")
 
     def _export_ubs_portfolio_sets(self) -> None:
         if not hasattr(self, "ubs_portfolio_saved_tree"):

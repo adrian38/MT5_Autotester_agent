@@ -138,6 +138,33 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             [item.set_id for item in sorted(selected, key=score_set_for_portfolio, reverse=True)],
         )
 
+    def test_top_k_per_symbol_groups_symbol_aliases(self) -> None:
+        sets = [
+            make_strategy("ustec", "USTEC", [0, 30, 25, 70]),
+            make_strategy("cash", ".USTECHCASH", [0, 60, 55, 120]),
+            make_strategy("us100", "US100", [0, 45, 40, 90]),
+        ]
+        selected = select_top_k_per_symbol(sets, top_k_per_symbol=2, max_total_candidates=None)
+        self.assertEqual(len(selected), 2)
+        self.assertNotIn("ustec", {item.set_id for item in selected})
+
+    def test_optimizer_treats_symbol_aliases_as_same_symbol_limit(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("ustec", "USTEC", [0, 100, 95, 180]),
+                make_strategy("cash", ".USTECHCASH", [0, 90, 85, 170]),
+                make_strategy("us100", "US100", [0, 80, 75, 160]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            top_k_per_symbol=3,
+            max_sets_per_symbol=1,
+            max_total_units=6,
+            run_local_search=True,
+        )
+        self.assertEqual(result.active_strategies, 1)
+
     def test_local_search_does_not_reduce_profit(self) -> None:
         sets = [
             make_strategy("s1", "EURUSD", [0, 60, 50, 100]),

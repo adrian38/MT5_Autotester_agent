@@ -24,6 +24,26 @@ from .mt5_report import StrategyReport, parse_report
 ProgressCallback = Callable[[str], None]
 
 
+PORTFOLIO_SYMBOL_ALIASES = {
+    "US30": ".US30CASH",
+    ".US30CASH": ".US30CASH",
+    "US500": ".US500CASH",
+    ".US500CASH": ".US500CASH",
+    "USTEC": ".USTECHCASH",
+    "US100": ".USTECHCASH",
+    "NAS100": ".USTECHCASH",
+    ".USTECHCASH": ".USTECHCASH",
+    "DAX": ".DE40CASH",
+    "DE40": ".DE40CASH",
+    "GER40": ".DE40CASH",
+    ".DE40CASH": ".DE40CASH",
+    "XTIUSD": "WTI",
+    "USOIL": "WTI",
+    "CRUDEOIL": "WTI",
+    "WTI": "WTI",
+}
+
+
 class PortfolioType(str, Enum):
     CONSERVATIVE = "conservative"
     BALANCED = "balanced"
@@ -496,7 +516,7 @@ def summarize_robust_rows(rows: Iterable[object], used_set_paths: Iterable[str])
             continue
         seen.add(set_path)
         robust_accepted += 1
-        symbol = _normalize_symbol(str(_row_value(row, "target_symbol", "symbol", default="")))
+        symbol = portfolio_symbol_key(str(_row_value(row, "target_symbol", "symbol", default="")))
         if _norm_path(set_path) in used:
             already_used += 1
             continue
@@ -623,7 +643,7 @@ def select_top_k_per_symbol(
 ) -> list[RobustStrategySet]:
     grouped: dict[str, list[RobustStrategySet]] = {}
     for strategy in sets:
-        grouped.setdefault(strategy.symbol, []).append(strategy)
+        grouped.setdefault(portfolio_symbol_key(strategy.symbol), []).append(strategy)
 
     selected: list[RobustStrategySet] = []
     for group in grouped.values():
@@ -714,18 +734,20 @@ def can_add_unit(
     if max_total_units is not None and sum(allocations.values()) + 1 > max_total_units:
         return False
     if max_units_per_symbol is not None:
+        target_symbol = portfolio_symbol_key(target_set.symbol)
         symbol_units = sum(
             allocations.get(strategy.set_id, 0)
             for strategy in sets
-            if strategy.symbol == target_set.symbol
+            if portfolio_symbol_key(strategy.symbol) == target_symbol
         )
         if symbol_units + 1 > max_units_per_symbol:
             return False
     if max_sets_per_symbol is not None:
+        target_symbol = portfolio_symbol_key(target_set.symbol)
         active_same_symbol = sum(
             1
             for strategy in sets
-            if strategy.symbol == target_set.symbol and allocations.get(strategy.set_id, 0) > 0
+            if portfolio_symbol_key(strategy.symbol) == target_symbol and allocations.get(strategy.set_id, 0) > 0
         )
         if current_units == 0 and active_same_symbol >= max_sets_per_symbol:
             return False
@@ -777,8 +799,9 @@ def _allocations_respect_constraints(
             return False
         if units <= 0:
             continue
-        units_by_symbol[strategy.symbol] = units_by_symbol.get(strategy.symbol, 0) + units
-        active_sets_by_symbol[strategy.symbol] = active_sets_by_symbol.get(strategy.symbol, 0) + 1
+        symbol_key = portfolio_symbol_key(strategy.symbol)
+        units_by_symbol[symbol_key] = units_by_symbol.get(symbol_key, 0) + units
+        active_sets_by_symbol[symbol_key] = active_sets_by_symbol.get(symbol_key, 0) + 1
 
     if max_total_units is not None and total_units > max_total_units:
         return False
@@ -1385,6 +1408,11 @@ def _normalize_symbol(symbol: str) -> str:
     if value.startswith("."):
         return value.upper()
     return re.sub(r"(?<=[A-Za-z0-9])\.[A-Za-z0-9]+$", "", value).upper()
+
+
+def portfolio_symbol_key(symbol: str) -> str:
+    normalized = _normalize_symbol(symbol)
+    return PORTFOLIO_SYMBOL_ALIASES.get(normalized, normalized)
 
 
 def _logical_stem(set_path: str) -> str:

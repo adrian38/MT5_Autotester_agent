@@ -204,10 +204,21 @@ class UBSPortfolioViewMixin:
         body.add(right, weight=3)
         left.columnconfigure(0, weight=1)
         right.columnconfigure(0, weight=1)
-        left.rowconfigure(3, weight=1)
+        left.rowconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
 
-        availability_bar = tk.Frame(left, bg=colors["panel_alt"])
+        left_split = ttk.PanedWindow(left, orient="vertical")
+        left_split.grid(row=0, column=0, sticky="nsew")
+        left_top = ttk.Frame(left_split, style="Panel.TFrame")
+        left_bottom = ttk.Frame(left_split, style="Panel.TFrame")
+        left_split.add(left_top, weight=1)
+        left_split.add(left_bottom, weight=3)
+        left_top.columnconfigure(0, weight=1)
+        left_top.rowconfigure(1, weight=1)
+        left_bottom.columnconfigure(0, weight=1)
+        left_bottom.rowconfigure(1, weight=1)
+
+        availability_bar = tk.Frame(left_top, bg=colors["panel_alt"])
         availability_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         availability_bar.columnconfigure(0, weight=1)
         tk.Label(
@@ -218,9 +229,10 @@ class UBSPortfolioViewMixin:
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=10, pady=5)
 
-        availability_frame = ttk.Frame(left, style="Panel.TFrame")
-        availability_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        availability_frame = ttk.Frame(left_top, style="Panel.TFrame")
+        availability_frame.grid(row=1, column=0, sticky="nsew")
         availability_frame.columnconfigure(0, weight=1)
+        availability_frame.rowconfigure(0, weight=1)
         availability_columns = ("symbol", "count")
         self.ubs_portfolio_availability_tree = ttk.Treeview(
             availability_frame, columns=availability_columns, show="headings", height=4
@@ -231,8 +243,8 @@ class UBSPortfolioViewMixin:
         self._standard_ubs_portfolio_tree(self.ubs_portfolio_availability_tree)
         self._attach_tree_scrollbars(availability_frame, self.ubs_portfolio_availability_tree, 0)
 
-        saved_bar = tk.Frame(left, bg=colors["panel_alt"])
-        saved_bar.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        saved_bar = tk.Frame(left_bottom, bg=colors["panel_alt"])
+        saved_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         saved_bar.columnconfigure(0, weight=1)
         tk.Label(saved_bar, text="Portafolios guardados", bg=colors["panel_alt"], fg=colors["text"],
                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=5)
@@ -266,8 +278,8 @@ class UBSPortfolioViewMixin:
         delete_btn.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=5)
         self.ubs_portfolio_buttons.extend([export_btn, delete_btn])
 
-        saved_frame = ttk.Frame(left, style="Panel.TFrame")
-        saved_frame.grid(row=3, column=0, sticky="nsew")
+        saved_frame = ttk.Frame(left_bottom, style="Panel.TFrame")
+        saved_frame.grid(row=1, column=0, sticky="nsew")
         saved_frame.columnconfigure(0, weight=1)
         saved_frame.rowconfigure(0, weight=1)
         saved_columns = ("id", "created", "type", "capital", "net", "valley", "valley_pct", "point", "point_pct", "units", "active")
@@ -316,69 +328,6 @@ class UBSPortfolioViewMixin:
         self._standard_ubs_portfolio_tree(self.ubs_portfolio_members_tree)
         self.ubs_portfolio_members_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_portfolio_member())
         self._attach_tree_scrollbars(members_frame, self.ubs_portfolio_members_tree, 0)
-
-        curve_frame = tk.Frame(right, bg=colors["panel"])
-        curve_frame.grid(row=2, column=0, sticky="ew", pady=(8, 8))
-        curve_frame.columnconfigure(0, weight=1)
-        tk.Label(curve_frame, text="Equity Curve 2020-2026", bg=colors["panel"], fg=colors["text"],
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-        self.ubs_portfolio_curve_canvas = tk.Canvas(
-            curve_frame,
-            height=120,
-            bg=colors["tree_bg"],
-            highlightthickness=1,
-            highlightbackground=colors["border"],
-        )
-        self.ubs_portfolio_curve_canvas.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-
-        lower = ttk.PanedWindow(right, orient="horizontal")
-        lower.grid(row=3, column=0, sticky="nsew")
-        right.rowconfigure(3, weight=1)
-        decision_wrap = ttk.Frame(lower, style="Panel.TFrame")
-        unused_wrap = ttk.Frame(lower, style="Panel.TFrame")
-        lower.add(decision_wrap, weight=3)
-        lower.add(unused_wrap, weight=1)
-        decision_wrap.columnconfigure(0, weight=1)
-        decision_wrap.rowconfigure(1, weight=1)
-        unused_wrap.columnconfigure(0, weight=1)
-        unused_wrap.rowconfigure(1, weight=1)
-
-        tk.Label(decision_wrap, text="Decision Log", bg=colors["panel"], fg=colors["text"],
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        decision_columns = ("step", "action", "set", "from", "to", "gain", "valley", "point", "score", "net_after", "valley_after", "point_after", "reason")
-        self.ubs_portfolio_decision_tree = ttk.Treeview(
-            decision_wrap, columns=decision_columns, show="headings", height=6
-        )
-        decision_headings = {
-            "step": "STEP", "action": "ACTION", "set": "SET", "from": "FROM", "to": "TO",
-            "gain": "GAIN", "valley": "VALLEY COST", "point": "POINT COST", "score": "SCORE",
-            "net_after": "NET AFTER", "valley_after": "VALLEY AFTER",
-            "point_after": "POINT AFTER", "reason": "REASON",
-        }
-        decision_widths = {
-            "step": 52, "action": 82, "set": 160, "from": 120, "to": 120,
-            "gain": 78, "valley": 90, "point": 90, "score": 82,
-            "net_after": 92, "valley_after": 100, "point_after": 100, "reason": 260,
-        }
-        for column in decision_columns:
-            self.ubs_portfolio_decision_tree.heading(column, text=decision_headings[column])
-            self.ubs_portfolio_decision_tree.column(column, width=decision_widths[column], minwidth=42, anchor="center", stretch=False)
-        self._standard_ubs_portfolio_tree(self.ubs_portfolio_decision_tree)
-        self._attach_tree_scrollbars(decision_wrap, self.ubs_portfolio_decision_tree, 1)
-
-        tk.Label(unused_wrap, text="Sets no usados", bg=colors["panel"], fg=colors["text"],
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        unused_columns = ("set", "symbol", "score", "reason")
-        self.ubs_portfolio_unused_tree = ttk.Treeview(
-            unused_wrap, columns=unused_columns, show="headings", height=6
-        )
-        unused_headings = {"set": "SET", "symbol": "SIMBOLO", "score": "SCORE", "reason": "MOTIVO"}
-        unused_widths = {"set": 220, "symbol": 90, "score": 78, "reason": 150}
-        for column in unused_columns:
-            self.ubs_portfolio_unused_tree.heading(column, text=unused_headings[column])
-            self.ubs_portfolio_unused_tree.column(column, width=unused_widths[column], minwidth=42, anchor="center", stretch=False)
-        self._standard_ubs_portfolio_tree(self.ubs_portfolio_unused_tree)
-        self._attach_tree_scrollbars(unused_wrap, self.ubs_portfolio_unused_tree, 1)
 
     def _standard_ubs_portfolio_tree(self, tree: ttk.Treeview) -> None:
         self._make_tree_sortable(tree)
