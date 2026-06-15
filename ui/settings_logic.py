@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -10,6 +11,8 @@ from tkinter import filedialog, messagebox
 import telegram_notify
 from mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR
+from ubs.account import ACCOUNT_TYPES, account_memory_path
+from ubs.db import connect_memory
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -159,8 +162,9 @@ class SettingsLogicMixin:
             return
         if not messagebox.askyesno(
             "Eliminar datos historicos",
-            "Esto cerrara MetaTrader y borrara cache de tester/bases/history y reportes en TODAS las terminales.\n"
-            f"Tambien borrara los reportes locales en:\n{REPORT_DIR}\n\n"
+            "Esto cerrara MetaTrader y borrara cache de tester/bases/history y reportes "
+            "en las carpetas de datos de TODAS las terminales.\n\n"
+            f"No borrara las copias locales del proyecto en:\n{REPORT_DIR}\n\n"
             f"Se ejecutaran en orden:\n  - {scripts[0].name}\n  - {scripts[1].name}\n\nContinuar?"
         ):
             return
@@ -171,7 +175,7 @@ class SettingsLogicMixin:
         self.active_task_detail.set("0%")
         self._set_progress_color("accent")
         self._progress_running = True
-        self._progress_total = len(scripts) + 1
+        self._progress_total = len(scripts)
         self._progress_done = 0
         self._progress_target = 2.0
         try:
@@ -428,15 +432,19 @@ class SettingsLogicMixin:
         if not files:
             messagebox.showinfo("Sin reportes", "No hay reportes generados para borrar.")
             return
+        protected = self._protected_ubs_report_files()
+        delete_files = [path for path in files if self._norm_report_path(path) not in protected]
+        skipped = len(files) - len(delete_files)
         if not messagebox.askyesno(
             "Borrar reportes antiguos",
-            f"Se borraran {len(files)} archivo(s) de reportes de la carpeta {REPORT_DIR}.\n\nContinuar?"
+            f"Se borraran {len(delete_files)} archivo(s) de reportes de la carpeta {REPORT_DIR}.\n"
+            f"Se conservaran {skipped} reporte(s) protegidos por UBS.\n\nContinuar?"
         ):
             return
 
         deleted = 0
         failures: list[str] = []
-        for path in files:
+        for path in delete_files:
             try:
                 path.unlink()
                 deleted += 1
@@ -444,13 +452,16 @@ class SettingsLogicMixin:
                 failures.append(f"{path.name}: {exc}")
 
         self._refresh_reports()
-        self.status_text.set(f"Reportes borrados: {deleted}")
-        self._append_console(f"\nReportes borrados: {deleted}\n", tag="warn")
+        self.status_text.set(f"Reportes borrados: {deleted} | protegidos: {skipped}")
+        self._append_console(f"\nReportes borrados: {deleted} | protegidos UBS: {skipped}\n", tag="warn")
         if failures:
             details = "\n".join(failures[:12])
             self._show_error("No se pudieron borrar todos los reportes", details)
         else:
-            messagebox.showinfo("Reportes borrados", f"Se borraron {deleted} reporte(s).")
+            messagebox.showinfo(
+                "Reportes borrados",
+                f"Se borraron {deleted} reporte(s).\nSe conservaron {skipped} reporte(s) protegidos por UBS.",
+            )
 
     def _project_report_files(self) -> list[Path]:
         if not REPORT_DIR.exists():
@@ -460,16 +471,69 @@ class SettingsLogicMixin:
             if path.is_file() and path.suffix.lower() in REPORT_SUFFIXES
         ]
 
-    def _delete_project_reports_for_clean(self) -> tuple[int, list[str]]:
+    def _delete_project_reports_for_clean(self) -> tuple[int, int, list[str]]:
         deleted = 0
+        skipped = 0
         failures: list[str] = []
+        protected = self._protected_ubs_report_files()
         for path in self._project_report_files():
+            if self._norm_report_path(path) in protected:
+                skipped += 1
+                continue
             try:
                 path.unlink()
                 deleted += 1
             except OSError as exc:
                 failures.append(f"{path.name}: {exc}")
-        return deleted, failures
+        return deleted, skipped, failures
+
+    def _protected_ubs_report_files(self) -> set[str]:
+        protected: set[str] = set()
+        for account_type in ACCOUNT_TYPES:
+            memory_path = account_memory_path(BASE_DIR, account_type)
+            if not memory_path.exists():
+                continue
+            try:
+                conn = connect_memory(memory_path)
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        """
+                        select c.report_path as base_report,
+                               cr.report_path as robust_report,
+                               ft.ohlc_report_path as final_ohlc_report,
+                               ft.real_tick_report_path as final_tick_report
+                        from candidates c
+                        left join candidate_robustness cr on cr.candidate_id = c.id
+                        left join candidate_final_tick ft on ft.candidate_id = c.id
+                        where c.status = 'accepted'
+                           or cr.status = 'accepted'
+                           or ft.status = 'accepted'
+                        """
+                    ).fetchall()
+                except sqlite3.Error:
+                    rows = []
+                finally:
+                    conn.close()
+            except Exception:
+                continue
+            for row in rows:
+                for key in ("base_report", "robust_report", "final_ohlc_report", "final_tick_report"):
+                    value = str(row[key] or "").strip()
+                    if not value:
+                        continue
+                    report_path = Path(value)
+                    protected.add(self._norm_report_path(report_path))
+                    for sibling in report_path.parent.glob(f"{report_path.stem}.*"):
+                        if sibling.suffix.lower() in REPORT_SUFFIXES:
+                            protected.add(self._norm_report_path(sibling))
+        return protected
+
+    def _norm_report_path(self, path: Path) -> str:
+        try:
+            return str(path.resolve()).casefold()
+        except OSError:
+            return str(path).casefold()
 
     def _find_clean_scripts(self) -> list[Path]:
         candidates_dirs = [BASE_DIR / "scripts", BASE_DIR]
@@ -483,7 +547,7 @@ class SettingsLogicMixin:
         return []
 
     def _run_clean_scripts(self, scripts: list[Path]) -> None:
-        total = max(1, len(scripts) + 1)
+        total = max(1, len(scripts))
         failures = 0
         for index, script in enumerate(scripts):
             self.output_queue.put(f"\n>>> Ejecutando {script.name}\n")
@@ -508,15 +572,6 @@ class SettingsLogicMixin:
                 self.output_queue.put(f"\nERROR ejecutando {script.name}: {exc}\n")
             slot_end = 100.0 * (index + 1) / total
             self.after(0, lambda v=slot_end: self._set_clean_progress(v))
-        self.output_queue.put("\n>>> Borrando reportes locales de reports/\n")
-        self.after(0, lambda: self._set_clean_progress(100.0 * len(scripts) / total))
-        deleted_reports, report_failures = self._delete_project_reports_for_clean()
-        self.output_queue.put(f"Reportes locales eliminados: {deleted_reports}\n")
-        if report_failures:
-            failures += 1
-            self.output_queue.put("No se pudieron borrar algunos reportes locales:\n")
-            for detail in report_failures[:20]:
-                self.output_queue.put(f"  {detail}\n")
         self.after(0, lambda: self._set_clean_progress(100.0))
         self.output_queue.put("\n=== Limpieza terminada ===\n")
         self.after(0, self._finish_clean, failures)
@@ -551,6 +606,7 @@ class SettingsLogicMixin:
             self.status_text.set("Limpieza terminada correctamente")
             messagebox.showinfo(
                 "Limpieza completada",
-                "Se eliminaron los datos historicos correctamente (tester, bases, history, reports, .fxt, .tick)."
+                "Se eliminaron los datos historicos de MT5 correctamente "
+                "(tester, bases, history, reports de terminal, .fxt, .tick)."
             )
         self._refresh_all()

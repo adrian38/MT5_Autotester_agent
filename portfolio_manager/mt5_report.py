@@ -255,7 +255,7 @@ def _build_trades(raw_deals: list[RawDeal]) -> list[Trade]:
                 size=opened.volume,
                 close_time=deal.timestamp,
                 close_price=deal.price,
-                profit_loss=deal.net_profit,
+                profit_loss=opened.net_profit + deal.net_profit,
                 comment=deal.comment,
             )
         )

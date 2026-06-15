@@ -20,6 +20,7 @@ from portfolio_manager.ubs_portfolio import (
     apply_portfolio_lot_text,
     load_robust_sets_from_rows,
     optimize_portfolio,
+    portfolio_symbol_key,
     summarize_robust_rows,
 )
 
@@ -365,10 +366,11 @@ class UBSPortfolioLogicMixin:
             f"{PORTFOLIO_TYPE_DISPLAY.get(portfolio_type, portfolio_type)} | "
             f"{result.active_strategies} estrategias | {datetime.now():%d.%m.%Y %H:%M}"
         )
-        active_symbols = len({allocation.symbol for allocation in result.allocations if allocation.units > 0})
+        active_symbols = len({portfolio_symbol_key(allocation.symbol) for allocation in result.allocations if allocation.units > 0})
         metrics = {
             "inputs": inputs,
             "warnings": result.warnings,
+            "group_summary": result.group_summary,
             "equity_curve_2020_2026": result.equity_curve_2020_2026,
             "unused_sets": [asdict(item) for item in result.unused_sets],
         }
@@ -720,6 +722,7 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
         self._set_ubs_portfolio_save_enabled(False)
+        self._clear_ubs_portfolio_result_tables()
         self._set_ubs_portfolio_running(True)
         self.ubs_portfolio_status.set("Analizando sets Final Tick accepted...")
         threading.Thread(target=self._ubs_portfolio_worker, args=(inputs,), daemon=True).start()
@@ -813,9 +816,9 @@ class UBSPortfolioLogicMixin:
         self._set_ubs_portfolio_running(False)
         if not info.get("ok"):
             message = info.get("error", "Error desconocido")
+            self._clear_failed_ubs_portfolio_generation()
             self.ubs_portfolio_status.set(message)
             self._notify_ubs_portfolio_event(f"Portfolio Builder fallido: {message}")
-            messagebox.showerror("Portfolio Builder", message)
             return
 
         result: PortfolioResult = info["result"]
@@ -824,10 +827,17 @@ class UBSPortfolioLogicMixin:
         self._populate_ubs_portfolio_result(result)
         self._populate_ubs_portfolio_availability(info.get("availability"))
         self._set_ubs_portfolio_save_enabled(True)
-        self.ubs_portfolio_status.set(
+        group_text = self._ubs_portfolio_group_summary_text(result.group_summary)
+        status = (
             f"Portafolio generado: {result.total_units} unidades, "
             f"DD valle {result.valley_usage_pct:.1f}%, DD puntual {result.point_usage_pct:.1f}%."
         )
+        if group_text:
+            status += f" Grupos: {group_text}."
+        group_warning = self._ubs_portfolio_group_warning(result.warnings)
+        if group_warning:
+            status += f" Aviso: {group_warning}"
+        self.ubs_portfolio_status.set(status)
         self._notify_ubs_portfolio_event(
             "Portfolio Builder generado: "
             f"net {result.total_net_profit:,.2f}, "
@@ -838,6 +848,8 @@ class UBSPortfolioLogicMixin:
             f"({result.valley_usage_pct:.1f}%), "
             f"DD puntual {result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f} "
             f"({result.point_usage_pct:.1f}%)."
+            + (f" Grupos: {group_text}." if group_text else "")
+            + (f" Aviso: {group_warning}" if group_warning else "")
         )
 
     def _save_pending_ubs_portfolio(self) -> None:
@@ -869,6 +881,26 @@ class UBSPortfolioLogicMixin:
         notifier = getattr(self, "_notify_telegram", None)
         if callable(notifier):
             notifier(message)
+
+    def _clear_failed_ubs_portfolio_generation(self) -> None:
+        self.ubs_portfolio_pending_result = None
+        self.ubs_portfolio_pending_inputs = None
+        self._set_ubs_portfolio_save_enabled(False)
+        self._clear_ubs_portfolio_result_tables()
+
+    def _ubs_portfolio_group_summary_text(self, group_summary: dict[str, dict[str, float | int]]) -> str:
+        if not group_summary:
+            return ""
+        parts = []
+        for group, stats in list(group_summary.items())[:4]:
+            parts.append(f"{group} {float(stats.get('unit_pct', 0.0)):.0f}%")
+        return ", ".join(parts)
+
+    def _ubs_portfolio_group_warning(self, warnings: list[str]) -> str:
+        for warning in warnings:
+            if "grupo" in warning.lower() or "asset group" in warning or "Group concentration" in warning:
+                return warning
+        return ""
 
     # ------------------------------------------------------------------ refresh/display
     def _refresh_ubs_portfolio_availability(self) -> None:
