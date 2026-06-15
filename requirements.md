@@ -125,8 +125,13 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.3** Lot sizing in every generated variant MUST be normalised via
   `force_fixed_lot_text` before use.
 - **FR-1.6.4** Timeframe exploration MUST draw on SQLite feedback
-  (`asset_feedback`, `timeframe_feedback`) and limit exploration to
-  M15 / M30 / H1 / H4 / D1 unless the seed itself specifies otherwise.
+  (`asset_feedback`, `timeframe_feedback`) and target the normal generation
+  universe M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN MUST remain opt-in
+  experimental targets behind `--experimental-long-timeframes`.
+- **FR-1.6.4a** When W1/MN experimentation is enabled, accepted/rejected scoring
+  in generation and robustness MUST use timeframe-specific minimum trade counts:
+  `--min-trades-w1` for W1 and `--min-trades-mn` for MN. Other timeframes MUST
+  keep using the normal `--min-trades` threshold.
 - **FR-1.6.5** When `--execute-backtests` is set, the agent MUST invoke
   `run_tests.py` (or the multiterminal equivalent) for the generated variants.
 - **FR-1.6.6** After backtests, every produced report MUST be scored and
@@ -144,8 +149,9 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.9** When `--force-unseeded-universe` is enabled, target selection
   MUST reserve exploration for universe assets and timeframes not represented
   by the current seed pool. The forced branch MUST prefer assets/TFs with no
-  feedback yet, use a stronger-than-default exploration quota, MUST remain
-  disabled by default, and MUST continue excluding disabled universe symbols.
+  feedback yet, use an adaptive exploration quota that decreases after early
+  generations, MUST remain disabled by default, and MUST continue excluding
+  disabled universe symbols.
 - **FR-1.6.9a** Disabled universe symbols MUST NOT be selected as generated
   candidate targets. If a disabled symbol has `SEEDS=si`, its `.set` files MAY
   still be used as mutation sources, but generated variants MUST target an
@@ -154,6 +160,43 @@ requirement changes or a debt item is opened/closed.
   `ForceSymbol=<target_symbol>`. If the source seed lacks `ForceSymbol`, the
   agent MUST add it to the generated `.set` so tester symbol inference cannot
   fall back to inherited source-seed aliases.
+- **FR-1.6.11** Generation MUST persist the selected source seeds for each
+  generation, including rank and the asset/timeframe/diversity components used
+  to choose them, so missing or skipped generation slots can be audited.
+- **FR-1.6.12** Parameter mutation feedback MUST separate true mutated
+  parameters from target-timeframe patch keys (`ST1_Timeframe`, `VolTimeframe`,
+  `Entry_Timing`, `ATR_Timeframe`). Timeframe patch keys MAY be stored for
+  audit, but MUST NOT pollute parameter-mutation weights.
+- **FR-1.6.13** New generation runs MUST persist their launch configuration in
+  `runs.config_json`. The JSON MUST include the account type, paths, generation
+  flags such as `force_unseeded_universe`, exploration probabilities, execution
+  dates, score thresholds, universe counts, and the serialized CLI arguments so
+  later audits can verify how the run was created without inferring from
+  candidate policies.
+- **FR-1.6.14** Target selection MUST apply per-generation diversity caps to
+  avoid over-concentrating candidates in one target or correlated universe
+  group. Universe groups SHOULD use group-specific caps based on breadth and
+  correlation: Forex and Stocks at 60%, Metals at 40%, Indices/Energies at 35%,
+  and Crypto at 25%, with unknown groups defaulting to 40%. A single
+  symbol+timeframe pair SHOULD be capped at 30%, a single symbol SHOULD be
+  capped at 45%, and a single timeframe SHOULD be capped at 60%. When a
+  proposed target is capped, the agent MUST reroll and then fall back to an
+  enabled universe target before allowing a diversity overflow.
+- **FR-1.6.15** Generation run metadata MUST persist the effective target
+  timeframe universe and whether W1/MN experimentation was enabled, so audits
+  can distinguish normal runs from long-timeframe experiments.
+- **FR-1.6.16** Generation run metadata MUST persist W1/MN base/robust minimum
+  trades and W1/MN Final Tick minimum trades.
+- **FR-1.6.17** Source seed selection and next-generation survivor selection
+  MUST apply the same group/symbol/timeframe/symbol+timeframe diversity caps
+  before allowing overflow, so a single profitable niche cannot monopolize all
+  seeds in later generations when alternatives exist.
+- **FR-1.6.18** When `force_unseeded_universe` is enabled, each generation MUST
+  reserve target slots for underrepresented intraday timeframes before normal
+  target creation: M1 at 2%, M5 at 2%, M15 at 3%, and M30 at 5% of planned
+  generation size. It MUST also reserve at least one target slot for any allowed
+  timeframe missing from the selected source seed set, subject to normal target
+  diversity caps and enabled universe symbols.
 
 ### 1.7 UBS agent — scoring
 
@@ -248,10 +291,17 @@ requirement changes or a debt item is opened/closed.
   both report paths, both metrics JSON blobs, `history_quality`, date range, and
   a `similarity_json` payload explaining pass/fail causes.
 - **FR-1.8.10** A Final Tick row MUST be `accepted` only if the real-tick report
-  has `History Quality` strictly greater than the configured minimum (`80` by
-  default) and real-tick metrics remain close to the OHLC metrics within
-  configured deltas for net, profit factor, drawdown %, and trade count. Missing
-  `History Quality` MUST fail the row.
+  has `History Quality` greater than or equal to the configured minimum (`80` by
+  default) and the active similarity checks (`profit_factor`, `drawdown_pct`,
+  and trade count) remain close to the OHLC metrics within configured deltas.
+  Missing `History Quality` MUST fail the row. `net_profit` MUST be stored in
+  `similarity_json` for inspection only and MUST NOT block acceptance, because
+  Final Tick validates operational similarity between data models rather than
+  absolute profitability.
+- **FR-1.8.10a** Final Tick is an eligibility gate for live-use workflows:
+  `candidate_final_tick.status='accepted'` makes a base+robust accepted strategy
+  eligible for portfolio/export consideration; `rejected` excludes it from
+  live-use pools; `pending_*` rows are not eligible until resolved.
 - **FR-1.8.11** Final Tick MUST support two intermediate pending states:
   `pending_history_quality` — real-tick report produced but history quality is
   below threshold (retryable when data improves); `pending_ohlc_trades` — the
@@ -460,6 +510,14 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.12.25** The UI MUST expose a `Poblar universo sin seed` toggle in
   `UBS Agente UBS`. It MUST persist as `ubs_force_unseeded_universe` and pass
   `--force-unseeded-universe` to normal and continuation UBS agent runs.
+- **FR-1.12.25a** The UI MUST expose an `Experimentar W1/MN` toggle in
+  `UBS Agente UBS`. It MUST persist as `ubs_experimental_long_timeframes` and
+  pass `--experimental-long-timeframes` to normal and continuation UBS agent
+  runs only when enabled.
+- **FR-1.12.25b** The `Experimentar W1/MN` UI row MUST expose four numeric
+  inputs: W1 base min trades, MN base min trades, W1 Final Tick min trades, and
+  MN Final Tick min trades. Defaults: W1 base `12`, MN base `4`, W1 Final Tick
+  `2`, MN Final Tick `1`.
 - **FR-1.12.26** `UBS Resultados` and `UBS Robustez` MUST display the latest
   visible run (`hidden=0 order by id desc limit 1`). New UBS generation runs
   MUST become visible immediately because `runs.hidden` defaults to `0`.

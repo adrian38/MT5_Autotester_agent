@@ -313,6 +313,7 @@ class UBSRobustnessLogicMixin:
             f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
             f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",
             f"Pass OOS: trades>={self.ubs_robust_pass_min_trades.get()} | recovery>={self.ubs_robust_pass_min_recovery_factor.get().strip()}",
+            f"Trades W1/MN OOS: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
             f"Bonus: accepted {positive_bonus:+.2f} | rejected {negative_bonus:+.2f}",
         ]
         details.extend(self._multiterminal_execution_details())

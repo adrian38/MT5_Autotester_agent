@@ -89,6 +89,8 @@ class UBSFinalTickLogicMixin:
                 symbol_map,
                 min_history_quality=thresholds["min_quality"],
                 min_ohlc_trades=thresholds["min_ohlc_trades"],
+                min_trades_w1=thresholds["min_trades_w1"],
+                min_trades_mn=thresholds["min_trades_mn"],
                 max_net_delta_pct=thresholds["net_delta"],
                 max_pf_delta_pct=thresholds["pf_delta"],
                 max_dd_delta_pct=thresholds["dd_delta"],
@@ -168,6 +170,20 @@ class UBSFinalTickLogicMixin:
                 self._score_float(
                     self.ubs_final_tick_min_ohlc_trades,
                     "Final Tick min ops OHLC",
+                    minimum=0.0,
+                )
+            ),
+            "min_trades_w1": int(
+                self._score_float(
+                    self.ubs_final_tick_min_trades_w1,
+                    "Final Tick W1 min ops",
+                    minimum=0.0,
+                )
+            ),
+            "min_trades_mn": int(
+                self._score_float(
+                    self.ubs_final_tick_min_trades_mn,
+                    "Final Tick MN min ops",
                     minimum=0.0,
                 )
             ),
@@ -345,6 +361,8 @@ class UBSFinalTickLogicMixin:
             "--to-date", to_date,
             "--final-tick-min-history-quality", str(thresholds["min_quality"]),
             "--final-tick-min-ohlc-trades", str(thresholds["min_ohlc_trades"]),
+            "--final-tick-min-trades-w1", str(thresholds["min_trades_w1"]),
+            "--final-tick-min-trades-mn", str(thresholds["min_trades_mn"]),
             "--final-tick-max-net-delta-pct", str(thresholds["net_delta"]),
             "--final-tick-max-pf-delta-pct", str(thresholds["pf_delta"]),
             "--final-tick-max-dd-delta-pct", str(thresholds["dd_delta"]),
@@ -441,6 +459,7 @@ class UBSFinalTickLogicMixin:
             "Modelos: OHLC Model=1 vs Every tick based on real ticks Model=4",
             f"History Quality >= {thresholds['min_quality']:.2f}%",
             f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
+            f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
             (
                 "Fechas retry OHLC: "
                 f"{self.ubs_final_tick_ohlc_from_date.get().strip() or '(mismas)'} -> "
@@ -510,6 +529,7 @@ class UBSFinalTickLogicMixin:
             f"Fechas: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}",
             f"History Quality minima requerida: {thresholds['min_quality']:.2f}%",
             f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
+            f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
         ]
         details.extend(self._multiterminal_execution_details())
         if not self._confirm_execution_start("Confirmar reintentar calidad baja", len(rows), details):

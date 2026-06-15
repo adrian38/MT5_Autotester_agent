@@ -160,10 +160,57 @@ class UBSAgentViewMixin:
             height=18,
         ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
 
-        self._build_ubs_multiterminal_row(agent, row=5)
+        long_tf_row = tk.Frame(agent, bg=self.colors["panel"])
+        long_tf_row.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(6, 6))
+        long_tf_row.columnconfigure(0, weight=1)
+        long_tf_text = tk.Frame(long_tf_row, bg=self.colors["panel"])
+        long_tf_text.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            long_tf_text,
+            text="Experimentar W1/MN",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            long_tf_text,
+            text="Incluye semanal y mensual como targets experimentales; apagado en runs normales.",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w")
+        long_tf_inputs = tk.Frame(long_tf_row, bg=self.colors["panel"])
+        long_tf_inputs.grid(row=0, column=1, sticky="e", padx=(10, 10))
+        long_tf_fields = [
+            ("W1 base", self.ubs_long_tf_min_trades_w1),
+            ("MN base", self.ubs_long_tf_min_trades_mn),
+            ("W1 FT", self.ubs_final_tick_min_trades_w1),
+            ("MN FT", self.ubs_final_tick_min_trades_mn),
+        ]
+        for index, (label, variable) in enumerate(long_tf_fields):
+            ttk.Label(long_tf_inputs, text=label, style="Muted.TLabel").grid(
+                row=0,
+                column=index * 2,
+                sticky="w",
+                padx=(0 if index == 0 else 8, 3),
+            )
+            ttk.Spinbox(long_tf_inputs, from_=0, to=100000, textvariable=variable, width=8).grid(
+                row=0,
+                column=index * 2 + 1,
+                sticky="w",
+            )
+        self._toggle_switch_cls(
+            long_tf_row,
+            variable=self.ubs_experimental_long_timeframes,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=2, sticky="ne", pady=(4, 0))
+
+        self._build_ubs_multiterminal_row(agent, row=6)
 
         buttons = ttk.Frame(agent, style="Panel.TFrame")
-        buttons.grid(row=6, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
+        buttons.grid(row=7, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
         buttons.columnconfigure(0, weight=1)
         buttons.columnconfigure(1, weight=1)
         buttons.columnconfigure(2, weight=1)
@@ -194,7 +241,7 @@ class UBSAgentViewMixin:
         )
         self.ubs_continue_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         ttk.Label(agent, textvariable=self.ubs_continue_status, style="Muted.TLabel").grid(
-            row=7, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
+            row=8, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
 
         # ── Filtros ─────────────────────────────────────────────────────────

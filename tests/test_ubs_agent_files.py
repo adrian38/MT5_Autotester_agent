@@ -4,10 +4,33 @@ import unittest
 from pathlib import Path
 
 from ubs.models import Seed, Variant
-from ubs.score import ScoreResult
+from ubs.score import ScoreConfig, ScoreResult
 from ubs.account import account_disabled_symbols_path
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
-from ubs_agent import copy_accepted, choose_target_symbol, final_tick_similarity, recreate_work_dir, robust_status_pending_for_retry, validate_seed_backtest_set, write_set_force_symbol
+from ubs_agent import (
+    TargetDiversityLimiter,
+    apply_reserved_timeframe,
+    choose_diverse_target,
+    choose_target_period,
+    choose_target_symbol,
+    copy_accepted,
+    create_variant,
+    final_tick_similarity,
+    recreate_work_dir,
+    related_timeframes,
+    robust_status_pending_for_retry,
+    score_config_for_period,
+    target_timeframe_universe,
+    min_trades_for_period,
+    ranked_seed_selection,
+    reserved_timeframe_plan,
+    unseeded_asset_force_probability,
+    unseeded_timeframe_force_probability,
+    select_next_seed_survivors,
+    validate_seed_backtest_set,
+    variant_as_next_seed,
+    write_set_force_symbol,
+)
 from run_tests import parse_symbol_map
 
 
@@ -165,6 +188,322 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertEqual(len(second), 1)
             self.assertEqual(files, second)
             self.assertEqual(files[0].name, "score_0020.00__candidate.set")
+
+    def test_variant_as_next_seed_preserves_target_timeframe(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+        variant = Variant(Path("candidate.set"), seed, "XAUUSD", "D1", ("Exit_stop",), (), "tf_feedback")
+
+        next_seed = variant_as_next_seed(variant)
+
+        self.assertEqual(next_seed.path, variant.path)
+        self.assertEqual(next_seed.symbol, "XAUUSD")
+        self.assertEqual(next_seed.period, "D1")
+        self.assertEqual(next_seed.family, seed.family)
+        self.assertEqual(next_seed.run_strategy, seed.run_strategy)
+
+    def test_unseeded_force_probabilities_drop_after_generation_one(self) -> None:
+        self.assertEqual(unseeded_asset_force_probability(1, 10), 0.35)
+        self.assertEqual(unseeded_asset_force_probability(2, 10), 0.25)
+        self.assertEqual(unseeded_asset_force_probability(3, 10), 0.15)
+        self.assertEqual(unseeded_asset_force_probability(1, 0), 0.0)
+        self.assertEqual(unseeded_timeframe_force_probability(1, 2), 0.20)
+        self.assertEqual(unseeded_timeframe_force_probability(3, 2), 0.08)
+
+    def test_target_timeframe_universe_keeps_long_timeframes_experimental(self) -> None:
+        normal = target_timeframe_universe(False)
+        experimental = target_timeframe_universe(True)
+
+        self.assertIn("M1", normal)
+        self.assertIn("M5", normal)
+        self.assertNotIn("W1", normal)
+        self.assertNotIn("MN", normal)
+        self.assertEqual(experimental[-2:], ("W1", "MN"))
+
+    def test_related_timeframes_filter_experimental_long_timeframes(self) -> None:
+        self.assertEqual(related_timeframes("D1", target_timeframe_universe(False)), ("H4", "D1"))
+        self.assertEqual(related_timeframes("D1", target_timeframe_universe(True)), ("H4", "D1", "W1", "MN"))
+
+    def test_choose_target_period_does_not_emit_long_timeframes_by_default(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "D1", "family", "1")
+
+        for idx in range(40):
+            target, _policy = choose_target_period(
+                seed,
+                {},
+                random.Random(idx),
+                timeframe_universe=target_timeframe_universe(False),
+            )
+            self.assertNotIn(target, {"W1", "MN"})
+
+    def test_choose_target_period_can_force_experimental_long_timeframes(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "D1", "family", "1")
+
+        target, policy = choose_target_period(
+            seed,
+            {},
+            random.Random(1),
+            timeframe_universe=target_timeframe_universe(True),
+            force_unseeded_timeframes=True,
+            unseeded_timeframes=("W1", "MN"),
+            force_unseeded_probability=1.0,
+        )
+
+        self.assertIn(target, {"W1", "MN"})
+        self.assertEqual(policy, "tf_unseeded_force")
+
+    def test_long_timeframe_min_trades_only_overrides_w1_mn(self) -> None:
+        config = ScoreConfig(min_trades=48)
+
+        self.assertEqual(score_config_for_period(config, "H4", min_trades_w1=12, min_trades_mn=4).min_trades, 48)
+        self.assertEqual(score_config_for_period(config, "W1", min_trades_w1=12, min_trades_mn=4).min_trades, 12)
+        self.assertEqual(score_config_for_period(config, "MN", min_trades_w1=12, min_trades_mn=4).min_trades, 4)
+
+    def test_final_tick_min_trades_can_be_lower_for_long_timeframes(self) -> None:
+        self.assertEqual(min_trades_for_period("H1", 5, 2, 1), 5)
+        self.assertEqual(min_trades_for_period("W1", 5, 2, 1), 2)
+        self.assertEqual(min_trades_for_period("MN", 5, 2, 1), 1)
+
+    def test_zero_unseeded_probability_disables_forced_symbol_branch(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        for idx in range(20):
+            _target, policy = choose_target_symbol(
+                seed,
+                {},
+                random.Random(idx),
+                ("EURUSD", "GBPUSD"),
+                {},
+                force_unseeded_universe=True,
+                unseeded_universe_symbols=("EURUSD", "GBPUSD"),
+                force_unseeded_probability=0.0,
+            )
+            self.assertNotEqual(policy, "asset_unseeded_force")
+
+    def test_zero_unseeded_probability_disables_forced_timeframe_branch(self) -> None:
+        seed = Seed(Path("seed.set"), "MYSTERY", "H1", "family", "1")
+
+        for idx in range(20):
+            _target, policy = choose_target_period(
+                seed,
+                {},
+                random.Random(idx),
+                force_unseeded_timeframes=True,
+                unseeded_timeframes=("D1",),
+                force_unseeded_probability=0.0,
+            )
+            self.assertNotEqual(policy, "tf_unseeded_force")
+
+    def test_target_diversity_limiter_caps_pair_and_symbol(self) -> None:
+        limiter = TargetDiversityLimiter(10)
+
+        for _ in range(3):
+            self.assertTrue(limiter.allows("META", "H4"))
+            limiter.record("META", "H4")
+
+        self.assertFalse(limiter.allows("META", "H4"))
+        self.assertTrue(limiter.allows("META", "H1"))
+        limiter.record("META", "H1")
+        limiter.record("META", "D1")
+        self.assertFalse(limiter.allows("META", "M30"))
+        self.assertTrue(limiter.allows("AMZN", "H4"))
+
+    def test_target_diversity_limiter_caps_universe_group(self) -> None:
+        limiter = TargetDiversityLimiter(
+            10,
+            group_by_symbol={
+                "XAUUSD": "Metals",
+                "XAGUSD": "Metals",
+                "XAUEUR": "Metals",
+                "META": "Stocks",
+            },
+        )
+
+        for symbol in ("XAUUSD", "XAGUSD", "XAUEUR", "XAUUSD"):
+            self.assertTrue(limiter.allows(symbol, "H4"))
+            limiter.record(symbol, "H4")
+
+        self.assertFalse(limiter.allows("XAUUSD", "H1"))
+        self.assertFalse(limiter.allows("XAGUSD", "H1"))
+        self.assertTrue(limiter.allows("META", "H4"))
+
+    def test_target_diversity_limiter_uses_group_specific_caps(self) -> None:
+        limiter = TargetDiversityLimiter(
+            10,
+            group_by_symbol={
+                "EURUSD": "Forex",
+                "GBPUSD": "Forex",
+                "USDJPY": "Forex",
+                "AUDUSD": "Forex",
+                "USDCAD": "Forex",
+                "USDCHF": "Forex",
+                "NZDUSD": "Forex",
+                "XAUUSD": "Metals",
+            },
+        )
+
+        for symbol in ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"):
+            self.assertTrue(limiter.allows(symbol, "H1"))
+            limiter.record(symbol, "H1")
+
+        self.assertFalse(limiter.allows("NZDUSD", "H4"))
+        self.assertTrue(limiter.allows("XAUUSD", "H4"))
+
+    def test_ranked_seed_selection_keeps_diverse_alternatives(self) -> None:
+        seeds = [
+            *(Seed(Path(f"xau_{idx}.set"), "XAUUSD", "H4", "family", "1") for idx in range(12)),
+            *(Seed(Path(f"meta_{idx}.set"), "META", "H1", "family", "1") for idx in range(4)),
+            *(Seed(Path(f"eur_{idx}.set"), "EURUSD", "D1", "family", "1") for idx in range(4)),
+            *(Seed(Path(f"btc_{idx}.set"), "BTCUSD", "M30", "family", "1") for idx in range(4)),
+        ]
+
+        selected = ranked_seed_selection(
+            seeds,
+            10,
+            {"XAUUSD": 100.0, "META": 20.0, "EURUSD": 15.0, "BTCUSD": 10.0},
+            {"H4": 10.0, "H1": 5.0, "D1": 4.0, "M30": 3.0},
+            random.Random(7),
+            {},
+            {"XAUUSD": "Metals", "META": "Stocks", "EURUSD": "Forex", "BTCUSD": "Crypto"},
+        )
+
+        pairs = {(seed.symbol, seed.period) for _score, seed, _asset, _tf, _div in selected}
+        self.assertIn(("XAUUSD", "H4"), pairs)
+        self.assertGreater(len(pairs), 1)
+        self.assertLess(sum(1 for _score, seed, _asset, _tf, _div in selected if seed.symbol == "XAUUSD"), 10)
+
+    def test_next_seed_survivors_are_diversified_without_changing_accepted_copy_pool(self) -> None:
+        dominant = [
+            (
+                Variant(Path(f"xau_{idx}.set"), Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"), "XAUUSD", "H4", (), (), "", (), ()),
+                score(100.0 - idx),
+            )
+            for idx in range(12)
+        ]
+        alternatives = [
+            (
+                Variant(Path("meta.set"), Seed(Path("seed.set"), "META", "H1", "family", "1"), "META", "H1", (), (), "", (), ()),
+                score(40.0, trades=100),
+            ),
+            (
+                Variant(Path("eur.set"), Seed(Path("seed.set"), "EURUSD", "D1", "family", "1"), "EURUSD", "D1", (), (), "", (), ()),
+                score(39.0, trades=100),
+            ),
+        ]
+
+        selected = select_next_seed_survivors(
+            dominant + alternatives,
+            20.0,
+            8,
+            {},
+            {"XAUUSD": "Metals", "META": "Stocks", "EURUSD": "Forex"},
+        )
+
+        self.assertEqual(len(selected), 8)
+        self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
+
+    def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
+        selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]
+
+        plan = reserved_timeframe_plan(selected, ("M1", "M5", "H4", "D1"), 10)
+
+        self.assertEqual(plan, ["M1", "M5", "D1"])
+
+    def test_reserved_timeframe_plan_applies_minimum_intraday_quotas(self) -> None:
+        selected = [
+            Seed(Path("h1.set"), "META", "H1", "family", "1"),
+            Seed(Path("h4.set"), "XAGUSD", "H4", "family", "1"),
+            Seed(Path("d1.set"), "USDJPY", "D1", "family", "1"),
+        ]
+
+        plan = reserved_timeframe_plan(selected, ("M1", "M5", "M15", "M30", "H1", "H4", "D1"), 300)
+
+        self.assertEqual(plan.count("M1"), 6)
+        self.assertEqual(plan.count("M5"), 6)
+        self.assertEqual(plan.count("M15"), 9)
+        self.assertEqual(plan.count("M30"), 15)
+
+    def test_apply_reserved_timeframe_overrides_target_when_allowed(self) -> None:
+        reserved = ["M1"]
+        limiter = TargetDiversityLimiter(10)
+
+        symbol, period, policy = apply_reserved_timeframe(
+            reserved_timeframes=reserved,
+            target_symbol="XAUUSD",
+            target_period="H4",
+            policy="exploit",
+            seed=Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
+            target_limiter=limiter,
+            universe_symbols=("META", "EURUSD"),
+            disabled_symbols=set(),
+            aliases={},
+            rng=random.Random(1),
+        )
+
+        self.assertEqual(symbol, "XAUUSD")
+        self.assertEqual(period, "M1")
+        self.assertEqual(policy, "exploit+tf_reserved")
+        self.assertEqual(reserved, [])
+
+    def test_choose_diverse_target_avoids_capped_symbol(self) -> None:
+        seed = Seed(Path("seed.set"), "META", "H4", "family", "1")
+        limiter = TargetDiversityLimiter(4)
+        limiter.record("META", "H4")
+        limiter.record("META", "H1")
+
+        target_symbol, target_period, _policy = choose_diverse_target(
+            seed,
+            {"META": 100.0, "AMZN": 10.0, "MSFT": 8.0},
+            {"H4": 10.0, "H1": 8.0},
+            random.Random(3),
+            limiter,
+            ("META", "AMZN", "MSFT"),
+            {},
+        )
+
+        self.assertNotEqual(target_symbol, "META")
+        self.assertTrue(limiter.allows(target_symbol, target_period))
+
+    def test_create_variant_separates_timeframe_keys_from_mutated_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seed.set"
+            source.write_text(
+                "\n".join(
+                    [
+                        "ForceSymbol=XAUUSD",
+                        "Run_Strategy=1||1||0||2||N",
+                        "ST1_Timeframe=16385||0||1||16408||Y",
+                        "Entry_Timing=16385||0||1||16408||Y",
+                        "ATR_Timeframe=16385||0||1||16408||Y",
+                        "Exit_stop=100||50||10||150||Y",
+                        "Risk=2||2||0||10||N",
+                        "StartLots=0.01||0.01||0.01||1||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            seed = Seed(source, "XAUUSD", "H1", "family", "1")
+
+            variant = create_variant(
+                seed,
+                "XAUUSD",
+                "D1",
+                Path(temp_dir) / "out",
+                1,
+                1,
+                1,
+                1,
+                {},
+                {},
+                "test",
+                random.Random(2),
+            )
+
+            self.assertIn("ST1_Timeframe", variant.timeframe_keys)
+            self.assertIn("Entry_Timing", variant.timeframe_keys)
+            self.assertIn("ATR_Timeframe", variant.timeframe_keys)
+            self.assertNotIn("ST1_Timeframe", variant.mutated_keys)
+            self.assertEqual(len(variant.mutated_keys), 1)
+            self.assertEqual(variant.mutation_details[0]["key"], variant.mutated_keys[0])
 
     def test_recreate_work_dir_removes_previous_contents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

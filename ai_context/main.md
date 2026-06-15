@@ -290,6 +290,11 @@ active criteria because `normalized_net_profit` depends on the normalization gro
 produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
 delta, but PF/DD/trades practically identical).
 
+Final Tick is a hard live-use eligibility gate: only `candidate_final_tick.status='accepted'`
+can enter portfolio/export/live-use pools; `rejected` is a hard no for live use, and
+`pending_*` remains non-eligible until resolved. The weight bonus/penalty only teaches
+future exploration and does not override this gate.
+
 #### `from_date` / `to_date` consistency guard
 
 When the disk-based `skip_ohlc=True` optimization is active (resume pending dir, sets
@@ -318,16 +323,59 @@ Visible-run behavior:
 default and persisted as `ubs_force_unseeded_universe` in `ui_settings.ini`.
 When enabled, the UI passes `--force-unseeded-universe` to `ubs_agent.py`.
 
+Normal generation targets M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN are
+available only through the explicit **Experimentar W1/MN** toggle, persisted
+as `ubs_experimental_long_timeframes` and passed as
+`--experimental-long-timeframes`. MT5 supports W1/MN, but they are kept opt-in
+because their trade frequency and validation cadence differ from normal
+intraday/daily generation.
+
+The experimental W1/MN row also exposes timeframe-specific minimum trade
+counts. Generation/base scoring and robustness use `--min-trades-w1` and
+`--min-trades-mn` for W1/MN only; other timeframes continue using the normal
+`--min-trades`. Defaults: W1 base/robust = 12, MN base/robust = 4. Final Tick
+uses separate short-window minimums through `--final-tick-min-trades-w1` and
+`--final-tick-min-trades-mn` for both scoring and the OHLC pre-check; defaults:
+W1 Final Tick = 2, MN Final Tick = 1.
+
 The option reserves part of generation for universe coverage:
 
-- Asset target selection gets a 65% early chance to choose a universe symbol
-  not represented by the current seed pool, preferring symbols with no feedback.
-- Timeframe target selection gets a 50% early chance to choose related
-  timeframes not represented by the current seed pool, preferring TFs with no
-  feedback.
+- Asset target selection gets an adaptive chance to choose a universe symbol
+  not represented by the current seed pool, preferring symbols with no feedback:
+  generation 1 = 35%, generation 2 = 25%, later generations = 15%.
+- Timeframe target selection gets a smaller adaptive chance to choose related
+  timeframes not represented by the current seed pool: generation 1 = 20%,
+  generation 2 = 12%, later generations = 8%.
 - If an explored asset/TF survives into the next generation as an internal
   candidate seed, it is no longer considered unseeded for that generation.
 - Disabled universe symbols remain excluded.
+- Selected source seeds are persisted in `generation_seed_selection` with rank,
+  asset weight, timeframe weight, diversity, and total selection score.
+- New generation runs persist launch metadata in `runs.config_json`, including
+  `force_unseeded_universe`, `experimental_long_timeframes`, the effective
+  `timeframe_universe`, W1/MN base minimum trades, W1/MN Final Tick minimum
+  trades, score thresholds, execution dates, universe counts, adaptive
+  exploration probabilities, and the serialized CLI args. Use this to audit how
+  a run was launched instead of inferring the flag from policies.
+- Target selection has per-generation anti-concentration caps: group-specific
+  max 60% for Forex/Stocks, 40% for Metals, 35% for IndicesEnergies, 25% for
+  Crypto, and 40% default for unknown groups; plus max 45% per canonical
+  symbol, max 60% per timeframe, and max 30% per canonical symbol+timeframe. Capped
+  choices are rerolled and then replaced with an enabled universe fallback when
+  needed; policies may include `diversity_reroll`, `diversity_fallback`, or
+  `diversity_overflow`.
+- Source seed selection and next-generation survivor selection apply the same
+  group/symbol/timeframe/symbol+timeframe caps before allowing overflow, so one
+  profitable niche cannot monopolize every seed slot when alternatives exist.
+- When `force_unseeded_universe` is enabled, generation reserves exploratory
+  target slots for intraday timeframes before normal target creation: M1 2%,
+  M5 2%, M15 3%, and M30 5% of planned generation size. It also reserves at
+  least one target slot for each allowed timeframe missing from the selected
+  source seeds, subject to the normal target diversity caps.
+- Generated candidates store true parameter mutations in `mutated_keys` and
+  target-timeframe patch keys separately in `timeframe_keys`. The
+  `mutation_details_json` payload stores old/new/delta values for future
+  directional feedback; timeframe patch keys must not pollute mutation weights.
 
 `UBS Universo` has live search filters for the displayed tables:
 
