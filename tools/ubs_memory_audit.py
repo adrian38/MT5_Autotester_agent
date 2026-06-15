@@ -85,6 +85,7 @@ def run_config_summary(run) -> str:
     long_tf = bool(generation.get("experimental_long_timeframes")) if isinstance(generation, dict) else False
     timeframe_universe = generation.get("timeframe_universe", ()) if isinstance(generation, dict) else ()
     long_min_trades = generation.get("long_timeframe_min_trades", {}) if isinstance(generation, dict) else {}
+    tf_min_ratios = generation.get("force_unseeded_timeframe_min_ratios", {}) if isinstance(generation, dict) else {}
     final_tick = config.get("final_tick_defaults", {}) if isinstance(config, dict) else {}
     from_date = str(execution.get("from_date") or "") if isinstance(execution, dict) else ""
     to_date = str(execution.get("to_date") or "") if isinstance(execution, dict) else ""
@@ -95,8 +96,11 @@ def run_config_summary(run) -> str:
     score_text = f" pf>={min_pf} trades>={min_trades}" if min_pf is not None or min_trades is not None else ""
     cap_text = ""
     if isinstance(caps, dict) and caps:
+        group_caps = caps.get("group_ratios", caps.get("group_ratio"))
         cap_text = (
+            f" cap_group={group_caps}"
             f" cap_sym={caps.get('symbol_ratio')}"
+            f" cap_tf={caps.get('timeframe_ratio')}"
             f" cap_pair={caps.get('symbol_timeframe_ratio')}"
         )
     tf_text = ""
@@ -108,7 +112,10 @@ def run_config_summary(run) -> str:
     ft_long_text = ""
     if isinstance(final_tick, dict) and ("min_trades_w1" in final_tick or "min_trades_mn" in final_tick):
         ft_long_text = f" W1/MN_FT={final_tick.get('min_trades_w1')}/{final_tick.get('min_trades_mn')}"
-    return f"force_unseeded={'si' if force else 'no'} long_tf={'si' if long_tf else 'no'}{tf_text}{long_min_text}{ft_long_text}{dates}{score_text}{cap_text}"
+    tf_min_text = ""
+    if isinstance(tf_min_ratios, dict) and tf_min_ratios:
+        tf_min_text = " tf_min=" + ",".join(f"{key}:{value}" for key, value in sorted(tf_min_ratios.items()))
+    return f"force_unseeded={'si' if force else 'no'} long_tf={'si' if long_tf else 'no'}{tf_text}{long_min_text}{ft_long_text}{dates}{score_text}{cap_text}{tf_min_text}"
 
 
 def print_heading(title: str) -> None:

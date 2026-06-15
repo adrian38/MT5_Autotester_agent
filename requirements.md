@@ -174,16 +174,29 @@ requirement changes or a debt item is opened/closed.
   later audits can verify how the run was created without inferring from
   candidate policies.
 - **FR-1.6.14** Target selection MUST apply per-generation diversity caps to
-  avoid over-concentrating candidates in one target. A single symbol+timeframe
-  pair SHOULD be capped at 30% of the planned generation, and a single symbol
-  SHOULD be capped at 45%. When a proposed target is capped, the agent MUST
-  reroll and then fall back to an enabled universe target before allowing a
-  diversity overflow.
+  avoid over-concentrating candidates in one target or correlated universe
+  group. Universe groups SHOULD use group-specific caps based on breadth and
+  correlation: Forex and Stocks at 60%, Metals at 40%, Indices/Energies at 35%,
+  and Crypto at 25%, with unknown groups defaulting to 40%. A single
+  symbol+timeframe pair SHOULD be capped at 30%, a single symbol SHOULD be
+  capped at 45%, and a single timeframe SHOULD be capped at 60%. When a
+  proposed target is capped, the agent MUST reroll and then fall back to an
+  enabled universe target before allowing a diversity overflow.
 - **FR-1.6.15** Generation run metadata MUST persist the effective target
   timeframe universe and whether W1/MN experimentation was enabled, so audits
   can distinguish normal runs from long-timeframe experiments.
 - **FR-1.6.16** Generation run metadata MUST persist W1/MN base/robust minimum
   trades and W1/MN Final Tick minimum trades.
+- **FR-1.6.17** Source seed selection and next-generation survivor selection
+  MUST apply the same group/symbol/timeframe/symbol+timeframe diversity caps
+  before allowing overflow, so a single profitable niche cannot monopolize all
+  seeds in later generations when alternatives exist.
+- **FR-1.6.18** When `force_unseeded_universe` is enabled, each generation MUST
+  reserve target slots for underrepresented intraday timeframes before normal
+  target creation: M1 at 2%, M5 at 2%, M15 at 3%, and M30 at 5% of planned
+  generation size. It MUST also reserve at least one target slot for any allowed
+  timeframe missing from the selected source seed set, subject to normal target
+  diversity caps and enabled universe symbols.
 
 ### 1.7 UBS agent — scoring
 

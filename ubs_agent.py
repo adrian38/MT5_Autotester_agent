@@ -66,8 +66,23 @@ ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
 ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
 TF_UNSEEDED_FORCE_PROB_LATE = 0.08
+FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS = {
+    "M1": 0.02,
+    "M5": 0.02,
+    "M15": 0.03,
+    "M30": 0.05,
+}
 TARGET_PAIR_CAP_RATIO = 0.30
 TARGET_SYMBOL_CAP_RATIO = 0.45
+TARGET_TIMEFRAME_CAP_RATIO = 0.60
+DEFAULT_TARGET_GROUP_CAP_RATIO = 0.40
+TARGET_GROUP_CAP_RATIOS = {
+    "Forex": 0.60,
+    "Stocks": 0.60,
+    "Metals": 0.40,
+    "IndicesEnergies": 0.35,
+    "Crypto": 0.25,
+}
 DIVERSITY_REROLL_ATTEMPTS = 24
 FINAL_TICK_RETRYABLE_STATUSES = {
     "no_report",
@@ -382,6 +397,7 @@ def ranked_seed_selection(
     timeframe_feedback: dict[str, float],
     rng: random.Random,
     aliases: dict[str, str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
 ) -> list[tuple[float, Seed, float, float, float]]:
     aliases = aliases or {}
     valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
@@ -396,7 +412,25 @@ def ranked_seed_selection(
         scored.append((asset_weight + timeframe_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
     scored.sort(key=lambda item: item[0], reverse=True)
     limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
-    return scored[:limit]
+    if limit <= 0:
+        return []
+    limiter = TargetDiversityLimiter(limit, aliases, group_by_symbol=group_by_symbol)
+    selected: list[tuple[float, Seed, float, float, float]] = []
+    overflow: list[tuple[float, Seed, float, float, float]] = []
+    for item in scored:
+        seed = item[1]
+        if limiter.allows(seed.symbol, seed.period):
+            selected.append(item)
+            limiter.record(seed.symbol, seed.period)
+            if len(selected) >= limit:
+                return selected
+        else:
+            overflow.append(item)
+    for item in overflow:
+        if len(selected) >= limit:
+            break
+        selected.append(item)
+    return selected
 
 
 def choose_seeds(
@@ -406,8 +440,14 @@ def choose_seeds(
     timeframe_feedback: dict[str, float],
     rng: random.Random,
     aliases: dict[str, str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
 ) -> list[Seed]:
-    return [seed for _, seed, _, _, _ in ranked_seed_selection(seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases)]
+    return [
+        seed
+        for _, seed, _, _, _ in ranked_seed_selection(
+            seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases, group_by_symbol
+        )
+    ]
 
 
 def unseeded_asset_force_probability(generation: int, unseeded_count: int) -> float:
@@ -422,10 +462,90 @@ def unseeded_timeframe_force_probability(generation: int, unseeded_count: int) -
     return TF_UNSEEDED_FORCE_PROB_BY_GENERATION.get(generation, TF_UNSEEDED_FORCE_PROB_LATE)
 
 
+def reserved_timeframe_plan(
+    selected_seeds: list[Seed],
+    timeframe_universe: tuple[str, ...],
+    capacity: int,
+    min_ratios: dict[str, float] | None = None,
+) -> list[str]:
+    if capacity <= 0:
+        return []
+    allowed = {str(tf).upper() for tf in timeframe_universe}
+    ratios = min_ratios or FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS
+    plan: list[str] = []
+    for timeframe, ratio in ratios.items():
+        key = str(timeframe).upper()
+        if key in allowed:
+            plan.extend([key] * capped_count(capacity, float(ratio)))
+    represented = {str(seed.period or "").upper() for seed in selected_seeds}
+    planned = set(plan)
+    missing = [
+        str(tf).upper()
+        for tf in timeframe_universe
+        if str(tf).upper() not in represented and str(tf).upper() not in planned
+    ]
+    plan.extend(missing)
+    return plan[:capacity]
+
+
+def timeframe_plan_summary(plan: list[str]) -> str:
+    counts = Counter(str(tf).upper() for tf in plan)
+    return ", ".join(f"{tf}x{counts[tf]}" for tf in sorted(counts))
+
+
+def apply_reserved_timeframe(
+    *,
+    reserved_timeframes: list[str],
+    target_symbol: str,
+    target_period: str,
+    policy: str,
+    seed: Seed,
+    target_limiter: "TargetDiversityLimiter",
+    universe_symbols: tuple[str, ...],
+    disabled_symbols: set[str],
+    aliases: dict[str, str],
+    rng: random.Random,
+) -> tuple[str, str, str]:
+    if not reserved_timeframes:
+        return target_symbol, target_period, policy
+    reserved_period = reserved_timeframes[0]
+    candidates = [target_symbol, seed.symbol]
+    shuffled = list(universe_symbols)
+    rng.shuffle(shuffled)
+    candidates.extend(shuffled)
+    seen: set[str] = set()
+    for symbol in candidates:
+        canonical = canonical_symbol(symbol, aliases).upper()
+        if not canonical or canonical in seen or canonical in disabled_symbols:
+            continue
+        seen.add(canonical)
+        if target_limiter.allows(symbol, reserved_period):
+            reserved_timeframes.pop(0)
+            suffix = "tf_reserved"
+            next_policy = f"{policy}+{suffix}" if policy else suffix
+            return symbol, reserved_period, next_policy
+    return target_symbol, target_period, policy
+
+
 def capped_count(total: int, ratio: float) -> int:
     if total <= 0:
         return 0
     return max(1, int(total * ratio + 0.999999))
+
+
+def asset_group_map(asset_groups: dict[str, list[str]], aliases: dict[str, str]) -> dict[str, str]:
+    group_by_symbol: dict[str, str] = {}
+    for group, symbols in asset_groups.items():
+        for symbol in symbols:
+            group_by_symbol[canonical_symbol(symbol, aliases).upper()] = str(group)
+    return group_by_symbol
+
+
+def format_group_cap_summary(limiter: "TargetDiversityLimiter") -> str:
+    groups = sorted(set(limiter.group_by_symbol.values()) | set(limiter.group_cap_ratios))
+    if not groups:
+        return f"default<={limiter.default_group_cap}"
+    return ", ".join(f"{group}<={limiter.group_cap_for(group)}" for group in groups)
 
 
 class TargetDiversityLimiter:
@@ -434,31 +554,67 @@ class TargetDiversityLimiter:
         planned_variants: int,
         aliases: dict[str, str] | None = None,
         *,
+        group_by_symbol: dict[str, str] | None = None,
         pair_cap_ratio: float = TARGET_PAIR_CAP_RATIO,
         symbol_cap_ratio: float = TARGET_SYMBOL_CAP_RATIO,
+        timeframe_cap_ratio: float = TARGET_TIMEFRAME_CAP_RATIO,
+        group_cap_ratios: dict[str, float] | None = None,
+        default_group_cap_ratio: float = DEFAULT_TARGET_GROUP_CAP_RATIO,
     ) -> None:
         self.aliases = aliases or {}
+        self.group_by_symbol = {str(k).upper(): str(v) for k, v in (group_by_symbol or {}).items()}
+        self.group_cap_ratios = {
+            str(group): float(ratio)
+            for group, ratio in (group_cap_ratios or TARGET_GROUP_CAP_RATIOS).items()
+        }
         self.pair_cap = capped_count(planned_variants, pair_cap_ratio)
         self.symbol_cap = capped_count(planned_variants, symbol_cap_ratio)
+        self.timeframe_cap = capped_count(planned_variants, timeframe_cap_ratio)
+        self.default_group_cap = capped_count(planned_variants, default_group_cap_ratio)
+        self.group_caps = {
+            group: capped_count(planned_variants, ratio)
+            for group, ratio in self.group_cap_ratios.items()
+        }
         self.pair_counts: Counter[tuple[str, str]] = Counter()
         self.symbol_counts: Counter[str] = Counter()
+        self.timeframe_counts: Counter[str] = Counter()
+        self.group_counts: Counter[str] = Counter()
 
     def symbol_key(self, symbol: str) -> str:
         return canonical_symbol(symbol, self.aliases).upper()
 
+    def group_key(self, symbol: str) -> str:
+        return self.group_by_symbol.get(self.symbol_key(symbol), "")
+
+    def group_cap_for(self, group: str) -> int:
+        return self.group_caps.get(str(group), self.default_group_cap)
+
     def pair_key(self, symbol: str, period: str) -> tuple[str, str]:
         return self.symbol_key(symbol), str(period or "").upper()
+
+    def timeframe_key(self, period: str) -> str:
+        return str(period or "").upper()
 
     def allows(self, symbol: str, period: str) -> bool:
         if self.pair_cap and self.pair_counts[self.pair_key(symbol, period)] >= self.pair_cap:
             return False
         if self.symbol_cap and self.symbol_counts[self.symbol_key(symbol)] >= self.symbol_cap:
             return False
+        if self.timeframe_cap and self.timeframe_counts[self.timeframe_key(period)] >= self.timeframe_cap:
+            return False
+        group = self.group_key(symbol)
+        group_cap = self.group_cap_for(group) if group else 0
+        if group and group_cap and self.group_counts[group] >= group_cap:
+            return False
         return True
 
     def record(self, symbol: str, period: str) -> None:
         self.pair_counts[self.pair_key(symbol, period)] += 1
         self.symbol_counts[self.symbol_key(symbol)] += 1
+        self.timeframe_counts[self.timeframe_key(period)] += 1
+        group = self.group_key(symbol)
+        if group:
+            self.group_counts[group] += 1
 
 
 def generation_source_seeds(
@@ -1815,6 +1971,40 @@ def select_survivors(scored: list[tuple[Variant, ScoreResult]], top_percent: flo
         limit = max(1, int(len(scored) * max(top_percent, 1.0) / 100.0))
         accepted = scored[:limit]
     return accepted
+
+
+def select_next_seed_survivors(
+    scored: list[tuple[Variant, ScoreResult]],
+    top_percent: float,
+    max_seeds: int,
+    aliases: dict[str, str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
+) -> list[tuple[Variant, ScoreResult]]:
+    survivors = select_survivors(scored, top_percent)
+    if not survivors:
+        return []
+    if max_seeds <= 0:
+        limit = len(survivors)
+    else:
+        top_limit = max(1, int(len(scored) * max(top_percent, 1.0) / 100.0))
+        limit = min(len(survivors), max(max_seeds, top_limit))
+    limiter = TargetDiversityLimiter(limit, aliases, group_by_symbol=group_by_symbol)
+    selected: list[tuple[Variant, ScoreResult]] = []
+    overflow: list[tuple[Variant, ScoreResult]] = []
+    for item in survivors:
+        variant, _result = item
+        if limiter.allows(variant.target_symbol, variant.target_period):
+            selected.append(item)
+            limiter.record(variant.target_symbol, variant.target_period)
+            if len(selected) >= limit:
+                return selected
+        else:
+            overflow.append(item)
+    for item in overflow:
+        if len(selected) >= limit:
+            break
+        selected.append(item)
+    return selected
 
 
 def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Path) -> list[Path]:
@@ -3643,10 +3833,28 @@ def build_run_config(
                 "generation_2": TF_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
                 "late": TF_UNSEEDED_FORCE_PROB_LATE,
             },
+            "force_unseeded_timeframe_min_ratios": FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS,
             "target_diversity_caps": {
+                "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
+                "group_ratios": TARGET_GROUP_CAP_RATIOS,
                 "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
+                "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
                 "reroll_attempts": DIVERSITY_REROLL_ATTEMPTS,
+            },
+            "seed_selection_diversity_caps": {
+                "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
+                "group_ratios": TARGET_GROUP_CAP_RATIOS,
+                "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
+                "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
+                "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
+            },
+            "next_seed_diversity_caps": {
+                "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
+                "group_ratios": TARGET_GROUP_CAP_RATIOS,
+                "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
+                "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
+                "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
             },
         },
         "execution": {
@@ -3715,6 +3923,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         Path(args.assets).expanduser(),
         disabled_symbols=disabled_symbols,
     )
+    group_by_symbol = asset_group_map(asset_groups, aliases)
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
@@ -3739,7 +3948,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             print(f"ERROR: gen {pending_generation} no produjo reportes puntuables; no se genera la siguiente generacion")
             return 1
         if scored:
-            current_seeds = seeds_from_survivors(select_survivors(scored, args.top_percent))
+            current_seeds = seeds_from_survivors(
+                select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+            )
         else:
             current_seeds = seeds_from_variants(variants)
         if args.backtest_pending_only:
@@ -3781,7 +3992,15 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         mutation_direction_feedback = memory.mutation_direction_feedback()
         asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
-        selected_seed_rankings = ranked_seed_selection(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+        selected_seed_rankings = ranked_seed_selection(
+            current_seeds,
+            args.max_seeds,
+            asset_feedback,
+            timeframe_feedback,
+            rng,
+            aliases,
+            group_by_symbol,
+        )
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
         memory.record_seed_selection(run_id, generation, selected_seed_rankings)
         unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
@@ -3792,12 +4011,23 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         )
         asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
         tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
-        target_limiter = TargetDiversityLimiter(len(selected_seeds) * args.variants_per_seed, aliases)
+        target_limiter = TargetDiversityLimiter(
+            len(selected_seeds) * args.variants_per_seed,
+            aliases,
+            group_by_symbol=group_by_symbol,
+        )
         variants: list[Variant] = []
+        reserved_timeframes = (
+            reserved_timeframe_plan(selected_seeds, timeframe_universe, len(selected_seeds) * args.variants_per_seed)
+            if args.force_unseeded_universe
+            else []
+        )
         print(f"Generacion {generation}: seeds={len(selected_seeds)}")
         print(
             "Caps diversidad target: "
-            f"simbolo<={target_limiter.symbol_cap}, simbolo+TF<={target_limiter.pair_cap}"
+            f"grupos[{format_group_cap_summary(target_limiter)}], "
+            f"simbolo<={target_limiter.symbol_cap}, TF<={target_limiter.timeframe_cap}, "
+            f"simbolo+TF<={target_limiter.pair_cap}"
         )
         if args.force_unseeded_universe:
             print(
@@ -3805,6 +4035,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 f"TF={len(unseeded_timeframes)} | "
                 f"prob_activo={asset_unseeded_probability:.0%}, prob_TF={tf_unseeded_probability:.0%}"
             )
+            if reserved_timeframes:
+                print(f"Cuota/reserva TF exploratoria: {timeframe_plan_summary(reserved_timeframes)}")
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
                 target_symbol, target_period, policy = choose_diverse_target(
@@ -3823,6 +4055,18 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     unseeded_timeframes=unseeded_timeframes,
                     asset_unseeded_probability=asset_unseeded_probability,
                     timeframe_unseeded_probability=tf_unseeded_probability,
+                )
+                target_symbol, target_period, policy = apply_reserved_timeframe(
+                    reserved_timeframes=reserved_timeframes,
+                    target_symbol=target_symbol,
+                    target_period=target_period,
+                    policy=policy,
+                    seed=seed,
+                    target_limiter=target_limiter,
+                    universe_symbols=universe_symbols,
+                    disabled_symbols=disabled_symbols,
+                    aliases=aliases,
+                    rng=rng,
                 )
                 variant = create_variant(
                     seed,
@@ -3853,7 +4097,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             print(f"ERROR: gen {generation} no produjo reportes puntuables; se detiene la continuacion")
             return 1
         if scored:
-            current_seeds = seeds_from_survivors(select_survivors(scored, args.top_percent))
+            current_seeds = seeds_from_survivors(
+                select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+            )
         else:
             current_seeds = seeds_from_variants(variants)
 
@@ -3966,6 +4212,7 @@ def run_agent(args: argparse.Namespace) -> int:
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
+    group_by_symbol = asset_group_map(asset_groups, aliases)
     timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
     if blocked_source_count:
@@ -4019,7 +4266,15 @@ def run_agent(args: argparse.Namespace) -> int:
             mutation_direction_feedback = memory.mutation_direction_feedback()
             asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
-            selected_seed_rankings = ranked_seed_selection(current_seeds, args.max_seeds, asset_feedback, timeframe_feedback, rng, aliases)
+            selected_seed_rankings = ranked_seed_selection(
+                current_seeds,
+                args.max_seeds,
+                asset_feedback,
+                timeframe_feedback,
+                rng,
+                aliases,
+                group_by_symbol,
+            )
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
             memory.record_seed_selection(run_id, generation, selected_seed_rankings)
             unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
@@ -4030,12 +4285,23 @@ def run_agent(args: argparse.Namespace) -> int:
             )
             asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
             tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
-            target_limiter = TargetDiversityLimiter(len(selected_seeds) * args.variants_per_seed, aliases)
+            target_limiter = TargetDiversityLimiter(
+                len(selected_seeds) * args.variants_per_seed,
+                aliases,
+                group_by_symbol=group_by_symbol,
+            )
             variants: list[Variant] = []
+            reserved_timeframes = (
+                reserved_timeframe_plan(selected_seeds, timeframe_universe, len(selected_seeds) * args.variants_per_seed)
+                if args.force_unseeded_universe
+                else []
+            )
             print(f"Generacion {generation}: seeds={len(selected_seeds)}")
             print(
                 "Caps diversidad target: "
-                f"simbolo<={target_limiter.symbol_cap}, simbolo+TF<={target_limiter.pair_cap}"
+                f"grupos[{format_group_cap_summary(target_limiter)}], "
+                f"simbolo<={target_limiter.symbol_cap}, TF<={target_limiter.timeframe_cap}, "
+                f"simbolo+TF<={target_limiter.pair_cap}"
             )
             if args.force_unseeded_universe:
                 print(
@@ -4043,6 +4309,8 @@ def run_agent(args: argparse.Namespace) -> int:
                     f"TF={len(unseeded_timeframes)} | "
                     f"prob_activo={asset_unseeded_probability:.0%}, prob_TF={tf_unseeded_probability:.0%}"
                 )
+                if reserved_timeframes:
+                    print(f"Cuota/reserva TF exploratoria: {timeframe_plan_summary(reserved_timeframes)}")
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
                     target_symbol, target_period, policy = choose_diverse_target(
@@ -4061,6 +4329,18 @@ def run_agent(args: argparse.Namespace) -> int:
                         unseeded_timeframes=unseeded_timeframes,
                         asset_unseeded_probability=asset_unseeded_probability,
                         timeframe_unseeded_probability=tf_unseeded_probability,
+                    )
+                    target_symbol, target_period, policy = apply_reserved_timeframe(
+                        reserved_timeframes=reserved_timeframes,
+                        target_symbol=target_symbol,
+                        target_period=target_period,
+                        policy=policy,
+                        seed=seed,
+                        target_limiter=target_limiter,
+                        universe_symbols=universe_symbols,
+                        disabled_symbols=disabled_symbols,
+                        aliases=aliases,
+                        rng=rng,
                     )
                     variant = create_variant(
                         seed,
@@ -4112,8 +4392,9 @@ def run_agent(args: argparse.Namespace) -> int:
                         return code
 
             if scored:
-                survivors = select_survivors(scored, args.top_percent)
-                current_seeds = [variant_as_next_seed(variant) for variant, _ in survivors]
+                current_seeds = seeds_from_survivors(
+                    select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                )
             else:
                 current_seeds = [variant_as_next_seed(variant) for variant in variants]
 

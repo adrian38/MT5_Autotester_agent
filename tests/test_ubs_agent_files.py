@@ -9,6 +9,7 @@ from ubs.account import account_disabled_symbols_path
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
 from ubs_agent import (
     TargetDiversityLimiter,
+    apply_reserved_timeframe,
     choose_diverse_target,
     choose_target_period,
     choose_target_symbol,
@@ -21,8 +22,11 @@ from ubs_agent import (
     score_config_for_period,
     target_timeframe_universe,
     min_trades_for_period,
+    ranked_seed_selection,
+    reserved_timeframe_plan,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
+    select_next_seed_survivors,
     validate_seed_backtest_set,
     variant_as_next_seed,
     write_set_force_symbol,
@@ -302,6 +306,143 @@ class UBSSetsFileTests(unittest.TestCase):
         limiter.record("META", "D1")
         self.assertFalse(limiter.allows("META", "M30"))
         self.assertTrue(limiter.allows("AMZN", "H4"))
+
+    def test_target_diversity_limiter_caps_universe_group(self) -> None:
+        limiter = TargetDiversityLimiter(
+            10,
+            group_by_symbol={
+                "XAUUSD": "Metals",
+                "XAGUSD": "Metals",
+                "XAUEUR": "Metals",
+                "META": "Stocks",
+            },
+        )
+
+        for symbol in ("XAUUSD", "XAGUSD", "XAUEUR", "XAUUSD"):
+            self.assertTrue(limiter.allows(symbol, "H4"))
+            limiter.record(symbol, "H4")
+
+        self.assertFalse(limiter.allows("XAUUSD", "H1"))
+        self.assertFalse(limiter.allows("XAGUSD", "H1"))
+        self.assertTrue(limiter.allows("META", "H4"))
+
+    def test_target_diversity_limiter_uses_group_specific_caps(self) -> None:
+        limiter = TargetDiversityLimiter(
+            10,
+            group_by_symbol={
+                "EURUSD": "Forex",
+                "GBPUSD": "Forex",
+                "USDJPY": "Forex",
+                "AUDUSD": "Forex",
+                "USDCAD": "Forex",
+                "USDCHF": "Forex",
+                "NZDUSD": "Forex",
+                "XAUUSD": "Metals",
+            },
+        )
+
+        for symbol in ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"):
+            self.assertTrue(limiter.allows(symbol, "H1"))
+            limiter.record(symbol, "H1")
+
+        self.assertFalse(limiter.allows("NZDUSD", "H4"))
+        self.assertTrue(limiter.allows("XAUUSD", "H4"))
+
+    def test_ranked_seed_selection_keeps_diverse_alternatives(self) -> None:
+        seeds = [
+            *(Seed(Path(f"xau_{idx}.set"), "XAUUSD", "H4", "family", "1") for idx in range(12)),
+            *(Seed(Path(f"meta_{idx}.set"), "META", "H1", "family", "1") for idx in range(4)),
+            *(Seed(Path(f"eur_{idx}.set"), "EURUSD", "D1", "family", "1") for idx in range(4)),
+            *(Seed(Path(f"btc_{idx}.set"), "BTCUSD", "M30", "family", "1") for idx in range(4)),
+        ]
+
+        selected = ranked_seed_selection(
+            seeds,
+            10,
+            {"XAUUSD": 100.0, "META": 20.0, "EURUSD": 15.0, "BTCUSD": 10.0},
+            {"H4": 10.0, "H1": 5.0, "D1": 4.0, "M30": 3.0},
+            random.Random(7),
+            {},
+            {"XAUUSD": "Metals", "META": "Stocks", "EURUSD": "Forex", "BTCUSD": "Crypto"},
+        )
+
+        pairs = {(seed.symbol, seed.period) for _score, seed, _asset, _tf, _div in selected}
+        self.assertIn(("XAUUSD", "H4"), pairs)
+        self.assertGreater(len(pairs), 1)
+        self.assertLess(sum(1 for _score, seed, _asset, _tf, _div in selected if seed.symbol == "XAUUSD"), 10)
+
+    def test_next_seed_survivors_are_diversified_without_changing_accepted_copy_pool(self) -> None:
+        dominant = [
+            (
+                Variant(Path(f"xau_{idx}.set"), Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"), "XAUUSD", "H4", (), (), "", (), ()),
+                score(100.0 - idx),
+            )
+            for idx in range(12)
+        ]
+        alternatives = [
+            (
+                Variant(Path("meta.set"), Seed(Path("seed.set"), "META", "H1", "family", "1"), "META", "H1", (), (), "", (), ()),
+                score(40.0, trades=100),
+            ),
+            (
+                Variant(Path("eur.set"), Seed(Path("seed.set"), "EURUSD", "D1", "family", "1"), "EURUSD", "D1", (), (), "", (), ()),
+                score(39.0, trades=100),
+            ),
+        ]
+
+        selected = select_next_seed_survivors(
+            dominant + alternatives,
+            20.0,
+            8,
+            {},
+            {"XAUUSD": "Metals", "META": "Stocks", "EURUSD": "Forex"},
+        )
+
+        self.assertEqual(len(selected), 8)
+        self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
+
+    def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
+        selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]
+
+        plan = reserved_timeframe_plan(selected, ("M1", "M5", "H4", "D1"), 10)
+
+        self.assertEqual(plan, ["M1", "M5", "D1"])
+
+    def test_reserved_timeframe_plan_applies_minimum_intraday_quotas(self) -> None:
+        selected = [
+            Seed(Path("h1.set"), "META", "H1", "family", "1"),
+            Seed(Path("h4.set"), "XAGUSD", "H4", "family", "1"),
+            Seed(Path("d1.set"), "USDJPY", "D1", "family", "1"),
+        ]
+
+        plan = reserved_timeframe_plan(selected, ("M1", "M5", "M15", "M30", "H1", "H4", "D1"), 300)
+
+        self.assertEqual(plan.count("M1"), 6)
+        self.assertEqual(plan.count("M5"), 6)
+        self.assertEqual(plan.count("M15"), 9)
+        self.assertEqual(plan.count("M30"), 15)
+
+    def test_apply_reserved_timeframe_overrides_target_when_allowed(self) -> None:
+        reserved = ["M1"]
+        limiter = TargetDiversityLimiter(10)
+
+        symbol, period, policy = apply_reserved_timeframe(
+            reserved_timeframes=reserved,
+            target_symbol="XAUUSD",
+            target_period="H4",
+            policy="exploit",
+            seed=Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
+            target_limiter=limiter,
+            universe_symbols=("META", "EURUSD"),
+            disabled_symbols=set(),
+            aliases={},
+            rng=random.Random(1),
+        )
+
+        self.assertEqual(symbol, "XAUUSD")
+        self.assertEqual(period, "M1")
+        self.assertEqual(policy, "exploit+tf_reserved")
+        self.assertEqual(reserved, [])
 
     def test_choose_diverse_target_avoids_capped_symbol(self) -> None:
         seed = Seed(Path("seed.set"), "META", "H4", "family", "1")

@@ -357,11 +357,21 @@ The option reserves part of generation for universe coverage:
   trades, score thresholds, execution dates, universe counts, adaptive
   exploration probabilities, and the serialized CLI args. Use this to audit how
   a run was launched instead of inferring the flag from policies.
-- Target selection has per-generation anti-concentration caps: max 45% per
-  canonical symbol and max 30% per canonical symbol+timeframe. Capped choices
-  are rerolled and then replaced with an enabled universe fallback when needed;
-  policies may include `diversity_reroll`, `diversity_fallback`, or
+- Target selection has per-generation anti-concentration caps: group-specific
+  max 60% for Forex/Stocks, 40% for Metals, 35% for IndicesEnergies, 25% for
+  Crypto, and 40% default for unknown groups; plus max 45% per canonical
+  symbol, max 60% per timeframe, and max 30% per canonical symbol+timeframe. Capped
+  choices are rerolled and then replaced with an enabled universe fallback when
+  needed; policies may include `diversity_reroll`, `diversity_fallback`, or
   `diversity_overflow`.
+- Source seed selection and next-generation survivor selection apply the same
+  group/symbol/timeframe/symbol+timeframe caps before allowing overflow, so one
+  profitable niche cannot monopolize every seed slot when alternatives exist.
+- When `force_unseeded_universe` is enabled, generation reserves exploratory
+  target slots for intraday timeframes before normal target creation: M1 2%,
+  M5 2%, M15 3%, and M30 5% of planned generation size. It also reserves at
+  least one target slot for each allowed timeframe missing from the selected
+  source seeds, subject to the normal target diversity caps.
 - Generated candidates store true parameter mutations in `mutated_keys` and
   target-timeframe patch keys separately in `timeframe_keys`. The
   `mutation_details_json` payload stores old/new/delta values for future
