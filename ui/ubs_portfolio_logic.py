@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
-import math
+import shutil
 import sqlite3
 import sys
 import threading
@@ -12,12 +12,11 @@ from tkinter import filedialog, messagebox
 
 from ubs.account import ACCOUNT_TYPES, account_memory_path
 from ubs.db import connect_memory
-from ubs.set_utils import read_set_with_encoding, write_set_text
+from ubs.set_utils import write_set_text
 from portfolio_manager.ubs_portfolio import (
     PortfolioAvailability,
     PortfolioResult,
     PortfolioType,
-    apply_portfolio_lot_text,
     load_robust_sets_from_rows,
     optimize_portfolio,
     portfolio_symbol_key,
@@ -1273,42 +1272,32 @@ class UBSPortfolioLogicMixin:
             messagebox.showerror("Exportar sets", f"No pude crear la carpeta:\n{exc}")
             return
 
-        capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
-        exported: list[tuple[str, str, str, float, int, str]] = []
+        exported: list[tuple[str, str, str, int, float, str]] = []
         missing: list[str] = []
-        not_found_key: list[str] = []
         for member in members:
             set_path = Path(str(member.get("set_path") or member.get("set_id") or ""))
             if not set_path.is_file():
                 missing.append(set_path.name)
                 continue
+            out_path = dest / set_path.name
             try:
-                text, encoding = read_set_with_encoding(set_path)
+                if set_path.resolve() != out_path.resolve():
+                    shutil.copy2(set_path, out_path)
             except Exception:
                 missing.append(set_path.name)
                 continue
-            step = float(member.get("lot_size_step") or 0)
-            if step <= 0:
-                units = int(member.get("units") or 0)
-                step = math.ceil(capital / units * 100.0) / 100.0 if units > 0 else 0
-            new_text, step_int, found = apply_portfolio_lot_text(text, step)
-            if not found:
-                not_found_key.append(set_path.name)
-            units = int(capital // step_int) if step_int > 0 else 0
-            real_lot = round(units * 0.01, 2)
-            out_path = dest / set_path.name
-            write_set_text(out_path, new_text, encoding)
             exported.append((
                 self._ubs_portfolio_member_account(member),
                 str(member.get("symbol") or ""),
                 str(member.get("timeframe") or member.get("period") or ""),
-                real_lot,
-                step_int,
+                int(member.get("units") or 0),
+                float(member.get("lot") or 0),
                 set_path.name,
             ))
 
         resumen = dest / f"PORTAFOLIO_{portfolio_id}_resumen.txt"
         type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
+        capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
         lines = [
             f"Portafolio: {portfolio['name']}",
             f"Tipo: {PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key)}   Capital: {capital:,.0f}",
@@ -1318,20 +1307,17 @@ class UBSPortfolioLogicMixin:
             f"DD puntual usado: {float(portfolio['actual_point_dd'] or 0):,.2f}",
             f"Net profit total 2020-2026: {float(portfolio['total_net_profit'] or 0):,.2f}",
             "",
-            "Modo de lote exportado: Risk=2.",
-            "El EA aplica Lots = floor(AccountBalance / LotPerBalance_step) * 0.01",
-            f"Calculado para balance {capital:,.0f}.",
+            "Sets exportados: copia exacta del .set original probado.",
+            "No se modifica Risk, LotPerBalance_step, grid ni ningun otro parametro del EA.",
+            "UNID. y LOTE son la asignacion informativa calculada por el portafolio.",
             "",
-            f"{'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'LOTE':>7s} {'LotPerBalance_step':>20s}   SET",
+            f"{'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'UNID.':>7s} {'LOTE':>7s}   SET",
         ]
-        for account, symbol, period, real_lot, step_int, name in exported:
-            lines.append(f"{account:7s} {symbol:12s} {period:5s} {real_lot:7.2f} {step_int:20d}   {name}")
+        for account, symbol, period, units, lot, name in exported:
+            lines.append(f"{account:7s} {symbol:12s} {period:5s} {units:7d} {lot:7.2f}   {name}")
         if missing:
             lines.append("")
             lines.append("OMITIDOS (set no encontrado): " + ", ".join(missing))
-        if not_found_key:
-            lines.append("")
-            lines.append("AVISO (sin clave LotPerBalance_step): " + ", ".join(not_found_key))
         write_set_text(resumen, "\n".join(lines), "utf-8")
 
         self.ubs_portfolio_status.set(f"Exportados {len(exported)} set(s) a {dest}")

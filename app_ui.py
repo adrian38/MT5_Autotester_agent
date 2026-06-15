@@ -40,6 +40,8 @@ from ui.portfolio_logic import PortfolioLogicMixin
 from ui.portfolio_view import PortfolioViewMixin
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 from ui.ubs_portfolio_view import UBSPortfolioViewMixin
+from ui.ubs_search_logic import UBSSearchLogicMixin
+from ui.ubs_search_view import UBSSearchViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
 from ui.ubs_params_view import UBSParamsViewMixin
 from ui.settings_logic import SettingsLogicMixin
@@ -556,6 +558,8 @@ class MT5AutotesterUI(
     PortfolioLogicMixin,
     UBSPortfolioViewMixin,
     UBSPortfolioLogicMixin,
+    UBSSearchViewMixin,
+    UBSSearchLogicMixin,
     SettingsViewMixin,
     SettingsLogicMixin,
     UBSAgentViewMixin,
@@ -805,6 +809,9 @@ class MT5AutotesterUI(
         self.ubs_portfolio_member_paths: dict[str, dict[str, str]] = {}
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        self.ubs_search_query = tk.StringVar(value="")
+        self.ubs_search_status = tk.StringVar(value="Escribe parte del nombre de un set UBS.")
+        self.ubs_search_paths: dict[str, dict[str, str]] = {}
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
@@ -1089,7 +1096,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -1106,6 +1113,7 @@ class MT5AutotesterUI(
         self._build_ubs_params(self.section_frames["ubs_params"])
         self._build_portfolio(self.section_frames["portfolio"])
         self._build_ubs_portfolio(self.section_frames["portafolio_ubs"])
+        self._build_ubs_search(self.section_frames["buscador"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
         self._build_files(self.section_frames["archivos"])
@@ -1153,6 +1161,7 @@ class MT5AutotesterUI(
             ("ubs_comparar", "UBS  Comparar"),
             ("ubs_params", "UBS  Parámetros"),
             ("portafolio_ubs", "UBS  Portafolio"),
+            ("buscador", "UBS  Buscador"),
         ]
         for index, (key, label) in enumerate(items):
             btn = RoundedButton(
