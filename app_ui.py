@@ -52,6 +52,8 @@ from ui.ubs_results_logic import UBSResultsLogicMixin
 from ui.ubs_results_view import UBSResultsViewMixin
 from ui.ubs_final_tick_logic import UBSFinalTickLogicMixin
 from ui.ubs_final_tick_view import UBSFinalTickViewMixin
+from ui.ubs_final_tick_6m_logic import UBSFinalTick6MLogicMixin
+from ui.ubs_final_tick_6m_view import UBSFinalTick6MViewMixin
 from ui.ubs_robustness_logic import UBSRobustnessLogicMixin
 from ui.ubs_robustness_view import UBSRobustnessViewMixin
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
@@ -572,6 +574,8 @@ class MT5AutotesterUI(
     UBSRobustnessLogicMixin,
     UBSFinalTickViewMixin,
     UBSFinalTickLogicMixin,
+    UBSFinalTick6MViewMixin,
+    UBSFinalTick6MLogicMixin,
     UBSSeedsViewMixin,
     UBSSeedsLogicMixin,
     UBSUniverseViewMixin,
@@ -686,6 +690,7 @@ class MT5AutotesterUI(
         self.ubs_robust_negative_bonus = tk.StringVar(value=saved_robust_negative_bonus)
         self.ubs_robust_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_robust_auto"), False))
         self.ubs_final_tick_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_final_tick_auto"), False))
+        self.ubs_final_tick_6m_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_final_tick_6m_auto"), False))
         self.ubs_agent_from_date = tk.StringVar(value=saved_general.get("ubs_agent_from_date", ""))
         self.ubs_agent_to_date = tk.StringVar(value=saved_general.get("ubs_agent_to_date", ""))
         self.ubs_seed_from_date = tk.StringVar(value=saved_general.get("ubs_seed_from_date", ""))
@@ -696,6 +701,10 @@ class MT5AutotesterUI(
         self.ubs_final_tick_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_to_date", "2026.05.31"))
         self.ubs_final_tick_ohlc_from_date = tk.StringVar(value=saved_general.get("ubs_final_tick_ohlc_from_date", ""))
         self.ubs_final_tick_ohlc_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_ohlc_to_date", ""))
+        self.ubs_final_tick_6m_from_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_from_date", "2026.01.01"))
+        self.ubs_final_tick_6m_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_to_date", "2026.06.30"))
+        self.ubs_final_tick_6m_ohlc_from_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_ohlc_from_date", ""))
+        self.ubs_final_tick_6m_ohlc_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_ohlc_to_date", ""))
         self.ubs_final_tick_min_history_quality = tk.StringVar(
             value=saved_general.get("ubs_final_tick_min_history_quality", "80")
         )
@@ -821,6 +830,8 @@ class MT5AutotesterUI(
         self.ubs_robust_status = tk.StringVar(value="Sin resultados de robustez")
         self.ubs_final_tick_summary = tk.StringVar(value="Final Tick: sin evaluar")
         self.ubs_final_tick_status = tk.StringVar(value="Sin resultados Final Tick")
+        self.ubs_final_tick_6m_summary = tk.StringVar(value="Final Tick 6M: sin evaluar")
+        self.ubs_final_tick_6m_status = tk.StringVar(value="Sin resultados Final Tick 6M")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
         self.ubs_universe_asset_search = tk.StringVar(value="")
@@ -831,6 +842,7 @@ class MT5AutotesterUI(
         self.ubs_results_run_id = tk.StringVar(value="")
         self.ubs_robust_run_id = tk.StringVar(value="")
         self.ubs_final_tick_run_id = tk.StringVar(value="")
+        self.ubs_final_tick_6m_run_id = tk.StringVar(value="")
         self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
         self.ubs_seed_override_symbol = tk.StringVar(value="")
         self.ubs_weights_locked = tk.BooleanVar(value=False)
@@ -873,6 +885,7 @@ class MT5AutotesterUI(
         self.ubs_robust_checked: set[str] = set()
         self.ubs_final_tick_paths: dict[str, dict[str, str]] = {}
         self.ubs_final_tick_checked: set[str] = set()
+        self.ubs_final_tick_6m_paths: dict[str, dict[str, str]] = {}
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}
         self.ubs_universe_checked: set[str] = set()
         self.ubs_timeframe_checked: set[str] = set()
@@ -1096,7 +1109,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -1107,6 +1120,7 @@ class MT5AutotesterUI(
         self._build_ubs_results(self.section_frames["ubs_resultados"])
         self._build_ubs_robustness(self.section_frames["ubs_robustez"])
         self._build_ubs_final_tick(self.section_frames["ubs_final_tick"])
+        self._build_ubs_final_tick_6m(self.section_frames["ubs_final_tick_6m"])
         self._build_ubs_history(self.section_frames["ubs_historico"])
         self._build_ubs_universe(self.section_frames["ubs_universo"])
         self._build_ubs_comparison(self.section_frames["ubs_comparar"])
@@ -1156,6 +1170,7 @@ class MT5AutotesterUI(
             ("ubs_resultados", "UBS  Resultados"),
             ("ubs_robustez", "UBS  Robustez"),
             ("ubs_final_tick", "UBS  Final Tick"),
+            ("ubs_final_tick_6m", "UBS  Final Tick 6M"),
             ("ubs_historico", "UBS  Historico"),
             ("ubs_universo", "UBS  Universo"),
             ("ubs_comparar", "UBS  Comparar"),
@@ -1572,6 +1587,7 @@ class MT5AutotesterUI(
             ("ubs_results", self._refresh_ubs_results),
             ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
+            ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
             ("ubs_seeds", self._refresh_ubs_seeds),

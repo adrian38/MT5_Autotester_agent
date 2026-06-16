@@ -12,11 +12,24 @@ from ubs.weights import (
 
 
 class UBSWeightsTests(unittest.TestCase):
-    def test_final_tick_accepted_adds_live_signal_bonus(self) -> None:
+    def test_short_final_tick_accepted_is_neutral_until_six_month_passes(self) -> None:
         row = {
             "status": "accepted",
             "score": 100.0,
             "final_tick_status": "accepted",
+        }
+
+        self.assertEqual(
+            feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
+            100.0 + ASSET_ACCEPTED_BONUS,
+        )
+
+    def test_final_tick_6m_accepted_adds_live_signal_bonus(self) -> None:
+        row = {
+            "status": "accepted",
+            "score": 100.0,
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "accepted",
         }
 
         self.assertEqual(
@@ -34,9 +47,7 @@ class UBSWeightsTests(unittest.TestCase):
 
         self.assertEqual(
             feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
-            100.0
-            + ASSET_ACCEPTED_BONUS
-            + DEFAULT_FINAL_TICK_REJECTED_PENALTY
+            DEFAULT_FINAL_TICK_REJECTED_PENALTY
             - FINAL_TICK_REASON_PENALTIES["profit_factor"]
             - FINAL_TICK_REASON_PENALTIES["drawdown_pct"],
         )
@@ -65,6 +76,38 @@ class UBSWeightsTests(unittest.TestCase):
                     "final_tick_similarity_json": json.dumps({"reasons": ["profit_factor", "drawdown_pct"]}),
                 }
                 self.assertEqual(feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS), expected)
+
+    def test_final_tick_6m_rejected_adds_live_signal_penalty_and_reason_penalties(self) -> None:
+        row = {
+            "status": "accepted",
+            "score": 100.0,
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "rejected",
+            "final_tick_6m_similarity_json": json.dumps({"reasons": ["profit_factor", "drawdown_pct"]}),
+        }
+
+        self.assertEqual(
+            feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
+            DEFAULT_FINAL_TICK_REJECTED_PENALTY
+            - FINAL_TICK_REASON_PENALTIES["profit_factor"]
+            - FINAL_TICK_REASON_PENALTIES["drawdown_pct"],
+        )
+
+    def test_final_tick_6m_rejected_caps_high_prior_weight(self) -> None:
+        row = {
+            "status": "accepted",
+            "score": 400.0,
+            "robust_status": "accepted",
+            "robust_positive_bonus": 70.0,
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "rejected",
+            "final_tick_6m_similarity_json": json.dumps({"reasons": ["profit_factor"]}),
+        }
+
+        self.assertEqual(
+            feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
+            DEFAULT_FINAL_TICK_REJECTED_PENALTY - FINAL_TICK_REASON_PENALTIES["profit_factor"],
+        )
 
     def test_no_trades_with_report_contributes_fixed_penalty(self) -> None:
         row = {

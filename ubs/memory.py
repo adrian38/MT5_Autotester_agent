@@ -24,9 +24,26 @@ def aggregate_feedback_value(groups: dict[object, list[float]]) -> float | None:
     return grouped_shrunk_mean(groups)
 
 
+FINAL_TICK_STAGE_TABLES = {
+    "probe": "candidate_final_tick",
+    "six_month": "candidate_final_tick_6m",
+}
+FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
+
+
+def final_tick_table_for_stage(stage: str | None) -> str:
+    key = str(stage or "probe").strip().lower().replace("-", "_")
+    if key in {"6m", "sixmonth", "six_month"}:
+        key = "six_month"
+    if key not in FINAL_TICK_STAGE_TABLES:
+        raise ValueError(f"Etapa Final Tick desconocida: {stage}")
+    return FINAL_TICK_STAGE_TABLES[key]
+
+
 class AgentMemory:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.active_final_tick_stage = "probe"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = connect_memory(self.path, enable_wal=True)
         self._init()
@@ -112,6 +129,28 @@ class AgentMemory:
                 evaluated_at text not null
             );
             create table if not exists candidate_final_tick (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                accepted integer,
+                ohlc_report_path text,
+                real_tick_report_path text,
+                ohlc_score real,
+                real_tick_score real,
+                ohlc_metrics_json text,
+                real_tick_metrics_json text,
+                similarity_json text,
+                history_quality real,
+                min_history_quality real not null default 80.0,
+                from_date text not null default '',
+                to_date text not null default '',
+                max_net_delta_pct real not null default 35.0,
+                max_pf_delta_pct real not null default 35.0,
+                max_dd_delta_pct real not null default 35.0,
+                max_trades_delta_pct real not null default 35.0,
+                evaluated_at text not null
+            );
+            create table if not exists candidate_final_tick_6m (
                 candidate_id integer primary key,
                 run_id integer not null,
                 status text not null,
@@ -533,9 +572,21 @@ class AgentMemory:
             (run_id,),
         ).fetchall()
 
-    def accepted_candidates_for_final_tick(self, run_id: int) -> list[sqlite3.Row]:
+    def accepted_candidates_for_final_tick(
+        self,
+        run_id: int,
+        *,
+        final_tick_stage: str = "probe",
+    ) -> list[sqlite3.Row]:
+        final_tick_table = final_tick_table_for_stage(final_tick_stage)
+        probe_join = ""
+        if final_tick_table != "candidate_final_tick":
+            probe_join = (
+                "join candidate_final_tick probe_ft on probe_ft.candidate_id = c.id "
+                "and probe_ft.status in ('accepted', 'pending_ohlc_trades')"
+            )
         return self.conn.execute(
-            """
+            f"""
             select
                 c.*,
                 cr.status as robust_status,
@@ -547,7 +598,8 @@ class AgentMemory:
                 ft.ohlc_metrics_json as ft_ohlc_metrics_json
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
-            left join candidate_final_tick ft on ft.candidate_id = c.id
+            {probe_join}
+            left join {final_tick_table} ft on ft.candidate_id = c.id
             where c.run_id=? and c.status='accepted' and cr.status='accepted'
             order by c.generation, c.id
             """,
@@ -621,11 +673,14 @@ class AgentMemory:
         max_pf_delta_pct: float,
         max_dd_delta_pct: float,
         max_trades_delta_pct: float,
+        *,
+        final_tick_stage: str | None = None,
     ) -> None:
         accepted = int(status == "accepted")
+        final_tick_table = final_tick_table_for_stage(final_tick_stage or self.active_final_tick_stage)
         self.conn.execute(
-            """
-            insert into candidate_final_tick (
+            f"""
+            insert into {final_tick_table} (
                 candidate_id, run_id, status, accepted,
                 ohlc_report_path, real_tick_report_path,
                 ohlc_score, real_tick_score,
@@ -693,10 +748,13 @@ class AgentMemory:
                 cr.negative_bonus as robust_negative_bonus,
                 cr.metrics_json as robust_metrics_json,
                 ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json
+                ft.similarity_json as final_tick_similarity_json,
+                ft6.status as final_tick_6m_status,
+                ft6.similarity_json as final_tick_6m_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.mutated_keys != ''
               and c.status in ('accepted', 'rejected', 'no_trades')
               and (c.score is not null or c.status = 'no_trades')
@@ -727,10 +785,13 @@ class AgentMemory:
                 cr.negative_bonus as robust_negative_bonus,
                 cr.metrics_json as robust_metrics_json,
                 ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json
+                ft.similarity_json as final_tick_similarity_json,
+                ft6.status as final_tick_6m_status,
+                ft6.similarity_json as final_tick_6m_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where coalesce(c.mutation_details_json, '') != ''
               and c.status in ('accepted', 'rejected', 'no_trades')
               and (c.score is not null or c.status = 'no_trades')
@@ -784,10 +845,13 @@ class AgentMemory:
                 cr.negative_bonus as robust_negative_bonus,
                 cr.metrics_json as robust_metrics_json,
                 ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json
+                ft.similarity_json as final_tick_similarity_json,
+                ft6.status as final_tick_6m_status,
+                ft6.similarity_json as final_tick_6m_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.status in ('accepted', 'rejected', 'no_trades')
               and (c.score is not null or c.status = 'no_trades')
             """
@@ -831,10 +895,13 @@ class AgentMemory:
                 cr.negative_bonus as robust_negative_bonus,
                 cr.metrics_json as robust_metrics_json,
                 ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json
+                ft.similarity_json as final_tick_similarity_json,
+                ft6.status as final_tick_6m_status,
+                ft6.similarity_json as final_tick_6m_similarity_json
             from candidates c
             left join candidate_robustness cr on cr.candidate_id = c.id
             left join candidate_final_tick ft on ft.candidate_id = c.id
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.status in ('accepted', 'rejected', 'no_trades')
               and (c.score is not null or c.status = 'no_trades')
             """

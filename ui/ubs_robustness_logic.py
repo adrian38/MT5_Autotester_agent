@@ -38,6 +38,7 @@ class UBSRobustnessLogicMixin:
         for label, callback in (
             ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
+            ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
             ("ubs_universe", self._refresh_ubs_universe),
         ):
             self._safe_refresh(label, callback)

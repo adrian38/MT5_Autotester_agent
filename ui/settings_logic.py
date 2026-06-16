@@ -359,6 +359,7 @@ class SettingsLogicMixin:
             "ubs_robust_negative_bonus": self.ubs_robust_negative_bonus.get().strip(),
             "ubs_robust_auto": "1" if self.ubs_robust_auto.get() else "0",
             "ubs_final_tick_auto": "1" if self.ubs_final_tick_auto.get() else "0",
+            "ubs_final_tick_6m_auto": "1" if self.ubs_final_tick_6m_auto.get() else "0",
             "ubs_agent_from_date": self.ubs_agent_from_date.get().strip(),
             "ubs_agent_to_date": self.ubs_agent_to_date.get().strip(),
             "ubs_seed_from_date": self.ubs_seed_from_date.get().strip(),
@@ -369,6 +370,10 @@ class SettingsLogicMixin:
             "ubs_final_tick_to_date": self.ubs_final_tick_to_date.get().strip(),
             "ubs_final_tick_ohlc_from_date": self.ubs_final_tick_ohlc_from_date.get().strip(),
             "ubs_final_tick_ohlc_to_date": self.ubs_final_tick_ohlc_to_date.get().strip(),
+            "ubs_final_tick_6m_from_date": self.ubs_final_tick_6m_from_date.get().strip(),
+            "ubs_final_tick_6m_to_date": self.ubs_final_tick_6m_to_date.get().strip(),
+            "ubs_final_tick_6m_ohlc_from_date": self.ubs_final_tick_6m_ohlc_from_date.get().strip(),
+            "ubs_final_tick_6m_ohlc_to_date": self.ubs_final_tick_6m_ohlc_to_date.get().strip(),
             "ubs_final_tick_min_history_quality": self.ubs_final_tick_min_history_quality.get().strip(),
             "ubs_final_tick_min_ohlc_trades": self.ubs_final_tick_min_ohlc_trades.get().strip(),
             "ubs_final_tick_min_trades_w1": self.ubs_final_tick_min_trades_w1.get().strip(),
@@ -497,18 +502,23 @@ class SettingsLogicMixin:
                 conn = connect_memory(memory_path)
                 conn.row_factory = sqlite3.Row
                 try:
+                    self._ensure_ubs_memory_schema(conn)
                     rows = conn.execute(
                         """
                         select c.report_path as base_report,
                                cr.report_path as robust_report,
                                ft.ohlc_report_path as final_ohlc_report,
-                               ft.real_tick_report_path as final_tick_report
+                               ft.real_tick_report_path as final_tick_report,
+                               ft6.ohlc_report_path as final_ohlc_6m_report,
+                               ft6.real_tick_report_path as final_tick_6m_report
                         from candidates c
                         left join candidate_robustness cr on cr.candidate_id = c.id
                         left join candidate_final_tick ft on ft.candidate_id = c.id
+                        left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
                         where c.status = 'accepted'
                            or cr.status = 'accepted'
                            or ft.status = 'accepted'
+                           or ft6.status = 'accepted'
                         """
                     ).fetchall()
                 except sqlite3.Error:
@@ -518,7 +528,14 @@ class SettingsLogicMixin:
             except Exception:
                 continue
             for row in rows:
-                for key in ("base_report", "robust_report", "final_ohlc_report", "final_tick_report"):
+                for key in (
+                    "base_report",
+                    "robust_report",
+                    "final_ohlc_report",
+                    "final_tick_report",
+                    "final_ohlc_6m_report",
+                    "final_tick_6m_report",
+                ):
                     value = str(row[key] or "").strip()
                     if not value:
                         continue

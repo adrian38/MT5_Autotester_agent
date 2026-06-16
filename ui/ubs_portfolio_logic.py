@@ -277,14 +277,14 @@ class UBSPortfolioLogicMixin:
                    c.period, c.family,
                    c.report_path as is_report_path,
                    cr.report_path as oos_report_path,
-                   ft.ohlc_report_path as final_ohlc_report_path,
-                   ft.real_tick_report_path as final_tick_report_path
+                   ft6.ohlc_report_path as final_ohlc_report_path,
+                   ft6.real_tick_report_path as final_tick_report_path
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
-            join candidate_final_tick ft on ft.candidate_id = c.id
+            join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.status = 'accepted'
               and cr.status = 'accepted'
-              and ft.status = 'accepted'
+              and ft6.status = 'accepted'
             order by c.id
             """,
             (account_type, account_type),
@@ -723,7 +723,7 @@ class UBSPortfolioLogicMixin:
         self._set_ubs_portfolio_save_enabled(False)
         self._clear_ubs_portfolio_result_tables()
         self._set_ubs_portfolio_running(True)
-        self.ubs_portfolio_status.set("Analizando sets Final Tick accepted...")
+        self.ubs_portfolio_status.set("Analizando sets Final Tick 6M accepted...")
         threading.Thread(target=self._ubs_portfolio_worker, args=(inputs,), daemon=True).start()
 
     def _ubs_portfolio_worker(self, inputs: dict[str, object]) -> None:
@@ -738,7 +738,7 @@ class UBSPortfolioLogicMixin:
             return
         try:
             if not rows:
-                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick accepted en ECN/PRO."})
+                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick 6M accepted en ECN/PRO."})
                 return
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
@@ -929,7 +929,7 @@ class UBSPortfolioLogicMixin:
             self.ubs_portfolio_availability.set("Disponibilidad: sin datos")
             return
         self.ubs_portfolio_availability.set(
-            f"Sets Final Tick OK ECN/PRO: {availability.robust_accepted} | "
+            f"Sets Final Tick 6M OK ECN/PRO: {availability.robust_accepted} | "
             f"Sets bloqueados: {availability.already_used} | "
             f"Sets disponibles: {availability.available} | "
             f"Simbolos disponibles: {availability.symbols_available}"

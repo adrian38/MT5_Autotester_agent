@@ -369,8 +369,7 @@ class UBSAgentViewMixin:
 
         ft_date_tip = (
             "Formato: YYYY.MM.DD.\n"
-            "Mismo tramo para OHLC (Model=1) y Every Tick real (Model=4).\n"
-            "Las fechas retry OHLC se usan si el tramo principal da pocas operaciones."
+            "Mismo tramo para OHLC (Model=1) y Every Tick real (Model=4)."
         )
         ttk.Label(final_tick, text="Desde", style="Panel.TLabel").grid(
             row=1, column=0, sticky="w", padx=(20, 10), pady=7
@@ -407,19 +406,6 @@ class UBSAgentViewMixin:
             "Al terminar la robustez OOS, lanza Final Tick automaticamente\nsobre los robust accepted pendientes.",
         )
 
-        ttk.Label(final_tick, text="Retry OHLC desde", style="Panel.TLabel").grid(
-            row=2, column=0, sticky="w", padx=(20, 10), pady=7
-        )
-        ft_retry_from = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_ohlc_from_date, width=14)
-        ft_retry_from.grid(row=2, column=1, sticky="ew", padx=(0, 10), pady=7)
-        self._tooltip_cls(ft_retry_from, ft_date_tip)
-        ttk.Label(final_tick, text="Retry OHLC hasta", style="Panel.TLabel").grid(
-            row=2, column=2, sticky="w", padx=(10, 10), pady=7
-        )
-        ft_retry_to = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_ohlc_to_date, width=14)
-        ft_retry_to.grid(row=2, column=3, sticky="ew", padx=(0, 10), pady=7)
-        self._tooltip_cls(ft_retry_to, ft_date_tip)
-
         final_tick_fields = [
             ("HQ min %", self.ubs_final_tick_min_history_quality, "entry"),
             ("Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, "spin"),
@@ -429,7 +415,7 @@ class UBSAgentViewMixin:
             ("Trades delta %", self.ubs_final_tick_max_trades_delta_pct, "entry"),
         ]
         for index, (label, variable, kind) in enumerate(final_tick_fields):
-            row = 3 + index // 3
+            row = 2 + index // 3
             column = (index % 3) * 2
             left_pad = 20 if column == 0 else 10
             ttk.Label(final_tick, text=label, style="Panel.TLabel").grid(
@@ -455,3 +441,79 @@ class UBSAgentViewMixin:
             style="Primary.TButton",
             command=self._save_ubs_agent_clicked,
         ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))
+
+        final_tick_6m = self._card(inner, "Final Tick 6M")
+        final_tick_6m.grid(row=5, column=0, sticky="ew", pady=(0, 24))
+        for column in (1, 3, 5):
+            final_tick_6m.columnconfigure(column, weight=1)
+
+        ft6_date_tip = (
+            "Formato: YYYY.MM.DD.\n"
+            "Tramo principal de 6M para OHLC vs Every Tick real.\n"
+            "Ops bajas desde/hasta solo se usan para reintentar filas con pocas operaciones OHLC."
+        )
+        ft6_auto_row = tk.Frame(final_tick_6m, bg=self.colors["panel"])
+        ft6_auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
+        ft6_auto_row.columnconfigure(0, weight=1)
+        tk.Label(
+            ft6_auto_row,
+            text="Auto Final Tick 6M",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self._toggle_switch_cls(
+            ft6_auto_row,
+            variable=self.ubs_final_tick_6m_auto,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="e")
+        self._tooltip_cls(
+            ft6_auto_row,
+            "Al terminar Final Tick corto, lanza Final Tick 6M automaticamente\nsobre los corto accepted y pending_ohlc_trades pendientes.",
+        )
+        final_tick_6m_fields = [
+            ("Desde", self.ubs_final_tick_6m_from_date, "date"),
+            ("Hasta", self.ubs_final_tick_6m_to_date, "date"),
+            ("Ops bajas desde", self.ubs_final_tick_6m_ohlc_from_date, "date"),
+            ("Ops bajas hasta", self.ubs_final_tick_6m_ohlc_to_date, "date"),
+            ("HQ min %", self.ubs_final_tick_min_history_quality, "entry"),
+            ("Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, "spin"),
+            ("Net delta %", self.ubs_final_tick_max_net_delta_pct, "entry"),
+            ("PF delta %", self.ubs_final_tick_max_pf_delta_pct, "entry"),
+            ("DD delta %", self.ubs_final_tick_max_dd_delta_pct, "entry"),
+            ("Trades delta %", self.ubs_final_tick_max_trades_delta_pct, "entry"),
+            ("W1 FT ops", self.ubs_final_tick_min_trades_w1, "spin"),
+            ("MN FT ops", self.ubs_final_tick_min_trades_mn, "spin"),
+        ]
+        for index, (label, variable, kind) in enumerate(final_tick_6m_fields):
+            if index < 2:
+                row = 1
+                column = index * 2
+            else:
+                row = 2 + (index - 2) // 3
+                column = ((index - 2) % 3) * 2
+            left_pad = 20 if column == 0 else 10
+            ttk.Label(final_tick_6m, text=label, style="Panel.TLabel").grid(
+                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            if kind == "spin":
+                widget = ttk.Spinbox(final_tick_6m, from_=0, to=100000, textvariable=variable, width=8)
+            else:
+                widget = ttk.Entry(final_tick_6m, textvariable=variable, width=14 if kind == "date" else 8)
+            widget.grid(row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7)
+            if kind == "date":
+                self._tooltip_cls(widget, ft6_date_tip)
+
+        ttk.Label(
+            final_tick_6m,
+            text="Valida el tramo largo para uso real. Portfolio solo usa Final Tick 6M accepted. Ops bajas reintenta solo pendientes por pocas operaciones OHLC.",
+            style="Muted.TLabel",
+        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
+        ttk.Button(
+            final_tick_6m,
+            text="Guardar Final Tick 6M",
+            style="Primary.TButton",
+            command=self._save_ubs_agent_clicked,
+        ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))

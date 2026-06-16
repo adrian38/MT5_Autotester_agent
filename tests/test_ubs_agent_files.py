@@ -15,6 +15,7 @@ from ubs_agent import (
     choose_target_symbol,
     copy_accepted,
     create_variant,
+    final_tick_row_pending_for_dates,
     final_tick_similarity,
     recreate_work_dir,
     related_timeframes,
@@ -27,6 +28,7 @@ from ubs_agent import (
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
     select_next_seed_survivors,
+    validate_final_tick_stage_dates,
     validate_seed_backtest_set,
     variant_as_next_seed,
     write_set_force_symbol,
@@ -71,6 +73,49 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_final_tick_6m_requires_at_least_180_days(self) -> None:
+        message = validate_final_tick_stage_dates("six_month", "2026.01.01", "2026.06.01")
+
+        self.assertIsNotNone(message)
+        self.assertIn("rango actual 151 dias", message)
+        self.assertIn("Hasta >= 2026.06.30", message)
+        self.assertIsNone(validate_final_tick_stage_dates("six_month", "2026.01.01", "2026.06.30"))
+
+    def test_short_final_tick_does_not_require_180_days(self) -> None:
+        self.assertIsNone(validate_final_tick_stage_dates("probe", "2026.01.01", "2026.06.01"))
+
+    def test_short_final_tick_does_not_retry_pending_ohlc_trades(self) -> None:
+        row = {
+            "final_tick_status": "pending_ohlc_trades",
+            "final_tick_from_date": "2026.05.01",
+            "final_tick_to_date": "2026.05.31",
+        }
+
+        self.assertFalse(
+            final_tick_row_pending_for_dates(
+                row,
+                "2026.01.01",
+                "2026.06.30",
+                final_tick_stage="probe",
+            )
+        )
+
+    def test_six_month_final_tick_retries_pending_ohlc_trades_with_new_dates(self) -> None:
+        row = {
+            "final_tick_status": "pending_ohlc_trades",
+            "final_tick_from_date": "2026.01.01",
+            "final_tick_to_date": "2026.06.30",
+        }
+
+        self.assertTrue(
+            final_tick_row_pending_for_dates(
+                row,
+                "2025.11.01",
+                "2026.06.30",
+                final_tick_stage="six_month",
+            )
+        )
+
     def test_crudeoil_seed_is_disabled_when_wti_is_disabled(self) -> None:
         seed = Seed(Path("Crude_D__CrudeOil_Optimization.set"), "CRUDEOIL", "D1", "family", "1")
         symbol_map = parse_symbol_map("CRUDEOIL=WTI,XTIUSD=WTI")

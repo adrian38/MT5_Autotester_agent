@@ -12,7 +12,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from run_tests import (
@@ -33,7 +33,7 @@ from ubs.account import (
     account_seed_dir,
     normalize_account_type,
 )
-from ubs.memory import AgentMemory, variant_from_candidate_row
+from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
@@ -58,6 +58,7 @@ DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
 DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
+FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
@@ -91,7 +92,6 @@ FINAL_TICK_RETRYABLE_STATUSES = {
 }
 FINAL_TICK_DATE_RETRYABLE_STATUSES = {
     "pending_history_quality",
-    "pending_ohlc_trades",
 }
 
 CORE_MUTATION_KEYS = {
@@ -312,6 +312,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robust-negative-bonus", type=float, default=DEFAULT_ROBUST_NEGATIVE_BONUS, help="Bonus de peso si el candidato falla robustez.")
     parser.add_argument("--evaluate-final-tick", action="store_true", help="Compara OHLC vs Every tick based on real ticks para robustez accepted.")
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
+    parser.add_argument(
+        "--final-tick-stage",
+        choices=("probe", "six_month"),
+        default="probe",
+        help="Etapa Final Tick: probe=filtro corto; six_month=validacion 6M para uso en portafolio.",
+    )
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
     parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, incluye filas pending_history_quality aunque las fechas no hayan cambiado.")
     parser.add_argument("--final-tick-reconcile-only", action="store_true", help="Con --evaluate-final-tick, concilia reportes OHLC/Every Tick ya existentes en disco sin abrir MT5.")
@@ -2429,8 +2435,10 @@ def final_tick_row_pending_for_dates(
     from_date: str,
     to_date: str,
     *,
+    final_tick_stage: str = "probe",
     force_quality_retry: bool = False,
 ) -> bool:
+    stage = normalize_final_tick_stage(final_tick_stage)
     status = str(row["final_tick_status"] or "").strip()
     if not status:
         return True
@@ -2438,22 +2446,68 @@ def final_tick_row_pending_for_dates(
         return True
     if force_quality_retry and status == "pending_history_quality":
         return True  # retry regardless of stored dates
-    if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
+    if stage == "six_month" and status == "pending_ohlc_trades":
         return not final_tick_dates_match(row, from_date, to_date)
+    if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
+        return stage == "six_month" and not final_tick_dates_match(row, from_date, to_date)
     return False
 
 
+def normalize_final_tick_stage(value: object) -> str:
+    text = str(value or "probe").strip().lower().replace("-", "_")
+    if text in {"6m", "sixmonth", "six_month"}:
+        return "six_month"
+    return "probe"
+
+
+def final_tick_stage_label(stage: str) -> str:
+    return "Final Tick 6M" if stage == "six_month" else "Final Tick"
+
+
+def final_tick_stage_dir_name(stage: str) -> str:
+    return "final_tick_6m" if stage == "six_month" else "final_tick"
+
+
+def final_tick_stage_prefixes(stage: str) -> tuple[str, str]:
+    return ("ohlc6m", "tick6m") if stage == "six_month" else ("ohlc", "tick")
+
+
+def validate_final_tick_stage_dates(stage: str, from_date: str, to_date: str) -> str | None:
+    if stage != "six_month":
+        return None
+    from_text = from_date.strip()
+    to_text = to_date.strip()
+    try:
+        start = datetime.strptime(from_text, "%Y.%m.%d")
+        end = datetime.strptime(to_text, "%Y.%m.%d")
+    except ValueError:
+        return "Final Tick 6M requiere fechas en formato YYYY.MM.DD."
+    days = (end - start).days
+    if days < FINAL_TICK_6M_MIN_DAYS:
+        min_to_date = (start + timedelta(days=FINAL_TICK_6M_MIN_DAYS)).strftime("%Y.%m.%d")
+        return (
+            f"Final Tick 6M requiere un rango minimo de {FINAL_TICK_6M_MIN_DAYS} dias; "
+            f"rango actual {days} dias ({from_text} -> {to_text}). "
+            f"Usa Hasta >= {min_to_date}."
+        )
+    return None
+
+
 def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    memory.active_final_tick_stage = final_tick_stage
+    final_tick_label = final_tick_stage_label(final_tick_stage)
     if getattr(args, "final_tick_reconcile_only", False):
         run = memory.run_by_id(args.final_tick_run_id) if args.final_tick_run_id else memory.latest_run()
         if run is None:
-            print("ERROR: no hay run SQLite disponible para Final Tick")
+            print(f"ERROR: no hay run SQLite disponible para {final_tick_label}")
             return 1
         counts = reconcile_final_tick_reports(
             memory,
             int(run["id"]),
             score_config,
             parse_symbol_map(args.symbol_map),
+            final_tick_stage=final_tick_stage,
             min_history_quality=args.final_tick_min_history_quality,
             min_ohlc_trades=args.final_tick_min_ohlc_trades,
             max_net_delta_pct=args.final_tick_max_net_delta_pct,
@@ -2463,30 +2517,34 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         )
         if counts:
             print(
-                "Final Tick reconciliado desde disco: "
+                f"{final_tick_label} reconciliado desde disco: "
                 + ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
             )
         else:
-            print("Final Tick reconcile: no hay reportes en disco utilizables para filas pendientes.")
+            print(f"{final_tick_label} reconcile: no hay reportes en disco utilizables para filas pendientes.")
         print(f"Memoria: {memory.path}")
         return 0
     if not args.expert and not args.multi_terminal and not args.dry_run:
-        print("ERROR: Final Tick requiere --expert o --multi-terminal")
+        print(f"ERROR: {final_tick_label} requiere --expert o --multi-terminal")
         return 1
     if not str(args.from_date or "").strip() or not str(args.to_date or "").strip():
-        print("ERROR: Final Tick requiere --from-date y --to-date para comparar el mismo tramo OHLC vs real tick.")
+        print(f"ERROR: {final_tick_label} requiere --from-date y --to-date para comparar el mismo tramo OHLC vs real tick.")
+        return 1
+    date_error = validate_final_tick_stage_dates(final_tick_stage, str(args.from_date or ""), str(args.to_date or ""))
+    if date_error:
+        print(f"ERROR: {date_error}")
         return 1
 
     run = memory.run_by_id(args.final_tick_run_id) if args.final_tick_run_id else memory.latest_run()
     if run is None:
-        print("ERROR: no hay run SQLite disponible para Final Tick")
+        print(f"ERROR: no hay run SQLite disponible para {final_tick_label}")
         return 1
 
     run_id = int(run["id"])
     run_dir = Path(run["output_dir"])
     rows = [
         row
-        for row in memory.accepted_candidates_for_final_tick(run_id)
+        for row in memory.accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
         if Path(row["set_path"]).exists()
     ]
     main_from_date = str(args.from_date or "").strip()
@@ -2515,43 +2573,65 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         for row in rows
     )
     using_ohlc_retry_dates = False
-    if args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
+    if final_tick_stage == "six_month" and args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
-            print("ERROR: Final Tick OHLC retry requiere ambas fechas alternativas Desde y Hasta.")
+            print(f"ERROR: {final_tick_label} OHLC retry requiere ambas fechas alternativas Desde y Hasta.")
             return 1
         args.from_date = ohlc_retry_from
         args.to_date = ohlc_retry_to
+        date_error = validate_final_tick_stage_dates(final_tick_stage, str(args.from_date or ""), str(args.to_date or ""))
+        if date_error:
+            print(f"ERROR: {date_error}")
+            return 1
         using_ohlc_retry_dates = True
-        print(f"Final Tick OHLC retry: usando fechas alternativas {args.from_date} -> {args.to_date}.")
+        print(f"{final_tick_label} OHLC retry: usando fechas alternativas {args.from_date} -> {args.to_date}.")
     retry_pending_quality = bool(getattr(args, "final_tick_retry_pending_quality", False))
     if args.final_tick_pending_only:
         if using_ohlc_retry_dates:
             deferred_main_rows = [
                 row for row in rows
                 if not _row_in_retry_scope(row)
-                and final_tick_row_pending_for_dates(row, main_from_date, main_to_date, force_quality_retry=retry_pending_quality)
+                and final_tick_row_pending_for_dates(
+                    row,
+                    main_from_date,
+                    main_to_date,
+                    final_tick_stage=final_tick_stage,
+                    force_quality_retry=retry_pending_quality,
+                )
             ]
             rows = [
                 row for row in rows
                 if _row_in_retry_scope(row)
-                and final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
+                and final_tick_row_pending_for_dates(
+                    row,
+                    args.from_date,
+                    args.to_date,
+                    final_tick_stage=final_tick_stage,
+                    force_quality_retry=retry_pending_quality,
+                )
             ]
             if deferred_main_rows:
                 print(
-                    "Final Tick OHLC retry: "
+                    f"{final_tick_label} OHLC retry: "
                     f"{len(deferred_main_rows)} fila(s) pendientes de fechas principales "
                     f"{main_from_date} -> {main_to_date} se dejan para la siguiente continuacion."
                 )
         else:
             rows = [
                 row for row in rows
-                if final_tick_row_pending_for_dates(row, args.from_date, args.to_date, force_quality_retry=retry_pending_quality)
+                if final_tick_row_pending_for_dates(
+                    row,
+                    args.from_date,
+                    args.to_date,
+                    final_tick_stage=final_tick_stage,
+                    force_quality_retry=retry_pending_quality,
+                )
             ]
     if not rows:
         if args.final_tick_pending_only:
-            print(f"Final Tick run #{run_id}: no hay robust accepted pendientes de Final Tick.")
+            print(f"{final_tick_label} run #{run_id}: no hay candidatos pendientes.")
         else:
-            print(f"Final Tick run #{run_id}: no hay candidatos robust accepted con .set existente.")
+            print(f"{final_tick_label} run #{run_id}: no hay candidatos elegibles con .set existente.")
         return 0
     stored_dates_match = all(
         not str(row["final_tick_status"] or "").strip()
@@ -2560,7 +2640,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     )
 
     mode = "pending" if args.final_tick_pending_only else "all"
-    final_dir = run_dir / "final_tick" / f"run_{run_id}_{mode}"
+    final_dir = run_dir / final_tick_stage_dir_name(final_tick_stage) / f"run_{run_id}_{mode}"
     resume_pending_dir = args.final_tick_pending_only and final_dir.exists()
     if resume_pending_dir:
         if not final_dir.is_dir():
@@ -2576,13 +2656,14 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     copied: list[tuple[sqlite3.Row, Variant, Variant]] = []
     used_names: set[str] = set()
     ohlc_sets_unchanged = True
+    ohlc_prefix, tick_prefix = final_tick_stage_prefixes(final_tick_stage)
     for row in rows:
         candidate_id = int(row["id"])
         source_set = Path(row["set_path"])
-        ohlc_name = f"ohlc_{candidate_id:06d}_{source_set.name}"
-        real_tick_name = f"tick_{candidate_id:06d}_{source_set.name}"
+        ohlc_name = f"{ohlc_prefix}_{candidate_id:06d}_{source_set.name}"
+        real_tick_name = f"{tick_prefix}_{candidate_id:06d}_{source_set.name}"
         if ohlc_name in used_names or real_tick_name in used_names:
-            print(f"ERROR: nombre duplicado en Final Tick para candidate #{candidate_id}")
+            print(f"ERROR: nombre duplicado en {final_tick_label} para candidate #{candidate_id}")
             return 1
         used_names.update({ohlc_name, real_tick_name})
 
@@ -2608,7 +2689,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             target_period=original_variant.target_period,
             mutated_keys=original_variant.mutated_keys,
             missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_ohlc",
+            policy=f"{original_variant.policy}+{final_tick_stage_dir_name(final_tick_stage)}_ohlc",
         )
         real_tick_variant = Variant(
             path=real_tick_set,
@@ -2617,15 +2698,15 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             target_period=original_variant.target_period,
             mutated_keys=original_variant.mutated_keys,
             missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_real",
+            policy=f"{original_variant.policy}+{final_tick_stage_dir_name(final_tick_stage)}_real",
         )
         copied.append((row, ohlc_variant, real_tick_variant))
 
-    print(f"Final Tick run #{run_id}: modo={mode}; candidatos robust accepted={len(copied)}")
-    print(f"Directorio Final Tick: {final_dir}")
-    print(f"Fechas Final Tick: {args.from_date or '(template)'} -> {args.to_date or '(template)'}")
+    print(f"{final_tick_label} run #{run_id}: modo={mode}; candidatos={len(copied)}")
+    print(f"Directorio {final_tick_label}: {final_dir}")
+    print(f"Fechas {final_tick_label}: {args.from_date or '(template)'} -> {args.to_date or '(template)'}")
     print(
-        "Criterios Final Tick: "
+        f"Criterios {final_tick_label}: "
         f"History Quality>={args.final_tick_min_history_quality:.2f}% | "
         f"Net delta<={args.final_tick_max_net_delta_pct:.2f}% | "
         f"PF delta<={args.final_tick_max_pf_delta_pct:.2f}% | "
@@ -3081,6 +3162,7 @@ def reconcile_final_tick_reports(
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
     *,
+    final_tick_stage: str = "probe",
     min_history_quality: float = 80.0,
     min_ohlc_trades: int = 5,
     min_trades_w1: int = 2,
@@ -3100,16 +3182,21 @@ def reconcile_final_tick_reports(
     """
     rows = [
         row
-        for row in memory.accepted_candidates_for_final_tick(run_id)
+        for row in memory.accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
         if Path(row["set_path"]).exists()
     ]
+    memory.active_final_tick_stage = normalize_final_tick_stage(final_tick_stage)
+    ohlc_prefix, tick_prefix = final_tick_stage_prefixes(memory.active_final_tick_stage)
+    policy_prefix = final_tick_stage_dir_name(memory.active_final_tick_stage)
     status_counts: dict[str, int] = {}
     for row in rows:
         if str(row["final_tick_status"] or "").strip() in {"accepted", "rejected"}:
             continue
         candidate_id = int(row["id"])
         source_set = Path(row["set_path"])
-        ohlc_report = find_report_for_set(Path(f"ohlc_{candidate_id:06d}_{source_set.name}"))
+        ohlc_set_name = f"{ohlc_prefix}_{candidate_id:06d}_{source_set.name}"
+        tick_set_name = f"{tick_prefix}_{candidate_id:06d}_{source_set.name}"
+        ohlc_report = find_report_for_set(Path(ohlc_set_name))
         if ohlc_report is None:
             continue
         ohlc_dates = _read_ohlc_report_cfg_dates(ohlc_report)
@@ -3117,13 +3204,13 @@ def reconcile_final_tick_reports(
             continue
         original_variant = variant_from_candidate_row(row)
         ohlc_variant = Variant(
-            path=Path(f"ohlc_{candidate_id:06d}_{source_set.name}"),
+            path=Path(ohlc_set_name),
             seed=original_variant.seed,
             target_symbol=original_variant.target_symbol,
             target_period=original_variant.target_period,
             mutated_keys=original_variant.mutated_keys,
             missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_ohlc",
+            policy=f"{original_variant.policy}+{policy_prefix}_ohlc",
         )
         try:
             ohlc_result = score_report_file(
@@ -3170,19 +3257,19 @@ def reconcile_final_tick_reports(
             )
             status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
             continue
-        tick_report = find_report_for_set(Path(f"tick_{candidate_id:06d}_{source_set.name}"))
+        tick_report = find_report_for_set(Path(tick_set_name))
         if tick_report is None:
             continue
         if _read_ohlc_report_cfg_dates(tick_report) != ohlc_dates:
             continue
         real_tick_variant = Variant(
-            path=Path(f"tick_{candidate_id:06d}_{source_set.name}"),
+            path=Path(tick_set_name),
             seed=original_variant.seed,
             target_symbol=original_variant.target_symbol,
             target_period=original_variant.target_period,
             mutated_keys=original_variant.mutated_keys,
             missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_real",
+            policy=f"{original_variant.policy}+{policy_prefix}_real",
         )
         if _evaluate_final_tick_tick_report(
             memory, thresholds, score_config, symbol_map, run_id,
@@ -3194,9 +3281,12 @@ def reconcile_final_tick_reports(
 
 
 def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    memory.active_final_tick_stage = final_tick_stage
+    final_tick_table = final_tick_table_for_stage(final_tick_stage)
     symbol_map = parse_symbol_map(args.symbol_map)
     rows = memory.conn.execute(
-        """
+        f"""
         select
             c.*,
             ft.run_id as ft_run_id,
@@ -3204,7 +3294,7 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             ft.real_tick_report_path as ft_real_tick_report_path,
             ft.from_date as ft_from_date,
             ft.to_date as ft_to_date
-        from candidate_final_tick ft
+        from {final_tick_table} ft
         join candidates c on c.id = ft.candidate_id
         order by ft.run_id, c.generation, c.id
         """

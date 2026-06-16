@@ -72,6 +72,28 @@ def memory_conn() -> sqlite3.Connection:
             max_trades_delta_pct real not null default 35.0,
             evaluated_at text not null
         );
+        create table candidate_final_tick_6m (
+            candidate_id integer primary key,
+            run_id integer not null,
+            status text not null,
+            accepted integer,
+            ohlc_report_path text,
+            real_tick_report_path text,
+            ohlc_score real,
+            real_tick_score real,
+            ohlc_metrics_json text,
+            real_tick_metrics_json text,
+            similarity_json text,
+            history_quality real,
+            min_history_quality real not null default 80.0,
+            from_date text not null default '',
+            to_date text not null default '',
+            max_net_delta_pct real not null default 35.0,
+            max_pf_delta_pct real not null default 35.0,
+            max_dd_delta_pct real not null default 35.0,
+            max_trades_delta_pct real not null default 35.0,
+            evaluated_at text not null
+        );
         """
     )
     return conn
@@ -136,6 +158,52 @@ class UBSManualStatusTests(unittest.TestCase):
         self.assertEqual(row["ohlc_score"], 10)
         self.assertEqual(row["real_tick_score"], 20)
         self.assertEqual(row["similarity_json"], '{"checks":{}}')
+
+    def test_manual_final_tick_6m_writes_6m_table(self) -> None:
+        conn = memory_conn()
+        conn.execute(
+            "insert into candidates (id, run_id, status, score, target_symbol, period) values (4, 7, 'accepted', 100, 'TSLA', 'H1')"
+        )
+
+        self.assertEqual(
+            mark_candidate_final_tick(
+                conn,
+                [4],
+                "accepted",
+                final_tick_stage="six_month",
+                from_date="2026.01.01",
+                to_date="2026.06.30",
+            ),
+            1,
+        )
+        row = conn.execute("select * from candidate_final_tick_6m where candidate_id=4").fetchone()
+
+        self.assertEqual(row["status"], "accepted")
+        self.assertEqual(row["accepted"], 1)
+        self.assertEqual(row["from_date"], "2026.01.01")
+        self.assertEqual(row["to_date"], "2026.06.30")
+
+    def test_manual_final_tick_6m_status_affects_feedback_weight(self) -> None:
+        conn = memory_conn()
+        conn.execute(
+            "insert into candidates (id, run_id, status, score, target_symbol, period) values (5, 7, 'accepted', 100, 'TSLA', 'H1')"
+        )
+
+        mark_candidate_final_tick(conn, [5], "rejected", final_tick_stage="six_month")
+        row = conn.execute(
+            """
+            select
+                c.status,
+                c.score,
+                ft6.status as final_tick_6m_status,
+                ft6.similarity_json as final_tick_6m_similarity_json
+            from candidates c
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
+            where c.id=5
+            """
+        ).fetchone()
+
+        self.assertEqual(feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS), -160.0)
 
 
 if __name__ == "__main__":

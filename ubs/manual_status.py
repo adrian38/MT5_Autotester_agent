@@ -8,6 +8,10 @@ from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_B
 
 
 MANUAL_STATUSES = {"accepted", "rejected"}
+FINAL_TICK_TABLES = {
+    "probe": "candidate_final_tick",
+    "six_month": "candidate_final_tick_6m",
+}
 
 
 def _normalize_status(status: str) -> str:
@@ -35,6 +39,15 @@ def _ids(values: Iterable[object]) -> list[int]:
 
 def _placeholders(count: int) -> str:
     return ",".join("?" for _ in range(count))
+
+
+def _final_tick_table(stage: str) -> str:
+    key = str(stage or "probe").strip().lower().replace("-", "_")
+    if key in {"6m", "sixmonth", "six_month"}:
+        key = "six_month"
+    if key not in FINAL_TICK_TABLES:
+        raise ValueError(f"Etapa Final Tick no soportada: {stage}")
+    return FINAL_TICK_TABLES[key]
 
 
 def mark_seed_scores(conn: sqlite3.Connection, seed_paths: Iterable[str], status: str) -> int:
@@ -149,6 +162,7 @@ def mark_candidate_final_tick(
     candidate_ids: Iterable[object],
     status: str,
     *,
+    final_tick_stage: str = "probe",
     min_history_quality: float = 80.0,
     from_date: str = "",
     to_date: str = "",
@@ -161,6 +175,7 @@ def mark_candidate_final_tick(
     ids = _ids(candidate_ids)
     if not ids:
         return 0
+    table = _final_tick_table(final_tick_stage)
     rows = conn.execute(
         f"""
         select
@@ -182,7 +197,7 @@ def mark_candidate_final_tick(
             ft.max_dd_delta_pct as max_dd_delta_pct,
             ft.max_trades_delta_pct as max_trades_delta_pct
         from candidates c
-        left join candidate_final_tick ft on ft.candidate_id = c.id
+        left join {table} ft on ft.candidate_id = c.id
         where c.id in ({_placeholders(len(ids))})
         """,
         tuple(ids),
@@ -190,8 +205,8 @@ def mark_candidate_final_tick(
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
         conn.execute(
-            """
-            insert into candidate_final_tick (
+            f"""
+            insert into {table} (
                 candidate_id, run_id, status, accepted,
                 ohlc_report_path, real_tick_report_path,
                 ohlc_score, real_tick_score,
