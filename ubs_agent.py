@@ -2301,6 +2301,7 @@ def final_tick_similarity(
     max_pf_delta_pct: float,
     max_dd_delta_pct: float,
     max_trades_delta_pct: float,
+    min_model_profit_factor: float | None = None,
 ) -> dict[str, object]:
     """Decide si OHLC y real-tick son suficientemente parecidos.
 
@@ -2342,6 +2343,18 @@ def final_tick_similarity(
     # 3. Profit factor — simétrico, cap [0, 10], piso 1.0
     ohlc_pf   = _bounded_profit_factor(ohlc_result.profit_factor)
     tick_pf   = _bounded_profit_factor(real_tick_result.profit_factor)
+    if min_model_profit_factor is not None:
+        min_pf = float(min_model_profit_factor)
+        pf_floor_accepted = ohlc_pf >= min_pf and tick_pf >= min_pf
+        if not pf_floor_accepted:
+            reasons.append("profit_factor_floor")
+        checks["profit_factor_floor"] = {
+            "ohlc": round(ohlc_pf, 4),
+            "real_tick": round(tick_pf, 4),
+            "min_profit_factor": round(min_pf, 4),
+            "accepted": pf_floor_accepted,
+            "checked": True,
+        }
     pf_delta  = _relative_delta_pct(ohlc_pf, tick_pf, floor=1.0)
     pf_accepted = pf_delta <= max_pf_delta_pct
     if not pf_accepted:
@@ -3185,14 +3198,16 @@ def _evaluate_final_tick_tick_report(
         status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
         return True
 
+    is_six_month = memory.active_final_tick_stage == "six_month"
     similarity = final_tick_similarity(
         ohlc_result,
         real_tick_result,
         min_history_quality=args.final_tick_min_history_quality,
         max_net_delta_pct=args.final_tick_max_net_delta_pct,
-        max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
+        max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0) if is_six_month else args.final_tick_max_pf_delta_pct,
         max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
         max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+        min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
     )
     reasons = set(str(reason) for reason in (similarity.get("reasons") or []))
     if "history_quality" in reasons:

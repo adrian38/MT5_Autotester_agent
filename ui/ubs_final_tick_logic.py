@@ -499,6 +499,7 @@ class UBSFinalTickLogicMixin:
             return False
 
         from_date, to_date, ohlc_from_date, ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
+        effective_pf_delta = min(thresholds["pf_delta"], 30.0) if final_tick_stage == "six_month" else thresholds["pf_delta"]
         details = [
             f"Accion: {'Continuar' if pending_only else 'Reprobar'} {stage_label} UBS run #{run_id}",
             f"Modo: {'pendientes + retryables' if pending_only else 'todos los elegibles, reemplaza estado existente'}",
@@ -514,10 +515,12 @@ class UBSFinalTickLogicMixin:
                 + f"{ohlc_to_date or '(mismas)'}"
             ),
             (
-                f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {thresholds['pf_delta']:.2f}% | "
+                f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {effective_pf_delta:.2f}% | "
                 f"DD {thresholds['dd_delta']:.2f}% | trades {thresholds['trades_delta']:.2f}%"
             ),
         ]
+        if final_tick_stage == "six_month":
+            details.append(f"6M PF minimo por modelo: >= {self.ubs_pass_min_profit_factor.get().strip() or '1.20'}")
         details.extend(self._multiterminal_execution_details())
         if confirm and not self._confirm_execution_start(f"Confirmar {stage_label} UBS", len(rows), details):
             return False
@@ -671,6 +674,15 @@ class UBSFinalTickLogicMixin:
                 trades = check.get("ohlc") if isinstance(check, dict) else None
                 minimum = check.get("min_trades") if isinstance(check, dict) else None
                 parts.append(f"OHLC ops: {self._format_ubs_int(trades)} < {self._format_ubs_int(minimum)}")
+                continue
+            if reason == "profit_factor_floor":
+                check = checks.get("profit_factor_floor", {}) if isinstance(checks, dict) else {}
+                ohlc = check.get("ohlc") if isinstance(check, dict) else None
+                tick = check.get("real_tick") if isinstance(check, dict) else None
+                minimum = check.get("min_profit_factor") if isinstance(check, dict) else None
+                parts.append(
+                    f"PF minimo: OHLC {self._format_ubs_number(ohlc)} / tick {self._format_ubs_number(tick)} < {self._format_ubs_number(minimum)}"
+                )
                 continue
             check = checks.get(str(reason), {}) if isinstance(checks, dict) else {}
             delta = check.get("delta_pct") if isinstance(check, dict) else None

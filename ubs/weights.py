@@ -38,6 +38,7 @@ ROBUST_REASON_PENALTIES = {
 }
 
 FINAL_TICK_REASON_PENALTIES = {
+    "profit_factor_floor": 55.0,
     "profit_factor": 45.0,
     "drawdown_pct": 55.0,
     "trades": 45.0,
