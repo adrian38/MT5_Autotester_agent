@@ -173,7 +173,7 @@ class UBSRobustnessLogicMixin:
 
     def _format_ubs_robustness_status(self, status: str) -> str:
         if status == "no_trades":
-            return "OK 0 ops"
+            return "0 ops/no aceptado"
         return self._format_ubs_status(status)
 
     def _ubs_robust_reason(self, status: str, metrics: dict) -> str:
@@ -186,7 +186,7 @@ class UBSRobustnessLogicMixin:
         if status == "report_mismatch":
             return "mismatch symbol/TF OOS"
         if status == "no_trades":
-            return "reporte OK, 0 operaciones"
+            return "reporte correcto, 0 operaciones; no pasa robustez"
         reasons = metrics.get("reasons") or []
         if not reasons:
             return ""
@@ -523,7 +523,7 @@ class UBSRobustnessLogicMixin:
         settled = accepted + rejected
         neutral = total - settled - no_trades
         self.ubs_robust_summary.set(
-            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | OK {accepted} | FAIL {rejected} | OK 0 ops {no_trades}"
+            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | OK {accepted} | FAIL {rejected} | 0 ops/no aceptado {no_trades}"
         )
         self.ubs_robust_status.set(
             f"Pendientes/neutros sin bonus: {neutral} | Fechas config: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}"

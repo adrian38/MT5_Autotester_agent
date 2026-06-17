@@ -285,6 +285,9 @@ class UBSPortfolioLogicMixin:
                    ft6.to_date as final_tick_to_date
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
+            join candidate_final_tick ft
+              on ft.candidate_id = c.id
+             and ft.status in ('accepted', 'pending_ohlc_trades')
             join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.status = 'accepted'
               and cr.status = 'accepted'

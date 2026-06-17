@@ -83,6 +83,11 @@ def mark_candidates(conn: sqlite3.Connection, candidate_ids: Iterable[object], s
         """,
         (status, _accepted_value(status), *ids),
     )
+    if status != "accepted":
+        placeholders = _placeholders(len(ids))
+        conn.execute(f"delete from candidate_final_tick_6m where candidate_id in ({placeholders})", tuple(ids))
+        conn.execute(f"delete from candidate_final_tick where candidate_id in ({placeholders})", tuple(ids))
+        conn.execute(f"delete from candidate_robustness where candidate_id in ({placeholders})", tuple(ids))
     return int(cur.rowcount or 0)
 
 
@@ -154,6 +159,10 @@ def mark_candidate_robustness(
                 now,
             ),
         )
+    if status != "accepted":
+        placeholders = _placeholders(len(ids))
+        conn.execute(f"delete from candidate_final_tick_6m where candidate_id in ({placeholders})", tuple(ids))
+        conn.execute(f"delete from candidate_final_tick where candidate_id in ({placeholders})", tuple(ids))
     return len(rows)
 
 
@@ -258,5 +267,10 @@ def mark_candidate_final_tick(
                 float(row["max_trades_delta_pct"] if row["max_trades_delta_pct"] is not None else max_trades_delta_pct),
                 now,
             ),
+        )
+    if table == "candidate_final_tick" and status not in {"accepted", "pending_ohlc_trades"}:
+        conn.execute(
+            f"delete from candidate_final_tick_6m where candidate_id in ({_placeholders(len(ids))})",
+            tuple(ids),
         )
     return len(rows)

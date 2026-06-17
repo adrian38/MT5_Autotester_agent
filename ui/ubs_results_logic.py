@@ -1370,7 +1370,7 @@ class UBSResultsLogicMixin:
             "rejected": "rechazado",
             "generated": "generado",
             "no_report": "pend. reporte",
-            "no_trades": "report OK 0 ops",
+            "no_trades": "0 ops/no aceptado",
             "disabled_symbol": "deshabilitado",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
@@ -1388,7 +1388,7 @@ class UBSResultsLogicMixin:
         labels = {
             "accepted": "OK",
             "rejected": "FAIL",
-            "no_trades": "OK 0 ops",
+            "no_trades": "0 ops/no aceptado",
             "no_report": "pend. reporte",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",

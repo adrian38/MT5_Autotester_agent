@@ -17,9 +17,9 @@ class UBSFinalTick6MLogicMixin:
                 r.id, r.created_at, r.hidden,
                 count(distinct c.id) as total,
                 sum(case when probe.status in ('accepted', 'pending_ohlc_trades') then 1 else 0 end) as probe_eligible,
-                sum(case when ft6.status in ('accepted', 'rejected') then 1 else 0 end) as six_done,
-                sum(case when ft6.status='accepted' then 1 else 0 end) as six_ok,
-                sum(case when ft6.status='rejected' then 1 else 0 end) as six_fail
+                sum(case when probe.status in ('accepted', 'pending_ohlc_trades') and ft6.status in ('accepted', 'rejected') then 1 else 0 end) as six_done,
+                sum(case when probe.status in ('accepted', 'pending_ohlc_trades') and ft6.status='accepted' then 1 else 0 end) as six_ok,
+                sum(case when probe.status in ('accepted', 'pending_ohlc_trades') and ft6.status='rejected' then 1 else 0 end) as six_fail
             from runs r
             left join candidates c on c.run_id = r.id
             left join candidate_robustness cr on cr.candidate_id = c.id

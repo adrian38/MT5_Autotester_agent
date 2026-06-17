@@ -217,9 +217,9 @@ class UBSFinalTickLogicMixin:
                 r.hidden,
                 count(c.id) as total,
                 sum(case when c.status='accepted' and cr.status='accepted' then 1 else 0 end) as robust_ok,
-                sum(case when ft.status in ('accepted', 'rejected') then 1 else 0 end) as final_done,
-                sum(case when ft.status='accepted' then 1 else 0 end) as final_ok,
-                sum(case when ft.status='rejected' then 1 else 0 end) as final_fail
+                sum(case when c.status='accepted' and cr.status='accepted' and ft.status in ('accepted', 'rejected') then 1 else 0 end) as final_done,
+                sum(case when c.status='accepted' and cr.status='accepted' and ft.status='accepted' then 1 else 0 end) as final_ok,
+                sum(case when c.status='accepted' and cr.status='accepted' and ft.status='rejected' then 1 else 0 end) as final_fail
             from runs r
             left join candidates c on c.run_id = r.id
             left join candidate_robustness cr on cr.candidate_id = c.id
