@@ -16,6 +16,71 @@ if getattr(sys, "frozen", False):
 
 
 class UBSRobustnessLogicMixin:
+    def _capture_ubs_robust_tree_state(self) -> dict[str, object]:
+        if not hasattr(self, "ubs_robust_tree"):
+            return {}
+        tree = self.ubs_robust_tree
+        top_visible_id = ""
+        for item in tree.get_children():
+            if tree.bbox(item):
+                top_visible_id = str(self.ubs_robust_paths.get(item, {}).get("id") or "")
+                break
+        selected_ids = [
+            str(self.ubs_robust_paths.get(item, {}).get("id") or "")
+            for item in tree.selection()
+        ]
+        return {
+            "xview": tree.xview(),
+            "yview": tree.yview(),
+            "focus_id": str(self.ubs_robust_paths.get(tree.focus(), {}).get("id") or ""),
+            "selected_ids": {cid for cid in selected_ids if cid},
+            "top_visible_id": top_visible_id,
+        }
+
+    def _restore_ubs_robust_tree_state(self, state: dict[str, object], item_by_id: dict[str, str]) -> None:
+        if not state or not hasattr(self, "ubs_robust_tree"):
+            return
+
+        def _restore() -> None:
+            if not hasattr(self, "ubs_robust_tree"):
+                return
+            tree = self.ubs_robust_tree
+            try:
+                xview = state.get("xview")
+                if isinstance(xview, tuple) and xview:
+                    tree.xview_moveto(float(xview[0]))
+
+                selected_items = [
+                    item_by_id[cid]
+                    for cid in state.get("selected_ids", set())
+                    if isinstance(cid, str) and cid in item_by_id
+                ]
+                focus_id = state.get("focus_id")
+                focus_item = item_by_id.get(focus_id) if isinstance(focus_id, str) else None
+                if selected_items:
+                    tree.selection_set(selected_items)
+                    tree.focus(focus_item or selected_items[0])
+
+                anchor_item = focus_item or (selected_items[0] if selected_items else None)
+                if not anchor_item:
+                    top_visible_id = state.get("top_visible_id")
+                    anchor_item = item_by_id.get(top_visible_id) if isinstance(top_visible_id, str) else None
+                if anchor_item:
+                    children = list(tree.get_children())
+                    if children:
+                        try:
+                            tree.yview_moveto(children.index(anchor_item) / max(len(children), 1))
+                        except ValueError:
+                            pass
+                else:
+                    yview = state.get("yview")
+                    if isinstance(yview, tuple) and yview:
+                        tree.yview_moveto(float(yview[0]))
+            except Exception:
+                pass
+
+        self.ubs_robust_tree.after_idle(_restore)
+
     def _on_ubs_robust_tree_click(self, event) -> str | None:
         if not hasattr(self, "ubs_robust_tree"):
             return None
@@ -103,8 +168,13 @@ class UBSRobustnessLogicMixin:
             if status == "rejected":
                 return float(negative or 0.0)
         except (TypeError, ValueError):
-            return None
+                return None
         return None
+
+    def _format_ubs_robustness_status(self, status: str) -> str:
+        if status == "no_trades":
+            return "OK 0 ops"
+        return self._format_ubs_status(status)
 
     def _ubs_robust_reason(self, status: str, metrics: dict) -> str:
         if status == "pending":
@@ -116,7 +186,7 @@ class UBSRobustnessLogicMixin:
         if status == "report_mismatch":
             return "mismatch symbol/TF OOS"
         if status == "no_trades":
-            return "reporte OOS sin operaciones"
+            return "reporte OK, 0 operaciones"
         reasons = metrics.get("reasons") or []
         if not reasons:
             return ""
@@ -230,7 +300,13 @@ class UBSRobustnessLogicMixin:
         finally:
             conn.close()
 
-    def _ubs_robustness_args(self, run_id: int, *, pending_only: bool = False) -> list[str]:
+    def _ubs_robustness_args(
+        self,
+        run_id: int,
+        *,
+        pending_only: bool = False,
+        candidate_ids: list[int] | None = None,
+    ) -> list[str]:
         output_dir = self._ubs_generation_output_dir()
         positive_bonus, negative_bonus = self._ubs_robust_bonus_values()
         args = [
@@ -245,6 +321,8 @@ class UBSRobustnessLogicMixin:
             "--robust-negative-bonus", str(negative_bonus),
             "--delay", str(self.delay.get()),
         ]
+        for candidate_id in candidate_ids or []:
+            args.extend(["--robust-candidate-id", str(int(candidate_id))])
         if pending_only:
             args.append("--robust-pending-only")
         if self.ubs_robust_from_date.get().strip():
@@ -270,6 +348,7 @@ class UBSRobustnessLogicMixin:
         confirm: bool = True,
         auto: bool = False,
         pending_only: bool = True,
+        candidate_ids: list[int] | None = None,
     ) -> bool:
         try:
             run = self._latest_visible_ubs_run()
@@ -280,11 +359,14 @@ class UBSRobustnessLogicMixin:
             run_id = int(run["id"])
             rows = self._accepted_candidates_for_robustness(run_id)
             rows = [row for row in rows if Path(row["set_path"]).exists()]
+            selected_ids = {int(value) for value in (candidate_ids or [])}
+            if selected_ids:
+                rows = [row for row in rows if int(row["id"]) in selected_ids]
             if pending_only:
                 rows = [
                     row for row in rows
                     if not str(row["robust_status"] or "").strip()
-                    or str(row["robust_status"]) in {"no_report", "parse_error", "report_mismatch", "no_trades"}
+                    or str(row["robust_status"]) in {"no_report", "parse_error", "report_mismatch"}
                 ]
             if not rows:
                 if pending_only:
@@ -297,9 +379,11 @@ class UBSRobustnessLogicMixin:
                 self.ubs_robust_status.set(message)
                 if not auto:
                     messagebox.showinfo("Robustez UBS", message)
+                else:
+                    self._append_console(f"\n[Robustez auto] {message}\n", tag="info")
                 return False
             positive_bonus, negative_bonus = self._ubs_robust_bonus_values()
-            args = self._ubs_robustness_args(run_id, pending_only=pending_only)
+            args = self._ubs_robustness_args(run_id, pending_only=pending_only, candidate_ids=sorted(selected_ids))
         except Exception as exc:
             if not auto:
                 self._show_error("No se pudo preparar robustez UBS", str(exc))
@@ -309,7 +393,7 @@ class UBSRobustnessLogicMixin:
 
         details = [
             f"Accion: {'Continuar robustez OOS UBS' if pending_only else 'Reprobar robustez OOS UBS'} run #{run_id}",
-            f"Modo: {'accepted sin OOS + OOS retryable' if pending_only else 'todos los accepted, reemplaza OOS existente'}",
+            f"Modo: {'accepted sin OOS + OOS retryable' if pending_only else ('seleccion marcada, reemplaza OOS existente' if candidate_ids else 'todos los accepted, reemplaza OOS existente')}",
             f"Candidatos accepted a testear: {len(rows)}",
             f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
             f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",
@@ -325,28 +409,48 @@ class UBSRobustnessLogicMixin:
         return True
 
     def _rerun_ubs_robustness_for_latest_run(self) -> bool:
-        return self._run_ubs_robustness_for_latest_run(pending_only=False)
+        checked_ids = sorted(
+            int(info["id"])
+            for info in self._checked_ubs_robust_infos(fallback_selected=False)
+            if str(info.get("id") or "").isdigit()
+        )
+        return self._run_ubs_robustness_for_latest_run(
+            pending_only=False,
+            candidate_ids=checked_ids or None,
+        )
 
     def _maybe_auto_run_ubs_robustness(self, script_name: str, args: list[str], code: int) -> bool:
-        if code != 0 or script_name != "ubs_agent.py" or not self.ubs_robust_auto.get():
+        if script_name != "ubs_agent.py" or not self.ubs_robust_auto.get():
+            return False
+        if code != 0:
+            self._append_console(f"\n[Robustez auto] No se lanza: proceso UBS termino con codigo {code}.\n", tag="error")
             return False
         excluded = {
             "--evaluate-robustness",
             "--evaluate-seeds",
             "--rescore-seeds-only",
+            "--rescore-candidates-only",
+            "--rescore-robustness-only",
+            "--rescore-final-tick-only",
             "--retry-candidate-id",
             "--retry-seed-path",
             "--retry-mismatch-run",
             "--retry-mismatch-generation",
+            "--retry-full-run",
+            "--evaluate-final-tick",
         }
         if any(flag in args for flag in excluded):
+            self._append_console("\n[Robustez auto] No se lanza: el proceso terminado no es generacion/backtests base.\n", tag="info")
             return False
-        if "--execute-backtests" not in args:
+        runs_base_backtests = "--execute-backtests" in args or "--backtest-pending-only" in args
+        if not runs_base_backtests:
+            self._append_console("\n[Robustez auto] No se lanza: el run no ejecuto backtests base.\n", tag="info")
             return False
         self._append_console("\n[Robustez auto] Lanzando robustez OOS sobre accepted pendientes sin OOS.\n", tag="info")
         return self._run_ubs_robustness_for_latest_run(confirm=False, auto=True, pending_only=True)
 
     def _refresh_ubs_robustness(self) -> None:
+        tree_state = self._capture_ubs_robust_tree_state()
         if hasattr(self, "ubs_robust_tree"):
             for item in self.ubs_robust_tree.get_children():
                 self.ubs_robust_tree.delete(item)
@@ -412,10 +516,11 @@ class UBSRobustnessLogicMixin:
         total = len(rows)
         accepted = sum(1 for row in rows if row["robust_status"] == "accepted")
         rejected = sum(1 for row in rows if row["robust_status"] == "rejected")
+        no_trades = sum(1 for row in rows if row["robust_status"] == "no_trades")
         settled = accepted + rejected
-        neutral = total - settled
+        neutral = total - settled - no_trades
         self.ubs_robust_summary.set(
-            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | OK {accepted} | FAIL {rejected}"
+            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | OK {accepted} | FAIL {rejected} | OK 0 ops {no_trades}"
         )
         self.ubs_robust_status.set(
             f"Pendientes/neutros sin bonus: {neutral} | Fechas config: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}"
@@ -424,6 +529,7 @@ class UBSRobustnessLogicMixin:
             return
 
         valid_ids: set[str] = set()
+        item_by_id: dict[str, str] = {}
         for index, row in enumerate(rows):
             status = str(row["robust_status"] or "pending")
             metrics = self._parse_ubs_metrics(row["robust_metrics_json"])
@@ -441,7 +547,7 @@ class UBSRobustnessLogicMixin:
                     row["run_id"],
                     row["id"],
                     row["generation"],
-                    self._format_ubs_status(status),
+                    self._format_ubs_robustness_status(status),
                     self._ubs_robust_reason(status, metrics),
                     row["target_symbol"] or row["symbol"],
                     row["period"],
@@ -464,7 +570,10 @@ class UBSRobustnessLogicMixin:
                 "report": str(row["robust_report_path"] or ""),
                 "status": status,
             }
+            if cid:
+                item_by_id[cid] = item
         self.ubs_robust_checked.intersection_update(valid_ids)
+        self._restore_ubs_robust_tree_state(tree_state, item_by_id)
 
     def _selected_ubs_robust_info(self) -> dict[str, str]:
         if not hasattr(self, "ubs_robust_tree"):

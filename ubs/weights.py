@@ -41,6 +41,7 @@ FINAL_TICK_REASON_PENALTIES = {
     "profit_factor": 45.0,
     "drawdown_pct": 55.0,
     "trades": 45.0,
+    "ohlc_trades": 45.0,
     "history_quality": 60.0,
 }
 

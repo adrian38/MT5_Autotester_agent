@@ -17,6 +17,7 @@ from portfolio_manager.ubs_portfolio import (
     PortfolioAvailability,
     PortfolioResult,
     PortfolioType,
+    filter_rows_by_recent_positive_months,
     load_robust_sets_from_rows,
     optimize_portfolio,
     portfolio_symbol_key,
@@ -58,6 +59,7 @@ DEFAULT_PORTFOLIO_FORM = {
     "max_sets_per_symbol": 1,
     "run_local_search": True,
     "use_correlation": True,
+    "require_3_positive_months_6m": False,
     "max_pair_corr": "0.35",
     "max_downside_corr": "0.25",
     "max_dd_overlap": "0.35",
@@ -278,7 +280,9 @@ class UBSPortfolioLogicMixin:
                    c.report_path as is_report_path,
                    cr.report_path as oos_report_path,
                    ft6.ohlc_report_path as final_ohlc_report_path,
-                   ft6.real_tick_report_path as final_tick_report_path
+                   ft6.real_tick_report_path as final_tick_report_path,
+                   ft6.from_date as final_tick_from_date,
+                   ft6.to_date as final_tick_to_date
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
             join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
@@ -611,6 +615,7 @@ class UBSPortfolioLogicMixin:
             "max_sets_per_symbol": max_sets_per_symbol,
             "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
             "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
+            "require_3_positive_months_6m": bool(self.ubs_portfolio_require_3_positive_months_6m.get()),
             "max_pair_corr": self._parse_optional_float_setting(
                 self.ubs_portfolio_max_pair_corr.get(),
                 "Max correlacion",
@@ -691,6 +696,7 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_max_sets_per_symbol.set(DEFAULT_PORTFOLIO_FORM["max_sets_per_symbol"])
         self.ubs_portfolio_run_local_search.set(DEFAULT_PORTFOLIO_FORM["run_local_search"])
         self.ubs_portfolio_use_correlation.set(DEFAULT_PORTFOLIO_FORM["use_correlation"])
+        self.ubs_portfolio_require_3_positive_months_6m.set(DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"])
         self.ubs_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
         self.ubs_portfolio_max_downside_corr.set(DEFAULT_PORTFOLIO_FORM["max_downside_corr"])
         self.ubs_portfolio_max_dd_overlap.set(DEFAULT_PORTFOLIO_FORM["max_dd_overlap"])
@@ -731,7 +737,6 @@ class UBSPortfolioLogicMixin:
             target_portfolio_type = PortfolioType(str(inputs["portfolio_type"]))
             rows = self._final_tick_passed_candidates_all_accounts()
             used = self._used_set_paths_all_accounts(target_portfolio_type)
-            availability = summarize_robust_rows(rows, used)
             existing_curves = self._saved_portfolio_curves_all_accounts(target_portfolio_type)
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"No pude abrir la memoria UBS: {exc}"})
@@ -740,6 +745,22 @@ class UBSPortfolioLogicMixin:
             if not rows:
                 self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick 6M accepted en ECN/PRO."})
                 return
+            month_warnings: list[str] = []
+            if bool(inputs.get("require_3_positive_months_6m")):
+                rows, month_warnings = filter_rows_by_recent_positive_months(
+                    rows,
+                    min_positive_months=3,
+                    window_months=6,
+                    progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
+                )
+                if not rows:
+                    self.after(
+                        0,
+                        self._ubs_portfolio_finished,
+                        {"ok": False, "error": "No quedan candidatos tras exigir 3 meses positivos en los ultimos 6."},
+                    )
+                    return
+            availability = summarize_robust_rows(rows, used)
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
                 used,
@@ -766,7 +787,7 @@ class UBSPortfolioLogicMixin:
                 existing_portfolio_curves=existing_curves,
                 max_portfolio_corr=inputs["max_portfolio_corr"],  # type: ignore[arg-type]
             )
-            result.warnings[:0] = load_warnings
+            result.warnings[:0] = month_warnings + load_warnings
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
             return
@@ -928,11 +949,16 @@ class UBSPortfolioLogicMixin:
         if availability is None:
             self.ubs_portfolio_availability.set("Disponibilidad: sin datos")
             return
+        filter_suffix = ""
+        recent_months_var = getattr(self, "ubs_portfolio_require_3_positive_months_6m", None)
+        if recent_months_var is not None and bool(recent_months_var.get()):
+            filter_suffix = " | Filtro 3/6M activo al generar"
         self.ubs_portfolio_availability.set(
             f"Sets Final Tick 6M OK ECN/PRO: {availability.robust_accepted} | "
             f"Sets bloqueados: {availability.already_used} | "
             f"Sets disponibles: {availability.available} | "
             f"Simbolos disponibles: {availability.symbols_available}"
+            f"{filter_suffix}"
         )
         for symbol, count in availability.by_symbol.items():
             tree.insert("", "end", values=(symbol, count))

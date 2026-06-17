@@ -576,8 +576,12 @@ def looks_like_ubs_expert_file(path: str | Path) -> bool:
     )
 
 
+def job_uses_profile_ubs_expert(job: BacktestJob) -> bool:
+    return not str(job.expert or "").strip()
+
+
 def profile_expert_for_job(profile: TerminalProfile, job: BacktestJob, set_mode: bool) -> str:
-    if set_mode and profile.ubs_ex5_file:
+    if set_mode and job_uses_profile_ubs_expert(job) and profile.ubs_ex5_file:
         return expert_from_cli_value(str(profile.ubs_ex5_file), profile.experts_root)
     return job.expert
 
@@ -606,6 +610,16 @@ def validate_terminal_profiles(
                     errors.append(f"{prefix}: UBS .ex5 no parece Ultimate Breakout System: {profile.ubs_ex5_file}")
                 if not dry_run and not profile.ubs_ex5_file.exists():
                     errors.append(f"{prefix}: no existe UBS .ex5: {profile.ubs_ex5_file}")
+            if not dry_run:
+                for job in jobs:
+                    effective_expert = profile_expert_for_job(profile, job, set_mode)
+                    if not effective_expert:
+                        errors.append(f"{prefix}: falta EA efectivo para el job #{job.index}.")
+                        break
+                    candidate = expert_file_path(effective_expert, profile.experts_root)
+                    if not candidate.exists():
+                        errors.append(f"{prefix}: falta EA del job {effective_expert} en {profile.experts_root}")
+                        break
             continue
         if dry_run:
             continue

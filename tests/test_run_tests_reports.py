@@ -142,6 +142,54 @@ class CopyReportsToProjectTests(unittest.TestCase):
             parser.read(ini_path, encoding="utf-8")
             self.assertEqual(parser["Tester"]["Model"], "4")
 
+    def test_multiterminal_ubs_profile_accepts_ubs_name_without_exact_expected_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            profile = run_tests.TerminalProfile(
+                name="MT5",
+                mt5_path=root / "terminal64.exe",
+                data_dir=None,
+                experts_root=root / "MQL5" / "Experts",
+                ubs_ex5_file=root / "MQL5" / "Experts" / "Advisors" / "UBS" / "Ultimate Breakout System_4.3.ex5",
+                portable=False,
+            )
+            errors = run_tests.validate_terminal_profiles(
+                [profile],
+                [run_tests.BacktestJob(1, "", root / "candidate.set")],
+                set_mode=True,
+                dry_run=True,
+            )
+
+            self.assertEqual(errors, [])
+
+    def test_multiterminal_ubs_profile_allows_same_relative_expert_in_different_terminal_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            profile = run_tests.TerminalProfile(
+                name="MT5",
+                mt5_path=root / "TerminalB" / "terminal64.exe",
+                data_dir=None,
+                experts_root=root / "TerminalB" / "MQL5" / "Experts",
+                ubs_ex5_file=(
+                    root
+                    / "TerminalB"
+                    / "MQL5"
+                    / "Experts"
+                    / "Advisors"
+                    / "Ultimate Breakout System_4.3_fix @LifeInDreamsWorld.ex5"
+                ),
+                portable=False,
+            )
+
+            errors = run_tests.validate_terminal_profiles(
+                [profile],
+                [run_tests.BacktestJob(1, "", root / "candidate.set")],
+                set_mode=True,
+                dry_run=True,
+            )
+
+            self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

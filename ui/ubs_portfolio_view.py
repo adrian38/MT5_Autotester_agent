@@ -101,6 +101,16 @@ class UBSPortfolioViewMixin:
         ttk.Entry(form, textvariable=self.ubs_portfolio_max_portfolio_corr, width=8).grid(
             row=2, column=9, sticky="w", pady=5
         )
+        recent_months_check = ttk.Checkbutton(
+            form,
+            text="3/6 meses +",
+            variable=self.ubs_portfolio_require_3_positive_months_6m,
+        )
+        recent_months_check.grid(row=2, column=10, columnspan=2, sticky="w", padx=(8, 10), pady=5)
+        self._tooltip_cls(
+            recent_months_check,
+            "Si esta activo, el portafolio solo usa Final Tick 6M accepted con al menos 3 meses positivos en los ultimos 6.",
+        )
 
         actions = tk.Frame(panel, bg=colors["panel_alt"])
         actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))

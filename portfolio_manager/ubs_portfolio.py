@@ -665,6 +665,78 @@ def filter_eligible_sets(
     return eligible
 
 
+def recent_positive_month_count(
+    monthly: dict[int, dict[int, float]],
+    end_date: str | datetime | None = None,
+    *,
+    window_months: int = 6,
+) -> int:
+    end = _coerce_month_end(end_date)
+    if end is None:
+        end = _latest_month_from_monthly(monthly)
+    if end is None or window_months <= 0:
+        return 0
+    count = 0
+    for year, month in _month_window(end.year, end.month, window_months):
+        if float(monthly.get(year, {}).get(month, 0.0)) > 0:
+            count += 1
+    return count
+
+
+def filter_rows_by_recent_positive_months(
+    rows: Sequence[object],
+    *,
+    min_positive_months: int = 3,
+    window_months: int = 6,
+    parse: Callable[[Path], StrategyReport] = parse_report,
+    progress: ProgressCallback | None = None,
+) -> tuple[list[object], list[str]]:
+    filtered: list[object] = []
+    skipped_no_report = 0
+    skipped_parse = 0
+    skipped_months = 0
+
+    for index, row in enumerate(rows, start=1):
+        if progress:
+            progress(f"Filtrando meses positivos {index}/{len(rows)}")
+        report_path = _first_existing_report_path(
+            row,
+            "final_tick_report_path",
+            "real_tick_report_path",
+            "final_ohlc_report_path",
+            "ohlc_report_path",
+        )
+        if report_path is None:
+            skipped_no_report += 1
+            continue
+        try:
+            report = parse(report_path)
+            end_date = str(_row_value(row, "final_tick_to_date", "to_date", default=""))
+            positives = recent_positive_month_count(
+                report.monthly,
+                end_date or report.period_end,
+                window_months=window_months,
+            )
+        except Exception:
+            skipped_parse += 1
+            continue
+        if positives >= min_positive_months:
+            filtered.append(row)
+        else:
+            skipped_months += 1
+
+    warnings: list[str] = []
+    if skipped_months or skipped_no_report or skipped_parse:
+        warnings.append(
+            f"Filtro {min_positive_months}/{window_months} meses positivos: "
+            f"{skipped_months} omitido(s) por meses insuficientes"
+            + (f", {skipped_no_report} sin reporte Final Tick 6M" if skipped_no_report else "")
+            + (f", {skipped_parse} con reporte ilegible" if skipped_parse else "")
+            + "."
+        )
+    return filtered, warnings
+
+
 def score_set_for_portfolio(
     strategy: RobustStrategySet,
     min_trades_2020_2026: int = 100,
@@ -1692,6 +1764,48 @@ def _parse_report_date(value: str) -> datetime | None:
             return datetime.strptime(value, fmt)
         except (TypeError, ValueError):
             continue
+    return None
+
+
+def _coerce_month_end(value: str | datetime | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if value:
+        return _parse_report_date(str(value))
+    return None
+
+
+def _latest_month_from_monthly(monthly: dict[int, dict[int, float]]) -> datetime | None:
+    pairs = [
+        (int(year), int(month))
+        for year, months in monthly.items()
+        for month in months
+    ]
+    if not pairs:
+        return None
+    year, month = max(pairs)
+    return datetime(year, month, 1)
+
+
+def _month_window(end_year: int, end_month: int, window_months: int) -> list[tuple[int, int]]:
+    end_index = end_year * 12 + end_month - 1
+    start_index = end_index - window_months + 1
+    result: list[tuple[int, int]] = []
+    for month_index in range(start_index, end_index + 1):
+        year = month_index // 12
+        month = month_index % 12 + 1
+        result.append((year, month))
+    return result
+
+
+def _first_existing_report_path(row: object, *keys: str) -> Path | None:
+    for key in keys:
+        value = str(_row_value(row, key, default="") or "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        if path.is_file():
+            return path
     return None
 
 

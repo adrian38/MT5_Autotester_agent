@@ -1021,6 +1021,17 @@ class AgentMemory:
     def candidate_by_id(self, candidate_id: int) -> sqlite3.Row | None:
         return self.conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()
 
+    def candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select *
+            from candidates
+            where run_id=?
+            order by generation, id
+            """,
+            (run_id,),
+        ).fetchall()
+
     def run_by_id(self, run_id: int) -> sqlite3.Row | None:
         return self.conn.execute("select * from runs where id=?", (run_id,)).fetchone()
 

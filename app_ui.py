@@ -793,6 +793,9 @@ class MT5AutotesterUI(
         self.ubs_portfolio_use_correlation = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_use_correlation"), True)
         )
+        self.ubs_portfolio_require_3_positive_months_6m = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_require_3_positive_months_6m"), False)
+        )
         self.ubs_portfolio_max_pair_corr = tk.StringVar(
             value=saved_general.get("ubs_portfolio_max_pair_corr", "0.35")
         )
@@ -1678,10 +1681,12 @@ class MT5AutotesterUI(
             or "--evaluate-seeds" in args
             or "--evaluate-robustness" in args
             or "--evaluate-final-tick" in args
+            or "--backtest-pending-only" in args
             or "--retry-candidate-id" in args
             or "--retry-seed-path" in args
             or "--retry-mismatch-run" in args
             or "--retry-mismatch-generation" in args
+            or "--retry-full-run" in args
         )
         if script_name == "ubs_agent.py" and not ubs_runs_backtests:
             return False

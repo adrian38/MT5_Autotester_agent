@@ -52,6 +52,19 @@ class UBSFinalTick6MViewMixin:
         ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
             bar,
+            text="Reintentar calidad baja",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._retry_ubs_final_tick_6m_pending_quality,
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            bar,
             text="Guardar config",
             bg=self.colors["panel"],
             fg=self.colors["muted"],
@@ -62,7 +75,7 @@ class UBSFinalTick6MViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._save_config_clicked,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
+        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(5, 3))
         tk.Button(
             bar,
             text="Actualizar",
@@ -75,10 +88,10 @@ class UBSFinalTick6MViewMixin:
             font=("Segoe UI", 9),
             cursor="hand2",
             command=self._refresh_ubs_final_tick_6m_panel,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=(5, 3))
+        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
 
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
+        row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(1, weight=1)
         tk.Label(
             row1,

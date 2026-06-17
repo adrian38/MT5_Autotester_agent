@@ -571,46 +571,59 @@ class UBSFinalTickLogicMixin:
             final_tick_stage="six_month",
         )
 
-    def _retry_ubs_final_tick_pending_quality(self) -> bool:
+    def _retry_ubs_final_tick_pending_quality(self, *, final_tick_stage: str = "probe") -> bool:
         """Re-run only rows with status=pending_history_quality, ignoring stored dates."""
+        final_tick_stage = "six_month" if str(final_tick_stage).strip().lower() in {"six_month", "6m"} else "probe"
+        stage_label = "Final Tick 6M" if final_tick_stage == "six_month" else "Final Tick"
+        section_key = "ubs_final_tick_6m" if final_tick_stage == "six_month" else "ubs_final_tick"
+        status_var = self.ubs_final_tick_6m_status if final_tick_stage == "six_month" else self.ubs_final_tick_status
         try:
-            run = self._latest_visible_ubs_run_for_final_tick()
+            run = self._latest_visible_ubs_run_for_final_tick(final_tick_stage=final_tick_stage)
             if run is None:
-                messagebox.showinfo("Final Tick UBS", "No hay run visible para Final Tick.")
+                messagebox.showinfo("Final Tick UBS", f"No hay run visible para {stage_label}.")
                 return False
             run_id = int(run["id"])
-            rows = self._accepted_candidates_for_final_tick(run_id)
+            rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [
                 row for row in rows
                 if Path(row["set_path"]).exists()
                 and str(row["final_tick_status"] or "").strip() == "pending_history_quality"
             ]
             if not rows:
-                msg = f"Run #{run_id}: no hay filas con calidad pendiente (pending_history_quality)."
-                self.ubs_final_tick_status.set(msg)
+                msg = f"Run #{run_id}: no hay filas con calidad pendiente en {stage_label}."
+                status_var.set(msg)
                 messagebox.showinfo("Final Tick UBS", msg)
                 return False
             thresholds = self._ubs_final_tick_threshold_values()
-            args = self._ubs_final_tick_args(run_id, pending_only=True, retry_pending_quality=True)
+            args = self._ubs_final_tick_args(
+                run_id,
+                pending_only=True,
+                retry_pending_quality=True,
+                final_tick_stage=final_tick_stage,
+            )
         except Exception as exc:
-            self._show_error("No se pudo preparar reintentar calidad baja", str(exc))
+            self._show_error(f"No se pudo preparar reintentar calidad baja {stage_label}", str(exc))
             return False
 
+        from_date, to_date, _ohlc_from_date, _ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
         details = [
-            f"Accion: Reintentar calidad baja — run #{run_id}",
+            f"Accion: Reintentar calidad baja {stage_label} - run #{run_id}",
             "Modo: solo filas pending_history_quality (ignora si las fechas coinciden o no)",
             f"Candidatos a reintentar: {len(rows)}",
-            f"Fechas: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}",
+            f"Fechas: {from_date} -> {to_date}",
             f"History Quality minima requerida: {thresholds['min_quality']:.2f}%",
             f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
             f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
         ]
         details.extend(self._multiterminal_execution_details())
-        if not self._confirm_execution_start("Confirmar reintentar calidad baja", len(rows), details):
+        if not self._confirm_execution_start(f"Confirmar reintentar calidad baja {stage_label}", len(rows), details):
             return False
-        self._show_section("ubs_final_tick")
+        self._show_section(section_key)
         self._run_script("ubs_agent.py", args)
         return True
+
+    def _retry_ubs_final_tick_6m_pending_quality(self) -> bool:
+        return self._retry_ubs_final_tick_pending_quality(final_tick_stage="six_month")
 
     def _parse_ubs_final_tick_similarity(self, raw) -> dict:
         try:

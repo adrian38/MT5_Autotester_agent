@@ -405,5 +405,3 @@ class MultiterminalLogicMixin:
             f"Terminales activas: {available}",
             f"Workers: {workers}",
         ]
-
-

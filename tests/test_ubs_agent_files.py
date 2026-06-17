@@ -16,6 +16,9 @@ from ubs_agent import (
     copy_accepted,
     create_variant,
     final_tick_row_pending_for_dates,
+    final_tick_ohlc_retry_needed_for_dates,
+    final_tick_ohlc_retry_exhausted_for_dates,
+    final_tick_stage_prefixes,
     final_tick_similarity,
     recreate_work_dir,
     related_timeframes,
@@ -114,6 +117,43 @@ class UBSSetsFileTests(unittest.TestCase):
                 "2026.06.30",
                 final_tick_stage="six_month",
             )
+        )
+
+    def test_six_month_ohlc_retry_not_needed_when_pending_row_already_used_retry_dates(self) -> None:
+        rows = [
+            {
+                "final_tick_status": "pending_ohlc_trades",
+                "final_tick_from_date": "2025.09.01",
+                "final_tick_to_date": "2026.06.30",
+            },
+            {
+                "final_tick_status": "report_mismatch",
+                "final_tick_from_date": "2026.01.01",
+                "final_tick_to_date": "2026.06.30",
+            },
+        ]
+
+        self.assertFalse(
+            final_tick_ohlc_retry_needed_for_dates(
+                rows,
+                "2025.09.01",
+                "2026.06.30",
+                final_tick_stage="six_month",
+            )
+        )
+        self.assertTrue(
+            final_tick_ohlc_retry_exhausted_for_dates(
+                rows[0],
+                "2025.09.01",
+                "2026.06.30",
+            )
+        )
+
+    def test_six_month_ohlc_retry_uses_separate_report_prefix(self) -> None:
+        self.assertEqual(final_tick_stage_prefixes("six_month"), ("ohlc6m", "tick6m"))
+        self.assertEqual(
+            final_tick_stage_prefixes("six_month", ohlc_retry=True),
+            ("ohlc6m_retry", "tick6m"),
         )
 
     def test_crudeoil_seed_is_disabled_when_wti_is_disabled(self) -> None:

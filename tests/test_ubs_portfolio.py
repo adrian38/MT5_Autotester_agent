@@ -19,6 +19,7 @@ from portfolio_manager.ubs_portfolio import (
     merge_accumulated_curves,
     optimize_portfolio,
     portfolio_group_key,
+    recent_positive_month_count,
     score_set_for_portfolio,
     select_top_k_per_symbol,
 )
@@ -126,6 +127,22 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         fresh = make_strategy("fresh", "GBPUSD", [0, 40, 30, 80])
         eligible = filter_eligible_sets([used, fresh], min_trades_2020_2026=100)
         self.assertEqual([item.set_id for item in eligible], ["fresh"])
+
+    def test_recent_positive_month_count_uses_configured_end_month(self) -> None:
+        monthly = {
+            2026: {
+                1: 10.0,
+                2: -3.0,
+                3: 0.0,
+                4: 12.0,
+                6: 5.0,
+            }
+        }
+        self.assertEqual(recent_positive_month_count(monthly, "2026.06.30", window_months=6), 3)
+
+    def test_recent_positive_month_count_treats_missing_months_as_not_positive(self) -> None:
+        monthly = {2026: {1: 10.0, 4: 12.0}}
+        self.assertEqual(recent_positive_month_count(monthly, "2026.06.30", window_months=6), 2)
 
     def test_top_k_per_symbol(self) -> None:
         sets = [

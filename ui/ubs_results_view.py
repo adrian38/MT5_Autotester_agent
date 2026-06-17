@@ -108,7 +108,8 @@ class UBSResultsViewMixin:
                  fg=self.colors["border"], font=("Segoe UI", 9)).grid(row=0, column=6, padx=(4, 4))
         for col, (label, cmd) in enumerate([
             ("Reprobar fila",      self._retry_selected_ubs_mismatch),
-            ("Reprobar run",       self._retry_visible_ubs_run_mismatches),
+            ("Continuar run",      self._retry_visible_ubs_run_mismatches),
+            ("Reprobar run",       self._retry_visible_ubs_full_run),
             ("Repetir sin ops",    self._retry_no_trades_result),
             ("Manual OK",          self._manual_accept_selected_ubs_results),
             ("Manual FAIL",        self._manual_reject_selected_ubs_results),

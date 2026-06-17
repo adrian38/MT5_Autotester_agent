@@ -76,7 +76,22 @@ class UBSFinalTick6MLogicMixin:
         self._refresh_ubs_final_tick_6m()
 
     def _refresh_ubs_final_tick_6m(self) -> None:
+        previous_yview: tuple[float, float] | None = None
+        previous_xview: tuple[float, float] | None = None
+        previous_selected_ids: set[str] = set()
         if hasattr(self, "ubs_final_tick_6m_tree"):
+            try:
+                previous_yview = self.ubs_final_tick_6m_tree.yview()
+                previous_xview = self.ubs_final_tick_6m_tree.xview()
+                previous_selected_ids = {
+                    str(self.ubs_final_tick_6m_paths.get(item, {}).get("id") or "")
+                    for item in self.ubs_final_tick_6m_tree.selection()
+                }
+                previous_selected_ids.discard("")
+            except Exception:
+                previous_yview = None
+                previous_xview = None
+                previous_selected_ids = set()
             for item in self.ubs_final_tick_6m_tree.get_children():
                 self.ubs_final_tick_6m_tree.delete(item)
         self.ubs_final_tick_6m_paths.clear()
@@ -160,6 +175,7 @@ class UBSFinalTick6MLogicMixin:
         if not hasattr(self, "ubs_final_tick_6m_tree"):
             return
 
+        id_to_item: dict[str, str] = {}
         for index, row in enumerate(rows):
             status = str(row["final_status"] or "pending")
             similarity = self._parse_ubs_final_tick_similarity(row["similarity_json"])
@@ -198,7 +214,30 @@ class UBSFinalTick6MLogicMixin:
                 "set": str(row["set_path"] or ""),
                 "ohlc_report": str(row["ohlc_report_path"] or ""),
                 "real_report": str(row["real_tick_report_path"] or ""),
+                "status": status,
+                "ohlc_trades": (
+                    "" if self._metric_from_json(row["ohlc_metrics_json"], "trades") is None
+                    else str(self._metric_from_json(row["ohlc_metrics_json"], "trades"))
+                ),
             }
+            candidate_id = str(row["id"] or "")
+            if candidate_id:
+                id_to_item[candidate_id] = item
+
+        if previous_selected_ids:
+            restored_items = [id_to_item[candidate_id] for candidate_id in previous_selected_ids if candidate_id in id_to_item]
+            if restored_items:
+                self.ubs_final_tick_6m_tree.selection_set(restored_items)
+        if previous_xview:
+            try:
+                self.ubs_final_tick_6m_tree.xview_moveto(previous_xview[0])
+            except Exception:
+                pass
+        if previous_yview:
+            try:
+                self.ubs_final_tick_6m_tree.yview_moveto(previous_yview[0])
+            except Exception:
+                pass
 
     def _selected_ubs_final_tick_6m_infos(self) -> list[dict[str, str]]:
         if not hasattr(self, "ubs_final_tick_6m_tree"):

@@ -93,6 +93,20 @@ class UBSWeightsTests(unittest.TestCase):
             - FINAL_TICK_REASON_PENALTIES["drawdown_pct"],
         )
 
+    def test_final_tick_6m_rejected_by_ohlc_zero_trades_has_strong_reason_penalty(self) -> None:
+        row = {
+            "status": "accepted",
+            "score": 100.0,
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "rejected",
+            "final_tick_6m_similarity_json": json.dumps({"reasons": ["ohlc_trades"]}),
+        }
+
+        self.assertEqual(
+            feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
+            DEFAULT_FINAL_TICK_REJECTED_PENALTY - FINAL_TICK_REASON_PENALTIES["ohlc_trades"],
+        )
+
     def test_final_tick_6m_rejected_caps_high_prior_weight(self) -> None:
         row = {
             "status": "accepted",

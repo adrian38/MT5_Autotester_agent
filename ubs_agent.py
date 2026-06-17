@@ -307,6 +307,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
     parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
     parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
+    parser.add_argument(
+        "--robust-candidate-id",
+        type=int,
+        action="append",
+        help="Limita robustez a un candidate id concreto. Puede repetirse para varios candidatos.",
+    )
     parser.add_argument("--robust-pending-only", action="store_true", help="Con --evaluate-robustness, testea solo accepted sin robustez registrada.")
     parser.add_argument("--robust-positive-bonus", type=float, default=DEFAULT_ROBUST_POSITIVE_BONUS, help="Bonus de peso si el candidato pasa robustez.")
     parser.add_argument("--robust-negative-bonus", type=float, default=DEFAULT_ROBUST_NEGATIVE_BONUS, help="Bonus de peso si el candidato falla robustez.")
@@ -351,6 +357,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-seed-path", action="append", help="Relanza una semilla concreta y actualiza seed_scores. Puede repetirse.")
     parser.add_argument("--retry-run-id", type=int, help="Run SQLite para retry de mismatches. Si se omite usa el ultimo run.")
     parser.add_argument("--retry-mismatch-run", action="store_true", help="Relanza todos los report_mismatch de un run.")
+    parser.add_argument("--retry-full-run", action="store_true", help="Relanza todos los candidatos de un run y reemplaza sus resultados.")
     parser.add_argument("--retry-mismatch-generation", type=int, help="Relanza todos los report_mismatch de una generacion.")
     parser.add_argument("--min-net-profit", type=float, default=score_defaults.min_net_profit)
     parser.add_argument("--min-profit-factor", type=float, default=score_defaults.min_profit_factor)
@@ -2091,7 +2098,7 @@ def prepare_final_tick_exec_dir(path: Path, variants: list[Variant]) -> Path:
     return exec_dir
 
 
-ROBUST_RETRYABLE_STATUSES = {"no_report", "parse_error", "report_mismatch", "no_trades"}
+ROBUST_RETRYABLE_STATUSES = {"no_report", "parse_error", "report_mismatch"}
 
 
 def robust_status_pending_for_retry(status: object) -> bool:
@@ -2116,6 +2123,9 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
         for row in memory.accepted_candidates_for_robustness(run_id)
         if Path(row["set_path"]).exists()
     ]
+    robust_candidate_ids = {int(value) for value in (args.robust_candidate_id or [])}
+    if robust_candidate_ids:
+        rows = [row for row in rows if int(row["id"]) in robust_candidate_ids]
     if args.robust_pending_only:
         rows = [
             row for row in rows
@@ -2453,6 +2463,36 @@ def final_tick_row_pending_for_dates(
     return False
 
 
+def final_tick_ohlc_retry_needed_for_dates(
+    rows: Iterable[sqlite3.Row],
+    from_date: str,
+    to_date: str,
+    *,
+    final_tick_stage: str = "probe",
+    force_quality_retry: bool = False,
+) -> bool:
+    if normalize_final_tick_stage(final_tick_stage) != "six_month":
+        return False
+    for row in rows:
+        if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades":
+            continue
+        if final_tick_row_pending_for_dates(
+            row,
+            from_date,
+            to_date,
+            final_tick_stage=final_tick_stage,
+            force_quality_retry=force_quality_retry,
+        ):
+            return True
+    return False
+
+
+def final_tick_ohlc_retry_exhausted_for_dates(row: sqlite3.Row, from_date: str, to_date: str) -> bool:
+    if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades":
+        return False
+    return final_tick_dates_match(row, from_date, to_date)
+
+
 def normalize_final_tick_stage(value: object) -> str:
     text = str(value or "probe").strip().lower().replace("-", "_")
     if text in {"6m", "sixmonth", "six_month"}:
@@ -2468,8 +2508,10 @@ def final_tick_stage_dir_name(stage: str) -> str:
     return "final_tick_6m" if stage == "six_month" else "final_tick"
 
 
-def final_tick_stage_prefixes(stage: str) -> tuple[str, str]:
-    return ("ohlc6m", "tick6m") if stage == "six_month" else ("ohlc", "tick")
+def final_tick_stage_prefixes(stage: str, *, ohlc_retry: bool = False) -> tuple[str, str]:
+    if stage == "six_month":
+        return ("ohlc6m_retry" if ohlc_retry else "ohlc6m", "tick6m")
+    return ("ohlc", "tick")
 
 
 def validate_final_tick_stage_dates(stage: str, from_date: str, to_date: str) -> str | None:
@@ -2568,10 +2610,20 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             or _row_uses_retry_dates(row)
         )
 
-    has_ohlc_trades_pending = any(
-        str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-        for row in rows
-    )
+    has_ohlc_trades_pending = False
+    if ohlc_retry_from and ohlc_retry_to:
+        has_ohlc_trades_pending = final_tick_ohlc_retry_needed_for_dates(
+            rows,
+            ohlc_retry_from,
+            ohlc_retry_to,
+            final_tick_stage=final_tick_stage,
+            force_quality_retry=bool(getattr(args, "final_tick_retry_pending_quality", False)),
+        )
+    else:
+        has_ohlc_trades_pending = any(
+            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+            for row in rows
+        )
     using_ohlc_retry_dates = False
     if final_tick_stage == "six_month" and args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
@@ -2626,6 +2678,10 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                     final_tick_stage=final_tick_stage,
                     force_quality_retry=retry_pending_quality,
                 )
+                and not (
+                    final_tick_stage == "six_month"
+                    and final_tick_ohlc_retry_exhausted_for_dates(row, ohlc_retry_from, ohlc_retry_to)
+                )
             ]
     if not rows:
         if args.final_tick_pending_only:
@@ -2656,7 +2712,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     copied: list[tuple[sqlite3.Row, Variant, Variant]] = []
     used_names: set[str] = set()
     ohlc_sets_unchanged = True
-    ohlc_prefix, tick_prefix = final_tick_stage_prefixes(final_tick_stage)
+    ohlc_prefix, tick_prefix = final_tick_stage_prefixes(final_tick_stage, ohlc_retry=using_ohlc_retry_dates)
     for row in rows:
         candidate_id = int(row["id"])
         source_set = Path(row["set_path"])
@@ -3499,15 +3555,15 @@ def _retry_single_candidate(
     if args.dry_run:
         return 0
 
-        status, result = evaluate_variant(
-            memory,
-            variant,
-            score_config,
-            parse_symbol_map(args.symbol_map),
-            min_report_mtime=batch_started_at - 1.0,
-            min_trades_w1=args.min_trades_w1,
-            min_trades_mn=args.min_trades_mn,
-        )
+    status, result = evaluate_variant(
+        memory,
+        variant,
+        score_config,
+        parse_symbol_map(args.symbol_map),
+        min_report_mtime=batch_started_at - 1.0,
+        min_trades_w1=args.min_trades_w1,
+        min_trades_mn=args.min_trades_mn,
+    )
     if status == "accepted" and result is not None:
         copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
         print(f"Retry aceptado; copias accepted: {len(copied)}")
@@ -3817,6 +3873,81 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         copied += len(copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}"))
     print(
         "Retry run terminado: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        + f"; accepted/copied={copied}"
+    )
+    return 0
+
+
+def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.expert and not args.multi_terminal:
+        print("ERROR: reprobar run completo requiere --expert o --multi-terminal")
+        return 1
+
+    run = memory.run_by_id(args.retry_run_id) if args.retry_run_id else memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para reprobar completo")
+        return 1
+
+    run_id = int(run["id"])
+    rows = [row for row in memory.candidates_for_run(run_id) if Path(row["set_path"]).exists()]
+    if not rows:
+        print(f"ERROR: run #{run_id} no tiene candidatos con .set existente")
+        return 1
+
+    run_dir = Path(run["output_dir"])
+    retry_dir = recreate_work_dir(run_dir / "retry_full" / f"run_{run_id}_all")
+    variants = [variant_from_candidate_row(row) for row in rows]
+
+    print(f"Reprobar run completo #{run_id}: {len(rows)} candidato(s)")
+    seen_names: set[str] = set()
+    for row in rows:
+        set_path = Path(row["set_path"])
+        if set_path.name in seen_names:
+            print(f"ERROR: nombre de set duplicado en reprobar run: {set_path.name}")
+            return 1
+        seen_names.add(set_path.name)
+        shutil.copy2(set_path, retry_dir / set_path.name)
+        if not args.dry_run:
+            generation = int(row["generation"] or 0)
+            remove_report_artifacts(set_path)
+            remove_candidate_copies(run_dir, generation, set_path.name)
+
+    batch_started_at = time.time()
+    code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code
+    if args.dry_run:
+        return 0
+
+    accepted_by_generation: dict[int, list[tuple[Variant, ScoreResult]]] = {}
+    status_counts: dict[str, int] = {}
+    symbol_map = parse_symbol_map(args.symbol_map)
+    for row, variant in zip(rows, variants):
+        status, result = evaluate_variant(
+            memory,
+            variant,
+            score_config,
+            symbol_map,
+            min_report_mtime=batch_started_at - 1.0,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status == "accepted" and result is not None:
+            generation = int(row["generation"] or 0)
+            accepted_by_generation.setdefault(generation, []).append((variant, result))
+
+    copied = 0
+    for generation, accepted in accepted_by_generation.items():
+        copied += len(copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}"))
+    print(
+        "Reprobar run completo terminado: "
         + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
         + f"; accepted/copied={copied}"
     )
@@ -4262,6 +4393,11 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.retry_seed_path:
         try:
             return retry_seed(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.retry_full_run:
+        try:
+            return retry_full_run(args, memory, score_config)
         finally:
             memory.close()
     if args.retry_mismatch_run:

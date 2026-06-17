@@ -397,6 +397,7 @@ class UBSAgentLogicMixin:
             "--infer-tester-from-set",
         ]
         if self.multiterminal_enabled.get():
+            args.extend(["--expert", self._required_ubs_ex5_file()])
             args.extend(self._multiterminal_args(require_ubs=True))
         else:
             args.extend(["--expert", self._required_ubs_ex5_file()])
