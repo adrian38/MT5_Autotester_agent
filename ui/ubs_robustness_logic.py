@@ -434,15 +434,18 @@ class UBSRobustnessLogicMixin:
             "--rescore-final-tick-only",
             "--retry-candidate-id",
             "--retry-seed-path",
-            "--retry-mismatch-run",
             "--retry-mismatch-generation",
-            "--retry-full-run",
             "--evaluate-final-tick",
         }
         if any(flag in args for flag in excluded):
             self._append_console("\n[Robustez auto] No se lanza: el proceso terminado no es generacion/backtests base.\n", tag="info")
             return False
-        runs_base_backtests = "--execute-backtests" in args or "--backtest-pending-only" in args
+        runs_base_backtests = (
+            "--execute-backtests" in args
+            or "--backtest-pending-only" in args
+            or "--retry-mismatch-run" in args
+            or "--retry-full-run" in args
+        )
         if not runs_base_backtests:
             self._append_console("\n[Robustez auto] No se lanza: el run no ejecuto backtests base.\n", tag="info")
             return False
