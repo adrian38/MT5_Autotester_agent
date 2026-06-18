@@ -39,7 +39,7 @@ class UBSSearchViewMixin:
 
         audit = tk.Frame(audit_pane, bg=self.colors["panel_alt"])
         audit.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        audit.columnconfigure(6, weight=1)
+        audit.columnconfigure(3, weight=1)
         tk.Label(
             audit,
             text="Cuenta",
@@ -47,13 +47,15 @@ class UBSSearchViewMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=(10, 8), pady=6)
-        ttk.Combobox(
+        account_combo = ttk.Combobox(
             audit,
             textvariable=self.ubs_audit_account,
             values=("ECN", "PRO"),
             state="readonly",
             width=8,
-        ).grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
+        )
+        account_combo.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
+        account_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_audit_run_combo())
         tk.Label(
             audit,
             text="Run",
@@ -61,7 +63,13 @@ class UBSSearchViewMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=2, sticky="w", padx=(0, 6), pady=6)
-        ttk.Entry(audit, textvariable=self.ubs_audit_run_id, width=8).grid(row=0, column=3, sticky="w", padx=(0, 8), pady=6)
+        self.ubs_audit_run_combo = ttk.Combobox(
+            audit,
+            textvariable=self.ubs_audit_run_id,
+            state="readonly",
+            width=44,
+        )
+        self.ubs_audit_run_combo.grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=6)
         for col, (label, command, accent) in enumerate(
             [
                 ("Auditar", self._run_ubs_audit_from_search, True),
@@ -83,8 +91,9 @@ class UBSSearchViewMixin:
                 command=command,
             ).grid(row=0, column=col, sticky="e", padx=(0, 6), pady=5)
         ttk.Label(audit, textvariable=self.ubs_audit_status, style="Muted.TLabel").grid(
-            row=0, column=6, sticky="ew", padx=(8, 10), pady=6
+            row=0, column=6, sticky="w", padx=(8, 10), pady=6
         )
+        self._refresh_ubs_audit_run_combo()
 
         self._ubs_search_section_title(audit_pane, 2, "Auditoria por test")
         audit_tables = tk.PanedWindow(

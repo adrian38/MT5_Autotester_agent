@@ -3907,15 +3907,29 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
 
     run_id = int(run["id"])
     rows = [row for row in memory.candidates_for_run(run_id) if Path(row["set_path"]).exists()]
+    requested_ids = {int(value) for value in (args.retry_candidate_id or [])}
+    if requested_ids:
+        rows = [row for row in rows if int(row["id"]) in requested_ids]
+        found_ids = {int(row["id"]) for row in rows}
+        missing_ids = sorted(requested_ids - found_ids)
+        if missing_ids:
+            print(
+                "ERROR: candidatos marcados no pertenecen al run o no tienen .set existente: "
+                + ", ".join(str(candidate_id) for candidate_id in missing_ids)
+            )
+            return 1
     if not rows:
         print(f"ERROR: run #{run_id} no tiene candidatos con .set existente")
         return 1
 
     run_dir = Path(run["output_dir"])
-    retry_dir = recreate_work_dir(run_dir / "retry_full" / f"run_{run_id}_all")
+    suffix = "selected" if requested_ids else "all"
+    retry_dir = recreate_work_dir(run_dir / "retry_full" / f"run_{run_id}_{suffix}")
     variants = [variant_from_candidate_row(row) for row in rows]
 
     print(f"Reprobar run completo #{run_id}: {len(rows)} candidato(s)")
+    if requested_ids:
+        print("Modo seleccionado: " + ", ".join(str(row["id"]) for row in rows))
     seen_names: set[str] = set()
     for row in rows:
         set_path = Path(row["set_path"])

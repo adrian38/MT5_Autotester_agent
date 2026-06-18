@@ -38,14 +38,77 @@ if getattr(sys, "frozen", False):
 
 
 class UBSSearchLogicMixin:
+    def _refresh_ubs_audit_run_combo(self) -> None:
+        combo = getattr(self, "ubs_audit_run_combo", None)
+        if combo is None:
+            return
+        account_type = str(self.ubs_audit_account.get() or self._ubs_account_type()).strip().upper()
+        if account_type not in ACCOUNT_TYPES:
+            combo.configure(values=())
+            self.ubs_audit_run_id.set("")
+            return
+        memory_path = account_memory_path(BASE_DIR, account_type)
+        if not memory_path.exists():
+            combo.configure(values=())
+            self.ubs_audit_run_id.set("")
+            self.ubs_audit_status.set(f"Sin memoria {account_type}.")
+            return
+        try:
+            conn = connect_memory(memory_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    """
+                    select
+                        r.id,
+                        r.created_at,
+                        r.hidden,
+                        count(c.id) as total,
+                        sum(case when c.status='accepted' then 1 else 0 end) as accepted,
+                        sum(case when c.status='rejected' then 1 else 0 end) as rejected,
+                        sum(case when c.status='no_trades' then 1 else 0 end) as no_trades
+                    from runs r
+                    left join candidates c on c.run_id=r.id
+                    group by r.id
+                    order by r.id desc
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            combo.configure(values=())
+            self.ubs_audit_status.set(f"Error runs {account_type}: {exc}")
+            return
+
+        labels = []
+        for row in rows:
+            hidden = " [arch]" if row["hidden"] else ""
+            labels.append(
+                f"#{row['id']} | {str(row['created_at'] or '')[:16]} | cand {int(row['total'] or 0)} "
+                f"| OK {int(row['accepted'] or 0)} FAIL {int(row['rejected'] or 0)} 0ops {int(row['no_trades'] or 0)}{hidden}"
+            )
+        combo.configure(values=labels)
+        current = str(self.ubs_audit_run_id.get() or "").strip()
+        current_id = self._parse_ubs_audit_run_id(current)
+        selected = ""
+        if current_id:
+            selected = next((label for label in labels if label.startswith(f"#{current_id} ")), "")
+        if not selected and labels:
+            selected = labels[0]
+        self.ubs_audit_run_id.set(selected)
+        self.ubs_audit_status.set("Selecciona run y audita.")
+
+    def _parse_ubs_audit_run_id(self, value: object) -> int:
+        match = re.search(r"#?(\d+)", str(value or "").strip())
+        return int(match.group(1)) if match else 0
+
     def _run_ubs_audit_from_search(self) -> None:
         account_type = self.ubs_audit_account.get().strip().upper() or self._ubs_account_type()
         if account_type not in ACCOUNT_TYPES:
             self.ubs_audit_status.set("Cuenta invalida.")
             return
-        try:
-            run_id = int(str(self.ubs_audit_run_id.get() or "").strip())
-        except ValueError:
+        run_id = self._parse_ubs_audit_run_id(self.ubs_audit_run_id.get())
+        if run_id <= 0:
             self.ubs_audit_status.set("Run invalido.")
             return
         memory_path = account_memory_path(BASE_DIR, account_type)
@@ -59,7 +122,7 @@ class UBSSearchLogicMixin:
             return
         self.ubs_audit_report_path.set(str(report_path))
         self._populate_ubs_audit_summary(summary)
-        self.ubs_audit_status.set(f"Auditoria guardada: {report_path.name}")
+        self.ubs_audit_status.set(f"Guardada: {report_path.name}")
 
     def _open_ubs_audit_report(self) -> None:
         path = Path(str(self.ubs_audit_report_path.get() or ""))
@@ -106,10 +169,11 @@ class UBSSearchLogicMixin:
                 )
                 if details:
                     detail = details[0]
+                    detail_key = (id(tree), item)
                     if isinstance(detail, list) and detail:
-                        self.ubs_audit_details[item] = "\n".join(str(part) for part in detail)
+                        self.ubs_audit_details[detail_key] = "\n".join(str(part) for part in detail)
                     elif detail:
-                        self.ubs_audit_details[item] = str(detail)
+                        self.ubs_audit_details[detail_key] = str(detail)
             return
         if not hasattr(self, "ubs_audit_tree"):
             return
@@ -131,10 +195,11 @@ class UBSSearchLogicMixin:
             )
             if details:
                 detail = details[0]
+                detail_key = (id(self.ubs_audit_tree), item)
                 if isinstance(detail, list) and detail:
-                    self.ubs_audit_details[item] = "\n".join(str(part) for part in detail)
+                    self.ubs_audit_details[detail_key] = "\n".join(str(part) for part in detail)
                 elif detail:
-                    self.ubs_audit_details[item] = str(detail)
+                    self.ubs_audit_details[detail_key] = str(detail)
             if index < len(rows) - 1:
                 self.ubs_audit_tree.insert("", "end", values=("", "", ""), tags=("separator",))
 
@@ -145,7 +210,8 @@ class UBSSearchLogicMixin:
             return
         values = tree.item(item, "values")
         title = str(values[0]) if values else "Auditoria run UBS"
-        detail = getattr(self, "ubs_audit_details", {}).get(item, "")
+        details = getattr(self, "ubs_audit_details", {})
+        detail = details.get((id(tree), item), details.get(item, ""))
         if not detail:
             messagebox.showinfo("Auditoria run UBS", "Esta fila no tiene detalle adicional.")
             return
@@ -327,9 +393,8 @@ class UBSSearchLogicMixin:
             return
 
         account_type = str(self.ubs_audit_account.get() or self._ubs_account_type()).strip().upper()
-        try:
-            run_id = int(str(self.ubs_audit_run_id.get() or "").strip())
-        except ValueError:
+        run_id = self._parse_ubs_audit_run_id(self.ubs_audit_run_id.get())
+        if run_id <= 0:
             messagebox.showerror("Auditoria run UBS", "Run invalido.")
             return
         if account_type not in ACCOUNT_TYPES:
@@ -671,18 +736,41 @@ class UBSSearchLogicMixin:
         missing_report_path: list[int] = []
         missing_report_files: list[int] = []
         invalid_metrics: list[int] = []
-        for row in rows("select id,status,set_path,report_path,metrics_json from candidates where run_id=?"):
+        artifact_detail = ["GEN\tID\tSTATUS\tPROBLEMA\tSET_PATH\tREPORT_PATH\tSET\tREPORTE"]
+        for row in rows("select id,generation,status,set_path,report_path,metrics_json from candidates where run_id=?"):
             set_path = str(row["set_path"] or "")
             report_path = str(row["report_path"] or "")
+            problems: list[str] = []
+            if not set_path:
+                problems.append("set_path vacio")
             if set_path and not Path(set_path).exists():
                 missing_set_files.append(int(row["id"]))
+                problems.append("set file no existe")
             if str(row["status"]) in {"accepted", "rejected", "no_trades", "report_mismatch", "parse_error"}:
                 if not report_path:
                     missing_report_path.append(int(row["id"]))
+                    problems.append("report_path vacio")
                 elif not Path(report_path).exists():
                     missing_report_files.append(int(row["id"]))
+                    problems.append("report file no existe")
             if row["metrics_json"] and not parse_json(row["metrics_json"]):
                 invalid_metrics.append(int(row["id"]))
+                problems.append("metrics_json invalido")
+            if problems:
+                artifact_detail.append(
+                    "\t".join(
+                        [
+                            str(row["generation"] or ""),
+                            str(row["id"] or ""),
+                            str(row["status"] or ""),
+                            ", ".join(problems),
+                            set_path,
+                            report_path,
+                            Path(set_path).name if set_path else "",
+                            Path(report_path).name if report_path else "",
+                        ]
+                    )
+                )
         line(
             f"set_path faltantes={missing_set_path} | set files faltantes={len(missing_set_files)} | "
             f"report_path faltantes={len(missing_report_path)} | report files faltantes={len(missing_report_files)} | "
@@ -1225,7 +1313,12 @@ class UBSSearchLogicMixin:
         summary = [
             ("Run", f"#{run_id} {account_type} | {run['created_at']}", "pending"),
             ("Base", f"{fmt_counts(base)} | teorico={theoretical}", "accepted" if sum(base.values()) == theoretical else "rejected"),
-            ("Sets/reportes", f"set files faltantes={len(missing_set_files)} | reportes base faltantes={len(missing_report_path)+len(missing_report_files)}", "accepted" if not (missing_set_files or missing_report_path or missing_report_files) else "rejected"),
+            (
+                "Sets/reportes",
+                f"set files faltantes={len(missing_set_files)} | reportes base faltantes={len(missing_report_path)+len(missing_report_files)}",
+                "accepted" if len(artifact_detail) == 1 else "rejected",
+                artifact_detail if len(artifact_detail) > 1 else [],
+            ),
             ("Cuenta MT5 base", base_account_detail, base_account_tag, base_account_lines),
             ("Robustez", f"{fmt_counts(robust)} | sin robust={missing_robust} | stale={stale_robust}", "accepted" if not (missing_robust or stale_robust) else "rejected"),
             ("Cuenta MT5 robustez", robust_account_detail, robust_account_tag, robust_account_lines),

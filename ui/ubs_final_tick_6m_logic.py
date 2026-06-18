@@ -163,9 +163,15 @@ class UBSFinalTick6MLogicMixin:
         total = len(rows)
         accepted = sum(1 for row in rows if row["final_status"] == "accepted")
         rejected = sum(1 for row in rows if row["final_status"] == "rejected")
-        pending = total - accepted - rejected
+        missing_6m = sum(1 for row in rows if row["final_status"] is None)
+        pending = sum(
+            1
+            for row in rows
+            if row["final_status"] not in (None, "accepted", "rejected")
+        )
         self.ubs_final_tick_6m_summary.set(
-            f"Run #{run['id']} | candidatos corto elegibles {total} | 6M OK {accepted} | 6M FAIL {rejected} | pend {pending}"
+            f"Run #{run['id']} | candidatos corto elegibles {total} | 6M OK {accepted} | "
+            f"6M FAIL {rejected} | pend reales {pending} | sin 6M {missing_6m}"
         )
         from_date, to_date, retry_from, retry_to = self._final_tick_stage_dates("six_month")
         retry_label = f" | Retry pocas ops OHLC: {retry_from} -> {retry_to}" if retry_from and retry_to else ""
@@ -177,7 +183,7 @@ class UBSFinalTick6MLogicMixin:
 
         id_to_item: dict[str, str] = {}
         for index, row in enumerate(rows):
-            status = str(row["final_status"] or "pending")
+            status = str(row["final_status"] or "missing_6m")
             similarity = self._parse_ubs_final_tick_similarity(row["similarity_json"])
             date_range = ""
             if row["from_date"] or row["to_date"]:

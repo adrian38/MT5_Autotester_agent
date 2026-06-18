@@ -637,6 +637,8 @@ class UBSFinalTickLogicMixin:
         return data if isinstance(data, dict) else {}
 
     def _ubs_final_tick_reason(self, status: str, similarity: dict) -> str:
+        if status == "missing_6m":
+            return "sin resultado Final Tick 6M"
         if status == "pending":
             return "pendiente"
         if status == "pending_history_quality":

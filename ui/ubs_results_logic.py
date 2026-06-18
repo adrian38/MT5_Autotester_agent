@@ -1376,6 +1376,7 @@ class UBSResultsLogicMixin:
             "report_mismatch": "pend. mismatch",
             "invalid_seed": "set invalido",
             "pending": "pendiente",
+            "missing_6m": "sin 6M",
             "pending_history_quality": "pend. calidad",
             "pending_ohlc_trades": "pend. OHLC ops",
             "sin_evaluar": "sin evaluar",
@@ -1574,7 +1575,28 @@ class UBSResultsLogicMixin:
             if run_id <= 0:
                 messagebox.showinfo("Agente UBS", "No hay run visible para reprobar.")
                 return
-            candidate_count = self._count_ubs_run_existing_sets(run_id)
+            checked_infos = [
+                info for info in self._checked_ubs_result_infos(fallback_selected=False)
+                if str(info.get("run") or "").strip() == str(run_id)
+            ]
+            checked_ids: list[str] = []
+            if checked_infos:
+                missing_sets = []
+                for info in checked_infos:
+                    candidate_id = str(info.get("id") or "").strip()
+                    set_path = Path(str(info.get("set") or "")).expanduser()
+                    if not candidate_id:
+                        messagebox.showinfo("Agente UBS", "Una fila marcada no tiene candidate id.")
+                        return
+                    if not set_path.exists():
+                        missing_sets.append(str(set_path))
+                    checked_ids.append(candidate_id)
+                if missing_sets:
+                    messagebox.showinfo("Agente UBS", "Hay filas marcadas con .set faltante:\n" + "\n".join(missing_sets[:8]))
+                    return
+                candidate_count = len(checked_ids)
+            else:
+                candidate_count = self._count_ubs_run_existing_sets(run_id)
             if candidate_count <= 0:
                 messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene candidatos con .set existente.")
                 return
@@ -1586,6 +1608,8 @@ class UBSResultsLogicMixin:
                 "--retry-full-run",
                 "--delay", str(self.delay.get()),
             ]
+            for candidate_id in checked_ids:
+                args.extend(["--retry-candidate-id", candidate_id])
             if self.multiterminal_enabled.get():
                 args.extend(self._multiterminal_args(require_ubs=True))
             else:
@@ -1602,15 +1626,29 @@ class UBSResultsLogicMixin:
             self._show_error("No se pudo preparar reprobar run completo", str(exc))
             return
 
+        scoped = bool(checked_ids)
         details = [
-            "Accion: Reprobar run UBS completo",
+            "Accion: " + ("Reprobar candidatos marcados" if scoped else "Reprobar run UBS completo"),
             f"Run: #{run_id}",
             f"Backtests previstos: {candidate_count}",
-            "Relanza todos los candidatos con .set existente.",
+            (
+                "Relanza solo las filas marcadas con [x]."
+                if scoped
+                else "Relanza todos los candidatos con .set existente."
+            ),
             "Limpia reportes/copias accepted previas de esos candidatos antes de re-evaluar.",
         ]
+        if scoped:
+            details.append(f"Candidatos: {', '.join('#' + candidate_id for candidate_id in checked_ids[:20])}")
+            if len(checked_ids) > 20:
+                details.append(f"... y {len(checked_ids) - 20} mas")
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar reprobar run completo", candidate_count, details):
+        if self._confirm_execution_start(
+            "Confirmar reprobar marcados" if scoped else "Confirmar reprobar run completo",
+            candidate_count,
+            details,
+        ):
+            self.ubs_result_checked.clear()
             self._run_script("ubs_agent.py", args)
 
     def _visible_ubs_run_id(self) -> int:
