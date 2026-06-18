@@ -16,6 +16,7 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
 FINAL_TICK_RETRYABLE_STATUSES = {
+    "pending",
     "no_report",
     "parse_error",
     "report_mismatch",

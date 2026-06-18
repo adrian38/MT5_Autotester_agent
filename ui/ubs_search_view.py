@@ -12,10 +12,128 @@ class UBSSearchViewMixin:
         card = self._card(parent, "Buscador UBS")
         card.grid(row=0, column=0, sticky="nsew")
         card.columnconfigure(0, weight=1)
-        card.rowconfigure(2, weight=1)
+        card.rowconfigure(1, weight=1)
 
-        bar = tk.Frame(card, bg=self.colors["panel_alt"])
-        bar.grid(row=0, column=0, sticky="ew", padx=20, pady=(4, 8))
+        panes = tk.PanedWindow(
+            card,
+            orient=tk.VERTICAL,
+            bg=self.colors["border"],
+            bd=0,
+            sashwidth=7,
+            sashrelief="raised",
+            showhandle=True,
+        )
+        panes.grid(row=1, column=0, sticky="nsew", padx=20, pady=(4, 12))
+
+        audit_pane = tk.Frame(panes, bg=self.colors["panel"])
+        search_pane = tk.Frame(panes, bg=self.colors["panel"])
+        panes.add(audit_pane, minsize=210, stretch="always")
+        panes.add(search_pane, minsize=180, stretch="always")
+
+        audit_pane.columnconfigure(0, weight=1)
+        audit_pane.rowconfigure(3, weight=1)
+        search_pane.columnconfigure(0, weight=1)
+        search_pane.rowconfigure(3, weight=1)
+
+        self._ubs_search_section_title(audit_pane, 0, "Auditoria de run")
+
+        audit = tk.Frame(audit_pane, bg=self.colors["panel_alt"])
+        audit.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        audit.columnconfigure(6, weight=1)
+        tk.Label(
+            audit,
+            text="Cuenta",
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=(10, 8), pady=6)
+        ttk.Combobox(
+            audit,
+            textvariable=self.ubs_audit_account,
+            values=("ECN", "PRO"),
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
+        tk.Label(
+            audit,
+            text="Run",
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=2, sticky="w", padx=(0, 6), pady=6)
+        ttk.Entry(audit, textvariable=self.ubs_audit_run_id, width=8).grid(row=0, column=3, sticky="w", padx=(0, 8), pady=6)
+        for col, (label, command, accent) in enumerate(
+            [
+                ("Auditar", self._run_ubs_audit_from_search, True),
+                ("Abrir auditoria", self._open_ubs_audit_report, False),
+            ],
+            start=4,
+        ):
+            tk.Button(
+                audit,
+                text=label,
+                bg=self.colors["accent"] if accent else self.colors["panel"],
+                fg="#ffffff" if accent else self.colors["muted"],
+                relief="solid" if not accent else "flat",
+                borderwidth=1 if not accent else 0,
+                padx=8,
+                pady=5,
+                font=("Segoe UI", 9, "bold" if accent else "normal"),
+                cursor="hand2",
+                command=command,
+            ).grid(row=0, column=col, sticky="e", padx=(0, 6), pady=5)
+        ttk.Label(audit, textvariable=self.ubs_audit_status, style="Muted.TLabel").grid(
+            row=0, column=6, sticky="ew", padx=(8, 10), pady=6
+        )
+
+        self._ubs_search_section_title(audit_pane, 2, "Auditoria por test")
+        audit_tables = tk.PanedWindow(
+            audit_pane,
+            orient=tk.VERTICAL,
+            bg=self.colors["border"],
+            bd=0,
+            sashwidth=6,
+            sashrelief="raised",
+            showhandle=True,
+        )
+        audit_tables.grid(row=3, column=0, sticky="nsew")
+        top_tables = tk.PanedWindow(
+            audit_tables,
+            orient=tk.HORIZONTAL,
+            bg=self.colors["border"],
+            bd=0,
+            sashwidth=6,
+            sashrelief="raised",
+            showhandle=True,
+        )
+        bottom_tables = tk.PanedWindow(
+            audit_tables,
+            orient=tk.HORIZONTAL,
+            bg=self.colors["border"],
+            bd=0,
+            sashwidth=6,
+            sashrelief="raised",
+            showhandle=True,
+        )
+        audit_tables.add(top_tables, minsize=105, stretch="always")
+        audit_tables.add(bottom_tables, minsize=105, stretch="always")
+        self.ubs_audit_trees = {}
+        for key, title in [
+            ("Generacion", "Base / Generacion"),
+            ("Robustez", "Robustez"),
+            ("Final Tick", "Final Tick corto"),
+        ]:
+            top_tables.add(self._create_ubs_audit_table(top_tables, key, title), minsize=260, stretch="always")
+        for key, title in [
+            ("Final Tick 6M", "Final Tick 6M"),
+            ("Pesos", "Pesos / Hallazgos"),
+        ]:
+            bottom_tables.add(self._create_ubs_audit_table(bottom_tables, key, title), minsize=320, stretch="always")
+
+        self._ubs_search_section_title(search_pane, 0, "Buscar set")
+
+        bar = tk.Frame(search_pane, bg=self.colors["panel_alt"])
+        bar.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         bar.columnconfigure(1, weight=1)
 
         tk.Label(
@@ -66,13 +184,13 @@ class UBSSearchViewMixin:
             ).grid(row=0, column=col, sticky="e", padx=(0, 10 if col == 6 else 6), pady=5)
 
         ttk.Label(
-            card,
+            search_pane,
             textvariable=self.ubs_search_status,
             style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 6))
+        ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
-        table_frame = ttk.Frame(card, style="Panel.TFrame")
-        table_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 12))
+        table_frame = ttk.Frame(search_pane, style="Panel.TFrame")
+        table_frame.grid(row=3, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
@@ -129,3 +247,65 @@ class UBSSearchViewMixin:
         self.ubs_search_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_search_set())
         self._make_tree_sortable(self.ubs_search_tree)
         self._attach_tree_scrollbars(table_frame, self.ubs_search_tree, 0)
+
+    def _create_ubs_audit_table(
+        self,
+        parent: tk.Widget,
+        key: str,
+        title: str,
+        row: int | None = None,
+        column: int | None = None,
+    ) -> tk.Frame:
+        box = tk.Frame(parent, bg=self.colors["panel"])
+        if row is not None and column is not None:
+            box.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0), pady=(0, 10))
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(1, weight=1)
+        tk.Label(
+            box,
+            text=title,
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        frame = ttk.Frame(box, style="Panel.TFrame")
+        frame.grid(row=1, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        columns = ("process", "status", "detail")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=4, selectmode="browse")
+        tree.heading("process", text="PROCESO")
+        tree.heading("status", text="ESTADO")
+        tree.heading("detail", text="DETALLE")
+        tree.column("process", width=125, minwidth=90, anchor="w", stretch=False)
+        tree.column("status", width=80, minwidth=70, anchor="center", stretch=False)
+        tree.column("detail", width=360, minwidth=180, anchor="w", stretch=False)
+        self._standard_ubs_search_audit_tree(tree)
+        tree.bind("<Double-1>", lambda event: self._on_ubs_audit_detail_double_click(event))
+        self._attach_tree_scrollbars(frame, tree, 0)
+        self.ubs_audit_trees[key] = tree
+        return box
+
+    def _ubs_search_section_title(self, parent: tk.Widget, row: int, text: str) -> None:
+        tk.Label(
+            parent,
+            text=text,
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=row, column=0, sticky="w", pady=(4, 4))
+
+    def _ubs_search_separator(self, parent: tk.Widget, row: int) -> None:
+        tk.Frame(parent, bg=self.colors["border"], height=1).grid(
+            row=row,
+            column=0,
+            sticky="ew",
+            padx=20,
+            pady=(4, 8),
+        )
+
+    def _standard_ubs_search_audit_tree(self, tree: ttk.Treeview) -> None:
+        tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
+        tree.tag_configure("rejected", foreground=self.colors["danger"])
+        tree.tag_configure("pending", foreground=self.colors["muted"])
+        tree.tag_configure("separator", background=self.colors["panel_alt"], foreground=self.colors["border"])

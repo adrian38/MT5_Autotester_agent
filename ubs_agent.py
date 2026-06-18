@@ -86,6 +86,7 @@ TARGET_GROUP_CAP_RATIOS = {
 }
 DIVERSITY_REROLL_ATTEMPTS = 24
 FINAL_TICK_RETRYABLE_STATUSES = {
+    "pending",
     "no_report",
     "parse_error",
     "report_mismatch",
@@ -2098,7 +2099,7 @@ def prepare_final_tick_exec_dir(path: Path, variants: list[Variant]) -> Path:
     return exec_dir
 
 
-ROBUST_RETRYABLE_STATUSES = {"no_report", "parse_error", "report_mismatch"}
+ROBUST_RETRYABLE_STATUSES = {"pending", "no_report", "parse_error", "report_mismatch"}
 
 
 def robust_status_pending_for_retry(status: object) -> bool:

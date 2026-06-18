@@ -823,7 +823,11 @@ class MT5AutotesterUI(
         self.ubs_portfolio_pending_inputs = None
         self.ubs_search_query = tk.StringVar(value="")
         self.ubs_search_status = tk.StringVar(value="Escribe parte del nombre de un set UBS.")
+        self.ubs_audit_account = tk.StringVar(value=self._ubs_account_type())
+        self.ubs_audit_run_id = tk.StringVar(value="")
+        self.ubs_audit_status = tk.StringVar(value="Selecciona cuenta/run y genera auditoria.")
         self.ubs_search_paths: dict[str, dict[str, str]] = {}
+        self.ubs_audit_report_path = tk.StringVar(value="")
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
