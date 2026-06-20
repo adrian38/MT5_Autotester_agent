@@ -16,9 +16,6 @@ class UBSAgentViewMixin:
 
         # ── Scrollable wrapper ──────────────────────────────────────────────
         canvas = tk.Canvas(parent, bg=self.colors["bg"], highlightthickness=0, bd=0)
-        vscroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vscroll.set)
-        vscroll.grid(row=0, column=1, sticky="ns")
         canvas.grid(row=0, column=0, sticky="nsew")
 
         inner = ttk.Frame(canvas)

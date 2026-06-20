@@ -14,12 +14,9 @@ class DashboardViewMixin:
         outer.rowconfigure(0, weight=1)
 
         canvas = tk.Canvas(outer, bg=self.colors["bg"], highlightthickness=0)
-        scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         parent = ttk.Frame(canvas, padding=(0, 0, 10, 0))
         content_id = canvas.create_window((0, 0), window=parent, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
         canvas.grid(row=0, column=0, sticky="nsew")
-        scroll.grid(row=0, column=1, sticky="ns")
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_id, width=event.width))
         parent.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
 

@@ -13,12 +13,9 @@ class SettingsViewMixin:
         parent.rowconfigure(0, weight=1)
 
         canvas = tk.Canvas(parent, bg=self.colors["bg"], highlightthickness=0)
-        scroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         content = ttk.Frame(canvas, padding=(0, 0, 10, 0))
         content_id = canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
         canvas.grid(row=0, column=0, sticky="nsew")
-        scroll.grid(row=0, column=1, sticky="ns")
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_id, width=event.width))
         content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
         content.columnconfigure(0, weight=1)
@@ -182,4 +179,3 @@ class SettingsViewMixin:
             parent_bg=self.colors["panel"],
             command=self._save_telegram_clicked,
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
-

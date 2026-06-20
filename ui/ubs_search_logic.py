@@ -318,11 +318,9 @@ class UBSSearchLogicMixin:
                 tag = "pending"
             inserted_items.append(detail_tree.insert("", "end", values=parts[: len(columns)], tags=(tag,)))
 
-        yscroll = ttk.Scrollbar(frame, orient="vertical", command=detail_tree.yview)
         xscroll = ttk.Scrollbar(frame, orient="horizontal", command=detail_tree.xview)
-        detail_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        detail_tree.configure(xscrollcommand=xscroll.set)
         detail_tree.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
 
         actions = tk.Frame(window, bg=self.colors["panel_alt"])

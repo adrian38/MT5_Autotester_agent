@@ -1066,10 +1066,8 @@ class MT5AutotesterUI(
         horizontal: bool = True,
     ) -> None:
         tree.grid(row=row, column=column, sticky="nsew")
-        if vertical:
-            y_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
-            y_scroll.grid(row=row, column=column + 1, sticky="ns")
-            tree.configure(yscrollcommand=y_scroll.set)
+        # Treeview keeps native wheel, keyboard and trackpad scrolling. The
+        # visual vertical bar is intentionally hidden application-wide.
         if horizontal:
             x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
             x_scroll.grid(row=row + 1, column=column, sticky="ew")
