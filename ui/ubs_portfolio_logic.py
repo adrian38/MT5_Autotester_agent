@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -1294,7 +1295,12 @@ class UBSPortfolioLogicMixin:
         folder = filedialog.askdirectory(title="Carpeta destino para los sets del portafolio")
         if not folder:
             return
-        dest = Path(folder)
+        created = str(portfolio["created_at"] or "").replace("T", "_").replace(":", "").replace("-", "")
+        type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
+        type_label = PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key or "Portfolio")
+        raw_folder_name = f"PORTAFOLIO_{portfolio_id}_{type_label}_{created[:15]}".strip("_")
+        folder_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_folder_name).strip("._") or f"PORTAFOLIO_{portfolio_id}"
+        dest = Path(folder) / folder_name
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -1325,7 +1331,6 @@ class UBSPortfolioLogicMixin:
             ))
 
         resumen = dest / f"PORTAFOLIO_{portfolio_id}_resumen.txt"
-        type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
         capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
         lines = [
             f"Portafolio: {portfolio['name']}",

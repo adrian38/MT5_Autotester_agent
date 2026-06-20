@@ -88,7 +88,21 @@ class MultiterminalViewMixin:
                   relief="flat", borderwidth=0, padx=10, pady=5,
                   font=("Segoe UI", 9, "bold"), cursor="hand2",
                   command=self._save_multiterminal_clicked,
-                  ).grid(row=0, column=6, sticky="e", padx=(0, 10), pady=5)
+                  ).grid(row=0, column=6, sticky="e", padx=(0, 6), pady=5)
+        self.multiterminal_cleanup_button = tk.Button(
+            top,
+            text="Limpiar Tester",
+            bg=self.colors["danger"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=self._clean_multiterminal_tester_files,
+        )
+        self.multiterminal_cleanup_button.grid(row=0, column=7, sticky="e", padx=(0, 10), pady=5)
 
         # ── PanedWindow: tabla izquierda | editor derecho (arrastra el divisor) ──
         paned = ttk.PanedWindow(panel, orient="horizontal")
@@ -250,4 +264,3 @@ class MultiterminalViewMixin:
             style="Tool.TButton",
             command=lambda: self._show_section("multiterminal"),
         ).grid(row=0, column=5, sticky="e", padx=(0, 12), pady=8)
-

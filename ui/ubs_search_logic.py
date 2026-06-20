@@ -37,6 +37,25 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
 
+AUDIT_FINAL_STATUSES = {"accepted", "rejected"}
+
+
+def audit_nonfinal_count(
+    status_counts: dict[str, int],
+    *,
+    additional_final_statuses: set[str] | frozenset[str] = frozenset(),
+) -> int:
+    """Count stored stage rows that have not reached a final pass/fail state."""
+    final_statuses = AUDIT_FINAL_STATUSES | {
+        str(status or "").strip().lower() for status in additional_final_statuses
+    }
+    return sum(
+        int(count or 0)
+        for status, count in status_counts.items()
+        if str(status or "").strip().lower() not in final_statuses
+    )
+
+
 class UBSSearchLogicMixin:
     def _refresh_ubs_audit_run_combo(self) -> None:
         combo = getattr(self, "ubs_audit_run_combo", None)
@@ -971,6 +990,7 @@ class UBSSearchLogicMixin:
             return detail, tag, detail_lines
 
         robust = counts("select cr.status,count(*) from candidate_robustness cr join candidates c on c.id=cr.candidate_id where c.run_id=? group by cr.status")
+        nonfinal_robust = audit_nonfinal_count(robust)
         missing_robust = one(
             "select count(*) from candidates c left join candidate_robustness cr on cr.candidate_id=c.id "
             "where c.run_id=? and c.status='accepted' and cr.candidate_id is null"
@@ -982,7 +1002,10 @@ class UBSSearchLogicMixin:
         line("\nROBUSTEZ")
         line("-" * 96)
         line(fmt_counts(robust))
-        line(f"base accepted sin robustez={missing_robust} | stale={stale_robust}")
+        line(
+            f"base accepted sin robustez={missing_robust} | "
+            f"estados no finales={nonfinal_robust} | stale={stale_robust}"
+        )
         for row in rows(
             "select c.generation,cr.status,count(*) n from candidate_robustness cr "
             "join candidates c on c.id=cr.candidate_id where c.run_id=? "
@@ -991,6 +1014,13 @@ class UBSSearchLogicMixin:
             line(f"  gen {row['generation']}: {row['status']}={row['n']}")
 
         ft = counts("select ft.status,count(*) from candidate_final_tick ft join candidates c on c.id=ft.candidate_id where c.run_id=? group by ft.status")
+        # pending_ohlc_trades is an intentional hand-off from the short window
+        # to 6M. Missing/unresolved 6M rows are audited separately below.
+        short_handoff_ft = int(ft.get("pending_ohlc_trades", 0) or 0)
+        nonfinal_ft = audit_nonfinal_count(
+            ft,
+            additional_final_statuses={"pending_ohlc_trades"},
+        )
         eligible_ft = one(
             "select count(*) from candidates c join candidate_robustness cr on cr.candidate_id=c.id "
             "where c.run_id=? and c.status='accepted' and cr.status='accepted'"
@@ -1008,7 +1038,10 @@ class UBSSearchLogicMixin:
         line("\nFINAL TICK CORTO")
         line("-" * 96)
         line(fmt_counts(ft))
-        line(f"elegibles base+robust={eligible_ft} | sin FT={missing_ft} | stale={stale_ft}")
+        line(
+            f"elegibles base+robust={eligible_ft} | sin FT={missing_ft} | "
+            f"bloqueantes={nonfinal_ft} | derivados a 6M={short_handoff_ft} | stale={stale_ft}"
+        )
         for row in rows(
             "select c.generation,ft.status,count(*) n from candidate_final_tick ft "
             "join candidates c on c.id=ft.candidate_id where c.run_id=? "
@@ -1017,6 +1050,7 @@ class UBSSearchLogicMixin:
             line(f"  gen {row['generation']}: {row['status']}={row['n']}")
 
         ft6 = counts("select ft6.status,count(*) from candidate_final_tick_6m ft6 join candidates c on c.id=ft6.candidate_id where c.run_id=? group by ft6.status")
+        nonfinal_ft6 = audit_nonfinal_count(ft6)
         eligible_ft6 = one(
             "select count(*) from candidates c join candidate_robustness cr on cr.candidate_id=c.id "
             "join candidate_final_tick ft on ft.candidate_id=c.id and ft.status in ('accepted','pending_ohlc_trades') "
@@ -1051,7 +1085,11 @@ class UBSSearchLogicMixin:
         line("\nFINAL TICK 6M")
         line("-" * 96)
         line(fmt_counts(ft6))
-        line(f"elegibles 6M={eligible_ft6} | sin 6M={missing_ft6} | stale={stale_ft6} | usable portfolio/live={usable}")
+        line(
+            f"elegibles 6M={eligible_ft6} | sin fila 6M={missing_ft6} | "
+            f"pendientes/problema={nonfinal_ft6} | stale={stale_ft6} | "
+            f"usable portfolio/live={usable}"
+        )
         line("causas rejected 6M: " + (", ".join(f"{key}={value}" for key, value in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))) or "sin rechazos"))
         for row in rows(
             "select c.generation,ft6.status,count(*) n from candidate_final_tick_6m ft6 "
@@ -1296,6 +1334,11 @@ class UBSSearchLogicMixin:
             issues.append(f"stale rows robust={stale_robust} ft={stale_ft} ft6={stale_ft6}")
         if missing_robust or missing_ft or missing_ft6:
             issues.append(f"pendientes missing robust={missing_robust} ft={missing_ft} ft6={missing_ft6}")
+        if nonfinal_robust or nonfinal_ft or nonfinal_ft6:
+            issues.append(
+                "estados no finales "
+                f"robust={nonfinal_robust} ft={nonfinal_ft} ft6={nonfinal_ft6}"
+            )
         if weight_mismatches:
             issues.append(f"mismatch formula pesos vs feedback_weight={weight_mismatches}")
         if not issues:
@@ -1320,11 +1363,23 @@ class UBSSearchLogicMixin:
                 artifact_detail if len(artifact_detail) > 1 else [],
             ),
             ("Cuenta MT5 base", base_account_detail, base_account_tag, base_account_lines),
-            ("Robustez", f"{fmt_counts(robust)} | sin robust={missing_robust} | stale={stale_robust}", "accepted" if not (missing_robust or stale_robust) else "rejected"),
+            (
+                "Robustez",
+                f"{fmt_counts(robust)} | sin robust={missing_robust} | no finales={nonfinal_robust} | stale={stale_robust}",
+                "accepted" if not (missing_robust or nonfinal_robust or stale_robust) else "rejected",
+            ),
             ("Cuenta MT5 robustez", robust_account_detail, robust_account_tag, robust_account_lines),
-            ("Final Tick corto", f"{fmt_counts(ft)} | sin FT={missing_ft} | stale={stale_ft}", "accepted" if not (missing_ft or stale_ft) else "rejected"),
+            (
+                "Final Tick corto",
+                f"{fmt_counts(ft)} | sin FT={missing_ft} | bloqueantes={nonfinal_ft} | derivados 6M={short_handoff_ft} | stale={stale_ft}",
+                "accepted" if not (missing_ft or nonfinal_ft or stale_ft) else "rejected",
+            ),
             ("Cuenta MT5 FT corto", ft_account_detail, ft_account_tag, ft_account_lines),
-            ("Final Tick 6M", f"{fmt_counts(ft6)} | usable={usable} | sin 6M={missing_ft6} | stale={stale_ft6}", "accepted" if usable > 0 and not (missing_ft6 or stale_ft6) else "rejected"),
+            (
+                "Final Tick 6M",
+                f"{fmt_counts(ft6)} | usable={usable} | sin fila={missing_ft6} | pendientes/problema={nonfinal_ft6} | stale={stale_ft6}",
+                "accepted" if usable > 0 and not (missing_ft6 or nonfinal_ft6 or stale_ft6) else "rejected",
+            ),
             ("Cuenta MT5 FT 6M", ft6_account_detail, ft6_account_tag, ft6_account_lines),
             (
                 "Formula pesos",

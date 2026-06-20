@@ -1162,8 +1162,30 @@ class MT5AutotesterUI(
         ttk.Label(header, text="MT5 Autotester", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="v1.4.0", style="Version.TLabel").grid(row=1, column=0, sticky="w")
 
-        nav = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        nav.grid(row=1, column=0, sticky="new")
+        nav_canvas = tk.Canvas(
+            sidebar,
+            bg=COLORS["sidebar_bg"],
+            highlightthickness=0,
+            bd=0,
+            yscrollincrement=24,
+        )
+        nav_canvas.grid(row=1, column=0, sticky="nsew")
+        nav = ttk.Frame(nav_canvas, style="Sidebar.TFrame")
+        nav_window = nav_canvas.create_window((0, 0), window=nav, anchor="nw")
+
+        def _sync_nav_scroll(_event=None) -> None:
+            nav_canvas.configure(scrollregion=nav_canvas.bbox("all"))
+            nav_canvas.itemconfigure(nav_window, width=nav_canvas.winfo_width())
+
+        def _scroll_nav(event) -> str | None:
+            if nav_canvas.bbox("all") is None:
+                return None
+            nav_canvas.yview_scroll(-1 * int(event.delta / 120), "units")
+            return "break"
+
+        nav.bind("<Configure>", _sync_nav_scroll)
+        nav_canvas.bind("<Configure>", _sync_nav_scroll)
+        nav_canvas.bind("<MouseWheel>", _scroll_nav)
         nav.columnconfigure(0, weight=1)
         items = [
             ("panel", "▦  Panel"),
@@ -1196,6 +1218,7 @@ class MT5AutotesterUI(
                 command=lambda k=key: self._show_section(k),
             )
             btn.grid(row=index, column=0, sticky="ew", pady=2)
+            btn.bind("<MouseWheel>", _scroll_nav)
             self.nav_buttons[key] = btn
 
         bottom = ttk.Frame(sidebar, style="Sidebar.TFrame")
