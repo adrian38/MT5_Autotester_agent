@@ -108,6 +108,7 @@ class UBSAgentLogicMixin:
             ("ubs_results", "_refresh_ubs_results_panel"),
             ("ubs_robustness", "_refresh_ubs_robustness_panel"),
             ("ubs_final_tick", "_refresh_ubs_final_tick_panel"),
+            ("ubs_final_tick_6m", "_refresh_ubs_final_tick_6m_panel"),
             ("ubs_universe", "_refresh_ubs_universe_panel"),
             ("ubs_portfolio", "_refresh_ubs_portfolio"),
         ):
@@ -396,6 +397,7 @@ class UBSAgentLogicMixin:
             "--infer-tester-from-set",
         ]
         if self.multiterminal_enabled.get():
+            args.extend(["--expert", self._required_ubs_ex5_file()])
             args.extend(self._multiterminal_args(require_ubs=True))
         else:
             args.extend(["--expert", self._required_ubs_ex5_file()])

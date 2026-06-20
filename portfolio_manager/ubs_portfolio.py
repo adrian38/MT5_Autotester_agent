@@ -43,11 +43,53 @@ PORTFOLIO_SYMBOL_ALIASES = {
     "WTI": "WTI",
 }
 
+PORTFOLIO_GROUP_BY_SYMBOL = {
+    **{
+        symbol: "Forex"
+        for symbol in (
+            "AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDUSD", "CADCHF", "CADJPY", "CHFJPY",
+            "GBPAUD", "GBPCAD", "GBPCHF", "GBPJPY", "GBPNZD", "GBPUSD", "EURAUD", "EURCAD",
+            "EURCHF", "EURGBP", "EURJPY", "EURNZD", "EURUSD", "NZDCAD", "NZDCHF", "NZDJPY",
+            "NZDUSD", "USDCAD", "USDCHF", "USDJPY",
+        )
+    },
+    **{symbol: "Metals" for symbol in ("XAGUSD", "XAUUSD", "XAUEUR")},
+    **{
+        symbol: "IndicesEnergies"
+        for symbol in (".DE40CASH", ".JP225CASH", ".US500CASH", ".USTECHCASH", ".US30CASH", "BRENT", "WTI")
+    },
+    **{symbol: "Crypto" for symbol in ("BTCUSD", "ETHUSD")},
+    **{
+        symbol: "Stocks"
+        for symbol in (
+            "GOOGL", "MSFT", "IBM", "VZ", "INTC", "LLY", "HPE", "PFE", "JNJ", "EA", "BA",
+            "ORCL", "NVDA", "CAT", "CSCO", "MMM", "ADBE", "GE", "TSLA", "NKE", "CMCSA",
+            "GM", "DIS", "PM", "PG", "PEP", "FOXA", "KO", "AAPL", "AMZN", "UPS", "NFLX",
+            "BRK.B", "MCD", "PRU", "SBUX", "PYPL", "GS", "WMT", "V", "DAL", "WFC", "C",
+            "XOM", "CVX", "NEM", "JPM", "BAC", "EBAY", "META",
+        )
+    },
+}
+
 
 class PortfolioType(str, Enum):
     CONSERVATIVE = "conservative"
     BALANCED = "balanced"
     AGGRESSIVE = "aggressive"
+
+
+@dataclass(frozen=True)
+class PortfolioGroupLimits:
+    max_units_pct: float | None
+    max_sets: int | None
+    bootstrap_units: int = 10
+
+
+DEFAULT_GROUP_LIMITS = {
+    PortfolioType.CONSERVATIVE: PortfolioGroupLimits(max_units_pct=0.40, max_sets=2, bootstrap_units=2),
+    PortfolioType.BALANCED: PortfolioGroupLimits(max_units_pct=0.55, max_sets=3, bootstrap_units=2),
+    PortfolioType.AGGRESSIVE: PortfolioGroupLimits(max_units_pct=0.70, max_sets=4, bootstrap_units=5),
+}
 
 
 @dataclass(frozen=True)
@@ -201,6 +243,7 @@ class PortfolioResult:
     decision_log: list[OptimizationDecision]
     unused_sets: list[UnusedSetInfo] = field(default_factory=list)
     correlation_rejections: int = 0
+    group_summary: dict[str, dict[str, float | int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -622,6 +665,78 @@ def filter_eligible_sets(
     return eligible
 
 
+def recent_positive_month_count(
+    monthly: dict[int, dict[int, float]],
+    end_date: str | datetime | None = None,
+    *,
+    window_months: int = 6,
+) -> int:
+    end = _coerce_month_end(end_date)
+    if end is None:
+        end = _latest_month_from_monthly(monthly)
+    if end is None or window_months <= 0:
+        return 0
+    count = 0
+    for year, month in _month_window(end.year, end.month, window_months):
+        if float(monthly.get(year, {}).get(month, 0.0)) > 0:
+            count += 1
+    return count
+
+
+def filter_rows_by_recent_positive_months(
+    rows: Sequence[object],
+    *,
+    min_positive_months: int = 3,
+    window_months: int = 6,
+    parse: Callable[[Path], StrategyReport] = parse_report,
+    progress: ProgressCallback | None = None,
+) -> tuple[list[object], list[str]]:
+    filtered: list[object] = []
+    skipped_no_report = 0
+    skipped_parse = 0
+    skipped_months = 0
+
+    for index, row in enumerate(rows, start=1):
+        if progress:
+            progress(f"Filtrando meses positivos {index}/{len(rows)}")
+        report_path = _first_existing_report_path(
+            row,
+            "final_tick_report_path",
+            "real_tick_report_path",
+            "final_ohlc_report_path",
+            "ohlc_report_path",
+        )
+        if report_path is None:
+            skipped_no_report += 1
+            continue
+        try:
+            report = parse(report_path)
+            end_date = str(_row_value(row, "final_tick_to_date", "to_date", default=""))
+            positives = recent_positive_month_count(
+                report.monthly,
+                end_date or report.period_end,
+                window_months=window_months,
+            )
+        except Exception:
+            skipped_parse += 1
+            continue
+        if positives >= min_positive_months:
+            filtered.append(row)
+        else:
+            skipped_months += 1
+
+    warnings: list[str] = []
+    if skipped_months or skipped_no_report or skipped_parse:
+        warnings.append(
+            f"Filtro {min_positive_months}/{window_months} meses positivos: "
+            f"{skipped_months} omitido(s) por meses insuficientes"
+            + (f", {skipped_no_report} sin reporte Final Tick 6M" if skipped_no_report else "")
+            + (f", {skipped_parse} con reporte ilegible" if skipped_parse else "")
+            + "."
+        )
+    return filtered, warnings
+
+
 def score_set_for_portfolio(
     strategy: RobustStrategySet,
     min_trades_2020_2026: int = 100,
@@ -660,7 +775,54 @@ def select_top_k_per_symbol(
         reverse=True,
     )
     if max_total_candidates is not None:
-        selected = selected[:max_total_candidates]
+        selected = _limit_candidates_with_group_reserve(
+            selected,
+            max_total_candidates,
+            min_trades_2020_2026,
+        )
+    return selected
+
+
+def _limit_candidates_with_group_reserve(
+    candidates: list[RobustStrategySet],
+    max_total_candidates: int,
+    min_trades_2020_2026: int,
+) -> list[RobustStrategySet]:
+    if max_total_candidates <= 0:
+        return []
+    if len(candidates) <= max_total_candidates:
+        return candidates
+
+    ordered = sorted(
+        candidates,
+        key=lambda item: score_set_for_portfolio(item, min_trades_2020_2026),
+        reverse=True,
+    )
+    groups: dict[str, list[RobustStrategySet]] = {}
+    for candidate in ordered:
+        groups.setdefault(portfolio_group_key(candidate.symbol), []).append(candidate)
+
+    selected: list[RobustStrategySet] = []
+    selected_ids: set[str] = set()
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda group: score_set_for_portfolio(group[0], min_trades_2020_2026),
+        reverse=True,
+    )
+    for group in ordered_groups:
+        if len(selected) >= max_total_candidates:
+            break
+        candidate = group[0]
+        selected.append(candidate)
+        selected_ids.add(candidate.set_id)
+
+    for candidate in ordered:
+        if len(selected) >= max_total_candidates:
+            break
+        if candidate.set_id in selected_ids:
+            continue
+        selected.append(candidate)
+        selected_ids.add(candidate.set_id)
     return selected
 
 
@@ -719,6 +881,76 @@ def evaluate_portfolio(
     )
 
 
+def portfolio_group_summary(
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+) -> dict[str, dict[str, float | int]]:
+    stats: dict[str, dict[str, float | int]] = {}
+    total_units = 0
+    for strategy in sets:
+        units = max(int(allocations.get(strategy.set_id, 0)), 0)
+        if units <= 0:
+            continue
+        group = portfolio_group_key(strategy.symbol)
+        row = stats.setdefault(group, {"units": 0, "sets": 0, "unit_pct": 0.0})
+        row["units"] = int(row["units"]) + units
+        row["sets"] = int(row["sets"]) + 1
+        total_units += units
+    if total_units > 0:
+        for row in stats.values():
+            row["unit_pct"] = float(row["units"]) / total_units * 100.0
+    return dict(sorted(stats.items(), key=lambda item: (-float(item[1]["units"]), item[0])))
+
+
+def _candidate_group_count(sets: list[RobustStrategySet]) -> int:
+    return len({portfolio_group_key(strategy.symbol) for strategy in sets})
+
+
+def _target_group_units_pct_allowed(
+    target_set: RobustStrategySet,
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    max_units_per_group_pct: float | None,
+    group_unit_cap_bootstrap: int,
+) -> bool:
+    if max_units_per_group_pct is None:
+        return True
+    if _candidate_group_count(sets) <= 1:
+        return True
+    after_total_units = sum(max(int(value), 0) for value in allocations.values())
+    after_target_units = max(int(allocations.get(target_set.set_id, 0)), 0)
+    before_total_units = max(after_total_units - 1, 0)
+    before_target_units = max(after_target_units - 1, 0)
+    if before_total_units <= 0:
+        return True
+
+    target_group = portfolio_group_key(target_set.symbol)
+    after_group_units = sum(
+        max(int(allocations.get(strategy.set_id, 0)), 0)
+        for strategy in sets
+        if portfolio_group_key(strategy.symbol) == target_group
+    )
+    before_group_units = max(after_group_units - 1, 0)
+    if before_group_units <= 0:
+        return True
+
+    before_active_groups: set[str] = set()
+    for strategy in sets:
+        units = max(int(allocations.get(strategy.set_id, 0)), 0)
+        if strategy.set_id == target_set.set_id:
+            units = before_target_units
+        if units > 0:
+            before_active_groups.add(portfolio_group_key(strategy.symbol))
+    if len(before_active_groups) < min(2, _candidate_group_count(sets)):
+        return before_group_units < group_unit_cap_bootstrap
+
+    before_group_pct = before_group_units / max(before_total_units, 1)
+    if before_group_pct > max_units_per_group_pct + 1e-9:
+        return False
+    max_units_with_one_step_slack = math.floor(after_total_units * max_units_per_group_pct) + 1
+    return after_group_units <= max_units_with_one_step_slack
+
+
 def can_add_unit(
     target_set: RobustStrategySet,
     sets: list[RobustStrategySet],
@@ -727,6 +959,9 @@ def can_add_unit(
     max_total_units: int | None,
     max_units_per_symbol: int | None,
     max_sets_per_symbol: int | None,
+    max_units_per_group_pct: float | None = None,
+    max_sets_per_group: int | None = None,
+    group_unit_cap_bootstrap: int = 10,
 ) -> bool:
     current_units = allocations.get(target_set.set_id, 0)
     if max_units_per_set is not None and current_units >= max_units_per_set:
@@ -751,6 +986,25 @@ def can_add_unit(
         )
         if current_units == 0 and active_same_symbol >= max_sets_per_symbol:
             return False
+    if max_sets_per_group is not None:
+        target_group = portfolio_group_key(target_set.symbol)
+        active_same_group = sum(
+            1
+            for strategy in sets
+            if portfolio_group_key(strategy.symbol) == target_group and allocations.get(strategy.set_id, 0) > 0
+        )
+        if current_units == 0 and active_same_group >= max_sets_per_group:
+            return False
+    temp_allocations = allocations.copy()
+    temp_allocations[target_set.set_id] = current_units + 1
+    if not _target_group_units_pct_allowed(
+        target_set,
+        sets,
+        temp_allocations,
+        max_units_per_group_pct,
+        group_unit_cap_bootstrap,
+    ):
+        return False
     return True
 
 
@@ -787,10 +1041,12 @@ def _allocations_respect_constraints(
     max_total_units: int | None,
     max_units_per_symbol: int | None,
     max_sets_per_symbol: int | None,
+    max_sets_per_group: int | None = None,
 ) -> bool:
     total_units = 0
     units_by_symbol: dict[str, int] = {}
     active_sets_by_symbol: dict[str, int] = {}
+    active_sets_by_group: dict[str, int] = {}
 
     for strategy in sets:
         units = max(int(allocations.get(strategy.set_id, 0)), 0)
@@ -802,6 +1058,8 @@ def _allocations_respect_constraints(
         symbol_key = portfolio_symbol_key(strategy.symbol)
         units_by_symbol[symbol_key] = units_by_symbol.get(symbol_key, 0) + units
         active_sets_by_symbol[symbol_key] = active_sets_by_symbol.get(symbol_key, 0) + 1
+        group_key = portfolio_group_key(strategy.symbol)
+        active_sets_by_group[group_key] = active_sets_by_group.get(group_key, 0) + 1
 
     if max_total_units is not None and total_units > max_total_units:
         return False
@@ -812,6 +1070,10 @@ def _allocations_respect_constraints(
     if max_sets_per_symbol is not None:
         for count in active_sets_by_symbol.values():
             if count > max_sets_per_symbol:
+                return False
+    if max_sets_per_group is not None:
+        for count in active_sets_by_group.values():
+            if count > max_sets_per_group:
                 return False
     return True
 
@@ -874,6 +1136,9 @@ def build_portfolio_greedy(
     max_dd_overlap: float | None = None,
     existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
     max_portfolio_corr: float | None = None,
+    max_units_per_group_pct: float | None = None,
+    max_sets_per_group: int | None = None,
+    group_unit_cap_bootstrap: int = 10,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], str, int]:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
@@ -896,6 +1161,9 @@ def build_portfolio_greedy(
                 max_total_units=max_total_units,
                 max_units_per_symbol=max_units_per_symbol,
                 max_sets_per_symbol=max_sets_per_symbol,
+                max_units_per_group_pct=max_units_per_group_pct,
+                max_sets_per_group=max_sets_per_group,
+                group_unit_cap_bootstrap=group_unit_cap_bootstrap,
             ):
                 continue
             rejected_by_corr, corr_reason = violates_correlation_limits(
@@ -1015,6 +1283,9 @@ def improve_with_local_search(
     max_dd_overlap: float | None = None,
     existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
     max_portfolio_corr: float | None = None,
+    max_units_per_group_pct: float | None = None,
+    max_sets_per_group: int | None = None,
+    group_unit_cap_bootstrap: int = 10,
     max_iterations: int = 1000,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision]]:
     decision_log: list[OptimizationDecision] = []
@@ -1039,6 +1310,15 @@ def improve_with_local_search(
                     max_total_units,
                     max_units_per_symbol,
                     max_sets_per_symbol,
+                    max_sets_per_group,
+                ):
+                    continue
+                if not _target_group_units_pct_allowed(
+                    to_set,
+                    sets,
+                    temp_allocations,
+                    max_units_per_group_pct,
+                    group_unit_cap_bootstrap,
                 ):
                     continue
                 if allocations.get(to_set.set_id, 0) <= 0:
@@ -1125,9 +1405,19 @@ def optimize_portfolio(
     max_dd_overlap: float | None = None,
     existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
     max_portfolio_corr: float | None = None,
+    max_units_per_group_pct: float | None = None,
+    max_sets_per_group: int | None = None,
+    group_unit_cap_bootstrap: int | None = None,
 ) -> PortfolioResult:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
+    group_limits = group_limits_for_portfolio_type(portfolio_type)
+    if max_units_per_group_pct is None:
+        max_units_per_group_pct = group_limits.max_units_pct
+    if max_sets_per_group is None:
+        max_sets_per_group = group_limits.max_sets
+    if group_unit_cap_bootstrap is None:
+        group_unit_cap_bootstrap = group_limits.bootstrap_units
     eligible = filter_eligible_sets(raw_sets, min_trades_2020_2026)
     if not eligible:
         raise ValueError("No eligible robust sets found")
@@ -1153,6 +1443,9 @@ def optimize_portfolio(
         max_dd_overlap=max_dd_overlap,
         existing_portfolio_curves=existing_portfolio_curves,
         max_portfolio_corr=max_portfolio_corr,
+        max_units_per_group_pct=max_units_per_group_pct,
+        max_sets_per_group=max_sets_per_group,
+        group_unit_cap_bootstrap=group_unit_cap_bootstrap,
     )
 
     local_log: list[OptimizationDecision] = []
@@ -1172,7 +1465,72 @@ def optimize_portfolio(
             max_dd_overlap=max_dd_overlap,
             existing_portfolio_curves=existing_portfolio_curves,
             max_portfolio_corr=max_portfolio_corr,
+            max_units_per_group_pct=max_units_per_group_pct,
+            max_sets_per_group=max_sets_per_group,
+            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
         )
+
+    group_cap_relaxed = False
+    if (
+        portfolio_type == PortfolioType.BALANCED
+        and max_units_per_group_pct is not None
+        and _candidate_group_count(selected) > 1
+        and current.valley_usage_pct < 70
+    ):
+        (
+            relaxed_allocations,
+            relaxed_current,
+            relaxed_greedy_log,
+            relaxed_stop_reason,
+            relaxed_rejections,
+        ) = build_portfolio_greedy(
+            sets=selected,
+            capital=capital,
+            valley_dd_pct=valley_dd_pct,
+            point_dd_pct=point_dd_pct,
+            portfolio_type=portfolio_type,
+            max_units_per_set=max_units_per_set,
+            max_total_units=max_total_units,
+            max_units_per_symbol=max_units_per_symbol,
+            max_sets_per_symbol=max_sets_per_symbol,
+            max_pair_corr=max_pair_corr,
+            max_downside_corr=max_downside_corr,
+            max_dd_overlap=max_dd_overlap,
+            existing_portfolio_curves=existing_portfolio_curves,
+            max_portfolio_corr=max_portfolio_corr,
+            max_units_per_group_pct=None,
+            max_sets_per_group=max_sets_per_group,
+            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+        )
+        relaxed_local_log: list[OptimizationDecision] = []
+        if run_local_search:
+            relaxed_allocations, relaxed_current, relaxed_local_log = improve_with_local_search(
+                sets=selected,
+                allocations=relaxed_allocations,
+                current=relaxed_current,
+                target_valley_dd=target_valley_dd,
+                target_point_dd=target_point_dd,
+                max_units_per_set=max_units_per_set,
+                max_total_units=max_total_units,
+                max_units_per_symbol=max_units_per_symbol,
+                max_sets_per_symbol=max_sets_per_symbol,
+                max_pair_corr=max_pair_corr,
+                max_downside_corr=max_downside_corr,
+                max_dd_overlap=max_dd_overlap,
+                existing_portfolio_curves=existing_portfolio_curves,
+                max_portfolio_corr=max_portfolio_corr,
+                max_units_per_group_pct=None,
+                max_sets_per_group=max_sets_per_group,
+                group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+            )
+        if relaxed_current.total_net_profit > current.total_net_profit and relaxed_current.total_units > current.total_units:
+            allocations = relaxed_allocations
+            current = relaxed_current
+            greedy_log = relaxed_greedy_log
+            local_log = relaxed_local_log
+            correlation_rejections = relaxed_rejections
+            group_cap_relaxed = True
+            stop_reason = f"{relaxed_stop_reason}; group unit cap relaxed after strict Balanced allocation underused DD"
 
     executable_allocations, executable_steps = _execution_plan_allocations(selected, allocations, capital)
     execution_adjustments = {
@@ -1213,7 +1571,28 @@ def optimize_portfolio(
         )
     result_allocations.sort(key=lambda item: (item.units, item.net_profit_contribution), reverse=True)
 
+    group_summary = portfolio_group_summary(selected, allocations)
+    eligible_groups = {portfolio_group_key(strategy.symbol) for strategy in eligible}
+    group_limit_overages: list[str] = []
+    if max_units_per_group_pct is not None and len(eligible_groups) > 1:
+        limit_pct = max_units_per_group_pct * 100.0
+        group_limit_overages = [
+            f"{group} {float(stats['unit_pct']):.1f}%"
+            for group, stats in group_summary.items()
+            if float(stats["unit_pct"]) > limit_pct + 0.1
+        ]
+
     warnings: list[str] = []
+    if group_cap_relaxed:
+        warnings.append(
+            "Balanced relajo el limite porcentual por grupo porque la asignacion estricta dejaba el portfolio infrautilizado."
+        )
+    if portfolio_type != PortfolioType.AGGRESSIVE and len(eligible_groups) <= 1:
+        only_group = next(iter(eligible_groups), "none")
+        warnings.append(
+            f"Solo un grupo de activo tuvo curvas elegibles ({only_group}); "
+            "no fue posible diversificar por grupo en Balanced/Conservative."
+        )
     if current.valley_usage_pct < 70:
         warnings.append(
             "Valley DD usage is below 70%. This can be acceptable if no efficient increments remained."
@@ -1228,6 +1607,12 @@ def optimize_portfolio(
         )
     if correlation_rejections:
         warnings.append(f"{correlation_rejections} increment candidate(s) rejected by correlation limits.")
+    if group_limit_overages:
+        limit_pct = max_units_per_group_pct * 100.0
+        warnings.append(
+            f"Concentracion por grupo sobre {limit_pct:.0f}% tras optimizar: "
+            + ", ".join(group_limit_overages)
+        )
 
     unused_sets = _build_unused_sets(raw_sets, eligible, selected, allocations, min_trades_2020_2026)
     return PortfolioResult(
@@ -1248,6 +1633,7 @@ def optimize_portfolio(
         decision_log=greedy_log + local_log,
         unused_sets=unused_sets,
         correlation_rejections=correlation_rejections,
+        group_summary=group_summary,
     )
 
 
@@ -1381,6 +1767,48 @@ def _parse_report_date(value: str) -> datetime | None:
     return None
 
 
+def _coerce_month_end(value: str | datetime | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if value:
+        return _parse_report_date(str(value))
+    return None
+
+
+def _latest_month_from_monthly(monthly: dict[int, dict[int, float]]) -> datetime | None:
+    pairs = [
+        (int(year), int(month))
+        for year, months in monthly.items()
+        for month in months
+    ]
+    if not pairs:
+        return None
+    year, month = max(pairs)
+    return datetime(year, month, 1)
+
+
+def _month_window(end_year: int, end_month: int, window_months: int) -> list[tuple[int, int]]:
+    end_index = end_year * 12 + end_month - 1
+    start_index = end_index - window_months + 1
+    result: list[tuple[int, int]] = []
+    for month_index in range(start_index, end_index + 1):
+        year = month_index // 12
+        month = month_index % 12 + 1
+        result.append((year, month))
+    return result
+
+
+def _first_existing_report_path(row: object, *keys: str) -> Path | None:
+    for key in keys:
+        value = str(_row_value(row, key, default="") or "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        if path.is_file():
+            return path
+    return None
+
+
 def _to_float(value: str) -> float:
     text = str(value or "").split("(")[0].strip()
     text = text.replace(" ", "").replace("%", "")
@@ -1413,6 +1841,24 @@ def _normalize_symbol(symbol: str) -> str:
 def portfolio_symbol_key(symbol: str) -> str:
     normalized = _normalize_symbol(symbol)
     return PORTFOLIO_SYMBOL_ALIASES.get(normalized, normalized)
+
+
+def portfolio_group_key(symbol: str) -> str:
+    symbol_key = portfolio_symbol_key(symbol)
+    if symbol_key in PORTFOLIO_GROUP_BY_SYMBOL:
+        return PORTFOLIO_GROUP_BY_SYMBOL[symbol_key]
+    if _looks_like_forex_pair(symbol_key):
+        return "Forex"
+    return "Other"
+
+
+def group_limits_for_portfolio_type(portfolio_type: PortfolioType) -> PortfolioGroupLimits:
+    return DEFAULT_GROUP_LIMITS.get(portfolio_type, DEFAULT_GROUP_LIMITS[PortfolioType.BALANCED])
+
+
+def _looks_like_forex_pair(symbol: str) -> bool:
+    currencies = {"AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD"}
+    return len(symbol) == 6 and symbol[:3] in currencies and symbol[3:] in currencies
 
 
 def _logical_stem(set_path: str) -> str:

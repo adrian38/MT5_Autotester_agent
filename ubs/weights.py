@@ -38,9 +38,11 @@ ROBUST_REASON_PENALTIES = {
 }
 
 FINAL_TICK_REASON_PENALTIES = {
+    "profit_factor_floor": 55.0,
     "profit_factor": 45.0,
     "drawdown_pct": 55.0,
     "trades": 45.0,
+    "ohlc_trades": 45.0,
     "history_quality": 60.0,
 }
 
@@ -94,13 +96,33 @@ def robust_bonus(row: object) -> float:
 
 
 def final_tick_bonus(row: object) -> float:
+    value = 0.0
     status = row_text(row, "final_tick_status").lower()
-    if status == "accepted":
-        return DEFAULT_FINAL_TICK_ACCEPTED_BONUS
     if status == "rejected":
         reasons = metric_reasons(row_get(row, "final_tick_similarity_json"))
-        return DEFAULT_FINAL_TICK_REJECTED_PENALTY - reason_penalty(reasons, FINAL_TICK_REASON_PENALTIES)
-    return 0.0
+        value += DEFAULT_FINAL_TICK_REJECTED_PENALTY - reason_penalty(reasons, FINAL_TICK_REASON_PENALTIES)
+
+    status_6m = row_text(row, "final_tick_6m_status").lower()
+    if status_6m == "accepted":
+        value += DEFAULT_FINAL_TICK_ACCEPTED_BONUS
+    elif status_6m == "rejected":
+        reasons = metric_reasons(row_get(row, "final_tick_6m_similarity_json"))
+        value += DEFAULT_FINAL_TICK_REJECTED_PENALTY - reason_penalty(reasons, FINAL_TICK_REASON_PENALTIES)
+    return value
+
+
+def final_tick_rejected_ceiling(row: object) -> float | None:
+    ceilings: list[float] = []
+    status = row_text(row, "final_tick_status").lower()
+    if status == "rejected":
+        reasons = metric_reasons(row_get(row, "final_tick_similarity_json"))
+        ceilings.append(DEFAULT_FINAL_TICK_REJECTED_PENALTY - reason_penalty(reasons, FINAL_TICK_REASON_PENALTIES))
+
+    status_6m = row_text(row, "final_tick_6m_status").lower()
+    if status_6m == "rejected":
+        reasons = metric_reasons(row_get(row, "final_tick_6m_similarity_json"))
+        ceilings.append(DEFAULT_FINAL_TICK_REJECTED_PENALTY - reason_penalty(reasons, FINAL_TICK_REASON_PENALTIES))
+    return min(ceilings) if ceilings else None
 
 
 def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
@@ -133,6 +155,9 @@ def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
         reasons = metric_reasons(row_get(row, "robust_metrics_json"))
         value += robust_bonus(row) - reason_penalty(reasons, ROBUST_REASON_PENALTIES)
     value += final_tick_bonus(row)
+    final_tick_ceiling = final_tick_rejected_ceiling(row)
+    if final_tick_ceiling is not None:
+        value = min(value, final_tick_ceiling)
     return value
 
 

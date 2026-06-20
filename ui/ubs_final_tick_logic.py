@@ -16,13 +16,13 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
 FINAL_TICK_RETRYABLE_STATUSES = {
+    "pending",
     "no_report",
     "parse_error",
     "report_mismatch",
 }
 FINAL_TICK_DATE_RETRYABLE_STATUSES = {
     "pending_history_quality",
-    "pending_ohlc_trades",
 }
 
 
@@ -218,9 +218,9 @@ class UBSFinalTickLogicMixin:
                 r.hidden,
                 count(c.id) as total,
                 sum(case when c.status='accepted' and cr.status='accepted' then 1 else 0 end) as robust_ok,
-                sum(case when ft.status in ('accepted', 'rejected') then 1 else 0 end) as final_done,
-                sum(case when ft.status='accepted' then 1 else 0 end) as final_ok,
-                sum(case when ft.status='rejected' then 1 else 0 end) as final_fail
+                sum(case when c.status='accepted' and cr.status='accepted' and ft.status in ('accepted', 'rejected') then 1 else 0 end) as final_done,
+                sum(case when c.status='accepted' and cr.status='accepted' and ft.status='accepted' then 1 else 0 end) as final_ok,
+                sum(case when c.status='accepted' and cr.status='accepted' and ft.status='rejected' then 1 else 0 end) as final_fail
             from runs r
             left join candidates c on c.run_id = r.id
             left join candidate_robustness cr on cr.candidate_id = c.id
@@ -270,7 +270,7 @@ class UBSFinalTickLogicMixin:
         if selected_label and self.ubs_final_tick_run_id.get() != selected_label:
             self.ubs_final_tick_run_id.set(selected_label)
 
-    def _latest_visible_ubs_run_for_final_tick(self) -> sqlite3.Row | None:
+    def _latest_visible_ubs_run_for_final_tick(self, *, final_tick_stage: str = "probe") -> sqlite3.Row | None:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return None
@@ -278,7 +278,8 @@ class UBSFinalTickLogicMixin:
         conn.row_factory = sqlite3.Row
         try:
             self._ensure_ubs_memory_schema(conn)
-            selected = self.ubs_final_tick_run_id.get().strip()
+            run_var = self.ubs_final_tick_6m_run_id if final_tick_stage == "six_month" else self.ubs_final_tick_run_id
+            selected = run_var.get().strip()
             match = re.search(r"#?(\d+)", selected)
             if match:
                 run = conn.execute("select * from runs where id=?", (int(match.group(1)),)).fetchone()
@@ -288,14 +289,22 @@ class UBSFinalTickLogicMixin:
         finally:
             conn.close()
 
-    def _accepted_candidates_for_final_tick(self, run_id: int) -> list[sqlite3.Row]:
+    def _accepted_candidates_for_final_tick(self, run_id: int, *, final_tick_stage: str = "probe") -> list[sqlite3.Row]:
         memory_path = self._ubs_memory_path()
         conn = connect_memory(memory_path)
         conn.row_factory = sqlite3.Row
         try:
             self._ensure_ubs_memory_schema(conn)
+            final_tick_stage = str(final_tick_stage or "probe").strip().lower()
+            final_tick_table = "candidate_final_tick_6m" if final_tick_stage in {"six_month", "6m"} else "candidate_final_tick"
+            probe_join = ""
+            if final_tick_table != "candidate_final_tick":
+                probe_join = (
+                    "join candidate_final_tick probe_ft on probe_ft.candidate_id = c.id "
+                    "and probe_ft.status in ('accepted', 'pending_ohlc_trades')"
+                )
             return conn.execute(
-                """
+                f"""
                 select
                     c.*,
                     ft.status as final_tick_status,
@@ -303,7 +312,8 @@ class UBSFinalTickLogicMixin:
                     ft.to_date as final_tick_to_date
                 from candidates c
                 join candidate_robustness cr on cr.candidate_id = c.id
-                left join candidate_final_tick ft on ft.candidate_id = c.id
+                {probe_join}
+                left join {final_tick_table} ft on ft.candidate_id = c.id
                 where c.run_id=? and c.status='accepted' and cr.status='accepted'
                 order by c.generation, c.id
                 """,
@@ -312,41 +322,75 @@ class UBSFinalTickLogicMixin:
         finally:
             conn.close()
 
-    def _final_tick_effective_dates_for_row(self, row: sqlite3.Row) -> tuple[str, str]:
-        status = str(row["final_tick_status"] or "").strip()
-        ohlc_from = self.ubs_final_tick_ohlc_from_date.get().strip()
-        ohlc_to = self.ubs_final_tick_ohlc_to_date.get().strip()
-        if status == "pending_ohlc_trades" and ohlc_from and ohlc_to:
-            return ohlc_from, ohlc_to
-        return self.ubs_final_tick_from_date.get().strip(), self.ubs_final_tick_to_date.get().strip()
+    def _final_tick_stage_dates(self, final_tick_stage: str = "probe") -> tuple[str, str, str, str]:
+        stage = str(final_tick_stage or "probe").strip().lower()
+        if stage in {"six_month", "6m"}:
+            return (
+                self.ubs_final_tick_6m_from_date.get().strip(),
+                self.ubs_final_tick_6m_to_date.get().strip(),
+                self.ubs_final_tick_6m_ohlc_from_date.get().strip(),
+                self.ubs_final_tick_6m_ohlc_to_date.get().strip(),
+            )
+        return (
+            self.ubs_final_tick_from_date.get().strip(),
+            self.ubs_final_tick_to_date.get().strip(),
+            "",
+            "",
+        )
 
-    def _final_tick_row_dates_match(self, row: sqlite3.Row) -> bool:
+    def _final_tick_effective_dates_for_row(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> tuple[str, str]:
+        status = str(row["final_tick_status"] or "").strip()
+        from_date, to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
+        if final_tick_stage in {"six_month", "6m"} and status == "pending_ohlc_trades" and ohlc_from and ohlc_to:
+            return ohlc_from, ohlc_to
+        return from_date, to_date
+
+    def _final_tick_row_dates_match(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> bool:
         stored_from = str(row["final_tick_from_date"] or "").strip()
         stored_to = str(row["final_tick_to_date"] or "").strip()
         if not stored_from and not stored_to:
             return False
-        from_date, to_date = self._final_tick_effective_dates_for_row(row)
+        from_date, to_date = self._final_tick_effective_dates_for_row(row, final_tick_stage=final_tick_stage)
         return stored_from == from_date and stored_to == to_date
 
-    def _final_tick_row_pending_for_current_dates(self, row: sqlite3.Row) -> bool:
+    def _final_tick_row_pending_for_current_dates(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> bool:
+        stage = str(final_tick_stage or "probe").strip().lower()
         status = str(row["final_tick_status"] or "").strip()
         if not status:
             return True
         if status in FINAL_TICK_RETRYABLE_STATUSES:
             return True
+        if stage in {"six_month", "6m"} and status == "pending_ohlc_trades":
+            return not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
         if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
-            return not self._final_tick_row_dates_match(row)
+            return stage in {"six_month", "6m"} and not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
         return False
 
-    def _ubs_final_tick_args(self, run_id: int, *, pending_only: bool = False, retry_pending_quality: bool = False) -> list[str]:
-        from_date = self.ubs_final_tick_from_date.get().strip()
-        to_date = self.ubs_final_tick_to_date.get().strip()
+    def _ubs_final_tick_args(
+        self,
+        run_id: int,
+        *,
+        pending_only: bool = False,
+        retry_pending_quality: bool = False,
+        final_tick_stage: str = "probe",
+    ) -> list[str]:
+        from_date, to_date, ohlc_from_date, ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
         if not from_date or not to_date:
             raise ValueError("Final Tick requiere fechas Desde y Hasta.")
-        ohlc_from_date = self.ubs_final_tick_ohlc_from_date.get().strip()
-        ohlc_to_date = self.ubs_final_tick_ohlc_to_date.get().strip()
         if bool(ohlc_from_date) != bool(ohlc_to_date):
+            if str(final_tick_stage).strip().lower() in {"six_month", "6m"}:
+                raise ValueError("Final Tick 6M pocas ops OHLC requiere rellenar Ops bajas desde y Ops bajas hasta.")
             raise ValueError("Final Tick OHLC retry requiere rellenar OHLC desde y OHLC hasta.")
+        if str(final_tick_stage).strip().lower() in {"six_month", "6m"}:
+            from ubs_agent import validate_final_tick_stage_dates
+
+            date_error = validate_final_tick_stage_dates("six_month", from_date, to_date)
+            if date_error:
+                raise ValueError(date_error)
+            if ohlc_from_date and ohlc_to_date:
+                ohlc_date_error = validate_final_tick_stage_dates("six_month", ohlc_from_date, ohlc_to_date)
+                if ohlc_date_error:
+                    raise ValueError(f"Final Tick 6M OHLC retry invalido: {ohlc_date_error}")
         output_dir = self._ubs_generation_output_dir()
         thresholds = self._ubs_final_tick_threshold_values()
         args = [
@@ -357,6 +401,7 @@ class UBSFinalTickLogicMixin:
             "--template", self.template_path.get(),
             "--evaluate-final-tick",
             "--final-tick-run-id", str(run_id),
+            "--final-tick-stage", final_tick_stage,
             "--from-date", from_date,
             "--to-date", to_date,
             "--final-tick-min-history-quality", str(thresholds["min_quality"]),
@@ -397,29 +442,32 @@ class UBSFinalTickLogicMixin:
         confirm: bool = True,
         auto: bool = False,
         pending_only: bool = True,
+        final_tick_stage: str = "probe",
     ) -> bool:
+        final_tick_stage = "six_month" if str(final_tick_stage).strip().lower() in {"six_month", "6m"} else "probe"
+        stage_label = "Final Tick 6M" if final_tick_stage == "six_month" else "Final Tick"
+        status_var = self.ubs_final_tick_6m_status if final_tick_stage == "six_month" else self.ubs_final_tick_status
         try:
-            run = self._latest_visible_ubs_run_for_final_tick()
+            run = self._latest_visible_ubs_run_for_final_tick(final_tick_stage=final_tick_stage)
             if run is None:
                 if not auto:
-                    messagebox.showinfo("Final Tick UBS", "No hay run visible para Final Tick.")
+                    messagebox.showinfo("Final Tick UBS", f"No hay run visible para {stage_label}.")
                 return False
             run_id = int(run["id"])
-            rows = self._accepted_candidates_for_final_tick(run_id)
+            rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [row for row in rows if Path(row["set_path"]).exists()]
             if pending_only:
                 rows = [
                     row for row in rows
-                    if self._final_tick_row_pending_for_current_dates(row)
+                    if self._final_tick_row_pending_for_current_dates(row, final_tick_stage=final_tick_stage)
                 ]
-                ohlc_from = self.ubs_final_tick_ohlc_from_date.get().strip()
-                ohlc_to = self.ubs_final_tick_ohlc_to_date.get().strip()
-                has_ohlc_retry = bool(ohlc_from and ohlc_to)
+                _from_date, _to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
+                has_ohlc_retry = final_tick_stage == "six_month" and bool(ohlc_from and ohlc_to)
 
                 def _row_in_retry_scope(row) -> bool:
                     # pending_ohlc_trades o filas ya registradas con el rango retry
                     # (p. ej. mismatch durante un retry): van con las fechas retry.
-                    if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
+                    if final_tick_stage == "six_month" and str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
                         return True
                     return (
                         has_ohlc_retry
@@ -427,7 +475,7 @@ class UBSFinalTickLogicMixin:
                         and str(row["final_tick_to_date"] or "").strip() == ohlc_to
                     )
 
-                has_ohlc_pending = any(
+                has_ohlc_pending = final_tick_stage == "six_month" and any(
                     str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
                     for row in rows
                 )
@@ -435,49 +483,56 @@ class UBSFinalTickLogicMixin:
                     rows = [row for row in rows if _row_in_retry_scope(row)]
             if not rows:
                 if pending_only:
-                    message = f"Run #{run_id} no tiene robust accepted pendientes de Final Tick."
+                    message = f"Run #{run_id} no tiene candidatos pendientes de {stage_label}."
                 else:
-                    message = f"Run #{run_id} no tiene candidatos robust accepted con .set existente."
-                self.ubs_final_tick_status.set(message)
+                    message = f"Run #{run_id} no tiene candidatos elegibles con .set existente para {stage_label}."
+                status_var.set(message)
                 if not auto:
                     messagebox.showinfo("Final Tick UBS", message)
                 return False
             thresholds = self._ubs_final_tick_threshold_values()
-            args = self._ubs_final_tick_args(run_id, pending_only=pending_only)
+            args = self._ubs_final_tick_args(run_id, pending_only=pending_only, final_tick_stage=final_tick_stage)
         except Exception as exc:
             if not auto:
-                self._show_error("No se pudo preparar Final Tick UBS", str(exc))
+                self._show_error(f"No se pudo preparar {stage_label} UBS", str(exc))
             else:
-                self._append_console(f"\n[Final Tick auto] No se pudo preparar: {exc}\n", tag="error")
+                self._append_console(f"\n[{stage_label} auto] No se pudo preparar: {exc}\n", tag="error")
             return False
 
+        from_date, to_date, ohlc_from_date, ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
+        effective_pf_delta = min(thresholds["pf_delta"], 30.0) if final_tick_stage == "six_month" else thresholds["pf_delta"]
         details = [
-            f"Accion: {'Continuar Final Tick UBS' if pending_only else 'Reprobar Final Tick UBS'} run #{run_id}",
-            f"Modo: {'robust accepted sin Final Tick + retryables' if pending_only else 'todos los robust accepted, reemplaza Final Tick existente'}",
-            f"Candidatos robust accepted a testear: {len(rows)}",
-            f"Fechas: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}",
+            f"Accion: {'Continuar' if pending_only else 'Reprobar'} {stage_label} UBS run #{run_id}",
+            f"Modo: {'pendientes + retryables' if pending_only else 'todos los elegibles, reemplaza estado existente'}",
+            f"Candidatos a testear: {len(rows)}",
+            f"Fechas: {from_date} -> {to_date}",
             "Modelos: OHLC Model=1 vs Every tick based on real ticks Model=4",
             f"History Quality >= {thresholds['min_quality']:.2f}%",
             f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
             f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
             (
-                "Fechas retry OHLC: "
-                f"{self.ubs_final_tick_ohlc_from_date.get().strip() or '(mismas)'} -> "
-                f"{self.ubs_final_tick_ohlc_to_date.get().strip() or '(mismas)'}"
+                ("Retry pocas ops OHLC: " if final_tick_stage == "six_month" else "Fechas retry OHLC: ")
+                + f"{ohlc_from_date or '(mismas)'} -> "
+                + f"{ohlc_to_date or '(mismas)'}"
             ),
             (
-                f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {thresholds['pf_delta']:.2f}% | "
+                f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {effective_pf_delta:.2f}% | "
                 f"DD {thresholds['dd_delta']:.2f}% | trades {thresholds['trades_delta']:.2f}%"
             ),
         ]
+        if final_tick_stage == "six_month":
+            details.append(f"6M PF minimo por modelo: >= {self.ubs_pass_min_profit_factor.get().strip() or '1.20'}")
         details.extend(self._multiterminal_execution_details())
-        if confirm and not self._confirm_execution_start("Confirmar Final Tick UBS", len(rows), details):
+        if confirm and not self._confirm_execution_start(f"Confirmar {stage_label} UBS", len(rows), details):
             return False
-        self._show_section("ubs_final_tick")
-        self.ubs_final_tick_status.set(f"Lanzando Final Tick run #{run_id}: {len(rows)} candidato(s)...")
-        self.status_text.set("Preparando Final Tick UBS")
+        if final_tick_stage == "six_month":
+            self._show_section("ubs_final_tick_6m")
+        else:
+            self._show_section("ubs_final_tick")
+        status_var.set(f"Lanzando {stage_label} run #{run_id}: {len(rows)} candidato(s)...")
+        self.status_text.set(f"Preparando {stage_label} UBS")
         self._append_console(
-            f"\n[Final Tick] Lanzando run #{run_id} con {len(rows)} candidato(s).\n",
+            f"\n[{stage_label}] Lanzando run #{run_id} con {len(rows)} candidato(s).\n",
             tag="info",
         )
         self.after(10, lambda: self._run_script("ubs_agent.py", args))
@@ -486,57 +541,93 @@ class UBSFinalTickLogicMixin:
     def _rerun_ubs_final_tick_for_latest_run(self) -> bool:
         return self._run_ubs_final_tick_for_latest_run(pending_only=False)
 
-    def _maybe_auto_run_ubs_final_tick(self, script_name: str, args: list[str], code: int) -> bool:
-        """Encadena robustez -> Final Tick: al terminar una evaluacion de
-        robustez OOS con exito y con el toggle Auto Final Tick activo, lanza
-        Final Tick sobre los robust accepted pendientes."""
-        if code != 0 or script_name != "ubs_agent.py" or not self.ubs_final_tick_auto.get():
-            return False
-        if "--evaluate-robustness" not in args:
-            return False
-        self._append_console("\n[Final Tick auto] Lanzando Final Tick sobre robust accepted pendientes.\n", tag="info")
-        return self._run_ubs_final_tick_for_latest_run(confirm=False, auto=True, pending_only=True)
+    def _run_ubs_final_tick_6m_for_latest_run(self) -> bool:
+        return self._run_ubs_final_tick_for_latest_run(pending_only=True, final_tick_stage="six_month")
 
-    def _retry_ubs_final_tick_pending_quality(self) -> bool:
+    def _rerun_ubs_final_tick_6m_for_latest_run(self) -> bool:
+        return self._run_ubs_final_tick_for_latest_run(pending_only=False, final_tick_stage="six_month")
+
+    def _maybe_auto_run_ubs_final_tick(self, script_name: str, args: list[str], code: int) -> bool:
+        """Encadena robustez -> Final Tick corto y Final Tick corto -> 6M."""
+        if code != 0 or script_name != "ubs_agent.py":
+            return False
+        if "--evaluate-robustness" in args:
+            if not self.ubs_final_tick_auto.get():
+                return False
+            self._append_console("\n[Final Tick auto] Lanzando Final Tick sobre robust accepted pendientes.\n", tag="info")
+            return self._run_ubs_final_tick_for_latest_run(confirm=False, auto=True, pending_only=True)
+        if "--evaluate-final-tick" not in args:
+            return False
+        if not self.ubs_final_tick_6m_auto.get():
+            return False
+        stage = "probe"
+        if "--final-tick-stage" in args:
+            index = args.index("--final-tick-stage")
+            if index + 1 < len(args):
+                stage = str(args[index + 1]).strip().lower().replace("-", "_")
+        if stage in {"six_month", "6m", "sixmonth"}:
+            return False
+        self._append_console("\n[Final Tick 6M auto] Lanzando Final Tick 6M sobre corto accepted/pend. OHLC.\n", tag="info")
+        return self._run_ubs_final_tick_for_latest_run(
+            confirm=False,
+            auto=True,
+            pending_only=True,
+            final_tick_stage="six_month",
+        )
+
+    def _retry_ubs_final_tick_pending_quality(self, *, final_tick_stage: str = "probe") -> bool:
         """Re-run only rows with status=pending_history_quality, ignoring stored dates."""
+        final_tick_stage = "six_month" if str(final_tick_stage).strip().lower() in {"six_month", "6m"} else "probe"
+        stage_label = "Final Tick 6M" if final_tick_stage == "six_month" else "Final Tick"
+        section_key = "ubs_final_tick_6m" if final_tick_stage == "six_month" else "ubs_final_tick"
+        status_var = self.ubs_final_tick_6m_status if final_tick_stage == "six_month" else self.ubs_final_tick_status
         try:
-            run = self._latest_visible_ubs_run_for_final_tick()
+            run = self._latest_visible_ubs_run_for_final_tick(final_tick_stage=final_tick_stage)
             if run is None:
-                messagebox.showinfo("Final Tick UBS", "No hay run visible para Final Tick.")
+                messagebox.showinfo("Final Tick UBS", f"No hay run visible para {stage_label}.")
                 return False
             run_id = int(run["id"])
-            rows = self._accepted_candidates_for_final_tick(run_id)
+            rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [
                 row for row in rows
                 if Path(row["set_path"]).exists()
                 and str(row["final_tick_status"] or "").strip() == "pending_history_quality"
             ]
             if not rows:
-                msg = f"Run #{run_id}: no hay filas con calidad pendiente (pending_history_quality)."
-                self.ubs_final_tick_status.set(msg)
+                msg = f"Run #{run_id}: no hay filas con calidad pendiente en {stage_label}."
+                status_var.set(msg)
                 messagebox.showinfo("Final Tick UBS", msg)
                 return False
             thresholds = self._ubs_final_tick_threshold_values()
-            args = self._ubs_final_tick_args(run_id, pending_only=True, retry_pending_quality=True)
+            args = self._ubs_final_tick_args(
+                run_id,
+                pending_only=True,
+                retry_pending_quality=True,
+                final_tick_stage=final_tick_stage,
+            )
         except Exception as exc:
-            self._show_error("No se pudo preparar reintentar calidad baja", str(exc))
+            self._show_error(f"No se pudo preparar reintentar calidad baja {stage_label}", str(exc))
             return False
 
+        from_date, to_date, _ohlc_from_date, _ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
         details = [
-            f"Accion: Reintentar calidad baja — run #{run_id}",
+            f"Accion: Reintentar calidad baja {stage_label} - run #{run_id}",
             "Modo: solo filas pending_history_quality (ignora si las fechas coinciden o no)",
             f"Candidatos a reintentar: {len(rows)}",
-            f"Fechas: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}",
+            f"Fechas: {from_date} -> {to_date}",
             f"History Quality minima requerida: {thresholds['min_quality']:.2f}%",
             f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
             f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
         ]
         details.extend(self._multiterminal_execution_details())
-        if not self._confirm_execution_start("Confirmar reintentar calidad baja", len(rows), details):
+        if not self._confirm_execution_start(f"Confirmar reintentar calidad baja {stage_label}", len(rows), details):
             return False
-        self._show_section("ubs_final_tick")
+        self._show_section(section_key)
         self._run_script("ubs_agent.py", args)
         return True
+
+    def _retry_ubs_final_tick_6m_pending_quality(self) -> bool:
+        return self._retry_ubs_final_tick_pending_quality(final_tick_stage="six_month")
 
     def _parse_ubs_final_tick_similarity(self, raw) -> dict:
         try:
@@ -546,6 +637,8 @@ class UBSFinalTickLogicMixin:
         return data if isinstance(data, dict) else {}
 
     def _ubs_final_tick_reason(self, status: str, similarity: dict) -> str:
+        if status == "missing_6m":
+            return "sin resultado Final Tick 6M"
         if status == "pending":
             return "pendiente"
         if status == "pending_history_quality":
@@ -584,6 +677,15 @@ class UBSFinalTickLogicMixin:
                 trades = check.get("ohlc") if isinstance(check, dict) else None
                 minimum = check.get("min_trades") if isinstance(check, dict) else None
                 parts.append(f"OHLC ops: {self._format_ubs_int(trades)} < {self._format_ubs_int(minimum)}")
+                continue
+            if reason == "profit_factor_floor":
+                check = checks.get("profit_factor_floor", {}) if isinstance(checks, dict) else {}
+                ohlc = check.get("ohlc") if isinstance(check, dict) else None
+                tick = check.get("real_tick") if isinstance(check, dict) else None
+                minimum = check.get("min_profit_factor") if isinstance(check, dict) else None
+                parts.append(
+                    f"PF minimo: OHLC {self._format_ubs_number(ohlc)} / tick {self._format_ubs_number(tick)} < {self._format_ubs_number(minimum)}"
+                )
                 continue
             check = checks.get(str(reason), {}) if isinstance(checks, dict) else {}
             delta = check.get("delta_pct") if isinstance(check, dict) else None
@@ -680,7 +782,7 @@ class UBSFinalTickLogicMixin:
         settled = accepted + rejected
         neutral = total - settled
         self.ubs_final_tick_summary.set(
-            f"Run #{run['id']} | robust accepted {total} | final resueltos {settled} | OK {accepted} | FAIL {rejected}"
+            f"Run #{run['id']} | robust accepted {total} | final corto resueltos {settled} | OK {accepted} | FAIL {rejected}"
         )
         self.ubs_final_tick_status.set(
             f"Pendientes/neutros: {neutral} | Fechas config: {self.ubs_final_tick_from_date.get().strip()} -> {self.ubs_final_tick_to_date.get().strip()}"

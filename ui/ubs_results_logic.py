@@ -160,6 +160,7 @@ class UBSResultsLogicMixin:
             ("ubs_results", self._refresh_ubs_results),
             ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
+            ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
             ("ubs_universe", self._refresh_ubs_universe),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_comparison", self._refresh_ubs_comparison),
@@ -247,6 +248,32 @@ class UBSResultsLogicMixin:
         conn.execute(
             """
             create table if not exists candidate_final_tick (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                accepted integer,
+                ohlc_report_path text,
+                real_tick_report_path text,
+                ohlc_score real,
+                real_tick_score real,
+                ohlc_metrics_json text,
+                real_tick_metrics_json text,
+                similarity_json text,
+                history_quality real,
+                min_history_quality real not null default 80.0,
+                from_date text not null default '',
+                to_date text not null default '',
+                max_net_delta_pct real not null default 35.0,
+                max_pf_delta_pct real not null default 35.0,
+                max_dd_delta_pct real not null default 35.0,
+                max_trades_delta_pct real not null default 35.0,
+                evaluated_at text not null
+            )
+            """
+        )
+        conn.execute(
+            """
+            create table if not exists candidate_final_tick_6m (
                 candidate_id integer primary key,
                 run_id integer not null,
                 status text not null,
@@ -1343,12 +1370,13 @@ class UBSResultsLogicMixin:
             "rejected": "rechazado",
             "generated": "generado",
             "no_report": "pend. reporte",
-            "no_trades": "pend. sin ops",
+            "no_trades": "0 ops/no aceptado",
             "disabled_symbol": "deshabilitado",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
             "invalid_seed": "set invalido",
             "pending": "pendiente",
+            "missing_6m": "sin 6M",
             "pending_history_quality": "pend. calidad",
             "pending_ohlc_trades": "pend. OHLC ops",
             "sin_evaluar": "sin evaluar",
@@ -1361,7 +1389,7 @@ class UBSResultsLogicMixin:
         labels = {
             "accepted": "OK",
             "rejected": "FAIL",
-            "no_trades": "pend. sin ops",
+            "no_trades": "0 ops/no aceptado",
             "no_report": "pend. reporte",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
@@ -1501,7 +1529,7 @@ class UBSResultsLogicMixin:
         try:
             run_id = self._visible_ubs_run_id()
             if run_id <= 0:
-                messagebox.showinfo("Agente UBS", "No hay run visible para reprobar.")
+                messagebox.showinfo("Agente UBS", "No hay run visible para continuar.")
                 return
             problem_count = self._count_ubs_run_retryable_problems(run_id)
             if problem_count <= 0:
@@ -1528,17 +1556,99 @@ class UBSResultsLogicMixin:
             if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
                 args.extend(["--symbol-map", self.symbol_map.get().strip()])
         except Exception as exc:
-            self._show_error("No se pudo preparar retry de run", str(exc))
+            self._show_error("No se pudo preparar continuar run", str(exc))
             return
 
         details = [
-            "Accion: Reprobar mismatch/sin reporte de run UBS",
+            "Accion: Continuar run UBS (solo mismatch/sin reporte)",
             f"Run: #{run_id}",
             f"Backtests previstos: {problem_count}",
             "Al terminar actualiza esas mismas filas SQLite.",
         ]
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar retry run", problem_count, details):
+        if self._confirm_execution_start("Confirmar continuar run", problem_count, details):
+            self._run_script("ubs_agent.py", args)
+
+    def _retry_visible_ubs_full_run(self) -> None:
+        try:
+            run_id = self._visible_ubs_run_id()
+            if run_id <= 0:
+                messagebox.showinfo("Agente UBS", "No hay run visible para reprobar.")
+                return
+            checked_infos = [
+                info for info in self._checked_ubs_result_infos(fallback_selected=False)
+                if str(info.get("run") or "").strip() == str(run_id)
+            ]
+            checked_ids: list[str] = []
+            if checked_infos:
+                missing_sets = []
+                for info in checked_infos:
+                    candidate_id = str(info.get("id") or "").strip()
+                    set_path = Path(str(info.get("set") or "")).expanduser()
+                    if not candidate_id:
+                        messagebox.showinfo("Agente UBS", "Una fila marcada no tiene candidate id.")
+                        return
+                    if not set_path.exists():
+                        missing_sets.append(str(set_path))
+                    checked_ids.append(candidate_id)
+                if missing_sets:
+                    messagebox.showinfo("Agente UBS", "Hay filas marcadas con .set faltante:\n" + "\n".join(missing_sets[:8]))
+                    return
+                candidate_count = len(checked_ids)
+            else:
+                candidate_count = self._count_ubs_run_existing_sets(run_id)
+            if candidate_count <= 0:
+                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene candidatos con .set existente.")
+                return
+            args = [
+                "--memory", str(self._ubs_memory_path()),
+                "--account-type", self._ubs_account_type(),
+                "--template", self.template_path.get(),
+                "--retry-run-id", str(run_id),
+                "--retry-full-run",
+                "--delay", str(self.delay.get()),
+            ]
+            for candidate_id in checked_ids:
+                args.extend(["--retry-candidate-id", candidate_id])
+            if self.multiterminal_enabled.get():
+                args.extend(self._multiterminal_args(require_ubs=True))
+            else:
+                args.extend(["--expert", self._required_ubs_ex5_file()])
+            args.extend(self._ubs_score_args())
+            if not self.multiterminal_enabled.get():
+                if self.mt5_path.get().strip():
+                    args.extend(["--mt5-path", self.mt5_path.get()])
+                if self.mt5_data_root.get().strip():
+                    args.extend(["--data-dir", self.mt5_data_root.get()])
+            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        except Exception as exc:
+            self._show_error("No se pudo preparar reprobar run completo", str(exc))
+            return
+
+        scoped = bool(checked_ids)
+        details = [
+            "Accion: " + ("Reprobar candidatos marcados" if scoped else "Reprobar run UBS completo"),
+            f"Run: #{run_id}",
+            f"Backtests previstos: {candidate_count}",
+            (
+                "Relanza solo las filas marcadas con [x]."
+                if scoped
+                else "Relanza todos los candidatos con .set existente."
+            ),
+            "Limpia reportes/copias accepted previas de esos candidatos antes de re-evaluar.",
+        ]
+        if scoped:
+            details.append(f"Candidatos: {', '.join('#' + candidate_id for candidate_id in checked_ids[:20])}")
+            if len(checked_ids) > 20:
+                details.append(f"... y {len(checked_ids) - 20} mas")
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start(
+            "Confirmar reprobar marcados" if scoped else "Confirmar reprobar run completo",
+            candidate_count,
+            details,
+        ):
+            self.ubs_result_checked.clear()
             self._run_script("ubs_agent.py", args)
 
     def _visible_ubs_run_id(self) -> int:
@@ -1574,6 +1684,21 @@ class UBSResultsLogicMixin:
                 (run_id,),
             ).fetchone()
             return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
+
+    def _count_ubs_run_existing_sets(self, run_id: int) -> int:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return 0
+        conn = connect_memory(memory_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "select set_path from candidates where run_id=? order by generation, id",
+                (run_id,),
+            ).fetchall()
+            return sum(1 for row in rows if Path(str(row["set_path"] or "")).exists())
         finally:
             conn.close()
 

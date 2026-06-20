@@ -211,10 +211,13 @@ class UBSUniverseLogicMixin:
                         cr.negative_bonus as robust_negative_bonus,
                         cr.metrics_json as robust_metrics_json,
                         ft.status as final_tick_status,
-                        ft.similarity_json as final_tick_similarity_json
+                        ft.similarity_json as final_tick_similarity_json,
+                        ft6.status as final_tick_6m_status,
+                        ft6.similarity_json as final_tick_6m_similarity_json
                     from candidates c
                     left join candidate_robustness cr on cr.candidate_id = c.id
                     left join candidate_final_tick ft on ft.candidate_id = c.id
+                    left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
                     """
                 ).fetchall()
                 seed_table = conn.execute(

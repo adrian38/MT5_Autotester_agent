@@ -18,6 +18,8 @@ from portfolio_manager.ubs_portfolio import (
     improve_with_local_search,
     merge_accumulated_curves,
     optimize_portfolio,
+    portfolio_group_key,
+    recent_positive_month_count,
     score_set_for_portfolio,
     select_top_k_per_symbol,
 )
@@ -98,6 +100,7 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             valley_dd_pct=10,
             point_dd_pct=5,
             max_total_units=20,
+            max_units_per_group_pct=1.0,
         )
         self.assertLessEqual(result.actual_valley_dd, result.target_valley_dd)
         self.assertLessEqual(result.actual_point_dd, result.target_point_dd)
@@ -124,6 +127,22 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         fresh = make_strategy("fresh", "GBPUSD", [0, 40, 30, 80])
         eligible = filter_eligible_sets([used, fresh], min_trades_2020_2026=100)
         self.assertEqual([item.set_id for item in eligible], ["fresh"])
+
+    def test_recent_positive_month_count_uses_configured_end_month(self) -> None:
+        monthly = {
+            2026: {
+                1: 10.0,
+                2: -3.0,
+                3: 0.0,
+                4: 12.0,
+                6: 5.0,
+            }
+        }
+        self.assertEqual(recent_positive_month_count(monthly, "2026.06.30", window_months=6), 3)
+
+    def test_recent_positive_month_count_treats_missing_months_as_not_positive(self) -> None:
+        monthly = {2026: {1: 10.0, 4: 12.0}}
+        self.assertEqual(recent_positive_month_count(monthly, "2026.06.30", window_months=6), 2)
 
     def test_top_k_per_symbol(self) -> None:
         sets = [
@@ -164,6 +183,91 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             run_local_search=True,
         )
         self.assertEqual(result.active_strategies, 1)
+
+    def test_balanced_limits_units_by_asset_group(self) -> None:
+        sets = [
+            make_strategy("nas", ".USTECHCASH", [0, 120, 119, 240]),
+            make_strategy("dow", ".US30CASH", [0, 115, 114, 230]),
+            make_strategy("dax", ".DE40CASH", [0, 110, 109, 220]),
+            make_strategy("silver", "XAGUSD", [0, 80, 79, 160]),
+            make_strategy("apple", "AAPL", [0, 70, 69, 140]),
+            make_strategy("eur", "EURUSD", [0, 65, 64, 130]),
+        ]
+        result = optimize_portfolio(
+            sets,
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.BALANCED,
+            top_k_per_symbol=10,
+            max_total_candidates=None,
+            max_total_units=100,
+            max_sets_per_symbol=1,
+            run_local_search=True,
+        )
+        self.assertLessEqual(result.group_summary["IndicesEnergies"]["unit_pct"], 55.1)
+
+    def test_candidate_cap_reserves_available_asset_groups(self) -> None:
+        sets = [
+            make_strategy(f"idx{i}", ".USTECHCASH", [0, 120 + i, 119 + i, 240 + i * 2])
+            for i in range(10)
+        ]
+        sets.extend(
+            [
+                make_strategy("silver", "XAGUSD", [0, 80, 79, 160]),
+                make_strategy("apple", "AAPL", [0, 70, 69, 140]),
+                make_strategy("eur", "EURUSD", [0, 65, 64, 130]),
+            ]
+        )
+        selected = select_top_k_per_symbol(
+            sets,
+            top_k_per_symbol=10,
+            max_total_candidates=5,
+        )
+        selected_groups = {portfolio_group_key(item.symbol) for item in selected}
+        self.assertIn("IndicesEnergies", selected_groups)
+        self.assertIn("Metals", selected_groups)
+        self.assertIn("Stocks", selected_groups)
+        self.assertIn("Forex", selected_groups)
+
+    def test_balanced_limits_active_sets_by_asset_group(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("nas", ".USTECHCASH", [0, 120, 119, 240]),
+                make_strategy("dow", ".US30CASH", [0, 115, 114, 230]),
+                make_strategy("dax", ".DE40CASH", [0, 110, 109, 220]),
+                make_strategy("spx", ".US500CASH", [0, 105, 104, 210]),
+                make_strategy("silver", "XAGUSD", [0, 80, 79, 160]),
+            ],
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.BALANCED,
+            top_k_per_symbol=10,
+            max_total_candidates=None,
+            max_total_units=20,
+            max_sets_per_symbol=1,
+        )
+        index_sets = [
+            allocation
+            for allocation in result.allocations
+            if portfolio_group_key(allocation.symbol) == "IndicesEnergies"
+        ]
+        self.assertLessEqual(len(index_sets), 3)
+
+    def test_balanced_warns_when_only_one_asset_group_is_eligible(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("nas", ".USTECHCASH", [0, 120, 119, 240]),
+                make_strategy("dow", ".US30CASH", [0, 115, 114, 230]),
+            ],
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.BALANCED,
+            max_total_units=20,
+        )
+        self.assertTrue(any("Solo un grupo" in warning for warning in result.warnings))
 
     def test_local_search_does_not_reduce_profit(self) -> None:
         sets = [

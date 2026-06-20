@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
-import math
+import re
+import shutil
 import sqlite3
 import sys
 import threading
@@ -12,14 +13,15 @@ from tkinter import filedialog, messagebox
 
 from ubs.account import ACCOUNT_TYPES, account_memory_path
 from ubs.db import connect_memory
-from ubs.set_utils import read_set_with_encoding, write_set_text
+from ubs.set_utils import write_set_text
 from portfolio_manager.ubs_portfolio import (
     PortfolioAvailability,
     PortfolioResult,
     PortfolioType,
-    apply_portfolio_lot_text,
+    filter_rows_by_recent_positive_months,
     load_robust_sets_from_rows,
     optimize_portfolio,
+    portfolio_symbol_key,
     summarize_robust_rows,
 )
 
@@ -58,6 +60,7 @@ DEFAULT_PORTFOLIO_FORM = {
     "max_sets_per_symbol": 1,
     "run_local_search": True,
     "use_correlation": True,
+    "require_3_positive_months_6m": False,
     "max_pair_corr": "0.35",
     "max_downside_corr": "0.25",
     "max_dd_overlap": "0.35",
@@ -277,14 +280,19 @@ class UBSPortfolioLogicMixin:
                    c.period, c.family,
                    c.report_path as is_report_path,
                    cr.report_path as oos_report_path,
-                   ft.ohlc_report_path as final_ohlc_report_path,
-                   ft.real_tick_report_path as final_tick_report_path
+                   ft6.ohlc_report_path as final_ohlc_report_path,
+                   ft6.real_tick_report_path as final_tick_report_path,
+                   ft6.from_date as final_tick_from_date,
+                   ft6.to_date as final_tick_to_date
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
-            join candidate_final_tick ft on ft.candidate_id = c.id
+            join candidate_final_tick ft
+              on ft.candidate_id = c.id
+             and ft.status in ('accepted', 'pending_ohlc_trades')
+            join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.status = 'accepted'
               and cr.status = 'accepted'
-              and ft.status = 'accepted'
+              and ft6.status = 'accepted'
             order by c.id
             """,
             (account_type, account_type),
@@ -365,10 +373,11 @@ class UBSPortfolioLogicMixin:
             f"{PORTFOLIO_TYPE_DISPLAY.get(portfolio_type, portfolio_type)} | "
             f"{result.active_strategies} estrategias | {datetime.now():%d.%m.%Y %H:%M}"
         )
-        active_symbols = len({allocation.symbol for allocation in result.allocations if allocation.units > 0})
+        active_symbols = len({portfolio_symbol_key(allocation.symbol) for allocation in result.allocations if allocation.units > 0})
         metrics = {
             "inputs": inputs,
             "warnings": result.warnings,
+            "group_summary": result.group_summary,
             "equity_curve_2020_2026": result.equity_curve_2020_2026,
             "unused_sets": [asdict(item) for item in result.unused_sets],
         }
@@ -610,6 +619,7 @@ class UBSPortfolioLogicMixin:
             "max_sets_per_symbol": max_sets_per_symbol,
             "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
             "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
+            "require_3_positive_months_6m": bool(self.ubs_portfolio_require_3_positive_months_6m.get()),
             "max_pair_corr": self._parse_optional_float_setting(
                 self.ubs_portfolio_max_pair_corr.get(),
                 "Max correlacion",
@@ -690,6 +700,7 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_max_sets_per_symbol.set(DEFAULT_PORTFOLIO_FORM["max_sets_per_symbol"])
         self.ubs_portfolio_run_local_search.set(DEFAULT_PORTFOLIO_FORM["run_local_search"])
         self.ubs_portfolio_use_correlation.set(DEFAULT_PORTFOLIO_FORM["use_correlation"])
+        self.ubs_portfolio_require_3_positive_months_6m.set(DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"])
         self.ubs_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
         self.ubs_portfolio_max_downside_corr.set(DEFAULT_PORTFOLIO_FORM["max_downside_corr"])
         self.ubs_portfolio_max_dd_overlap.set(DEFAULT_PORTFOLIO_FORM["max_dd_overlap"])
@@ -720,8 +731,9 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
         self._set_ubs_portfolio_save_enabled(False)
+        self._clear_ubs_portfolio_result_tables()
         self._set_ubs_portfolio_running(True)
-        self.ubs_portfolio_status.set("Analizando sets Final Tick accepted...")
+        self.ubs_portfolio_status.set("Analizando sets Final Tick 6M accepted...")
         threading.Thread(target=self._ubs_portfolio_worker, args=(inputs,), daemon=True).start()
 
     def _ubs_portfolio_worker(self, inputs: dict[str, object]) -> None:
@@ -729,15 +741,30 @@ class UBSPortfolioLogicMixin:
             target_portfolio_type = PortfolioType(str(inputs["portfolio_type"]))
             rows = self._final_tick_passed_candidates_all_accounts()
             used = self._used_set_paths_all_accounts(target_portfolio_type)
-            availability = summarize_robust_rows(rows, used)
             existing_curves = self._saved_portfolio_curves_all_accounts(target_portfolio_type)
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"No pude abrir la memoria UBS: {exc}"})
             return
         try:
             if not rows:
-                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick accepted en ECN/PRO."})
+                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick 6M accepted en ECN/PRO."})
                 return
+            month_warnings: list[str] = []
+            if bool(inputs.get("require_3_positive_months_6m")):
+                rows, month_warnings = filter_rows_by_recent_positive_months(
+                    rows,
+                    min_positive_months=3,
+                    window_months=6,
+                    progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
+                )
+                if not rows:
+                    self.after(
+                        0,
+                        self._ubs_portfolio_finished,
+                        {"ok": False, "error": "No quedan candidatos tras exigir 3 meses positivos en los ultimos 6."},
+                    )
+                    return
+            availability = summarize_robust_rows(rows, used)
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
                 used,
@@ -764,7 +791,7 @@ class UBSPortfolioLogicMixin:
                 existing_portfolio_curves=existing_curves,
                 max_portfolio_corr=inputs["max_portfolio_corr"],  # type: ignore[arg-type]
             )
-            result.warnings[:0] = load_warnings
+            result.warnings[:0] = month_warnings + load_warnings
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
             return
@@ -813,9 +840,9 @@ class UBSPortfolioLogicMixin:
         self._set_ubs_portfolio_running(False)
         if not info.get("ok"):
             message = info.get("error", "Error desconocido")
+            self._clear_failed_ubs_portfolio_generation()
             self.ubs_portfolio_status.set(message)
             self._notify_ubs_portfolio_event(f"Portfolio Builder fallido: {message}")
-            messagebox.showerror("Portfolio Builder", message)
             return
 
         result: PortfolioResult = info["result"]
@@ -824,10 +851,17 @@ class UBSPortfolioLogicMixin:
         self._populate_ubs_portfolio_result(result)
         self._populate_ubs_portfolio_availability(info.get("availability"))
         self._set_ubs_portfolio_save_enabled(True)
-        self.ubs_portfolio_status.set(
+        group_text = self._ubs_portfolio_group_summary_text(result.group_summary)
+        status = (
             f"Portafolio generado: {result.total_units} unidades, "
             f"DD valle {result.valley_usage_pct:.1f}%, DD puntual {result.point_usage_pct:.1f}%."
         )
+        if group_text:
+            status += f" Grupos: {group_text}."
+        group_warning = self._ubs_portfolio_group_warning(result.warnings)
+        if group_warning:
+            status += f" Aviso: {group_warning}"
+        self.ubs_portfolio_status.set(status)
         self._notify_ubs_portfolio_event(
             "Portfolio Builder generado: "
             f"net {result.total_net_profit:,.2f}, "
@@ -838,6 +872,8 @@ class UBSPortfolioLogicMixin:
             f"({result.valley_usage_pct:.1f}%), "
             f"DD puntual {result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f} "
             f"({result.point_usage_pct:.1f}%)."
+            + (f" Grupos: {group_text}." if group_text else "")
+            + (f" Aviso: {group_warning}" if group_warning else "")
         )
 
     def _save_pending_ubs_portfolio(self) -> None:
@@ -870,6 +906,26 @@ class UBSPortfolioLogicMixin:
         if callable(notifier):
             notifier(message)
 
+    def _clear_failed_ubs_portfolio_generation(self) -> None:
+        self.ubs_portfolio_pending_result = None
+        self.ubs_portfolio_pending_inputs = None
+        self._set_ubs_portfolio_save_enabled(False)
+        self._clear_ubs_portfolio_result_tables()
+
+    def _ubs_portfolio_group_summary_text(self, group_summary: dict[str, dict[str, float | int]]) -> str:
+        if not group_summary:
+            return ""
+        parts = []
+        for group, stats in list(group_summary.items())[:4]:
+            parts.append(f"{group} {float(stats.get('unit_pct', 0.0)):.0f}%")
+        return ", ".join(parts)
+
+    def _ubs_portfolio_group_warning(self, warnings: list[str]) -> str:
+        for warning in warnings:
+            if "grupo" in warning.lower() or "asset group" in warning or "Group concentration" in warning:
+                return warning
+        return ""
+
     # ------------------------------------------------------------------ refresh/display
     def _refresh_ubs_portfolio_availability(self) -> None:
         if not hasattr(self, "ubs_portfolio_availability_tree"):
@@ -897,11 +953,16 @@ class UBSPortfolioLogicMixin:
         if availability is None:
             self.ubs_portfolio_availability.set("Disponibilidad: sin datos")
             return
+        filter_suffix = ""
+        recent_months_var = getattr(self, "ubs_portfolio_require_3_positive_months_6m", None)
+        if recent_months_var is not None and bool(recent_months_var.get()):
+            filter_suffix = " | Filtro 3/6M activo al generar"
         self.ubs_portfolio_availability.set(
-            f"Sets Final Tick OK ECN/PRO: {availability.robust_accepted} | "
+            f"Sets Final Tick 6M OK ECN/PRO: {availability.robust_accepted} | "
             f"Sets bloqueados: {availability.already_used} | "
             f"Sets disponibles: {availability.available} | "
             f"Simbolos disponibles: {availability.symbols_available}"
+            f"{filter_suffix}"
         )
         for symbol, count in availability.by_symbol.items():
             tree.insert("", "end", values=(symbol, count))
@@ -1234,49 +1295,43 @@ class UBSPortfolioLogicMixin:
         folder = filedialog.askdirectory(title="Carpeta destino para los sets del portafolio")
         if not folder:
             return
-        dest = Path(folder)
+        created = str(portfolio["created_at"] or "").replace("T", "_").replace(":", "").replace("-", "")
+        type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
+        type_label = PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key or "Portfolio")
+        raw_folder_name = f"PORTAFOLIO_{portfolio_id}_{type_label}_{created[:15]}".strip("_")
+        folder_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_folder_name).strip("._") or f"PORTAFOLIO_{portfolio_id}"
+        dest = Path(folder) / folder_name
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             messagebox.showerror("Exportar sets", f"No pude crear la carpeta:\n{exc}")
             return
 
-        capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
-        exported: list[tuple[str, str, str, float, int, str]] = []
+        exported: list[tuple[str, str, str, int, float, str]] = []
         missing: list[str] = []
-        not_found_key: list[str] = []
         for member in members:
             set_path = Path(str(member.get("set_path") or member.get("set_id") or ""))
             if not set_path.is_file():
                 missing.append(set_path.name)
                 continue
+            out_path = dest / set_path.name
             try:
-                text, encoding = read_set_with_encoding(set_path)
+                if set_path.resolve() != out_path.resolve():
+                    shutil.copy2(set_path, out_path)
             except Exception:
                 missing.append(set_path.name)
                 continue
-            step = float(member.get("lot_size_step") or 0)
-            if step <= 0:
-                units = int(member.get("units") or 0)
-                step = math.ceil(capital / units * 100.0) / 100.0 if units > 0 else 0
-            new_text, step_int, found = apply_portfolio_lot_text(text, step)
-            if not found:
-                not_found_key.append(set_path.name)
-            units = int(capital // step_int) if step_int > 0 else 0
-            real_lot = round(units * 0.01, 2)
-            out_path = dest / set_path.name
-            write_set_text(out_path, new_text, encoding)
             exported.append((
                 self._ubs_portfolio_member_account(member),
                 str(member.get("symbol") or ""),
                 str(member.get("timeframe") or member.get("period") or ""),
-                real_lot,
-                step_int,
+                int(member.get("units") or 0),
+                float(member.get("lot") or 0),
                 set_path.name,
             ))
 
         resumen = dest / f"PORTAFOLIO_{portfolio_id}_resumen.txt"
-        type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
+        capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
         lines = [
             f"Portafolio: {portfolio['name']}",
             f"Tipo: {PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key)}   Capital: {capital:,.0f}",
@@ -1286,20 +1341,17 @@ class UBSPortfolioLogicMixin:
             f"DD puntual usado: {float(portfolio['actual_point_dd'] or 0):,.2f}",
             f"Net profit total 2020-2026: {float(portfolio['total_net_profit'] or 0):,.2f}",
             "",
-            "Modo de lote exportado: Risk=2.",
-            "El EA aplica Lots = floor(AccountBalance / LotPerBalance_step) * 0.01",
-            f"Calculado para balance {capital:,.0f}.",
+            "Sets exportados: copia exacta del .set original probado.",
+            "No se modifica Risk, LotPerBalance_step, grid ni ningun otro parametro del EA.",
+            "UNID. y LOTE son la asignacion informativa calculada por el portafolio.",
             "",
-            f"{'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'LOTE':>7s} {'LotPerBalance_step':>20s}   SET",
+            f"{'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'UNID.':>7s} {'LOTE':>7s}   SET",
         ]
-        for account, symbol, period, real_lot, step_int, name in exported:
-            lines.append(f"{account:7s} {symbol:12s} {period:5s} {real_lot:7.2f} {step_int:20d}   {name}")
+        for account, symbol, period, units, lot, name in exported:
+            lines.append(f"{account:7s} {symbol:12s} {period:5s} {units:7d} {lot:7.2f}   {name}")
         if missing:
             lines.append("")
             lines.append("OMITIDOS (set no encontrado): " + ", ".join(missing))
-        if not_found_key:
-            lines.append("")
-            lines.append("AVISO (sin clave LotPerBalance_step): " + ", ".join(not_found_key))
         write_set_text(resumen, "\n".join(lines), "utf-8")
 
         self.ubs_portfolio_status.set(f"Exportados {len(exported)} set(s) a {dest}")
