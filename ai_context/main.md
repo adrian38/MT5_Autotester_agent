@@ -120,11 +120,13 @@ batch wrappers.
 | `ubs_resultados` | UBS Resultados | `ui/ubs_results_view.py` | `ui/ubs_results_logic.py` |
 | `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
 | `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
+| `ubs_final_tick_6m` | UBS Final Tick 6M | `ui/ubs_final_tick_6m_view.py` | `ui/ubs_final_tick_6m_logic.py` |
 | `ubs_historico` | UBS Historico | (part of ubs_results) | (part of ubs_results) |
 | `ubs_universo` | UBS Universo | `ui/ubs_universe_view.py` | `ui/ubs_universe_logic.py` |
 | `ubs_comparar` | UBS Comparar | (part of ubs_results) | (part of ubs_results) |
 | `ubs_params` | UBS Parámetros | `ui/ubs_params_view.py` | `ui/ubs_params_logic.py` |
 | `portafolio_ubs` | UBS Portafolio | `ui/ubs_portfolio_view.py` | `ui/ubs_portfolio_logic.py` |
+| `buscador` | UBS Buscador | `ui/ubs_search_view.py` | `ui/ubs_search_logic.py` |
 
 ## Recent Important Changes
 
@@ -822,6 +824,68 @@ this fix, `ALL_STRATEGIES.xlsx` was generated but contained empty/zero metrics
 for English-language reports. Relevant files:
 [`portfolio_manager/mt5_report.py`](../portfolio_manager/mt5_report.py),
 [`portfolio_manager/excel.py`](../portfolio_manager/excel.py).
+
+### UBS Final Tick — two-stage pipeline (probe + 6M)
+
+Final Tick is now a **two-stage pipeline**:
+
+| Stage | CLI flag | DB table | Purpose |
+|-------|----------|----------|---------|
+| `probe` (default) | `--final-tick-stage probe` | `candidate_final_tick` | Short-window OHLC vs real-tick similarity filter. Same as before. |
+| `six_month` | `--final-tick-stage six_month` | `candidate_final_tick_6m` | 6-month validation for live portfolio eligibility. Requires ≥ 180-day date range. |
+
+The `six_month` stage adds an extra **PF floor check** (`min_model_profit_factor`): both OHLC and real-tick PF must meet the configured minimum profit factor. If either falls short, `reasons` gets `"profit_factor_floor"`. The PF delta tolerance is also tightened to `min(configured, 30.0)%` when running the 6M stage. This stricter check is applied only to `six_month`; the `probe` stage is unchanged.
+
+The `--final-tick-stage` argument normalises `"6m"`, `"sixmonth"`, `"six_month"` → `"six_month"`. The stage controls which output directory (`final_tick/` vs `final_tick_6m/`) and which DB table is used.
+
+The `UBS Final Tick 6M` tab (`ubs_final_tick_6m` key, `ui/ubs_final_tick_6m_view.py` + `ui/ubs_final_tick_6m_logic.py`) exposes:
+- **Continuar 6M** (pending-only incremental run for the visible run)
+- **Reprobar 6M** (replace all 6M rows for the visible run)
+- **Reintentar calidad baja** (retry `pending_history_quality` rows with `--final-tick-skip-ohlc`)
+- Date config block for the 6M window (defaults `2026.01.01 → 2026.06.30`)
+
+New `ui_settings.ini` variables for 6M: `ubs_final_tick_6m_from_date`, `ubs_final_tick_6m_to_date`, `ubs_final_tick_6m_ohlc_from_date`, `ubs_final_tick_6m_ohlc_to_date`, `ubs_final_tick_6m_auto` (boolean, auto-run after probe).
+
+The probe stage weight bonus (`DEFAULT_FINAL_TICK_ACCEPTED_BONUS = +120` / `DEFAULT_FINAL_TICK_REJECTED_PENALTY = −160`) is distinct from the 6M stage. The `FINAL_TICK_REASON_PENALTIES` now includes `"profit_factor_floor": 55.0`.
+
+### UBS Portafolio — Final Tick 6M gate
+
+Portfolio candidate eligibility requires: `candidates.status='accepted'` AND `candidate_robustness.status='accepted'` AND `candidate_final_tick_6m.status='accepted'` (6M gate). The probe stage (`candidate_final_tick`) is no longer a gate for portfolio; only the 6M stage is.
+
+New portfolio filter: **"Requerir 3 meses positivos 6M"** checkbox (`ubs_portfolio_require_3_positive_months_6m`, persisted in `ui_settings.ini`). When enabled, the optimizer filters out candidates whose 6M curve has fewer than 3 positive months before optimization.
+
+### UBS Buscador tab (run auditor + set search)
+
+A new tab `buscador` ("UBS Buscador", `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`) has two vertical sections:
+
+**Auditoria de run** — per-account, per-run pipeline status summary:
+- Account and run selectors (ECN/PRO).
+- Shows counts for each pipeline stage: seeds, base candidates (generated/accepted/rejected/no_trades/etc.), robustness, Final Tick probe, Final Tick 6M, portfolio membership.
+- "Non-final" counts identify how many rows are still in intermediate/pending states.
+- Weight breakdown: shows per-asset and per-TF current weight contribution from all stages.
+
+**Buscador de sets** — free-text search across all `.set` files in the UBS pipeline:
+- Searches seeds, candidates, robustness sets, final tick sets across ECN and PRO accounts.
+- Shows result: set filename, stage, status, symbol, TF, score, account.
+- "Abrir set" and "Abrir reporte" actions on selected rows.
+- Export found sets to a folder.
+
+State: `self.ubs_search_query`, `self.ubs_search_status`, `self.ubs_search_paths`, `self.ubs_audit_account`, `self.ubs_audit_run_id`.
+
+### Multiterminal — Limpiar Tester button
+
+A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It scans configured MT5 data directories and safely removes disposable Tester files:
+
+- Scans `<data_dir>/Tester/` root: `.gif`, `.htm`, `.html`, `.png`, `.set`, `.xml` temp files.
+- Recursively clears `Tester/cache/` and `Tester/logs/` subdirectories.
+- Clears `MQL5/Profiles/Tester/` profile temp files.
+- Shows a pre-deletion preview (count + size) with confirmation dialog.
+- Blocks if any process is active or if MT5 terminals are still running.
+- Implemented via `build_tester_cleanup_plan()` + `execute_tester_cleanup()` in `ui/multiterminal_logic.py`.
+
+### Final Tick similarity — `profit_factor_floor` check (6M only)
+
+`final_tick_similarity()` in `ubs_agent.py` accepts an optional `min_model_profit_factor` parameter. When set (only for `six_month` stage), it adds a **symmetric floor check**: both OHLC PF and real-tick PF must be ≥ the minimum. This is separate from the delta check and fires even when the two values are close to each other but both below the threshold. The check appears as `"profit_factor_floor"` in `similarity_json.checks` and in UI `CAUSA` columns.
 
 ## Python Dependencies
 

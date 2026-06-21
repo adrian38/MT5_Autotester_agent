@@ -551,12 +551,33 @@ requirement changes or a debt item is opened/closed.
   Tick rows for robust-accepted candidates.
 - **FR-1.12.32** `UBS Portafolio` MUST build its candidate pool from both ECN
   and PRO memories, but only from strategies where base candidate, robustness,
-  and Final Tick are all `accepted`. Portfolio history MUST still be built from
-  the base report plus the robustness report; Final Tick is an eligibility gate,
+  AND Final Tick 6M (`candidate_final_tick_6m.status='accepted'`) are all
+  `accepted`. The probe Final Tick (`candidate_final_tick`) is NOT the portfolio
+  gate; only the 6M stage is. Portfolio history MUST still be built from the
+  base report plus the robustness report; Final Tick 6M is an eligibility gate,
   not the curve source. Saved Conservative/Balanced portfolios MUST lock their
   selected sets for every future portfolio. Saved Aggressive portfolios MUST
   lock their selected sets only for future Aggressive portfolios; they MUST NOT
   block Conservative/Balanced generation.
+- **FR-1.12.33** `UBS Portafolio` MUST expose a "Requerir 3 meses positivos 6M"
+  checkbox (`ubs_portfolio_require_3_positive_months_6m`). When enabled, the
+  optimizer MUST filter out candidates whose 6M report curve has fewer than 3
+  positive months before performing lot allocation.
+- **FR-1.12.34** The UI MUST include a `UBS Final Tick 6M` tab (`ubs_final_tick_6m`).
+  This tab runs the `six_month` stage of Final Tick, which requires a date range
+  of at least 180 days and applies an extra PF floor check in addition to all
+  normal similarity checks. It targets the same `candidate_robustness.status='accepted'`
+  pool as the probe stage. The tab MUST expose **Continuar 6M**, **Reprobar 6M**,
+  and **Reintentar calidad baja** buttons plus a date configuration block.
+- **FR-1.12.35** The UI MUST include a `UBS Buscador` tab (`buscador`) with two
+  sections: (1) a run auditor showing per-stage counts and non-final pending
+  counts for a selected account+run; (2) a free-text set search across all
+  pipeline stages and accounts, with open/export actions on results.
+- **FR-1.12.36** The Multiterminal tab MUST expose a **"Limpiar Tester"** danger
+  button that safely removes disposable Tester cache/log/temp files from all
+  configured MT5 data directories. It MUST show a preview (file count + size)
+  and require confirmation before deleting. It MUST be blocked while any process
+  is active or while MT5 terminals are open.
 
 ### 1.13 Packaging & runtime
 
@@ -892,3 +913,23 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   **Actualizar** buttons, plus per-row "Abrir set / OHLC / Real Tick" actions.
   Ten new `ubs_final_tick_*` variables persisted in `ui_settings.ini`.
   `_refresh_all()` now also refreshes the Final Tick panel.
+
+- **2026-06** — Final Tick extended to a two-stage pipeline. `--final-tick-stage`
+  accepts `probe` (existing short-window filter, `candidate_final_tick`) and
+  `six_month` (new 6M validation, `candidate_final_tick_6m`). The 6M stage requires
+  ≥ 180-day date range and adds a PF floor check (`profit_factor_floor` in
+  `similarity_json`). `FINAL_TICK_REASON_PENALTIES` gained `"profit_factor_floor": 55.0`.
+  New `UBS Final Tick 6M` tab added. Portfolio gate changed from probe to 6M stage.
+
+- **2026-06** — `UBS Buscador` tab added: run auditor (per-account per-run pipeline
+  status and weight breakdown) plus free-text set search across all pipeline stages
+  and accounts. `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`.
+
+- **2026-06** — Multiterminal `Limpiar Tester` button: pre-deletion scan +
+  confirmation + safe deletion of `Tester/` temp files, `Tester/cache/`,
+  `Tester/logs/`, and `MQL5/Profiles/Tester/` across all configured data dirs.
+  `build_tester_cleanup_plan()` + `execute_tester_cleanup()` in `ui/multiterminal_logic.py`.
+
+- **2026-06** — `UBS Portafolio` portfolio gate updated to `candidate_final_tick_6m`
+  (6M stage), not probe. New optional filter: "Requerir 3 meses positivos 6M"
+  via `filter_rows_by_recent_positive_months()` in `portfolio_manager/ubs_portfolio.py`.
