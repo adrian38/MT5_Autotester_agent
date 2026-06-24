@@ -137,25 +137,25 @@ class UBSAgentViewMixin:
         explore_text.grid(row=0, column=0, sticky="w")
         tk.Label(
             explore_text,
-            text="Poblar universo sin seed",
+            text="Modo de generacion",
             bg=self.colors["panel"],
             fg=self.colors["text"],
             font=("Segoe UI", 10, "bold"),
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
             explore_text,
-            text="Reserva exploracion para activos/TF del universo que no existen en las seeds actuales.",
+            text="production prioriza evidencia existente; discovery reserva cobertura sin seed.",
             bg=self.colors["panel"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=1, column=0, sticky="w")
-        self._toggle_switch_cls(
+        ttk.Combobox(
             explore_row,
-            variable=self.ubs_force_unseeded_universe,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+            textvariable=self.ubs_generation_mode,
+            values=("production", "discovery"),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e", pady=(4, 0))
 
         long_tf_row = tk.Frame(agent, bg=self.colors["panel"])
         long_tf_row.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(6, 6))
@@ -328,8 +328,8 @@ class UBSAgentViewMixin:
             ("Trades min", self.ubs_robust_pass_min_trades, "spin"),
             ("DD max %", self.ubs_robust_pass_max_drawdown_pct, "entry"),
             ("Recovery min", self.ubs_robust_pass_min_recovery_factor, "entry"),
-            ("Bonus OK", self.ubs_robust_positive_bonus, "entry"),
-            ("Bonus FAIL", self.ubs_robust_negative_bonus, "entry"),
+            ("Bonus OK legacy", self.ubs_robust_positive_bonus, "entry"),
+            ("Bonus FAIL legacy", self.ubs_robust_negative_bonus, "entry"),
         ]
         for index, (label, variable, kind) in enumerate(robust_fields):
             row = 2 + index // 3

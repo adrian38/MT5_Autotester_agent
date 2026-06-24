@@ -1259,11 +1259,11 @@ class UBSSearchLogicMixin:
             weights_by_ft6.setdefault(str(row["final_tick_6m_status"] or "sin_6m"), []).append(value)
             weights_by_asset.setdefault(str(row["target_symbol"] or row["symbol"]).upper(), []).append(value)
             weights_by_tf.setdefault(str(row["period"]).upper(), []).append(value)
-        line("\nPESOS / FEEDBACK")
+        line("\nUTILIDAD LEGACY POR FILA (DIAGNOSTICO; NO USADA PARA SELECCION)")
         line("-" * 96)
         for item in formula_detail[1:]:
             line(item.replace("\t", ": "))
-        line(f"asset feedback run: {stat(weights)}")
+        line(f"utilidad legacy run: {stat(weights)}")
         line(f"detalle pesos verificable: filas={max(len(weight_detail) - 1, 0)} mismatch_formula_vs_funcion={weight_mismatches}")
         for status, values in sorted(weights_by_ft6.items()):
             line(f"  ft6 {status}: {stat(values)}")
@@ -1338,7 +1338,7 @@ class UBSSearchLogicMixin:
                 f"robust={nonfinal_robust} ft={nonfinal_ft} ft6={nonfinal_ft6}"
             )
         if weight_mismatches:
-            issues.append(f"mismatch formula pesos vs feedback_weight={weight_mismatches}")
+            issues.append(f"mismatch diagnostico legacy vs feedback_weight={weight_mismatches}")
         if not issues:
             issues.append(f"sin inconsistencias estructurales detectadas en run {run_id}")
         line("\nHALLAZGOS")

@@ -184,9 +184,21 @@ generation scoring:
     `metrics_json.reasons`.
 - SQLite: results are stored in `candidate_robustness`, separate from base
   `candidates` scores.
-- Weight rule lives in `ubs/weights.py` and must be shared by
+- Selection feedback lives in `ubs/weights.py` and is shared by
   `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
-  and the `UBS Universo` UI:
+  and `UBS Universo`. It estimates the smoothed four-stage probability
+  `P(base) * P(OOS|base) * P(probe eligible|OOS) * P(6M accepted|probe)`,
+  grouped by correlated source. Its bounded relative log-odds score is centred
+  on the global probability, so unknown evidence is neutral. The UI exposes
+  probability, confidence and effective 6M trials separately. Mutations use
+  relative percentile multipliers `0.5..1.5`; timeframe patch keys are excluded.
+- Report score and evolutionary fitness are separate. `ubs/selection.py`
+  trains only on finalized prior runs, targets Final Tick 6M acceptance, and
+  persists probability/weight/evidence in `generation_seed_selection`. After
+  prospective validation on run 21, fitness is `observe_only`: its applied
+  scale is `0.0`, so it cannot alter source-seed or survivor selection.
+- The following additive row utility is retained only for legacy audit detail;
+  it is no longer used by asset/TF/mutation selection:
   - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).
   - base `rejected`: score minus `REJECTED_BASE_PENALTY` and per-cause
     penalties from `metrics_json.reasons`, capped so rejected rows never add
@@ -321,9 +333,14 @@ Visible-run behavior:
 
 ### UBS Unseeded Universe Exploration
 
-`UBS Agente UBS` has a **Poblar universo sin seed** toggle. It is off by
-default and persisted as `ubs_force_unseeded_universe` in `ui_settings.ini`.
-When enabled, the UI passes `--force-unseeded-universe` to `ubs_agent.py`.
+`UBS Agente UBS` has an explicit generation mode selector:
+
+- `production`: no forced unseeded quota; prioritizes existing evidence.
+- `discovery`: enables adaptive unseeded asset/TF coverage.
+
+It is persisted as `ubs_generation_mode` and passed through
+`--generation-mode`. The legacy `ubs_force_unseeded_universe` setting/CLI flag
+maps to `discovery` for backwards compatibility.
 
 Normal generation targets M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN are
 available only through the explicit **Experimentar W1/MN** toggle, persisted
@@ -352,9 +369,11 @@ The option reserves part of generation for universe coverage:
   candidate seed, it is no longer considered unseeded for that generation.
 - Disabled universe symbols remain excluded.
 - Selected source seeds are persisted in `generation_seed_selection` with rank,
-  asset weight, timeframe weight, diversity, and total selection score.
+  asset weight, timeframe weight, diversity, Final Tick 6M fitness probability,
+  fitness weight/evidence, and total selection score.
 - New generation runs persist launch metadata in `runs.config_json`, including
-  `force_unseeded_universe`, `experimental_long_timeframes`, the effective
+  `mode`, the legacy-derived `force_unseeded_universe`,
+  `experimental_long_timeframes`, the effective
   `timeframe_universe`, W1/MN base minimum trades, W1/MN Final Tick minimum
   trades, score thresholds, execution dates, universe counts, adaptive
   exploration probabilities, and the serialized CLI args. Use this to audit how
@@ -369,7 +388,7 @@ The option reserves part of generation for universe coverage:
 - Source seed selection and next-generation survivor selection apply the same
   group/symbol/timeframe/symbol+timeframe caps before allowing overflow, so one
   profitable niche cannot monopolize every seed slot when alternatives exist.
-- When `force_unseeded_universe` is enabled, generation reserves exploratory
+- In `discovery` mode, generation reserves exploratory
   target slots for intraday timeframes before normal target creation: M1 2%,
   M5 2%, M15 3%, and M30 5% of planned generation size. It also reserves at
   least one target slot for each allowed timeframe missing from the selected
@@ -414,10 +433,12 @@ The option reserves part of generation for universe coverage:
   only the already-generated pending candidates; it must not advance to new
   generations. If `Auto robustez` is enabled, the normal process-finished hook
   still launches OOS robustness after the pending backtests finish successfully.
-- **"Completar run"** button: appears in `UBS Resultados` when the visible run
-  still has planned generations remaining. It delegates to the normal
-  continuation path and may run pending backtests plus generate/evaluate the
-  remaining generations. This is the deliberate full-plan action.
+- **"Completar run"** handles only already-generated pending backtests and
+  planned generations that remain.
+- **"Continuar run"** handles only base `report_mismatch`/`no_report` rows.
+  Its retries reuse the original base dates from `runs.config_json`; missing
+  stored dates block the retry instead of falling back to
+  `tester_template.ini`.
 - **"Continuar a robustez"** button: sends only accepted candidates that do not
   have a `candidate_robustness` row yet (`--robust-pending-only`).
 - **"Reprobar robustez"** button: reruns robustness for all accepted candidates
@@ -426,7 +447,8 @@ The option reserves part of generation for universe coverage:
   individually or at run level. Once a retry updates the row to `accepted` or
   `rejected`, it enters the normal weight pool. A `rejected` candidate now
   contributes through `ubs.weights`: raw score minus the base rejection penalty
-  and per-cause penalties.
+  and per-cause penalties. A run-level retry does not auto-launch robustness if
+  base generations or retryable rows still remain.
 
 ### UBS symbol inference / ForceSymbol safety
 

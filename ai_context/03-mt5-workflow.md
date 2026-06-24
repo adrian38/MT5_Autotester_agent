@@ -352,11 +352,13 @@ quality cannot be proven. `no_report`, `parse_error`, `report_mismatch`, and
 ## UBS Unseeded Universe Exploration
 
 Normal target selection is intentionally biased toward the current seed symbol
-and toward assets/timeframes with positive feedback. To force coverage of
-assets or timeframes with no seed representation, enable `Poblar universo sin
-seed` in `UBS Agente UBS` or pass `ubs_agent.py --force-unseeded-universe`.
+and toward assets/timeframes with positive feedback. Use the `production` mode
+for normal runs without a forced unseeded quota. Use `discovery` in `UBS Agente
+UBS`, or pass `ubs_agent.py --generation-mode discovery`, when deliberate
+coverage of assets or timeframes with no seed representation is required. The
+legacy `--force-unseeded-universe` flag remains an alias for `discovery`.
 
-When enabled:
+In discovery mode:
 
 - `choose_target_symbol()` computes universe symbols not represented by the
   current seed pool and gets a 65% early chance to choose one of them before

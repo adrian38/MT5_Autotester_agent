@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.memory import AgentMemory
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -194,6 +195,8 @@ class UBSUniverseLogicMixin:
         total_seed_mismatch = 0
         total_robust_accepted = 0
         total_robust_rejected = 0
+        asset_signals = {}
+        timeframe_signals = {}
 
         if memory_path.exists():
             try:
@@ -233,6 +236,12 @@ class UBSUniverseLogicMixin:
                         """
                     ).fetchall()
                 conn.close()
+                memory = AgentMemory(memory_path)
+                try:
+                    asset_signals = memory.asset_feedback_signals(aliases)
+                    timeframe_signals = memory.timeframe_feedback_signals()
+                finally:
+                    memory.close()
             except sqlite3.Error as exc:
                 self.ubs_universe_summary.set(f"No se pudo leer memoria UBS: {exc}")
                 self.ubs_timeframe_summary.set("Sin pesos por error SQLite")
@@ -329,11 +338,14 @@ class UBSUniverseLogicMixin:
         ranked_assets = []
         for group, symbol, symbol_aliases in all_assets:
             stat = asset_stats.get(symbol.upper(), self._empty_ubs_stat())
-            weight_groups = stat["weight_groups"]
             scores = stat["scores"]
-            weight_value = grouped_shrunk_mean(weight_groups) if isinstance(weight_groups, dict) else None
+            signal = asset_signals.get(symbol.upper())
+            weight_value = signal.score if signal is not None else None
+            probability = signal.probability if signal is not None else None
+            confidence = signal.confidence if signal is not None else None
+            final_trials = signal.final_trials if signal is not None else 0
             avg_score = (sum(scores) / len(scores)) if scores else None
-            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, avg_score))
+            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, avg_score))
         ranked_assets.sort(key=lambda item: (item[0], item[4]["pending"]), reverse=True)
         asset_total_before_filter = len(ranked_assets)
         asset_search_terms = self._ubs_universe_search_terms("ubs_universe_asset_search")
@@ -344,7 +356,7 @@ class UBSUniverseLogicMixin:
             ]
 
         if hasattr(self, "ubs_universe_assets_tree"):
-            for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
+            for _, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, avg_score in ranked_assets:
                 is_disabled = symbol.upper() in disabled_symbols
                 seed_enabled = (not is_disabled) or symbol.upper() in seed_enabled_when_disabled
                 item = self.ubs_universe_assets_tree.insert(
@@ -358,6 +370,9 @@ class UBSUniverseLogicMixin:
                         symbol,
                         ", ".join(symbol_aliases),
                         self._format_ubs_number(weight_value),
+                        self._format_ubs_number(probability * 100.0 if probability is not None else None),
+                        self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
+                        int(final_trials),
                         self._format_ubs_number(avg_score),
                         self._format_ubs_number(stat["best"]),
                         int(stat["tests"]),
@@ -377,11 +392,14 @@ class UBSUniverseLogicMixin:
         tf_rows = []
         for period in ordered_timeframes:
             stat = timeframe_stats.get(period, self._empty_ubs_stat())
-            weight_groups = stat["weight_groups"]
             scores = stat["scores"]
-            weight_value = grouped_shrunk_mean(weight_groups) if isinstance(weight_groups, dict) else None
+            signal = timeframe_signals.get(period.upper())
+            weight_value = signal.score if signal is not None else None
+            probability = signal.probability if signal is not None else None
+            confidence = signal.confidence if signal is not None else None
+            final_trials = signal.final_trials if signal is not None else 0
             avg_score = (sum(scores) / len(scores)) if scores else None
-            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, avg_score))
+            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, probability, confidence, final_trials, avg_score))
         tf_rows.sort(key=lambda item: item[0], reverse=True)
         tf_total_before_filter = len(tf_rows)
         tf_search_terms = self._ubs_universe_search_terms("ubs_universe_tf_search")
@@ -390,7 +408,7 @@ class UBSUniverseLogicMixin:
 
         if hasattr(self, "ubs_timeframes_tree"):
             valid_tfs: set[str] = set()
-            for _, period, stat, weight_value, avg_score in tf_rows:
+            for _, period, stat, weight_value, probability, confidence, final_trials, avg_score in tf_rows:
                 valid_tfs.add(period.upper())
                 self.ubs_timeframes_tree.insert(
                     "",
@@ -399,6 +417,9 @@ class UBSUniverseLogicMixin:
                         self._checkbox_text(period.upper() in self.ubs_timeframe_checked),
                         period,
                         self._format_ubs_number(weight_value),
+                        self._format_ubs_number(probability * 100.0 if probability is not None else None),
+                        self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
+                        int(final_trials),
                         self._format_ubs_number(avg_score),
                         self._format_ubs_number(stat["best"]),
                         int(stat["tests"]),

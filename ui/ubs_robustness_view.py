@@ -161,8 +161,8 @@ class UBSRobustnessViewMixin:
             ("Trades >=", self.ubs_robust_pass_min_trades),
             ("DD <= %", self.ubs_robust_pass_max_drawdown_pct),
             ("Recovery >=", self.ubs_robust_pass_min_recovery_factor),
-            ("Bonus OK", self.ubs_robust_positive_bonus),
-            ("Bonus FAIL", self.ubs_robust_negative_bonus),
+            ("Bonus OK legacy", self.ubs_robust_positive_bonus),
+            ("Bonus FAIL legacy", self.ubs_robust_negative_bonus),
         ]
         for col, (label, var) in enumerate(fields, start=1):
             ttk.Label(crit, text=label, style="Muted.TLabel").grid(row=0, column=col * 2 - 1, sticky="w", padx=(0, 4))
@@ -190,7 +190,7 @@ class UBSRobustnessViewMixin:
             "period": "TF",
             "train_score": "SCORE GEN",
             "robust_score": "SCORE OOS",
-            "bonus": "BONUS",
+            "bonus": "BONUS LEGACY",
             "profit": "NET OOS",
             "profit_norm": "NET NORM",
             "pf": "PF",
@@ -228,4 +228,4 @@ class UBSRobustnessViewMixin:
         self._make_tree_sortable(self.ubs_robust_tree)
         self.ubs_robust_tree.bind("<Button-1>", self._on_ubs_robust_tree_click)
         self.ubs_robust_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_robust_report())
-        self._attach_tree_scrollbars(table_frame, self.ubs_robust_tree, 0)
+        self._attach_tree_scrollbars(table_frame, self.ubs_robust_tree, 0, vertical=True)

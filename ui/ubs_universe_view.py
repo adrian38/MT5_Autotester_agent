@@ -78,7 +78,7 @@ class UBSUniverseViewMixin:
         asset_frame.rowconfigure(1, weight=1)
         body.add(asset_frame, weight=3)
         ttk.Label(asset_frame, text="Activos RoboForex", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        asset_columns = ("mark", "enabled", "seed_enabled", "group", "symbol", "aliases", "weight", "avg", "best", "tests", "accepted", "pending")
+        asset_columns = ("mark", "enabled", "seed_enabled", "group", "symbol", "aliases", "weight", "probability", "confidence", "final_trials", "avg", "best", "tests", "accepted", "pending")
         self.ubs_universe_assets_tree = ttk.Treeview(asset_frame, columns=asset_columns, show="headings", height=18, selectmode="extended")
         asset_headings = {
             "mark": "SEL",
@@ -87,21 +87,27 @@ class UBSUniverseViewMixin:
             "group": "GRUPO",
             "symbol": "ACTIVO",
             "aliases": "ALIAS",
-            "weight": "PESO",
+            "weight": "PESO REL",
+            "probability": "P 6M %",
+            "confidence": "CONF %",
+            "final_trials": "N 6M",
             "avg": "AVG",
             "best": "BEST",
             "tests": "TESTS",
             "accepted": "OK",
             "pending": "PEND",
         }
-        asset_widths = {"mark": 48, "enabled": 50, "seed_enabled": 58, "group": 110, "symbol": 110, "aliases": 150, "weight": 80, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
+        asset_widths = {"mark": 48, "enabled": 50, "seed_enabled": 58, "group": 110, "symbol": 110, "aliases": 150, "weight": 82, "probability": 76, "confidence": 72, "final_trials": 58, "avg": 80, "best": 80, "tests": 62, "accepted": 54, "pending": 58}
         for column in asset_columns:
             self.ubs_universe_assets_tree.heading(column, text=asset_headings[column])
-            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], anchor="center", stretch=False)
+            self.ubs_universe_assets_tree.column(column, width=asset_widths[column], minwidth=42, anchor="center", stretch=False)
         self.ubs_universe_assets_tree.tag_configure("positive", foreground=self.colors["accent_soft_text"])
         self.ubs_universe_assets_tree.tag_configure("negative", foreground=self.colors["danger"])
         self.ubs_universe_assets_tree.tag_configure("neutral", foreground=self.colors["muted"])
         self.ubs_universe_assets_tree.tag_configure("disabled", foreground=self.colors["muted"])
+        self.ubs_universe_assets_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
+        self.ubs_universe_assets_tree.tag_configure("rejected", foreground=self.colors["danger"])
+        self.ubs_universe_assets_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_universe_assets_tree)
         self.ubs_universe_assets_tree.bind("<Button-1>", self._on_ubs_universe_tree_click)
         self._attach_tree_scrollbars(asset_frame, self.ubs_universe_assets_tree, 1)
@@ -112,17 +118,20 @@ class UBSUniverseViewMixin:
         body.add(tf_frame, weight=2)
         ttk.Label(tf_frame, text="Timeframes", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         ttk.Label(tf_frame, textvariable=self.ubs_timeframe_summary, style="Muted.TLabel", wraplength=520).grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        tf_columns = ("mark", "period", "weight", "avg", "best", "tests", "accepted", "pending")
+        tf_columns = ("mark", "period", "weight", "probability", "confidence", "final_trials", "avg", "best", "tests", "accepted", "pending")
         self.ubs_timeframes_tree = ttk.Treeview(tf_frame, columns=tf_columns, show="headings",
                                                 height=18, selectmode="extended")
-        tf_headings = {"mark": "SEL", "period": "TF", "weight": "PESO", "avg": "AVG", "best": "BEST", "tests": "TESTS", "accepted": "OK", "pending": "PEND"}
-        tf_widths = {"mark": 48, "period": 66, "weight": 84, "avg": 84, "best": 84, "tests": 62, "accepted": 52, "pending": 56}
+        tf_headings = {"mark": "SEL", "period": "TF", "weight": "PESO REL", "probability": "P 6M %", "confidence": "CONF %", "final_trials": "N 6M", "avg": "AVG", "best": "BEST", "tests": "TESTS", "accepted": "OK", "pending": "PEND"}
+        tf_widths = {"mark": 48, "period": 66, "weight": 84, "probability": 76, "confidence": 72, "final_trials": 58, "avg": 84, "best": 84, "tests": 62, "accepted": 52, "pending": 56}
         for column in tf_columns:
             self.ubs_timeframes_tree.heading(column, text=tf_headings[column])
-            self.ubs_timeframes_tree.column(column, width=tf_widths[column], anchor="center", stretch=False)
+            self.ubs_timeframes_tree.column(column, width=tf_widths[column], minwidth=42, anchor="center", stretch=False)
         self.ubs_timeframes_tree.tag_configure("positive", foreground=self.colors["accent_soft_text"])
         self.ubs_timeframes_tree.tag_configure("negative", foreground=self.colors["danger"])
         self.ubs_timeframes_tree.tag_configure("neutral", foreground=self.colors["muted"])
+        self.ubs_timeframes_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
+        self.ubs_timeframes_tree.tag_configure("rejected", foreground=self.colors["danger"])
+        self.ubs_timeframes_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_timeframes_tree)
         self.ubs_timeframes_tree.bind("<Button-1>", self._on_ubs_timeframe_tree_click)
         self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 2)

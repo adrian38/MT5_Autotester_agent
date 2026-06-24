@@ -165,8 +165,11 @@ class UBSAgentLogicMixin:
             args.extend(["--to-date", self.ubs_agent_to_date.get().strip()])
         if continue_last:
             args.append("--continue-last-run")
-        if self.ubs_force_unseeded_universe.get():
-            args.append("--force-unseeded-universe")
+        generation_mode = self.ubs_generation_mode.get().strip().lower()
+        if generation_mode not in {"production", "discovery"}:
+            raise ValueError("Modo de generacion UBS invalido.")
+        args.extend(["--generation-mode", generation_mode])
+        self.ubs_force_unseeded_universe.set(generation_mode == "discovery")
         if self.ubs_experimental_long_timeframes.get():
             args.append("--experimental-long-timeframes")
         args.extend(self._ubs_score_args())
@@ -217,7 +220,7 @@ class UBSAgentLogicMixin:
             f"Variantes por set: {shown_variants}",
             f"Max seeds/gen: {shown_max_seeds}",
             f"Backtests: {'si' if shown_backtests else 'no'}",
-            f"Explorar universo sin seed: {'si' if self.ubs_force_unseeded_universe.get() else 'no'}",
+            f"Modo de generacion: {self.ubs_generation_mode.get().strip().lower()}",
             f"Experimentar W1/MN: {'si' if self.ubs_experimental_long_timeframes.get() else 'no'}",
             f"Trades W1/MN base: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
             f"Trades W1/MN Final Tick: W1>={self.ubs_final_tick_min_trades_w1.get().strip()} | MN>={self.ubs_final_tick_min_trades_mn.get().strip()}",

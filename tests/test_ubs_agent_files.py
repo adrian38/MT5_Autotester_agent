@@ -456,6 +456,33 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertGreater(len(pairs), 1)
         self.assertLess(sum(1 for _score, seed, _asset, _tf, _div in selected if seed.symbol == "XAUUSD"), 10)
 
+    def test_ranked_seed_selection_observes_but_does_not_apply_final_fitness(self) -> None:
+        ordinary = Seed(Path("ordinary.set"), "XAUUSD", "H4", "family", "1")
+        compatible = Seed(Path("compatible.set"), "XAUUSD", "H4", "family", "1")
+
+        observed = ranked_seed_selection(
+            [ordinary, compatible],
+            2,
+            {},
+            {},
+            random.Random(4),
+            {},
+            {},
+            {str(ordinary.path): -10.0, str(compatible.path): 10.0},
+        )
+        neutral = ranked_seed_selection(
+            [ordinary, compatible],
+            2,
+            {},
+            {},
+            random.Random(4),
+            {},
+            {},
+            {},
+        )
+
+        self.assertEqual(observed, neutral)
+
     def test_next_seed_survivors_are_diversified_without_changing_accepted_copy_pool(self) -> None:
         dominant = [
             (
@@ -485,6 +512,29 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 8)
         self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
+
+    def test_next_seed_survivors_ignore_observed_fitness(self) -> None:
+        higher_score = Variant(
+            Path("higher.set"),
+            Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
+            "XAUUSD", "H4", (), (), "", (), (),
+        )
+        lower_score = Variant(
+            Path("lower.set"),
+            Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+            "EURUSD", "H1", (), (), "", (), (),
+        )
+
+        selected = select_next_seed_survivors(
+            [(higher_score, score(100.0)), (lower_score, score(50.0))],
+            20.0,
+            1,
+            {},
+            {},
+            {str(higher_score.path): -15.0, str(lower_score.path): 15.0},
+        )
+
+        self.assertEqual(selected[0][0], higher_score)
 
     def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
         selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]

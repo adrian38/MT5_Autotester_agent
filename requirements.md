@@ -140,13 +140,22 @@ requirement changes or a debt item is opened/closed.
   reports are produced the agent MUST exit with an error.
 - **FR-1.6.7** Continuation MUST be supported via `--continue-last-run`. The
   agent MUST pick up the pending generation count, variants-per-seed, and
-  max-seeds from the last stored run.
+  max-seeds from the last stored run. UI responsibilities MUST remain separate:
+  `Completar run` handles already-generated pending backtests and remaining
+  generations; `Continuar run` handles only retryable
+  `report_mismatch`/`no_report` rows. Retrying problem rows MUST pass the
+  original base dates stored in `runs.config_json`; it MUST NOT silently fall
+  back to the current tester template dates.
 - **FR-1.6.8** Before mutating a variant, the agent MUST apply any values from
   `outputs/ubs_global_params.json` for keys listed in
   `outputs/ubs_mutation_overrides.json` `frozen_override`. This injects the
   globally configured fixed value into every generated variant regardless of
   what value the seed file holds for that key.
-- **FR-1.6.9** When `--force-unseeded-universe` is enabled, target selection
+- **FR-1.6.9** `--generation-mode` MUST support `production` and `discovery`.
+  `production` MUST use existing evidence without a forced unseeded quota.
+  `discovery` MUST enable the existing forced-unseeded policy. The legacy
+  `--force-unseeded-universe` flag MUST remain an alias for `discovery`.
+  When discovery is enabled, target selection
   MUST reserve exploration for universe assets and timeframes not represented
   by the current seed pool. The forced branch MUST prefer assets/TFs with no
   feedback yet, use an adaptive exploration quota that decreases after early
@@ -161,7 +170,8 @@ requirement changes or a debt item is opened/closed.
   agent MUST add it to the generated `.set` so tester symbol inference cannot
   fall back to inherited source-seed aliases.
 - **FR-1.6.11** Generation MUST persist the selected source seeds for each
-  generation, including rank and the asset/timeframe/diversity components used
+  generation, including rank, asset/timeframe/diversity components, predicted
+  Final Tick 6M fitness probability, fitness weight, and fitness evidence used
   to choose them, so missing or skipped generation slots can be audited.
 - **FR-1.6.12** Parameter mutation feedback MUST separate true mutated
   parameters from target-timeframe patch keys (`ST1_Timeframe`, `VolTimeframe`,
@@ -169,7 +179,7 @@ requirement changes or a debt item is opened/closed.
   audit, but MUST NOT pollute parameter-mutation weights.
 - **FR-1.6.13** New generation runs MUST persist their launch configuration in
   `runs.config_json`. The JSON MUST include the account type, paths, generation
-  flags such as `force_unseeded_universe`, exploration probabilities, execution
+  mode, legacy-derived flags such as `force_unseeded_universe`, exploration probabilities, execution
   dates, score thresholds, universe counts, and the serialized CLI arguments so
   later audits can verify how the run was created without inferring from
   candidate policies.
@@ -191,12 +201,25 @@ requirement changes or a debt item is opened/closed.
   MUST apply the same group/symbol/timeframe/symbol+timeframe diversity caps
   before allowing overflow, so a single profitable niche cannot monopolize all
   seeds in later generations when alternatives exist.
-- **FR-1.6.18** When `force_unseeded_universe` is enabled, each generation MUST
+- **FR-1.6.18** In `discovery` mode, each generation MUST
   reserve target slots for underrepresented intraday timeframes before normal
   target creation: M1 at 2%, M5 at 2%, M15 at 3%, and M30 at 5% of planned
   generation size. It MUST also reserve at least one target slot for any allowed
   timeframe missing from the selected source seed set, subject to normal target
   diversity caps and enabled universe symbols.
+- **FR-1.6.19** Report score and evolutionary selection fitness MUST remain
+  separate. The score continues to classify/report base quality. A regularized
+  model trained only on finalized candidates from prior runs MUST estimate
+  `candidate_final_tick_6m.status='accepted'`, excluding the current run, and
+  persist its probability, raw weight and evidence for prospective audit. The
+  model MUST operate in `observe_only` mode with applied weight scale `0.0`:
+  neither source-seed ranking nor next-generation survivor selection may use
+  its weight until a later validated change explicitly re-enables it.
+- **FR-1.6.20** Mutation sampling MUST convert mutation feedback to relative
+  percentile multipliers in the range `0.5..1.5`; missing feedback is neutral
+  (`1.0`) and tied values receive the same multiplier. Core parameters retain
+  their separate 4x base preference. Legacy timeframe patch keys MUST be
+  excluded from mutation and direction feedback.
 
 ### 1.7 UBS agent — scoring
 
@@ -241,14 +264,14 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.1** Candidate statuses in SQLite `candidates` table MUST be one of:
   `generated` → `accepted` | `rejected` | `no_report` | `parse_error` |
   `report_mismatch` | `no_trades`.
-- **FR-1.8.2** `accepted`, `rejected`, and `no_trades` candidates MUST
-  contribute to Universe asset/timeframe feedback. `accepted` rows contribute
-  score plus accepted bonus. `rejected` rows contribute score minus a fixed
-  rejection penalty and per-cause penalties from `metrics_json.reasons`, capped
-  so a rejected row can never contribute positive weight.
-  `no_trades` contributes a fixed negative execution/reliability penalty.
-  `report_mismatch`, `no_report`, and `parse_error` MUST NOT contribute to
-  weights.
+- **FR-1.8.2** Universe and mutation feedback MUST estimate the smoothed
+  end-to-end probability of the four-stage chain: base accepted, robustness
+  accepted, probe eligible (`accepted` or `pending_ohlc_trades`), and Final Tick
+  6M accepted. Each correlated candidate source group contributes at most one
+  effective trial per stage. Technical/retryable states (`report_mismatch`,
+  `no_report`, `parse_error`, `pending_history_quality`) MUST NOT become
+  statistical failures. Stage probabilities MUST use an empirical global prior
+  with shrinkage for small samples.
 - **FR-1.8.3** `report_mismatch` and `no_report` rows MUST be retryable:
   - Single candidate: UI "Reprobar mismatch" → copies `.set` to
     `outputs/ubs_agent/<run>/retry_mismatch/`, re-evaluates, updates the
@@ -269,13 +292,12 @@ requirement changes or a debt item is opened/closed.
   all accepted candidates and replace their stored OOS row.
 - **FR-1.8.5** Robustness statuses MUST be one of: `accepted`, `rejected`,
   `no_report`, `parse_error`, `report_mismatch`, `no_trades`.
-- **FR-1.8.6** All base `accepted`/`rejected`/`no_trades` candidates MUST
-  continue contributing to weights through the shared `ubs.weights` formula.
-  Robustness adds an OOS adjustment only for evaluated rows: `accepted` adds
-  `positive_bonus`; `rejected` adds `negative_bonus` plus per-cause OOS
-  penalties; `no_report`, `parse_error`, `report_mismatch`, and OOS
-  `no_trades` add no robustness bonus. `AgentMemory` feedback methods and the
-  `UBS Universo` UI MUST use identical logic.
+- **FR-1.8.6** The probability product MUST be converted to a bounded relative
+  log-odds score centred on the global end-to-end probability. Unknown evidence
+  is therefore neutral instead of automatically outranking known negative
+  values. `AgentMemory` and `UBS Universo` MUST use the identical shared model.
+  The UI MUST expose relative score, estimated 6M probability, confidence, and
+  number of effective 6M trials separately.
 - **FR-1.8.7** Robustness-accepted candidates MAY be evaluated in a Final Tick
   pass with `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
   Final Tick MUST only select rows where `candidates.status='accepted'` and
@@ -331,9 +353,9 @@ requirement changes or a debt item is opened/closed.
   `pending` | `accepted` | `rejected` | `report_mismatch` | `no_report` |
   `parse_error` | `no_trades` | `disabled_symbol` | `invalid_seed`.
 - **FR-1.9.4** `accepted`, `rejected`, and `no_trades` seeds with stored reports
-  MUST contribute to Universe weights at full base strength, the same as
-  generated candidates. Seeds MUST NOT receive robustness/date bonus unless a
-  separate seed bonus rule is explicitly configured.
+  MUST contribute evidence to the base stage of the shared probability model.
+  They MUST NOT invent robustness/probe/6M trials; missing later-stage evidence
+  is filled only by the global shrunk prior.
   `report_mismatch` is ready for the purpose of pending counts, but it MUST NOT
   contribute to weights.
 - **FR-1.9.4a** A parsed MT5 report with zero closed trades MUST be stored as
@@ -492,7 +514,8 @@ requirement changes or a debt item is opened/closed.
   independent OOS dates, independent thresholds, positive/negative bonus values,
   and an auto-run toggle. Defaults: robust thresholds copy agent thresholds when
   no saved setting exists; positive bonus `+70`; negative bonus `-70`; dates
-  empty = template dates.
+  empty = template dates. Bonus values are retained as legacy audit metadata;
+  probability feedback uses stage outcomes rather than additive bonuses.
 - **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
   for the latest visible run and must confirm the number of candidates before
   launching MT5. This action MUST be incremental: it passes
@@ -507,9 +530,10 @@ requirement changes or a debt item is opened/closed.
   normal UBS agent run with backtests MUST launch robustness automatically for
   accepted candidates. Auto-run MUST NOT trigger after seed evaluation, seed
   rescoring, retry actions, or another robustness run.
-- **FR-1.12.25** The UI MUST expose a `Poblar universo sin seed` toggle in
-  `UBS Agente UBS`. It MUST persist as `ubs_force_unseeded_universe` and pass
-  `--force-unseeded-universe` to normal and continuation UBS agent runs.
+- **FR-1.12.25** The UI MUST expose a `production` / `discovery` generation-mode
+  selector in `UBS Agente UBS`, persist it as `ubs_generation_mode`, and pass
+  `--generation-mode` to normal and continuation runs. Loading old settings
+  MUST map `ubs_force_unseeded_universe=1` to `discovery`.
 - **FR-1.12.25a** The UI MUST expose an `Experimentar W1/MN` toggle in
   `UBS Agente UBS`. It MUST persist as `ubs_experimental_long_timeframes` and
   pass `--experimental-long-timeframes` to normal and continuation UBS agent
@@ -902,6 +926,14 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   the `Poblar universo sin seed` UI toggle. When enabled, generation reserves
   part of asset/TF target selection for universe items not represented in the
   current seed pool, preferring items with no feedback yet.
+
+- **2026-06** — Generation learning v2: report score and evolutionary fitness
+  are separated. A regularized prior-run model predicts Final Tick 6M fitness;
+  asset/TF/mutation feedback uses smoothed stage probabilities and relative
+  log-odds; mutation sampling uses percentile multipliers without negative
+  saturation; Universe displays probability/confidence/effective 6M trials;
+  and generation exposes explicit `production` / `discovery` modes while
+  retaining the old force-unseeded flag as a compatibility alias.
 
 - **2026-06** — UBS Final Tick implemented end-to-end: `candidate_final_tick`
   DB table, `ubs_agent.py --evaluate-final-tick` with flags

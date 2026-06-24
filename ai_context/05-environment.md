@@ -45,7 +45,8 @@ keys include:
 - `telegram_enabled`
 - `portfolio_threshold`
 - `ubs_generation_count`, `ubs_variants_per_seed`, `ubs_max_seeds`
-- `ubs_agent_execute`, `ubs_force_unseeded_universe`
+- `ubs_agent_execute`, `ubs_generation_mode` (`production` / `discovery`),
+  `ubs_force_unseeded_universe` (legacy compatibility)
 - `ubs_pass_min_net_profit`, `ubs_pass_min_profit_factor`, `ubs_pass_min_trades`,
   `ubs_pass_max_drawdown_pct`, `ubs_pass_min_recovery_factor`
 - `ubs_seed_pass_min_net_profit`, `ubs_seed_pass_min_profit_factor`, `ubs_seed_pass_min_trades`,

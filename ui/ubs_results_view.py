@@ -114,10 +114,14 @@ class UBSResultsViewMixin:
             ("Manual OK",          self._manual_accept_selected_ubs_results),
             ("Manual FAIL",        self._manual_reject_selected_ubs_results),
         ], start=7):
-            tk.Button(row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
-                      relief="solid", borderwidth=1, padx=8, pady=5,
-                      font=("Segoe UI", 9), cursor="hand2", command=cmd,
-                      ).grid(row=0, column=col, sticky="e", padx=(0, 4))
+            action_button = tk.Button(
+                row1, text=label, bg=self.colors["panel"], fg=self.colors["muted"],
+                relief="solid", borderwidth=1, padx=8, pady=5,
+                font=("Segoe UI", 9), cursor="hand2", command=cmd,
+            )
+            action_button.grid(row=0, column=col, sticky="e", padx=(0, 4))
+            if label == "Continuar run":
+                self.ubs_results_continue_run_btn = action_button
 
         ttk.Label(results, textvariable=self.ubs_results_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(0, 4)
@@ -196,7 +200,7 @@ class UBSResultsViewMixin:
         self._make_tree_sortable(self.ubs_results_tree)
         self.ubs_results_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_report())
         self.ubs_results_tree.bind("<Button-1>", self._on_ubs_result_tree_click)
-        self._attach_tree_scrollbars(table_frame, self.ubs_results_tree, 0)
+        self._attach_tree_scrollbars(table_frame, self.ubs_results_tree, 0, vertical=True)
     def _build_ubs_history(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)

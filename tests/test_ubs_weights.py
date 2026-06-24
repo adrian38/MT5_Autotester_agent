@@ -8,10 +8,52 @@ from ubs.weights import (
     FINAL_TICK_REASON_PENALTIES,
     NO_TRADES_WEIGHT,
     feedback_weight,
+    percentile_multipliers,
+    probability_feedback_signals,
+    row_stage_outcome,
 )
 
 
 class UBSWeightsTests(unittest.TestCase):
+    def test_pending_ohlc_trades_is_probe_success_but_technical_errors_are_not_trials(self) -> None:
+        self.assertEqual(row_stage_outcome({"final_tick_status": "pending_ohlc_trades"}, "probe"), (True, 1.0))
+        self.assertEqual(row_stage_outcome({"final_tick_status": "parse_error"}, "probe"), (False, 0.0))
+
+    def test_probability_feedback_is_relative_and_smoothed(self) -> None:
+        good = {
+            "status": "accepted",
+            "robust_status": "accepted",
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "accepted",
+        }
+        bad = {
+            "status": "rejected",
+            "robust_status": "",
+            "final_tick_status": "",
+            "final_tick_6m_status": "",
+        }
+        global_groups = {("good",): [good], ("bad",): [bad]}
+        signals = probability_feedback_signals(
+            {
+                "GOOD": {("good",): [good]},
+                "BAD": {("bad",): [bad]},
+            },
+            global_groups,
+            prior_strength=2.0,
+        )
+        self.assertGreater(signals["GOOD"].score, 0.0)
+        self.assertLess(signals["BAD"].score, 0.0)
+        self.assertGreater(signals["GOOD"].probability, signals["BAD"].probability)
+
+    def test_percentile_mutation_multipliers_preserve_order_and_ties(self) -> None:
+        ordered = percentile_multipliers({"a": -100.0, "b": -50.0, "c": 10.0}, ("a", "b", "c", "new"))
+        self.assertEqual(ordered["a"], 0.5)
+        self.assertEqual(ordered["b"], 1.0)
+        self.assertEqual(ordered["c"], 1.5)
+        self.assertEqual(ordered["new"], 1.0)
+        tied = percentile_multipliers({"a": -40.0, "b": -40.0}, ("a", "b"))
+        self.assertEqual(tied, {"a": 1.0, "b": 1.0})
+
     def test_short_final_tick_accepted_is_neutral_until_six_month_passes(self) -> None:
         row = {
             "status": "accepted",

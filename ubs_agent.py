@@ -45,7 +45,11 @@ from ubs.universe import (
     load_seed_enabled_disabled_symbols,
     seed_symbol_disabled,
 )
-from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
+from ubs.weights import (
+    DEFAULT_ROBUST_NEGATIVE_BONUS,
+    DEFAULT_ROBUST_POSITIVE_BONUS,
+    percentile_multipliers,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -63,6 +67,9 @@ TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
 TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
+GENERATION_MODES = ("production", "discovery")
+SELECTION_FITNESS_MODE = "observe_only"
+SELECTION_FITNESS_APPLIED_SCALE = 0.0
 ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
 ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
@@ -290,9 +297,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mutations-per-variant", type=int, default=6)
     parser.add_argument("--top-percent", type=float, default=20.0)
     parser.add_argument(
+        "--generation-mode",
+        choices=GENERATION_MODES,
+        default="production",
+        help="production prioriza rendimiento conocido; discovery activa exploracion del universo sin seed.",
+    )
+    parser.add_argument(
         "--force-unseeded-universe",
         action="store_true",
-        help="Reserva exploracion para activos/TF del universo que no existen en las seeds base.",
+        help="Alias legacy de --generation-mode discovery.",
     )
     parser.add_argument(
         "--experimental-long-timeframes",
@@ -375,6 +388,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
     args = parser.parse_args()
+    if args.force_unseeded_universe:
+        args.generation_mode = "discovery"
+    args.force_unseeded_universe = args.generation_mode == "discovery"
     args.account_type = normalize_account_type(args.account_type)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
         args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type))
@@ -412,8 +428,10 @@ def ranked_seed_selection(
     rng: random.Random,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
 ) -> list[tuple[float, Seed, float, float, float]]:
     aliases = aliases or {}
+    fitness_feedback = fitness_feedback or {}
     valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
     if not valid:
         valid = seeds
@@ -423,7 +441,11 @@ def ranked_seed_selection(
         asset_weight = asset_feedback.get(asset_key, 0.0)
         timeframe_weight = timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
         diversity = rng.random() * 5.0
-        scored.append((asset_weight + timeframe_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
+        fitness_weight = (
+            fitness_feedback.get(str(seed.path), 0.0)
+            * SELECTION_FITNESS_APPLIED_SCALE
+        )
+        scored.append((asset_weight + timeframe_weight + fitness_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
     scored.sort(key=lambda item: item[0], reverse=True)
     limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
     if limit <= 0:
@@ -455,11 +477,12 @@ def choose_seeds(
     rng: random.Random,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
 ) -> list[Seed]:
     return [
         seed
         for _, seed, _, _, _ in ranked_seed_selection(
-            seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases, group_by_symbol
+            seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases, group_by_symbol, fitness_feedback
         )
     ]
 
@@ -1035,11 +1058,11 @@ def line_candidates(
             continue
         if step <= 0 or stop <= start:
             continue
-        weight = 1.0
-        if key in preferred:
-            weight += 3.0
-        weight += max(min(mutation_feedback.get(key, 0.0) / 25.0, 4.0), -0.5)
-        candidates[key] = (index, parts, max(weight, 0.1))
+        base_weight = 4.0 if key in preferred else 1.0
+        candidates[key] = (index, parts, base_weight)
+    multipliers = percentile_multipliers(mutation_feedback, candidates)
+    for key, (index, parts, base_weight) in tuple(candidates.items()):
+        candidates[key] = (index, parts, base_weight * multipliers[key])
     return candidates
 
 
@@ -1993,10 +2016,20 @@ def select_next_seed_survivors(
     max_seeds: int,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
 ) -> list[tuple[Variant, ScoreResult]]:
     survivors = select_survivors(scored, top_percent)
     if not survivors:
         return []
+    if fitness_feedback and SELECTION_FITNESS_APPLIED_SCALE:
+        survivors.sort(
+            key=lambda item: (
+                fitness_feedback.get(str(item[0].path), 0.0)
+                * SELECTION_FITNESS_APPLIED_SCALE,
+                item[1].score,
+            ),
+            reverse=True,
+        )
     if max_seeds <= 0:
         limit = len(survivors)
     else:
@@ -2019,6 +2052,31 @@ def select_next_seed_survivors(
             break
         selected.append(item)
     return selected
+
+
+def select_next_generation_survivors(
+    memory: AgentMemory,
+    run_id: int,
+    scored: list[tuple[Variant, ScoreResult]],
+    top_percent: float,
+    max_seeds: int,
+    aliases: dict[str, str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
+) -> list[tuple[Variant, ScoreResult]]:
+    accepted = select_survivors(scored, top_percent)
+    predictions = memory.seed_selection_predictions(
+        seeds_from_survivors(accepted),
+        exclude_run_id=run_id,
+    )
+    fitness_feedback = {path: prediction.weight for path, prediction in predictions.items()}
+    return select_next_seed_survivors(
+        scored,
+        top_percent,
+        max_seeds,
+        aliases,
+        group_by_symbol,
+        fitness_feedback,
+    )
 
 
 def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Path) -> list[Path]:
@@ -2099,7 +2157,7 @@ def prepare_final_tick_exec_dir(path: Path, variants: list[Variant]) -> Path:
     return exec_dir
 
 
-ROBUST_RETRYABLE_STATUSES = {"pending", "no_report", "parse_error", "report_mismatch"}
+ROBUST_RETRYABLE_STATUSES = {"pending", "no_report", "parse_error", "report_mismatch", "no_trades"}
 
 
 def robust_status_pending_for_retry(status: object) -> bool:
@@ -4050,7 +4108,7 @@ def build_run_config(
 ) -> dict[str, object]:
     timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_by": "ubs_agent.py",
         "account_type": normalize_account_type(args.account_type),
         "paths": {
@@ -4062,6 +4120,7 @@ def build_run_config(
             "assets": str(Path(args.assets).expanduser()),
         },
         "generation": {
+            "mode": str(args.generation_mode),
             "generations": int(args.generations),
             "variants_per_seed": int(args.variants_per_seed),
             "max_seeds": int(args.max_seeds),
@@ -4106,6 +4165,18 @@ def build_run_config(
                 "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
+            },
+            "selection_fitness": {
+                "model": "regularized_logistic_final_tick_6m_v1",
+                "target": "final_tick_6m_accepted",
+                "exclude_current_run": True,
+                "mode": SELECTION_FITNESS_MODE,
+                "applied_weight_scale": SELECTION_FITNESS_APPLIED_SCALE,
+            },
+            "feedback_model": {
+                "model": "smoothed_stage_probability_v1",
+                "stages": ["base", "robust", "probe", "six_month"],
+                "mutation_sampling": "percentile_multiplier_0.5_1.5",
             },
         },
         "execution": {
@@ -4200,7 +4271,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             return 1
         if scored:
             current_seeds = seeds_from_survivors(
-                select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                select_next_generation_survivors(
+                    memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+                )
             )
         else:
             current_seeds = seeds_from_variants(variants)
@@ -4243,6 +4316,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         mutation_direction_feedback = memory.mutation_direction_feedback()
         asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
+        fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
+        fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
         selected_seed_rankings = ranked_seed_selection(
             current_seeds,
             args.max_seeds,
@@ -4251,9 +4326,10 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             rng,
             aliases,
             group_by_symbol,
+            fitness_feedback,
         )
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
-        memory.record_seed_selection(run_id, generation, selected_seed_rankings)
+        memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
         unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
             current_seeds,
             universe_symbols,
@@ -4349,7 +4425,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             return 1
         if scored:
             current_seeds = seeds_from_survivors(
-                select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                select_next_generation_survivors(
+                    memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+                )
             )
         else:
             current_seeds = seeds_from_variants(variants)
@@ -4522,6 +4600,8 @@ def run_agent(args: argparse.Namespace) -> int:
             mutation_direction_feedback = memory.mutation_direction_feedback()
             asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
+            fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
+            fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
             selected_seed_rankings = ranked_seed_selection(
                 current_seeds,
                 args.max_seeds,
@@ -4530,9 +4610,10 @@ def run_agent(args: argparse.Namespace) -> int:
                 rng,
                 aliases,
                 group_by_symbol,
+                fitness_feedback,
             )
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
-            memory.record_seed_selection(run_id, generation, selected_seed_rankings)
+            memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
             unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
                 current_seeds,
                 universe_symbols,
@@ -4649,7 +4730,9 @@ def run_agent(args: argparse.Namespace) -> int:
 
             if scored:
                 current_seeds = seeds_from_survivors(
-                    select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                    select_next_generation_survivors(
+                        memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+                    )
                 )
             else:
                 current_seeds = [variant_as_next_seed(variant) for variant in variants]

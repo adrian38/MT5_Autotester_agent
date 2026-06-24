@@ -210,7 +210,8 @@ Owns the UBS agent workflow:
 | `--final-tick-max-dd-delta-pct` (default 35) | Max DD divergence % |
 | `--final-tick-max-trades-delta-pct` (default 35) | Max trade count divergence % |
 | `--from-date` / `--to-date` | Override template dates for any run |
-| `--force-unseeded-universe` | Reserve generation quota for universe items not in seed pool |
+| `--generation-mode production\|discovery` | Normal evidence-driven generation or explicit unseeded exploration |
+| `--force-unseeded-universe` | Legacy alias for `--generation-mode discovery` |
 | `--retry-candidate-id` | Re-run one candidate |
 | `--retry-run-id` + `--retry-mismatch-run` | Re-run all problem candidates in a run |
 | `--rescore-seeds-only` / `--rescore-candidates-only` / `--rescore-robustness-only` | Rescore without MT5 |
@@ -223,11 +224,15 @@ UBS support code lives in the `ubs/` package:
   writes are less likely to collide.
 - `ubs/memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
   and conversion from candidate rows to `Variant`.
-- `ubs/weights.py`: shared weight formula for `AgentMemory` and `UBS Universo`.
-  It applies accepted bonuses, rejected/cause penalties, no-trades penalty,
-  robustness OOS adjustments, correlated-group averaging, and shrinkage toward
-  zero for small samples. Seed rows with valid scored reports use the same base
-  formula as candidates.
+- `ubs/weights.py`: shared probability feedback for `AgentMemory` and
+  `UBS Universo`. It estimates the smoothed four-stage end-to-end probability,
+  groups correlated sources, returns bounded relative log-odds plus confidence,
+  and maps mutation evidence to percentile multipliers. The old additive row
+  utility remains only for legacy audit detail.
+- `ubs/selection.py`: regularized evolutionary fitness observer. It trains only
+  on finalized prior runs, predicts Final Tick 6M acceptance from report metrics
+  and timeframe, and keeps this fitness separate from the report score. Its
+  predictions are persisted but currently have applied selection scale `0.0`.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
 - `ubs/universe.py`: RoboForex universe parsing, common alias canonicalisation,

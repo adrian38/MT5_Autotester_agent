@@ -37,7 +37,7 @@ python .\ubs_agent.py --retry-run-id 1 --retry-mismatch-run --expert "C:\path\to
 python .\ubs_agent.py --evaluate-seeds --source-dir ".\sets\ubs_ready" --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
 python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --from-date 2025.01.01 --to-date 2026.06.01 --dry-run
 python .\ubs_agent.py --evaluate-robustness --robust-run-id 1 --robust-pending-only --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
-python .\ubs_agent.py --force-unseeded-universe --dry-run
+python .\ubs_agent.py --generation-mode discovery --dry-run
 python .\ubs_agent.py --rescore-seeds-only --min-net-profit 0 --min-trades 50
 python .\ubs_agent.py --rescore-candidates-only --min-net-profit 100 --min-trades 49
 python .\ubs_agent.py --rescore-robustness-only --min-net-profit 20 --min-trades 50
@@ -48,6 +48,7 @@ Audit current UBS memory and weights:
 ```powershell
 python .\tools\ubs_memory_audit.py
 python .\tools\ubs_memory_audit.py --strict
+python .\tools\ubs_selection_fitness_audit.py --account-type ECN --holdout-run-id 20
 ```
 
 Compile then backtest:
@@ -106,31 +107,35 @@ For UBS agent changes:
   `no_report`, `parse_error`, or `no_trades`.
 - Confirm `report_mismatch` rows do not feed `asset_feedback`,
   `timeframe_feedback`, seed feedback, or Universe tab weights.
-- Confirm active seed rows with valid scored reports (`accepted`, `rejected`,
-  `no_trades`) feed `asset_feedback` and `timeframe_feedback` at the same base
-  strength as generated candidates. They should not be scaled down as a prior.
-  They also should not receive robustness/date bonus unless an explicit seed
-  bonus feature exists.
+- Confirm active seed rows with valid reports contribute base-stage probability
+  evidence only; they must not create synthetic OOS/probe/6M trials.
 - For scoring changes, confirm metrics JSON preserves raw `net_profit` and
   includes `normalized_net_profit`, `net_profit_factor`, `net_profit_basis`, and
   `normalization_group`. Pass/fail decisions for `net_profit` must use
   normalized net, not raw net.
 - After retrying a `report_mismatch` or `no_report` candidate, confirm the
-  original row is updated. If it becomes `rejected`, it should contribute
-  through `ubs.weights`: raw score minus rejection/cause penalties and without
-  accepted bonus.
+  original row is updated and the shared probability feedback changes only
+  after it reaches a statistical terminal state.
 - For robustness changes, run `ubs_agent.py --evaluate-robustness --dry-run`
   against a run with accepted candidates. Confirm copied sets are created under
   `outputs/ubs_agent/<run>/robustness/...`, and confirm real/non-dry results
   write `candidate_robustness` without modifying base candidate scores.
-- Confirm robustness bonus math is consistent in `AgentMemory` and `UBS
-  Universo`: robust `accepted` adds positive bonus, robust `rejected` adds
-  negative bonus plus OOS cause penalties, and
-  `no_report`/`parse_error`/`report_mismatch`/`no_trades` are neutral for the
-  robustness adjustment.
-- For unseeded-universe exploration changes, use a fixed `--random-seed` and
+- Confirm `AgentMemory` and `UBS Universo` show the same relative score,
+  estimated 6M probability, confidence and effective final trials. Verify
+  `pending_ohlc_trades` is probe-eligible and technical errors are not failures.
+- Confirm mutation sampling produces distinct percentile multipliers even when
+  all raw relative scores are negative; tied scores must stay tied and unknown
+  keys must remain neutral.
+- Validate selection-fitness changes with
+  `tools/ubs_selection_fitness_audit.py --holdout-run-id <id>`, which excludes a
+  complete run from training and reports its held-out AUC. Current-run rows must
+  never train the model. While fitness is `observe_only`, confirm its raw
+  probability/weight/evidence are persisted but changing those observed values
+  does not change source-seed ranking or next-generation survivor order.
+- For discovery-mode exploration changes, use a fixed `--random-seed` and
   confirm generated candidates include policy labels `asset_unseeded_force` or
-  `tf_unseeded_force` when `--force-unseeded-universe` is active.
+  `tf_unseeded_force` with `--generation-mode discovery`, and neither forced
+  policy appears in `production` mode.
 - If testing real MT5 retry, close MT5 first, select a `mismatch reporte` row
   in the UI, and use `Reprobar mismatch` for one candidate or `Reprobar run`
   for all mismatches in the visible run.

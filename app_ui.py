@@ -643,6 +643,10 @@ class MT5AutotesterUI(
         self.ubs_force_unseeded_universe = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_force_unseeded_universe"), False)
         )
+        saved_generation_mode = saved_general.get("ubs_generation_mode", "").strip().lower()
+        if saved_generation_mode not in {"production", "discovery"}:
+            saved_generation_mode = "discovery" if self.ubs_force_unseeded_universe.get() else "production"
+        self.ubs_generation_mode = tk.StringVar(value=saved_generation_mode)
         self.ubs_experimental_long_timeframes = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_experimental_long_timeframes"), False)
         )
@@ -1062,12 +1066,14 @@ class MT5AutotesterUI(
         row: int,
         column: int = 0,
         *,
-        vertical: bool = True,
+        vertical: bool = False,
         horizontal: bool = True,
     ) -> None:
         tree.grid(row=row, column=column, sticky="nsew")
-        # Treeview keeps native wheel, keyboard and trackpad scrolling. The
-        # visual vertical bar is intentionally hidden application-wide.
+        if vertical:
+            y_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+            y_scroll.grid(row=row, column=column + 1, sticky="ns")
+            tree.configure(yscrollcommand=y_scroll.set)
         if horizontal:
             x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
             x_scroll.grid(row=row + 1, column=column, sticky="ew")
