@@ -19,8 +19,10 @@ from portfolio_manager.ubs_portfolio import (
     PortfolioResult,
     PortfolioType,
     filter_rows_by_recent_positive_months,
+    evaluate_portfolio,
     load_robust_sets_from_rows,
     optimize_portfolio,
+    portfolio_group_summary,
     portfolio_symbol_key,
     summarize_robust_rows,
 )
@@ -94,6 +96,7 @@ class UBSPortfolioLogicMixin:
                 total_lot real not null default 0,
                 total_units integer not null default 0,
                 active_strategies integer not null default 0,
+                target_strategies integer not null default 0,
                 stop_reason text not null default '',
                 scale_factor real,
                 binding_constraint text,
@@ -120,6 +123,7 @@ class UBSPortfolioLogicMixin:
             ("total_lot", "real not null default 0"),
             ("total_units", "integer not null default 0"),
             ("active_strategies", "integer not null default 0"),
+            ("target_strategies", "integer not null default 0"),
             ("stop_reason", "text not null default ''"),
             ("scale_factor", "real"),
             ("binding_constraint", "text"),
@@ -190,6 +194,21 @@ class UBSPortfolioLogicMixin:
                 combined_net_profit real,
                 is_report_path text,
                 oos_report_path text
+            )
+            """
+        )
+        conn.execute(
+            """
+            create table if not exists portfolio_quarantine (
+                id integer primary key autoincrement,
+                account_type text not null,
+                candidate_id integer,
+                set_path text not null unique,
+                symbol text,
+                timeframe text,
+                reason text not null default '',
+                source_portfolio_id integer,
+                quarantined_at text not null
             )
             """
         )
@@ -293,6 +312,10 @@ class UBSPortfolioLogicMixin:
             where c.status = 'accepted'
               and cr.status = 'accepted'
               and ft6.status = 'accepted'
+              and not exists (
+                  select 1 from portfolio_quarantine pq
+                  where pq.set_path = c.set_path
+              )
             order by c.id
             """,
             (account_type, account_type),
@@ -317,9 +340,18 @@ class UBSPortfolioLogicMixin:
         except ValueError:
             return PortfolioType.BALANCED
 
-    def _used_set_paths(self, conn: sqlite3.Connection, target_portfolio_type: PortfolioType) -> list[str]:
-        type_filter = ""
-        if target_portfolio_type != PortfolioType.AGGRESSIVE:
+    def _used_set_paths(
+        self,
+        conn: sqlite3.Connection,
+        target_portfolio_type: PortfolioType,
+        *,
+        exclude_portfolio_id: int | None = None,
+    ) -> list[str]:
+        if target_portfolio_type == PortfolioType.AGGRESSIVE:
+            type_filter = (
+                "and lower(coalesce(nullif(p.portfolio_type, ''), nullif(p.type, ''), '')) = 'aggressive'"
+            )
+        else:
             type_filter = (
                 "and lower(coalesce(nullif(p.portfolio_type, ''), nullif(p.type, ''), '')) <> 'aggressive'"
             )
@@ -330,22 +362,39 @@ class UBSPortfolioLogicMixin:
             join portfolios p on p.id = pa.portfolio_id
             where pa.set_path is not null and pa.set_path <> ''
               {type_filter}
+              and (? is null or pa.portfolio_id <> ?)
             union
             select pm.set_path
             from portfolio_members pm
             join portfolios p on p.id = pm.portfolio_id
             where pm.set_path is not null and pm.set_path <> ''
               {type_filter}
+              and (? is null or pm.portfolio_id <> ?)
             """
+            ,
+            (exclude_portfolio_id, exclude_portfolio_id, exclude_portfolio_id, exclude_portfolio_id),
         ).fetchall()
         return [str(row["set_path"]) for row in rows]
 
-    def _used_set_paths_all_accounts(self, target_portfolio_type: PortfolioType) -> list[str]:
+    def _used_set_paths_all_accounts(
+        self,
+        target_portfolio_type: PortfolioType,
+        *,
+        exclude_portfolio_id: int | None = None,
+    ) -> list[str]:
         used: set[str] = set()
+        active_memory = self._ubs_memory_path().resolve()
         for _account_type, memory_path in self._ubs_portfolio_source_paths():
             conn = self._ubs_portfolio_conn_for_memory(memory_path)
             try:
-                used.update(self._used_set_paths(conn, target_portfolio_type))
+                excluded = exclude_portfolio_id if memory_path.resolve() == active_memory else None
+                used.update(
+                    self._used_set_paths(
+                        conn,
+                        target_portfolio_type,
+                        exclude_portfolio_id=excluded,
+                    )
+                )
             finally:
                 conn.close()
         return sorted(used)
@@ -388,8 +437,8 @@ class UBSPortfolioLogicMixin:
                 capital, target_valley_dd_pct, target_point_dd_pct, target_valley_dd,
                 target_point_dd, actual_valley_dd, actual_point_dd, valley_usage_pct,
                 point_usage_pct, total_net_profit, total_lot, total_units,
-                active_strategies, stop_reason, binding_constraint, metrics_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                active_strategies, target_strategies, stop_reason, binding_constraint, metrics_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -410,6 +459,7 @@ class UBSPortfolioLogicMixin:
                 result.total_net_profit,
                 result.total_lot,
                 result.total_units,
+                result.active_strategies,
                 result.active_strategies,
                 result.stop_reason,
                 "valley" if result.valley_usage_pct >= result.point_usage_pct else "point",
@@ -545,6 +595,129 @@ class UBSPortfolioLogicMixin:
         conn.execute("delete from portfolio_members where portfolio_id=?", (portfolio_id,))
         conn.execute("delete from portfolios where id=?", (portfolio_id,))
         conn.commit()
+
+    def _portfolio_quarantine_rows_all_accounts(self) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for account_type, memory_path in self._ubs_portfolio_source_paths():
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                for row in conn.execute(
+                    "select * from portfolio_quarantine order by quarantined_at desc, id desc"
+                ):
+                    item = dict(row)
+                    item["account_type"] = account_type
+                    item["memory_path"] = str(memory_path)
+                    rows.append(item)
+            finally:
+                conn.close()
+        rows.sort(key=lambda item: str(item.get("quarantined_at") or ""), reverse=True)
+        return rows
+
+    def _resolve_portfolio_member_source(
+        self,
+        member: dict[str, object],
+    ) -> tuple[str, Path, int | None]:
+        set_path = str(member.get("set_path") or member.get("set_id") or "")
+        account = self._ubs_portfolio_member_account(member)
+        candidate_label = self._ubs_portfolio_member_candidate_label(member)
+        candidate_id = int(candidate_label) if candidate_label.isdigit() else None
+        sources = self._ubs_portfolio_source_paths()
+        if account:
+            sources.sort(key=lambda item: item[0] != account)
+        for source_account, memory_path in sources:
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                row = None
+                if candidate_id is not None:
+                    row = conn.execute(
+                        "select id from candidates where id=? and set_path=?",
+                        (candidate_id, set_path),
+                    ).fetchone()
+                if row is None:
+                    row = conn.execute(
+                        "select id from candidates where set_path=? order by id desc limit 1",
+                        (set_path,),
+                    ).fetchone()
+                if row is not None:
+                    return source_account, memory_path, int(row["id"])
+            finally:
+                conn.close()
+        account_var = getattr(self, "ubs_account_type", None)
+        current_account = str(account_var.get()) if account_var is not None else "ECN"
+        fallback_account = account or current_account
+        return fallback_account, account_memory_path(BASE_DIR, fallback_account), candidate_id
+
+    def _recalculate_saved_portfolio(self, conn: sqlite3.Connection, portfolio_id: int) -> None:
+        portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+        if portfolio is None:
+            raise ValueError("El portafolio ya no existe.")
+        members = self._portfolio_members(conn, portfolio_id)
+        metrics = self._portfolio_metrics_json(portfolio)
+        if not members:
+            metrics["equity_curve_2020_2026"] = [0.0]
+            metrics["group_summary"] = {}
+            conn.execute(
+                """
+                update portfolios
+                set num_symbols=0, actual_valley_dd=0, actual_point_dd=0,
+                    valley_usage_pct=0, point_usage_pct=0, total_net_profit=0,
+                    total_lot=0, total_units=0, active_strategies=0,
+                    metrics_json=?
+                where id=?
+                """,
+                (json.dumps(metrics, ensure_ascii=True), portfolio_id),
+            )
+            return
+
+        rows = [
+            {
+                "candidate_id": member.get("candidate_id"),
+                "set_path": member.get("set_path") or member.get("set_id"),
+                "symbol": member.get("symbol"),
+                "target_symbol": member.get("symbol"),
+                "period": member.get("timeframe") or member.get("period"),
+                "family": "",
+                "is_report_path": member.get("is_report_path"),
+                "oos_report_path": member.get("oos_report_path"),
+            }
+            for member in members
+        ]
+        strategies, warnings = load_robust_sets_from_rows(rows, [])
+        if len(strategies) != len(members):
+            raise ValueError("No se pudieron reconstruir todas las curvas restantes.")
+        units = {
+            str(member.get("set_path") or member.get("set_id")): int(member.get("units") or 0)
+            for member in members
+        }
+        target_valley = float(portfolio["target_valley_dd"] or 0)
+        target_point = float(portfolio["target_point_dd"] or 0)
+        evaluation = evaluate_portfolio(strategies, units, target_valley, target_point)
+        metrics["equity_curve_2020_2026"] = evaluation.equity_curve_2020_2026
+        metrics["group_summary"] = portfolio_group_summary(strategies, units)
+        if warnings:
+            metrics.setdefault("warnings", []).extend(warnings)
+        conn.execute(
+            """
+            update portfolios
+            set num_symbols=?, actual_valley_dd=?, actual_point_dd=?,
+                valley_usage_pct=?, point_usage_pct=?, total_net_profit=?,
+                total_lot=?, total_units=?, active_strategies=?, metrics_json=?
+            where id=?
+            """,
+            (
+                len({portfolio_symbol_key(item.symbol) for item in strategies if units.get(item.set_id, 0) > 0}),
+                evaluation.valley_dd,
+                evaluation.point_dd,
+                evaluation.valley_usage_pct,
+                evaluation.point_usage_pct,
+                evaluation.total_net_profit,
+                evaluation.total_lot,
+                evaluation.total_units,
+                evaluation.active_strategies,
+                json.dumps(metrics, ensure_ascii=True),
+                portfolio_id,
+            ),
+        )
 
     # ------------------------------------------------------------------ form/state
     def _parse_float_setting(self, value: str, label: str) -> float:
@@ -802,17 +975,28 @@ class UBSPortfolioLogicMixin:
             "result": result,
         })
 
-    def _saved_portfolio_curves(self, conn: sqlite3.Connection, target_portfolio_type: PortfolioType) -> list[list[float]]:
+    def _saved_portfolio_curves(
+        self,
+        conn: sqlite3.Connection,
+        target_portfolio_type: PortfolioType,
+        *,
+        exclude_portfolio_id: int | None = None,
+    ) -> list[list[float]]:
         curves: list[list[float]] = []
-        type_filter = ""
-        if target_portfolio_type != PortfolioType.AGGRESSIVE:
+        if target_portfolio_type == PortfolioType.AGGRESSIVE:
+            type_filter = (
+                "and lower(coalesce(nullif(portfolio_type, ''), nullif(type, ''), '')) = 'aggressive'"
+            )
+        else:
             type_filter = "and lower(coalesce(nullif(portfolio_type, ''), nullif(type, ''), '')) <> 'aggressive'"
         for row in conn.execute(
             f"""
             select metrics_json from portfolios
             where metrics_json is not null and metrics_json <> ''
               {type_filter}
-            """
+              and (? is null or id <> ?)
+            """,
+            (exclude_portfolio_id, exclude_portfolio_id),
         ):
             try:
                 metrics = json.loads(row["metrics_json"])
@@ -826,12 +1010,25 @@ class UBSPortfolioLogicMixin:
                     continue
         return curves
 
-    def _saved_portfolio_curves_all_accounts(self, target_portfolio_type: PortfolioType) -> list[list[float]]:
+    def _saved_portfolio_curves_all_accounts(
+        self,
+        target_portfolio_type: PortfolioType,
+        *,
+        exclude_portfolio_id: int | None = None,
+    ) -> list[list[float]]:
         curves: list[list[float]] = []
+        active_memory = self._ubs_memory_path().resolve()
         for _account_type, memory_path in self._ubs_portfolio_source_paths():
             conn = self._ubs_portfolio_conn_for_memory(memory_path)
             try:
-                curves.extend(self._saved_portfolio_curves(conn, target_portfolio_type))
+                excluded = exclude_portfolio_id if memory_path.resolve() == active_memory else None
+                curves.extend(
+                    self._saved_portfolio_curves(
+                        conn,
+                        target_portfolio_type,
+                        exclude_portfolio_id=excluded,
+                    )
+                )
             finally:
                 conn.close()
         return curves
@@ -971,6 +1168,7 @@ class UBSPortfolioLogicMixin:
         if not hasattr(self, "ubs_portfolio_saved_tree"):
             return
         self._refresh_ubs_portfolio_availability()
+        self._refresh_ubs_portfolio_quarantine()
         tree = self.ubs_portfolio_saved_tree
         for item in tree.get_children(""):
             tree.delete(item)
@@ -1015,6 +1213,57 @@ class UBSPortfolioLogicMixin:
             self._clear_ubs_portfolio_result_tables()
             self.ubs_portfolio_status.set("Sin portafolios guardados todavia.")
 
+    def _refresh_ubs_portfolio_quarantine(self) -> None:
+        tree = getattr(self, "ubs_portfolio_quarantine_tree", None)
+        if tree is None:
+            return
+        for item in tree.get_children(""):
+            tree.delete(item)
+        self.ubs_portfolio_quarantine_rows = {}
+        try:
+            rows = self._portfolio_quarantine_rows_all_accounts()
+        except Exception as exc:
+            self.ubs_portfolio_status.set(f"No pude leer la cuarentena: {exc}")
+            return
+        for index, row in enumerate(rows):
+            item = tree.insert(
+                "",
+                "end",
+                iid=f"q:{index}",
+                values=(
+                    Path(str(row.get("set_path") or "")).name,
+                    row.get("account_type") or "",
+                    row.get("symbol") or "",
+                    row.get("timeframe") or "",
+                    row.get("quarantined_at") or "",
+                ),
+                tags=("rejected",),
+            )
+            self.ubs_portfolio_quarantine_rows[item] = row
+
+    def _release_selected_ubs_portfolio_quarantine(self) -> None:
+        tree = getattr(self, "ubs_portfolio_quarantine_tree", None)
+        if tree is None or not tree.selection():
+            messagebox.showinfo("Cuarentena", "Selecciona un set en cuarentena.")
+            return
+        row = getattr(self, "ubs_portfolio_quarantine_rows", {}).get(tree.selection()[0])
+        if not row:
+            return
+        set_name = Path(str(row.get("set_path") or "")).name
+        if not messagebox.askyesno(
+            "Reintegrar set",
+            f"{set_name} volvera a ser elegible para futuros portafolios.\n\nContinuar?",
+        ):
+            return
+        conn = self._ubs_portfolio_conn_for_memory(Path(str(row["memory_path"])))
+        try:
+            conn.execute("delete from portfolio_quarantine where id=?", (int(row["id"]),))
+            conn.commit()
+        finally:
+            conn.close()
+        self._refresh_ubs_portfolios()
+        self.ubs_portfolio_status.set(f"{set_name} reintegrado al pool elegible.")
+
     def _on_ubs_portfolio_select(self, _event=None) -> None:
         if not hasattr(self, "ubs_portfolio_saved_tree"):
             return
@@ -1025,6 +1274,501 @@ class UBSPortfolioLogicMixin:
             self._populate_ubs_portfolio_saved(int(selection[0]))
         except ValueError:
             pass
+
+    def _open_selected_ubs_portfolio_detail(self, event=None) -> None:
+        tree = getattr(self, "ubs_portfolio_saved_tree", None)
+        if tree is None:
+            return
+        if event is not None:
+            item = tree.identify_row(event.y)
+            if item:
+                tree.selection_set(item)
+        selection = tree.selection()
+        if not selection:
+            return
+        portfolio_id = int(selection[0])
+        self._create_ubs_portfolio_detail_window(portfolio_id)
+        self._populate_ubs_portfolio_detail(portfolio_id)
+
+    def _populate_ubs_portfolio_detail(self, portfolio_id: int) -> None:
+        window = getattr(self, "ubs_portfolio_detail_window", None)
+        if window is None or not window.winfo_exists():
+            return
+        tree = getattr(self, "ubs_portfolio_detail_tree", None)
+        if tree is None:
+            return
+        conn = self._ubs_portfolio_conn()
+        try:
+            portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+            members = self._portfolio_members(conn, portfolio_id)
+        finally:
+            conn.close()
+        for item in tree.get_children(""):
+            tree.delete(item)
+        self.ubs_portfolio_detail_members = {}
+        if portfolio is None:
+            self.ubs_portfolio_detail_status.set("El portafolio ya no existe.")
+            return
+        target = max(int(portfolio["target_strategies"] or 0), int(portfolio["active_strategies"] or 0))
+        self.ubs_portfolio_detail_status.set(
+            f"Portafolio #{portfolio_id}: {len(members)}/{target} estrategias | "
+            f"{int(portfolio['total_units'] or 0)} unidades | lote {float(portfolio['total_lot'] or 0):.2f}"
+        )
+        for index, member in enumerate(members):
+            item = tree.insert(
+                "",
+                "end",
+                iid=f"member:{index}",
+                values=(
+                    Path(str(member.get("set_path") or member.get("set_id") or "")).name,
+                    self._ubs_portfolio_member_account(member),
+                    self._ubs_portfolio_member_candidate_label(member),
+                    member.get("symbol") or "",
+                    member.get("timeframe") or member.get("period") or "",
+                    int(member.get("units") or 0),
+                    f"{float(member.get('lot') or 0):.2f}",
+                    f"{float(member.get('net_profit_contribution') or 0):,.0f}",
+                    f"{float(member.get('standalone_valley_dd') or 0):,.2f}",
+                    f"{float(member.get('standalone_point_dd') or 0):,.2f}",
+                ),
+                tags=("accepted",),
+            )
+            self.ubs_portfolio_detail_members[item] = member
+
+    def _selected_ubs_portfolio_detail_member(self) -> dict[str, object] | None:
+        tree = getattr(self, "ubs_portfolio_detail_tree", None)
+        if tree is None or not tree.selection():
+            messagebox.showinfo("Portafolio UBS", "Selecciona una estrategia del portafolio.")
+            return None
+        return getattr(self, "ubs_portfolio_detail_members", {}).get(tree.selection()[0])
+
+    def _open_selected_ubs_portfolio_detail_member(self) -> None:
+        member = self._selected_ubs_portfolio_detail_member()
+        if not member:
+            return
+        report = str(member.get("oos_report_path") or member.get("is_report_path") or "")
+        if report:
+            self._open_local_file(Path(report))
+        else:
+            messagebox.showinfo("Abrir reporte", "La estrategia no tiene reporte guardado.")
+
+    def _quarantine_selected_ubs_portfolio_member(self, portfolio_id: int) -> None:
+        try:
+            self._quarantine_selected_ubs_portfolio_member_impl(portfolio_id)
+        except Exception as exc:
+            messagebox.showerror("Poner en cuarentena", f"No se pudo actualizar el portafolio:\n{exc}")
+            self._refresh_ubs_portfolios(select_id=portfolio_id)
+            self._populate_ubs_portfolio_detail(portfolio_id)
+
+    def _quarantine_selected_ubs_portfolio_member_impl(self, portfolio_id: int) -> None:
+        member = self._selected_ubs_portfolio_detail_member()
+        if not member:
+            return
+        set_path = str(member.get("set_path") or member.get("set_id") or "")
+        set_name = Path(set_path).name
+        if not messagebox.askyesno(
+            "Poner en cuarentena",
+            f"{set_name} dejara de ser elegible y se quitara del portafolio #{portfolio_id}.\n\n"
+            "Despues podras usar 'Completar portafolio' para buscar una sustituta y recalcular lotes.",
+        ):
+            return
+        account_type, memory_path, candidate_id = self._resolve_portfolio_member_source(member)
+        source_conn = self._ubs_portfolio_conn_for_memory(memory_path)
+        try:
+            source_conn.execute(
+                """
+                insert into portfolio_quarantine (
+                    account_type, candidate_id, set_path, symbol, timeframe,
+                    reason, source_portfolio_id, quarantined_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(set_path) do update set
+                    account_type=excluded.account_type,
+                    candidate_id=excluded.candidate_id,
+                    symbol=excluded.symbol,
+                    timeframe=excluded.timeframe,
+                    reason=excluded.reason,
+                    source_portfolio_id=excluded.source_portfolio_id,
+                    quarantined_at=excluded.quarantined_at
+                """,
+                (
+                    account_type,
+                    candidate_id,
+                    set_path,
+                    str(member.get("symbol") or ""),
+                    str(member.get("timeframe") or member.get("period") or ""),
+                    "Retirada manualmente de un portafolio guardado",
+                    portfolio_id,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            source_conn.commit()
+        finally:
+            source_conn.close()
+
+        conn = self._ubs_portfolio_conn()
+        try:
+            portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+            if portfolio is None:
+                raise ValueError("El portafolio ya no existe.")
+            target = max(
+                int(portfolio["target_strategies"] or 0),
+                int(portfolio["active_strategies"] or 0),
+            )
+            conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
+            conn.execute(
+                "delete from portfolio_allocations where portfolio_id=? and set_path=?",
+                (portfolio_id, set_path),
+            )
+            conn.execute(
+                "delete from portfolio_members where portfolio_id=? and set_path=?",
+                (portfolio_id, set_path),
+            )
+            self._recalculate_saved_portfolio(conn, portfolio_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        self._refresh_ubs_portfolios(select_id=portfolio_id)
+        self._populate_ubs_portfolio_detail(portfolio_id)
+        self.ubs_portfolio_status.set(f"{set_name} puesto en cuarentena y retirado del portafolio #{portfolio_id}.")
+
+    def _saved_portfolio_inputs(self, portfolio: sqlite3.Row) -> dict[str, object]:
+        metrics = self._portfolio_metrics_json(portfolio)
+        stored = metrics.get("inputs") if isinstance(metrics.get("inputs"), dict) else {}
+        defaults: dict[str, object] = {
+            "capital": float(portfolio["capital"] or portfolio["account_capital"] or 0),
+            "valley_dd_pct": float(portfolio["target_valley_dd_pct"] or 0),
+            "point_dd_pct": float(portfolio["target_point_dd_pct"] or 0),
+            "portfolio_type": str(portfolio["portfolio_type"] or portfolio["type"] or "balanced").lower(),
+            "top_k_per_symbol": 3,
+            "max_total_candidates": 30,
+            "min_trades_2020_2026": 100,
+            "max_units_per_set": None,
+            "max_total_units": None,
+            "max_units_per_symbol": None,
+            "max_sets_per_symbol": 1,
+            "run_local_search": True,
+            "use_correlation": True,
+            "require_3_positive_months_6m": False,
+            "max_pair_corr": 0.35,
+            "max_downside_corr": 0.25,
+            "max_dd_overlap": 0.35,
+            "max_portfolio_corr": 0.50,
+        }
+        defaults.update(stored)
+        return defaults
+
+    def _set_ubs_portfolio_detail_running(self, running: bool, text: str = "") -> None:
+        for button in getattr(self, "ubs_portfolio_detail_buttons", []):
+            try:
+                button.configure(state="disabled" if running else "normal")
+            except Exception:
+                pass
+        if text and hasattr(self, "ubs_portfolio_detail_status"):
+            self.ubs_portfolio_detail_status.set(text)
+
+    def _complete_saved_ubs_portfolio(self, portfolio_id: int) -> None:
+        if getattr(self, "ubs_portfolio_running", False):
+            messagebox.showwarning("Completar portafolio", "Ya hay un calculo de portafolio en marcha.")
+            return
+        conn = self._ubs_portfolio_conn()
+        try:
+            portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+            members = self._portfolio_members(conn, portfolio_id)
+        finally:
+            conn.close()
+        if portfolio is None:
+            messagebox.showerror("Completar portafolio", "El portafolio ya no existe.")
+            return
+        target = max(int(portfolio["target_strategies"] or 0), int(portfolio["active_strategies"] or 0))
+        if len(members) >= target:
+            messagebox.showinfo("Completar portafolio", "El portafolio ya tiene todas sus estrategias.")
+            return
+        self.ubs_portfolio_running = True
+        self._set_ubs_portfolio_detail_running(
+            True,
+            f"Completando portafolio #{portfolio_id}: conservando {len(members)} y buscando {target - len(members)} sustituta(s)...",
+        )
+        threading.Thread(
+            target=self._complete_saved_ubs_portfolio_worker,
+            args=(portfolio_id, dict(portfolio), members, target),
+            daemon=True,
+        ).start()
+
+    def _complete_saved_ubs_portfolio_worker(
+        self,
+        portfolio_id: int,
+        portfolio: dict[str, object],
+        members: list[dict[str, object]],
+        target_strategies: int,
+    ) -> None:
+        try:
+            inputs = self._saved_portfolio_inputs(portfolio)  # type: ignore[arg-type]
+            portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
+            inputs["portfolio_type"] = portfolio_type.value
+            rows = self._final_tick_passed_candidates_all_accounts()
+            used = self._used_set_paths_all_accounts(
+                portfolio_type,
+                exclude_portfolio_id=portfolio_id,
+            )
+            required_rows = [
+                {
+                    "candidate_id": member.get("candidate_id"),
+                    "set_path": member.get("set_path") or member.get("set_id"),
+                    "symbol": member.get("symbol"),
+                    "target_symbol": member.get("symbol"),
+                    "period": member.get("timeframe") or member.get("period"),
+                    "family": "",
+                    "is_report_path": member.get("is_report_path"),
+                    "oos_report_path": member.get("oos_report_path"),
+                }
+                for member in members
+            ]
+            required_sets, required_warnings = load_robust_sets_from_rows(required_rows, [])
+            if len(required_sets) != len(required_rows):
+                raise ValueError("No se pudieron reconstruir todas las estrategias que deben conservarse.")
+            if bool(inputs.get("require_3_positive_months_6m")):
+                rows, month_warnings = filter_rows_by_recent_positive_months(
+                    rows,
+                    min_positive_months=3,
+                    window_months=6,
+                )
+            else:
+                month_warnings = []
+            candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+            # Existing members are the fixed base of a repair. They may now be
+            # locked by a newer portfolio or have a changed pipeline status;
+            # neither condition is allowed to evict them implicitly. Only the
+            # replacement candidates pass through today's eligibility gates.
+            raw_by_id = {strategy.set_id: strategy for strategy in candidate_sets}
+            raw_by_id.update({strategy.set_id: strategy for strategy in required_sets})
+            raw_sets = list(raw_by_id.values())
+            required_set_ids = [strategy.set_id for strategy in required_sets]
+            saved_units = {
+                str(member.get("set_path") or member.get("set_id") or ""): int(member.get("units") or 0)
+                for member in members
+            }
+            required_initial_allocations = {
+                strategy.set_id: saved_units[strategy.set_id]
+                for strategy in required_sets
+            }
+            existing_curves = self._saved_portfolio_curves_all_accounts(
+                portfolio_type,
+                exclude_portfolio_id=portfolio_id,
+            )
+            result = optimize_portfolio(
+                raw_sets=raw_sets,
+                capital=float(inputs["capital"]),
+                valley_dd_pct=float(inputs["valley_dd_pct"]),
+                point_dd_pct=float(inputs["point_dd_pct"]),
+                portfolio_type=portfolio_type,
+                min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
+                top_k_per_symbol=int(inputs["top_k_per_symbol"]),
+                max_total_candidates=int(inputs["max_total_candidates"]),
+                max_units_per_set=inputs.get("max_units_per_set"),  # type: ignore[arg-type]
+                max_total_units=inputs.get("max_total_units"),  # type: ignore[arg-type]
+                max_units_per_symbol=inputs.get("max_units_per_symbol"),  # type: ignore[arg-type]
+                max_sets_per_symbol=inputs.get("max_sets_per_symbol"),  # type: ignore[arg-type]
+                run_local_search=bool(inputs.get("run_local_search", True)),
+                max_pair_corr=inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                max_downside_corr=inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                max_dd_overlap=inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                existing_portfolio_curves=existing_curves,
+                max_portfolio_corr=inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                required_set_ids=required_set_ids,
+                minimum_active_strategies=target_strategies,
+                maximum_active_strategies=target_strategies,
+                required_initial_allocations=required_initial_allocations,
+                preserve_required_allocations=True,
+            )
+            result.warnings[:0] = required_warnings + month_warnings + load_warnings
+            if result.active_strategies < target_strategies:
+                raise ValueError(
+                    f"No existe una sustituta compatible: quedaron {result.active_strategies}/{target_strategies} estrategias."
+                )
+            conn = self._ubs_portfolio_conn()
+            try:
+                self._replace_saved_portfolio_result(
+                    conn,
+                    portfolio_id,
+                    inputs,
+                    result,
+                    target_strategies,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        except Exception as exc:
+            self.after(0, self._complete_saved_ubs_portfolio_finished, portfolio_id, None, str(exc))
+            return
+        self.after(0, self._complete_saved_ubs_portfolio_finished, portfolio_id, result, "")
+
+    def _complete_saved_ubs_portfolio_finished(
+        self,
+        portfolio_id: int,
+        result: PortfolioResult | None,
+        error: str,
+    ) -> None:
+        self.ubs_portfolio_running = False
+        self._set_ubs_portfolio_detail_running(False)
+        if error or result is None:
+            messagebox.showerror("Completar portafolio", error or "No se pudo completar el portafolio.")
+            self._populate_ubs_portfolio_detail(portfolio_id)
+            return
+        self._refresh_ubs_portfolios(select_id=portfolio_id)
+        self._populate_ubs_portfolio_detail(portfolio_id)
+        repair_reductions = sum(
+            1 for decision in result.decision_log if decision.action == "reduce_unit_for_repair"
+        )
+        adjustment_text = (
+            f" Se redujeron {repair_reductions} unidad(es) existentes por limites de DD."
+            if repair_reductions
+            else " Las unidades existentes se conservaron."
+        )
+        self.ubs_portfolio_status.set(
+            f"Portafolio #{portfolio_id} completado: {result.active_strategies} estrategias, "
+            f"{result.total_units} unidades, lote {result.total_lot:.2f}.{adjustment_text}"
+        )
+
+    def _replace_saved_portfolio_result(
+        self,
+        conn: sqlite3.Connection,
+        portfolio_id: int,
+        inputs: dict[str, object],
+        result: PortfolioResult,
+        target_strategies: int,
+    ) -> None:
+        active_symbols = len(
+            {portfolio_symbol_key(item.symbol) for item in result.allocations if item.units > 0}
+        )
+        metrics = {
+            "inputs": inputs,
+            "warnings": result.warnings,
+            "group_summary": result.group_summary,
+            "equity_curve_2020_2026": result.equity_curve_2020_2026,
+            "unused_sets": [asdict(item) for item in result.unused_sets],
+            "last_completed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        conn.execute(
+            """
+            update portfolios
+            set num_symbols=?, account_capital=?, capital=?,
+                target_valley_dd_pct=?, target_point_dd_pct=?,
+                target_valley_dd=?, target_point_dd=?, actual_valley_dd=?,
+                actual_point_dd=?, valley_usage_pct=?, point_usage_pct=?,
+                total_net_profit=?, total_lot=?, total_units=?, active_strategies=?,
+                target_strategies=?, stop_reason=?, binding_constraint=?, metrics_json=?
+            where id=?
+            """,
+            (
+                active_symbols,
+                float(inputs["capital"]),
+                float(inputs["capital"]),
+                float(inputs["valley_dd_pct"]),
+                float(inputs["point_dd_pct"]),
+                result.target_valley_dd,
+                result.target_point_dd,
+                result.actual_valley_dd,
+                result.actual_point_dd,
+                result.valley_usage_pct,
+                result.point_usage_pct,
+                result.total_net_profit,
+                result.total_lot,
+                result.total_units,
+                result.active_strategies,
+                target_strategies,
+                result.stop_reason,
+                "valley" if result.valley_usage_pct >= result.point_usage_pct else "point",
+                json.dumps(metrics, ensure_ascii=True),
+                portfolio_id,
+            ),
+        )
+        conn.execute("delete from portfolio_decision_log where portfolio_id=?", (portfolio_id,))
+        conn.execute("delete from portfolio_allocations where portfolio_id=?", (portfolio_id,))
+        conn.execute("delete from portfolio_members where portfolio_id=?", (portfolio_id,))
+        for allocation in result.allocations:
+            conn.execute(
+                """
+                insert into portfolio_allocations (
+                    portfolio_id, set_id, candidate_id, symbol, units, lot,
+                    net_profit_contribution, standalone_valley_dd, standalone_point_dd,
+                    set_path, timeframe, lot_size_step, is_report_path, oos_report_path
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    portfolio_id,
+                    allocation.set_id,
+                    allocation.candidate_id,
+                    allocation.symbol,
+                    allocation.units,
+                    allocation.lot,
+                    allocation.net_profit_contribution,
+                    allocation.standalone_valley_dd,
+                    allocation.standalone_point_dd,
+                    allocation.set_path or allocation.set_id,
+                    allocation.timeframe or "",
+                    allocation.lot_size_step,
+                    allocation.is_report_path,
+                    allocation.oos_report_path,
+                ),
+            )
+            candidate_text = str(allocation.candidate_id)
+            legacy_candidate_id = int(candidate_text) if candidate_text.isdigit() else None
+            conn.execute(
+                """
+                insert into portfolio_members (
+                    portfolio_id, candidate_id, set_path, symbol, period, lot_multiplier,
+                    lot, lot_size_step, standalone_dd, quality_score, combined_net_profit,
+                    is_report_path, oos_report_path
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    portfolio_id,
+                    legacy_candidate_id,
+                    allocation.set_path or allocation.set_id,
+                    allocation.symbol,
+                    allocation.timeframe or "",
+                    allocation.units,
+                    allocation.lot,
+                    allocation.lot_size_step,
+                    allocation.standalone_valley_dd,
+                    0.0,
+                    allocation.net_profit_contribution,
+                    allocation.is_report_path,
+                    allocation.oos_report_path,
+                ),
+            )
+        for decision in result.decision_log:
+            conn.execute(
+                """
+                insert into portfolio_decision_log (
+                    portfolio_id, step, action, set_id, from_set_id, to_set_id,
+                    gain, valley_cost, point_cost, score, portfolio_net_profit_after,
+                    portfolio_valley_dd_after, portfolio_point_dd_after, reason
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    portfolio_id,
+                    decision.step,
+                    decision.action,
+                    decision.set_id,
+                    decision.from_set_id,
+                    decision.to_set_id,
+                    decision.gain,
+                    decision.valley_cost,
+                    decision.point_cost,
+                    decision.score,
+                    decision.portfolio_net_profit_after,
+                    decision.portfolio_valley_dd_after,
+                    decision.portfolio_point_dd_after,
+                    decision.reason,
+                ),
+            )
 
     def _clear_ubs_portfolio_result_tables(self) -> None:
         for tree_name in (

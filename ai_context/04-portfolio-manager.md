@@ -108,9 +108,10 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   2020-2026 history. The module reconstructs accumulated P/L from closed trades,
   validates net profit against report metrics when available, and merges the
   two curves.
-- **Eligibility filters**: Final Tick accepted, not locked by a non-aggressive
-  portfolio, parseable curve, minimum combined trades, and positive combined
-  net. Do not add OOS/degradation filters here.
+- **Eligibility filters**: Final Tick accepted, not locked by the matching
+  portfolio class (Conservative/Balanced together; Aggressive separately),
+  parseable curve, minimum combined trades, and positive combined net. Do not
+  add OOS/degradation filters here.
 - **Ranking and selection**: candidates are ranked, then limited by top-K per
   symbol before optimization.
 - **Discrete lot model**: `1 unit = 0.01 lot`. The optimizer assigns integer
@@ -124,6 +125,14 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 - **No global scaling**: do not reintroduce risk-parity allocation, a global
   scale factor (`S = target_dd/current_dd`), StartLots validation, or automatic
   lot normalization.
+- **Quarantine is a hard gate**: rows in `portfolio_quarantine` are excluded
+  before parsing or optimization across both ECN and PRO memories.
+- **Saved portfolio repair**: repair starts with every remaining member at its
+  saved unit count and freezes those allocations. If quarantine removed a
+  diversifying curve and the remainder now violates DD, the repair reduces only
+  the minimum existing units needed to make a replacement feasible. It restores
+  the pre-quarantine strategy count and optimizes units only on the replacement.
+  The repaired result replaces saved allocations only after all constraints pass.
 
 ### Public API
 
@@ -147,10 +156,10 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   increments and optional local-search swaps.
 - `portfolio_members`: legacy-compatible per-strategy table. `set_path` remains
   part of the global exclusion key and is freed automatically when the portfolio
-  is deleted. Aggressive portfolios are exploratory for Conservative/Balanced
-  generation and do not lock their selected sets there, but they do lock sets
-  for later Aggressive generations. Conservative and Balanced portfolios lock
-  selected sets for every portfolio type.
+  is deleted. Aggressive portfolios use their own lock pool and do not conflict
+  with Conservative/Balanced. Conservative and Balanced share a lock pool.
+- `portfolio_quarantine`: account-scoped hard exclusion keyed by `set_path`,
+  including source candidate, symbol/TF, source portfolio, reason, and date.
 
 ### Export
 

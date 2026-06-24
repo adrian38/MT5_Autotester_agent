@@ -501,8 +501,22 @@ calibration, StartLots validation, or automatic lot normalization in this module
 **Persistence**: `portfolios`, `portfolio_allocations`,
 `portfolio_decision_log`, plus legacy-compatible `portfolio_members` in
 `outputs/ubs_memory_{ECN|PRO}.sqlite` (account-scoped; resolved via
-`account_memory_path()`). A set in saved allocations/members is globally
-excluded from future portfolios until its portfolio is deleted.
+`account_memory_path()`). Used-set locks are portfolio-class scoped:
+Conservative/Balanced share one pool, while Aggressive only conflicts with
+other Aggressive portfolios. Deleting a portfolio frees its locks.
+
+**Quarantine and repair**: `portfolio_quarantine` is stored in the source
+candidate's ECN/PRO memory and is a hard cross-account exclusion from portfolio
+eligibility. The Portfolio Builder shows the quarantined-set table and allows
+explicit reinstatement. Double-clicking a saved portfolio opens a member window;
+quarantining a member removes it and recalculates the remaining saved metrics.
+"Completar portafolio" preserves all remaining members, fills the missing active
+strategy slots where constraints permit, and freezes their existing units/lots.
+If the remaining allocation exceeds DD after quarantine, it greedily removes
+only the minimum existing units needed to make a valid replacement feasible;
+only the replacement receives newly optimized units. It then recalculates DD,
+correlations, curve, and decision log. A failed repair does not replace the
+incomplete saved portfolio.
 
 **Export sets**: patches each .set with `Risk=2` + integer
 `LotPerBalance_step`, writes a human-readable `PORTAFOLIO_<id>_resumen.txt`,

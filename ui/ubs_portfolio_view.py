@@ -221,12 +221,16 @@ class UBSPortfolioViewMixin:
         left_split.grid(row=0, column=0, sticky="nsew")
         left_top = ttk.Frame(left_split, style="Panel.TFrame")
         left_bottom = ttk.Frame(left_split, style="Panel.TFrame")
+        left_quarantine = ttk.Frame(left_split, style="Panel.TFrame")
         left_split.add(left_top, weight=1)
         left_split.add(left_bottom, weight=3)
+        left_split.add(left_quarantine, weight=2)
         left_top.columnconfigure(0, weight=1)
         left_top.rowconfigure(1, weight=1)
         left_bottom.columnconfigure(0, weight=1)
         left_bottom.rowconfigure(1, weight=1)
+        left_quarantine.columnconfigure(0, weight=1)
+        left_quarantine.rowconfigure(1, weight=1)
 
         availability_bar = tk.Frame(left_top, bg=colors["panel_alt"])
         availability_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
@@ -311,7 +315,61 @@ class UBSPortfolioViewMixin:
             self.ubs_portfolio_saved_tree.column(column, width=saved_widths[column], minwidth=42, anchor="center", stretch=False)
         self._standard_ubs_portfolio_tree(self.ubs_portfolio_saved_tree)
         self.ubs_portfolio_saved_tree.bind("<<TreeviewSelect>>", self._on_ubs_portfolio_select)
+        self.ubs_portfolio_saved_tree.bind("<Double-1>", self._open_selected_ubs_portfolio_detail)
         self._attach_tree_scrollbars(saved_frame, self.ubs_portfolio_saved_tree, 0)
+
+        quarantine_bar = tk.Frame(left_quarantine, bg=colors["panel_alt"])
+        quarantine_bar.grid(row=0, column=0, sticky="ew", pady=(4, 4))
+        quarantine_bar.columnconfigure(0, weight=1)
+        tk.Label(
+            quarantine_bar,
+            text="Sets en cuarentena",
+            bg=colors["panel_alt"],
+            fg=colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        release_btn = tk.Button(
+            quarantine_bar,
+            text="Reintegrar",
+            bg=colors["panel"],
+            fg=colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._release_selected_ubs_portfolio_quarantine,
+        )
+        release_btn.grid(row=0, column=1, sticky="e", padx=(0, 10), pady=5)
+        self.ubs_portfolio_buttons.append(release_btn)
+
+        quarantine_frame = ttk.Frame(left_quarantine, style="Panel.TFrame")
+        quarantine_frame.grid(row=1, column=0, sticky="nsew")
+        quarantine_frame.columnconfigure(0, weight=1)
+        quarantine_frame.rowconfigure(0, weight=1)
+        quarantine_columns = ("set", "account", "symbol", "tf", "date")
+        self.ubs_portfolio_quarantine_tree = ttk.Treeview(
+            quarantine_frame,
+            columns=quarantine_columns,
+            show="headings",
+            height=6,
+            selectmode="browse",
+        )
+        quarantine_specs = (
+            ("set", "SET", 210),
+            ("account", "CUENTA", 68),
+            ("symbol", "SIMBOLO", 90),
+            ("tf", "TF", 52),
+            ("date", "DESDE", 132),
+        )
+        for column, heading, width in quarantine_specs:
+            self.ubs_portfolio_quarantine_tree.heading(column, text=heading)
+            self.ubs_portfolio_quarantine_tree.column(
+                column, width=width, minwidth=42, anchor="center", stretch=False
+            )
+        self._standard_ubs_portfolio_tree(self.ubs_portfolio_quarantine_tree)
+        self._attach_tree_scrollbars(quarantine_frame, self.ubs_portfolio_quarantine_tree, 0)
 
         tk.Label(right, text="Asignaciones del portafolio", bg=colors["panel"], fg=colors["text"],
                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
@@ -344,3 +402,94 @@ class UBSPortfolioViewMixin:
         tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
         tree.tag_configure("rejected", foreground=self.colors["danger"])
         tree.tag_configure("pending", foreground=self.colors["muted"])
+
+    def _create_ubs_portfolio_detail_window(self, portfolio_id: int) -> None:
+        existing = getattr(self, "ubs_portfolio_detail_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+
+        window = tk.Toplevel(self)
+        self.ubs_portfolio_detail_window = window
+        window.title(f"Portafolio #{portfolio_id}")
+        window.geometry("1180x560")
+        window.minsize(900, 420)
+        window.configure(bg=self.colors["bg"])
+        window.transient(self)
+        window.grab_set()
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+
+        bar = tk.Frame(window, bg=self.colors["panel_alt"])
+        bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
+        bar.columnconfigure(0, weight=1)
+        self.ubs_portfolio_detail_status = tk.StringVar(value=f"Portafolio #{portfolio_id}")
+        tk.Label(
+            bar,
+            textvariable=self.ubs_portfolio_detail_status,
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        quarantine_btn = tk.Button(
+            bar,
+            text="Poner en cuarentena",
+            bg=self.colors["danger"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=lambda: self._quarantine_selected_ubs_portfolio_member(portfolio_id),
+        )
+        quarantine_btn.grid(row=0, column=1, padx=(0, 6), pady=6)
+        complete_btn = tk.Button(
+            bar,
+            text="Completar portafolio",
+            bg=self.colors["accent"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=lambda: self._complete_saved_ubs_portfolio(portfolio_id),
+        )
+        complete_btn.grid(row=0, column=2, padx=(0, 6), pady=6)
+        open_btn = tk.Button(
+            bar,
+            text="Abrir reporte",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._open_selected_ubs_portfolio_detail_member,
+        )
+        open_btn.grid(row=0, column=3, padx=(0, 10), pady=6)
+        self.ubs_portfolio_detail_buttons = [quarantine_btn, complete_btn, open_btn]
+
+        frame = ttk.Frame(window, style="Panel.TFrame")
+        frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        columns = ("set", "account", "candidate", "symbol", "tf", "units", "lot", "net", "valley", "point")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=14, selectmode="browse")
+        self.ubs_portfolio_detail_tree = tree
+        specs = (
+            ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
+            ("symbol", "SIMBOLO", 90), ("tf", "TF", 52), ("units", "UNID.", 58),
+            ("lot", "LOTE", 62), ("net", "NET", 90), ("valley", "DD VALLE", 82),
+            ("point", "DD PUNT.", 82),
+        )
+        for column, heading, width in specs:
+            tree.heading(column, text=heading)
+            tree.column(column, width=width, minwidth=42, anchor="center", stretch=False)
+        self._standard_ubs_portfolio_tree(tree)
+        tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_portfolio_detail_member())
+        self._attach_tree_scrollbars(frame, tree, 0)

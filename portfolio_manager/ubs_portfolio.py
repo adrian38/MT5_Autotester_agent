@@ -1139,20 +1139,61 @@ def build_portfolio_greedy(
     max_units_per_group_pct: float | None = None,
     max_sets_per_group: int | None = None,
     group_unit_cap_bootstrap: int = 10,
+    initial_allocations: dict[str, int] | None = None,
+    minimum_active_strategies: int | None = None,
+    maximum_active_strategies: int | None = None,
+    fixed_set_ids: Sequence[str] | None = None,
+    allow_fixed_reductions_for_repair: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], str, int]:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
-    allocations = {strategy.set_id: 0 for strategy in sets}
+    allocations = {
+        strategy.set_id: max(int((initial_allocations or {}).get(strategy.set_id, 0)), 0)
+        for strategy in sets
+    }
+    if not _allocations_respect_constraints(
+        sets,
+        allocations,
+        max_units_per_set,
+        max_total_units,
+        max_units_per_symbol,
+        max_sets_per_symbol,
+        max_sets_per_group,
+    ):
+        raise ValueError("Initial portfolio allocations violate configured limits")
     current = evaluate_portfolio(sets, allocations, target_valley_dd, target_point_dd)
+    if (
+        current.valley_dd > target_valley_dd or current.point_dd > target_point_dd
+    ) and not allow_fixed_reductions_for_repair:
+        raise ValueError("Initial portfolio allocations violate DD limits")
     decision_log: list[OptimizationDecision] = []
-    step = 0
+    step = sum(allocations.values())
     max_steps = max_total_units if max_total_units is not None else 10000
     correlation_rejections = 0
     portfolio_curves = list(existing_portfolio_curves or [])
+    fixed_ids = {str(set_id) for set_id in (fixed_set_ids or ())}
 
     while step < max_steps:
         best_candidate: dict[str, object] | None = None
+        best_repair_candidate: dict[str, object] | None = None
+        blocked_by_risk = False
         for strategy in sets:
+            if strategy.set_id in fixed_ids:
+                continue
+            if (
+                maximum_active_strategies is not None
+                and current.active_strategies >= maximum_active_strategies
+                and allocations.get(strategy.set_id, 0) <= 0
+            ):
+                continue
+            if (
+                minimum_active_strategies is not None
+                and current.active_strategies < minimum_active_strategies
+                and allocations.get(strategy.set_id, 0) > 0
+            ):
+                # During repair, fill the missing strategy slots before adding
+                # more risk to strategies that are already active.
+                continue
             if not can_add_unit(
                 target_set=strategy,
                 sets=sets,
@@ -1198,6 +1239,30 @@ def build_portfolio_greedy(
             temp_allocations[strategy.set_id] += 1
             temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
             if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
+                blocked_by_risk = True
+                if allow_fixed_reductions_for_repair:
+                    current_violation = max(
+                        current.valley_dd / max(target_valley_dd, 1e-9),
+                        current.point_dd / max(target_point_dd, 1e-9),
+                    )
+                    temp_violation = max(
+                        temp.valley_dd / max(target_valley_dd, 1e-9),
+                        temp.point_dd / max(target_point_dd, 1e-9),
+                    )
+                    if temp_violation < current_violation - 1e-9:
+                        repair_score = (current_violation - temp_violation) * 1_000_000_000.0
+                        repair_score += max(temp.total_net_profit - current.total_net_profit, 0.0)
+                        if (
+                            best_repair_candidate is None
+                            or repair_score > float(best_repair_candidate["score"])
+                        ):
+                            best_repair_candidate = {
+                                "set": strategy,
+                                "allocations": temp_allocations,
+                                "evaluation": temp,
+                                "score": repair_score,
+                                "reason": "Replacement increment reduced the DD violation",
+                            }
                 continue
             if max_portfolio_corr is not None and portfolio_curves:
                 worst_portfolio_corr = max(
@@ -1205,6 +1270,7 @@ def build_portfolio_greedy(
                     for curve in portfolio_curves
                 )
                 if worst_portfolio_corr > max_portfolio_corr:
+                    blocked_by_risk = True
                     correlation_rejections += 1
                     decision_log.append(
                         OptimizationDecision(
@@ -1233,7 +1299,59 @@ def build_portfolio_greedy(
                     "allocations": temp_allocations,
                     "evaluation": temp,
                     "score": score,
+                    "reason": "Best valid +0.01 increment",
                 }
+
+        if best_candidate is None and best_repair_candidate is not None:
+            best_candidate = best_repair_candidate
+
+        if best_candidate is None and allow_fixed_reductions_for_repair:
+            current_violation = max(
+                current.valley_dd / max(target_valley_dd, 1e-9),
+                current.point_dd / max(target_point_dd, 1e-9),
+            )
+            missing_required_strategy = (
+                minimum_active_strategies is not None
+                and current.active_strategies < minimum_active_strategies
+            )
+            if current_violation > 1.0 or (missing_required_strategy and blocked_by_risk):
+                best_reduction: tuple[float, float, RobustStrategySet, dict[str, int], PortfolioEvaluation] | None = None
+                for strategy in sets:
+                    if strategy.set_id not in fixed_ids or allocations.get(strategy.set_id, 0) <= 1:
+                        continue
+                    temp_allocations = allocations.copy()
+                    temp_allocations[strategy.set_id] -= 1
+                    temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
+                    temp_violation = max(
+                        temp.valley_dd / max(target_valley_dd, 1e-9),
+                        temp.point_dd / max(target_point_dd, 1e-9),
+                    )
+                    if temp_violation >= current_violation - 1e-9:
+                        continue
+                    choice = (temp_violation, -temp.total_net_profit, strategy, temp_allocations, temp)
+                    if best_reduction is None or choice[:2] < best_reduction[:2]:
+                        best_reduction = choice
+                if best_reduction is not None:
+                    _violation, _negative_net, reduced_set, allocations, current = best_reduction
+                    step = sum(allocations.values())
+                    decision_log.append(
+                        OptimizationDecision(
+                            step=len(decision_log) + 1,
+                            action="reduce_unit_for_repair",
+                            set_id=reduced_set.set_id,
+                            from_set_id=reduced_set.set_id,
+                            to_set_id=None,
+                            gain=-reduced_set.net_profit_2020_2026_001,
+                            valley_cost=0.0,
+                            point_cost=0.0,
+                            score=-current_violation,
+                            portfolio_net_profit_after=current.total_net_profit,
+                            portfolio_valley_dd_after=current.valley_dd,
+                            portfolio_point_dd_after=current.point_dd,
+                            reason="Minimum existing-lot reduction required to make portfolio repair feasible",
+                        )
+                    )
+                    continue
 
         if best_candidate is None:
             stop_reason = "No valid +0.01 increment found without breaking DD constraints"
@@ -1259,7 +1377,7 @@ def build_portfolio_greedy(
                 portfolio_net_profit_after=current.total_net_profit,
                 portfolio_valley_dd_after=current.valley_dd,
                 portfolio_point_dd_after=current.point_dd,
-                reason="Best valid +0.01 increment",
+                reason=str(best_candidate.get("reason") or "Best valid +0.01 increment"),
             )
         )
     else:
@@ -1287,15 +1405,20 @@ def improve_with_local_search(
     max_sets_per_group: int | None = None,
     group_unit_cap_bootstrap: int = 10,
     max_iterations: int = 1000,
+    protected_set_ids: Sequence[str] | None = None,
+    minimum_active_strategies: int | None = None,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision]]:
     decision_log: list[OptimizationDecision] = []
     iteration = 0
     portfolio_curves = list(existing_portfolio_curves or [])
+    protected_ids = {str(set_id) for set_id in (protected_set_ids or ())}
     while iteration < max_iterations:
         iteration += 1
         best_move: dict[str, object] | None = None
         for from_set in sets:
             if allocations.get(from_set.set_id, 0) <= 0:
+                continue
+            if from_set.set_id in protected_ids and allocations.get(from_set.set_id, 0) <= 1:
                 continue
             for to_set in sets:
                 if from_set.set_id == to_set.set_id:
@@ -1303,6 +1426,10 @@ def improve_with_local_search(
                 temp_allocations = allocations.copy()
                 temp_allocations[from_set.set_id] -= 1
                 temp_allocations[to_set.set_id] += 1
+                if minimum_active_strategies is not None:
+                    active_count = sum(1 for units in temp_allocations.values() if units > 0)
+                    if active_count < minimum_active_strategies:
+                        continue
                 if not _allocations_respect_constraints(
                     sets,
                     temp_allocations,
@@ -1408,6 +1535,11 @@ def optimize_portfolio(
     max_units_per_group_pct: float | None = None,
     max_sets_per_group: int | None = None,
     group_unit_cap_bootstrap: int | None = None,
+    required_set_ids: Sequence[str] | None = None,
+    minimum_active_strategies: int | None = None,
+    maximum_active_strategies: int | None = None,
+    required_initial_allocations: dict[str, int] | None = None,
+    preserve_required_allocations: bool = False,
 ) -> PortfolioResult:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
@@ -1428,6 +1560,22 @@ def optimize_portfolio(
         max_total_candidates=max_total_candidates,
         min_trades_2020_2026=min_trades_2020_2026,
     )
+    required_ids = {str(set_id) for set_id in (required_set_ids or ())}
+    required_ids.update(str(set_id) for set_id in (required_initial_allocations or {}))
+    eligible_by_id = {strategy.set_id: strategy for strategy in eligible}
+    missing_required = sorted(required_ids - set(eligible_by_id))
+    if missing_required:
+        raise ValueError(
+            "Required portfolio sets are no longer eligible: "
+            + ", ".join(Path(set_id).name for set_id in missing_required)
+        )
+    selected_ids = {strategy.set_id for strategy in selected}
+    selected.extend(eligible_by_id[set_id] for set_id in required_ids - selected_ids)
+    initial_allocations = {
+        set_id: max(int((required_initial_allocations or {}).get(set_id, 1)), 1)
+        for set_id in required_ids
+    }
+    fixed_set_ids = required_ids if preserve_required_allocations else set()
     allocations, current, greedy_log, stop_reason, correlation_rejections = build_portfolio_greedy(
         sets=selected,
         capital=capital,
@@ -1446,10 +1594,15 @@ def optimize_portfolio(
         max_units_per_group_pct=max_units_per_group_pct,
         max_sets_per_group=max_sets_per_group,
         group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+        initial_allocations=initial_allocations,
+        minimum_active_strategies=minimum_active_strategies,
+        maximum_active_strategies=maximum_active_strategies,
+        fixed_set_ids=fixed_set_ids,
+        allow_fixed_reductions_for_repair=preserve_required_allocations,
     )
 
     local_log: list[OptimizationDecision] = []
-    if run_local_search:
+    if run_local_search and not preserve_required_allocations:
         allocations, current, local_log = improve_with_local_search(
             sets=selected,
             allocations=allocations,
@@ -1468,6 +1621,8 @@ def optimize_portfolio(
             max_units_per_group_pct=max_units_per_group_pct,
             max_sets_per_group=max_sets_per_group,
             group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+            protected_set_ids=required_ids,
+            minimum_active_strategies=minimum_active_strategies,
         )
 
     group_cap_relaxed = False
@@ -1501,9 +1656,14 @@ def optimize_portfolio(
             max_units_per_group_pct=None,
             max_sets_per_group=max_sets_per_group,
             group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+            initial_allocations=initial_allocations,
+            minimum_active_strategies=minimum_active_strategies,
+            maximum_active_strategies=maximum_active_strategies,
+            fixed_set_ids=fixed_set_ids,
+            allow_fixed_reductions_for_repair=preserve_required_allocations,
         )
         relaxed_local_log: list[OptimizationDecision] = []
-        if run_local_search:
+        if run_local_search and not preserve_required_allocations:
             relaxed_allocations, relaxed_current, relaxed_local_log = improve_with_local_search(
                 sets=selected,
                 allocations=relaxed_allocations,
@@ -1522,6 +1682,8 @@ def optimize_portfolio(
                 max_units_per_group_pct=None,
                 max_sets_per_group=max_sets_per_group,
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+                protected_set_ids=required_ids,
+                minimum_active_strategies=minimum_active_strategies,
             )
         if relaxed_current.total_net_profit > current.total_net_profit and relaxed_current.total_units > current.total_units:
             allocations = relaxed_allocations
@@ -1583,6 +1745,18 @@ def optimize_portfolio(
         ]
 
     warnings: list[str] = []
+    if preserve_required_allocations and required_ids:
+        repair_reductions = sum(
+            1 for decision in greedy_log if decision.action == "reduce_unit_for_repair"
+        )
+        if repair_reductions:
+            warnings.append(
+                f"Repair preserved every existing strategy and changed only {repair_reductions} existing unit(s) required by DD limits."
+            )
+        else:
+            warnings.append(
+                "Existing portfolio strategies and units were preserved; only replacement allocations were optimized."
+            )
     if group_cap_relaxed:
         warnings.append(
             "Balanced relajo el limite porcentual por grupo porque la asignacion estricta dejaba el portfolio infrautilizado."

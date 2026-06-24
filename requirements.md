@@ -579,10 +579,11 @@ requirement changes or a debt item is opened/closed.
   `accepted`. The probe Final Tick (`candidate_final_tick`) is NOT the portfolio
   gate; only the 6M stage is. Portfolio history MUST still be built from the
   base report plus the robustness report; Final Tick 6M is an eligibility gate,
-  not the curve source. Saved Conservative/Balanced portfolios MUST lock their
-  selected sets for every future portfolio. Saved Aggressive portfolios MUST
-  lock their selected sets only for future Aggressive portfolios; they MUST NOT
-  block Conservative/Balanced generation.
+  not the curve source. Conservative/Balanced portfolios MUST share one lock
+  pool. Aggressive portfolios MUST use a separate lock pool: only sets selected
+  by another Aggressive portfolio are unavailable to a new or repaired
+  Aggressive portfolio, and Aggressive portfolios MUST NOT block
+  Conservative/Balanced generation.
 - **FR-1.12.33** `UBS Portafolio` MUST expose a "Requerir 3 meses positivos 6M"
   checkbox (`ubs_portfolio_require_3_positive_months_6m`). When enabled, the
   optimizer MUST filter out candidates whose 6M report curve has fewer than 3
@@ -602,6 +603,21 @@ requirement changes or a debt item is opened/closed.
   configured MT5 data directories. It MUST show a preview (file count + size)
   and require confirmation before deleting. It MUST be blocked while any process
   is active or while MT5 terminals are open.
+- **FR-1.12.37** `UBS Portafolio` MUST persist a cross-account set quarantine.
+  Quarantined sets MUST be excluded from every future portfolio candidate pool
+  until explicitly reinstated. Double-clicking a saved portfolio MUST open its
+  strategy list; quarantining a member there MUST remove it from that portfolio
+  and recalculate the remaining metrics. The detail window MUST offer a
+  **Completar portafolio** action that preserves every remaining member, finds
+  eligible replacement strategies up to the pre-quarantine strategy count, and
+  preserves every existing unit/lot whenever the resulting portfolio remains
+  feasible. If removing the quarantined member makes the saved allocation
+  violate DD, the repair MAY reduce only the minimum existing units needed to
+  restore feasibility; it MUST NOT rebuild or globally redistribute the
+  portfolio. Only replacement strategies MAY receive newly optimized units.
+  Drawdowns, correlations, curve, decision log, and portfolio metrics MUST be
+  recalculated before replacing the saved allocations transactionally. If no
+  valid replacement exists, the incomplete portfolio MUST remain unchanged.
 
 ### 1.13 Packaging & runtime
 

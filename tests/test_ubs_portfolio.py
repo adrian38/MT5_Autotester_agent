@@ -425,6 +425,155 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertEqual(allocation.units, execution_units_from_step(5000, allocation.lot_size_step))
         self.assertEqual(allocation.lot, allocation.units * 0.01)
 
+    def test_portfolio_repair_retains_required_sets(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("remaining", "EURUSD", [0, 20, 19, 40]),
+                make_strategy("replacement", "GBPUSD", [0, 80, 79, 160]),
+                make_strategy("best", "XAUUSD", [0, 100, 99, 200]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=3,
+            max_sets_per_symbol=1,
+            run_local_search=True,
+            required_set_ids=["remaining"],
+            minimum_active_strategies=2,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertGreaterEqual(allocations["remaining"], 1)
+        self.assertEqual(result.active_strategies, 2)
+
+    def test_portfolio_repair_fills_missing_strategy_slots_before_extra_units(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 99, 200]),
+                make_strategy("b", "GBPUSD", [0, 80, 79, 160]),
+                make_strategy("c", "XAUUSD", [0, 60, 59, 120]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=3,
+            run_local_search=False,
+            required_set_ids=["a", "b"],
+            minimum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        self.assertEqual(result.active_strategies, 3)
+        self.assertEqual({allocation.set_id for allocation in result.allocations}, {"a", "b", "c"})
+
+    def test_portfolio_repair_preserves_existing_units_and_only_sizes_replacement(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 99, 200]),
+                make_strategy("b", "GBPUSD", [0, 80, 79, 160]),
+                make_strategy("c", "XAUUSD", [0, 60, 59, 120]),
+                make_strategy("d", "US30", [0, 50, 49, 100]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=12,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 4, "b": 3},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations["a"], 4)
+        self.assertEqual(allocations["b"], 3)
+        self.assertEqual(result.active_strategies, 3)
+        self.assertEqual(len(set(allocations) - {"a", "b"}), 1)
+
+    def test_portfolio_repair_reduces_only_units_required_to_restore_dd(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 20]),
+                make_strategy("b", "GBPUSD", [0, 10, 20]),
+                make_strategy("c", "XAUUSD", [0, 10, 1]),
+            ],
+            capital=1000,
+            valley_dd_pct=14.9,
+            point_dd_pct=14.9,
+            max_total_units=4,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 2, "b": 1},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations["a"], 1)
+        self.assertEqual(allocations["b"], 1)
+        self.assertGreaterEqual(allocations["c"], 1)
+        self.assertTrue(any("changed only 1 existing unit" in warning for warning in result.warnings))
+
+    def test_portfolio_repair_can_add_replacement_progressively_before_reducing_existing_units(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 20]),
+                make_strategy("b", "GBPUSD", [0, 10, 20]),
+                make_strategy("c", "XAUUSD", [0, 0, 5]),
+            ],
+            capital=1000,
+            valley_dd_pct=14,
+            point_dd_pct=14,
+            max_total_units=5,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 2, "b": 1},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations, {"a": 2, "b": 1, "c": 2})
+        self.assertTrue(any("units were preserved" in warning for warning in result.warnings))
+
+    def test_portfolio_repair_stops_reducing_existing_units_once_complete_and_valid(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 20]),
+                make_strategy("b", "GBPUSD", [0, 10, 20]),
+                make_strategy("c", "XAUUSD", [0, 10, 1]),
+            ],
+            capital=1000,
+            valley_dd_pct=23,
+            point_dd_pct=23,
+            max_total_units=20,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 4, "b": 1},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations["a"], 2)
+        self.assertEqual(allocations["b"], 1)
+        self.assertGreaterEqual(allocations["c"], 1)
+        reductions = [
+            decision for decision in result.decision_log
+            if decision.action == "reduce_unit_for_repair"
+        ]
+        self.assertEqual(len(reductions), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
