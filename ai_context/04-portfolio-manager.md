@@ -126,6 +126,11 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   are re-optimized; only a strictly better final net result is retained.
 - **DD reserve**: a configurable percentage reduces both effective DD budgets,
   leaving explicit operating headroom below the nominal user limits.
+- **Stress/bootstrap**: every final allocation receives a deterministic
+  1,000-run circular moving-block bootstrap over its chronological P/L
+  increments. It stores valley-DD P50/P95 and probabilities of exceeding the
+  nominal and effective valley limits. P95 above the effective limit is an
+  alert only; it does not invalidate the proposal.
 - **No global scaling**: do not reintroduce risk-parity allocation, a global
   scale factor (`S = target_dd/current_dd`), StartLots validation, or automatic
   lot normalization.
@@ -149,6 +154,7 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 | `optimize_portfolio(sets, config)` | Discrete unit optimizer with DD constraints and decision log |
 | `calc_valley_dd(curve)` | Maximum peak-to-trough drawdown for a curve |
 | `calc_point_dd(curve)` | Worst single-step drop for a curve |
+| `bootstrap_valley_drawdown(curve, ...)` | Deterministic block-bootstrap DD P50/P95 and limit exceedance probabilities |
 | `apply_portfolio_lot_text(text, step)` | Patch .set: `Risk=2` + integer `LotPerBalance_step` |
 | `set_current_value(text, key, value)` | Replace first field (before `||`) of a .set key |
 
@@ -176,6 +182,12 @@ same eligible pool: profit, balanced, and DD-margin. Balanced enforces at least
 15% DD reserve; DD-margin uses Conservative scoring and at least 25% reserve.
 The selected row controls the before/after allocation diff and is the only
 proposal eligible for save/apply.
+
+The comparison also shows bootstrap DD P50/P95, `P(> nominal)`,
+`P(> effective)`, and an `OK`/`ALERTA` state. Alert rows are red when P95 is
+above the effective valley-DD limit. The full `stress_bootstrap` payload is
+stored in `portfolios.metrics_json` and refreshed after quarantine-driven
+portfolio recalculation, generation, completion, and reoptimization.
 
 ### Export
 

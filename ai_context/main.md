@@ -540,6 +540,15 @@ a row refreshes the exact set/unit diff. New generation sends the selected
 proposal to the existing Guardar portafolio step; reoptimization applies it to
 the existing ID after snapshotting.
 
+Every proposal now includes a deterministic 1,000-simulation circular
+moving-block bootstrap of portfolio P/L increments. The comparison shows
+valley-DD P50/P95 and probabilities of exceeding the nominal and effective DD
+limits. P95 above the effective limit marks the proposal red as `ALERTA`, but
+does not block selection. The complete `stress_bootstrap` audit payload
+(method, seed, sample/block sizes, thresholds, percentiles, probabilities, and
+alert state) is persisted in `portfolios.metrics_json` and recalculated after
+portfolio mutations.
+
 **Export sets**: patches each .set with `Risk=2` + integer
 `LotPerBalance_step`, writes a human-readable `PORTAFOLIO_<id>_resumen.txt`,
 and opens the folder.

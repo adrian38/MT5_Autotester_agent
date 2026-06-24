@@ -19,6 +19,7 @@ from portfolio_manager.ubs_portfolio import (
     PortfolioAvailability,
     PortfolioResult,
     PortfolioType,
+    bootstrap_valley_drawdown,
     filter_rows_by_recent_positive_months,
     evaluate_portfolio,
     load_robust_sets_from_rows,
@@ -445,6 +446,7 @@ class UBSPortfolioLogicMixin:
             "group_summary": result.group_summary,
             "equity_curve_2020_2026": result.equity_curve_2020_2026,
             "unused_sets": [asdict(item) for item in result.unused_sets],
+            "stress_bootstrap": asdict(result.stress_bootstrap) if result.stress_bootstrap else None,
         }
         cur = conn.execute(
             """
@@ -795,6 +797,17 @@ class UBSPortfolioLogicMixin:
         if not members:
             metrics["equity_curve_2020_2026"] = [0.0]
             metrics["group_summary"] = {}
+            metrics["stress_bootstrap"] = asdict(
+                bootstrap_valley_drawdown(
+                    [0.0],
+                    nominal_valley_dd_limit=(
+                        float(portfolio["capital"] or portfolio["account_capital"] or 0)
+                        * float(portfolio["target_valley_dd_pct"] or 0)
+                        / 100.0
+                    ),
+                    effective_valley_dd_limit=float(portfolio["target_valley_dd"] or 0),
+                )
+            )
             conn.execute(
                 """
                 update portfolios
@@ -833,6 +846,17 @@ class UBSPortfolioLogicMixin:
         evaluation = evaluate_portfolio(strategies, units, target_valley, target_point)
         metrics["equity_curve_2020_2026"] = evaluation.equity_curve_2020_2026
         metrics["group_summary"] = portfolio_group_summary(strategies, units)
+        metrics["stress_bootstrap"] = asdict(
+            bootstrap_valley_drawdown(
+                evaluation.equity_curve_2020_2026,
+                nominal_valley_dd_limit=(
+                    float(portfolio["capital"] or portfolio["account_capital"] or 0)
+                    * float(portfolio["target_valley_dd_pct"] or 0)
+                    / 100.0
+                ),
+                effective_valley_dd_limit=target_valley,
+            )
+        )
         if warnings:
             metrics.setdefault("warnings", []).extend(warnings)
         conn.execute(
@@ -1853,6 +1877,8 @@ class UBSPortfolioLogicMixin:
                 (float(stats.get("unit_pct", 0.0)) for stats in result.group_summary.values()),
                 default=0.0,
             )
+            stress = result.stress_bootstrap
+            stress_status = "ALERTA" if stress and stress.alert else "OK" if stress else "SIN DATOS"
             comparison_rows.append(
                 (
                     proposal["key"],
@@ -1860,12 +1886,17 @@ class UBSPortfolioLogicMixin:
                     f"{result.total_net_profit:,.0f}",
                     f"{result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f}",
                     f"{result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f}",
+                    f"{stress.valley_dd_p50:,.2f}" if stress else "-",
+                    f"{stress.valley_dd_p95:,.2f}" if stress else "-",
+                    f"{stress.probability_exceed_nominal_pct:.1f}%" if stress else "-",
+                    f"{stress.probability_exceed_effective_pct:.1f}%" if stress else "-",
                     f"{margin_pct:.1f}%",
                     f"{float(proposal['reserve_pct']):.1f}%",
                     result.total_units,
                     result.active_strategies,
                     f"{max_group_pct:.1f}%",
                     changes,
+                    stress_status,
                 )
             )
         self._create_ubs_portfolio_proposals_window(portfolio_id, comparison_rows)
@@ -1900,13 +1931,27 @@ class UBSPortfolioLogicMixin:
             diff_tree.insert("", "end", values=values, tags=(tag,))
         summary_var = getattr(self, "ubs_portfolio_proposals_summary", None)
         if summary_var is not None:
+            stress = result.stress_bootstrap
+            stress_text = (
+                f"DD bootstrap P50/P95 {stress.valley_dd_p50:.2f}/{stress.valley_dd_p95:.2f} | "
+                f"P(> nominal) {stress.probability_exceed_nominal_pct:.1f}% | "
+                f"P(> efectivo) {stress.probability_exceed_effective_pct:.1f}% | "
+                f"{'ALERTA ROJA' if stress.alert else 'estres OK'} | "
+                if stress else "bootstrap sin datos | "
+            )
             summary_var.set(
                 f"{proposal['label']}: net {result.total_net_profit:,.2f} | "
                 f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
                 f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
+                f"{stress_text}"
                 f"reserva {float(proposal['reserve_pct']):.1f}% | "
                 f"{result.active_strategies} estrategias | {result.total_units} unidades."
             )
+            summary_label = getattr(self, "ubs_portfolio_proposals_summary_label", None)
+            if summary_label is not None:
+                summary_label.configure(
+                    fg=self.colors["danger"] if stress and stress.alert else self.colors["accent_soft_text"]
+                )
 
     def _apply_selected_ubs_portfolio_proposal(self) -> None:
         key = getattr(self, "ubs_portfolio_selected_proposal_key", None)
@@ -2237,6 +2282,7 @@ class UBSPortfolioLogicMixin:
             "group_summary": result.group_summary,
             "equity_curve_2020_2026": result.equity_curve_2020_2026,
             "unused_sets": [asdict(item) for item in result.unused_sets],
+            "stress_bootstrap": asdict(result.stress_bootstrap) if result.stress_bootstrap else None,
             "last_completed_at": datetime.now().isoformat(timespec="seconds"),
         }
         conn.execute(

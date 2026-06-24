@@ -4,7 +4,7 @@ import json
 import sqlite3
 import unittest
 
-from portfolio_manager.ubs_portfolio import PortfolioType
+from portfolio_manager.ubs_portfolio import PortfolioType, optimize_portfolio
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 from tests.test_ubs_portfolio import make_strategy
 
@@ -200,6 +200,40 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         targets = [item["result"].target_valley_dd for item in proposals]
         self.assertGreater(targets[0], targets[1])
         self.assertGreater(targets[1], targets[2])
+        for proposal in proposals:
+            stress = proposal["result"].stress_bootstrap
+            self.assertIsNotNone(stress)
+            self.assertEqual(stress.simulations, 1000)
+
+    def test_saved_portfolio_persists_bootstrap_analysis_for_audit(self) -> None:
+        inputs = {
+            "capital": 1000.0,
+            "valley_dd_pct": 20.0,
+            "point_dd_pct": 20.0,
+            "portfolio_type": "balanced",
+        }
+        result = optimize_portfolio(
+            [make_strategy("audit.set", "EURUSD", [0, 20, 10, 35, 15, 45])],
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=2,
+            bootstrap_simulations=40,
+        )
+
+        portfolio_id = self.logic._insert_portfolio(self.conn, inputs, result)
+        row = self.conn.execute(
+            "select metrics_json from portfolios where id=?",
+            (portfolio_id,),
+        ).fetchone()
+        metrics = json.loads(row["metrics_json"])
+        stress = metrics["stress_bootstrap"]
+        self.assertEqual(stress["method"], "circular_moving_block")
+        self.assertEqual(stress["simulations"], 40)
+        self.assertEqual(stress["seed"], 20260624)
+        self.assertIn("valley_dd_p95", stress)
+        self.assertIn("probability_exceed_nominal_pct", stress)
+        self.assertIn("probability_exceed_effective_pct", stress)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from portfolio_manager.ubs_portfolio import (
     RobustStrategySet,
     build_portfolio_greedy,
     build_correlation_pairs,
+    bootstrap_valley_drawdown,
     calc_point_dd,
     calc_valley_dd,
     curve_increment_correlation,
@@ -77,6 +78,48 @@ def make_strategy(
 
 
 class UBSPortfolioOptimizerTests(unittest.TestCase):
+    def test_block_bootstrap_is_deterministic_and_reports_audit_parameters(self) -> None:
+        curve = [0, 12, 5, -4, 9, 3, 18, 7, 4, 22]
+        first = bootstrap_valley_drawdown(
+            curve,
+            nominal_valley_dd_limit=14,
+            effective_valley_dd_limit=10,
+            simulations=250,
+            block_size=3,
+            seed=77,
+        )
+        second = bootstrap_valley_drawdown(
+            curve,
+            nominal_valley_dd_limit=14,
+            effective_valley_dd_limit=10,
+            simulations=250,
+            block_size=3,
+            seed=77,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.method, "circular_moving_block")
+        self.assertEqual(first.simulations, 250)
+        self.assertEqual(first.observations, len(curve) - 1)
+        self.assertEqual(first.block_size, 3)
+        self.assertGreaterEqual(first.valley_dd_p95, first.valley_dd_p50)
+        self.assertGreaterEqual(first.probability_exceed_effective_pct, first.probability_exceed_nominal_pct)
+        self.assertEqual(first.alert, first.valley_dd_p95 > 10)
+
+    def test_optimizer_attaches_one_thousand_simulation_stress_analysis(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("stress", "EURUSD", [0, 20, 10, 30, 5, 40])],
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=2,
+        )
+
+        self.assertIsNotNone(result.stress_bootstrap)
+        self.assertEqual(result.stress_bootstrap.simulations, 1000)
+        self.assertEqual(result.stress_bootstrap.nominal_valley_dd_limit, 200)
+        self.assertEqual(result.stress_bootstrap.effective_valley_dd_limit, result.target_valley_dd)
+
     def test_merge_accumulated_curves(self) -> None:
         self.assertEqual(
             merge_accumulated_curves([0, 100, 80, 150], [0, 30, 10, 70]),

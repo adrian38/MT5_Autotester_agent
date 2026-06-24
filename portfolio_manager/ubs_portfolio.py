@@ -25,6 +25,11 @@ from .mt5_report import StrategyReport, parse_report
 ProgressCallback = Callable[[str], None]
 
 
+DEFAULT_BOOTSTRAP_SIMULATIONS = 1_000
+DEFAULT_BOOTSTRAP_SEED = 20260624
+BOOTSTRAP_METHOD = "circular_moving_block"
+
+
 PORTFOLIO_SYMBOL_ALIASES = {
     "US30": ".US30CASH",
     ".US30CASH": ".US30CASH",
@@ -171,6 +176,22 @@ class PortfolioEvaluation:
     active_strategies: int
 
 
+@dataclass(frozen=True)
+class BootstrapDrawdownAnalysis:
+    method: str
+    simulations: int
+    seed: int
+    observations: int
+    block_size: int
+    valley_dd_p50: float
+    valley_dd_p95: float
+    nominal_valley_dd_limit: float
+    effective_valley_dd_limit: float
+    probability_exceed_nominal_pct: float
+    probability_exceed_effective_pct: float
+    alert: bool
+
+
 @dataclass
 class StrategyAllocation:
     set_id: str
@@ -245,6 +266,7 @@ class PortfolioResult:
     unused_sets: list[UnusedSetInfo] = field(default_factory=list)
     correlation_rejections: int = 0
     group_summary: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    stress_bootstrap: BootstrapDrawdownAnalysis | None = None
 
 
 @dataclass(frozen=True)
@@ -390,6 +412,99 @@ def calc_point_dd(equity_curve: list[float]) -> float:
         if change < worst_loss:
             worst_loss = change
     return abs(float(worst_loss))
+
+
+def bootstrap_valley_drawdown(
+    equity_curve: Sequence[float],
+    *,
+    nominal_valley_dd_limit: float,
+    effective_valley_dd_limit: float,
+    simulations: int = DEFAULT_BOOTSTRAP_SIMULATIONS,
+    block_size: int | None = None,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> BootstrapDrawdownAnalysis:
+    """Estimate valley-DD risk with a deterministic circular block bootstrap.
+
+    Consecutive P/L increments are sampled in blocks, preserving local loss
+    streaks instead of independently shuffling every trade. A fixed seed makes
+    proposal comparisons and saved audits reproducible.
+    """
+    if simulations <= 0:
+        raise ValueError("Bootstrap simulations must be positive")
+    increments = [
+        float(current) - float(previous)
+        for previous, current in zip(equity_curve, equity_curve[1:])
+    ]
+    observation_count = len(increments)
+    if observation_count == 0:
+        return BootstrapDrawdownAnalysis(
+            method=BOOTSTRAP_METHOD,
+            simulations=int(simulations),
+            seed=int(seed),
+            observations=0,
+            block_size=0,
+            valley_dd_p50=0.0,
+            valley_dd_p95=0.0,
+            nominal_valley_dd_limit=float(nominal_valley_dd_limit),
+            effective_valley_dd_limit=float(effective_valley_dd_limit),
+            probability_exceed_nominal_pct=0.0,
+            probability_exceed_effective_pct=0.0,
+            alert=False,
+        )
+
+    if block_size is None:
+        block_size = min(20, max(5, int(round(math.sqrt(observation_count)))))
+    block_size = min(max(int(block_size), 1), observation_count)
+    rng = random.Random(int(seed))
+    drawdowns: list[float] = []
+    for _simulation in range(int(simulations)):
+        sampled = 0
+        equity = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        while sampled < observation_count:
+            start = rng.randrange(observation_count)
+            take = min(block_size, observation_count - sampled)
+            for offset in range(take):
+                equity += increments[(start + offset) % observation_count]
+                peak = max(peak, equity)
+                max_drawdown = max(max_drawdown, peak - equity)
+            sampled += take
+        drawdowns.append(float(max_drawdown))
+
+    drawdowns.sort()
+    p50 = _linear_percentile(drawdowns, 0.50)
+    p95 = _linear_percentile(drawdowns, 0.95)
+    nominal_limit = float(nominal_valley_dd_limit)
+    effective_limit = float(effective_valley_dd_limit)
+    exceed_nominal = sum(value > nominal_limit + 1e-9 for value in drawdowns)
+    exceed_effective = sum(value > effective_limit + 1e-9 for value in drawdowns)
+    return BootstrapDrawdownAnalysis(
+        method=BOOTSTRAP_METHOD,
+        simulations=int(simulations),
+        seed=int(seed),
+        observations=observation_count,
+        block_size=block_size,
+        valley_dd_p50=p50,
+        valley_dd_p95=p95,
+        nominal_valley_dd_limit=nominal_limit,
+        effective_valley_dd_limit=effective_limit,
+        probability_exceed_nominal_pct=exceed_nominal / simulations * 100.0,
+        probability_exceed_effective_pct=exceed_effective / simulations * 100.0,
+        alert=p95 > effective_limit + 1e-9,
+    )
+
+
+def _linear_percentile(sorted_values: Sequence[float], quantile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    position = min(max(float(quantile), 0.0), 1.0) * (len(sorted_values) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return float(sorted_values[lower])
+    weight = position - lower
+    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
 
 
 def extract_period_info(text: str) -> tuple[str, str, str]:
@@ -1685,6 +1800,9 @@ def optimize_portfolio(
     preserve_required_allocations: bool = False,
     dd_reserve_pct: float = 0.0,
     search_restarts: int = 0,
+    bootstrap_simulations: int = DEFAULT_BOOTSTRAP_SIMULATIONS,
+    bootstrap_block_size: int | None = None,
+    bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> PortfolioResult:
     reserve_factor = 1.0 - min(max(float(dd_reserve_pct), 0.0), 99.0) / 100.0
     effective_valley_dd_pct = valley_dd_pct * reserve_factor
@@ -1971,6 +2089,19 @@ def optimize_portfolio(
         )
 
     unused_sets = _build_unused_sets(raw_sets, eligible, selected, allocations, min_trades_2020_2026)
+    stress_bootstrap = bootstrap_valley_drawdown(
+        current.equity_curve_2020_2026,
+        nominal_valley_dd_limit=capital * valley_dd_pct / 100.0,
+        effective_valley_dd_limit=target_valley_dd,
+        simulations=bootstrap_simulations,
+        block_size=bootstrap_block_size,
+        seed=bootstrap_seed,
+    )
+    if stress_bootstrap.alert:
+        warnings.append(
+            f"ALERTA bootstrap: DD valle P95 {stress_bootstrap.valley_dd_p95:.2f} "
+            f"supera el limite efectivo {stress_bootstrap.effective_valley_dd_limit:.2f}."
+        )
     return PortfolioResult(
         allocations=result_allocations,
         equity_curve_2020_2026=current.equity_curve_2020_2026,
@@ -1990,6 +2121,7 @@ def optimize_portfolio(
         unused_sets=unused_sets,
         correlation_rejections=correlation_rejections,
         group_summary=group_summary,
+        stress_bootstrap=stress_bootstrap,
     )
 
 

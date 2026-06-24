@@ -654,8 +654,8 @@ class UBSPortfolioViewMixin:
         mode = getattr(self, "ubs_portfolio_proposals_mode", "")
         title_target = "Nuevo portafolio" if mode == "generate" else f"Portafolio #{portfolio_id}"
         window.title(f"Propuestas comparables - {title_target}")
-        window.geometry("1250x720")
-        window.minsize(980, 560)
+        window.geometry("1450x760")
+        window.minsize(1080, 600)
         window.configure(bg=self.colors["bg"])
         window.transient(parent)
         window.grab_set()
@@ -667,7 +667,7 @@ class UBSPortfolioViewMixin:
         bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
         bar.columnconfigure(0, weight=1)
         self.ubs_portfolio_proposals_summary = tk.StringVar(value="Selecciona una propuesta.")
-        tk.Label(
+        summary_label = tk.Label(
             bar,
             textvariable=self.ubs_portfolio_proposals_summary,
             bg=self.colors["panel_alt"],
@@ -675,7 +675,9 @@ class UBSPortfolioViewMixin:
             font=("Segoe UI", 9),
             anchor="w",
             justify="left",
-        ).grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+        )
+        self.ubs_portfolio_proposals_summary_label = summary_label
+        summary_label.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
         tk.Button(
             bar,
             text="Usar propuesta" if mode == "generate" else "Aplicar propuesta",
@@ -707,8 +709,9 @@ class UBSPortfolioViewMixin:
         compare_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
         compare_frame.columnconfigure(0, weight=1)
         compare_columns = (
-            "profile", "net", "valley", "point", "margin", "reserve",
-            "units", "strategies", "group", "changes",
+            "profile", "net", "valley", "point", "p50", "p95",
+            "prob_nominal", "prob_effective", "margin", "reserve",
+            "units", "strategies", "group", "changes", "stress",
         )
         compare_tree = ttk.Treeview(
             compare_frame,
@@ -723,12 +726,17 @@ class UBSPortfolioViewMixin:
             ("net", "NET", 100),
             ("valley", "DD VALLE", 130),
             ("point", "DD PUNT.", 130),
+            ("p50", "DD P50", 90),
+            ("p95", "DD P95", 90),
+            ("prob_nominal", "P(> NOM.)", 90),
+            ("prob_effective", "P(> EFEC.)", 95),
             ("margin", "MARGEN DD", 90),
             ("reserve", "RESERVA", 80),
             ("units", "UNID.", 70),
             ("strategies", "ESTR.", 70),
             ("group", "MAX GRUPO", 90),
             ("changes", "CAMBIOS", 75),
+            ("stress", "ESTRES", 85),
         )
         for column, heading, width in specs:
             compare_tree.heading(column, text=heading)
@@ -736,7 +744,8 @@ class UBSPortfolioViewMixin:
         self._standard_ubs_portfolio_tree(compare_tree)
         for row in comparison_rows:
             key = str(row[0])
-            compare_tree.insert("", "end", iid=key, values=row[1:], tags=("accepted",))
+            tag = "rejected" if str(row[-1]) == "ALERTA" else "accepted"
+            compare_tree.insert("", "end", iid=key, values=row[1:], tags=(tag,))
         compare_tree.bind("<<TreeviewSelect>>", self._on_ubs_portfolio_proposal_select)
         self._attach_tree_scrollbars(compare_frame, compare_tree, 0)
 

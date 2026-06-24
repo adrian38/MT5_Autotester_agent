@@ -641,6 +641,16 @@ requirement changes or a debt item is opened/closed.
   and number of changed allocations. Selecting a proposal MUST update a
   set-level before/after diff. New generation continues through the normal
   pending-save workflow; reoptimization uses versioned explicit application.
+- **FR-1.12.41** Every generated, reoptimized, or recalculated UBS portfolio
+  MUST run a deterministic 1,000-simulation circular moving-block bootstrap on
+  the combined portfolio P/L increments. The analysis MUST preserve contiguous
+  loss sequences within sampled blocks and report valley-DD P50/P95 plus the
+  probability of exceeding both the nominal and effective valley-DD limits.
+  All three comparable proposals MUST display these values. A proposal whose
+  DD P95 exceeds the effective limit MUST be shown as a red alert, but MUST NOT
+  be rejected automatically. The complete method, seed, simulation count,
+  observation count, block size, thresholds, percentiles, probabilities, and
+  alert state MUST be persisted in the portfolio `metrics_json` for audit.
 
 ### 1.13 Packaging & runtime
 
