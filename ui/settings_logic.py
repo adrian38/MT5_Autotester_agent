@@ -406,6 +406,8 @@ class SettingsLogicMixin:
             "ubs_portfolio_require_3_positive_months_6m": (
                 "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"
             ),
+            "ubs_portfolio_dd_reserve_pct": self.ubs_portfolio_dd_reserve_pct.get().strip(),
+            "ubs_portfolio_search_restarts": str(self.ubs_portfolio_search_restarts.get()),
             "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
             "ubs_portfolio_max_downside_corr": self.ubs_portfolio_max_downside_corr.get().strip(),
             "ubs_portfolio_max_dd_overlap": self.ubs_portfolio_max_dd_overlap.get().strip(),

@@ -129,6 +129,38 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         curves = self.logic._saved_portfolio_curves(self.conn, PortfolioType.AGGRESSIVE)
         self.assertEqual(curves, [[0.0, 30.0, 60.0]])
 
+    def test_portfolio_version_snapshot_restores_allocations_and_metrics(self) -> None:
+        self.conn.execute(
+            """
+            insert into portfolios (
+                id, created_at, portfolio_type, total_units, total_lot,
+                active_strategies, target_strategies
+            ) values (8, '2026-06-24', 'aggressive', 4, 0.04, 1, 2)
+            """
+        )
+        self.conn.execute(
+            """
+            insert into portfolio_allocations (
+                portfolio_id, set_id, candidate_id, symbol, units, lot,
+                net_profit_contribution, standalone_valley_dd, standalone_point_dd, set_path
+            ) values (8, 'old.set', 'ECN:1', 'EURUSD', 4, 0.04, 100, 10, 5, 'old.set')
+            """
+        )
+        version_no = self.logic._save_portfolio_version(self.conn, 8, "before test")
+        self.assertEqual(version_no, 1)
+        self.conn.execute("update portfolios set total_units=9, total_lot=0.09 where id=8")
+        self.conn.execute("update portfolio_allocations set units=9, lot=0.09 where portfolio_id=8")
+        version = self.conn.execute(
+            "select snapshot_json from portfolio_versions where portfolio_id=8 and version_no=1"
+        ).fetchone()
+        self.logic._restore_portfolio_version_payload(self.conn, 8, bytes(version["snapshot_json"]))
+        portfolio = self.conn.execute("select total_units,total_lot from portfolios where id=8").fetchone()
+        allocation = self.conn.execute(
+            "select units,lot from portfolio_allocations where portfolio_id=8"
+        ).fetchone()
+        self.assertEqual(tuple(portfolio), (4, 0.04))
+        self.assertEqual(tuple(allocation), (4, 0.04))
+
 
 if __name__ == "__main__":
     unittest.main()

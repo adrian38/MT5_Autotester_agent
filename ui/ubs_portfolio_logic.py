@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import sys
 import threading
+import zlib
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -63,6 +64,8 @@ DEFAULT_PORTFOLIO_FORM = {
     "run_local_search": True,
     "use_correlation": True,
     "require_3_positive_months_6m": False,
+    "dd_reserve_pct": "10",
+    "search_restarts": 4,
     "max_pair_corr": "0.35",
     "max_downside_corr": "0.25",
     "max_dd_overlap": "0.35",
@@ -209,6 +212,19 @@ class UBSPortfolioLogicMixin:
                 reason text not null default '',
                 source_portfolio_id integer,
                 quarantined_at text not null
+            )
+            """
+        )
+        conn.execute(
+            """
+            create table if not exists portfolio_versions (
+                id integer primary key autoincrement,
+                portfolio_id integer not null,
+                version_no integer not null,
+                created_at text not null,
+                reason text not null,
+                snapshot_json blob not null,
+                unique(portfolio_id, version_no)
             )
             """
         )
@@ -593,8 +609,131 @@ class UBSPortfolioLogicMixin:
         conn.execute("delete from portfolio_decision_log where portfolio_id=?", (portfolio_id,))
         conn.execute("delete from portfolio_allocations where portfolio_id=?", (portfolio_id,))
         conn.execute("delete from portfolio_members where portfolio_id=?", (portfolio_id,))
+        conn.execute("delete from portfolio_versions where portfolio_id=?", (portfolio_id,))
         conn.execute("delete from portfolios where id=?", (portfolio_id,))
         conn.commit()
+
+    def _save_portfolio_version(
+        self,
+        conn: sqlite3.Connection,
+        portfolio_id: int,
+        reason: str,
+    ) -> int:
+        portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+        if portfolio is None:
+            raise ValueError("El portafolio ya no existe.")
+        payload = {
+            "portfolio": dict(portfolio),
+            "allocations": [
+                dict(row) for row in conn.execute(
+                    "select * from portfolio_allocations where portfolio_id=? order by id",
+                    (portfolio_id,),
+                )
+            ],
+            "members": [
+                dict(row) for row in conn.execute(
+                    "select * from portfolio_members where portfolio_id=? order by id",
+                    (portfolio_id,),
+                )
+            ],
+            "decisions": [
+                dict(row) for row in conn.execute(
+                    "select * from portfolio_decision_log where portfolio_id=? order by id",
+                    (portfolio_id,),
+                )
+            ],
+        }
+        version_no = int(
+            conn.execute(
+                "select coalesce(max(version_no), 0) + 1 from portfolio_versions where portfolio_id=?",
+                (portfolio_id,),
+            ).fetchone()[0]
+        )
+        compressed = zlib.compress(json.dumps(payload, ensure_ascii=True).encode("utf-8"), level=6)
+        conn.execute(
+            """
+            insert into portfolio_versions (
+                portfolio_id, version_no, created_at, reason, snapshot_json
+            ) values (?, ?, ?, ?, ?)
+            """,
+            (
+                portfolio_id,
+                version_no,
+                datetime.now().isoformat(timespec="seconds"),
+                reason,
+                compressed,
+            ),
+        )
+        return version_no
+
+    def _restore_portfolio_version_payload(
+        self,
+        conn: sqlite3.Connection,
+        portfolio_id: int,
+        snapshot_json: bytes,
+    ) -> None:
+        payload = json.loads(zlib.decompress(snapshot_json).decode("utf-8"))
+        portfolio = dict(payload["portfolio"])
+        portfolio.pop("id", None)
+        columns = list(portfolio)
+        assignments = ", ".join(f"{column}=?" for column in columns)
+        conn.execute(
+            f"update portfolios set {assignments} where id=?",
+            [portfolio[column] for column in columns] + [portfolio_id],
+        )
+        for table in ("portfolio_decision_log", "portfolio_allocations", "portfolio_members"):
+            conn.execute(f"delete from {table} where portfolio_id=?", (portfolio_id,))
+
+        def restore_rows(table: str, rows: list[dict[str, object]]) -> None:
+            for raw_row in rows:
+                row = dict(raw_row)
+                row.pop("id", None)
+                row["portfolio_id"] = portfolio_id
+                row_columns = list(row)
+                placeholders = ", ".join("?" for _ in row_columns)
+                conn.execute(
+                    f"insert into {table} ({', '.join(row_columns)}) values ({placeholders})",
+                    [row[column] for column in row_columns],
+                )
+
+        restore_rows("portfolio_allocations", list(payload.get("allocations") or []))
+        restore_rows("portfolio_members", list(payload.get("members") or []))
+        restore_rows("portfolio_decision_log", list(payload.get("decisions") or []))
+
+    def _undo_latest_ubs_portfolio_completion(self, portfolio_id: int) -> None:
+        conn = self._ubs_portfolio_conn()
+        try:
+            version = conn.execute(
+                """
+                select * from portfolio_versions
+                where portfolio_id=? order by version_no desc limit 1
+                """,
+                (portfolio_id,),
+            ).fetchone()
+            if version is None:
+                messagebox.showinfo("Deshacer recomposicion", "No hay una version anterior guardada.")
+                return
+            if not messagebox.askyesno(
+                "Deshacer recomposicion",
+                f"Restaurar la version {version['version_no']} ({version['reason']})?",
+            ):
+                return
+            self._save_portfolio_version(
+                conn,
+                portfolio_id,
+                f"Antes de deshacer hacia version {version['version_no']}",
+            )
+            self._restore_portfolio_version_payload(conn, portfolio_id, bytes(version["snapshot_json"]))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            messagebox.showerror("Deshacer recomposicion", f"No se pudo restaurar la version:\n{exc}")
+            return
+        finally:
+            conn.close()
+        self._refresh_ubs_portfolios(select_id=portfolio_id)
+        self._populate_ubs_portfolio_detail(portfolio_id)
+        self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} restaurado desde version anterior.")
 
     def _portfolio_quarantine_rows_all_accounts(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -793,6 +932,15 @@ class UBSPortfolioLogicMixin:
             "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
             "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
             "require_3_positive_months_6m": bool(self.ubs_portfolio_require_3_positive_months_6m.get()),
+            "dd_reserve_pct": self._parse_float_setting(
+                self.ubs_portfolio_dd_reserve_pct.get(),
+                "Reserva DD",
+            ),
+            "search_restarts": self._parse_int_setting(
+                self.ubs_portfolio_search_restarts.get(),
+                "Reinicios de busqueda",
+                minimum=0,
+            ),
             "max_pair_corr": self._parse_optional_float_setting(
                 self.ubs_portfolio_max_pair_corr.get(),
                 "Max correlacion",
@@ -824,6 +972,8 @@ class UBSPortfolioLogicMixin:
             value = values[key]
             if value is not None and not (0 <= float(value) <= 1):
                 raise ValueError(f"{label} debe estar entre 0 y 1.")
+        if not (0 <= float(values["dd_reserve_pct"]) < 100):
+            raise ValueError("Reserva DD debe estar entre 0 y menos de 100.")
         return values
 
     def _parse_optional_float_setting(self, value: str, label: str) -> float | None:
@@ -874,6 +1024,8 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_run_local_search.set(DEFAULT_PORTFOLIO_FORM["run_local_search"])
         self.ubs_portfolio_use_correlation.set(DEFAULT_PORTFOLIO_FORM["use_correlation"])
         self.ubs_portfolio_require_3_positive_months_6m.set(DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"])
+        self.ubs_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
+        self.ubs_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
         self.ubs_portfolio_max_downside_corr.set(DEFAULT_PORTFOLIO_FORM["max_downside_corr"])
         self.ubs_portfolio_max_dd_overlap.set(DEFAULT_PORTFOLIO_FORM["max_dd_overlap"])
@@ -963,6 +1115,8 @@ class UBSPortfolioLogicMixin:
                 max_dd_overlap=inputs["max_dd_overlap"],  # type: ignore[arg-type]
                 existing_portfolio_curves=existing_curves,
                 max_portfolio_corr=inputs["max_portfolio_corr"],  # type: ignore[arg-type]
+                dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
+                search_restarts=int(inputs.get("search_restarts") or 0),
             )
             result.warnings[:0] = month_warnings + load_warnings
         except Exception as exc:
@@ -1452,6 +1606,8 @@ class UBSPortfolioLogicMixin:
             "run_local_search": True,
             "use_correlation": True,
             "require_3_positive_months_6m": False,
+            "dd_reserve_pct": 0.0,
+            "search_restarts": 0,
             "max_pair_corr": 0.35,
             "max_downside_corr": 0.25,
             "max_dd_overlap": 0.35,
@@ -1582,36 +1738,44 @@ class UBSPortfolioLogicMixin:
                 maximum_active_strategies=target_strategies,
                 required_initial_allocations=required_initial_allocations,
                 preserve_required_allocations=True,
+                dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
+                search_restarts=int(inputs.get("search_restarts") or 0),
             )
             result.warnings[:0] = required_warnings + month_warnings + load_warnings
             if result.active_strategies < target_strategies:
                 raise ValueError(
                     f"No existe una sustituta compatible: quedaron {result.active_strategies}/{target_strategies} estrategias."
                 )
-            conn = self._ubs_portfolio_conn()
-            try:
-                self._replace_saved_portfolio_result(
-                    conn,
-                    portfolio_id,
-                    inputs,
-                    result,
-                    target_strategies,
-                )
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
         except Exception as exc:
-            self.after(0, self._complete_saved_ubs_portfolio_finished, portfolio_id, None, str(exc))
+            self.after(
+                0,
+                self._complete_saved_ubs_portfolio_finished,
+                portfolio_id,
+                None,
+                None,
+                members,
+                target_strategies,
+                str(exc),
+            )
             return
-        self.after(0, self._complete_saved_ubs_portfolio_finished, portfolio_id, result, "")
+        self.after(
+            0,
+            self._complete_saved_ubs_portfolio_finished,
+            portfolio_id,
+            result,
+            inputs,
+            members,
+            target_strategies,
+            "",
+        )
 
     def _complete_saved_ubs_portfolio_finished(
         self,
         portfolio_id: int,
         result: PortfolioResult | None,
+        inputs: dict[str, object] | None,
+        previous_members: list[dict[str, object]],
+        target_strategies: int,
         error: str,
     ) -> None:
         self.ubs_portfolio_running = False
@@ -1620,8 +1784,9 @@ class UBSPortfolioLogicMixin:
             messagebox.showerror("Completar portafolio", error or "No se pudo completar el portafolio.")
             self._populate_ubs_portfolio_detail(portfolio_id)
             return
-        self._refresh_ubs_portfolios(select_id=portfolio_id)
-        self._populate_ubs_portfolio_detail(portfolio_id)
+        if inputs is None:
+            messagebox.showerror("Completar portafolio", "Faltan los parametros de la propuesta.")
+            return
         repair_reductions = sum(
             1 for decision in result.decision_log if decision.action == "reduce_unit_for_repair"
         )
@@ -1630,10 +1795,93 @@ class UBSPortfolioLogicMixin:
             if repair_reductions
             else " Las unidades existentes se conservaron."
         )
-        self.ubs_portfolio_status.set(
-            f"Portafolio #{portfolio_id} completado: {result.active_strategies} estrategias, "
-            f"{result.total_units} unidades, lote {result.total_lot:.2f}.{adjustment_text}"
+        summary = (
+            f"Propuesta #{portfolio_id}: {result.active_strategies} estrategias | "
+            f"{result.total_units} unidades | lote {result.total_lot:.2f} | "
+            f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
+            f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f}."
+            f"{adjustment_text}"
         )
+        self.ubs_portfolio_preview_result = result
+        self.ubs_portfolio_preview_inputs = inputs
+        self.ubs_portfolio_preview_id = portfolio_id
+        self.ubs_portfolio_preview_target = target_strategies
+        self._create_ubs_portfolio_completion_preview(
+            portfolio_id,
+            summary,
+            self._ubs_portfolio_completion_diff_rows(previous_members, result),
+        )
+
+    def _ubs_portfolio_completion_diff_rows(
+        self,
+        previous_members: list[dict[str, object]],
+        result: PortfolioResult,
+    ) -> list[tuple[str, str, str, int, int, int, str]]:
+        before = {
+            str(member.get("set_path") or member.get("set_id") or ""): member
+            for member in previous_members
+        }
+        after = {allocation.set_path or allocation.set_id: allocation for allocation in result.allocations}
+        rows: list[tuple[str, str, str, int, int, int, str]] = []
+        for set_path in sorted(set(before) | set(after), key=lambda path: Path(path).name.lower()):
+            old = before.get(set_path)
+            new = after.get(set_path)
+            old_units = int(old.get("units") or 0) if old else 0
+            new_units = int(new.units) if new else 0
+            if old is None:
+                state = "NUEVA"
+            elif new is None:
+                state = "RETIRADA"
+            elif old_units != new_units:
+                state = "AJUSTADA"
+            else:
+                state = "SIN CAMBIO"
+            candidate = str(new.candidate_id) if new else str(old.get("candidate_id") or "")
+            symbol = str(new.symbol) if new else str(old.get("symbol") or "")
+            rows.append((Path(set_path).name, candidate, symbol, old_units, new_units, new_units - old_units, state))
+        return rows
+
+    def _apply_ubs_portfolio_completion_preview(self) -> None:
+        result = getattr(self, "ubs_portfolio_preview_result", None)
+        inputs = getattr(self, "ubs_portfolio_preview_inputs", None)
+        portfolio_id = getattr(self, "ubs_portfolio_preview_id", None)
+        target = getattr(self, "ubs_portfolio_preview_target", None)
+        if result is None or inputs is None or portfolio_id is None or target is None:
+            messagebox.showerror("Completar portafolio", "La propuesta ya no esta disponible.")
+            return
+        conn = self._ubs_portfolio_conn()
+        try:
+            self._save_portfolio_version(
+                conn,
+                int(portfolio_id),
+                "Antes de aplicar recomposicion desde vista previa",
+            )
+            self._replace_saved_portfolio_result(conn, int(portfolio_id), inputs, result, int(target))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            messagebox.showerror("Completar portafolio", f"No se pudo aplicar la propuesta:\n{exc}")
+            return
+        finally:
+            conn.close()
+        preview = getattr(self, "ubs_portfolio_preview_window", None)
+        if preview is not None and preview.winfo_exists():
+            preview.destroy()
+        self.ubs_portfolio_preview_result = None
+        self.ubs_portfolio_preview_inputs = None
+        self._refresh_ubs_portfolios(select_id=int(portfolio_id))
+        self._populate_ubs_portfolio_detail(int(portfolio_id))
+        self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} actualizado desde la vista previa.")
+
+    def _cancel_ubs_portfolio_completion_preview(self) -> None:
+        preview = getattr(self, "ubs_portfolio_preview_window", None)
+        if preview is not None and preview.winfo_exists():
+            preview.destroy()
+        self.ubs_portfolio_preview_result = None
+        self.ubs_portfolio_preview_inputs = None
+        portfolio_id = getattr(self, "ubs_portfolio_preview_id", None)
+        if portfolio_id is not None:
+            self._populate_ubs_portfolio_detail(int(portfolio_id))
 
     def _replace_saved_portfolio_result(
         self,

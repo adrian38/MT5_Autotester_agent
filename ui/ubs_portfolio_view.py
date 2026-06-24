@@ -112,6 +112,27 @@ class UBSPortfolioViewMixin:
             "Si esta activo, el portafolio solo usa Final Tick 6M accepted con al menos 3 meses positivos en los ultimos 6.",
         )
 
+        label(3, 0, "Reserva DD %")
+        reserve_entry = ttk.Entry(form, textvariable=self.ubs_portfolio_dd_reserve_pct, width=8)
+        reserve_entry.grid(row=3, column=1, sticky="w", pady=5)
+        self._tooltip_cls(
+            reserve_entry,
+            "Margen de seguridad sin utilizar. Con 10%, un limite DD de 350 optimiza hasta 315.",
+        )
+        label(3, 2, "Reinicios busqueda")
+        restart_spin = ttk.Spinbox(
+            form,
+            from_=0,
+            to=20,
+            width=8,
+            textvariable=self.ubs_portfolio_search_restarts,
+        )
+        restart_spin.grid(row=3, column=3, sticky="w", pady=5)
+        self._tooltip_cls(
+            restart_spin,
+            "Perturbaciones validas para escapar del optimo local. 0 desactiva; 4 es el valor recomendado.",
+        )
+
         actions = tk.Frame(panel, bg=colors["panel_alt"])
         actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
         actions.columnconfigure(0, weight=1)
@@ -458,6 +479,20 @@ class UBSPortfolioViewMixin:
             command=lambda: self._complete_saved_ubs_portfolio(portfolio_id),
         )
         complete_btn.grid(row=0, column=2, padx=(0, 6), pady=6)
+        undo_btn = tk.Button(
+            bar,
+            text="Deshacer recomposicion",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=lambda: self._undo_latest_ubs_portfolio_completion(portfolio_id),
+        )
+        undo_btn.grid(row=0, column=3, padx=(0, 6), pady=6)
         open_btn = tk.Button(
             bar,
             text="Abrir reporte",
@@ -471,8 +506,8 @@ class UBSPortfolioViewMixin:
             cursor="hand2",
             command=self._open_selected_ubs_portfolio_detail_member,
         )
-        open_btn.grid(row=0, column=3, padx=(0, 10), pady=6)
-        self.ubs_portfolio_detail_buttons = [quarantine_btn, complete_btn, open_btn]
+        open_btn.grid(row=0, column=4, padx=(0, 10), pady=6)
+        self.ubs_portfolio_detail_buttons = [quarantine_btn, complete_btn, undo_btn, open_btn]
 
         frame = ttk.Frame(window, style="Panel.TFrame")
         frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -492,4 +527,93 @@ class UBSPortfolioViewMixin:
             tree.column(column, width=width, minwidth=42, anchor="center", stretch=False)
         self._standard_ubs_portfolio_tree(tree)
         tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_portfolio_detail_member())
+        self._attach_tree_scrollbars(frame, tree, 0)
+
+    def _create_ubs_portfolio_completion_preview(
+        self,
+        portfolio_id: int,
+        summary: str,
+        rows: list[tuple[str, str, str, int, int, int, str]],
+    ) -> None:
+        existing = getattr(self, "ubs_portfolio_preview_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+        parent = getattr(self, "ubs_portfolio_detail_window", self)
+        window = tk.Toplevel(parent)
+        self.ubs_portfolio_preview_window = window
+        window.title(f"Vista previa - Portafolio #{portfolio_id}")
+        window.geometry("1040x560")
+        window.minsize(820, 420)
+        window.configure(bg=self.colors["bg"])
+        window.transient(parent)
+        window.grab_set()
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self._cancel_ubs_portfolio_completion_preview)
+
+        bar = tk.Frame(window, bg=self.colors["panel_alt"])
+        bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
+        bar.columnconfigure(0, weight=1)
+        tk.Label(
+            bar,
+            text=summary,
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=700,
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+        apply_btn = tk.Button(
+            bar,
+            text="Aplicar cambios",
+            bg=self.colors["accent"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=self._apply_ubs_portfolio_completion_preview,
+        )
+        apply_btn.grid(row=0, column=1, padx=(0, 6), pady=6)
+        cancel_btn = tk.Button(
+            bar,
+            text="Cancelar",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._cancel_ubs_portfolio_completion_preview,
+        )
+        cancel_btn.grid(row=0, column=2, padx=(0, 10), pady=6)
+
+        frame = ttk.Frame(window, style="Panel.TFrame")
+        frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        columns = ("set", "candidate", "symbol", "before", "after", "delta", "state")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=14, selectmode="browse")
+        specs = (
+            ("set", "SET", 330),
+            ("candidate", "CANDIDATE", 100),
+            ("symbol", "SIMBOLO", 90),
+            ("before", "UNID. ANTES", 90),
+            ("after", "UNID. DESPUES", 100),
+            ("delta", "DELTA", 70),
+            ("state", "CAMBIO", 100),
+        )
+        for column, heading, width in specs:
+            tree.heading(column, text=heading)
+            tree.column(column, width=width, minwidth=42, anchor="center", stretch=False)
+        self._standard_ubs_portfolio_tree(tree)
+        for values in rows:
+            state = values[-1]
+            tag = "accepted" if state == "NUEVA" else "rejected" if state == "RETIRADA" else "pending"
+            tree.insert("", "end", values=values, tags=(tag,))
         self._attach_tree_scrollbars(frame, tree, 0)

@@ -14,6 +14,7 @@ from datetime import datetime
 from enum import Enum
 import math
 from pathlib import Path
+import random
 import re
 import unicodedata
 from typing import Callable, Iterable, Sequence
@@ -1513,6 +1514,148 @@ def improve_with_local_search(
     return allocations, current, decision_log
 
 
+def improve_with_multi_start_search(
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    current: PortfolioEvaluation,
+    target_valley_dd: float,
+    target_point_dd: float,
+    *,
+    restarts: int,
+    perturbations: int = 2,
+    max_units_per_set: int | None = None,
+    max_total_units: int | None = None,
+    max_units_per_symbol: int | None = None,
+    max_sets_per_symbol: int | None = None,
+    max_pair_corr: float | None = None,
+    max_downside_corr: float | None = None,
+    max_dd_overlap: float | None = None,
+    existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
+    max_portfolio_corr: float | None = None,
+    max_units_per_group_pct: float | None = None,
+    max_sets_per_group: int | None = None,
+    group_unit_cap_bootstrap: int = 10,
+) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
+    if restarts <= 0 or perturbations <= 0 or len(sets) < 2:
+        return allocations, current, [], 0
+
+    best_allocations = allocations.copy()
+    best = current
+    best_log: list[OptimizationDecision] = []
+    valid_restarts = 0
+    portfolio_curves = list(existing_portfolio_curves or [])
+
+    for restart in range(restarts):
+        rng = random.Random(104729 + restart * 7919 + len(sets) * 17)
+        trial_allocations = allocations.copy()
+        trial = current
+        perturb_log: list[OptimizationDecision] = []
+
+        for perturbation in range(perturbations):
+            active = [item for item in sets if trial_allocations.get(item.set_id, 0) > 0]
+            targets = list(sets)
+            moves = [(source, target) for source in active for target in targets if source.set_id != target.set_id]
+            rng.shuffle(moves)
+            accepted_move = False
+            for source, target in moves:
+                temp_allocations = trial_allocations.copy()
+                temp_allocations[source.set_id] -= 1
+                temp_allocations[target.set_id] += 1
+                if not _allocations_respect_constraints(
+                    sets,
+                    temp_allocations,
+                    max_units_per_set,
+                    max_total_units,
+                    max_units_per_symbol,
+                    max_sets_per_symbol,
+                    max_sets_per_group,
+                ):
+                    continue
+                if not _target_group_units_pct_allowed(
+                    target,
+                    sets,
+                    temp_allocations,
+                    max_units_per_group_pct,
+                    group_unit_cap_bootstrap,
+                ):
+                    continue
+                if trial_allocations.get(target.set_id, 0) <= 0:
+                    corr_allocations = temp_allocations.copy()
+                    corr_allocations[target.set_id] = 0
+                    rejected, _reason = violates_correlation_limits(
+                        target,
+                        sets,
+                        corr_allocations,
+                        max_pair_corr,
+                        max_downside_corr,
+                        max_dd_overlap,
+                    )
+                    if rejected:
+                        continue
+                temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
+                if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
+                    continue
+                if max_portfolio_corr is not None and portfolio_curves:
+                    if max(
+                        curve_increment_correlation(temp.equity_curve_2020_2026, curve)
+                        for curve in portfolio_curves
+                    ) > max_portfolio_corr:
+                        continue
+                perturb_log.append(
+                    OptimizationDecision(
+                        step=perturbation + 1,
+                        action="multi_start_perturb",
+                        set_id=None,
+                        from_set_id=source.set_id,
+                        to_set_id=target.set_id,
+                        gain=temp.total_net_profit - trial.total_net_profit,
+                        valley_cost=temp.valley_dd - trial.valley_dd,
+                        point_cost=temp.point_dd - trial.point_dd,
+                        score=temp.total_net_profit - trial.total_net_profit,
+                        portfolio_net_profit_after=temp.total_net_profit,
+                        portfolio_valley_dd_after=temp.valley_dd,
+                        portfolio_point_dd_after=temp.point_dd,
+                        reason=f"Multi-start perturbation {restart + 1}",
+                    )
+                )
+                trial_allocations = temp_allocations
+                trial = temp
+                accepted_move = True
+                break
+            if not accepted_move:
+                break
+
+        if not perturb_log:
+            continue
+        valid_restarts += 1
+        trial_allocations, trial, local_log = improve_with_local_search(
+            sets=sets,
+            allocations=trial_allocations,
+            current=trial,
+            target_valley_dd=target_valley_dd,
+            target_point_dd=target_point_dd,
+            max_units_per_set=max_units_per_set,
+            max_total_units=max_total_units,
+            max_units_per_symbol=max_units_per_symbol,
+            max_sets_per_symbol=max_sets_per_symbol,
+            max_pair_corr=max_pair_corr,
+            max_downside_corr=max_downside_corr,
+            max_dd_overlap=max_dd_overlap,
+            existing_portfolio_curves=portfolio_curves,
+            max_portfolio_corr=max_portfolio_corr,
+            max_units_per_group_pct=max_units_per_group_pct,
+            max_sets_per_group=max_sets_per_group,
+            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+            max_iterations=200,
+        )
+        if trial.total_net_profit > best.total_net_profit + 1e-9:
+            best_allocations = trial_allocations
+            best = trial
+            best_log = perturb_log + local_log
+
+    return best_allocations, best, best_log, valid_restarts
+
+
 def optimize_portfolio(
     raw_sets: list[RobustStrategySet],
     capital: float,
@@ -1540,9 +1683,14 @@ def optimize_portfolio(
     maximum_active_strategies: int | None = None,
     required_initial_allocations: dict[str, int] | None = None,
     preserve_required_allocations: bool = False,
+    dd_reserve_pct: float = 0.0,
+    search_restarts: int = 0,
 ) -> PortfolioResult:
-    target_valley_dd = capital * valley_dd_pct / 100.0
-    target_point_dd = capital * point_dd_pct / 100.0
+    reserve_factor = 1.0 - min(max(float(dd_reserve_pct), 0.0), 99.0) / 100.0
+    effective_valley_dd_pct = valley_dd_pct * reserve_factor
+    effective_point_dd_pct = point_dd_pct * reserve_factor
+    target_valley_dd = capital * effective_valley_dd_pct / 100.0
+    target_point_dd = capital * effective_point_dd_pct / 100.0
     group_limits = group_limits_for_portfolio_type(portfolio_type)
     if max_units_per_group_pct is None:
         max_units_per_group_pct = group_limits.max_units_pct
@@ -1579,8 +1727,8 @@ def optimize_portfolio(
     allocations, current, greedy_log, stop_reason, correlation_rejections = build_portfolio_greedy(
         sets=selected,
         capital=capital,
-        valley_dd_pct=valley_dd_pct,
-        point_dd_pct=point_dd_pct,
+        valley_dd_pct=effective_valley_dd_pct,
+        point_dd_pct=effective_point_dd_pct,
         portfolio_type=portfolio_type,
         max_units_per_set=max_units_per_set,
         max_total_units=max_total_units,
@@ -1641,8 +1789,8 @@ def optimize_portfolio(
         ) = build_portfolio_greedy(
             sets=selected,
             capital=capital,
-            valley_dd_pct=valley_dd_pct,
-            point_dd_pct=point_dd_pct,
+            valley_dd_pct=effective_valley_dd_pct,
+            point_dd_pct=effective_point_dd_pct,
             portfolio_type=portfolio_type,
             max_units_per_set=max_units_per_set,
             max_total_units=max_total_units,
@@ -1693,6 +1841,32 @@ def optimize_portfolio(
             correlation_rejections = relaxed_rejections
             group_cap_relaxed = True
             stop_reason = f"{relaxed_stop_reason}; group unit cap relaxed after strict Balanced allocation underused DD"
+
+    multi_start_log: list[OptimizationDecision] = []
+    valid_restarts = 0
+    if search_restarts > 0 and not preserve_required_allocations:
+        allocations, current, multi_start_log, valid_restarts = improve_with_multi_start_search(
+            sets=selected,
+            allocations=allocations,
+            current=current,
+            target_valley_dd=target_valley_dd,
+            target_point_dd=target_point_dd,
+            restarts=int(search_restarts),
+            max_units_per_set=max_units_per_set,
+            max_total_units=max_total_units,
+            max_units_per_symbol=max_units_per_symbol,
+            max_sets_per_symbol=max_sets_per_symbol,
+            max_pair_corr=max_pair_corr,
+            max_downside_corr=max_downside_corr,
+            max_dd_overlap=max_dd_overlap,
+            existing_portfolio_curves=existing_portfolio_curves,
+            max_portfolio_corr=max_portfolio_corr,
+            max_units_per_group_pct=None if group_cap_relaxed else max_units_per_group_pct,
+            max_sets_per_group=max_sets_per_group,
+            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+        )
+        if multi_start_log:
+            stop_reason += "; multi-start search improved the local solution"
 
     executable_allocations, executable_steps = _execution_plan_allocations(selected, allocations, capital)
     execution_adjustments = {
@@ -1745,6 +1919,14 @@ def optimize_portfolio(
         ]
 
     warnings: list[str] = []
+    if dd_reserve_pct > 0:
+        warnings.append(
+            f"DD reserve {float(dd_reserve_pct):.1f}% applied; optimizer used reduced effective DD targets."
+        )
+    if search_restarts > 0:
+        warnings.append(
+            f"Multi-start search evaluated {valid_restarts}/{int(search_restarts)} valid restart(s)."
+        )
     if preserve_required_allocations and required_ids:
         repair_reductions = sum(
             1 for decision in greedy_log if decision.action == "reduce_unit_for_repair"
@@ -1804,7 +1986,7 @@ def optimize_portfolio(
         active_strategies=current.active_strategies,
         stop_reason=stop_reason,
         warnings=warnings,
-        decision_log=greedy_log + local_log,
+        decision_log=greedy_log + local_log + multi_start_log,
         unused_sets=unused_sets,
         correlation_rejections=correlation_rejections,
         group_summary=group_summary,

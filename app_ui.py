@@ -800,6 +800,12 @@ class MT5AutotesterUI(
         self.ubs_portfolio_require_3_positive_months_6m = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_require_3_positive_months_6m"), False)
         )
+        self.ubs_portfolio_dd_reserve_pct = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_dd_reserve_pct", "10")
+        )
+        self.ubs_portfolio_search_restarts = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_search_restarts"), 4)
+        )
         self.ubs_portfolio_max_pair_corr = tk.StringVar(
             value=saved_general.get("ubs_portfolio_max_pair_corr", "0.35")
         )

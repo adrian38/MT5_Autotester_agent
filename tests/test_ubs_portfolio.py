@@ -105,6 +105,61 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertLessEqual(result.actual_valley_dd, result.target_valley_dd)
         self.assertLessEqual(result.actual_point_dd, result.target_point_dd)
 
+    def test_optimizer_applies_configured_dd_reserve(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("s1", "EURUSD", [0, 100, 80, 160])],
+            capital=1000,
+            valley_dd_pct=10,
+            point_dd_pct=5,
+            dd_reserve_pct=10,
+            max_total_units=5,
+        )
+        self.assertEqual(result.target_valley_dd, 90.0)
+        self.assertEqual(result.target_point_dd, 45.0)
+        self.assertTrue(any("DD reserve 10.0%" in warning for warning in result.warnings))
+
+    def test_multi_start_search_is_deterministic_and_never_worsens_greedy_result(self) -> None:
+        sets = [
+            make_strategy("a", "EURUSD", [0, 60, 50, 100]),
+            make_strategy("b", "GBPUSD", [0, 45, 43, 130]),
+            make_strategy("c", "XAUUSD", [0, 20, 19, 60]),
+            make_strategy("d", "US30", [0, 30, 25, 75]),
+        ]
+        baseline = optimize_portfolio(
+            sets,
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=8,
+            max_sets_per_symbol=1,
+            search_restarts=0,
+        )
+        first = optimize_portfolio(
+            sets,
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=8,
+            max_sets_per_symbol=1,
+            search_restarts=3,
+        )
+        second = optimize_portfolio(
+            sets,
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=8,
+            max_sets_per_symbol=1,
+            search_restarts=3,
+        )
+        self.assertGreaterEqual(first.total_net_profit, baseline.total_net_profit)
+        self.assertEqual(first.total_net_profit, second.total_net_profit)
+        self.assertEqual(
+            [(item.set_id, item.units) for item in first.allocations],
+            [(item.set_id, item.units) for item in second.allocations],
+        )
+        self.assertTrue(any("Multi-start search evaluated" in warning for warning in first.warnings))
+
     def test_zero_units_are_allowed_for_selected_candidates(self) -> None:
         sets = [
             make_strategy("strong", "EURUSD", [0, 100, 90, 180]),

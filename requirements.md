@@ -618,6 +618,14 @@ requirement changes or a debt item is opened/closed.
   Drawdowns, correlations, curve, decision log, and portfolio metrics MUST be
   recalculated before replacing the saved allocations transactionally. If no
   valid replacement exists, the incomplete portfolio MUST remain unchanged.
+- **FR-1.12.38** Portfolio generation MUST support a configurable DD reserve
+  percentage and deterministic multi-start local search. The DD reserve reduces
+  the effective valley and point-DD budgets without changing the user-entered
+  nominal percentages. A saved-portfolio recomposition MUST show a set-by-set
+  before/after preview and require explicit application. Immediately before
+  application, the current portfolio row, allocations, members, and decision
+  log MUST be stored as a compressed version snapshot. The detail window MUST
+  allow restoring the latest snapshot.
 
 ### 1.13 Packaging & runtime
 

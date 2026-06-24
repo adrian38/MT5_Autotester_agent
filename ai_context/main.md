@@ -473,7 +473,9 @@ passed robustness (`candidates.status='accepted'` and
 trades 2020-2026, optional unit caps (per set, total, per symbol), max sets per
 symbol, optional local search, and optional correlation filters (max pair
 correlation, max downside correlation, max DD overlap, max portfolio correlation).
-All are persisted in `ui_settings.ini` under the `ubs_portfolio_*` keys.
+The form also exposes a DD safety reserve percentage and deterministic
+multi-start search count. All are persisted in `ui_settings.ini` under the
+`ubs_portfolio_*` keys.
 
 **Optimizer** (pure math in `portfolio_manager/ubs_portfolio.py`):
 
@@ -494,6 +496,9 @@ All are persisted in `ui_settings.ini` under the `ubs_portfolio_*` keys.
    Choose the valid increment with the best marginal score.
 7. Optional local search swaps one unit between selected strategies only when it
    increases net profit and keeps both DD constraints valid.
+8. Optional deterministic multi-start search perturbs the local optimum, runs
+   local improvement again, and keeps a restart only when it improves net while
+   preserving every configured constraint.
 
 Do not reintroduce global scaling (`S = target_dd/current_dd`), risk-parity lot
 calibration, StartLots validation, or automatic lot normalization in this module.
@@ -516,7 +521,10 @@ If the remaining allocation exceeds DD after quarantine, it greedily removes
 only the minimum existing units needed to make a valid replacement feasible;
 only the replacement receives newly optimized units. It then recalculates DD,
 correlations, curve, and decision log. A failed repair does not replace the
-incomplete saved portfolio.
+incomplete saved portfolio. A successful calculation first opens a before/after
+preview; SQLite changes only after explicit confirmation. Before applying, a
+compressed `portfolio_versions` snapshot is written, and the detail window can
+restore the latest version.
 
 **Export sets**: patches each .set with `Risk=2` + integer
 `LotPerBalance_step`, writes a human-readable `PORTAFOLIO_<id>_resumen.txt`,

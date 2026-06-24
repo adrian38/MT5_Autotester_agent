@@ -122,6 +122,10 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   exceeded.
 - **Local search**: optional one-unit swaps among selected strategies are kept
   only if they increase net profit and remain inside both DD limits.
+- **Multi-start search**: deterministic valid perturbations of the local optimum
+  are re-optimized; only a strictly better final net result is retained.
+- **DD reserve**: a configurable percentage reduces both effective DD budgets,
+  leaving explicit operating headroom below the nominal user limits.
 - **No global scaling**: do not reintroduce risk-parity allocation, a global
   scale factor (`S = target_dd/current_dd`), StartLots validation, or automatic
   lot normalization.
@@ -160,6 +164,12 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   with Conservative/Balanced. Conservative and Balanced share a lock pool.
 - `portfolio_quarantine`: account-scoped hard exclusion keyed by `set_path`,
   including source candidate, symbol/TF, source portfolio, reason, and date.
+- `portfolio_versions`: compressed before-change snapshots of the portfolio row,
+  allocations, compatibility members, and optimizer decision log. Used by
+  "Deshacer recomposicion".
+
+Completion is non-destructive until confirmation: the UI presents a set-level
+before/after units table and applies the result only from "Aplicar cambios".
 
 ### Export
 
