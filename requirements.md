@@ -626,6 +626,21 @@ requirement changes or a debt item is opened/closed.
   application, the current portfolio row, allocations, members, and decision
   log MUST be stored as a compressed version snapshot. The detail window MUST
   allow restoring the latest snapshot.
+- **FR-1.12.39** The saved-portfolio detail window MUST expose
+  **Revalidar / optimizar** for complete portfolios. It MUST rebuild the
+  candidate allocation with the saved portfolio constraints plus the currently
+  selected DD reserve and multi-start count, exclude the current portfolio from
+  used-set and saved-curve locks, and route the result through the same
+  before/after preview, version snapshot, and explicit-apply workflow.
+- **FR-1.12.40** New generation and full reoptimization MUST calculate three
+  comparable proposals from the same candidate universe: `profit` (configured
+  portfolio objective and reserve), `balanced` (Balanced objective with at
+  least 15% DD reserve), and `margin` (Conservative objective with at least 25%
+  DD reserve). The selector MUST show net, effective valley/point DD, nominal DD
+  margin, reserve, units, strategy count, maximum asset-group concentration,
+  and number of changed allocations. Selecting a proposal MUST update a
+  set-level before/after diff. New generation continues through the normal
+  pending-save workflow; reoptimization uses versioned explicit application.
 
 ### 1.13 Packaging & runtime
 

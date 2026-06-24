@@ -1095,30 +1095,19 @@ class UBSPortfolioLogicMixin:
                 used,
                 progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
             )
-            self.after(0, self.ubs_portfolio_status.set, "Optimizando incrementos de 0.01...")
-            result = optimize_portfolio(
-                raw_sets=raw_sets,
-                capital=float(inputs["capital"]),
-                valley_dd_pct=float(inputs["valley_dd_pct"]),
-                point_dd_pct=float(inputs["point_dd_pct"]),
-                portfolio_type=target_portfolio_type,
-                min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
-                top_k_per_symbol=int(inputs["top_k_per_symbol"]),
-                max_total_candidates=int(inputs["max_total_candidates"]),
-                max_units_per_set=inputs["max_units_per_set"],  # type: ignore[arg-type]
-                max_total_units=inputs["max_total_units"],  # type: ignore[arg-type]
-                max_units_per_symbol=inputs["max_units_per_symbol"],  # type: ignore[arg-type]
-                max_sets_per_symbol=inputs["max_sets_per_symbol"],  # type: ignore[arg-type]
-                run_local_search=bool(inputs["run_local_search"]),
-                max_pair_corr=inputs["max_pair_corr"],  # type: ignore[arg-type]
-                max_downside_corr=inputs["max_downside_corr"],  # type: ignore[arg-type]
-                max_dd_overlap=inputs["max_dd_overlap"],  # type: ignore[arg-type]
-                existing_portfolio_curves=existing_curves,
-                max_portfolio_corr=inputs["max_portfolio_corr"],  # type: ignore[arg-type]
-                dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
-                search_restarts=int(inputs.get("search_restarts") or 0),
+            proposals = self._optimize_ubs_portfolio_proposals(
+                raw_sets,
+                inputs,
+                target_portfolio_type,
+                existing_curves,
+                progress=lambda label, index: self.after(
+                    0,
+                    self.ubs_portfolio_status.set,
+                    f"Calculando propuesta {index}/3 ({label})...",
+                ),
             )
-            result.warnings[:0] = month_warnings + load_warnings
+            for proposal in proposals:
+                proposal["result"].warnings[:0] = month_warnings + load_warnings
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
             return
@@ -1126,7 +1115,7 @@ class UBSPortfolioLogicMixin:
             "ok": True,
             "inputs": inputs,
             "availability": availability,
-            "result": result,
+            "proposals": proposals,
         })
 
     def _saved_portfolio_curves(
@@ -1196,11 +1185,32 @@ class UBSPortfolioLogicMixin:
             self._notify_ubs_portfolio_event(f"Portfolio Builder fallido: {message}")
             return
 
-        result: PortfolioResult = info["result"]
+        proposals = info.get("proposals") or []
+        if not proposals:
+            self._clear_failed_ubs_portfolio_generation()
+            self.ubs_portfolio_status.set("No se genero ninguna propuesta viable.")
+            return
+        self.ubs_portfolio_proposals_availability = info.get("availability")
+        self._show_ubs_portfolio_proposals_preview(
+            0,
+            proposals,
+            [],
+            mode="generate",
+        )
+        self.ubs_portfolio_status.set("Selecciona una de las tres propuestas para continuar.")
+
+    def _accept_generated_ubs_portfolio_proposal(
+        self,
+        proposal: dict[str, object],
+    ) -> None:
+        result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
+        inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
         self.ubs_portfolio_pending_result = result
-        self.ubs_portfolio_pending_inputs = info["inputs"]
+        self.ubs_portfolio_pending_inputs = inputs
         self._populate_ubs_portfolio_result(result)
-        self._populate_ubs_portfolio_availability(info.get("availability"))
+        self._populate_ubs_portfolio_availability(
+            getattr(self, "ubs_portfolio_proposals_availability", None)
+        )
         self._set_ubs_portfolio_save_enabled(True)
         group_text = self._ubs_portfolio_group_summary_text(result.group_summary)
         status = (
@@ -1214,7 +1224,7 @@ class UBSPortfolioLogicMixin:
             status += f" Aviso: {group_warning}"
         self.ubs_portfolio_status.set(status)
         self._notify_ubs_portfolio_event(
-            "Portfolio Builder generado: "
+            f"Portfolio Builder propuesta {proposal['label']}: "
             f"net {result.total_net_profit:,.2f}, "
             f"lote {result.total_lot:.2f}, "
             f"{result.total_units} unidades, "
@@ -1624,6 +1634,333 @@ class UBSPortfolioLogicMixin:
                 pass
         if text and hasattr(self, "ubs_portfolio_detail_status"):
             self.ubs_portfolio_detail_status.set(text)
+
+    def _reoptimize_saved_ubs_portfolio(self, portfolio_id: int) -> None:
+        if getattr(self, "ubs_portfolio_running", False):
+            messagebox.showwarning("Revalidar portafolio", "Ya hay un calculo de portafolio en marcha.")
+            return
+        conn = self._ubs_portfolio_conn()
+        try:
+            portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+            members = self._portfolio_members(conn, portfolio_id)
+        finally:
+            conn.close()
+        if portfolio is None:
+            messagebox.showerror("Revalidar portafolio", "El portafolio ya no existe.")
+            return
+        inputs = self._saved_portfolio_inputs(portfolio)
+        try:
+            inputs["dd_reserve_pct"] = self._parse_float_setting(
+                self.ubs_portfolio_dd_reserve_pct.get(),
+                "Reserva DD",
+            )
+            inputs["search_restarts"] = self._parse_int_setting(
+                self.ubs_portfolio_search_restarts.get(),
+                "Reinicios de busqueda",
+                minimum=0,
+            )
+        except ValueError as exc:
+            messagebox.showerror("Revalidar portafolio", str(exc))
+            return
+        self.ubs_portfolio_running = True
+        self._set_ubs_portfolio_detail_running(
+            True,
+            f"Revalidando portafolio #{portfolio_id} con reserva DD {float(inputs['dd_reserve_pct']):.1f}%...",
+        )
+        threading.Thread(
+            target=self._reoptimize_saved_ubs_portfolio_worker,
+            args=(portfolio_id, inputs, members),
+            daemon=True,
+        ).start()
+
+    def _reoptimize_saved_ubs_portfolio_worker(
+        self,
+        portfolio_id: int,
+        inputs: dict[str, object],
+        previous_members: list[dict[str, object]],
+    ) -> None:
+        try:
+            portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
+            inputs["portfolio_type"] = portfolio_type.value
+            rows = self._final_tick_passed_candidates_all_accounts()
+            if bool(inputs.get("require_3_positive_months_6m")):
+                rows, month_warnings = filter_rows_by_recent_positive_months(
+                    rows,
+                    min_positive_months=3,
+                    window_months=6,
+                )
+            else:
+                month_warnings = []
+            used = self._used_set_paths_all_accounts(
+                portfolio_type,
+                exclude_portfolio_id=portfolio_id,
+            )
+            raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+            if not raw_sets:
+                raise ValueError("No quedan candidatos elegibles para reoptimizar.")
+            proposals = self._optimize_ubs_portfolio_proposals(
+                raw_sets,
+                inputs,
+                portfolio_type,
+                self._saved_portfolio_curves_all_accounts(
+                    portfolio_type,
+                    exclude_portfolio_id=portfolio_id,
+                ),
+                progress=lambda label, index: self.after(
+                    0,
+                    self._set_ubs_portfolio_detail_running,
+                    True,
+                    f"Revalidando #{portfolio_id}: propuesta {index}/3 ({label})...",
+                ),
+            )
+            for proposal in proposals:
+                proposal["result"].warnings[:0] = month_warnings + load_warnings
+        except Exception as exc:
+            self.after(
+                0,
+                self._reoptimize_saved_ubs_portfolio_finished,
+                portfolio_id,
+                None,
+                inputs,
+                previous_members,
+                str(exc),
+            )
+            return
+        self.after(
+            0,
+            self._reoptimize_saved_ubs_portfolio_finished,
+            portfolio_id,
+            proposals,
+            inputs,
+            previous_members,
+            "",
+        )
+
+    def _reoptimize_saved_ubs_portfolio_finished(
+        self,
+        portfolio_id: int,
+        proposals: list[dict[str, object]] | None,
+        inputs: dict[str, object],
+        previous_members: list[dict[str, object]],
+        error: str,
+    ) -> None:
+        self.ubs_portfolio_running = False
+        self._set_ubs_portfolio_detail_running(False)
+        if error or not proposals:
+            messagebox.showerror("Revalidar portafolio", error or "No se pudo reoptimizar el portafolio.")
+            self._populate_ubs_portfolio_detail(portfolio_id)
+            return
+        self._show_ubs_portfolio_proposals_preview(
+            portfolio_id,
+            proposals,
+            previous_members,
+            mode="reoptimize",
+        )
+
+    def _optimize_ubs_portfolio_proposals(
+        self,
+        raw_sets: list,
+        inputs: dict[str, object],
+        base_type: PortfolioType,
+        existing_curves: list[list[float]],
+        *,
+        progress=None,
+    ) -> list[dict[str, object]]:
+        configured_reserve = float(inputs.get("dd_reserve_pct") or 0)
+        specs = (
+            ("profit", "Maximo beneficio", base_type, configured_reserve),
+            ("balanced", "Equilibrada", PortfolioType.BALANCED, max(configured_reserve, 15.0)),
+            ("margin", "Maximo margen DD", PortfolioType.CONSERVATIVE, max(configured_reserve, 25.0)),
+        )
+        proposals: list[dict[str, object]] = []
+        errors: list[str] = []
+        for index, (key, label, objective_type, reserve) in enumerate(specs, start=1):
+            if callable(progress):
+                progress(label, index)
+            proposal_inputs = dict(inputs)
+            proposal_inputs["optimization_profile"] = key
+            proposal_inputs["optimization_profile_label"] = label
+            proposal_inputs["dd_reserve_pct"] = reserve
+            try:
+                result = optimize_portfolio(
+                    raw_sets=raw_sets,
+                    capital=float(inputs["capital"]),
+                    valley_dd_pct=float(inputs["valley_dd_pct"]),
+                    point_dd_pct=float(inputs["point_dd_pct"]),
+                    portfolio_type=objective_type,
+                    min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
+                    top_k_per_symbol=int(inputs["top_k_per_symbol"]),
+                    max_total_candidates=int(inputs["max_total_candidates"]),
+                    max_units_per_set=inputs.get("max_units_per_set"),  # type: ignore[arg-type]
+                    max_total_units=inputs.get("max_total_units"),  # type: ignore[arg-type]
+                    max_units_per_symbol=inputs.get("max_units_per_symbol"),  # type: ignore[arg-type]
+                    max_sets_per_symbol=inputs.get("max_sets_per_symbol"),  # type: ignore[arg-type]
+                    run_local_search=bool(inputs.get("run_local_search", True)),
+                    max_pair_corr=inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                    max_downside_corr=inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                    max_dd_overlap=inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                    existing_portfolio_curves=existing_curves,
+                    max_portfolio_corr=inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
+                    dd_reserve_pct=reserve,
+                    search_restarts=int(inputs.get("search_restarts") or 0),
+                )
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+                continue
+            proposals.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "reserve_pct": reserve,
+                    "result": result,
+                    "inputs": proposal_inputs,
+                }
+            )
+        if not proposals:
+            raise ValueError("Ninguna propuesta fue viable. " + " | ".join(errors))
+        return proposals
+
+    def _show_ubs_portfolio_proposals_preview(
+        self,
+        portfolio_id: int,
+        proposals: list[dict[str, object]],
+        previous_members: list[dict[str, object]],
+        *,
+        mode: str,
+    ) -> None:
+        self.ubs_portfolio_proposals = {str(item["key"]): item for item in proposals}
+        self.ubs_portfolio_proposals_previous_members = previous_members
+        self.ubs_portfolio_proposals_id = portfolio_id
+        self.ubs_portfolio_proposals_mode = mode
+        before_units = {
+            str(member.get("set_path") or member.get("set_id") or ""): int(member.get("units") or 0)
+            for member in previous_members
+        }
+        comparison_rows = []
+        for proposal in proposals:
+            result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
+            inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
+            after_units = {item.set_path or item.set_id: item.units for item in result.allocations}
+            changes = sum(
+                1 for set_path in set(before_units) | set(after_units)
+                if before_units.get(set_path, 0) != after_units.get(set_path, 0)
+            )
+            nominal_valley = float(inputs["capital"]) * float(inputs["valley_dd_pct"]) / 100.0
+            margin_pct = (
+                max(nominal_valley - result.actual_valley_dd, 0.0) / max(nominal_valley, 1e-9) * 100.0
+            )
+            max_group_pct = max(
+                (float(stats.get("unit_pct", 0.0)) for stats in result.group_summary.values()),
+                default=0.0,
+            )
+            comparison_rows.append(
+                (
+                    proposal["key"],
+                    proposal["label"],
+                    f"{result.total_net_profit:,.0f}",
+                    f"{result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f}",
+                    f"{result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f}",
+                    f"{margin_pct:.1f}%",
+                    f"{float(proposal['reserve_pct']):.1f}%",
+                    result.total_units,
+                    result.active_strategies,
+                    f"{max_group_pct:.1f}%",
+                    changes,
+                )
+            )
+        self._create_ubs_portfolio_proposals_window(portfolio_id, comparison_rows)
+        first_key = str(proposals[0]["key"])
+        tree = getattr(self, "ubs_portfolio_proposals_tree", None)
+        if tree is not None and tree.exists(first_key):
+            tree.selection_set(first_key)
+            tree.focus(first_key)
+        self._on_ubs_portfolio_proposal_select()
+
+    def _on_ubs_portfolio_proposal_select(self, _event=None) -> None:
+        tree = getattr(self, "ubs_portfolio_proposals_tree", None)
+        diff_tree = getattr(self, "ubs_portfolio_proposals_diff_tree", None)
+        if tree is None or diff_tree is None or not tree.selection():
+            return
+        key = str(tree.selection()[0])
+        proposal = getattr(self, "ubs_portfolio_proposals", {}).get(key)
+        if not proposal:
+            return
+        result: PortfolioResult = proposal["result"]
+        inputs: dict[str, object] = proposal["inputs"]
+        self.ubs_portfolio_selected_proposal_key = key
+        for item in diff_tree.get_children(""):
+            diff_tree.delete(item)
+        rows = self._ubs_portfolio_completion_diff_rows(
+            getattr(self, "ubs_portfolio_proposals_previous_members", []),
+            result,
+        )
+        for values in rows:
+            state = values[-1]
+            tag = "accepted" if state == "NUEVA" else "rejected" if state == "RETIRADA" else "pending"
+            diff_tree.insert("", "end", values=values, tags=(tag,))
+        summary_var = getattr(self, "ubs_portfolio_proposals_summary", None)
+        if summary_var is not None:
+            summary_var.set(
+                f"{proposal['label']}: net {result.total_net_profit:,.2f} | "
+                f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
+                f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
+                f"reserva {float(proposal['reserve_pct']):.1f}% | "
+                f"{result.active_strategies} estrategias | {result.total_units} unidades."
+            )
+
+    def _apply_selected_ubs_portfolio_proposal(self) -> None:
+        key = getattr(self, "ubs_portfolio_selected_proposal_key", None)
+        proposal = getattr(self, "ubs_portfolio_proposals", {}).get(key)
+        portfolio_id = getattr(self, "ubs_portfolio_proposals_id", None)
+        if not proposal or portfolio_id is None:
+            messagebox.showerror("Propuestas", "Selecciona una propuesta valida.")
+            return
+        if getattr(self, "ubs_portfolio_proposals_mode", "") == "generate":
+            self._accept_generated_ubs_portfolio_proposal(proposal)
+            self._cancel_ubs_portfolio_proposals_preview(refresh_detail=False)
+            return
+        result: PortfolioResult = proposal["result"]
+        inputs: dict[str, object] = proposal["inputs"]
+        conn = self._ubs_portfolio_conn()
+        try:
+            self._save_portfolio_version(
+                conn,
+                int(portfolio_id),
+                f"Antes de aplicar propuesta {proposal['label']}",
+            )
+            self._replace_saved_portfolio_result(
+                conn,
+                int(portfolio_id),
+                inputs,
+                result,
+                result.active_strategies,
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            messagebox.showerror("Propuestas", f"No se pudo aplicar la propuesta:\n{exc}")
+            return
+        finally:
+            conn.close()
+        self._cancel_ubs_portfolio_proposals_preview(refresh_detail=False)
+        self._refresh_ubs_portfolios(select_id=int(portfolio_id))
+        self._populate_ubs_portfolio_detail(int(portfolio_id))
+        self.ubs_portfolio_status.set(
+            f"Portafolio #{portfolio_id} actualizado con propuesta {proposal['label']}."
+        )
+
+    def _cancel_ubs_portfolio_proposals_preview(self, *, refresh_detail: bool = True) -> None:
+        window = getattr(self, "ubs_portfolio_proposals_window", None)
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        portfolio_id = getattr(self, "ubs_portfolio_proposals_id", None)
+        mode = getattr(self, "ubs_portfolio_proposals_mode", "")
+        self.ubs_portfolio_proposals = {}
+        self.ubs_portfolio_selected_proposal_key = None
+        if mode == "generate":
+            self.ubs_portfolio_status.set("Seleccion de propuesta cancelada.")
+        if refresh_detail and mode != "generate" and portfolio_id is not None:
+            self._populate_ubs_portfolio_detail(int(portfolio_id))
 
     def _complete_saved_ubs_portfolio(self, portfolio_id: int) -> None:
         if getattr(self, "ubs_portfolio_running", False):

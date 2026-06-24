@@ -526,6 +526,20 @@ preview; SQLite changes only after explicit confirmation. Before applying, a
 compressed `portfolio_versions` snapshot is written, and the detail window can
 restore the latest version.
 
+The detail window also exposes **Revalidar / optimizar** for already-complete
+portfolios. It runs a full candidate reoptimization with the portfolio's saved
+constraints and the reserve/restart values currently shown in the form, then
+uses the same preview/version/apply workflow.
+
+New generation and reoptimization calculate three proposals from the same pool:
+**Maximo beneficio** (configured type/reserve), **Equilibrada** (Balanced with
+at least 15% reserve), and **Maximo margen DD** (Conservative with at least 25%
+reserve). The proposal window compares net, DD, nominal margin, reserve, units,
+strategy count, maximum group concentration, and changed allocations. Selecting
+a row refreshes the exact set/unit diff. New generation sends the selected
+proposal to the existing Guardar portafolio step; reoptimization applies it to
+the existing ID after snapshotting.
+
 **Export sets**: patches each .set with `Risk=2` + integer
 `LotPerBalance_step`, writes a human-readable `PORTAFOLIO_<id>_resumen.txt`,
 and opens the folder.

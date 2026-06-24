@@ -432,7 +432,7 @@ class UBSPortfolioViewMixin:
         window = tk.Toplevel(self)
         self.ubs_portfolio_detail_window = window
         window.title(f"Portafolio #{portfolio_id}")
-        window.geometry("1180x560")
+        window.geometry("1320x560")
         window.minsize(900, 420)
         window.configure(bg=self.colors["bg"])
         window.transient(self)
@@ -479,6 +479,20 @@ class UBSPortfolioViewMixin:
             command=lambda: self._complete_saved_ubs_portfolio(portfolio_id),
         )
         complete_btn.grid(row=0, column=2, padx=(0, 6), pady=6)
+        reoptimize_btn = tk.Button(
+            bar,
+            text="Revalidar / optimizar",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=lambda: self._reoptimize_saved_ubs_portfolio(portfolio_id),
+        )
+        reoptimize_btn.grid(row=0, column=3, padx=(0, 6), pady=6)
         undo_btn = tk.Button(
             bar,
             text="Deshacer recomposicion",
@@ -492,7 +506,7 @@ class UBSPortfolioViewMixin:
             cursor="hand2",
             command=lambda: self._undo_latest_ubs_portfolio_completion(portfolio_id),
         )
-        undo_btn.grid(row=0, column=3, padx=(0, 6), pady=6)
+        undo_btn.grid(row=0, column=4, padx=(0, 6), pady=6)
         open_btn = tk.Button(
             bar,
             text="Abrir reporte",
@@ -506,8 +520,14 @@ class UBSPortfolioViewMixin:
             cursor="hand2",
             command=self._open_selected_ubs_portfolio_detail_member,
         )
-        open_btn.grid(row=0, column=4, padx=(0, 10), pady=6)
-        self.ubs_portfolio_detail_buttons = [quarantine_btn, complete_btn, undo_btn, open_btn]
+        open_btn.grid(row=0, column=5, padx=(0, 10), pady=6)
+        self.ubs_portfolio_detail_buttons = [
+            quarantine_btn,
+            complete_btn,
+            reoptimize_btn,
+            undo_btn,
+            open_btn,
+        ]
 
         frame = ttk.Frame(window, style="Panel.TFrame")
         frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -538,7 +558,8 @@ class UBSPortfolioViewMixin:
         existing = getattr(self, "ubs_portfolio_preview_window", None)
         if existing is not None and existing.winfo_exists():
             existing.destroy()
-        parent = getattr(self, "ubs_portfolio_detail_window", self)
+        detail_parent = getattr(self, "ubs_portfolio_detail_window", None)
+        parent = detail_parent if detail_parent is not None and detail_parent.winfo_exists() else self
         window = tk.Toplevel(parent)
         self.ubs_portfolio_preview_window = window
         window.title(f"Vista previa - Portafolio #{portfolio_id}")
@@ -617,3 +638,132 @@ class UBSPortfolioViewMixin:
             tag = "accepted" if state == "NUEVA" else "rejected" if state == "RETIRADA" else "pending"
             tree.insert("", "end", values=values, tags=(tag,))
         self._attach_tree_scrollbars(frame, tree, 0)
+
+    def _create_ubs_portfolio_proposals_window(
+        self,
+        portfolio_id: int,
+        comparison_rows: list[tuple],
+    ) -> None:
+        existing = getattr(self, "ubs_portfolio_proposals_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+        detail_parent = getattr(self, "ubs_portfolio_detail_window", None)
+        parent = detail_parent if detail_parent is not None and detail_parent.winfo_exists() else self
+        window = tk.Toplevel(parent)
+        self.ubs_portfolio_proposals_window = window
+        mode = getattr(self, "ubs_portfolio_proposals_mode", "")
+        title_target = "Nuevo portafolio" if mode == "generate" else f"Portafolio #{portfolio_id}"
+        window.title(f"Propuestas comparables - {title_target}")
+        window.geometry("1250x720")
+        window.minsize(980, 560)
+        window.configure(bg=self.colors["bg"])
+        window.transient(parent)
+        window.grab_set()
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(2, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self._cancel_ubs_portfolio_proposals_preview)
+
+        bar = tk.Frame(window, bg=self.colors["panel_alt"])
+        bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
+        bar.columnconfigure(0, weight=1)
+        self.ubs_portfolio_proposals_summary = tk.StringVar(value="Selecciona una propuesta.")
+        tk.Label(
+            bar,
+            textvariable=self.ubs_portfolio_proposals_summary,
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+        tk.Button(
+            bar,
+            text="Usar propuesta" if mode == "generate" else "Aplicar propuesta",
+            bg=self.colors["accent"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=self._apply_selected_ubs_portfolio_proposal,
+        ).grid(row=0, column=1, padx=(0, 6), pady=6)
+        tk.Button(
+            bar,
+            text="Cancelar",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._cancel_ubs_portfolio_proposals_preview,
+        ).grid(row=0, column=2, padx=(0, 10), pady=6)
+
+        compare_frame = ttk.Frame(window, style="Panel.TFrame")
+        compare_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        compare_frame.columnconfigure(0, weight=1)
+        compare_columns = (
+            "profile", "net", "valley", "point", "margin", "reserve",
+            "units", "strategies", "group", "changes",
+        )
+        compare_tree = ttk.Treeview(
+            compare_frame,
+            columns=compare_columns,
+            show="headings",
+            height=4,
+            selectmode="browse",
+        )
+        self.ubs_portfolio_proposals_tree = compare_tree
+        specs = (
+            ("profile", "PROPUESTA", 150),
+            ("net", "NET", 100),
+            ("valley", "DD VALLE", 130),
+            ("point", "DD PUNT.", 130),
+            ("margin", "MARGEN DD", 90),
+            ("reserve", "RESERVA", 80),
+            ("units", "UNID.", 70),
+            ("strategies", "ESTR.", 70),
+            ("group", "MAX GRUPO", 90),
+            ("changes", "CAMBIOS", 75),
+        )
+        for column, heading, width in specs:
+            compare_tree.heading(column, text=heading)
+            compare_tree.column(column, width=width, minwidth=42, anchor="center", stretch=False)
+        self._standard_ubs_portfolio_tree(compare_tree)
+        for row in comparison_rows:
+            key = str(row[0])
+            compare_tree.insert("", "end", iid=key, values=row[1:], tags=("accepted",))
+        compare_tree.bind("<<TreeviewSelect>>", self._on_ubs_portfolio_proposal_select)
+        self._attach_tree_scrollbars(compare_frame, compare_tree, 0)
+
+        diff_frame = ttk.Frame(window, style="Panel.TFrame")
+        diff_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 14))
+        diff_frame.columnconfigure(0, weight=1)
+        diff_frame.rowconfigure(0, weight=1)
+        diff_columns = ("set", "candidate", "symbol", "before", "after", "delta", "state")
+        diff_tree = ttk.Treeview(
+            diff_frame,
+            columns=diff_columns,
+            show="headings",
+            height=14,
+            selectmode="browse",
+        )
+        self.ubs_portfolio_proposals_diff_tree = diff_tree
+        diff_specs = (
+            ("set", "SET", 360),
+            ("candidate", "CANDIDATE", 100),
+            ("symbol", "SIMBOLO", 90),
+            ("before", "UNID. ANTES", 90),
+            ("after", "UNID. DESPUES", 100),
+            ("delta", "DELTA", 70),
+            ("state", "CAMBIO", 100),
+        )
+        for column, heading, width in diff_specs:
+            diff_tree.heading(column, text=heading)
+            diff_tree.column(column, width=width, minwidth=42, anchor="center", stretch=False)
+        self._standard_ubs_portfolio_tree(diff_tree)
+        self._attach_tree_scrollbars(diff_frame, diff_tree, 0)

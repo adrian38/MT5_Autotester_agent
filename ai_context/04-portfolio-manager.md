@@ -171,6 +171,12 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 Completion is non-destructive until confirmation: the UI presents a set-level
 before/after units table and applies the result only from "Aplicar cambios".
 
+Generation and full reoptimization expose three comparable profiles over the
+same eligible pool: profit, balanced, and DD-margin. Balanced enforces at least
+15% DD reserve; DD-margin uses Conservative scoring and at least 25% reserve.
+The selected row controls the before/after allocation diff and is the only
+proposal eligible for save/apply.
+
 ### Export
 
 "Exportar sets" writes each member .set to a user-chosen folder with `Risk=2`

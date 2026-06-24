@@ -6,6 +6,7 @@ import unittest
 
 from portfolio_manager.ubs_portfolio import PortfolioType
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
+from tests.test_ubs_portfolio import make_strategy
 
 
 class _PortfolioLogic(UBSPortfolioLogicMixin):
@@ -160,6 +161,45 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(portfolio), (4, 0.04))
         self.assertEqual(tuple(allocation), (4, 0.04))
+
+    def test_three_comparable_proposals_use_distinct_risk_profiles(self) -> None:
+        inputs = {
+            "capital": 1000.0,
+            "valley_dd_pct": 20.0,
+            "point_dd_pct": 15.0,
+            "portfolio_type": "aggressive",
+            "top_k_per_symbol": 3,
+            "max_total_candidates": 10,
+            "min_trades_2020_2026": 100,
+            "max_units_per_set": None,
+            "max_total_units": 8,
+            "max_units_per_symbol": None,
+            "max_sets_per_symbol": 1,
+            "run_local_search": True,
+            "use_correlation": False,
+            "require_3_positive_months_6m": False,
+            "dd_reserve_pct": 10.0,
+            "search_restarts": 1,
+            "max_pair_corr": None,
+            "max_downside_corr": None,
+            "max_dd_overlap": None,
+            "max_portfolio_corr": None,
+        }
+        proposals = self.logic._optimize_ubs_portfolio_proposals(
+            [
+                make_strategy("a", "EURUSD", [0, 60, 50, 100]),
+                make_strategy("b", "GBPUSD", [0, 45, 43, 130]),
+                make_strategy("c", "XAUUSD", [0, 20, 19, 60]),
+            ],
+            inputs,
+            PortfolioType.AGGRESSIVE,
+            [],
+        )
+        self.assertEqual([item["key"] for item in proposals], ["profit", "balanced", "margin"])
+        self.assertEqual([item["reserve_pct"] for item in proposals], [10.0, 15.0, 25.0])
+        targets = [item["result"].target_valley_dd for item in proposals]
+        self.assertGreater(targets[0], targets[1])
+        self.assertGreater(targets[1], targets[2])
 
 
 if __name__ == "__main__":
