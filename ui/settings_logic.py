@@ -412,6 +412,32 @@ class SettingsLogicMixin:
             "ubs_portfolio_max_downside_corr": self.ubs_portfolio_max_downside_corr.get().strip(),
             "ubs_portfolio_max_dd_overlap": self.ubs_portfolio_max_dd_overlap.get().strip(),
             "ubs_portfolio_max_portfolio_corr": self.ubs_portfolio_max_portfolio_corr.get().strip(),
+            "ubs_monthly_portfolio_target_month": self.ubs_monthly_portfolio_target_month.get().strip(),
+            "ubs_monthly_portfolio_type": self.ubs_monthly_portfolio_type.get().strip(),
+            "ubs_monthly_portfolio_valley_pct": self.ubs_monthly_portfolio_valley_pct.get().strip(),
+            "ubs_monthly_portfolio_point_pct": self.ubs_monthly_portfolio_point_pct.get().strip(),
+            "ubs_monthly_portfolio_capital": self.ubs_monthly_portfolio_capital.get().strip(),
+            "ubs_monthly_portfolio_top_k": str(self.ubs_monthly_portfolio_top_k.get()),
+            "ubs_monthly_portfolio_max_candidates": str(self.ubs_monthly_portfolio_max_candidates.get()),
+            "ubs_monthly_portfolio_min_trades": str(self.ubs_monthly_portfolio_min_trades.get()),
+            "ubs_monthly_portfolio_max_units_per_set": self.ubs_monthly_portfolio_max_units_per_set.get().strip(),
+            "ubs_monthly_portfolio_max_total_units": self.ubs_monthly_portfolio_max_total_units.get().strip(),
+            "ubs_monthly_portfolio_max_units_per_symbol": self.ubs_monthly_portfolio_max_units_per_symbol.get().strip(),
+            "ubs_monthly_portfolio_max_sets_per_symbol": str(self.ubs_monthly_portfolio_max_sets_per_symbol.get()),
+            "ubs_monthly_portfolio_run_local_search": "1" if self.ubs_monthly_portfolio_run_local_search.get() else "0",
+            "ubs_monthly_portfolio_use_correlation": "1" if self.ubs_monthly_portfolio_use_correlation.get() else "0",
+            "ubs_monthly_portfolio_require_3_positive_months_6m": (
+                "1" if self.ubs_monthly_portfolio_require_3_positive_months_6m.get() else "0"
+            ),
+            "ubs_monthly_portfolio_strict_yearly_month_validation": (
+                "1" if self.ubs_monthly_portfolio_strict_yearly_month_validation.get() else "0"
+            ),
+            "ubs_monthly_portfolio_dd_reserve_pct": self.ubs_monthly_portfolio_dd_reserve_pct.get().strip(),
+            "ubs_monthly_portfolio_search_restarts": str(self.ubs_monthly_portfolio_search_restarts.get()),
+            "ubs_monthly_portfolio_max_pair_corr": self.ubs_monthly_portfolio_max_pair_corr.get().strip(),
+            "ubs_monthly_portfolio_max_downside_corr": self.ubs_monthly_portfolio_max_downside_corr.get().strip(),
+            "ubs_monthly_portfolio_max_dd_overlap": self.ubs_monthly_portfolio_max_dd_overlap.get().strip(),
+            "ubs_monthly_portfolio_max_portfolio_corr": self.ubs_monthly_portfolio_max_portfolio_corr.get().strip(),
             "theme": self.theme_mode.get(),
         }
         parser["Multiterminal"] = {

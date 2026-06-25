@@ -100,7 +100,7 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 
 - **Final Tick-gated input**: UBS Portafolio reads both ECN and PRO memories
   and only offers rows where the base candidate, robustness result, and Final
-  Tick result are all accepted. The portfolio curve still uses the base report
+  Tick 6M result are all accepted. The probe stage is not a gate. The portfolio curve still uses the base report
   (`candidates.report_path`) plus the robustness report
   (`candidate_robustness.report_path`) as the 2020-2026 history; Final Tick is
   the eligibility gate, not the curve source.
@@ -136,6 +136,14 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   lot normalization.
 - **Quarantine is a hard gate**: rows in `portfolio_quarantine` are excluded
   before parsing or optimization across both ECN and PRO memories.
+- **Monthly screen exception**: `UBS Portafolio Mensual` keeps the Final Tick 6M
+  gate but intentionally ignores quarantine and used-set locks. It extracts the
+  selected close-month from every available historical year, then calculates
+  trades, net, PF, DD, correlations, ranking, allocation, and bootstrap only on
+  that seasonal curve. Its optional strict seasonal validation rejects proposals
+  unless the fixed allocation passes the selected month year-by-year over the
+  latest five years where that month exists, and unless that selected month is
+  the best aggregate calendar month by net in the same five-year window.
 - **Saved portfolio repair**: repair starts with every remaining member at its
   saved unit count and freezes those allocations. If quarantine removed a
   diversifying curve and the remainder now violates DD, the repair reduces only
@@ -152,6 +160,9 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 | `load_robust_sets_from_rows(rows, used_set_paths, min_trades)` | Convert DB candidate rows into optimizer-ready sets |
 | `summarize_availability(sets)` | Count total/eligible candidates by symbol |
 | `optimize_portfolio(sets, config)` | Discrete unit optimizer with DD constraints and decision log |
+| `slice_strategy_set_to_month(set, month)` | Rebuild one strategy from the selected calendar month across all years |
+| `slice_strategy_sets_to_month(sets, month)` | Seasonal batch conversion with missing-date warnings |
+| `validate_strict_monthly_portfolio(sets, allocations, ...)` | Audit a monthly allocation year-by-year and verify selected-month dominance over the latest five years |
 | `calc_valley_dd(curve)` | Maximum peak-to-trough drawdown for a curve |
 | `calc_point_dd(curve)` | Worst single-step drop for a curve |
 | `bootstrap_valley_drawdown(curve, ...)` | Deterministic block-bootstrap DD P50/P95 and limit exceedance probabilities |
@@ -161,6 +172,8 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 ### DB tables (in `outputs/ubs_memory.sqlite`)
 
 - `portfolios`: one row per generated portfolio (inputs, results, `metrics_json`).
+  Monthly rows use `portfolio_scope='monthly'` and `target_month`; regular rows
+  use `portfolio_scope='full_history'`.
 - `portfolio_allocations`: canonical per-strategy allocation table.
 - `portfolio_decision_log`: optimizer audit trail for accepted/rejected unit
   increments and optional local-search swaps.

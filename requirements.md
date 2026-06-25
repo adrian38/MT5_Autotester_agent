@@ -651,6 +651,29 @@ requirement changes or a debt item is opened/closed.
   be rejected automatically. The complete method, seed, simulation count,
   observation count, block size, thresholds, percentiles, probabilities, and
   alert state MUST be persisted in the portfolio `metrics_json` for audit.
+- **FR-1.12.42** The UI MUST include a separate `UBS Portafolio Mensual` screen
+  (`portafolio_ubs_mensual`) with the same generation, proposal comparison,
+  save, detail, completion, reoptimization, export, correlation, DD-reserve,
+  local-search, and bootstrap tools as `UBS Portafolio`, plus a calendar-month
+  selector. Its candidate universe MUST contain ECN/PRO strategies whose base,
+  robustness, and Final Tick 6M stages are accepted. Unlike the full-history
+  portfolio, monthly generation MUST NOT exclude candidates because their set
+  is quarantined or already allocated to another portfolio. For the selected
+  month, every strategy curve MUST be rebuilt from trades closing in that month
+  across every year available in the combined base + robustness history. Trade
+  count, net profit, PF, DD, correlations, ranking, allocation, and bootstrap
+  MUST use that month-only curve. Saved monthly portfolios MUST persist
+  `portfolio_scope='monthly'` and `target_month`; they MUST be listed separately
+  and MUST NOT lock sets in the full-history `UBS Portafolio` screen.
+  The screen MAY expose a strict seasonal checkbox. When enabled, every
+  generated proposal MUST also pass the selected month year-by-year over the
+  latest five years where that month exists in the historical data: yearly net
+  MUST be positive and yearly valley/point DD MUST remain inside the same
+  effective DD limits. The selected month MUST also be the highest-net calendar
+  month for that fixed portfolio allocation over the same five-year window.
+  Proposals that fail this strict seasonal validation MUST be rejected before
+  the proposal preview/save step, and the audit details MUST be persisted in
+  `metrics_json`.
 
 ### 1.13 Packaging & runtime
 

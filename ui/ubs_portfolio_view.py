@@ -132,6 +132,43 @@ class UBSPortfolioViewMixin:
             restart_spin,
             "Perturbaciones validas para escapar del optimo local. 0 desactiva; 4 es el valor recomendado.",
         )
+        target_month_var = getattr(self, "ubs_portfolio_target_month", None)
+        if target_month_var is not None:
+            label(3, 4, "Mes objetivo")
+            self.ubs_portfolio_target_month_combo = ttk.Combobox(
+                form,
+                textvariable=target_month_var,
+                state="readonly",
+                width=12,
+                values=(
+                    "01 - Enero", "02 - Febrero", "03 - Marzo", "04 - Abril",
+                    "05 - Mayo", "06 - Junio", "07 - Julio", "08 - Agosto",
+                    "09 - Septiembre", "10 - Octubre", "11 - Noviembre", "12 - Diciembre",
+                ),
+            )
+            self.ubs_portfolio_target_month_combo.grid(
+                row=3,
+                column=5,
+                columnspan=2,
+                sticky="w",
+                pady=5,
+            )
+            self._tooltip_cls(
+                self.ubs_portfolio_target_month_combo,
+                "Evalua solamente este mes en cada ano disponible del historico base y robustez.",
+            )
+            strict_month_var = getattr(self, "ubs_portfolio_strict_yearly_month_validation", None)
+            if strict_month_var is not None:
+                strict_check = ttk.Checkbutton(
+                    form,
+                    text="Validar anos + mejor mes 5A",
+                    variable=strict_month_var,
+                )
+                strict_check.grid(row=3, column=7, columnspan=5, sticky="w", padx=(8, 10), pady=5)
+                self._tooltip_cls(
+                    strict_check,
+                    "Si esta activo, el portafolio debe pasar el DD del mes objetivo en cada uno de los ultimos 5 anos y ese mes debe ser el mejor por net.",
+                )
 
         actions = tk.Frame(panel, bg=colors["panel_alt"])
         actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
@@ -146,7 +183,7 @@ class UBSPortfolioViewMixin:
 
         generate_btn = tk.Button(
             actions,
-            text="Generar portafolio",
+            text="Generar mensual" if target_month_var is not None else "Generar portafolio",
             bg=colors["accent"],
             fg="#ffffff",
             relief="flat",
@@ -160,7 +197,7 @@ class UBSPortfolioViewMixin:
         generate_btn.grid(row=0, column=1, sticky="e", padx=(0, 6), pady=6)
         self.ubs_portfolio_save_button = tk.Button(
             actions,
-            text="Guardar portafolio",
+            text="Guardar mensual" if target_month_var is not None else "Guardar portafolio",
             bg=colors["panel"],
             fg=colors["muted"],
             relief="solid",
@@ -281,7 +318,7 @@ class UBSPortfolioViewMixin:
         saved_bar = tk.Frame(left_bottom, bg=colors["panel_alt"])
         saved_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         saved_bar.columnconfigure(0, weight=1)
-        tk.Label(saved_bar, text="Portafolios guardados", bg=colors["panel_alt"], fg=colors["text"],
+        tk.Label(saved_bar, text=("Portafolios mensuales guardados" if target_month_var is not None else "Portafolios guardados"), bg=colors["panel_alt"], fg=colors["text"],
                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=5)
         export_btn = tk.Button(
             saved_bar,
@@ -344,7 +381,7 @@ class UBSPortfolioViewMixin:
         quarantine_bar.columnconfigure(0, weight=1)
         tk.Label(
             quarantine_bar,
-            text="Sets en cuarentena",
+            text=("Cuarentena (informativa; no excluye)" if target_month_var is not None else "Sets en cuarentena"),
             bg=colors["panel_alt"],
             fg=colors["text"],
             font=("Segoe UI", 10, "bold"),
@@ -392,7 +429,7 @@ class UBSPortfolioViewMixin:
         self._standard_ubs_portfolio_tree(self.ubs_portfolio_quarantine_tree)
         self._attach_tree_scrollbars(quarantine_frame, self.ubs_portfolio_quarantine_tree, 0)
 
-        tk.Label(right, text="Asignaciones del portafolio", bg=colors["panel"], fg=colors["text"],
+        tk.Label(right, text=("Asignaciones del portafolio mensual" if target_month_var is not None else "Asignaciones del portafolio"), bg=colors["panel"], fg=colors["text"],
                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
         members_frame = ttk.Frame(right, style="Panel.TFrame")
         members_frame.grid(row=1, column=0, sticky="nsew")
@@ -533,12 +570,16 @@ class UBSPortfolioViewMixin:
         frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
-        columns = ("set", "account", "candidate", "symbol", "tf", "units", "lot", "net", "valley", "point")
+        columns = (
+            "set", "account", "candidate", "symbol", "tf", "month", "years", "positive_years",
+            "units", "lot", "net", "valley", "point",
+        )
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=14, selectmode="browse")
         self.ubs_portfolio_detail_tree = tree
         specs = (
             ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
-            ("symbol", "SIMBOLO", 90), ("tf", "TF", 52), ("units", "UNID.", 58),
+            ("symbol", "SIMBOLO", 90), ("tf", "TF", 52), ("month", "MES", 58),
+            ("years", "ANOS", 90), ("positive_years", "POS.", 58), ("units", "UNID.", 58),
             ("lot", "LOTE", 62), ("net", "NET", 90), ("valley", "DD VALLE", 82),
             ("point", "DD PUNT.", 82),
         )
@@ -652,7 +693,21 @@ class UBSPortfolioViewMixin:
         window = tk.Toplevel(parent)
         self.ubs_portfolio_proposals_window = window
         mode = getattr(self, "ubs_portfolio_proposals_mode", "")
-        title_target = "Nuevo portafolio" if mode == "generate" else f"Portafolio #{portfolio_id}"
+        if mode == "generate_monthly":
+            month_label = ""
+            try:
+                first_proposal = next(iter(getattr(self, "ubs_portfolio_proposals", {}).values()))
+                first_inputs = first_proposal.get("inputs", {})
+                month_label = str(first_inputs.get("target_month_label") or "")
+            except Exception:
+                month_label = ""
+            title_target = "Nuevo portafolio mensual"
+            if month_label:
+                title_target += f" - {month_label}"
+        elif mode == "generate":
+            title_target = "Nuevo portafolio"
+        else:
+            title_target = f"Portafolio #{portfolio_id}"
         window.title(f"Propuestas comparables - {title_target}")
         window.geometry("1450x760")
         window.minsize(1080, 600)
@@ -678,9 +733,15 @@ class UBSPortfolioViewMixin:
         )
         self.ubs_portfolio_proposals_summary_label = summary_label
         summary_label.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+        if mode == "generate_monthly":
+            action_text = "Guardar mensual"
+        elif mode == "generate":
+            action_text = "Usar propuesta"
+        else:
+            action_text = "Aplicar propuesta"
         tk.Button(
             bar,
-            text="Usar propuesta" if mode == "generate" else "Aplicar propuesta",
+            text=action_text,
             bg=self.colors["accent"],
             fg="#ffffff",
             relief="flat",

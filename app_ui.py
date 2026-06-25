@@ -40,6 +40,8 @@ from ui.portfolio_logic import PortfolioLogicMixin
 from ui.portfolio_view import PortfolioViewMixin
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 from ui.ubs_portfolio_view import UBSPortfolioViewMixin
+from ui.ubs_monthly_portfolio_logic import MONTH_LABELS, UBSMonthlyPortfolioLogicMixin
+from ui.ubs_monthly_portfolio_view import UBSMonthlyPortfolioViewMixin
 from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_search_view import UBSSearchViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
@@ -560,6 +562,8 @@ class MT5AutotesterUI(
     PortfolioLogicMixin,
     UBSPortfolioViewMixin,
     UBSPortfolioLogicMixin,
+    UBSMonthlyPortfolioViewMixin,
+    UBSMonthlyPortfolioLogicMixin,
     UBSSearchViewMixin,
     UBSSearchLogicMixin,
     SettingsViewMixin,
@@ -831,6 +835,89 @@ class MT5AutotesterUI(
         self.ubs_portfolio_member_paths: dict[str, dict[str, str]] = {}
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        monthly_prefix = "ubs_monthly_portfolio_"
+        self.ubs_monthly_portfolio_target_month = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}target_month", MONTH_LABELS[0])
+        )
+        self.ubs_monthly_portfolio_type = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}type", saved_portfolio_type)
+        )
+        self.ubs_monthly_portfolio_valley_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}valley_pct", "10")
+        )
+        self.ubs_monthly_portfolio_point_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}point_pct", "4")
+        )
+        self.ubs_monthly_portfolio_capital = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}capital", "10000")
+        )
+        self.ubs_monthly_portfolio_top_k = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}top_k"), 3)
+        )
+        self.ubs_monthly_portfolio_max_candidates = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}max_candidates"), 30)
+        )
+        self.ubs_monthly_portfolio_min_trades = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}min_trades"), 15)
+        )
+        self.ubs_monthly_portfolio_max_units_per_set = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_units_per_set", "")
+        )
+        self.ubs_monthly_portfolio_max_total_units = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_total_units", "")
+        )
+        self.ubs_monthly_portfolio_max_units_per_symbol = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_units_per_symbol", "")
+        )
+        self.ubs_monthly_portfolio_max_sets_per_symbol = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}max_sets_per_symbol"), 1)
+        )
+        self.ubs_monthly_portfolio_run_local_search = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}run_local_search"), True)
+        )
+        self.ubs_monthly_portfolio_use_correlation = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}use_correlation"), True)
+        )
+        self.ubs_monthly_portfolio_require_3_positive_months_6m = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}require_3_positive_months_6m"), False)
+        )
+        self.ubs_monthly_portfolio_strict_yearly_month_validation = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}strict_yearly_month_validation"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_dd_reserve_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}dd_reserve_pct", "10")
+        )
+        self.ubs_monthly_portfolio_search_restarts = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}search_restarts"), 4)
+        )
+        self.ubs_monthly_portfolio_max_pair_corr = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_pair_corr", "0.35")
+        )
+        self.ubs_monthly_portfolio_max_downside_corr = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_downside_corr", "0.25")
+        )
+        self.ubs_monthly_portfolio_max_dd_overlap = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_dd_overlap", "0.35")
+        )
+        self.ubs_monthly_portfolio_max_portfolio_corr = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_portfolio_corr", "0.50")
+        )
+        self.ubs_monthly_portfolio_status = tk.StringVar(value="Selecciona un mes objetivo.")
+        self.ubs_monthly_portfolio_availability = tk.StringVar(value="Disponibilidad: sin datos")
+        self.ubs_monthly_portfolio_metric_net = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_valley = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_point = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_count = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_lot = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_units = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_running = False
+        self.ubs_monthly_portfolio_buttons: list = []
+        self.ubs_monthly_portfolio_member_paths: dict[str, dict[str, str]] = {}
+        self.ubs_monthly_portfolio_pending_result = None
+        self.ubs_monthly_portfolio_pending_inputs = None
         self.ubs_search_query = tk.StringVar(value="")
         self.ubs_search_status = tk.StringVar(value="Escribe parte del nombre de un set UBS.")
         self.ubs_audit_account = tk.StringVar(value=self._ubs_account_type())
@@ -1126,7 +1213,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -1144,6 +1231,7 @@ class MT5AutotesterUI(
         self._build_ubs_params(self.section_frames["ubs_params"])
         self._build_portfolio(self.section_frames["portfolio"])
         self._build_ubs_portfolio(self.section_frames["portafolio_ubs"])
+        self._build_ubs_monthly_portfolio(self.section_frames["portafolio_ubs_mensual"])
         self._build_ubs_search(self.section_frames["buscador"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
@@ -1215,6 +1303,7 @@ class MT5AutotesterUI(
             ("ubs_comparar", "UBS  Comparar"),
             ("ubs_params", "UBS  Parámetros"),
             ("portafolio_ubs", "UBS  Portafolio"),
+            ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
             ("buscador", "UBS  Buscador"),
         ]
         for index, (key, label) in enumerate(items):
@@ -1636,6 +1725,7 @@ class MT5AutotesterUI(
             ("ubs_continue", self._refresh_ubs_continue_state),
             ("portfolio", self._refresh_portfolio_count),
             ("ubs_portfolios", self._refresh_ubs_portfolios),
+            ("ubs_monthly_portfolios", self._refresh_ubs_monthly_portfolios),
             ("last_log", self._refresh_last_log),
             ("multiterminal", self._refresh_multiterminal_tree),
         ):

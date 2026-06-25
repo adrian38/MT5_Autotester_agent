@@ -23,6 +23,9 @@ from portfolio_manager.ubs_portfolio import (
     recent_positive_month_count,
     score_set_for_portfolio,
     select_top_k_per_symbol,
+    slice_strategy_set_to_month,
+    slice_strategy_sets_to_month,
+    validate_strict_monthly_portfolio,
 )
 
 
@@ -78,6 +81,103 @@ def make_strategy(
 
 
 class UBSPortfolioOptimizerTests(unittest.TestCase):
+    def test_month_slice_uses_only_target_month_trade_increments_across_years(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10, 5, 25, 15, 30], trades=5)
+        strategy.curve_points_2020_2026_001 = [
+            (datetime(2020, 1, 10), 10.0),
+            (datetime(2020, 2, 10), 5.0),
+            (datetime(2021, 1, 10), 25.0),
+            (datetime(2022, 1, 10), 15.0),
+            (datetime(2022, 3, 10), 30.0),
+        ]
+
+        monthly = slice_strategy_set_to_month(strategy, 1)
+
+        self.assertEqual(monthly.curve_2020_2026_001, [0.0, 10.0, 30.0, 20.0])
+        self.assertEqual(monthly.net_profit_2020_2026_001, 20.0)
+        self.assertEqual(monthly.trades_2020_2026, 3)
+        self.assertEqual(monthly.month_years, (2020, 2021, 2022))
+        self.assertEqual(monthly.positive_month_years, (2020, 2021))
+        self.assertEqual(monthly.target_month, 1)
+
+    def test_month_slice_reports_candidates_without_timestamped_curves(self) -> None:
+        sliced, warnings = slice_strategy_sets_to_month(
+            [make_strategy("missing-dates", "EURUSD", [0, 10])],
+            1,
+        )
+        self.assertEqual(sliced, [])
+        self.assertTrue(any("curva historica con fechas" in warning for warning in warnings))
+
+    def test_strict_monthly_validation_requires_target_month_best_in_last_five_years(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 10.0
+            points.append((datetime(year, 7, 10), accumulated))
+            accumulated += 8.0
+            points.append((datetime(year, 8, 10), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=100,
+            target_point_dd=100,
+            lookback_years=5,
+        )
+
+        self.assertTrue(validation["passed"])
+        self.assertEqual(validation["best_month"], 7)
+        self.assertEqual(len(validation["yearly"]), 5)
+
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 10.0
+            points.append((datetime(year, 7, 10), accumulated))
+            accumulated += 20.0
+            points.append((datetime(year, 8, 10), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=100,
+            target_point_dd=100,
+            lookback_years=5,
+        )
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["best_month"], 8)
+        self.assertTrue(any("no es el mejor" in reason for reason in validation["reasons"]))
+
+    def test_strict_monthly_validation_rejects_yearly_dd_break(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 20.0
+            points.append((datetime(year, 7, 5), accumulated))
+            accumulated -= 15.0
+            points.append((datetime(year, 7, 10), accumulated))
+            accumulated += 20.0
+            points.append((datetime(year, 7, 20), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=10,
+            target_point_dd=20,
+            lookback_years=5,
+        )
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("DD valle" in reason for reason in validation["reasons"]))
+
     def test_block_bootstrap_is_deterministic_and_reports_audit_parameters(self) -> None:
         curve = [0, 12, 5, -4, 9, 3, 18, 7, 4, 22]
         first = bootstrap_valley_drawdown(

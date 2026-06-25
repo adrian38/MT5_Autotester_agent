@@ -26,7 +26,9 @@ from portfolio_manager.ubs_portfolio import (
     optimize_portfolio,
     portfolio_group_summary,
     portfolio_symbol_key,
+    slice_strategy_sets_to_month,
     summarize_robust_rows,
+    validate_strict_monthly_portfolio,
 )
 
 
@@ -104,6 +106,8 @@ class UBSPortfolioLogicMixin:
                 stop_reason text not null default '',
                 scale_factor real,
                 binding_constraint text,
+                portfolio_scope text not null default 'full_history',
+                target_month integer,
                 metrics_json text
             )
             """
@@ -131,6 +135,8 @@ class UBSPortfolioLogicMixin:
             ("stop_reason", "text not null default ''"),
             ("scale_factor", "real"),
             ("binding_constraint", "text"),
+            ("portfolio_scope", "text not null default 'full_history'"),
+            ("target_month", "integer"),
             ("metrics_json", "text"),
         ):
             self._ensure_sqlite_column(conn, "portfolios", column, definition)
@@ -306,6 +312,8 @@ class UBSPortfolioLogicMixin:
         self,
         conn: sqlite3.Connection,
         account_type: str,
+        *,
+        include_quarantined: bool = False,
     ) -> list[sqlite3.Row]:
         return conn.execute(
             """
@@ -322,28 +330,36 @@ class UBSPortfolioLogicMixin:
                    ft6.to_date as final_tick_to_date
             from candidates c
             join candidate_robustness cr on cr.candidate_id = c.id
-            join candidate_final_tick ft
-              on ft.candidate_id = c.id
-             and ft.status in ('accepted', 'pending_ohlc_trades')
             join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
             where c.status = 'accepted'
               and cr.status = 'accepted'
               and ft6.status = 'accepted'
-              and not exists (
+              and (? = 1 or not exists (
                   select 1 from portfolio_quarantine pq
                   where pq.set_path = c.set_path
-              )
+              ))
             order by c.id
             """,
-            (account_type, account_type),
+            (account_type, account_type, 1 if include_quarantined else 0),
         ).fetchall()
 
-    def _final_tick_passed_candidates_all_accounts(self) -> list[dict[str, object]]:
+    def _final_tick_passed_candidates_all_accounts(
+        self,
+        *,
+        include_quarantined: bool = False,
+    ) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for account_type, memory_path in self._ubs_portfolio_source_paths():
             conn = self._ubs_portfolio_conn_for_memory(memory_path)
             try:
-                rows.extend(dict(row) for row in self._final_tick_passed_candidates(conn, account_type))
+                rows.extend(
+                    dict(row)
+                    for row in self._final_tick_passed_candidates(
+                        conn,
+                        account_type,
+                        include_quarantined=include_quarantined,
+                    )
+                )
             finally:
                 conn.close()
         return rows
@@ -363,6 +379,8 @@ class UBSPortfolioLogicMixin:
         target_portfolio_type: PortfolioType,
         *,
         exclude_portfolio_id: int | None = None,
+        portfolio_scope: str = "full_history",
+        target_month: int | None = None,
     ) -> list[str]:
         if target_portfolio_type == PortfolioType.AGGRESSIVE:
             type_filter = (
@@ -379,6 +397,8 @@ class UBSPortfolioLogicMixin:
             join portfolios p on p.id = pa.portfolio_id
             where pa.set_path is not null and pa.set_path <> ''
               {type_filter}
+              and coalesce(nullif(p.portfolio_scope, ''), 'full_history') = ?
+              and (? is null or p.target_month = ?)
               and (? is null or pa.portfolio_id <> ?)
             union
             select pm.set_path
@@ -386,10 +406,23 @@ class UBSPortfolioLogicMixin:
             join portfolios p on p.id = pm.portfolio_id
             where pm.set_path is not null and pm.set_path <> ''
               {type_filter}
+              and coalesce(nullif(p.portfolio_scope, ''), 'full_history') = ?
+              and (? is null or p.target_month = ?)
               and (? is null or pm.portfolio_id <> ?)
             """
             ,
-            (exclude_portfolio_id, exclude_portfolio_id, exclude_portfolio_id, exclude_portfolio_id),
+            (
+                portfolio_scope,
+                target_month,
+                target_month,
+                exclude_portfolio_id,
+                exclude_portfolio_id,
+                portfolio_scope,
+                target_month,
+                target_month,
+                exclude_portfolio_id,
+                exclude_portfolio_id,
+            ),
         ).fetchall()
         return [str(row["set_path"]) for row in rows]
 
@@ -398,6 +431,8 @@ class UBSPortfolioLogicMixin:
         target_portfolio_type: PortfolioType,
         *,
         exclude_portfolio_id: int | None = None,
+        portfolio_scope: str = "full_history",
+        target_month: int | None = None,
     ) -> list[str]:
         used: set[str] = set()
         active_memory = self._ubs_memory_path().resolve()
@@ -410,6 +445,8 @@ class UBSPortfolioLogicMixin:
                         conn,
                         target_portfolio_type,
                         exclude_portfolio_id=excluded,
+                        portfolio_scope=portfolio_scope,
+                        target_month=target_month,
                     )
                 )
             finally:
@@ -435,9 +472,12 @@ class UBSPortfolioLogicMixin:
     ) -> int:
         created_at = datetime.now().isoformat(timespec="seconds")
         portfolio_type = str(inputs["portfolio_type"])
+        portfolio_scope = str(inputs.get("portfolio_scope") or "full_history")
+        target_month = int(inputs["target_month"]) if inputs.get("target_month") else None
         name = (
             f"{PORTFOLIO_TYPE_DISPLAY.get(portfolio_type, portfolio_type)} | "
-            f"{result.active_strategies} estrategias | {datetime.now():%d.%m.%Y %H:%M}"
+            + (f"Mes {target_month:02d} | " if target_month else "")
+            + f"{result.active_strategies} estrategias | {datetime.now():%d.%m.%Y %H:%M}"
         )
         active_symbols = len({portfolio_symbol_key(allocation.symbol) for allocation in result.allocations if allocation.units > 0})
         metrics = {
@@ -447,6 +487,8 @@ class UBSPortfolioLogicMixin:
             "equity_curve_2020_2026": result.equity_curve_2020_2026,
             "unused_sets": [asdict(item) for item in result.unused_sets],
             "stress_bootstrap": asdict(result.stress_bootstrap) if result.stress_bootstrap else None,
+            "seasonal_coverage": result.seasonal_coverage,
+            "seasonal_validation": result.seasonal_validation,
         }
         cur = conn.execute(
             """
@@ -455,8 +497,9 @@ class UBSPortfolioLogicMixin:
                 capital, target_valley_dd_pct, target_point_dd_pct, target_valley_dd,
                 target_point_dd, actual_valley_dd, actual_point_dd, valley_usage_pct,
                 point_usage_pct, total_net_profit, total_lot, total_units,
-                active_strategies, target_strategies, stop_reason, binding_constraint, metrics_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                active_strategies, target_strategies, stop_reason, binding_constraint,
+                portfolio_scope, target_month, metrics_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -481,6 +524,8 @@ class UBSPortfolioLogicMixin:
                 result.active_strategies,
                 result.stop_reason,
                 "valley" if result.valley_usage_pct >= result.point_usage_pct else "point",
+                portfolio_scope,
+                target_month,
                 json.dumps(metrics, ensure_ascii=True),
             ),
         )
@@ -564,8 +609,20 @@ class UBSPortfolioLogicMixin:
         conn.commit()
         return portfolio_id
 
-    def _list_portfolios(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:
-        return conn.execute("select * from portfolios order by id desc").fetchall()
+    def _list_portfolios(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        portfolio_scope: str = "full_history",
+    ) -> list[sqlite3.Row]:
+        return conn.execute(
+            """
+            select * from portfolios
+            where coalesce(nullif(portfolio_scope, ''), 'full_history') = ?
+            order by id desc
+            """,
+            (portfolio_scope,),
+        ).fetchall()
 
     def _portfolio_members(self, conn: sqlite3.Connection, portfolio_id: int) -> list[dict[str, object]]:
         rows = conn.execute(
@@ -734,6 +791,8 @@ class UBSPortfolioLogicMixin:
         finally:
             conn.close()
         self._refresh_ubs_portfolios(select_id=portfolio_id)
+        if hasattr(self, "_refresh_ubs_monthly_portfolios"):
+            self._refresh_ubs_monthly_portfolios(select_id=portfolio_id)
         self._populate_ubs_portfolio_detail(portfolio_id)
         self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} restaurado desde version anterior.")
 
@@ -797,6 +856,8 @@ class UBSPortfolioLogicMixin:
         if not members:
             metrics["equity_curve_2020_2026"] = [0.0]
             metrics["group_summary"] = {}
+            metrics["seasonal_coverage"] = {}
+            metrics["seasonal_validation"] = {}
             metrics["stress_bootstrap"] = asdict(
                 bootstrap_valley_drawdown(
                     [0.0],
@@ -837,6 +898,15 @@ class UBSPortfolioLogicMixin:
         strategies, warnings = load_robust_sets_from_rows(rows, [])
         if len(strategies) != len(members):
             raise ValueError("No se pudieron reconstruir todas las curvas restantes.")
+        full_strategies = list(strategies)
+        saved_inputs = self._saved_portfolio_inputs(portfolio)
+        strategies, scope_warnings = self._scope_portfolio_sets(
+            strategies,
+            saved_inputs,
+        )
+        warnings.extend(scope_warnings)
+        if len(strategies) != len(members):
+            raise ValueError("No se pudieron reconstruir todas las curvas del mes objetivo.")
         units = {
             str(member.get("set_path") or member.get("set_id")): int(member.get("units") or 0)
             for member in members
@@ -846,6 +916,29 @@ class UBSPortfolioLogicMixin:
         evaluation = evaluate_portfolio(strategies, units, target_valley, target_point)
         metrics["equity_curve_2020_2026"] = evaluation.equity_curve_2020_2026
         metrics["group_summary"] = portfolio_group_summary(strategies, units)
+        metrics["seasonal_coverage"] = {
+            strategy.set_id: {
+                "target_month": strategy.target_month,
+                "years": list(strategy.month_years),
+                "positive_years": list(strategy.positive_month_years),
+                "year_count": len(strategy.month_years),
+                "positive_year_count": len(strategy.positive_month_years),
+                "trades": strategy.trades_2020_2026,
+            }
+            for strategy in strategies
+            if strategy.target_month is not None and units.get(strategy.set_id, 0) > 0
+        }
+        if bool(saved_inputs.get("strict_yearly_month_validation")):
+            metrics["seasonal_validation"] = validate_strict_monthly_portfolio(
+                full_strategies,
+                units,
+                target_month=int(saved_inputs.get("target_month") or 0),
+                target_valley_dd=target_valley,
+                target_point_dd=target_point,
+                lookback_years=5,
+            )
+        else:
+            metrics["seasonal_validation"] = {}
         metrics["stress_bootstrap"] = asdict(
             bootstrap_valley_drawdown(
                 evaluation.equity_curve_2020_2026,
@@ -1062,7 +1155,10 @@ class UBSPortfolioLogicMixin:
 
     # ------------------------------------------------------------------ generate/save
     def _run_ubs_portfolio_build(self) -> None:
-        if getattr(self, "ubs_portfolio_running", False):
+        if (
+            getattr(self, "ubs_portfolio_running", False)
+            or getattr(self, "ubs_monthly_portfolio_running", False)
+        ):
             messagebox.showwarning("Portafolio en ejecucion", "Ya hay un proceso de portafolio en marcha.")
             return
         try:
@@ -1148,6 +1244,8 @@ class UBSPortfolioLogicMixin:
         target_portfolio_type: PortfolioType,
         *,
         exclude_portfolio_id: int | None = None,
+        portfolio_scope: str = "full_history",
+        target_month: int | None = None,
     ) -> list[list[float]]:
         curves: list[list[float]] = []
         if target_portfolio_type == PortfolioType.AGGRESSIVE:
@@ -1161,9 +1259,17 @@ class UBSPortfolioLogicMixin:
             select metrics_json from portfolios
             where metrics_json is not null and metrics_json <> ''
               {type_filter}
+              and coalesce(nullif(portfolio_scope, ''), 'full_history') = ?
+              and (? is null or target_month = ?)
               and (? is null or id <> ?)
             """,
-            (exclude_portfolio_id, exclude_portfolio_id),
+            (
+                portfolio_scope,
+                target_month,
+                target_month,
+                exclude_portfolio_id,
+                exclude_portfolio_id,
+            ),
         ):
             try:
                 metrics = json.loads(row["metrics_json"])
@@ -1182,6 +1288,8 @@ class UBSPortfolioLogicMixin:
         target_portfolio_type: PortfolioType,
         *,
         exclude_portfolio_id: int | None = None,
+        portfolio_scope: str = "full_history",
+        target_month: int | None = None,
     ) -> list[list[float]]:
         curves: list[list[float]] = []
         active_memory = self._ubs_memory_path().resolve()
@@ -1194,6 +1302,8 @@ class UBSPortfolioLogicMixin:
                         conn,
                         target_portfolio_type,
                         exclude_portfolio_id=excluded,
+                        portfolio_scope=portfolio_scope,
+                        target_month=target_month,
                     )
                 )
             finally:
@@ -1450,6 +1560,8 @@ class UBSPortfolioLogicMixin:
         finally:
             conn.close()
         self._refresh_ubs_portfolios()
+        if hasattr(self, "_refresh_ubs_monthly_portfolios"):
+            self._refresh_ubs_monthly_portfolios()
         self.ubs_portfolio_status.set(f"{set_name} reintegrado al pool elegible.")
 
     def _on_ubs_portfolio_select(self, _event=None) -> None:
@@ -1497,12 +1609,66 @@ class UBSPortfolioLogicMixin:
         if portfolio is None:
             self.ubs_portfolio_detail_status.set("El portafolio ya no existe.")
             return
+        try:
+            metrics = json.loads(portfolio["metrics_json"] or "{}")
+        except Exception:
+            metrics = {}
+        inputs = metrics.get("inputs") if isinstance(metrics.get("inputs"), dict) else {}
+        seasonal_coverage = (
+            metrics.get("seasonal_coverage")
+            if isinstance(metrics.get("seasonal_coverage"), dict)
+            else {}
+        )
+        stress = metrics.get("stress_bootstrap") if isinstance(metrics.get("stress_bootstrap"), dict) else {}
+        is_monthly = str(portfolio["portfolio_scope"] or inputs.get("portfolio_scope") or "full_history") == "monthly"
+        month_no = int(portfolio["target_month"] or inputs.get("target_month") or 0)
+        month_label = str(inputs.get("target_month_label") or "").strip()
+        if is_monthly and not month_label and 1 <= month_no <= 12:
+            month_names = (
+                "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+            )
+            month_label = f"{month_no:02d} - {month_names[month_no - 1]}"
+        profile_label = str(inputs.get("optimization_profile_label") or "").strip()
+        title_suffix = f" - Mensual {month_label}" if is_monthly and month_label else ""
+        window.title(f"Portafolio #{portfolio_id}{title_suffix}")
         target = max(int(portfolio["target_strategies"] or 0), int(portfolio["active_strategies"] or 0))
-        self.ubs_portfolio_detail_status.set(
+        status_parts = [
             f"Portafolio #{portfolio_id}: {len(members)}/{target} estrategias | "
             f"{int(portfolio['total_units'] or 0)} unidades | lote {float(portfolio['total_lot'] or 0):.2f}"
+        ]
+        if is_monthly and month_label:
+            status_parts.append(f"Mensual {month_label}")
+        if profile_label:
+            status_parts.append(f"Perfil {profile_label}")
+        status_parts.append(
+            f"DD valle {float(portfolio['actual_valley_dd'] or 0):,.2f}/{float(portfolio['target_valley_dd'] or 0):,.2f}"
         )
+        status_parts.append(
+            f"DD puntual {float(portfolio['actual_point_dd'] or 0):,.2f}/{float(portfolio['target_point_dd'] or 0):,.2f}"
+        )
+        if stress:
+            stress_state = "ALERTA stress" if bool(stress.get("alert")) else "stress OK"
+            status_parts.append(
+                f"{stress_state} P95 {float(stress.get('valley_dd_p95') or 0):,.2f}"
+            )
+        self.ubs_portfolio_detail_status.set(" | ".join(status_parts))
         for index, member in enumerate(members):
+            coverage = {}
+            for coverage_key in (
+                str(member.get("set_id") or ""),
+                str(member.get("set_path") or ""),
+            ):
+                if coverage_key and coverage_key in seasonal_coverage:
+                    coverage = seasonal_coverage[coverage_key]
+                    break
+            coverage_month = int(coverage.get("target_month") or 0) if isinstance(coverage, dict) else 0
+            years = coverage.get("years") if isinstance(coverage, dict) else []
+            positive_years = coverage.get("positive_years") if isinstance(coverage, dict) else []
+            if not isinstance(years, list):
+                years = []
+            if not isinstance(positive_years, list):
+                positive_years = []
             item = tree.insert(
                 "",
                 "end",
@@ -1513,6 +1679,9 @@ class UBSPortfolioLogicMixin:
                     self._ubs_portfolio_member_candidate_label(member),
                     member.get("symbol") or "",
                     member.get("timeframe") or member.get("period") or "",
+                    f"{coverage_month:02d}" if coverage_month else "",
+                    ",".join(str(year) for year in years),
+                    f"{len(positive_years)}/{len(years)}" if years else "",
                     int(member.get("units") or 0),
                     f"{float(member.get('lot') or 0):.2f}",
                     f"{float(member.get('net_profit_contribution') or 0):,.0f}",
@@ -1546,6 +1715,8 @@ class UBSPortfolioLogicMixin:
         except Exception as exc:
             messagebox.showerror("Poner en cuarentena", f"No se pudo actualizar el portafolio:\n{exc}")
             self._refresh_ubs_portfolios(select_id=portfolio_id)
+            if hasattr(self, "_refresh_ubs_monthly_portfolios"):
+                self._refresh_ubs_monthly_portfolios(select_id=portfolio_id)
             self._populate_ubs_portfolio_detail(portfolio_id)
 
     def _quarantine_selected_ubs_portfolio_member_impl(self, portfolio_id: int) -> None:
@@ -1619,6 +1790,8 @@ class UBSPortfolioLogicMixin:
         finally:
             conn.close()
         self._refresh_ubs_portfolios(select_id=portfolio_id)
+        if hasattr(self, "_refresh_ubs_monthly_portfolios"):
+            self._refresh_ubs_monthly_portfolios(select_id=portfolio_id)
         self._populate_ubs_portfolio_detail(portfolio_id)
         self.ubs_portfolio_status.set(f"{set_name} puesto en cuarentena y retirado del portafolio #{portfolio_id}.")
 
@@ -1646,9 +1819,72 @@ class UBSPortfolioLogicMixin:
             "max_downside_corr": 0.25,
             "max_dd_overlap": 0.35,
             "max_portfolio_corr": 0.50,
+            "portfolio_scope": str(portfolio["portfolio_scope"] or "full_history"),
+            "target_month": int(portfolio["target_month"] or 0) or None,
+            "strict_yearly_month_validation": False,
         }
         defaults.update(stored)
         return defaults
+
+    def _scope_portfolio_sets(
+        self,
+        strategies: list,
+        inputs: dict[str, object],
+    ) -> tuple[list, list[str]]:
+        if str(inputs.get("portfolio_scope") or "full_history") != "monthly":
+            return strategies, []
+        target_month = int(inputs.get("target_month") or 0)
+        if not 1 <= target_month <= 12:
+            raise ValueError("El portafolio mensual no tiene un mes objetivo valido.")
+        return slice_strategy_sets_to_month(strategies, target_month)
+
+    def _filter_strict_monthly_valid_proposals(
+        self,
+        full_sets: list,
+        proposals: list[dict[str, object]],
+        inputs: dict[str, object],
+    ) -> list[dict[str, object]]:
+        if not bool(inputs.get("strict_yearly_month_validation")):
+            return proposals
+        target_month = int(inputs.get("target_month") or 0)
+        if not 1 <= target_month <= 12:
+            raise ValueError("La validacion estricta mensual no tiene un mes objetivo valido.")
+        full_by_id = {strategy.set_id: strategy for strategy in full_sets}
+        valid: list[dict[str, object]] = []
+        rejected: list[str] = []
+        for proposal in proposals:
+            result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
+            units = {
+                allocation.set_id: allocation.units
+                for allocation in result.allocations
+                if allocation.units > 0
+            }
+            validation = validate_strict_monthly_portfolio(
+                [full_by_id[set_id] for set_id in units if set_id in full_by_id],
+                units,
+                target_month=target_month,
+                target_valley_dd=result.target_valley_dd,
+                target_point_dd=result.target_point_dd,
+                lookback_years=5,
+            )
+            result.seasonal_validation = validation
+            if bool(validation.get("passed")):
+                result.warnings.append(
+                    "Validacion estricta mensual OK: el mes objetivo pasa ano a ano "
+                    "y es el mejor mes neto de los ultimos 5 anos."
+                )
+                valid.append(proposal)
+            else:
+                reasons = validation.get("reasons") or []
+                rejected.append(
+                    f"{proposal['label']}: " + "; ".join(str(item) for item in reasons[:3])
+                )
+        if not valid:
+            raise ValueError(
+                "Ninguna propuesta paso la validacion estricta mensual. "
+                + " | ".join(rejected)
+            )
+        return valid
 
     def _set_ubs_portfolio_detail_running(self, running: bool, text: str = "") -> None:
         for button in getattr(self, "ubs_portfolio_detail_buttons", []):
@@ -1660,7 +1896,10 @@ class UBSPortfolioLogicMixin:
             self.ubs_portfolio_detail_status.set(text)
 
     def _reoptimize_saved_ubs_portfolio(self, portfolio_id: int) -> None:
-        if getattr(self, "ubs_portfolio_running", False):
+        if (
+            getattr(self, "ubs_portfolio_running", False)
+            or getattr(self, "ubs_monthly_portfolio_running", False)
+        ):
             messagebox.showwarning("Revalidar portafolio", "Ya hay un calculo de portafolio en marcha.")
             return
         conn = self._ubs_portfolio_conn()
@@ -1673,13 +1912,22 @@ class UBSPortfolioLogicMixin:
             messagebox.showerror("Revalidar portafolio", "El portafolio ya no existe.")
             return
         inputs = self._saved_portfolio_inputs(portfolio)
+        is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+        reserve_var = (
+            self.ubs_monthly_portfolio_dd_reserve_pct
+            if is_monthly else self.ubs_portfolio_dd_reserve_pct
+        )
+        restarts_var = (
+            self.ubs_monthly_portfolio_search_restarts
+            if is_monthly else self.ubs_portfolio_search_restarts
+        )
         try:
             inputs["dd_reserve_pct"] = self._parse_float_setting(
-                self.ubs_portfolio_dd_reserve_pct.get(),
+                reserve_var.get(),
                 "Reserva DD",
             )
             inputs["search_restarts"] = self._parse_int_setting(
-                self.ubs_portfolio_search_restarts.get(),
+                restarts_var.get(),
                 "Reinicios de busqueda",
                 minimum=0,
             )
@@ -1706,7 +1954,10 @@ class UBSPortfolioLogicMixin:
         try:
             portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
             inputs["portfolio_type"] = portfolio_type.value
-            rows = self._final_tick_passed_candidates_all_accounts()
+            is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+            rows = self._final_tick_passed_candidates_all_accounts(
+                include_quarantined=is_monthly,
+            )
             if bool(inputs.get("require_3_positive_months_6m")):
                 rows, month_warnings = filter_rows_by_recent_positive_months(
                     rows,
@@ -1715,11 +1966,13 @@ class UBSPortfolioLogicMixin:
                 )
             else:
                 month_warnings = []
-            used = self._used_set_paths_all_accounts(
+            used = [] if is_monthly else self._used_set_paths_all_accounts(
                 portfolio_type,
                 exclude_portfolio_id=portfolio_id,
             )
             raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+            full_sets_for_strict_validation = list(raw_sets)
+            raw_sets, scope_warnings = self._scope_portfolio_sets(raw_sets, inputs)
             if not raw_sets:
                 raise ValueError("No quedan candidatos elegibles para reoptimizar.")
             proposals = self._optimize_ubs_portfolio_proposals(
@@ -1729,6 +1982,8 @@ class UBSPortfolioLogicMixin:
                 self._saved_portfolio_curves_all_accounts(
                     portfolio_type,
                     exclude_portfolio_id=portfolio_id,
+                    portfolio_scope="monthly" if is_monthly else "full_history",
+                    target_month=int(inputs.get("target_month") or 0) if is_monthly else None,
                 ),
                 progress=lambda label, index: self.after(
                     0,
@@ -1737,8 +1992,13 @@ class UBSPortfolioLogicMixin:
                     f"Revalidando #{portfolio_id}: propuesta {index}/3 ({label})...",
                 ),
             )
+            proposals = self._filter_strict_monthly_valid_proposals(
+                full_sets_for_strict_validation,
+                proposals,
+                inputs,
+            )
             for proposal in proposals:
-                proposal["result"].warnings[:0] = month_warnings + load_warnings
+                proposal["result"].warnings[:0] = month_warnings + load_warnings + scope_warnings
         except Exception as exc:
             self.after(
                 0,
@@ -1831,6 +2091,20 @@ class UBSPortfolioLogicMixin:
             except Exception as exc:
                 errors.append(f"{label}: {exc}")
                 continue
+            raw_by_id = {strategy.set_id: strategy for strategy in raw_sets}
+            result.seasonal_coverage = {
+                allocation.set_id: {
+                    "target_month": raw_by_id[allocation.set_id].target_month,
+                    "years": list(raw_by_id[allocation.set_id].month_years),
+                    "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
+                    "year_count": len(raw_by_id[allocation.set_id].month_years),
+                    "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
+                    "trades": raw_by_id[allocation.set_id].trades_2020_2026,
+                }
+                for allocation in result.allocations
+                if allocation.set_id in raw_by_id
+                and raw_by_id[allocation.set_id].target_month is not None
+            }
             proposals.append(
                 {
                     "key": key,
@@ -1931,6 +2205,11 @@ class UBSPortfolioLogicMixin:
             diff_tree.insert("", "end", values=values, tags=(tag,))
         summary_var = getattr(self, "ubs_portfolio_proposals_summary", None)
         if summary_var is not None:
+            month_prefix = ""
+            if str(inputs.get("portfolio_scope") or "full_history") == "monthly":
+                month_label = str(inputs.get("target_month_label") or "").strip()
+                if month_label:
+                    month_prefix = f"Objetivo {month_label} | "
             stress = result.stress_bootstrap
             stress_text = (
                 f"DD bootstrap P50/P95 {stress.valley_dd_p50:.2f}/{stress.valley_dd_p95:.2f} | "
@@ -1940,7 +2219,7 @@ class UBSPortfolioLogicMixin:
                 if stress else "bootstrap sin datos | "
             )
             summary_var.set(
-                f"{proposal['label']}: net {result.total_net_profit:,.2f} | "
+                f"{month_prefix}{proposal['label']}: net {result.total_net_profit:,.2f} | "
                 f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
                 f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
                 f"{stress_text}"
@@ -1960,9 +2239,15 @@ class UBSPortfolioLogicMixin:
         if not proposal or portfolio_id is None:
             messagebox.showerror("Propuestas", "Selecciona una propuesta valida.")
             return
-        if getattr(self, "ubs_portfolio_proposals_mode", "") == "generate":
+        proposal_mode = getattr(self, "ubs_portfolio_proposals_mode", "")
+        if proposal_mode == "generate":
             self._accept_generated_ubs_portfolio_proposal(proposal)
-            self._cancel_ubs_portfolio_proposals_preview(refresh_detail=False)
+            self._cancel_ubs_portfolio_proposals_preview(refresh_detail=False, update_status=False)
+            return
+        if proposal_mode == "generate_monthly":
+            self._accept_generated_ubs_monthly_portfolio_proposal(proposal)
+            self._cancel_ubs_portfolio_proposals_preview(refresh_detail=False, update_status=False)
+            self._save_pending_ubs_monthly_portfolio()
             return
         result: PortfolioResult = proposal["result"]
         inputs: dict[str, object] = proposal["inputs"]
@@ -1989,12 +2274,19 @@ class UBSPortfolioLogicMixin:
             conn.close()
         self._cancel_ubs_portfolio_proposals_preview(refresh_detail=False)
         self._refresh_ubs_portfolios(select_id=int(portfolio_id))
+        if hasattr(self, "_refresh_ubs_monthly_portfolios"):
+            self._refresh_ubs_monthly_portfolios(select_id=int(portfolio_id))
         self._populate_ubs_portfolio_detail(int(portfolio_id))
         self.ubs_portfolio_status.set(
             f"Portafolio #{portfolio_id} actualizado con propuesta {proposal['label']}."
         )
 
-    def _cancel_ubs_portfolio_proposals_preview(self, *, refresh_detail: bool = True) -> None:
+    def _cancel_ubs_portfolio_proposals_preview(
+        self,
+        *,
+        refresh_detail: bool = True,
+        update_status: bool = True,
+    ) -> None:
         window = getattr(self, "ubs_portfolio_proposals_window", None)
         if window is not None and window.winfo_exists():
             window.destroy()
@@ -2002,13 +2294,18 @@ class UBSPortfolioLogicMixin:
         mode = getattr(self, "ubs_portfolio_proposals_mode", "")
         self.ubs_portfolio_proposals = {}
         self.ubs_portfolio_selected_proposal_key = None
-        if mode == "generate":
+        if update_status and mode == "generate":
             self.ubs_portfolio_status.set("Seleccion de propuesta cancelada.")
-        if refresh_detail and mode != "generate" and portfolio_id is not None:
+        elif update_status and mode == "generate_monthly":
+            self.ubs_monthly_portfolio_status.set("Seleccion de propuesta mensual cancelada.")
+        if refresh_detail and mode not in {"generate", "generate_monthly"} and portfolio_id is not None:
             self._populate_ubs_portfolio_detail(int(portfolio_id))
 
     def _complete_saved_ubs_portfolio(self, portfolio_id: int) -> None:
-        if getattr(self, "ubs_portfolio_running", False):
+        if (
+            getattr(self, "ubs_portfolio_running", False)
+            or getattr(self, "ubs_monthly_portfolio_running", False)
+        ):
             messagebox.showwarning("Completar portafolio", "Ya hay un calculo de portafolio en marcha.")
             return
         conn = self._ubs_portfolio_conn()
@@ -2046,8 +2343,11 @@ class UBSPortfolioLogicMixin:
             inputs = self._saved_portfolio_inputs(portfolio)  # type: ignore[arg-type]
             portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
             inputs["portfolio_type"] = portfolio_type.value
-            rows = self._final_tick_passed_candidates_all_accounts()
-            used = self._used_set_paths_all_accounts(
+            is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+            rows = self._final_tick_passed_candidates_all_accounts(
+                include_quarantined=is_monthly,
+            )
+            used = [] if is_monthly else self._used_set_paths_all_accounts(
                 portfolio_type,
                 exclude_portfolio_id=portfolio_id,
             )
@@ -2076,6 +2376,9 @@ class UBSPortfolioLogicMixin:
             else:
                 month_warnings = []
             candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+            full_sets_for_strict_validation = list(required_sets) + list(candidate_sets)
+            required_sets, required_scope_warnings = self._scope_portfolio_sets(required_sets, inputs)
+            candidate_sets, candidate_scope_warnings = self._scope_portfolio_sets(candidate_sets, inputs)
             # Existing members are the fixed base of a repair. They may now be
             # locked by a newer portfolio or have a changed pipeline status;
             # neither condition is allowed to evict them implicitly. Only the
@@ -2095,6 +2398,8 @@ class UBSPortfolioLogicMixin:
             existing_curves = self._saved_portfolio_curves_all_accounts(
                 portfolio_type,
                 exclude_portfolio_id=portfolio_id,
+                portfolio_scope="monthly" if is_monthly else "full_history",
+                target_month=int(inputs.get("target_month") or 0) if is_monthly else None,
             )
             result = optimize_portfolio(
                 raw_sets=raw_sets,
@@ -2123,7 +2428,41 @@ class UBSPortfolioLogicMixin:
                 dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
                 search_restarts=int(inputs.get("search_restarts") or 0),
             )
-            result.warnings[:0] = required_warnings + month_warnings + load_warnings
+            raw_by_id = {strategy.set_id: strategy for strategy in raw_sets}
+            result.seasonal_coverage = {
+                allocation.set_id: {
+                    "target_month": raw_by_id[allocation.set_id].target_month,
+                    "years": list(raw_by_id[allocation.set_id].month_years),
+                    "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
+                    "year_count": len(raw_by_id[allocation.set_id].month_years),
+                    "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
+                    "trades": raw_by_id[allocation.set_id].trades_2020_2026,
+                }
+                for allocation in result.allocations
+                if allocation.set_id in raw_by_id
+                and raw_by_id[allocation.set_id].target_month is not None
+            }
+            if bool(inputs.get("strict_yearly_month_validation")):
+                validated = self._filter_strict_monthly_valid_proposals(
+                    full_sets_for_strict_validation,
+                    [
+                        {
+                            "key": "complete",
+                            "label": "Completar portafolio",
+                            "result": result,
+                            "inputs": inputs,
+                        }
+                    ],
+                    inputs,
+                )
+                result = validated[0]["result"]  # type: ignore[assignment]
+            result.warnings[:0] = (
+                required_warnings
+                + required_scope_warnings
+                + month_warnings
+                + load_warnings
+                + candidate_scope_warnings
+            )
             if result.active_strategies < target_strategies:
                 raise ValueError(
                     f"No existe una sustituta compatible: quedaron {result.active_strategies}/{target_strategies} estrategias."
@@ -2252,6 +2591,8 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_preview_result = None
         self.ubs_portfolio_preview_inputs = None
         self._refresh_ubs_portfolios(select_id=int(portfolio_id))
+        if hasattr(self, "_refresh_ubs_monthly_portfolios"):
+            self._refresh_ubs_monthly_portfolios(select_id=int(portfolio_id))
         self._populate_ubs_portfolio_detail(int(portfolio_id))
         self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} actualizado desde la vista previa.")
 
@@ -2283,6 +2624,8 @@ class UBSPortfolioLogicMixin:
             "equity_curve_2020_2026": result.equity_curve_2020_2026,
             "unused_sets": [asdict(item) for item in result.unused_sets],
             "stress_bootstrap": asdict(result.stress_bootstrap) if result.stress_bootstrap else None,
+            "seasonal_coverage": result.seasonal_coverage,
+            "seasonal_validation": result.seasonal_validation,
             "last_completed_at": datetime.now().isoformat(timespec="seconds"),
         }
         conn.execute(

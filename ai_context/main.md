@@ -126,6 +126,7 @@ batch wrappers.
 | `ubs_comparar` | UBS Comparar | (part of ubs_results) | (part of ubs_results) |
 | `ubs_params` | UBS Parámetros | `ui/ubs_params_view.py` | `ui/ubs_params_logic.py` |
 | `portafolio_ubs` | UBS Portafolio | `ui/ubs_portfolio_view.py` | `ui/ubs_portfolio_logic.py` |
+| `portafolio_ubs_mensual` | UBS Portafolio Mensual | `ui/ubs_monthly_portfolio_view.py` | `ui/ubs_monthly_portfolio_logic.py` |
 | `buscador` | UBS Buscador | `ui/ubs_search_view.py` | `ui/ubs_search_logic.py` |
 
 ## Recent Important Changes
@@ -953,6 +954,16 @@ A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It 
 ### Final Tick similarity — `profit_factor_floor` check (6M only)
 
 `final_tick_similarity()` in `ubs_agent.py` accepts an optional `min_model_profit_factor` parameter. When set (only for `six_month` stage), it adds a **symmetric floor check**: both OHLC PF and real-tick PF must be ≥ the minimum. This is separate from the delta check and fires even when the two values are close to each other but both below the threshold. The check appears as `"profit_factor_floor"` in `similarity_json.checks` and in UI `CAUSA` columns.
+
+### UBS Portafolio Mensual
+
+The independent `UBS Portafolio Mensual` screen uses every ECN/PRO candidate
+that passed Final Tick 6M. It intentionally ignores quarantine and used-set
+locks. The selected calendar month is extracted from every available year in
+the combined base + robustness trade history; all portfolio metrics and
+optimization operate on that month-only curve. Saved rows use
+`portfolio_scope='monthly'` plus `target_month` and do not block the regular
+full-history portfolio pool.
 
 ## Python Dependencies
 

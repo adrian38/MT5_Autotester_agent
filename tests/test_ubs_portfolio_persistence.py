@@ -13,6 +13,14 @@ class _PortfolioLogic(UBSPortfolioLogicMixin):
     pass
 
 
+class _MonthlyProposalApplyLogic(UBSPortfolioLogicMixin):
+    def _accept_generated_ubs_monthly_portfolio_proposal(self, proposal):
+        self.accepted_monthly_proposal = proposal
+
+    def _save_pending_ubs_monthly_portfolio(self):
+        self.saved_monthly_proposal = True
+
+
 class UBSPortfolioPersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.logic = _PortfolioLogic()
@@ -49,6 +57,12 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
             """
         )
         self.assertEqual(len(self.logic._final_tick_passed_candidates(self.conn, "ECN")), 1)
+        self.conn.execute("delete from candidate_final_tick where candidate_id=7")
+        self.assertEqual(
+            len(self.logic._final_tick_passed_candidates(self.conn, "ECN")),
+            1,
+            "The probe stage is not a portfolio gate once Final Tick 6M passed",
+        )
 
         self.conn.execute(
             """
@@ -59,6 +73,59 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
             """
         )
         self.assertEqual(self.logic._final_tick_passed_candidates(self.conn, "ECN"), [])
+        self.assertEqual(
+            len(
+                self.logic._final_tick_passed_candidates(
+                    self.conn,
+                    "ECN",
+                    include_quarantined=True,
+                )
+            ),
+            1,
+        )
+
+    def test_monthly_portfolios_do_not_lock_full_history_sets(self) -> None:
+        for portfolio_id, scope, month, set_path in (
+            (1, "full_history", None, "C:/sets/full.set"),
+            (2, "monthly", 1, "C:/sets/monthly.set"),
+        ):
+            self.conn.execute(
+                """
+                insert into portfolios (
+                    id, created_at, portfolio_type, portfolio_scope, target_month
+                ) values (?, '2026-06-24', 'balanced', ?, ?)
+                """,
+                (portfolio_id, scope, month),
+            )
+            self.conn.execute(
+                """
+                insert into portfolio_allocations (
+                    portfolio_id, set_id, candidate_id, symbol, units, lot,
+                    net_profit_contribution, standalone_valley_dd,
+                    standalone_point_dd, set_path
+                ) values (?, ?, '1', 'EURUSD', 1, 0.01, 10, 1, 1, ?)
+                """,
+                (portfolio_id, set_path, set_path),
+            )
+
+        self.assertEqual(
+            self.logic._used_set_paths(self.conn, PortfolioType.BALANCED),
+            ["C:/sets/full.set"],
+        )
+        self.assertEqual(
+            [row["id"] for row in self.logic._list_portfolios(self.conn)],
+            [1],
+        )
+        self.assertEqual(
+            [
+                row["id"]
+                for row in self.logic._list_portfolios(
+                    self.conn,
+                    portfolio_scope="monthly",
+                )
+            ],
+            [2],
+        )
 
     def test_used_set_query_can_exclude_portfolio_being_repaired(self) -> None:
         for portfolio_id, set_path in ((1, "C:/sets/current.set"), (2, "C:/sets/other.set")):
@@ -234,6 +301,48 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         self.assertIn("valley_dd_p95", stress)
         self.assertIn("probability_exceed_nominal_pct", stress)
         self.assertIn("probability_exceed_effective_pct", stress)
+
+    def test_monthly_portfolio_persists_scope_and_target_month(self) -> None:
+        inputs = {
+            "capital": 1000.0,
+            "valley_dd_pct": 20.0,
+            "point_dd_pct": 20.0,
+            "portfolio_type": "balanced",
+            "portfolio_scope": "monthly",
+            "target_month": 8,
+            "target_month_label": "08 - Agosto",
+        }
+        result = optimize_portfolio(
+            [make_strategy("august.set", "EURUSD", [0, 20, 10, 35])],
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=1,
+            bootstrap_simulations=20,
+        )
+
+        portfolio_id = self.logic._insert_portfolio(self.conn, inputs, result)
+        row = self.conn.execute(
+            "select portfolio_scope,target_month,metrics_json from portfolios where id=?",
+            (portfolio_id,),
+        ).fetchone()
+        self.assertEqual(row["portfolio_scope"], "monthly")
+        self.assertEqual(row["target_month"], 8)
+        self.assertEqual(json.loads(row["metrics_json"])["inputs"]["target_month"], 8)
+
+    def test_generated_monthly_proposal_is_saved_directly_from_preview(self) -> None:
+        logic = _MonthlyProposalApplyLogic()
+        proposal = {"result": object(), "inputs": {"portfolio_scope": "monthly", "target_month": 7}}
+        logic.ubs_portfolio_proposals = {"profit": proposal}
+        logic.ubs_portfolio_selected_proposal_key = "profit"
+        logic.ubs_portfolio_proposals_id = 0
+        logic.ubs_portfolio_proposals_mode = "generate_monthly"
+
+        logic._apply_selected_ubs_portfolio_proposal()
+
+        self.assertIs(logic.accepted_monthly_proposal, proposal)
+        self.assertTrue(logic.saved_monthly_proposal)
+        self.assertEqual(logic.ubs_portfolio_proposals, {})
 
 
 if __name__ == "__main__":
