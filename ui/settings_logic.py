@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import os
 import sqlite3
 import subprocess
 import sys
@@ -597,6 +598,62 @@ class SettingsLogicMixin:
                 return paths
         return []
 
+    def _historical_data_roots(self) -> list[Path]:
+        roots: list[Path] = []
+
+        def add_root(value: object) -> None:
+            text = str(value or "").strip()
+            if not text:
+                return
+            root = Path(text).expanduser().resolve(strict=False)
+            if root not in roots:
+                roots.append(root)
+
+        if hasattr(self, "mt5_data_root"):
+            add_root(self.mt5_data_root.get())
+        for profile in getattr(self, "multiterminal_profiles", []):
+            add_root(profile.get("data_dir"))
+
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            global_tester = Path(appdata) / "MetaQuotes" / "Tester"
+            if global_tester.is_dir():
+                add_root(global_tester)
+            terminal_base = Path(appdata) / "MetaQuotes" / "Terminal"
+            if terminal_base.is_dir():
+                for child in terminal_base.iterdir():
+                    if child.is_dir():
+                        add_root(child)
+        return roots
+
+    def _historical_data_leftovers(self) -> list[tuple[Path, int, int]]:
+        leftovers: list[tuple[Path, int, int]] = []
+        for root in self._historical_data_roots():
+            subdirs = (".",) if root.name.casefold() == "tester" else ("Tester", "tester", "bases", "history")
+            for subdir in subdirs:
+                path = root / subdir
+                if not path.exists() or not path.is_dir():
+                    continue
+                file_count = 0
+                total_bytes = 0
+                try:
+                    for item in path.rglob("*"):
+                        if not item.is_file():
+                            continue
+                        file_count += 1
+                        try:
+                            total_bytes += item.stat().st_size
+                        except OSError:
+                            pass
+                except OSError:
+                    file_count += 1
+                if file_count > 0 or total_bytes > 0:
+                    leftovers.append((path, file_count, total_bytes))
+        unique: dict[str, tuple[Path, int, int]] = {}
+        for path, file_count, total_bytes in leftovers:
+            unique[str(path).casefold()] = (path, file_count, total_bytes)
+        return sorted(unique.values(), key=lambda item: item[2], reverse=True)
+
     def _run_clean_scripts(self, scripts: list[Path]) -> None:
         total = max(1, len(scripts))
         failures = 0
@@ -623,6 +680,16 @@ class SettingsLogicMixin:
                 self.output_queue.put(f"\nERROR ejecutando {script.name}: {exc}\n")
             slot_end = 100.0 * (index + 1) / total
             self.after(0, lambda v=slot_end: self._set_clean_progress(v))
+        leftovers = self._historical_data_leftovers()
+        if leftovers:
+            failures += 1
+            self.output_queue.put("\nAVISO: quedan datos historicos despues de limpiar:\n")
+            for path, file_count, total_bytes in leftovers[:20]:
+                self.output_queue.put(
+                    f" - {path} | {file_count:,} archivos | {total_bytes / (1024 ** 3):.2f} GB\n"
+                )
+            if len(leftovers) > 20:
+                self.output_queue.put(f" - ... {len(leftovers) - 20} carpeta(s) mas\n")
         self.after(0, lambda: self._set_clean_progress(100.0))
         self.output_queue.put("\n=== Limpieza terminada ===\n")
         self.after(0, self._finish_clean, failures)
@@ -641,10 +708,11 @@ class SettingsLogicMixin:
         if failures:
             self._set_progress_color("danger")
             self.active_task_text.set("Limpieza con errores")
-            self.status_text.set(f"Limpieza terminada con {failures} script(s) fallido(s)")
+            self.status_text.set(f"Limpieza terminada con {failures} problema(s)")
             messagebox.showwarning(
                 "Limpieza con errores",
-                f"La limpieza termino con {failures} script(s) fallido(s).\nRevisa la consola en la pestaña Logs."
+                f"La limpieza termino con {failures} problema(s).\n"
+                "Revisa la consola en la pestana Logs para ver scripts fallidos o carpetas restantes."
             )
         else:
             self._set_progress_color("accent")
