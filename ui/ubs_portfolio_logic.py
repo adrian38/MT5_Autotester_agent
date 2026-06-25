@@ -1917,7 +1917,7 @@ class UBSPortfolioLogicMixin:
             if bool(validation.get("passed")):
                 result.warnings.append(
                     "Validacion estricta mensual OK: el mes objetivo pasa ano a ano "
-                    "y es el mejor mes neto de los ultimos 5 años."
+                    "todos los meses respetan el DD y el objetivo es el mejor mes neto de los ultimos 5 anos."
                 )
                 valid.append(proposal)
             else:

@@ -179,7 +179,7 @@ class UBSPortfolioViewMixin:
                 strict_check.grid(row=3, column=8, columnspan=4, sticky="w", padx=(8, 10), pady=5)
                 self._tooltip_cls(
                     strict_check,
-                    "Si esta activo, el portafolio debe pasar el DD del mes objetivo en cada uno de los ultimos 5 años y ese mes debe ser el mejor por net.",
+                    "Si esta activo, todos los meses deben respetar el DD en los ultimos 5 anos; el mes objetivo ademas debe pasar ano a ano y ser el mejor por net.",
                 )
             deep_var = getattr(self, "ubs_portfolio_deep_optimization", None)
             if deep_var is not None:
@@ -191,7 +191,7 @@ class UBSPortfolioViewMixin:
                 deep_check.grid(row=4, column=4, columnspan=4, sticky="w", padx=(8, 10), pady=5)
                 self._tooltip_cls(
                     deep_check,
-                    "Si esta activo, prueba pools estacionales adicionales. No sustituye la base estricta si reduce estrategias.",
+                    "Si esta activo, refina la cartera estricta probando adiciones y swaps sin saltarse DD, margen, correlacion ni mejor mes 5A.",
                 )
             margin_var = getattr(self, "ubs_portfolio_validate_roboforex_margin", None)
             margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)

@@ -223,6 +223,35 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertFalse(validation["passed"])
         self.assertTrue(any("DD valle" in reason for reason in validation["reasons"]))
 
+    def test_strict_monthly_validation_rejects_any_month_dd_break(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 100.0
+            points.append((datetime(year, 7, 5), accumulated))
+            accumulated += 10.0
+            points.append((datetime(year, 8, 5), accumulated))
+            accumulated -= 20.0
+            points.append((datetime(year, 8, 10), accumulated))
+            accumulated += 20.0
+            points.append((datetime(year, 8, 20), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=15,
+            target_point_dd=15,
+            lookback_years=5,
+        )
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["best_month"], 7)
+        self.assertFalse(validation["monthly_dd"]["08"]["passed_dd"])
+        self.assertTrue(any("mes 08" in reason for reason in validation["reasons"]))
+
     def test_block_bootstrap_is_deterministic_and_reports_audit_parameters(self) -> None:
         curve = [0, 12, 5, -4, 9, 3, 18, 7, 4, 22]
         first = bootstrap_valley_drawdown(

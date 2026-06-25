@@ -830,13 +830,13 @@ def validate_strict_monthly_portfolio(
     target_point_dd: float,
     lookback_years: int = 5,
 ) -> dict[str, object]:
-    """Validate a monthly portfolio year-by-year and by seasonal dominance.
+    """Validate a monthly portfolio year-by-year, by DD caps, and by dominance.
 
     The optimizer builds the portfolio on the selected month aggregated across
     history.  This stricter audit checks the fixed final allocation against each
-    selected-month year in the latest ``lookback_years`` available years, then
-    verifies that the selected month is the best aggregate month in that same
-    window.
+    selected-month year in the latest ``lookback_years`` available years,
+    verifies that every calendar month in that same window respects the DD caps,
+    then verifies that the selected month is the best aggregate month by net.
     """
     month = int(target_month)
     if not 1 <= month <= 12:
@@ -861,6 +861,7 @@ def validate_strict_monthly_portfolio(
             "lookback_years": years_back,
             "years": [],
             "yearly": [],
+            "monthly_dd": {},
             "month_net_by_month": {},
             "best_month": None,
             "best_month_net": 0.0,
@@ -933,6 +934,44 @@ def validate_strict_monthly_portfolio(
     month_net_by_month = {item: 0.0 for item in range(1, 13)}
     for timestamp, increment in increments:
         month_net_by_month[timestamp.month] += increment
+
+    monthly_dd: dict[str, dict[str, object]] = {}
+    for month_no in range(1, 13):
+        month_increments = [
+            (timestamp, increment)
+            for timestamp, increment in increments
+            if timestamp.month == month_no
+        ]
+        month_increments.sort(key=lambda item: item[0])
+        curve = [0.0]
+        total = 0.0
+        for _timestamp, increment in month_increments:
+            total += increment
+            curve.append(total)
+        valley_dd = calc_valley_dd(curve)
+        point_dd = calc_point_dd(curve)
+        passed_dd = (
+            valley_dd <= float(target_valley_dd) + 1e-9
+            and point_dd <= float(target_point_dd) + 1e-9
+        )
+        if not passed_dd:
+            label = f"mes {month_no:02d}"
+            if valley_dd > float(target_valley_dd) + 1e-9:
+                reasons.append(
+                    f"{label}: DD valle {valley_dd:,.2f} > {float(target_valley_dd):,.2f}"
+                )
+            if point_dd > float(target_point_dd) + 1e-9:
+                reasons.append(
+                    f"{label}: DD puntual {point_dd:,.2f} > {float(target_point_dd):,.2f}"
+                )
+        monthly_dd[f"{month_no:02d}"] = {
+            "trades": len(month_increments),
+            "net": total,
+            "valley_dd": valley_dd,
+            "point_dd": point_dd,
+            "passed_dd": passed_dd,
+        }
+
     best_month, best_month_net = max(
         month_net_by_month.items(),
         key=lambda item: (item[1], -abs(item[0] - month)),
@@ -950,6 +989,7 @@ def validate_strict_monthly_portfolio(
         "lookback_years": years_back,
         "years": years,
         "yearly": yearly,
+        "monthly_dd": monthly_dd,
         "month_net_by_month": {
             f"{key:02d}": value for key, value in sorted(month_net_by_month.items())
         },
