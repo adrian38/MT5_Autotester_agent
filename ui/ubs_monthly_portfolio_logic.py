@@ -12,6 +12,7 @@ from portfolio_manager.ubs_portfolio import (
     load_robust_sets_from_rows,
     slice_strategy_sets_to_month,
     summarize_robust_rows,
+    validate_strict_monthly_portfolio,
 )
 from ui.ubs_portfolio_logic import (
     DEFAULT_PORTFOLIO_FORM,
@@ -75,6 +76,17 @@ class UBSMonthlyPortfolioLogicMixin:
         inputs["strict_yearly_month_validation"] = bool(
             self.ubs_monthly_portfolio_strict_yearly_month_validation.get()
         )
+        inputs["deep_optimization"] = bool(self.ubs_monthly_portfolio_deep_optimization.get())
+        inputs["validate_roboforex_margin"] = bool(
+            self.ubs_monthly_portfolio_validate_roboforex_margin.get()
+        )
+        inputs["max_margin_pct"] = UBSPortfolioLogicMixin._parse_float_setting(
+            adapter,
+            self.ubs_monthly_portfolio_max_margin_pct.get(),
+            "Max margen",
+        )
+        if float(inputs["max_margin_pct"]) <= 0:
+            raise ValueError("Max margen debe ser mayor que 0.")
         return inputs
 
     def _set_ubs_monthly_portfolio_running(self, running: bool) -> None:
@@ -126,6 +138,9 @@ class UBSMonthlyPortfolioLogicMixin:
         self.ubs_monthly_portfolio_max_portfolio_corr.set(DEFAULT_PORTFOLIO_FORM["max_portfolio_corr"])
         self.ubs_monthly_portfolio_target_month.set(MONTH_LABELS[0])
         self.ubs_monthly_portfolio_strict_yearly_month_validation.set(False)
+        self.ubs_monthly_portfolio_deep_optimization.set(False)
+        self.ubs_monthly_portfolio_validate_roboforex_margin.set(True)
+        self.ubs_monthly_portfolio_max_margin_pct.set("100")
         self.ubs_monthly_portfolio_pending_result = None
         self.ubs_monthly_portfolio_pending_inputs = None
         self._set_ubs_monthly_portfolio_save_enabled(False)
@@ -198,21 +213,67 @@ class UBSMonthlyPortfolioLogicMixin:
                 portfolio_scope="monthly",
                 target_month=int(inputs["target_month"]),
             )
+            strict_retry_warnings: list[str] = []
             proposals = self._optimize_ubs_portfolio_proposals(
                 monthly_sets,
                 inputs,
                 portfolio_type,
                 existing_curves,
+                strict_full_sets=raw_sets,
                 progress=lambda label, index: self.after(
                     0,
                     self.ubs_monthly_portfolio_status.set,
-                    f"Calculando propuesta mensual {index}/3 ({label})...",
+                    (
+                        f"Calculando propuesta mensual profunda {index}/3 ({label})..."
+                        if bool(inputs.get("strict_yearly_month_validation")) and bool(inputs.get("deep_optimization"))
+                        else f"Calculando propuesta mensual estricta {index}/3 ({label})..."
+                        if bool(inputs.get("strict_yearly_month_validation"))
+                        else f"Calculando propuesta mensual {index}/3 ({label})..."
+                    ),
                 ),
             )
-            proposals = self._filter_strict_monthly_valid_proposals(raw_sets, proposals, inputs)
+            try:
+                proposals = self._filter_strict_monthly_valid_proposals(raw_sets, proposals, inputs)
+            except ValueError:
+                if not bool(inputs.get("strict_yearly_month_validation")):
+                    raise
+                strict_raw_sets, strict_retry_warnings = self._strict_monthly_candidate_pool(
+                    raw_sets,
+                    inputs,
+                )
+                if not strict_raw_sets:
+                    raise
+                strict_monthly_sets, strict_slice_warnings = slice_strategy_sets_to_month(
+                    strict_raw_sets,
+                    int(inputs["target_month"]),
+                )
+                strict_retry_warnings.extend(strict_slice_warnings)
+                if not strict_monthly_sets:
+                    raise
+                proposals = self._optimize_ubs_portfolio_proposals(
+                    strict_monthly_sets,
+                    inputs,
+                    portfolio_type,
+                    existing_curves,
+                    strict_full_sets=raw_sets,
+                    progress=lambda label, index: self.after(
+                        0,
+                        self.ubs_monthly_portfolio_status.set,
+                        f"Reintentando estricto {index}/3 ({label})...",
+                    ),
+                )
+                proposals = self._filter_strict_monthly_valid_proposals(
+                    raw_sets,
+                    proposals,
+                    inputs,
+                )
             for proposal in proposals:
                 proposal["result"].warnings[:0] = (
-                    month_filter_warnings + grid_warnings + load_warnings + slice_warnings
+                    month_filter_warnings
+                    + grid_warnings
+                    + load_warnings
+                    + slice_warnings
+                    + strict_retry_warnings
                 )
         except Exception as exc:
             self.after(0, self._ubs_monthly_portfolio_finished, {
@@ -226,19 +287,66 @@ class UBSMonthlyPortfolioLogicMixin:
             "proposals": proposals,
         })
 
+    def _strict_monthly_candidate_pool(
+        self,
+        raw_sets: list,
+        inputs: dict[str, object],
+    ) -> tuple[list, list[str]]:
+        target_month = int(inputs.get("target_month") or 0)
+        if not 1 <= target_month <= 12:
+            return [], []
+        selected = []
+        for strategy in raw_sets:
+            validation = validate_strict_monthly_portfolio(
+                [strategy],
+                {strategy.set_id: 1},
+                target_month=target_month,
+                target_valley_dd=1_000_000_000.0,
+                target_point_dd=1_000_000_000.0,
+                lookback_years=5,
+            )
+            if (
+                int(validation.get("best_month") or 0) == target_month
+                and float(validation.get("target_month_net") or 0.0) > 0
+            ):
+                selected.append(strategy)
+        warnings = [
+            "Validacion estricta: reintento con "
+            f"{len(selected)}/{len(raw_sets)} candidato(s) cuyo mejor mes individual 5A es el objetivo."
+        ]
+        return selected, warnings
+
     def _ubs_monthly_portfolio_finished(self, info: dict[str, object]) -> None:
         self._set_ubs_monthly_portfolio_running(False)
         if not info.get("ok"):
             message = str(info.get("error") or "Error desconocido")
             self.ubs_monthly_portfolio_pending_result = None
             self.ubs_monthly_portfolio_pending_inputs = None
-            self._clear_ubs_monthly_portfolio_result_tables()
+            if not self._restore_selected_ubs_monthly_portfolio_after_failed_generate():
+                self._clear_ubs_monthly_portfolio_result_tables()
             self.ubs_monthly_portfolio_status.set(message)
             return
         proposals = info.get("proposals") or []
         self.ubs_monthly_portfolio_proposals_availability = info.get("availability")
         self._show_ubs_portfolio_proposals_preview(0, proposals, [], mode="generate_monthly")
         self.ubs_monthly_portfolio_status.set("Selecciona una propuesta mensual para continuar.")
+
+    def _restore_selected_ubs_monthly_portfolio_after_failed_generate(self) -> bool:
+        tree = getattr(self, "ubs_monthly_portfolio_saved_tree", None)
+        if tree is None:
+            return False
+        selection = tree.selection()
+        if not selection:
+            return False
+        try:
+            portfolio_id = int(selection[0])
+        except (TypeError, ValueError):
+            return False
+        try:
+            self._populate_ubs_monthly_portfolio_saved(portfolio_id)
+        except Exception:
+            return False
+        return True
 
     def _accept_generated_ubs_monthly_portfolio_proposal(self, proposal: dict[str, object]) -> None:
         result: PortfolioResult = proposal["result"]  # type: ignore[assignment]

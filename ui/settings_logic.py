@@ -435,6 +435,13 @@ class SettingsLogicMixin:
             "ubs_monthly_portfolio_strict_yearly_month_validation": (
                 "1" if self.ubs_monthly_portfolio_strict_yearly_month_validation.get() else "0"
             ),
+            "ubs_monthly_portfolio_deep_optimization": (
+                "1" if self.ubs_monthly_portfolio_deep_optimization.get() else "0"
+            ),
+            "ubs_monthly_portfolio_validate_roboforex_margin": (
+                "1" if self.ubs_monthly_portfolio_validate_roboforex_margin.get() else "0"
+            ),
+            "ubs_monthly_portfolio_max_margin_pct": self.ubs_monthly_portfolio_max_margin_pct.get().strip(),
             "ubs_monthly_portfolio_dd_reserve_pct": self.ubs_monthly_portfolio_dd_reserve_pct.get().strip(),
             "ubs_monthly_portfolio_search_restarts": str(self.ubs_monthly_portfolio_search_restarts.get()),
             "ubs_monthly_portfolio_max_pair_corr": self.ubs_monthly_portfolio_max_pair_corr.get().strip(),

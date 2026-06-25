@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from portfolio_manager.ubs_portfolio import (
+    ClosedTrade,
     PeriodReport,
     PortfolioType,
     RobustStrategySet,
@@ -22,6 +23,7 @@ from portfolio_manager.ubs_portfolio import (
     improve_with_local_search,
     merge_accumulated_curves,
     optimize_portfolio,
+    optimize_strict_monthly_portfolio,
     portfolio_group_key,
     recent_positive_month_count,
     score_set_for_portfolio,
@@ -43,6 +45,7 @@ def make_strategy(
     already_used: bool = False,
     trades: int = 120,
     profit_factor: float = 1.5,
+    price: float | None = None,
 ) -> RobustStrategySet:
     valley = calc_valley_dd(curve)
     point = calc_point_dd(curve)
@@ -62,6 +65,19 @@ def make_strategy(
         trades=trades,
         gross_profit=max(net, 0),
         gross_loss=-max(valley, 1),
+        closed_trades=[
+            ClosedTrade(
+                open_time=datetime(2026, 1, 1),
+                close_time=datetime(2026, 1, 2),
+                symbol=symbol,
+                volume=0.01,
+                profit=net,
+                open_price=price,
+                close_price=price,
+            )
+        ]
+        if price is not None
+        else [],
     )
     return RobustStrategySet(
         set_id=set_id,
@@ -457,6 +473,92 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertIn("Stocks", selected_groups)
         self.assertIn("Forex", selected_groups)
 
+    def test_candidate_cap_reserves_symbols_inside_same_asset_group(self) -> None:
+        sets = []
+        for symbol_index, symbol in enumerate(("EURUSD", "USDJPY", "GBPUSD")):
+            for variant in range(3):
+                net = 200 - symbol_index * 20 - variant * 2
+                sets.append(make_strategy(f"{symbol}-{variant}", symbol, [0, net, net - 1, net * 2]))
+
+        selected = select_top_k_per_symbol(
+            sets,
+            top_k_per_symbol=3,
+            max_total_candidates=3,
+        )
+
+        self.assertEqual(
+            {portfolio_group_key(item.symbol) for item in selected},
+            {"Forex"},
+        )
+        self.assertEqual(
+            {item.symbol for item in selected},
+            {"EURUSD", "USDJPY", "GBPUSD"},
+        )
+
+    def test_strict_monthly_optimizer_can_combine_non_individually_best_sets(self) -> None:
+        july = 7
+        a = make_strategy("a", "EURUSD", [0, 1], trades=1)
+        b = make_strategy("b", "USDJPY", [0, 1], trades=1)
+        total_a = 0.0
+        total_b = 0.0
+        a_points = []
+        b_points = []
+        for year in range(2021, 2026):
+            total_a += 20.0
+            a_points.append((datetime(year, 7, 10), total_a))
+            total_a += 30.0
+            a_points.append((datetime(year, 8, 10), total_a))
+
+            total_b += 1.0
+            b_points.append((datetime(year, 7, 11), total_b))
+            total_b -= 50.0
+            b_points.append((datetime(year, 8, 11), total_b))
+            total_b += 2.0
+            b_points.append((datetime(year, 9, 11), total_b))
+        a.curve_points_2020_2026_001 = a_points
+        b.curve_points_2020_2026_001 = b_points
+        monthly, _warnings = slice_strategy_sets_to_month([a, b], july)
+
+        self.assertFalse(
+            validate_strict_monthly_portfolio(
+                [a],
+                {"a": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+        self.assertFalse(
+            validate_strict_monthly_portfolio(
+                [b],
+                {"b": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+
+        result = optimize_strict_monthly_portfolio(
+            monthly,
+            [a, b],
+            target_month=july,
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=3,
+            max_total_candidates=2,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+        )
+
+        self.assertEqual({item.set_id for item in result.allocations}, {"a", "b"})
+        self.assertTrue(result.seasonal_validation["passed"])
+        self.assertEqual(result.seasonal_validation["best_month"], july)
+
     def test_balanced_limits_active_sets_by_asset_group(self) -> None:
         result = optimize_portfolio(
             [
@@ -651,6 +753,28 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         allocation = result.allocations[0]
         self.assertEqual(allocation.units, execution_units_from_step(5000, allocation.lot_size_step))
         self.assertEqual(allocation.lot, allocation.units * 0.01)
+
+    def test_roboforex_margin_guard_limits_stock_lot_by_balance(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("meta", "META", [0, 50, 49.9, 100], price=700.0)],
+            capital=5000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=1000,
+            margin_balance=5000,
+            max_margin_pct=100,
+            stock_leverage=20,
+            default_leverage=500,
+            stock_contract_size=100,
+            default_contract_size=1,
+        )
+
+        allocation = result.allocations[0]
+        self.assertLessEqual(allocation.units, 142)
+        self.assertLess(allocation.lot, 10.0)
+        self.assertLessEqual(float(result.margin_summary["total"]), 5000.0)
+        self.assertEqual(allocation.margin_leverage, 20.0)
+        self.assertEqual(allocation.margin_contract_size, 100.0)
 
     def test_portfolio_repair_retains_required_sets(self) -> None:
         result = optimize_portfolio(

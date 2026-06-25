@@ -893,6 +893,21 @@ class MT5AutotesterUI(
                 False,
             )
         )
+        self.ubs_monthly_portfolio_deep_optimization = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}deep_optimization"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_validate_roboforex_margin = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}validate_roboforex_margin"),
+                True,
+            )
+        )
+        self.ubs_monthly_portfolio_max_margin_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_margin_pct", "100")
+        )
         self.ubs_monthly_portfolio_dd_reserve_pct = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}dd_reserve_pct", "10")
         )
@@ -1149,8 +1164,46 @@ class MT5AutotesterUI(
                         foreground=COLORS["text"], rowheight=26, borderwidth=0)
         style.map("Treeview", background=[("selected", COLORS["panel_highest"])], foreground=[("selected", COLORS["text"])])
         style.configure("Treeview.Heading", background=COLORS["panel_alt"], foreground=COLORS["muted"], font=("Segoe UI", 8, "bold"), padding=(6, 4))
-        style.configure("TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
-        style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
+        style.configure("TCheckbutton", background=COLORS["panel_alt"], foreground=COLORS["text"], focuscolor=COLORS["panel_alt"])
+        style.map(
+            "TCheckbutton",
+            background=[
+                ("disabled", COLORS["panel_alt"]),
+                ("pressed", COLORS["panel_alt"]),
+                ("active", COLORS["panel_alt"]),
+                ("focus", COLORS["panel_alt"]),
+                ("selected", COLORS["panel_alt"]),
+                ("!disabled", COLORS["panel_alt"]),
+            ],
+            foreground=[
+                ("disabled", COLORS["muted"]),
+                ("pressed", COLORS["text"]),
+                ("active", COLORS["text"]),
+                ("focus", COLORS["text"]),
+                ("selected", COLORS["text"]),
+                ("!disabled", COLORS["text"]),
+            ],
+        )
+        style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"], focuscolor=COLORS["panel"])
+        style.map(
+            "Panel.TCheckbutton",
+            background=[
+                ("disabled", COLORS["panel"]),
+                ("pressed", COLORS["panel"]),
+                ("active", COLORS["panel"]),
+                ("focus", COLORS["panel"]),
+                ("selected", COLORS["panel"]),
+                ("!disabled", COLORS["panel"]),
+            ],
+            foreground=[
+                ("disabled", COLORS["muted"]),
+                ("pressed", COLORS["text"]),
+                ("active", COLORS["text"]),
+                ("focus", COLORS["text"]),
+                ("selected", COLORS["text"]),
+                ("!disabled", COLORS["text"]),
+            ],
+        )
         style.configure("TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.configure("Panel.TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.map("TRadiobutton",

@@ -25,7 +25,9 @@ from portfolio_manager.ubs_portfolio import (
     evaluate_portfolio,
     load_robust_sets_from_rows,
     optimize_portfolio,
+    optimize_strict_monthly_portfolio,
     portfolio_group_summary,
+    portfolio_margin_summary,
     portfolio_symbol_key,
     slice_strategy_sets_to_month,
     summarize_robust_rows,
@@ -158,12 +160,25 @@ class UBSPortfolioLogicMixin:
                 set_path text,
                 timeframe text,
                 lot_size_step real,
+                margin_required real not null default 0,
+                margin_pct real not null default 0,
+                margin_leverage real not null default 0,
+                margin_contract_size real not null default 0,
+                margin_price real not null default 0,
                 is_report_path text,
                 oos_report_path text,
                 foreign key (portfolio_id) references portfolios(id)
             )
             """
         )
+        for column, definition in (
+            ("margin_required", "real not null default 0"),
+            ("margin_pct", "real not null default 0"),
+            ("margin_leverage", "real not null default 0"),
+            ("margin_contract_size", "real not null default 0"),
+            ("margin_price", "real not null default 0"),
+        ):
+            self._ensure_sqlite_column(conn, "portfolio_allocations", column, definition)
         conn.execute(
             """
             create table if not exists portfolio_decision_log (
@@ -493,6 +508,7 @@ class UBSPortfolioLogicMixin:
             "stress_bootstrap": asdict(result.stress_bootstrap) if result.stress_bootstrap else None,
             "seasonal_coverage": result.seasonal_coverage,
             "seasonal_validation": result.seasonal_validation,
+            "margin_summary": result.margin_summary,
         }
         cur = conn.execute(
             """
@@ -540,8 +556,10 @@ class UBSPortfolioLogicMixin:
                 insert into portfolio_allocations (
                     portfolio_id, set_id, candidate_id, symbol, units, lot,
                     net_profit_contribution, standalone_valley_dd, standalone_point_dd,
-                    set_path, timeframe, lot_size_step, is_report_path, oos_report_path
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    set_path, timeframe, lot_size_step, margin_required, margin_pct,
+                    margin_leverage, margin_contract_size, margin_price,
+                    is_report_path, oos_report_path
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     portfolio_id,
@@ -556,6 +574,11 @@ class UBSPortfolioLogicMixin:
                     allocation.set_path or allocation.set_id,
                     allocation.timeframe or "",
                     allocation.lot_size_step,
+                    allocation.margin_required,
+                    allocation.margin_pct,
+                    allocation.margin_leverage,
+                    allocation.margin_contract_size,
+                    allocation.margin_price,
                     allocation.is_report_path,
                     allocation.oos_report_path,
                 ),
@@ -1844,6 +1867,7 @@ class UBSPortfolioLogicMixin:
             "portfolio_scope": str(portfolio["portfolio_scope"] or "full_history"),
             "target_month": int(portfolio["target_month"] or 0) or None,
             "strict_yearly_month_validation": False,
+            "deep_optimization": False,
         }
         defaults.update(stored)
         return defaults
@@ -1893,7 +1917,7 @@ class UBSPortfolioLogicMixin:
             if bool(validation.get("passed")):
                 result.warnings.append(
                     "Validacion estricta mensual OK: el mes objetivo pasa ano a ano "
-                    "y es el mejor mes neto de los ultimos 5 anos."
+                    "y es el mejor mes neto de los ultimos 5 años."
                 )
                 valid.append(proposal)
             else:
@@ -2010,6 +2034,7 @@ class UBSPortfolioLogicMixin:
                     portfolio_scope="monthly" if is_monthly else "full_history",
                     target_month=int(inputs.get("target_month") or 0) if is_monthly else None,
                 ),
+                strict_full_sets=full_sets_for_strict_validation if is_monthly else None,
                 progress=lambda label, index: self.after(
                     0,
                     self._set_ubs_portfolio_detail_running,
@@ -2075,6 +2100,7 @@ class UBSPortfolioLogicMixin:
         base_type: PortfolioType,
         existing_curves: list[list[float]],
         *,
+        strict_full_sets: list | None = None,
         progress=None,
     ) -> list[dict[str, object]]:
         configured_reserve = float(inputs.get("dd_reserve_pct") or 0)
@@ -2093,28 +2119,55 @@ class UBSPortfolioLogicMixin:
             proposal_inputs["optimization_profile_label"] = label
             proposal_inputs["dd_reserve_pct"] = reserve
             try:
-                result = optimize_portfolio(
-                    raw_sets=raw_sets,
-                    capital=float(inputs["capital"]),
-                    valley_dd_pct=float(inputs["valley_dd_pct"]),
-                    point_dd_pct=float(inputs["point_dd_pct"]),
-                    portfolio_type=objective_type,
-                    min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
-                    top_k_per_symbol=int(inputs["top_k_per_symbol"]),
-                    max_total_candidates=int(inputs["max_total_candidates"]),
-                    max_units_per_set=inputs.get("max_units_per_set"),  # type: ignore[arg-type]
-                    max_total_units=inputs.get("max_total_units"),  # type: ignore[arg-type]
-                    max_units_per_symbol=inputs.get("max_units_per_symbol"),  # type: ignore[arg-type]
-                    max_sets_per_symbol=inputs.get("max_sets_per_symbol"),  # type: ignore[arg-type]
-                    run_local_search=bool(inputs.get("run_local_search", True)),
-                    max_pair_corr=inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                    max_downside_corr=inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                    max_dd_overlap=inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                    existing_portfolio_curves=existing_curves,
-                    max_portfolio_corr=inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                    dd_reserve_pct=reserve,
-                    search_restarts=int(inputs.get("search_restarts") or 0),
+                strict_monthly = (
+                    bool(inputs.get("strict_yearly_month_validation"))
+                    and bool(inputs.get("deep_optimization"))
+                    and str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+                    and strict_full_sets is not None
                 )
+                optimizer_kwargs = {
+                    "capital": float(inputs["capital"]),
+                    "valley_dd_pct": float(inputs["valley_dd_pct"]),
+                    "point_dd_pct": float(inputs["point_dd_pct"]),
+                    "portfolio_type": objective_type,
+                    "min_trades_2020_2026": int(inputs["min_trades_2020_2026"]),
+                    "top_k_per_symbol": int(inputs["top_k_per_symbol"]),
+                    "max_total_candidates": int(inputs["max_total_candidates"]),
+                    "max_units_per_set": inputs.get("max_units_per_set"),
+                    "max_total_units": inputs.get("max_total_units"),
+                    "max_units_per_symbol": inputs.get("max_units_per_symbol"),
+                    "max_sets_per_symbol": inputs.get("max_sets_per_symbol"),
+                    "run_local_search": bool(inputs.get("run_local_search", True)),
+                    "max_pair_corr": inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,
+                    "max_downside_corr": inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,
+                    "max_dd_overlap": inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,
+                    "existing_portfolio_curves": existing_curves,
+                    "max_portfolio_corr": inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,
+                    "dd_reserve_pct": reserve,
+                    "search_restarts": int(inputs.get("search_restarts") or 0),
+                    "margin_balance": float(inputs["capital"])
+                    if bool(inputs.get("validate_roboforex_margin"))
+                    else None,
+                    "max_margin_pct": float(inputs.get("max_margin_pct") or 100.0)
+                    if bool(inputs.get("validate_roboforex_margin"))
+                    else None,
+                    "stock_leverage": 20.0,
+                    "default_leverage": 500.0,
+                    "stock_contract_size": 100.0,
+                    "default_contract_size": 1.0,
+                }
+                if strict_monthly:
+                    result = optimize_strict_monthly_portfolio(
+                        monthly_sets=raw_sets,
+                        full_sets=strict_full_sets or [],
+                        target_month=int(inputs.get("target_month") or 0),
+                        **optimizer_kwargs,  # type: ignore[arg-type]
+                    )
+                else:
+                    result = optimize_portfolio(
+                        raw_sets=raw_sets,
+                        **optimizer_kwargs,  # type: ignore[arg-type]
+                    )
             except Exception as exc:
                 errors.append(f"{label}: {exc}")
                 continue
@@ -2180,6 +2233,10 @@ class UBSPortfolioLogicMixin:
             )
             stress = result.stress_bootstrap
             stress_status = "ALERTA" if stress and stress.alert else "OK" if stress else "SIN DATOS"
+            margin_summary = result.margin_summary or {}
+            margin_total = float(margin_summary.get("total", 0.0) or 0.0)
+            margin_limit = float(margin_summary.get("limit", 0.0) or 0.0)
+            margin_usage = float(margin_summary.get("usage_pct", 0.0) or 0.0)
             comparison_rows.append(
                 (
                     proposal["key"],
@@ -2193,6 +2250,8 @@ class UBSPortfolioLogicMixin:
                     f"{stress.probability_exceed_effective_pct:.1f}%" if stress else "-",
                     f"{margin_pct:.1f}%",
                     f"{float(proposal['reserve_pct']):.1f}%",
+                    f"{margin_total:,.0f}/{margin_limit:,.0f}" if margin_summary else "-",
+                    f"{margin_usage:.1f}%" if margin_summary else "-",
                     result.total_units,
                     result.active_strategies,
                     f"{max_group_pct:.1f}%",
@@ -2201,7 +2260,14 @@ class UBSPortfolioLogicMixin:
                 )
             )
         self._create_ubs_portfolio_proposals_window(portfolio_id, comparison_rows)
-        first_key = str(proposals[0]["key"])
+        if mode == "generate_monthly":
+            selected_proposal = max(
+                proposals,
+                key=lambda item: float(item["result"].total_net_profit),  # type: ignore[index, union-attr]
+            )
+        else:
+            selected_proposal = proposals[0]
+        first_key = str(selected_proposal["key"])
         tree = getattr(self, "ubs_portfolio_proposals_tree", None)
         if tree is not None and tree.exists(first_key):
             tree.selection_set(first_key)
@@ -2245,11 +2311,19 @@ class UBSPortfolioLogicMixin:
                 f"{'ALERTA ROJA' if stress.alert else 'estres OK'} | "
                 if stress else "bootstrap sin datos | "
             )
+            margin_text = ""
+            if result.margin_summary:
+                margin_text = (
+                    f"margen {float(result.margin_summary.get('total', 0.0)):,.2f}/"
+                    f"{float(result.margin_summary.get('limit', 0.0)):,.2f} "
+                    f"({float(result.margin_summary.get('usage_pct', 0.0)):.1f}%) | "
+                )
             summary_var.set(
                 f"{month_prefix}{proposal['label']}: net {result.total_net_profit:,.2f} | "
                 f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
                 f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
                 f"{stress_text}"
+                f"{margin_text}"
                 f"reserva {float(proposal['reserve_pct']):.1f}% | "
                 f"{result.active_strategies} estrategias | {result.total_units} unidades."
             )
@@ -2568,18 +2642,20 @@ class UBSPortfolioLogicMixin:
         self,
         previous_members: list[dict[str, object]],
         result: PortfolioResult,
-    ) -> list[tuple[str, str, str, int, int, int, str]]:
+    ) -> list[tuple[str, str, str, str, int, int, int, str, str, str]]:
         before = {
             str(member.get("set_path") or member.get("set_id") or ""): member
             for member in previous_members
         }
         after = {allocation.set_path or allocation.set_id: allocation for allocation in result.allocations}
-        rows: list[tuple[str, str, str, int, int, int, str]] = []
+        rows: list[tuple[str, str, str, str, int, int, int, str, str, str]] = []
         for set_path in sorted(set(before) | set(after), key=lambda path: Path(path).name.lower()):
             old = before.get(set_path)
             new = after.get(set_path)
             old_units = int(old.get("units") or 0) if old else 0
             new_units = int(new.units) if new else 0
+            old_lot = float(old.get("lot") or old_units * 0.01) if old else 0.0
+            new_lot = float(new.lot) if new else 0.0
             if old is None:
                 state = "NUEVA"
             elif new is None:
@@ -2590,7 +2666,20 @@ class UBSPortfolioLogicMixin:
                 state = "SIN CAMBIO"
             candidate = str(new.candidate_id) if new else str(old.get("candidate_id") or "")
             symbol = str(new.symbol) if new else str(old.get("symbol") or "")
-            rows.append((Path(set_path).name, candidate, symbol, old_units, new_units, new_units - old_units, state))
+            rows.append(
+                (
+                    Path(set_path).name,
+                    candidate,
+                    symbol,
+                    f"{new_lot:.2f}",
+                    old_units,
+                    new_units,
+                    new_units - old_units,
+                    f"{old_lot:.2f}",
+                    f"{new_lot - old_lot:+.2f}",
+                    state,
+                )
+            )
         return rows
 
     def _apply_ubs_portfolio_completion_preview(self) -> None:
@@ -2657,6 +2746,7 @@ class UBSPortfolioLogicMixin:
             "stress_bootstrap": asdict(result.stress_bootstrap) if result.stress_bootstrap else None,
             "seasonal_coverage": result.seasonal_coverage,
             "seasonal_validation": result.seasonal_validation,
+            "margin_summary": result.margin_summary,
             "last_completed_at": datetime.now().isoformat(timespec="seconds"),
         }
         conn.execute(
@@ -2702,8 +2792,10 @@ class UBSPortfolioLogicMixin:
                 insert into portfolio_allocations (
                     portfolio_id, set_id, candidate_id, symbol, units, lot,
                     net_profit_contribution, standalone_valley_dd, standalone_point_dd,
-                    set_path, timeframe, lot_size_step, is_report_path, oos_report_path
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    set_path, timeframe, lot_size_step, margin_required, margin_pct,
+                    margin_leverage, margin_contract_size, margin_price,
+                    is_report_path, oos_report_path
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     portfolio_id,
@@ -2718,6 +2810,11 @@ class UBSPortfolioLogicMixin:
                     allocation.set_path or allocation.set_id,
                     allocation.timeframe or "",
                     allocation.lot_size_step,
+                    allocation.margin_required,
+                    allocation.margin_pct,
+                    allocation.margin_leverage,
+                    allocation.margin_contract_size,
+                    allocation.margin_price,
                     allocation.is_report_path,
                     allocation.oos_report_path,
                 ),
@@ -2886,6 +2983,9 @@ class UBSPortfolioLogicMixin:
                 f"{float(member.get('standalone_valley_dd') or 0):,.2f}",
                 f"{float(member.get('standalone_point_dd') or 0):,.2f}",
                 f"{float(step):,.2f}" if step not in (None, "") else "-",
+                f"{float(member.get('margin_required') or 0):,.2f}",
+                f"{float(member.get('margin_pct') or 0):.1f}%",
+                f"1:{float(member.get('margin_leverage') or 0):.0f}" if float(member.get("margin_leverage") or 0) else "-",
             )
             item = tree.insert("", "end", values=values)
             self.ubs_portfolio_member_paths[item] = {

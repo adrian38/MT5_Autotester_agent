@@ -173,13 +173,42 @@ class UBSPortfolioViewMixin:
             if strict_month_var is not None:
                 strict_check = ttk.Checkbutton(
                     form,
-                    text="Validar anos + mejor mes 5A",
+                    text="Validar años + mejor mes 5A",
                     variable=strict_month_var,
                 )
                 strict_check.grid(row=3, column=8, columnspan=4, sticky="w", padx=(8, 10), pady=5)
                 self._tooltip_cls(
                     strict_check,
-                    "Si esta activo, el portafolio debe pasar el DD del mes objetivo en cada uno de los ultimos 5 anos y ese mes debe ser el mejor por net.",
+                    "Si esta activo, el portafolio debe pasar el DD del mes objetivo en cada uno de los ultimos 5 años y ese mes debe ser el mejor por net.",
+                )
+            deep_var = getattr(self, "ubs_portfolio_deep_optimization", None)
+            if deep_var is not None:
+                deep_check = ttk.Checkbutton(
+                    form,
+                    text="Optimización profunda",
+                    variable=deep_var,
+                )
+                deep_check.grid(row=4, column=4, columnspan=4, sticky="w", padx=(8, 10), pady=5)
+                self._tooltip_cls(
+                    deep_check,
+                    "Si esta activo, prueba pools estacionales adicionales. Es mas lento y solo aplica al mensual estricto.",
+                )
+            margin_var = getattr(self, "ubs_portfolio_validate_roboforex_margin", None)
+            margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
+            if margin_var is not None and margin_pct_var is not None:
+                margin_check = ttk.Checkbutton(
+                    form,
+                    text="Margen RoboForex",
+                    variable=margin_var,
+                )
+                margin_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=(10, 4), pady=5)
+                self._tooltip_cls(
+                    margin_check,
+                    "Valida margen estimado con Stocks 1:20 contract_size 100; resto 1:500 contract_size 1.",
+                )
+                label(4, 2, "Max margen %")
+                ttk.Entry(form, textvariable=margin_pct_var, width=8).grid(
+                    row=4, column=3, sticky="w", pady=5
                 )
         elif grid_off_var is not None:
             grid_off_check = ttk.Checkbutton(
@@ -458,18 +487,22 @@ class UBSPortfolioViewMixin:
         members_frame.grid(row=1, column=0, sticky="nsew")
         members_frame.columnconfigure(0, weight=1)
         members_frame.rowconfigure(0, weight=1)
-        member_columns = ("set", "account", "candidate", "symbol", "tf", "units", "lot", "net", "valley", "point", "step")
+        member_columns = (
+            "set", "account", "candidate", "symbol", "tf", "units", "lot", "net",
+            "valley", "point", "step", "margin", "margin_pct", "lev",
+        )
         self.ubs_portfolio_members_tree = ttk.Treeview(
             members_frame, columns=member_columns, show="headings", height=8, selectmode="browse"
         )
         member_headings = {
             "set": "SET ID", "account": "CUENTA", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
             "units": "UNID.", "lot": "LOTE", "net": "NET", "valley": "DD VALLE",
-            "point": "DD PUNT.", "step": "$/0.01",
+            "point": "DD PUNT.", "step": "$/0.01", "margin": "MARGEN", "margin_pct": "% BAL.", "lev": "LEV.",
         }
         member_widths = {
             "set": 230, "account": 70, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
             "lot": 62, "net": 90, "valley": 82, "point": 82, "step": 88,
+            "margin": 88, "margin_pct": 70, "lev": 58,
         }
         for column in member_columns:
             self.ubs_portfolio_members_tree.heading(column, text=member_headings[column])
@@ -602,7 +635,7 @@ class UBSPortfolioViewMixin:
         specs = (
             ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
             ("symbol", "SIMBOLO", 90), ("tf", "TF", 52), ("month", "MES", 58),
-            ("years", "ANOS", 90), ("positive_years", "POS.", 58), ("units", "UNID.", 58),
+            ("years", "AÑOS", 90), ("positive_years", "POS.", 58), ("units", "UNID.", 58),
             ("lot", "LOTE", 62), ("net", "NET", 90), ("valley", "DD VALLE", 82),
             ("point", "DD PUNT.", 82),
         )
@@ -617,7 +650,7 @@ class UBSPortfolioViewMixin:
         self,
         portfolio_id: int,
         summary: str,
-        rows: list[tuple[str, str, str, int, int, int, str]],
+        rows: list[tuple[str, str, str, str, int, int, int, str, str, str]],
     ) -> None:
         existing = getattr(self, "ubs_portfolio_preview_window", None)
         if existing is not None and existing.winfo_exists():
@@ -682,15 +715,21 @@ class UBSPortfolioViewMixin:
         frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
-        columns = ("set", "candidate", "symbol", "before", "after", "delta", "state")
+        columns = (
+            "set", "candidate", "symbol", "lot_after", "before", "after", "delta",
+            "lot_before", "lot_delta", "state",
+        )
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=14, selectmode="browse")
         specs = (
-            ("set", "SET", 330),
-            ("candidate", "CANDIDATE", 100),
+            ("set", "SET", 300),
+            ("candidate", "CANDIDATE", 92),
             ("symbol", "SIMBOLO", 90),
-            ("before", "UNID. ANTES", 90),
-            ("after", "UNID. DESPUES", 100),
+            ("lot_after", "LOTE", 72),
+            ("before", "UNID. ANTES", 86),
+            ("after", "UNID. DESPUES", 96),
             ("delta", "DELTA", 70),
+            ("lot_before", "LOTE ANTES", 86),
+            ("lot_delta", "DELTA LOTE", 86),
             ("state", "CAMBIO", 100),
         )
         for column, heading, width in specs:
@@ -795,7 +834,7 @@ class UBSPortfolioViewMixin:
         compare_columns = (
             "profile", "net", "valley", "point", "p50", "p95",
             "prob_nominal", "prob_effective", "margin", "reserve",
-            "units", "strategies", "group", "changes", "stress",
+            "real_margin", "real_margin_pct", "units", "strategies", "group", "changes", "stress",
         )
         compare_tree = ttk.Treeview(
             compare_frame,
@@ -816,6 +855,8 @@ class UBSPortfolioViewMixin:
             ("prob_effective", "P(> EFEC.)", 95),
             ("margin", "MARGEN DD", 90),
             ("reserve", "RESERVA", 80),
+            ("real_margin", "MARGEN", 105),
+            ("real_margin_pct", "% MARG.", 78),
             ("units", "UNID.", 70),
             ("strategies", "ESTR.", 70),
             ("group", "MAX GRUPO", 90),
@@ -837,7 +878,10 @@ class UBSPortfolioViewMixin:
         diff_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 14))
         diff_frame.columnconfigure(0, weight=1)
         diff_frame.rowconfigure(0, weight=1)
-        diff_columns = ("set", "candidate", "symbol", "before", "after", "delta", "state")
+        diff_columns = (
+            "set", "candidate", "symbol", "lot_after", "before", "after", "delta",
+            "lot_before", "lot_delta", "state",
+        )
         diff_tree = ttk.Treeview(
             diff_frame,
             columns=diff_columns,
@@ -847,12 +891,15 @@ class UBSPortfolioViewMixin:
         )
         self.ubs_portfolio_proposals_diff_tree = diff_tree
         diff_specs = (
-            ("set", "SET", 360),
-            ("candidate", "CANDIDATE", 100),
+            ("set", "SET", 300),
+            ("candidate", "CANDIDATE", 92),
             ("symbol", "SIMBOLO", 90),
-            ("before", "UNID. ANTES", 90),
-            ("after", "UNID. DESPUES", 100),
+            ("lot_after", "LOTE", 72),
+            ("before", "UNID. ANTES", 86),
+            ("after", "UNID. DESPUES", 96),
             ("delta", "DELTA", 70),
+            ("lot_before", "LOTE ANTES", 86),
+            ("lot_delta", "DELTA LOTE", 86),
             ("state", "CAMBIO", 100),
         )
         for column, heading, width in diff_specs:
