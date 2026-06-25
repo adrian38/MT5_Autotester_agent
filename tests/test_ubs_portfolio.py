@@ -559,6 +559,66 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertTrue(result.seasonal_validation["passed"])
         self.assertEqual(result.seasonal_validation["best_month"], july)
 
+    def test_strict_monthly_deep_refinement_adds_valid_improver(self) -> None:
+        july = 7
+        anchor = make_strategy("anchor", "EURUSD", [0, 1], trades=1)
+        improver = make_strategy("improver", "USDJPY", [0, 1], trades=1)
+        anchor_total = 0.0
+        improver_total = 0.0
+        anchor_points = []
+        improver_points = []
+        for year in range(2021, 2026):
+            anchor_total += 100.0
+            anchor_points.append((datetime(year, 7, 10), anchor_total))
+            improver_total += 10.0
+            improver_points.append((datetime(year, 7, 11), improver_total))
+            improver_total += 20.0
+            improver_points.append((datetime(year, 8, 11), improver_total))
+        anchor.curve_points_2020_2026_001 = anchor_points
+        improver.curve_points_2020_2026_001 = improver_points
+        monthly, _warnings = slice_strategy_sets_to_month([anchor, improver], july)
+
+        self.assertTrue(
+            validate_strict_monthly_portfolio(
+                [anchor],
+                {"anchor": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+        self.assertFalse(
+            validate_strict_monthly_portfolio(
+                [improver],
+                {"improver": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+
+        result = optimize_strict_monthly_portfolio(
+            monthly,
+            [anchor, improver],
+            target_month=july,
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=3,
+            max_total_candidates=2,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+        )
+
+        self.assertEqual({item.set_id for item in result.allocations}, {"anchor", "improver"})
+        self.assertEqual(result.active_strategies, 2)
+        self.assertTrue(result.seasonal_validation["passed"])
+        self.assertTrue(any("Optimizacion profunda aplicada" in warning for warning in result.warnings))
+
     def test_balanced_limits_active_sets_by_asset_group(self) -> None:
         result = optimize_portfolio(
             [

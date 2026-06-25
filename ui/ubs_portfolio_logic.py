@@ -2121,7 +2121,7 @@ class UBSPortfolioLogicMixin:
             try:
                 strict_monthly = (
                     bool(inputs.get("strict_yearly_month_validation"))
-                    and bool(inputs.get("deep_optimization"))
+                    and bool(inputs.get("use_deep_candidate_engine"))
                     and str(inputs.get("portfolio_scope") or "full_history") == "monthly"
                     and strict_full_sets is not None
                 )

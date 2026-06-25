@@ -191,7 +191,7 @@ class UBSPortfolioViewMixin:
                 deep_check.grid(row=4, column=4, columnspan=4, sticky="w", padx=(8, 10), pady=5)
                 self._tooltip_cls(
                     deep_check,
-                    "Si esta activo, prueba pools estacionales adicionales. Es mas lento y solo aplica al mensual estricto.",
+                    "Si esta activo, prueba pools estacionales adicionales. No sustituye la base estricta si reduce estrategias.",
                 )
             margin_var = getattr(self, "ubs_portfolio_validate_roboforex_margin", None)
             margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)

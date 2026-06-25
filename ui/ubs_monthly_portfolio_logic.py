@@ -214,9 +214,11 @@ class UBSMonthlyPortfolioLogicMixin:
                 target_month=int(inputs["target_month"]),
             )
             strict_retry_warnings: list[str] = []
+            base_inputs = dict(inputs)
+            base_inputs["use_deep_candidate_engine"] = False
             proposals = self._optimize_ubs_portfolio_proposals(
                 monthly_sets,
-                inputs,
+                base_inputs,
                 portfolio_type,
                 existing_curves,
                 strict_full_sets=raw_sets,
@@ -224,9 +226,7 @@ class UBSMonthlyPortfolioLogicMixin:
                     0,
                     self.ubs_monthly_portfolio_status.set,
                     (
-                        f"Calculando propuesta mensual profunda {index}/3 ({label})..."
-                        if bool(inputs.get("strict_yearly_month_validation")) and bool(inputs.get("deep_optimization"))
-                        else f"Calculando propuesta mensual estricta {index}/3 ({label})..."
+                        f"Calculando propuesta mensual estricta {index}/3 ({label})..."
                         if bool(inputs.get("strict_yearly_month_validation"))
                         else f"Calculando propuesta mensual {index}/3 ({label})..."
                     ),
@@ -252,7 +252,7 @@ class UBSMonthlyPortfolioLogicMixin:
                     raise
                 proposals = self._optimize_ubs_portfolio_proposals(
                     strict_monthly_sets,
-                    inputs,
+                    base_inputs,
                     portfolio_type,
                     existing_curves,
                     strict_full_sets=raw_sets,
@@ -267,6 +267,33 @@ class UBSMonthlyPortfolioLogicMixin:
                     proposals,
                     inputs,
                 )
+            if bool(inputs.get("strict_yearly_month_validation")) and bool(inputs.get("deep_optimization")):
+                try:
+                    deep_inputs = dict(inputs)
+                    deep_inputs["use_deep_candidate_engine"] = True
+                    deep_proposals = self._optimize_ubs_portfolio_proposals(
+                        monthly_sets,
+                        deep_inputs,
+                        portfolio_type,
+                        existing_curves,
+                        strict_full_sets=raw_sets,
+                        progress=lambda label, index: self.after(
+                            0,
+                            self.ubs_monthly_portfolio_status.set,
+                            f"Probando profunda {index}/3 ({label})...",
+                        ),
+                    )
+                    deep_proposals = self._filter_strict_monthly_valid_proposals(
+                        raw_sets,
+                        deep_proposals,
+                        inputs,
+                    )
+                    proposals = self._merge_deep_monthly_proposals(proposals, deep_proposals)
+                except Exception as exc:
+                    for proposal in proposals:
+                        proposal["result"].warnings.append(
+                            f"Optimizacion profunda descartada: {exc}"
+                        )
             for proposal in proposals:
                 proposal["result"].warnings[:0] = (
                     month_filter_warnings
@@ -286,6 +313,41 @@ class UBSMonthlyPortfolioLogicMixin:
             "availability": availability,
             "proposals": proposals,
         })
+
+    def _merge_deep_monthly_proposals(
+        self,
+        base_proposals: list[dict[str, object]],
+        deep_proposals: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        deep_by_key = {str(item.get("key")): item for item in deep_proposals}
+        merged: list[dict[str, object]] = []
+        for base in base_proposals:
+            key = str(base.get("key"))
+            deep = deep_by_key.get(key)
+            if deep is None:
+                merged.append(base)
+                continue
+            base_result: PortfolioResult = base["result"]  # type: ignore[assignment]
+            deep_result: PortfolioResult = deep["result"]  # type: ignore[assignment]
+            deep_is_better = (
+                deep_result.active_strategies >= base_result.active_strategies
+                and deep_result.total_net_profit > base_result.total_net_profit + 1e-9
+            )
+            if deep_is_better:
+                deep_result.warnings.append(
+                    "Optimizacion profunda aplicada: supera la solucion normal sin reducir estrategias."
+                )
+                merged.append(deep)
+            else:
+                base_result.warnings.append(
+                    "Optimizacion profunda no mejoro la solucion normal; se mantuvo la normal."
+                )
+                merged.append(base)
+        base_keys = {str(item.get("key")) for item in base_proposals}
+        for deep in deep_proposals:
+            if str(deep.get("key")) not in base_keys:
+                merged.append(deep)
+        return merged
 
     def _strict_monthly_candidate_pool(
         self,
