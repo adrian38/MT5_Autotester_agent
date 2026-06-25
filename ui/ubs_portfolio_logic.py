@@ -21,6 +21,7 @@ from portfolio_manager.ubs_portfolio import (
     PortfolioType,
     bootstrap_valley_drawdown,
     filter_rows_by_recent_positive_months,
+    filter_rows_grid_off,
     evaluate_portfolio,
     load_robust_sets_from_rows,
     optimize_portfolio,
@@ -461,6 +462,9 @@ class UBSPortfolioLogicMixin:
     ) -> PortfolioAvailability:
         target_portfolio_type = target_portfolio_type or self._portfolio_type_from_label(self.ubs_portfolio_type.get())
         rows = self._final_tick_passed_candidates_all_accounts()
+        grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
+        if grid_off_var is not None and bool(grid_off_var.get()):
+            rows, _warnings = filter_rows_grid_off(rows)
         used = self._used_set_paths_all_accounts(target_portfolio_type)
         return summarize_robust_rows(rows, used)
 
@@ -1049,6 +1053,9 @@ class UBSPortfolioLogicMixin:
             "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
             "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
             "require_3_positive_months_6m": bool(self.ubs_portfolio_require_3_positive_months_6m.get()),
+            "grid_off": bool(getattr(self, "ubs_portfolio_grid_off").get())
+            if hasattr(self, "ubs_portfolio_grid_off")
+            else False,
             "dd_reserve_pct": self._parse_float_setting(
                 self.ubs_portfolio_dd_reserve_pct.get(),
                 "Reserva DD",
@@ -1141,6 +1148,8 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_run_local_search.set(DEFAULT_PORTFOLIO_FORM["run_local_search"])
         self.ubs_portfolio_use_correlation.set(DEFAULT_PORTFOLIO_FORM["use_correlation"])
         self.ubs_portfolio_require_3_positive_months_6m.set(DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"])
+        if hasattr(self, "ubs_portfolio_grid_off"):
+            self.ubs_portfolio_grid_off.set(False)
         self.ubs_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
         self.ubs_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
@@ -1209,6 +1218,16 @@ class UBSPortfolioLogicMixin:
                         {"ok": False, "error": "No quedan candidatos tras exigir 3 meses positivos en los ultimos 6."},
                     )
                     return
+            grid_warnings: list[str] = []
+            if bool(inputs.get("grid_off")):
+                rows, grid_warnings = filter_rows_grid_off(rows)
+                if not rows:
+                    self.after(
+                        0,
+                        self._ubs_portfolio_finished,
+                        {"ok": False, "error": "No quedan candidatos tras aplicar Grid OFF."},
+                    )
+                    return
             availability = summarize_robust_rows(rows, used)
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
@@ -1227,7 +1246,7 @@ class UBSPortfolioLogicMixin:
                 ),
             )
             for proposal in proposals:
-                proposal["result"].warnings[:0] = month_warnings + load_warnings
+                proposal["result"].warnings[:0] = month_warnings + grid_warnings + load_warnings
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
             return
@@ -1452,6 +1471,9 @@ class UBSPortfolioLogicMixin:
         recent_months_var = getattr(self, "ubs_portfolio_require_3_positive_months_6m", None)
         if recent_months_var is not None and bool(recent_months_var.get()):
             filter_suffix = " | Filtro 3/6M activo al generar"
+        grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
+        if grid_off_var is not None and bool(grid_off_var.get()):
+            filter_suffix += " | Grid OFF activo"
         self.ubs_portfolio_availability.set(
             f"Sets Final Tick 6M OK ECN/PRO: {availability.robust_accepted} | "
             f"Sets bloqueados: {availability.already_used} | "
@@ -1966,6 +1988,9 @@ class UBSPortfolioLogicMixin:
                 )
             else:
                 month_warnings = []
+            grid_warnings: list[str] = []
+            if bool(inputs.get("grid_off")):
+                rows, grid_warnings = filter_rows_grid_off(rows)
             used = [] if is_monthly else self._used_set_paths_all_accounts(
                 portfolio_type,
                 exclude_portfolio_id=portfolio_id,
@@ -1998,7 +2023,9 @@ class UBSPortfolioLogicMixin:
                 inputs,
             )
             for proposal in proposals:
-                proposal["result"].warnings[:0] = month_warnings + load_warnings + scope_warnings
+                proposal["result"].warnings[:0] = (
+                    month_warnings + grid_warnings + load_warnings + scope_warnings
+                )
         except Exception as exc:
             self.after(
                 0,
@@ -2375,6 +2402,9 @@ class UBSPortfolioLogicMixin:
                 )
             else:
                 month_warnings = []
+            grid_warnings: list[str] = []
+            if bool(inputs.get("grid_off")):
+                rows, grid_warnings = filter_rows_grid_off(rows)
             candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
             full_sets_for_strict_validation = list(required_sets) + list(candidate_sets)
             required_sets, required_scope_warnings = self._scope_portfolio_sets(required_sets, inputs)
@@ -2460,6 +2490,7 @@ class UBSPortfolioLogicMixin:
                 required_warnings
                 + required_scope_warnings
                 + month_warnings
+                + grid_warnings
                 + load_warnings
                 + candidate_scope_warnings
             )

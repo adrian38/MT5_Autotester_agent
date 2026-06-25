@@ -133,6 +133,7 @@ class UBSPortfolioViewMixin:
             "Perturbaciones validas para escapar del optimo local. 0 desactiva; 4 es el valor recomendado.",
         )
         target_month_var = getattr(self, "ubs_portfolio_target_month", None)
+        grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
         if target_month_var is not None:
             label(3, 4, "Mes objetivo")
             self.ubs_portfolio_target_month_combo = ttk.Combobox(
@@ -157,6 +158,17 @@ class UBSPortfolioViewMixin:
                 self.ubs_portfolio_target_month_combo,
                 "Evalua solamente este mes en cada ano disponible del historico base y robustez.",
             )
+            if grid_off_var is not None:
+                grid_off_check = ttk.Checkbutton(
+                    form,
+                    text="Grid OFF",
+                    variable=grid_off_var,
+                )
+                grid_off_check.grid(row=3, column=7, sticky="w", padx=(8, 4), pady=5)
+                self._tooltip_cls(
+                    grid_off_check,
+                    "Si esta activo, descarta candidatos cuyo .set tenga EnableGrid=true.",
+                )
             strict_month_var = getattr(self, "ubs_portfolio_strict_yearly_month_validation", None)
             if strict_month_var is not None:
                 strict_check = ttk.Checkbutton(
@@ -164,11 +176,22 @@ class UBSPortfolioViewMixin:
                     text="Validar anos + mejor mes 5A",
                     variable=strict_month_var,
                 )
-                strict_check.grid(row=3, column=7, columnspan=5, sticky="w", padx=(8, 10), pady=5)
+                strict_check.grid(row=3, column=8, columnspan=4, sticky="w", padx=(8, 10), pady=5)
                 self._tooltip_cls(
                     strict_check,
                     "Si esta activo, el portafolio debe pasar el DD del mes objetivo en cada uno de los ultimos 5 anos y ese mes debe ser el mejor por net.",
                 )
+        elif grid_off_var is not None:
+            grid_off_check = ttk.Checkbutton(
+                form,
+                text="Grid OFF",
+                variable=grid_off_var,
+            )
+            grid_off_check.grid(row=3, column=4, columnspan=2, sticky="w", padx=(8, 4), pady=5)
+            self._tooltip_cls(
+                grid_off_check,
+                "Si esta activo, descarta candidatos cuyo .set tenga EnableGrid=true.",
+            )
 
         actions = tk.Frame(panel, bg=colors["panel_alt"])
         actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))

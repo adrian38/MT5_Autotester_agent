@@ -766,6 +766,51 @@ def slice_strategy_sets_to_month(
     return sliced, warnings
 
 
+def set_file_has_enabled_grid(set_path: str | Path) -> bool:
+    """Return True only when a .set file explicitly has EnableGrid=true."""
+    path = Path(set_path)
+    if not path.is_file():
+        return False
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = ""
+        for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+            try:
+                text = raw.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if not text:
+            text = raw.decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        if "=" not in line or line.lstrip().startswith(";"):
+            continue
+        key, value = line.split("=", 1)
+        if key.strip().lower() != "enablegrid":
+            continue
+        first_value = value.split("||", 1)[0].strip().lower()
+        return first_value in {"true", "1", "yes", "y", "si", "sí"}
+    return False
+
+
+def filter_rows_grid_off(rows: Sequence[object]) -> tuple[list[object], list[str]]:
+    """Remove candidate rows whose .set explicitly enables grid trading."""
+    filtered: list[object] = []
+    skipped_grid = 0
+    for row in rows:
+        set_path = str(_row_value(row, "set_path", default=""))
+        if set_path and set_file_has_enabled_grid(set_path):
+            skipped_grid += 1
+            continue
+        filtered.append(row)
+    warnings = []
+    if skipped_grid:
+        warnings.append(f"Grid OFF: {skipped_grid} candidato(s) omitido(s) por EnableGrid=true.")
+    return filtered, warnings
+
+
 def validate_strict_monthly_portfolio(
     strategies: Sequence[RobustStrategySet],
     allocations: dict[str, int],

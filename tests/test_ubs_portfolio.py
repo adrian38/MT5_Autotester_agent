@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+import tempfile
 import unittest
 
 from portfolio_manager.ubs_portfolio import (
@@ -16,6 +18,7 @@ from portfolio_manager.ubs_portfolio import (
     evaluate_portfolio,
     execution_units_from_step,
     filter_eligible_sets,
+    filter_rows_grid_off,
     improve_with_local_search,
     merge_accumulated_curves,
     optimize_portfolio,
@@ -23,6 +26,7 @@ from portfolio_manager.ubs_portfolio import (
     recent_positive_month_count,
     score_set_for_portfolio,
     select_top_k_per_symbol,
+    set_file_has_enabled_grid,
     slice_strategy_set_to_month,
     slice_strategy_sets_to_month,
     validate_strict_monthly_portfolio,
@@ -107,6 +111,31 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         )
         self.assertEqual(sliced, [])
         self.assertTrue(any("curva historica con fechas" in warning for warning in warnings))
+
+    def test_grid_off_filter_excludes_only_explicit_enable_grid_true(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            grid_on = root / "grid_on.set"
+            grid_off = root / "grid_off.set"
+            missing = root / "missing_key.set"
+            grid_on.write_text("EnableGrid=true||false||0||true||N\n", encoding="utf-8")
+            grid_off.write_text("EnableGrid=false||false||0||true||N\n", encoding="utf-8")
+            missing.write_text("OtherParam=true\n", encoding="utf-8")
+
+            self.assertTrue(set_file_has_enabled_grid(grid_on))
+            self.assertFalse(set_file_has_enabled_grid(grid_off))
+            self.assertFalse(set_file_has_enabled_grid(missing))
+
+            rows = [
+                {"set_path": str(grid_on), "candidate_id": 1},
+                {"set_path": str(grid_off), "candidate_id": 2},
+                {"set_path": str(missing), "candidate_id": 3},
+                {"set_path": str(root / "does_not_exist.set"), "candidate_id": 4},
+            ]
+            filtered, warnings = filter_rows_grid_off(rows)
+
+            self.assertEqual([row["candidate_id"] for row in filtered], [2, 3, 4])
+            self.assertTrue(any("EnableGrid=true" in warning for warning in warnings))
 
     def test_strict_monthly_validation_requires_target_month_best_in_last_five_years(self) -> None:
         strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)

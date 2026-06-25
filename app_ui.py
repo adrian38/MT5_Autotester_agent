@@ -804,6 +804,9 @@ class MT5AutotesterUI(
         self.ubs_portfolio_require_3_positive_months_6m = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_require_3_positive_months_6m"), False)
         )
+        self.ubs_portfolio_grid_off = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_grid_off"), False)
+        )
         self.ubs_portfolio_dd_reserve_pct = tk.StringVar(
             value=saved_general.get("ubs_portfolio_dd_reserve_pct", "10")
         )
@@ -880,6 +883,9 @@ class MT5AutotesterUI(
         )
         self.ubs_monthly_portfolio_require_3_positive_months_6m = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}require_3_positive_months_6m"), False)
+        )
+        self.ubs_monthly_portfolio_grid_off = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}grid_off"), False)
         )
         self.ubs_monthly_portfolio_strict_yearly_month_validation = tk.BooleanVar(
             value=self._bool_setting(

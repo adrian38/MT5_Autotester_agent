@@ -7,6 +7,7 @@ from types import MethodType
 from portfolio_manager.ubs_portfolio import (
     PortfolioResult,
     PortfolioType,
+    filter_rows_grid_off,
     filter_rows_by_recent_positive_months,
     load_robust_sets_from_rows,
     slice_strategy_sets_to_month,
@@ -116,6 +117,7 @@ class UBSMonthlyPortfolioLogicMixin:
         self.ubs_monthly_portfolio_require_3_positive_months_6m.set(
             DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"]
         )
+        self.ubs_monthly_portfolio_grid_off.set(False)
         self.ubs_monthly_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
         self.ubs_monthly_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_monthly_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
@@ -174,6 +176,11 @@ class UBSMonthlyPortfolioLogicMixin:
                     min_positive_months=3,
                     window_months=6,
                 )
+            grid_warnings: list[str] = []
+            if bool(inputs.get("grid_off")):
+                rows, grid_warnings = filter_rows_grid_off(rows)
+                if not rows:
+                    raise ValueError("No quedan candidatos tras aplicar Grid OFF.")
             availability = summarize_robust_rows(rows, [])
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
@@ -205,7 +212,7 @@ class UBSMonthlyPortfolioLogicMixin:
             proposals = self._filter_strict_monthly_valid_proposals(raw_sets, proposals, inputs)
             for proposal in proposals:
                 proposal["result"].warnings[:0] = (
-                    month_filter_warnings + load_warnings + slice_warnings
+                    month_filter_warnings + grid_warnings + load_warnings + slice_warnings
                 )
         except Exception as exc:
             self.after(0, self._ubs_monthly_portfolio_finished, {
@@ -276,6 +283,8 @@ class UBSMonthlyPortfolioLogicMixin:
             return
         try:
             rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=True)
+            if bool(self.ubs_monthly_portfolio_grid_off.get()):
+                rows, _warnings = filter_rows_grid_off(rows)
             availability = summarize_robust_rows(rows, [])
         except Exception as exc:
             self.ubs_monthly_portfolio_availability.set(f"Disponibilidad: error ({exc})")
@@ -293,6 +302,7 @@ class UBSMonthlyPortfolioLogicMixin:
             f"Final Tick 6M accepted: {availability.robust_accepted} | "
             "Sin exclusion por cuarentena ni por uso | "
             f"Simbolos: {availability.symbols_available}"
+            + (" | Grid OFF activo" if bool(self.ubs_monthly_portfolio_grid_off.get()) else "")
         )
         for symbol, count in availability.by_symbol.items():
             tree.insert("", "end", values=(symbol, count))

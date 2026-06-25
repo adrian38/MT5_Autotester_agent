@@ -406,6 +406,7 @@ class SettingsLogicMixin:
             "ubs_portfolio_require_3_positive_months_6m": (
                 "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"
             ),
+            "ubs_portfolio_grid_off": "1" if self.ubs_portfolio_grid_off.get() else "0",
             "ubs_portfolio_dd_reserve_pct": self.ubs_portfolio_dd_reserve_pct.get().strip(),
             "ubs_portfolio_search_restarts": str(self.ubs_portfolio_search_restarts.get()),
             "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
@@ -429,6 +430,7 @@ class SettingsLogicMixin:
             "ubs_monthly_portfolio_require_3_positive_months_6m": (
                 "1" if self.ubs_monthly_portfolio_require_3_positive_months_6m.get() else "0"
             ),
+            "ubs_monthly_portfolio_grid_off": "1" if self.ubs_monthly_portfolio_grid_off.get() else "0",
             "ubs_monthly_portfolio_strict_yearly_month_validation": (
                 "1" if self.ubs_monthly_portfolio_strict_yearly_month_validation.get() else "0"
             ),

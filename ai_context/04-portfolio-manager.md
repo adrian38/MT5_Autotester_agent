@@ -144,6 +144,10 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
   unless the fixed allocation passes the selected month year-by-year over the
   latest five years where that month exists, and unless that selected month is
   the best aggregate calendar month by net in the same five-year window.
+- **Grid OFF filter**: when enabled in `UBS Portafolio` or
+  `UBS Portafolio Mensual`, candidate rows are filtered before report loading
+  if their source `.set` explicitly has `EnableGrid=true`. Missing/unreadable
+  keys are not treated as grid-enabled.
 - **Saved portfolio repair**: repair starts with every remaining member at its
   saved unit count and freezes those allocations. If quarantine removed a
   diversifying curve and the remainder now violates DD, the repair reduces only
@@ -162,6 +166,7 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 | `optimize_portfolio(sets, config)` | Discrete unit optimizer with DD constraints and decision log |
 | `slice_strategy_set_to_month(set, month)` | Rebuild one strategy from the selected calendar month across all years |
 | `slice_strategy_sets_to_month(sets, month)` | Seasonal batch conversion with missing-date warnings |
+| `set_file_has_enabled_grid(path)` / `filter_rows_grid_off(rows)` | Detect and exclude `.set` files whose current `EnableGrid` value is true |
 | `validate_strict_monthly_portfolio(sets, allocations, ...)` | Audit a monthly allocation year-by-year and verify selected-month dominance over the latest five years |
 | `calc_valley_dd(curve)` | Maximum peak-to-trough drawdown for a curve |
 | `calc_point_dd(curve)` | Worst single-step drop for a curve |

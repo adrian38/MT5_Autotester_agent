@@ -674,6 +674,12 @@ requirement changes or a debt item is opened/closed.
   Proposals that fail this strict seasonal validation MUST be rejected before
   the proposal preview/save step, and the audit details MUST be persisted in
   `metrics_json`.
+- **FR-1.12.43** `UBS Portafolio` and `UBS Portafolio Mensual` MAY expose a
+  `Grid OFF` checkbox. When enabled, portfolio generation, reoptimization, and
+  completion MUST exclude candidate rows whose source `.set` file explicitly
+  contains `EnableGrid=true` as the current value. Missing/unreadable
+  `EnableGrid` keys MUST NOT be treated as grid-enabled. The selected setting
+  MUST be persisted in portfolio inputs and UI settings.
 
 ### 1.13 Packaging & runtime
 
