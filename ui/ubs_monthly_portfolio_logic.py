@@ -298,11 +298,15 @@ class UBSMonthlyPortfolioLogicMixin:
             )
             if not monthly_sets:
                 raise ValueError("Ningun candidato tiene trades fechados para el mes objetivo.")
-            existing_curves = self._saved_portfolio_curves_all_accounts(
+            saved_monthly_curves = self._saved_portfolio_curves_all_accounts(
                 portfolio_type,
                 portfolio_scope="monthly",
                 target_month=int(inputs["target_month"]),
             )
+            # A new monthly portfolio is an independent search for the selected
+            # month.  It must not be penalized for looking like another saved
+            # monthly portfolio unless we add a dedicated UI option for that.
+            existing_curves = []
             strict_retry_warnings: list[str] = []
             engine_inputs = dict(inputs)
             engine_inputs["use_deep_candidate_engine"] = (
@@ -315,6 +319,7 @@ class UBSMonthlyPortfolioLogicMixin:
                 {
                     "strict": bool(inputs.get("strict_yearly_month_validation")),
                     "deep_refinement": bool(engine_inputs.get("use_deep_candidate_engine")),
+                    "saved_monthly_curves_ignored": len(saved_monthly_curves),
                     "existing_monthly_curves": len(existing_curves),
                 },
             )
