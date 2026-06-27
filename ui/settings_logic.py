@@ -12,7 +12,15 @@ from tkinter import filedialog, messagebox
 import telegram_notify
 from mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR
-from ubs.account import BROKER_ACCOUNT_TYPES, account_memory_path
+from ubs.account import (
+    BROKERS,
+    BROKER_ACCOUNT_TYPES,
+    DEFAULT_BROKER,
+    account_memory_path,
+    default_symbol_map_for_broker,
+    normalize_broker,
+    symbol_map_setting_key,
+)
 from ubs.db import connect_memory
 
 
@@ -329,6 +337,14 @@ class SettingsLogicMixin:
             "portfolio_input": self.portfolio_input.get().strip(),
             "portfolio_output": self.portfolio_output.get().strip(),
         }
+        symbol_maps = getattr(self, "_ubs_symbol_maps_by_broker", {})
+        if symbol_maps is None:
+            symbol_maps = {}
+        active_symbol_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", self.ubs_broker.get()))
+        symbol_maps[active_symbol_broker] = self.symbol_map.get().strip()
+        for broker in BROKERS:
+            symbol_maps.setdefault(broker, default_symbol_map_for_broker(broker))
+        self._ubs_symbol_maps_by_broker = symbol_maps
         parser["General"] = {
             "recursive": "1" if self.recursive.get() else "0",
             "delay": str(self.delay.get()),
@@ -388,7 +404,7 @@ class SettingsLogicMixin:
             "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
             "symbol_suffix": self.symbol_suffix.get().strip(),
             "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
-            "symbol_map": self.symbol_map.get().strip(),
+            "symbol_map": symbol_maps.get(DEFAULT_BROKER, default_symbol_map_for_broker(DEFAULT_BROKER)),
             "telegram_enabled": "1" if self.telegram_enabled.get() else "0",
             "portfolio_threshold": self.portfolio_threshold.get().strip(),
             "ubs_portfolio_num_symbols": str(self.ubs_portfolio_num_symbols.get()),
@@ -451,6 +467,11 @@ class SettingsLogicMixin:
             "ubs_monthly_portfolio_max_portfolio_corr": self.ubs_monthly_portfolio_max_portfolio_corr.get().strip(),
             "theme": self.theme_mode.get(),
         }
+        for broker in BROKERS:
+            parser["General"][symbol_map_setting_key(broker)] = symbol_maps.get(
+                broker,
+                default_symbol_map_for_broker(broker),
+            )
         parser["Multiterminal"] = {
             "enabled": "1" if self.multiterminal_enabled.get() else "0",
             "broker": self._active_multiterminal_broker() if hasattr(self, "_active_multiterminal_broker") else "ROBOFOREX",

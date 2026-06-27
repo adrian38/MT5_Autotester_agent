@@ -122,19 +122,19 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.0** UBS storage MUST be isolated by broker and account type. Supported
   broker/account pairs are RoboForex ECN/PRO, ICTrading STANDARD, and AXI
   STANDARD/PREMIUM. SQLite memory files, seed directories, output directories,
-  and run results MUST be broker/account-scoped. Asset universes and
-  disabled-symbol GEN/SEEDS policies MUST be broker-scoped and shared by the
-  accounts under that broker. Timeframe universes MUST already resolve through a
-  broker/account path so they can diverge later even though defaults are shared
-  today. All paths MUST be resolved through `ubs/account.py` helpers; code MUST
-  NOT assume `ECN`/`PRO` are globally unique.
+  and run results MUST be broker/account-scoped. Asset universes MUST be
+  broker-scoped, while disabled-symbol GEN/SEEDS policies MUST be
+  broker/account-scoped. Timeframe universe configuration is the only shared
+  universe for now and MUST use the same file for every broker/account. All
+  paths MUST be resolved through `ubs/account.py` helpers; code MUST NOT assume
+  `ECN`/`PRO` are globally unique.
 - **FR-1.6.0a** Existing account-only RoboForex ECN/PRO data MUST be preserved.
   On app/CLI startup, legacy files and folders (`ubs_memory_ECN.sqlite`,
   `ubs_memory_PRO.sqlite`, `sets/ubs_ready/ECN|PRO`, `outputs/ubs_agent/ECN|PRO`,
-  and old disabled-symbol JSON files) MUST be copied/merged into the new
-  `ROBOFOREX/{ECN|PRO}` and broker-policy layout only when the destination does
-  not already exist or can be merged safely. Migration MUST be non-destructive
-  and MUST NOT overwrite new data.
+  and old disabled-symbol JSON files) MUST be copied into the new
+  `ROBOFOREX/{ECN|PRO}` and account-policy layout only when the destination
+  does not already exist or can be migrated safely. Migration MUST be
+  non-destructive and MUST NOT overwrite new data.
 - **FR-1.6.1** Each generation round MUST load `.set` seeds from the configured
   source directory (default `sets/ubs_ready/`), apply any stored `seed_overrides`,
   then mutate them into variant `.set` files.
@@ -258,11 +258,11 @@ requirement changes or a debt item is opened/closed.
   the failing metric names in `reasons`.
 - **FR-1.7.3** UBS scoring MUST keep `net_profit` as the raw report result, but
   the net-profit threshold and profit score component MUST use
-  `normalized_net_profit`. The current RoboForex-only normalization lives in
-  `assets/roboforex_normalization.json`: Forex/metals/crypto default to `1.0`,
-  indices/energies to `2.0`, and stocks to `5.0`. Metrics JSON MUST include the
-  raw net, normalized net, factor, basis, and asset group so old results can be
-  audited after rescoring.
+  `normalized_net_profit`. Normalization MUST be broker-scoped via
+  `assets/<broker>_normalization.json` and the active broker's asset universe;
+  missing broker config defaults to factor `1.0` instead of falling back to
+  RoboForex. Metrics JSON MUST include the raw net, normalized net, factor,
+  basis, and asset group so old results can be audited after rescoring.
 - **FR-1.7.4** The score formula MUST be:
   ```
   score = profit_component + pf_component + recovery_component
@@ -384,8 +384,8 @@ requirement changes or a debt item is opened/closed.
   Universe weights, and allowed as mutation sources. This MUST NOT re-enable
   generated candidate targets for the symbol; target generation still follows
   the normal enabled universe only. The `GEN/SEEDS` policy MUST be
-  broker-scoped by `--broker` and shared by all accounts under that broker
-  (`outputs/ubs_disabled_symbols_{BROKER}.json`).
+  broker/account-scoped by `--broker` and `--account-type`
+  (`outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`).
 - **FR-1.9.5** Seeds deleted from the source directory MUST be marked `active=0`
   in the DB and excluded from the UI active count, but their rows MUST be kept
   for historical reference.
@@ -428,7 +428,10 @@ requirement changes or a debt item is opened/closed.
   before comparing against the parsed report symbol.
 - **FR-1.10.2** The map MUST be stored as a whitespace-separated list of
   `BROKER_SYMBOL=CANONICAL_SYMBOL` pairs passed via `--symbol-map`.
-- **FR-1.10.3** Symbol normalisation MUST strip only trailing broker suffixes
+- **FR-1.10.3** `symbol_map` configuration MUST be broker-scoped. The legacy
+  `symbol_map` setting is RoboForex compatibility data; new settings use
+  `symbol_map_<broker>`.
+- **FR-1.10.4** Symbol normalisation MUST strip only trailing broker suffixes
   (e.g. `.a`, `.b`). Symbols starting with a dot (e.g. `.US30Cash`) MUST be
   preserved intact.
 
@@ -517,11 +520,11 @@ requirement changes or a debt item is opened/closed.
   when any are checked, and fall back to the selected row otherwise.
 - **FR-1.12.19** The UBS Universo tab MUST expose a SEL checkbox column and
   controls to disable/enable checked symbols. Disabled symbols MUST be persisted
-  per broker in `outputs/ubs_disabled_symbols_{BROKER}.json`,
+  per broker/account in `outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`,
   remain visible as disabled in the UI,
   be excluded from generated candidate targets, and be excluded from seed
   evaluation/weights unless `SEEDS=si` is set for that symbol in the active
-  broker.
+  broker/account.
 - **FR-1.12.20** UBS seed evaluation MUST skip any seed whose inferred or
   manually overridden symbol maps to a disabled Universe symbol. Skipped seeds
   MUST be recorded as `disabled_symbol`, MUST NOT launch MT5, MUST NOT count as
@@ -616,8 +619,9 @@ requirement changes or a debt item is opened/closed.
   and **Reintentar calidad baja** buttons plus a date configuration block.
 - **FR-1.12.35** The UI MUST include a `UBS Buscador` tab (`buscador`) with two
   sections: (1) a run auditor showing per-stage counts and non-final pending
-  counts for a selected account+run; (2) a free-text set search across all
-  pipeline stages and accounts, with open/export actions on results.
+  counts for a selected active-broker account+run; (2) a free-text set search
+  across pipeline stages and accounts belonging to the active broker only, with
+  open/export actions on results.
 - **FR-1.12.36** The Multiterminal tab MUST expose a **"Limpiar Tester"** danger
   button that safely removes disposable Tester cache/log/temp files from all
   configured MT5 data directories. It MUST show a preview (file count + size)
@@ -1011,11 +1015,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   columns; `UBS Historico` candidates gained a ROBUST column; `UBS Comparar`
   auto-selects a newly created latest visible run.
 
-- **2026-06** - RoboForex net-profit normalization: UBS scoring keeps raw
+- **2026-06** - Broker-scoped net-profit normalization: UBS scoring keeps raw
   report `net_profit` but uses `normalized_net_profit` for pass/fail and the
   profit score component. Factors are configured in
-  `assets/roboforex_normalization.json`; existing seed, candidate, and OOS
-  reports were rescored offline so Universe weights use the updated metrics.
+  `assets/<broker>_normalization.json`; RoboForex keeps its existing factors
+  while brokers without a file use neutral factor `1.0`.
 
 - **2026-06** — Fixed UBS generated symbol safety: generated variants now add
   `ForceSymbol` when missing, and `run_tests.py` recognizes `.JP225Cash` /
@@ -1053,8 +1057,8 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   New `UBS Final Tick 6M` tab added. Portfolio gate changed from probe to 6M stage.
 
 - **2026-06** — `UBS Buscador` tab added: run auditor (per-account per-run pipeline
-  status and weight breakdown) plus free-text set search across all pipeline stages
-  and accounts. `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`.
+  status and weight breakdown) plus free-text set search across pipeline stages
+  and accounts within the active broker. `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`.
 
 - **2026-06** — Multiterminal `Limpiar Tester` button: pre-deletion scan +
   confirmation + safe deletion of `Tester/` temp files, `Tester/cache/`,

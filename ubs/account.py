@@ -22,6 +22,15 @@ BROKER_ACCOUNT_TYPES = tuple(
 DEFAULT_BROKER = "ROBOFOREX"
 DEFAULT_ACCOUNT_TYPE = "ECN"
 DEFAULT_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+ROBOFOREX_DEFAULT_SYMBOL_MAP = (
+    "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,"
+    "US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
+)
+DEFAULT_SYMBOL_MAPS_BY_BROKER = {
+    "ROBOFOREX": ROBOFOREX_DEFAULT_SYMBOL_MAP,
+    "ICTRADING": "",
+    "AXI": "",
+}
 
 
 def normalize_broker(value: object) -> str:
@@ -53,6 +62,14 @@ def account_scope_key(broker: object, account_type: object) -> str:
     return f"{broker_key}_{account}"
 
 
+def symbol_map_setting_key(broker: object) -> str:
+    return f"symbol_map_{normalize_broker(broker).lower()}"
+
+
+def default_symbol_map_for_broker(broker: object = DEFAULT_BROKER) -> str:
+    return DEFAULT_SYMBOL_MAPS_BY_BROKER.get(normalize_broker(broker), "")
+
+
 def account_memory_path(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> Path:
     return base_dir / "outputs" / f"ubs_memory_{account_scope_key(broker, account_type)}.sqlite"
 
@@ -70,10 +87,11 @@ def account_seed_dir(base_dir: Path, account_type: object, broker: object = DEFA
 
 
 def account_disabled_symbols_path(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> Path:
-    return broker_disabled_symbols_path(base_dir, broker)
+    return base_dir / "outputs" / f"ubs_disabled_symbols_{account_scope_key(broker, account_type)}.json"
 
 
 def broker_disabled_symbols_path(base_dir: Path, broker: object = DEFAULT_BROKER) -> Path:
+    """Legacy merged broker policy path; active GEN/SEEDS policy is account-scoped."""
     return base_dir / "outputs" / f"ubs_disabled_symbols_{normalize_broker(broker)}.json"
 
 
@@ -83,14 +101,15 @@ def broker_asset_universe_path(base_dir: Path, broker: object = DEFAULT_BROKER) 
 
 
 def broker_asset_universe_path_with_fallback(base_dir: Path, broker: object = DEFAULT_BROKER) -> Path:
-    path = broker_asset_universe_path(base_dir, broker)
-    if path.exists():
-        return path
-    return broker_asset_universe_path(base_dir, DEFAULT_BROKER)
+    return broker_asset_universe_path(base_dir, broker)
+
+
+def timeframe_universe_path(base_dir: Path) -> Path:
+    return base_dir / "outputs" / "ubs_timeframes.json"
 
 
 def account_timeframe_universe_path(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> Path:
-    return base_dir / "outputs" / f"ubs_timeframes_{account_scope_key(broker, account_type)}.json"
+    return timeframe_universe_path(base_dir)
 
 
 def load_account_timeframe_universe(
@@ -102,7 +121,7 @@ def load_account_timeframe_universe(
     default_timeframes: tuple[str, ...] = DEFAULT_TIMEFRAME_UNIVERSE,
     experimental_timeframes: tuple[str, ...] = ("W1", "MN"),
 ) -> tuple[str, ...]:
-    path = account_timeframe_universe_path(base_dir, account_type, broker)
+    path = timeframe_universe_path(base_dir)
     values: list[object] = []
     if path.exists():
         try:
@@ -365,7 +384,7 @@ def migrate_legacy_account_storage(base_dir: Path, account_type: object, broker:
     copied: list[str] = []
     migrations = (
         ("memory", legacy_account_memory_path(base_dir, account), account_memory_path(base_dir, account, broker_key), _copy_legacy_file),
-        ("disabled_symbols", legacy_account_disabled_symbols_path(base_dir, account), broker_disabled_symbols_path(base_dir, broker_key), _merge_legacy_symbol_policy),
+        ("disabled_symbols", legacy_account_disabled_symbols_path(base_dir, account), account_disabled_symbols_path(base_dir, account, broker_key), _copy_legacy_file),
         ("seeds", legacy_account_seed_dir(base_dir, account), account_seed_dir(base_dir, account, broker_key), _copy_legacy_dir),
         ("outputs", legacy_account_output_dir(base_dir, account), account_output_dir(base_dir, account, broker_key), _copy_legacy_dir),
     )

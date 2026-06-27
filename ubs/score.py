@@ -9,6 +9,7 @@ import re
 import statistics
 
 from portfolio_manager.mt5_report import StrategyReport, parse_report
+from ubs.account import DEFAULT_BROKER
 from ubs.normalization import net_profit_normalization
 
 
@@ -65,11 +66,16 @@ class ScoreResult:
         return json.dumps(asdict(self), ensure_ascii=True, sort_keys=True)
 
 
-def score_report_file(path: Path, config: ScoreConfig | None = None) -> ScoreResult:
-    return score_report(parse_report(path), config=config)
+def score_report_file(path: Path, config: ScoreConfig | None = None, *, broker: object = DEFAULT_BROKER) -> ScoreResult:
+    return score_report(parse_report(path), config=config, broker=broker)
 
 
-def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> ScoreResult:
+def score_report(
+    report: StrategyReport,
+    config: ScoreConfig | None = None,
+    *,
+    broker: object = DEFAULT_BROKER,
+) -> ScoreResult:
     config = config or ScoreConfig()
     profits = [trade.profit_loss for trade in report.trades]
     wins = [value for value in profits if value > 0]
@@ -93,7 +99,7 @@ def score_report(report: StrategyReport, config: ScoreConfig | None = None) -> S
     avg_trade = net_profit / len(profits) if profits else 0.0
     deviation = statistics.pstdev(profits) if len(profits) > 1 else 0.0
     sqn = math.sqrt(len(profits)) * avg_trade / deviation if deviation else 0.0
-    net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol)
+    net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol, broker=broker)
     normalized_net_profit = round(net_profit * net_profit_factor, 2)
     history_quality = _history_quality(report)
 

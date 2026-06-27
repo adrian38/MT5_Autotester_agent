@@ -60,6 +60,9 @@ batch wrappers.
 - `report_mismatch` is an intentional UBS candidate state. It means the
   report was parsed, but MT5 executed a different symbol/timeframe than the
   candidate target after applying the configured `symbol_map`.
+- `symbol_map` is broker-scoped. The legacy `symbol_map` setting belongs to
+  RoboForex compatibility; current UI settings use `symbol_map_roboforex`,
+  `symbol_map_ictrading`, and `symbol_map_axi`.
 - UBS parameter mutability is defined by `is_agent_mutable_key()` in
   `ubs_agent.py` — NOT by the Y/N flag in `.set` files (that is the MT5
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
@@ -72,11 +75,10 @@ batch wrappers.
   with logic that belongs in a domain module.
 - **Broker/account isolation**: RoboForex ECN/PRO, ICTrading STANDARD, and AXI
   STANDARD/PREMIUM use separate SQLite DBs, seed dirs, output dirs, and results.
-  Asset universes and disabled-symbol GEN/SEEDS policies are broker-scoped and
-  shared by accounts under that broker. Timeframe universes already use
-  broker/account paths for future divergence. All path resolution goes through
-  `ubs/account.py` helpers. Never hardcode `ubs_memory.sqlite`; always call
-  `account_memory_path()`.
+  Asset universes are broker-scoped; disabled-symbol GEN/SEEDS policies are
+  broker/account-scoped. Timeframe universe configuration is the only shared
+  universe for now. All path resolution goes through `ubs/account.py` helpers.
+  Never hardcode `ubs_memory.sqlite`; always call `account_memory_path()`.
 - For every substantial UI screen/tab use a view/logic pair inside `ui/`:
   `ui/<screen>_view.py` for widgets/layout and `ui/<screen>_logic.py` for
   behavior/state/persistence. This is the mandatory structure for all tabs.
@@ -226,9 +228,10 @@ generation scoring:
     the same as generated candidates. Seeds do not receive robustness bonus
     unless a separate seed-date/robustness bonus is explicitly added.
 - UBS scoring keeps raw report `net_profit` in metrics, but pass/fail and the
-  profit score component use `normalized_net_profit`. Current RoboForex-only
-  factors live in `assets/roboforex_normalization.json`: Forex/metals/crypto
-  `1.0`, indices/energies `2.0`, stocks `5.0`. Metrics JSON includes raw net,
+  profit score component use `normalized_net_profit`. Net normalization is
+  broker-scoped through `assets/<broker>_normalization.json` plus the active
+  broker asset universe. RoboForex keeps the existing factors; brokers without
+  a normalization file use neutral factor `1.0`. Metrics JSON includes raw net,
   normalized net, factor, basis, and group.
 
 Current local memory was migrated in June 2026 from old robustness bonus
@@ -416,7 +419,7 @@ The option reserves part of generation for universe coverage:
 - **SEL column** (first): checkbox toggling via `_on_ubs_result_tree_click()`;
   checked set stored in `self.ubs_result_checked`.
 - **NET / NET NORM columns**: `NET` is raw report profit; `NET NORM` is the
-  RoboForex-normalized net used by pass/fail scoring.
+  broker-normalized net used by pass/fail scoring.
 - **MOTIVO column**: shows failing criteria with values (e.g.
   `net profit: -830 | PF: 0.69 | DD: 26.1%`), same format as Seeds.
 - **Criteria bar**: read-only display of current agent thresholds above the
@@ -761,9 +764,9 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   Seeds tab exposes "Repetir backtest" to relaunch one selected seed directly.
 - Seeds and Universe tables have a SEL checkbox column. Seed actions use checked
   rows when present, otherwise the selected row. Universe checked symbols can be
-  disabled/enabled; disabled symbols are persisted per broker in
-  `outputs/ubs_disabled_symbols_{BROKER}.json`, remain visible, and are excluded
-  from agent target-symbol exploration for all accounts under that broker. The same JSON can store
+  disabled/enabled; disabled symbols are persisted per broker/account in
+  `outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`, remain visible, and are excluded
+  from agent target-symbol exploration for that account. The same JSON can store
   `seed_enabled_when_disabled`: these symbols remain `GEN=no` for generation but
   `SEEDS=si` lets their seeds run, score, contribute weights, and act as
   mutation sources. Disabled symbols without `SEEDS=si` remain excluded from
@@ -779,10 +782,9 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
 
 `ubs/account.py` centralises broker/account path resolution. Each broker/account
 pair gets separate SQLite storage, ready-seed directories, generated output
-directories, and result/weight history. Broker-level data is shared by accounts
-inside the same broker: asset universe files and disabled-symbol GEN/SEEDS
-policy files. Timeframe universes currently use shared defaults but already
-resolve through broker/account-specific files for future changes.
+directories, result/weight history, and disabled-symbol GEN/SEEDS policy files.
+Broker-level asset universe files are shared by accounts inside the same broker.
+Timeframe universe configuration is shared globally for now.
 
 ```
 BROKER_ACCOUNTS = {
@@ -802,8 +804,8 @@ DEFAULT_ACCOUNT_TYPE = "ECN"
 | `account_output_dir(base_dir, account_type, broker)` | `outputs/ubs_agent/{BROKER}/{ACCOUNT}/` |
 | `account_seed_dir(base_dir, account_type, broker)` | `sets/ubs_ready/{BROKER}/{ACCOUNT}/` |
 | `broker_asset_universe_path(base_dir, broker)` | `assets/{broker_lower}_assets.ini` |
-| `broker_disabled_symbols_path(base_dir, broker)` | `outputs/ubs_disabled_symbols_{BROKER}.json` |
-| `account_timeframe_universe_path(base_dir, account_type, broker)` | `outputs/ubs_timeframes_{BROKER}_{ACCOUNT}.json` |
+| `account_disabled_symbols_path(base_dir, account_type, broker)` | `outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json` |
+| `account_timeframe_universe_path(base_dir, account_type, broker)` | `outputs/ubs_timeframes.json` |
 
 **CLI**: `ubs_agent.py --broker ROBOFOREX|ICTRADING|AXI --account-type ...`.
 When `--source-dir`, `--output-dir`, and `--memory` are not explicitly provided,
@@ -826,9 +828,9 @@ Legacy RoboForex data is preserved by `migrate_legacy_roboforex_storage()`:
 on UI startup (and in CLI tools before opening the default memory), old
 account-only ECN/PRO files and folders are copied into the new
 `ROBOFOREX/{ECN|PRO}` layout only when the new destination does not already
-exist. Legacy ECN/PRO disabled-symbol JSON files are merged into
-`outputs/ubs_disabled_symbols_ROBOFOREX.json`. The migration is non-destructive;
-it never deletes or overwrites the legacy paths.
+exist. Legacy ECN/PRO disabled-symbol JSON files are copied into
+`outputs/ubs_disabled_symbols_ROBOFOREX_{ECN|PRO}.json`. The migration is
+non-destructive; it never deletes or overwrites the legacy paths.
 
 ### Manual status override
 
@@ -966,14 +968,14 @@ New portfolio filter: **"Requerir 3 meses positivos 6M"** checkbox (`ubs_portfol
 
 A new tab `buscador` ("UBS Buscador", `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`) has two vertical sections:
 
-**Auditoria de run** — per broker/account, per-run pipeline status summary:
-- Broker/account and run selectors.
+**Auditoria de run** — per account within the active broker, per-run pipeline status summary:
+- Account and run selectors are limited to the currently selected UBS broker.
 - Shows counts for each pipeline stage: seeds, base candidates (generated/accepted/rejected/no_trades/etc.), robustness, Final Tick probe, Final Tick 6M, portfolio membership.
 - "Non-final" counts identify how many rows are still in intermediate/pending states.
 - Weight breakdown: shows per-asset and per-TF current weight contribution from all stages.
 
-**Buscador de sets** — free-text search across all `.set` files in the UBS pipeline:
-- Searches seeds, candidates, robustness sets, final tick sets across ECN and PRO accounts.
+**Buscador de sets** — free-text search across active-broker `.set` files in the UBS pipeline:
+- Searches seeds, candidates, robustness sets, final tick sets across the accounts belonging to the active broker only.
 - Shows result: set filename, stage, status, symbol, TF, score, account.
 - "Abrir set" and "Abrir reporte" actions on selected rows.
 - Export found sets to a folder.

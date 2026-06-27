@@ -231,14 +231,22 @@ class MultiterminalLogicMixin:
             return profiles
         return [profile for profile in profiles if bool(profile.get("enabled"))]
 
+    def _broker_multiterminal_profile_items(self, *, include_disabled: bool = True) -> list[tuple[int, dict[str, object]]]:
+        broker = self._active_multiterminal_broker()
+        items = [
+            (index, profile)
+            for index, profile in enumerate(self.multiterminal_profiles)
+            if self._profile_broker(profile) == broker
+        ]
+        if include_disabled:
+            return items
+        return [(index, profile) for index, profile in items if bool(profile.get("enabled"))]
+
     def _update_multiterminal_summary(self) -> None:
         if not hasattr(self, "multiterminal_summary"):
             return
         worker_limit = self._multiterminal_worker_limit()
-        if worker_limit > 1:
-            available = len(self._broker_multiterminal_profiles())
-        else:
-            available = len(self._active_multiterminal_profiles())
+        available = len(self._active_multiterminal_profiles())
         workers = min(worker_limit, available) if available else 0
         mode = "on" if self.multiterminal_enabled.get() else "off"
         self.multiterminal_summary.set(
@@ -296,7 +304,8 @@ class MultiterminalLogicMixin:
         for item in self.multiterminal_tree.get_children():
             self.multiterminal_tree.delete(item)
         valid_names = set()
-        for index, profile in enumerate(self.multiterminal_profiles):
+        visible_items = self._broker_multiterminal_profile_items()
+        for index, profile in visible_items:
             name = str(profile.get("name") or f"Terminal {index + 1}")
             valid_names.add(name)
             tag = "odd" if index % 2 else "even"
@@ -308,9 +317,17 @@ class MultiterminalLogicMixin:
                 tags=(tag,),
             )
         self.multiterminal_checked.intersection_update(valid_names)
-        if selected_index is not None and 0 <= selected_index < len(self.multiterminal_profiles):
+        visible_indexes = {index for index, _profile in visible_items}
+        if selected_index is not None and selected_index in visible_indexes:
             self.multiterminal_tree.selection_set(str(selected_index))
             self.multiterminal_tree.focus(str(selected_index))
+        elif visible_items:
+            first_index = visible_items[0][0]
+            self.multiterminal_tree.selection_set(str(first_index))
+            self.multiterminal_tree.focus(str(first_index))
+            self._load_multiterminal_profile_editor(first_index)
+        else:
+            self._load_multiterminal_profile_editor(-1)
         self._update_multiterminal_summary()
 
     def _on_multiterminal_tree_click(self, event) -> None:
@@ -383,9 +400,12 @@ class MultiterminalLogicMixin:
 
     def _select_multiterminal_profile(self, index: int) -> None:
         self._load_multiterminal_profile_editor(index)
-        if hasattr(self, "multiterminal_tree") and 0 <= index < len(self.multiterminal_profiles):
-            self.multiterminal_tree.selection_set(str(index))
-            self.multiterminal_tree.focus(str(index))
+        if not hasattr(self, "multiterminal_tree") or index < 0 or index >= len(self.multiterminal_profiles):
+            return
+        iid = str(index)
+        if self.multiterminal_tree.exists(iid):
+            self.multiterminal_tree.selection_set(iid)
+            self.multiterminal_tree.focus(iid)
 
     def _on_multiterminal_tree_select(self, _event=None) -> None:
         if not hasattr(self, "multiterminal_tree"):
@@ -697,10 +717,7 @@ class MultiterminalLogicMixin:
         if not self.multiterminal_enabled.get():
             return ["Multiterminal: no"]
         worker_limit = self._multiterminal_worker_limit()
-        if worker_limit > 1:
-            available = len(self._broker_multiterminal_profiles())
-        else:
-            available = len(self._active_multiterminal_profiles())
+        available = len(self._active_multiterminal_profiles())
         workers = min(worker_limit, available) if available else 0
         return [
             "Multiterminal: si",

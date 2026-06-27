@@ -254,7 +254,7 @@ class UBSSeedsLogicMixin:
         ]
         if disabled:
             details.append(
-                "Symbols deshabilitados (Universo del broker): "
+                "Symbols deshabilitados (Universo de la cuenta): "
                 f"{self._format_disabled_seed_counts(disabled_counts)}."
             )
             details.append("Ejemplo: XTIUSD cuenta como deshabilitado si el mapa activo lo traduce a WTI y WTI esta deshabilitado.")

@@ -42,6 +42,29 @@ class UBSUniverseLogicMixin:
     def _canonical_ubs_symbol(self, symbol: str, aliases: dict[str, str]) -> str:
         return canonical_symbol(symbol, aliases)
 
+    def _canonical_ubs_symbol_set(self, symbols: set[str], aliases: dict[str, str]) -> set[str]:
+        return {
+            self._canonical_ubs_symbol(symbol, aliases).upper()
+            for symbol in symbols
+            if str(symbol or "").strip()
+        }
+
+    def _selected_ubs_universe_symbols(self) -> set[str]:
+        symbols = set(self.ubs_universe_checked)
+        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
+            selected = self.ubs_universe_assets_tree.selection()
+            symbols = {
+                self.ubs_universe_paths.get(item, {}).get("symbol", "")
+                for item in selected
+            }
+            symbols.discard("")
+        return symbols
+
+    def _active_ubs_symbol_policy(self, aliases: dict[str, str]) -> tuple[set[str], set[str]]:
+        disabled = self._canonical_ubs_symbol_set(self._load_disabled_ubs_symbols(), aliases)
+        seed_enabled = self._canonical_ubs_symbol_set(self._load_seed_enabled_disabled_ubs_symbols(), aliases)
+        return disabled, seed_enabled & disabled
+
     def _empty_ubs_stat(self) -> dict[str, object]:
         return {
             "scores": [],
@@ -104,43 +127,31 @@ class UBSUniverseLogicMixin:
         return "break"
 
     def _set_checked_universe_symbols_enabled(self, enabled: bool) -> None:
-        symbols = set(self.ubs_universe_checked)
-        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
-            selected = self.ubs_universe_assets_tree.selection()
-            symbols = {
-                self.ubs_universe_paths.get(item, {}).get("symbol", "")
-                for item in selected
-            }
-            symbols.discard("")
+        _, aliases = self._load_ubs_asset_universe()
+        symbols = self._canonical_ubs_symbol_set(self._selected_ubs_universe_symbols(), aliases)
         if not symbols:
             messagebox.showinfo("Universo UBS", "Marca uno o mas simbolos primero.")
             return
-        disabled = self._load_disabled_ubs_symbols()
+        disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
         if enabled:
             disabled.difference_update(symbols)
             action = "habilitados"
         else:
             disabled.update(symbols)
             action = "deshabilitados"
-        self._save_disabled_ubs_symbols(disabled)
+        seed_enabled.difference_update(symbols)
+        self._save_disabled_ubs_symbols(disabled, seed_enabled)
         self.ubs_universe_checked.clear()
         self.status_text.set(f"Simbolos {action}: {len(symbols)}")
         self._refresh_ubs_universe()
 
     def _set_checked_universe_symbols_seed_enabled(self, enabled: bool) -> None:
-        symbols = set(self.ubs_universe_checked)
-        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
-            selected = self.ubs_universe_assets_tree.selection()
-            symbols = {
-                self.ubs_universe_paths.get(item, {}).get("symbol", "")
-                for item in selected
-            }
-            symbols.discard("")
+        _, aliases = self._load_ubs_asset_universe()
+        symbols = self._canonical_ubs_symbol_set(self._selected_ubs_universe_symbols(), aliases)
         if not symbols:
             messagebox.showinfo("Universo UBS", "Marca uno o mas simbolos primero.")
             return
-        disabled = self._load_disabled_ubs_symbols()
-        seed_enabled = self._load_seed_enabled_disabled_ubs_symbols()
+        disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
         if enabled:
             eligible = {symbol for symbol in symbols if symbol in disabled}
             if not eligible:
@@ -181,9 +192,7 @@ class UBSUniverseLogicMixin:
             return
 
         assets, aliases = self._load_ubs_asset_universe()
-        disabled_symbols = self._load_disabled_ubs_symbols()
-        seed_enabled_when_disabled = self._load_seed_enabled_disabled_ubs_symbols()
-        seed_enabled_when_disabled &= disabled_symbols
+        disabled_symbols, seed_enabled_when_disabled = self._active_ubs_symbol_policy(aliases)
         checked_symbols = set(self.ubs_universe_checked)
         memory_path = self._ubs_memory_path()
         asset_stats: dict[str, dict[str, object]] = {}

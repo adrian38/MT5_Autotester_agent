@@ -12,6 +12,7 @@ from ubs.account import (
     account_output_dir,
     account_seed_dir,
     account_types_for_broker,
+    default_symbol_map_for_broker,
     normalize_account_type,
     normalize_broker,
 )
@@ -90,6 +91,17 @@ class UBSAgentLogicMixin:
         if self.ubs_account_type.get() != account:
             self.ubs_account_type.set(account)
 
+    def _sync_ubs_symbol_map_for_broker(self, broker: str | None = None) -> None:
+        maps = getattr(self, "_ubs_symbol_maps_by_broker", None)
+        symbol_map_var = getattr(self, "symbol_map", None)
+        if maps is None or symbol_map_var is None:
+            return
+        target_broker = normalize_broker(broker or self.ubs_broker.get())
+        active_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", target_broker))
+        maps[active_broker] = symbol_map_var.get().strip()
+        symbol_map_var.set(maps.get(target_broker, default_symbol_map_for_broker(target_broker)))
+        self._ubs_symbol_map_active_broker = target_broker
+
     def _ubs_generation_output_dir(self) -> Path:
         return self._account_scoped_path(
             self.ubs_generation_output.get(),
@@ -148,6 +160,7 @@ class UBSAgentLogicMixin:
 
     def _on_ubs_broker_changed(self) -> None:
         self._normalize_ubs_account_selection()
+        self._sync_ubs_symbol_map_for_broker(self._ubs_broker())
         account_combo = getattr(self, "ubs_account_combo", None)
         if account_combo is not None:
             account_combo.configure(values=account_types_for_broker(self._ubs_broker()))

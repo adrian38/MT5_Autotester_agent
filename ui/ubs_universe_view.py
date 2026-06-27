@@ -77,7 +77,7 @@ class UBSUniverseViewMixin:
         asset_frame.columnconfigure(0, weight=1)
         asset_frame.rowconfigure(1, weight=1)
         body.add(asset_frame, weight=3)
-        ttk.Label(asset_frame, text="Activos RoboForex", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(asset_frame, text="Activos del broker", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         asset_columns = ("mark", "enabled", "seed_enabled", "group", "symbol", "aliases", "weight", "probability", "confidence", "final_trials", "avg", "best", "tests", "accepted", "pending")
         self.ubs_universe_assets_tree = ttk.Treeview(asset_frame, columns=asset_columns, show="headings", height=18, selectmode="extended")
         asset_headings = {
@@ -110,7 +110,7 @@ class UBSUniverseViewMixin:
         self.ubs_universe_assets_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_universe_assets_tree)
         self.ubs_universe_assets_tree.bind("<Button-1>", self._on_ubs_universe_tree_click)
-        self._attach_tree_scrollbars(asset_frame, self.ubs_universe_assets_tree, 1)
+        self._attach_tree_scrollbars(asset_frame, self.ubs_universe_assets_tree, 1, vertical=True)
 
         tf_frame = ttk.Frame(body, style="Panel.TFrame")
         tf_frame.columnconfigure(0, weight=1)
@@ -134,4 +134,4 @@ class UBSUniverseViewMixin:
         self.ubs_timeframes_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_timeframes_tree)
         self.ubs_timeframes_tree.bind("<Button-1>", self._on_ubs_timeframe_tree_click)
-        self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 2)
+        self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 2, vertical=True)

@@ -63,12 +63,15 @@ from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
 from ubs.account import (
+    BROKERS,
     DEFAULT_ACCOUNT_TYPE,
     DEFAULT_BROKER,
     account_memory_path,
+    default_symbol_map_for_broker,
     migrate_legacy_roboforex_storage,
     normalize_account_type,
     normalize_broker,
+    symbol_map_setting_key,
 )
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
@@ -749,7 +752,20 @@ class MT5AutotesterUI(
         self.symbol_suffix_enabled = tk.BooleanVar(value=saved_general.get("symbol_suffix_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_suffix = tk.StringVar(value=saved_general.get("symbol_suffix", ""))
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
-        self.symbol_map = tk.StringVar(value=saved_general.get("symbol_map", ""))
+        self._ubs_symbol_maps_by_broker = {
+            broker: saved_general.get(symbol_map_setting_key(broker), default_symbol_map_for_broker(broker))
+            for broker in BROKERS
+        }
+        if not saved_general.get(symbol_map_setting_key(DEFAULT_BROKER)):
+            self._ubs_symbol_maps_by_broker[DEFAULT_BROKER] = saved_general.get(
+                "symbol_map",
+                default_symbol_map_for_broker(DEFAULT_BROKER),
+            )
+        self._ubs_symbol_map_active_broker = self.ubs_broker.get()
+        self.symbol_map = tk.StringVar(value=self._ubs_symbol_maps_by_broker.get(
+            self._ubs_symbol_map_active_broker,
+            default_symbol_map_for_broker(self._ubs_symbol_map_active_broker),
+        ))
         _tg_default = "1" if (env_value("TELEGRAM_BOT_TOKEN") and env_value("TELEGRAM_CHAT_ID")) else "0"
         self.telegram_enabled = tk.BooleanVar(value=self._bool_setting(saved_general.get("telegram_enabled", _tg_default)))
         self.telegram_bot_token = tk.StringVar(value=env_value("TELEGRAM_BOT_TOKEN") or "")

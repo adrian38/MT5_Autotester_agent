@@ -194,21 +194,21 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target, "EURUSD")
         self.assertNotEqual(policy, "exploit")
 
-    def test_disabled_symbols_policy_is_broker_scoped(self) -> None:
+    def test_disabled_symbols_policy_is_account_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_dir = Path(temp_dir)
 
             self.assertEqual(
                 account_disabled_symbols_path(base_dir, "ECN"),
-                account_disabled_symbols_path(base_dir, "PRO"),
+                base_dir / "outputs" / "ubs_disabled_symbols_ROBOFOREX_ECN.json",
             )
             self.assertEqual(
-                account_disabled_symbols_path(base_dir, "ECN"),
-                base_dir / "outputs" / "ubs_disabled_symbols_ROBOFOREX.json",
+                account_disabled_symbols_path(base_dir, "PRO"),
+                base_dir / "outputs" / "ubs_disabled_symbols_ROBOFOREX_PRO.json",
             )
             self.assertEqual(
                 account_disabled_symbols_path(base_dir, "PREMIUM", "AXI"),
-                base_dir / "outputs" / "ubs_disabled_symbols_AXI.json",
+                base_dir / "outputs" / "ubs_disabled_symbols_AXI_PREMIUM.json",
             )
 
     def test_seed_validation_rejects_incomplete_ubs_set(self) -> None:

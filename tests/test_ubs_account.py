@@ -11,7 +11,7 @@ from ubs.account import (
     account_timeframe_universe_path,
     broker_asset_universe_path,
     broker_asset_universe_path_with_fallback,
-    broker_disabled_symbols_path,
+    default_symbol_map_for_broker,
     load_account_timeframe_universe,
     migrate_legacy_account_storage,
     migrate_legacy_seed_paths_in_memory,
@@ -20,7 +20,10 @@ from ubs.account import (
 )
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols
 from ui.ubs_agent_logic import UBSAgentLogicMixin
+from ui.multiterminal_logic import MultiterminalLogicMixin
+from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
+from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
 
 class _FakeVar:
@@ -54,6 +57,64 @@ class _FakePortfolio(UBSPortfolioLogicMixin):
         self.ubs_broker = _FakeVar(broker)
 
 
+class _FakeMultiterminal(MultiterminalLogicMixin):
+    def __init__(self, broker: str) -> None:
+        self.ubs_broker = _FakeVar(broker)
+        self.multiterminal_profiles = [
+            {"name": "Robo 1", "broker": "ROBOFOREX", "enabled": True},
+            {"name": "Axi 1", "broker": "AXI", "enabled": True},
+            {"name": "IC 1", "broker": "ICTRADING", "enabled": False},
+            {"name": "Robo legacy", "enabled": True},
+        ]
+
+
+class _FakeSearch(UBSSearchLogicMixin):
+    def __init__(self, broker: str) -> None:
+        self.ubs_broker = _FakeVar(broker)
+        self.ubs_account_type = _FakeVar("")
+
+    def _ubs_broker(self) -> str:
+        return normalize_broker(self.ubs_broker.get())
+
+    def _ubs_account_type(self) -> str:
+        return normalize_account_type(self.ubs_account_type.get(), self._ubs_broker())
+
+
+class _FakeUniverse(UBSUniverseLogicMixin):
+    def __init__(self) -> None:
+        self.ubs_universe_checked = {"US100"}
+        self.disabled_symbols = set()
+        self.seed_enabled = {"US100"}
+        self.saved: tuple[set[str], set[str]] | None = None
+        self.status_text = _FakeVar("")
+
+    def _load_ubs_asset_universe(self):
+        return [], {"US100": ".USTECHCASH"}
+
+    def _load_disabled_ubs_symbols(self) -> set[str]:
+        return set(self.disabled_symbols)
+
+    def _load_seed_enabled_disabled_ubs_symbols(self) -> set[str]:
+        return set(self.seed_enabled)
+
+    def _save_disabled_ubs_symbols(self, symbols: set, seed_enabled_when_disabled: set | None = None) -> None:
+        self.saved = (set(symbols), set(seed_enabled_when_disabled or set()))
+
+    def _refresh_ubs_universe(self) -> None:
+        pass
+
+
+class _FakeTree:
+    def exists(self, _iid: str) -> bool:
+        return False
+
+    def selection_set(self, _iid: str) -> None:
+        raise AssertionError("selection_set should not be called for missing tree items")
+
+    def focus(self, _iid: str) -> None:
+        raise AssertionError("focus should not be called for missing tree items")
+
+
 class UBSAccountTests(unittest.TestCase):
     def test_normalize_account_type_defaults_to_ecn(self) -> None:
         self.assertEqual(normalize_account_type("pro"), "PRO")
@@ -72,7 +133,7 @@ class UBSAccountTests(unittest.TestCase):
         self.assertEqual(account_seed_dir(base, "PRO"), base / "sets" / "ubs_ready" / "ROBOFOREX" / "PRO")
         self.assertEqual(account_memory_path(base, "PREMIUM", "AXI"), base / "outputs" / "ubs_memory_AXI_PREMIUM.sqlite")
 
-    def test_universe_policy_is_broker_scoped_and_timeframes_are_account_scoped(self) -> None:
+    def test_universe_policy_is_broker_scoped_and_timeframes_are_shared(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             axi_assets = broker_asset_universe_path(base, "AXI")
@@ -82,16 +143,44 @@ class UBSAccountTests(unittest.TestCase):
             tf_path.parent.mkdir(parents=True, exist_ok=True)
             tf_path.write_text('{"timeframes": ["H1", "D1"]}', encoding="utf-8")
 
-            self.assertEqual(account_disabled_symbols_path(base, "ECN"), broker_disabled_symbols_path(base, "ROBOFOREX"))
-            self.assertEqual(account_disabled_symbols_path(base, "PRO"), broker_disabled_symbols_path(base, "ROBOFOREX"))
-            self.assertNotEqual(account_timeframe_universe_path(base, "ECN"), account_timeframe_universe_path(base, "PRO"))
+            self.assertEqual(
+                account_disabled_symbols_path(base, "ECN"),
+                base / "outputs" / "ubs_disabled_symbols_ROBOFOREX_ECN.json",
+            )
+            self.assertEqual(
+                account_disabled_symbols_path(base, "PRO"),
+                base / "outputs" / "ubs_disabled_symbols_ROBOFOREX_PRO.json",
+            )
+            self.assertEqual(account_timeframe_universe_path(base, "ECN"), account_timeframe_universe_path(base, "PRO"))
+            self.assertEqual(account_timeframe_universe_path(base, "STANDARD", "AXI"), account_timeframe_universe_path(base, "PRO"))
             self.assertEqual(load_account_timeframe_universe(base, "PRO"), ("H1", "D1"))
-            self.assertEqual(load_account_timeframe_universe(base, "ECN"), ("M1", "M5", "M15", "M30", "H1", "H4", "D1"))
+            self.assertEqual(load_account_timeframe_universe(base, "ECN"), ("H1", "D1"))
             self.assertEqual(broker_asset_universe_path_with_fallback(base, "AXI"), axi_assets)
             self.assertEqual(
                 broker_asset_universe_path_with_fallback(base, "ICTRADING"),
-                broker_asset_universe_path(base, "ROBOFOREX"),
+                broker_asset_universe_path(base, "ICTRADING"),
             )
+
+    def test_symbol_map_defaults_are_broker_scoped(self) -> None:
+        self.assertIn("CRUDEOIL=WTI", default_symbol_map_for_broker("ROBOFOREX"))
+        self.assertEqual(default_symbol_map_for_broker("AXI"), "")
+        self.assertEqual(default_symbol_map_for_broker("ICTRADING"), "")
+
+    def test_symbol_map_switch_keeps_values_per_broker(self) -> None:
+        agent = _FakeAgent("ECN", "", "", broker="ROBOFOREX")
+        agent.symbol_map = _FakeVar("XTIUSD=WTI")
+        agent._ubs_symbol_maps_by_broker = {
+            "ROBOFOREX": "XTIUSD=WTI",
+            "AXI": "GER40=GER40.cash",
+            "ICTRADING": "",
+        }
+        agent._ubs_symbol_map_active_broker = "ROBOFOREX"
+        agent.ubs_broker.set("AXI")
+
+        agent._sync_ubs_symbol_map_for_broker("AXI")
+
+        self.assertEqual(agent._ubs_symbol_maps_by_broker["ROBOFOREX"], "XTIUSD=WTI")
+        self.assertEqual(agent.symbol_map.get(), "GER40=GER40.cash")
 
     def test_ubs_portfolio_sources_are_limited_to_active_broker(self) -> None:
         import ui.ubs_portfolio_logic as portfolio_logic
@@ -110,6 +199,59 @@ class UBSAccountTests(unittest.TestCase):
 
             self.assertEqual([label for label, _path in robo_sources], ["ROBOFOREX/ECN", "ROBOFOREX/PRO"])
             self.assertEqual([label for label, _path in axi_sources], ["AXI/STANDARD"])
+
+    def test_multiterminal_visible_profiles_are_limited_to_active_broker(self) -> None:
+        robo = _FakeMultiterminal("ROBOFOREX")
+        axi = _FakeMultiterminal("AXI")
+
+        self.assertEqual([profile["name"] for _index, profile in robo._broker_multiterminal_profile_items()], ["Robo 1", "Robo legacy"])
+        self.assertEqual([profile["name"] for _index, profile in axi._broker_multiterminal_profile_items()], ["Axi 1"])
+
+    def test_multiterminal_summary_counts_enabled_profiles_only(self) -> None:
+        robo = _FakeMultiterminal("ROBOFOREX")
+        robo.multiterminal_profiles.append({"name": "Robo disabled", "broker": "ROBOFOREX", "enabled": False})
+        robo.multiterminal_workers = _FakeVar("4")
+        robo.multiterminal_enabled = _FakeVar("1")
+        robo.multiterminal_summary = _FakeVar("")
+
+        robo._update_multiterminal_summary()
+
+        self.assertEqual(robo.multiterminal_summary.get(), "ROBOFOREX: 2 activas / usando hasta 2 / on")
+        self.assertIn("Terminales activas: 2", robo._multiterminal_execution_details())
+
+    def test_multiterminal_select_ignores_filtered_tree_item(self) -> None:
+        axi = _FakeMultiterminal("AXI")
+        axi.multiterminal_tree = _FakeTree()
+        axi.mt_selected_index = None
+        axi.mt_profile_enabled = _FakeVar("")
+        axi.mt_profile_portable = _FakeVar("")
+        axi.mt_profile_broker = _FakeVar("")
+        axi.mt_profile_name = _FakeVar("")
+        axi.mt_profile_mt5_path = _FakeVar("")
+        axi.mt_profile_data_dir = _FakeVar("")
+        axi.mt_profile_experts_root = _FakeVar("")
+        axi.mt_profile_ubs_ex5_file = _FakeVar("")
+
+        axi._select_multiterminal_profile(0)
+
+        self.assertEqual(axi.mt_selected_index, 0)
+
+    def test_search_audit_contexts_are_limited_to_active_broker(self) -> None:
+        robo = _FakeSearch("ROBOFOREX")
+        axi = _FakeSearch("AXI")
+
+        self.assertEqual(robo._ubs_active_broker_account_contexts(), (("ROBOFOREX", "ECN"), ("ROBOFOREX", "PRO")))
+        self.assertEqual(axi._ubs_active_broker_account_contexts(), (("AXI", "STANDARD"), ("AXI", "PREMIUM")))
+        self.assertEqual(robo._ubs_account_context_file_label("ROBOFOREX/ECN"), "ROBOFOREX_ECN")
+        self.assertIsNone(axi._parse_ubs_account_context("ROBOFOREX/ECN"))
+        self.assertEqual(axi._parse_ubs_account_context("PREMIUM"), ("AXI", "PREMIUM"))
+
+    def test_disabling_generation_clears_stale_seed_permission(self) -> None:
+        universe = _FakeUniverse()
+
+        universe._set_checked_universe_symbols_enabled(False)
+
+        self.assertEqual(universe.saved, ({".USTECHCASH"}, set()))
 
     def test_sync_switches_previous_account_defaults_to_active_account(self) -> None:
         from ui.ubs_agent_logic import BASE_DIR
@@ -224,7 +366,7 @@ class UBSAccountTests(unittest.TestCase):
             self.assertTrue((account_seed_dir(base, "ECN") / "XAUUSD" / "seed.set").exists())
             self.assertTrue((account_output_dir(base, "ECN") / "run_1" / "candidate.set").exists())
 
-    def test_migration_merges_legacy_account_symbol_policies_into_broker_policy(self) -> None:
+    def test_migration_copies_legacy_account_symbol_policies_into_account_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             ecn_policy = base / "outputs" / "ubs_disabled_symbols_ECN.json"
@@ -242,9 +384,12 @@ class UBSAccountTests(unittest.TestCase):
             migrate_legacy_account_storage(base, "ECN")
             migrate_legacy_account_storage(base, "PRO")
 
-            broker_policy = broker_disabled_symbols_path(base)
-            self.assertEqual(load_disabled_symbols(broker_policy), {"WTI", "XAUUSD"})
-            self.assertEqual(load_seed_enabled_disabled_symbols(broker_policy), {"XAUUSD"})
+            ecn_new_policy = account_disabled_symbols_path(base, "ECN")
+            pro_new_policy = account_disabled_symbols_path(base, "PRO")
+            self.assertEqual(load_disabled_symbols(ecn_new_policy), {"XAUUSD"})
+            self.assertEqual(load_seed_enabled_disabled_symbols(ecn_new_policy), {"XAUUSD"})
+            self.assertEqual(load_disabled_symbols(pro_new_policy), {"WTI"})
+            self.assertEqual(load_seed_enabled_disabled_symbols(pro_new_policy), set())
 
     def test_migration_does_not_overwrite_existing_new_storage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

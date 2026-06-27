@@ -34,6 +34,7 @@ from ubs.account import (
     account_output_dir,
     account_seed_dir,
     broker_asset_universe_path_with_fallback,
+    default_symbol_map_for_broker,
     load_account_timeframe_universe,
     migrate_legacy_account_storage,
     normalize_account_type,
@@ -67,7 +68,7 @@ DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BRO
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER)
-DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
+DEFAULT_SYMBOL_MAP = default_symbol_map_for_broker(DEFAULT_BROKER)
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
@@ -297,7 +298,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminals-config", help="Archivo .ini con perfiles multiterminal.")
     parser.add_argument("--multi-terminal", action="store_true", help="Ejecuta backtests UBS repartidos entre terminales configuradas.")
     parser.add_argument("--max-workers", type=int, default=1, help="Maximo de terminales simultaneas con --multi-terminal.")
-    parser.add_argument("--symbol-map", default=DEFAULT_SYMBOL_MAP)
+    parser.add_argument("--symbol-map")
     parser.add_argument("--generations", type=int, default=1)
     parser.add_argument("--variants-per-seed", type=int, default=3)
     parser.add_argument("--max-seeds", type=int, default=30)
@@ -400,6 +401,8 @@ def parse_args() -> argparse.Namespace:
     args.force_unseeded_universe = args.generation_mode == "discovery"
     args.broker = normalize_broker(args.broker)
     args.account_type = normalize_account_type(args.account_type, args.broker)
+    if args.symbol_map is None:
+        args.symbol_map = default_symbol_map_for_broker(args.broker)
     migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
         args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type, args.broker))
@@ -1378,6 +1381,7 @@ def reconcile_seed_eval_reports(
     output_root: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
 ) -> tuple[dict[str, int], set[str]]:
     seed_eval_root = output_root / "seed_eval"
     if not pending or not seed_eval_root.exists():
@@ -1422,7 +1426,7 @@ def reconcile_seed_eval_reports(
                 if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
                     continue
                 try:
-                    probe = score_report_file(report, config=score_config)
+                    probe = score_report_file(report, config=score_config, broker=broker)
                 except Exception:
                     continue
                 probe_variant = Variant(
@@ -1438,7 +1442,15 @@ def reconcile_seed_eval_reports(
                 if not matches:
                     continue
             seed_path = str(seed.path)
-            status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
+            status, _ = evaluate_seed_report(
+                memory,
+                seed,
+                report,
+                score_config,
+                symbol_map,
+                broker,
+                label=copied_set.name,
+            )
             status_counts[status] = status_counts.get(status, 0) + 1
             processed_paths.add(seed_path)
             if len(processed_paths) >= len(pending):
@@ -1451,6 +1463,7 @@ def rescore_existing_seed_scores(
     seeds: list[Seed],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     exclude_paths: set[str],
 ) -> dict[str, int]:
@@ -1467,7 +1480,7 @@ def rescore_existing_seed_scores(
         report = Path(report_raw)
         if not report.exists():
             continue
-        status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map)
+        status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, broker)
         status_counts[status] = status_counts.get(status, 0) + 1
     return status_counts
 
@@ -1562,7 +1575,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         print(f"Semillas bloqueadas por .set invalido: {len(invalid_set_reasons)}")
     if disabled_pending:
         print(
-            "Semillas omitidas por symbol deshabilitado en Universo del broker: "
+            "Semillas omitidas por symbol deshabilitado en politica GEN/SEEDS de la cuenta: "
             f"{len(disabled_pending)} ({format_disabled_seed_counts(disabled_pending, symbol_map)})"
         )
         print("Estas seeds no abren MT5 ni aportan pesos; activa SEEDS para usarlas sin habilitar generacion.")
@@ -1575,6 +1588,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         output_root,
         score_config,
         symbol_map,
+        args.broker,
     )
     if reconciled_counts:
         pending = [seed for seed in pending if str(seed.path) not in reconciled_paths]
@@ -1592,6 +1606,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             seeds,
             score_config,
             symbol_map,
+            args.broker,
             exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
         )
         if rescored_counts:
@@ -1603,7 +1618,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             if invalid_pending:
                 print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas sin inferencia.")
             elif disabled_pending:
-                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en Universo del broker.")
+                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en la politica GEN/SEEDS de la cuenta.")
         else:
             print("Evaluacion de semillas al dia. No hay backtests pendientes.")
         return 0
@@ -1641,7 +1656,15 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             status_counts["no_report"] = status_counts.get("no_report", 0) + 1
             handled_issues += 1
             continue
-        status, result = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
+        status, result = evaluate_seed_report(
+            memory,
+            seed,
+            report,
+            score_config,
+            symbol_map,
+            args.broker,
+            label=copied_set.name,
+        )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status in {"accepted", "rejected"} and result is not None:
             scored += 1
@@ -1653,6 +1676,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         seeds,
         score_config,
         symbol_map,
+        args.broker,
         exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
     )
     rescored_total = sum(rescored_counts.values())
@@ -1685,6 +1709,7 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
         seeds,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         exclude_paths=set(),
     )
     total = sum(status_counts.values())
@@ -1794,7 +1819,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
                 min_trades_w1=args.min_trades_w1,
                 min_trades_mn=args.min_trades_mn,
             )
-            result = score_report_file(report, config=period_score_config)
+            result = score_report_file(report, config=period_score_config, broker=args.broker)
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez candidate #{candidate_id}: {exc}")
             memory.record_candidate_robustness(
@@ -1886,12 +1911,13 @@ def evaluate_seed_report(
     report: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     label: str | None = None,
 ) -> tuple[str, ScoreResult | None]:
     display_name = label or seed.path.name
     try:
-        result = score_report_file(report, config=score_config)
+        result = score_report_file(report, config=score_config, broker=broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear seed {display_name}: {exc}")
         memory.record_seed_score(seed, None, "parse_error", report)
@@ -1944,6 +1970,7 @@ def evaluate_variants(
     variants: list[Variant],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_report_mtime: float | None = None,
     min_trades_w1: int = 12,
@@ -1956,6 +1983,7 @@ def evaluate_variants(
             variant,
             score_config,
             symbol_map,
+            broker,
             min_report_mtime=min_report_mtime,
             min_trades_w1=min_trades_w1,
             min_trades_mn=min_trades_mn,
@@ -1971,6 +1999,7 @@ def evaluate_variant(
     variant: Variant,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_report_mtime: float | None = None,
     min_trades_w1: int = 12,
@@ -1986,6 +2015,7 @@ def evaluate_variant(
         report,
         score_config,
         symbol_map,
+        broker,
         min_trades_w1=min_trades_w1,
         min_trades_mn=min_trades_mn,
     )
@@ -1997,6 +2027,7 @@ def evaluate_variant_report(
     report: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
@@ -2008,7 +2039,7 @@ def evaluate_variant_report(
         min_trades_mn=min_trades_mn,
     )
     try:
-        result = score_report_file(report, config=period_score_config)
+        result = score_report_file(report, config=period_score_config, broker=broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
@@ -2150,6 +2181,7 @@ def count_valid_existing_reports(
     variants: list[Variant],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
@@ -2168,6 +2200,7 @@ def count_valid_existing_reports(
                     min_trades_w1=min_trades_w1,
                     min_trades_mn=min_trades_mn,
                 ),
+                broker=broker,
             )
         except Exception:
             continue
@@ -2301,7 +2334,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             min_trades_mn=args.min_trades_mn,
         )
         try:
-            result = score_report_file(report, config=period_score_config)
+            result = score_report_file(report, config=period_score_config, broker=args.broker)
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez {report}: {exc}")
             memory.record_candidate_robustness(
@@ -2913,6 +2946,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             ohlc_variants,
             score_config,
             symbol_map,
+            args.broker,
             min_trades_w1=args.final_tick_min_trades_w1,
             min_trades_mn=args.final_tick_min_trades_mn,
         )
@@ -3033,7 +3067,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 min_trades_mn=args.final_tick_min_trades_mn,
             )
             try:
-                ohlc_result = score_report_file(ohlc_report, config=ohlc_score_config)
+                ohlc_result = score_report_file(ohlc_report, config=ohlc_score_config, broker=args.broker)
             except Exception as exc:
                 print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
                 memory.record_candidate_final_tick(
@@ -3243,7 +3277,7 @@ def _evaluate_final_tick_tick_report(
         min_trades_mn=args.final_tick_min_trades_mn,
     )
     try:
-        real_tick_result = score_report_file(real_tick_report, config=tick_score_config)
+        real_tick_result = score_report_file(real_tick_report, config=tick_score_config, broker=args.broker)
     except Exception as exc:
         if reconcile:
             return False
@@ -3378,6 +3412,7 @@ def reconcile_final_tick_reports(
                     min_trades_w1=min_trades_w1,
                     min_trades_mn=min_trades_mn,
                 ),
+                broker=args.broker,
             )
         except Exception:
             continue
@@ -3501,6 +3536,7 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
                     min_trades_w1=args.final_tick_min_trades_w1,
                     min_trades_mn=args.final_tick_min_trades_mn,
                 ),
+                broker=args.broker,
             )
         except Exception as exc:
             print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
@@ -3661,6 +3697,7 @@ def _retry_single_candidate(
         variant,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         min_report_mtime=batch_started_at - 1.0,
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
@@ -3751,6 +3788,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
                 report,
                 score_config,
                 parse_symbol_map(args.symbol_map),
+                args.broker,
                 label=retry_set.name,
             )
             statuses[status] = statuses.get(status, 0) + 1
@@ -3817,6 +3855,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         report,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         label=retry_set.name,
     )
     print(f"Retry seed estado={status}; score={result.score if result else 'n/a'}")
@@ -3887,6 +3926,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
             variant,
             score_config,
             symbol_map,
+            args.broker,
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
@@ -3960,6 +4000,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
             variant,
             score_config,
             symbol_map,
+            args.broker,
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
@@ -4049,6 +4090,7 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
             variant,
             score_config,
             symbol_map,
+            args.broker,
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
@@ -4097,6 +4139,7 @@ def evaluate_generation(
         variants,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         min_report_mtime=batch_started_at - 1.0,
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
@@ -4760,6 +4803,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         variants,
                         score_config,
                         parse_symbol_map(args.symbol_map),
+                        args.broker,
                         min_report_mtime=batch_started_at - 1.0,
                         min_trades_w1=args.min_trades_w1,
                         min_trades_mn=args.min_trades_mn,

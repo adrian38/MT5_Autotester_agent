@@ -12,7 +12,13 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from ubs.account import ACCOUNT_TYPES, BROKER_ACCOUNT_TYPES, account_memory_path, normalize_account_type, normalize_broker
+from ubs.account import (
+    ACCOUNT_TYPES,
+    account_memory_path,
+    account_types_for_broker,
+    normalize_account_type,
+    normalize_broker,
+)
 from ubs.db import connect_memory
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -57,10 +63,17 @@ def audit_nonfinal_count(
 
 
 class UBSSearchLogicMixin:
+    def _ubs_active_broker_account_contexts(self) -> tuple[tuple[str, str], ...]:
+        broker = self._ubs_broker()
+        return tuple((broker, account) for account in account_types_for_broker(broker))
+
     def _ubs_account_context_label(self, broker: object, account_type: object) -> str:
         broker_key = normalize_broker(broker)
         account = normalize_account_type(account_type, broker_key)
         return f"{broker_key}/{account}"
+
+    def _ubs_account_context_file_label(self, value: object) -> str:
+        return str(value or "").strip().replace("\\", "_").replace("/", "_") or "UBS"
 
     def _parse_ubs_account_context(self, value: object) -> tuple[str, str] | None:
         text = str(value or "").strip().upper().replace("\\", "/")
@@ -71,24 +84,27 @@ class UBSSearchLogicMixin:
             broker_raw, account_raw = text.split(separator, 1)
             broker = normalize_broker(broker_raw)
             account = normalize_account_type(account_raw, broker)
-            if (broker, account) in BROKER_ACCOUNT_TYPES:
+            if (broker, account) in self._ubs_active_broker_account_contexts():
                 return broker, account
             return None
         if text in ACCOUNT_TYPES:
             broker = self._ubs_broker()
-            account = text
-            if (broker, account) not in BROKER_ACCOUNT_TYPES:
-                broker = next((candidate_broker for candidate_broker, candidate_account in BROKER_ACCOUNT_TYPES if candidate_account == account), broker)
+            account = normalize_account_type(text, broker)
+            if (broker, account) not in self._ubs_active_broker_account_contexts():
+                return None
             return broker, account
         return None
 
     def _refresh_ubs_audit_account_values(self) -> None:
         combo = getattr(self, "ubs_audit_account_combo", None)
-        values = tuple(self._ubs_account_context_label(broker, account) for broker, account in BROKER_ACCOUNT_TYPES)
+        values = tuple(
+            self._ubs_account_context_label(broker, account)
+            for broker, account in self._ubs_active_broker_account_contexts()
+        )
         if combo is not None:
             combo.configure(values=values)
         context = self._parse_ubs_account_context(self.ubs_audit_account.get())
-        current = self._ubs_account_context_label(*context) if context else values[0]
+        current = self._ubs_account_context_label(*context) if context else (values[0] if values else "")
         if self.ubs_audit_account.get() != current:
             self.ubs_audit_account.set(current)
 
@@ -662,7 +678,7 @@ class UBSSearchLogicMixin:
             out, summary = self._compose_ubs_run_audit(conn, account_type, run)
         finally:
             conn.close()
-        report_path = BASE_DIR / "outputs" / f"run{run_id}_{account_type}_audit.txt"
+        report_path = BASE_DIR / "outputs" / f"run{run_id}_{self._ubs_account_context_file_label(account_type)}_audit.txt"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("\n".join(out) + "\n", encoding="utf-8")
         return summary, report_path
@@ -1450,7 +1466,7 @@ class UBSSearchLogicMixin:
 
         rows: list[dict[str, object]] = []
         errors: list[str] = []
-        for broker, account_type in BROKER_ACCOUNT_TYPES:
+        for broker, account_type in self._ubs_active_broker_account_contexts():
             memory_path = account_memory_path(BASE_DIR, account_type, broker)
             account_label = self._ubs_account_context_label(broker, account_type)
             if not memory_path.exists():

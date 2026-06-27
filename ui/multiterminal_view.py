@@ -228,8 +228,6 @@ class MultiterminalViewMixin:
                   ).grid(row=8, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 14))
 
         self._refresh_multiterminal_tree()
-        if self.multiterminal_profiles:
-            self._select_multiterminal_profile(0)
         self._update_multiterminal_summary()
     def _build_ubs_multiterminal_row(self, parent: ttk.Frame, *, row: int) -> None:
         mt_row = tk.Frame(parent, bg=self.colors["panel_alt"], highlightthickness=1, highlightbackground=self.colors["border"])

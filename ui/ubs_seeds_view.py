@@ -165,7 +165,7 @@ class UBSSeedsViewMixin:
             self.ubs_seeds_tree.heading(column, text=headings[column])
             self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=False, anchor="center")
         self._make_tree_sortable(self.ubs_seeds_tree)
-        self._attach_tree_scrollbars(table_frame, self.ubs_seeds_tree, 0)
+        self._attach_tree_scrollbars(table_frame, self.ubs_seeds_tree, 0, vertical=True)
         self.ubs_seeds_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
         self.ubs_seeds_tree.tag_configure("rejected", foreground=self.colors["danger"])
         self.ubs_seeds_tree.tag_configure("pending", foreground=self.colors["muted"])

@@ -235,10 +235,10 @@ UBS support code lives in the `ubs/` package:
   predictions are persisted but currently have applied selection scale `0.0`.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
-- `ubs/universe.py`: RoboForex universe parsing, common alias canonicalisation,
+- `ubs/universe.py`: broker universe parsing, common alias canonicalisation,
   disabled symbol JSON persistence, and disabled-seed filtering.
-- `ubs/normalization.py`: RoboForex-only score normalization helpers. It loads
-  `assets/roboforex_normalization.json` and returns the net-profit factor,
+- `ubs/normalization.py`: broker-scoped score normalization helpers. It loads
+  `assets/{broker}_normalization.json` and returns the net-profit factor,
   group, and basis used by scoring.
 - `ubs/score.py`: `ScoreConfig`, `ScoreResult`, scoring formula. Raw
   `net_profit` is preserved, while `normalized_net_profit` drives net pass/fail

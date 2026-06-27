@@ -228,6 +228,7 @@ thresholds. The default seed net-profit threshold is `0`, which means strict
 `normalized_net_profit > 0` because the scorer rejects
 `normalized_net_profit <= min_net_profit`. The raw report `net_profit` remains
 stored for audit/display; current RoboForex scoring factors are configured in
+the active broker normalization file, for example
 `assets/roboforex_normalization.json`.
 When `--evaluate-seeds` runs, already evaluated `accepted`/`rejected` seeds are
 re-scored from their stored reports using the current seed thresholds, without
@@ -256,12 +257,15 @@ The UI can reset seed evaluation from `UBS Seeds`:
 
 Seeds and Universe tables use a SEL checkbox column for multi-row operations.
 Seed actions use checked rows when any exist, otherwise the selected row.
-Universe symbols can be disabled/enabled from checked rows; the disabled set is
-stored in `outputs/ubs_disabled_symbols.json`. Disabled symbols remain visible
-in the Universe table, but are excluded from displayed weights and from UBS
-agent target-symbol exploration. During seed evaluation, a seed whose inferred
-or overridden symbol maps to a disabled symbol is recorded as `disabled_symbol`
-and is not sent to MT5, including after a seed reset.
+Universe symbols can be disabled/enabled from checked rows. The asset universe
+is broker-scoped, while GEN/SEEDS disabled-symbol policy is broker/account
+scoped and stored in
+`outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`. Disabled symbols remain
+visible in the Universe table, but are excluded from displayed weights and from
+UBS agent target-symbol exploration for that broker/account. During seed
+evaluation, a seed whose inferred or overridden symbol maps to a disabled symbol
+is recorded as `disabled_symbol` and is not sent to MT5, including after a seed
+reset.
 
 For single-candidate retry, `ubs_agent.py --retry-candidate-id <id>` copies the
 candidate `.set` into `outputs/ubs_agent/<run>/retry_mismatch/...`, runs
