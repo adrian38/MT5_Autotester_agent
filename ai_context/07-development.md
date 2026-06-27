@@ -102,7 +102,7 @@ For UBS agent changes:
 - If multiterminal behavior changed, run a dry test with
   `run_tests.py --multi-terminal --terminals-config ui_settings.ini
   --max-workers 2 --dry-run` and verify the queue splits without launching MT5.
-- Confirm `outputs/ubs_memory.sqlite` candidate statuses remain terminal after
+- Confirm the active `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite` candidate statuses remain terminal after
   completed generations: `accepted`, `rejected`, `report_mismatch`,
   `no_report`, `parse_error`, or `no_trades`.
 - Confirm `report_mismatch` rows do not feed `asset_feedback`,
@@ -118,7 +118,7 @@ For UBS agent changes:
   after it reaches a statistical terminal state.
 - For robustness changes, run `ubs_agent.py --evaluate-robustness --dry-run`
   against a run with accepted candidates. Confirm copied sets are created under
-  `outputs/ubs_agent/<run>/robustness/...`, and confirm real/non-dry results
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/...`, and confirm real/non-dry results
   write `candidate_robustness` without modifying base candidate scores.
 - Confirm `AgentMemory` and `UBS Universo` show the same relative score,
   estimated 6M probability, confidence and effective final trials. Verify
@@ -225,7 +225,7 @@ Inspect UBS memory:
 ```powershell
 @'
 import sqlite3
-conn = sqlite3.connect("outputs/ubs_memory.sqlite")
+conn = sqlite3.connect("outputs/ubs_memory_ROBOFOREX_ECN.sqlite")
 conn.row_factory = sqlite3.Row
 for row in conn.execute("select status, count(*) n from candidates group by status order by status"):
     print(dict(row))
@@ -245,5 +245,6 @@ Known UBS memory snapshot after run #4 on 2026-06-06:
 - active seeds with valid scored reports contribute to weights at the same base
   strength as generated candidates.
 
-This snapshot is historical only; always query `outputs/ubs_memory.sqlite` for
-the current state before drawing conclusions.
+This snapshot is historical only; always query the active
+`outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite` for the current state before
+drawing conclusions.

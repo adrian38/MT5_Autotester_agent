@@ -23,6 +23,7 @@ from ui.ubs_agent_logic import UBSAgentLogicMixin
 from ui.multiterminal_logic import MultiterminalLogicMixin
 from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
+from ui.ubs_monthly_portfolio_logic import UBSMonthlyPortfolioLogicMixin
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
 
@@ -78,6 +79,15 @@ class _FakeSearch(UBSSearchLogicMixin):
 
     def _ubs_account_type(self) -> str:
         return normalize_account_type(self.ubs_account_type.get(), self._ubs_broker())
+
+
+class _FakeMonthlyPortfolio(UBSMonthlyPortfolioLogicMixin):
+    def __init__(self, broker: str, margin_enabled: bool = True) -> None:
+        self.ubs_broker = _FakeVar(broker)
+        self.ubs_monthly_portfolio_validate_roboforex_margin = _FakeVar(margin_enabled)
+
+    def _ubs_broker(self) -> str:
+        return normalize_broker(self.ubs_broker.get())
 
 
 class _FakeUniverse(UBSUniverseLogicMixin):
@@ -245,6 +255,36 @@ class UBSAccountTests(unittest.TestCase):
         self.assertEqual(robo._ubs_account_context_file_label("ROBOFOREX/ECN"), "ROBOFOREX_ECN")
         self.assertIsNone(axi._parse_ubs_account_context("ROBOFOREX/ECN"))
         self.assertEqual(axi._parse_ubs_account_context("PREMIUM"), ("AXI", "PREMIUM"))
+
+    def test_search_audit_detects_report_broker_and_account_headers(self) -> None:
+        search = _FakeSearch("ROBOFOREX")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            robo_report = base / "robo.htm"
+            axi_report = base / "axi.htm"
+            ic_report = base / "ic.htm"
+            robo_report.write_text("<html>RoboForex-ECN (Build 5120)</html>", encoding="utf-8")
+            axi_report.write_text("<html>AXI Premium (Build 5120)</html>", encoding="utf-8")
+            ic_report.write_text("<html>ICTrading-Live (Build 5120)</html>", encoding="utf-8")
+
+            self.assertEqual(
+                search._detect_ubs_report_account_header(robo_report, "ROBOFOREX")[1:],
+                ("ROBOFOREX", "ECN"),
+            )
+            self.assertEqual(
+                search._detect_ubs_report_account_header(axi_report, "AXI")[1:],
+                ("AXI", "PREMIUM"),
+            )
+            self.assertEqual(
+                search._detect_ubs_report_account_header(ic_report, "ICTRADING")[1:],
+                ("ICTRADING", "STANDARD"),
+            )
+
+    def test_monthly_roboforex_margin_guard_only_applies_to_roboforex(self) -> None:
+        self.assertTrue(_FakeMonthlyPortfolio("ROBOFOREX")._monthly_roboforex_margin_enabled())
+        self.assertFalse(_FakeMonthlyPortfolio("AXI")._monthly_roboforex_margin_enabled())
+        self.assertFalse(_FakeMonthlyPortfolio("ICTRADING")._monthly_roboforex_margin_enabled())
+        self.assertFalse(_FakeMonthlyPortfolio("ROBOFOREX", margin_enabled=False)._monthly_roboforex_margin_enabled())
 
     def test_disabling_generation_clears_stale_seed_permission(self) -> None:
         universe = _FakeUniverse()

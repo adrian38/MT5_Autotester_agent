@@ -266,7 +266,7 @@ enter this queue.
     `--final-tick-max-dd-delta-pct`, `--final-tick-max-trades-delta-pct` — tolerances for
     comparing real-tick metrics against OHLC control metrics (all default `35.0`).
 - The agent copies each robust-accepted `.set` twice under
-  `outputs/ubs_agent/<run>/final_tick/...`: one OHLC batch with `Model=1` and
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/...`: one OHLC batch with `Model=1` and
   one real-tick batch with `Model=4` (`Every tick based on real ticks`).
 - Final Tick requires explicit `--from-date` and `--to-date`; the UI defaults to
   `2026.05.01 -> 2026.05.31` as the last robustness segment example.

@@ -147,7 +147,7 @@ Owns the Strategy Tester workflow:
 
 Owns the UBS agent workflow:
 
-- Load source `.set` seeds from `sets/ubs_ready` or a supplied source folder.
+- Load source `.set` seeds from `sets/ubs_ready/{BROKER}/{ACCOUNT}` or a supplied source folder.
 - Generate variants via `create_variant()`: reads seed, applies symbol/TF,
   injects global frozen values from `ubs_global_params.json` for any key listed
   in `ubs_mutation_overrides.json` `frozen_override`, then mutates the remaining
@@ -159,13 +159,13 @@ Owns the UBS agent workflow:
 - Explore related assets and timeframes (`M15`, `M30`, `H1`, `H4`, `D1`) using
   SQLite feedback from prior scored candidates.
 - Run MT5 backtests through `run_tests.py` when `--execute-backtests` is set.
-- Score reports via `ubs_score.py` and store candidates in
-  `outputs/ubs_memory.sqlite`.
+- Score reports via `ubs_score.py` and store candidates in the active
+  `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`.
 - Validate parsed report `Symbol`/`Period` against the intended target after
   applying `symbol_map`; invalid executions become `report_mismatch`.
 - Evaluate out-of-sample robustness with `--evaluate-robustness` for accepted
   candidates from a run. It copies candidate `.set` files into
-  `outputs/ubs_agent/<run>/robustness/...`, forwards robustness dates/criteria
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/...`, forwards robustness dates/criteria
   to `run_tests.py`, validates symbol/timeframe again, and stores results in
   `candidate_robustness` without overwriting the base candidate score.
 - Evaluate Final Tick with `--evaluate-final-tick` for robustness-accepted
@@ -344,10 +344,10 @@ explicitly about packaging.
 | `logs/` | Compile and backtest logs plus `last_*` pointers |
 | `reports/` | Copied MT5 HTML reports, `.set` files, chart images |
 | `outputs/` | Generated Excel workbooks |
-| `outputs/ubs_agent/` | Generated UBS variants and copied accepted sets |
-| `outputs/ubs_agent/<run>/robustness/` | Copied `.set` files for OOS robustness batches |
-| `outputs/ubs_agent/<run>/final_tick/` | OHLC and real-tick `.set` copies for Final Tick evaluation |
-| `outputs/ubs_memory.sqlite` | UBS agent SQLite: `runs`, `candidates`, `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`, `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members` |
+| `outputs/ubs_agent/{BROKER}/{ACCOUNT}/` | Generated UBS variants and copied accepted sets for that broker/account |
+| `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/` | Copied `.set` files for OOS robustness batches |
+| `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/` | OHLC and real-tick `.set` copies for Final Tick evaluation |
+| `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite` | UBS agent SQLite: `runs`, `candidates`, `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`, `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members` |
 | `outputs/ubs_global_params.json` | Global EA parameter values edited in the UBS Parámetros tab |
 | `outputs/ubs_mutation_overrides.json` | User mutability overrides: `frozen_override` and `mutable_override` |
 

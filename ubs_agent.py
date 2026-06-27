@@ -67,7 +67,6 @@ DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
 DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
-DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER)
 DEFAULT_SYMBOL_MAP = default_symbol_map_for_broker(DEFAULT_BROKER)
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
@@ -799,7 +798,7 @@ def target_symbol_disabled(
 ) -> bool:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
-    policy_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS) if disabled_symbols is None else disabled_symbols
+    policy_symbols = set() if disabled_symbols is None else disabled_symbols
     disabled = {symbol.upper() for symbol in policy_symbols}
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():

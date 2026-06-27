@@ -24,6 +24,7 @@ from ubs_agent import (
     related_timeframes,
     robust_status_pending_for_retry,
     score_config_for_period,
+    target_symbol_disabled,
     target_timeframe_universe,
     min_trades_for_period,
     ranked_seed_selection,
@@ -193,6 +194,9 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(target, "EURUSD")
         self.assertNotEqual(policy, "exploit")
+
+    def test_target_disabled_without_policy_does_not_read_default_account_file(self) -> None:
+        self.assertFalse(target_symbol_disabled("WTI", ("WTI",), {}, disabled_symbols=None))
 
     def test_disabled_symbols_policy_is_account_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

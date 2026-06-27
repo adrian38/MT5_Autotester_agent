@@ -60,6 +60,13 @@ class UBSMonthlyPortfolioLogicMixin:
     def _monthly_portfolio_adapter(self) -> _MonthlyPortfolioLogicAdapter:
         return _MonthlyPortfolioLogicAdapter(self)
 
+    def _monthly_roboforex_margin_enabled(self) -> bool:
+        broker_getter = getattr(self, "_ubs_broker", None)
+        broker = broker_getter() if callable(broker_getter) else "ROBOFOREX"
+        return str(broker).strip().upper() == "ROBOFOREX" and bool(
+            self.ubs_monthly_portfolio_validate_roboforex_margin.get()
+        )
+
     def _read_ubs_monthly_portfolio_inputs(self) -> dict[str, object]:
         adapter = self._monthly_portfolio_adapter()
         inputs = UBSPortfolioLogicMixin._read_ubs_portfolio_inputs(adapter)
@@ -77,9 +84,7 @@ class UBSMonthlyPortfolioLogicMixin:
             self.ubs_monthly_portfolio_strict_yearly_month_validation.get()
         )
         inputs["deep_optimization"] = bool(self.ubs_monthly_portfolio_deep_optimization.get())
-        inputs["validate_roboforex_margin"] = bool(
-            self.ubs_monthly_portfolio_validate_roboforex_margin.get()
-        )
+        inputs["validate_roboforex_margin"] = self._monthly_roboforex_margin_enabled()
         inputs["max_margin_pct"] = UBSPortfolioLogicMixin._parse_float_setting(
             adapter,
             self.ubs_monthly_portfolio_max_margin_pct.get(),

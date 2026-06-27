@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ubs.account import (
     ACCOUNT_TYPES,
+    BROKERS,
     account_memory_path,
     account_types_for_broker,
     normalize_account_type,
@@ -173,6 +174,69 @@ class UBSSearchLogicMixin:
     def _parse_ubs_audit_run_id(self, value: object) -> int:
         match = re.search(r"#?(\d+)", str(value or "").strip())
         return int(match.group(1)) if match else 0
+
+    def _detect_ubs_report_account_header(self, path: Path, expected_broker: object) -> tuple[str, str, str]:
+        try:
+            raw = path.read_bytes()[:12000]
+        except OSError:
+            return "", "", ""
+        for encoding in ("utf-8-sig", "utf-16", "cp1252"):
+            try:
+                text = raw.decode(encoding)
+                break
+            except UnicodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+
+        cleaned = re.sub(r"<[^>]+>", " ", text)
+        cleaned = unescape(re.sub(r"\s+", " ", cleaned)).strip()
+        token_map = {
+            "ROBOFOREX": ("RoboForex",),
+            "ICTRADING": ("ICTrading", "IC Trading", "ICMarkets", "IC Markets"),
+            "AXI": ("AXI",),
+        }
+        detected_broker = ""
+        for broker in BROKERS:
+            if any(re.search(rf"\b{re.escape(token)}\b", cleaned, flags=re.IGNORECASE) for token in token_map.get(broker, ())):
+                detected_broker = broker
+                break
+        if not detected_broker:
+            expected = normalize_broker(expected_broker)
+            if any(re.search(rf"\b{re.escape(token)}\b", cleaned, flags=re.IGNORECASE) for token in token_map.get(expected, ())):
+                detected_broker = expected
+        if not detected_broker:
+            return "", "", ""
+
+        header = ""
+        broker_tokens = token_map.get(detected_broker, ())
+        if broker_tokens:
+            token_pattern = "|".join(re.escape(token) for token in broker_tokens)
+            match = re.search(
+                rf"([^<\r\n]*?(?:{token_pattern})[^<\r\n(]*\s*\(Build\s+\d+\))",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                match = re.search(
+                    rf"([A-Za-z0-9 ._-]*(?:{token_pattern})[A-Za-z0-9 ._-]*\s*\(Build\s+\d+\))",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+            header = unescape(match.group(1)).strip() if match else ""
+        if not header:
+            header = cleaned[:160]
+
+        accounts = account_types_for_broker(detected_broker)
+        detected_account = ""
+        account_probe = re.sub(r"[^A-Z0-9]+", " ", header.upper())
+        for account in accounts:
+            if account in account_probe:
+                detected_account = account
+                break
+        if not detected_account and len(accounts) == 1:
+            detected_account = accounts[0]
+        return header, detected_broker, detected_account
 
     def _run_ubs_audit_from_search(self) -> None:
         context = self._parse_ubs_account_context(self.ubs_audit_account.get())
@@ -727,34 +791,19 @@ class UBSSearchLogicMixin:
                 return {}
             return data if isinstance(data, dict) else {}
 
-        def report_account_header(path: Path) -> tuple[str, str]:
-            try:
-                raw = path.read_bytes()[:12000]
-            except OSError:
-                return "", ""
-            for encoding in ("utf-8-sig", "utf-16", "cp1252"):
-                try:
-                    text = raw.decode(encoding)
-                    break
-                except UnicodeError:
-                    continue
+        expected_context = self._parse_ubs_account_context(account_type)
+        if expected_context is None:
+            if "/" in str(account_type):
+                broker_raw, account_raw = str(account_type).split("/", 1)
+                expected_context = (
+                    normalize_broker(broker_raw),
+                    normalize_account_type(account_raw, normalize_broker(broker_raw)),
+                )
             else:
-                text = raw.decode("utf-8", errors="ignore")
-            match = re.search(r"(RoboForex-[^<\r\n(]+)\s*\(Build\s+\d+\)", text, flags=re.IGNORECASE)
-            if not match:
-                cleaned = re.sub(r"<[^>]+>", " ", text)
-                cleaned = unescape(re.sub(r"\s+", " ", cleaned))
-                match = re.search(r"(RoboForex-\S+)\s*\(Build\s+\d+\)", cleaned, flags=re.IGNORECASE)
-            if not match:
-                return "", ""
-            header = unescape(match.group(0)).strip()
-            account_name = match.group(1).strip()
-            suffix = account_name.split("-", 1)[1].strip().upper() if "-" in account_name else account_name.upper()
-            if "ECN" in suffix:
-                return header, "ECN"
-            if "PRO" in suffix:
-                return header, "PRO"
-            return header, suffix or "OTRA"
+                expected_broker = self._ubs_broker()
+                expected_context = (expected_broker, normalize_account_type(account_type, expected_broker))
+        expected_broker, expected_account = expected_context
+        expected_label = self._ubs_account_context_label(expected_broker, expected_account)
 
         out: list[str] = []
 
@@ -767,7 +816,7 @@ class UBSSearchLogicMixin:
         score_cfg = config.get("score") if isinstance(config.get("score"), dict) else {}
         caps = generation.get("target_diversity_caps") if isinstance(generation.get("target_diversity_caps"), dict) else {}
 
-        line(f"AUDITORIA RUN #{run_id} - {account_type}")
+        line(f"AUDITORIA RUN #{run_id} - {expected_label}")
         line("=" * 96)
         line(f"created_at: {run['created_at']}")
         line(f"run_dir: {run['output_dir']}")
@@ -892,7 +941,7 @@ class UBSSearchLogicMixin:
             ("FT 6M OHLC", "ft6_ohlc_report"),
             ("FT 6M Tick", "ft6_tick_report"),
         ]
-        account_cache: dict[str, tuple[str, str]] = {}
+        account_cache: dict[str, tuple[str, str, str]] = {}
         account_by_gen: dict[int, dict[str, dict[str, int]]] = {}
         account_ids_by_gen: dict[int, dict[str, dict[str, set[int]]]] = {}
         account_bad_types_by_process: dict[str, dict[str, int]] = {}
@@ -912,10 +961,15 @@ class UBSSearchLogicMixin:
                     continue
                 cache_key = str(report_path.resolve()).casefold()
                 checked_report_files.add(cache_key)
-                header, detected_account = account_cache.get(cache_key, ("", ""))
+                header, detected_broker, detected_account = account_cache.get(cache_key, ("", "", ""))
                 if not header and cache_key not in account_cache:
-                    header, detected_account = report_account_header(report_path)
-                    account_cache[cache_key] = (header, detected_account)
+                    header, detected_broker, detected_account = self._detect_ubs_report_account_header(report_path, expected_broker)
+                    account_cache[cache_key] = (header, detected_broker, detected_account)
+                detected_label = (
+                    self._ubs_account_context_label(detected_broker, detected_account)
+                    if detected_broker and detected_account
+                    else ""
+                )
                 bucket = account_by_gen.setdefault(gen_no, {}).setdefault(
                     process,
                     {"ok": 0, "mismatch": 0, "unknown": 0},
@@ -930,20 +984,20 @@ class UBSSearchLogicMixin:
                     id_bucket["unknown"].add(candidate_id)
                     detail = (
                         f"{gen_no}\t{row['id']}\t{Path(str(row['set_path'] or '')).name}\t{process}\t"
-                        f"{account_type}\tSIN_ENCABEZADO\t\t{report_path.name}"
+                        f"{expected_label}\tSIN_ENCABEZADO\t\t{report_path.name}"
                     )
                     account_details_by_process.setdefault(process, []).append(detail)
                     account_unknowns.append(detail)
-                elif detected_account != account_type:
+                elif (detected_broker, detected_account) != expected_context:
                     bucket["mismatch"] += 1
                     id_bucket["mismatch"].add(candidate_id)
-                    account_bad_types_by_process.setdefault(process, {})[detected_account] = (
-                        account_bad_types_by_process.setdefault(process, {}).get(detected_account, 0) + 1
+                    account_bad_types_by_process.setdefault(process, {})[detected_label] = (
+                        account_bad_types_by_process.setdefault(process, {}).get(detected_label, 0) + 1
                     )
-                    account_bad_ids_by_process.setdefault(process, {}).setdefault(detected_account, set()).add(candidate_id)
+                    account_bad_ids_by_process.setdefault(process, {}).setdefault(detected_label, set()).add(candidate_id)
                     detail = (
                         f"{gen_no}\t{row['id']}\t{Path(str(row['set_path'] or '')).name}\t{process}\t"
-                        f"{account_type}\t{detected_account}\t{header}\t{report_path.name}"
+                        f"{expected_label}\t{detected_label}\t{header}\t{report_path.name}"
                     )
                     account_details_by_process.setdefault(process, []).append(detail)
                     account_mismatches.append(detail)

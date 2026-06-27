@@ -174,7 +174,7 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 | `apply_portfolio_lot_text(text, step)` | Patch .set: `Risk=2` + integer `LotPerBalance_step` |
 | `set_current_value(text, key, value)` | Replace first field (before `||`) of a .set key |
 
-### DB tables (in `outputs/ubs_memory.sqlite`)
+### DB tables (in `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`)
 
 - `portfolios`: one row per generated portfolio (inputs, results, `metrics_json`).
   Monthly rows use `portfolio_scope='monthly'` and `target_month`; regular rows

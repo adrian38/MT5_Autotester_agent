@@ -136,8 +136,8 @@ requirement changes or a debt item is opened/closed.
   does not already exist or can be migrated safely. Migration MUST be
   non-destructive and MUST NOT overwrite new data.
 - **FR-1.6.1** Each generation round MUST load `.set` seeds from the configured
-  source directory (default `sets/ubs_ready/`), apply any stored `seed_overrides`,
-  then mutate them into variant `.set` files.
+  source directory (default `sets/ubs_ready/{BROKER}/{ACCOUNT}/`), apply any
+  stored `seed_overrides`, then mutate them into variant `.set` files.
 - **FR-1.6.2** Variant mutation MUST only replace keys that already exist in the
   seed; it MUST NOT add new keys.
 - **FR-1.6.3** Lot sizing in every generated variant MUST be normalised via
@@ -292,7 +292,7 @@ requirement changes or a debt item is opened/closed.
   with shrinkage for small samples.
 - **FR-1.8.3** `report_mismatch` and `no_report` rows MUST be retryable:
   - Single candidate: UI "Reprobar mismatch" → copies `.set` to
-    `outputs/ubs_agent/<run>/retry_mismatch/`, re-evaluates, updates the
+    `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/retry_mismatch/`, re-evaluates, updates the
     original DB row.
   - Run-level: "Reprobar run" → copies all mismatches from the run, evaluates
     all produced reports. Partial failures leave failed candidates as `no_report`.
@@ -302,7 +302,7 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.4** Accepted candidates MAY be evaluated in a separate OOS robustness
   pass with `ubs_agent.py --evaluate-robustness --robust-run-id <id>`.
   Robustness MUST copy accepted candidate `.set` files into
-  `outputs/ubs_agent/<run>/robustness/...`, run `run_tests.py` on that folder,
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/...`, run `run_tests.py` on that folder,
   validate report symbol/timeframe using the same `symbol_map` rules, and store
   results in `candidate_robustness` without overwriting base `candidates.score`.
   `--robust-pending-only` MUST limit the pass to accepted candidates with no
@@ -412,7 +412,8 @@ requirement changes or a debt item is opened/closed.
   MUST do the same for base candidates and OOS robustness rows. These commands
   MUST be run with the correct threshold set for seeds, generation, and OOS.
 - **FR-1.9.12** Before launching new seed backtests, `--evaluate-seeds` MUST
-  reconcile reports left by interrupted `outputs/ubs_agent/seed_eval/eval_*`
+  reconcile reports left by interrupted
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/seed_eval/eval_*`
   batches. It MUST match copied `.set` files back to source seeds by file
   content, validate symbol/TF against the report, and update `seed_scores` so
   completed jobs do not remain stuck as `pending`.
