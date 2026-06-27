@@ -648,6 +648,41 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertTrue(result.seasonal_validation["passed"])
         self.assertTrue(any("Optimizacion profunda aplicada" in warning for warning in result.warnings))
 
+    def test_strict_monthly_optimizer_can_run_without_deep_refinement(self) -> None:
+        july = 7
+        strategy = make_strategy("anchor", "EURUSD", [0, 1], trades=1)
+        total = 0.0
+        points = []
+        for year in range(2021, 2026):
+            total += 100.0
+            points.append((datetime(year, 7, 10), total))
+            total += 10.0
+            points.append((datetime(year, 8, 10), total))
+        strategy.curve_points_2020_2026_001 = points
+        monthly, _warnings = slice_strategy_sets_to_month([strategy], july)
+
+        result = optimize_strict_monthly_portfolio(
+            monthly,
+            [strategy],
+            target_month=july,
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=3,
+            max_total_candidates=1,
+            max_units_per_set=1,
+            max_total_units=1,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+            use_deep_refinement=False,
+        )
+
+        self.assertTrue(result.seasonal_validation["passed"])
+        self.assertTrue(any("sin optimizacion profunda" in warning for warning in result.warnings))
+        self.assertFalse(any("Optimizacion profunda aplicada" in warning for warning in result.warnings))
+
     def test_balanced_limits_active_sets_by_asset_group(self) -> None:
         result = optimize_portfolio(
             [

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import threading
+from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox
 from types import MethodType
 
@@ -15,6 +18,7 @@ from portfolio_manager.ubs_portfolio import (
     validate_strict_monthly_portfolio,
 )
 from ui.ubs_portfolio_logic import (
+    BASE_DIR,
     DEFAULT_PORTFOLIO_FORM,
     PORTFOLIO_TYPE_DISPLAY,
     UBSPortfolioLogicMixin,
@@ -94,6 +98,52 @@ class UBSMonthlyPortfolioLogicMixin:
             raise ValueError("Max margen debe ser mayor que 0.")
         return inputs
 
+    def _start_ubs_monthly_generation_log(self, inputs: dict[str, object]) -> Path:
+        logs_dir = BASE_DIR / "logs" / "ubs_monthly_portfolio"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_month = int(inputs.get("target_month") or 0)
+        path = logs_dir / f"monthly_{stamp}_mes_{target_month:02d}.log"
+        self._append_ubs_monthly_generation_log(
+            path,
+            "INICIO_GENERACION_MENSUAL",
+            {
+                "inputs": self._monthly_log_safe(inputs),
+                "strict_yearly_month_validation": bool(inputs.get("strict_yearly_month_validation")),
+                "deep_optimization": bool(inputs.get("deep_optimization")),
+                "validate_roboforex_margin": bool(inputs.get("validate_roboforex_margin")),
+            },
+        )
+        return path
+
+    def _append_ubs_monthly_generation_log(
+        self,
+        path: Path | None,
+        event: str,
+        payload: object | None = None,
+    ) -> None:
+        if path is None:
+            return
+        record = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "event": event,
+        }
+        if payload is not None:
+            record["payload"] = self._monthly_log_safe(payload)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+    def _monthly_log_safe(self, value: object) -> object:
+        if isinstance(value, dict):
+            return {str(key): self._monthly_log_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._monthly_log_safe(item) for item in value]
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
     def _set_ubs_monthly_portfolio_running(self, running: bool) -> None:
         UBSPortfolioLogicMixin._set_ubs_portfolio_running(
             self._monthly_portfolio_adapter(),
@@ -164,6 +214,8 @@ class UBSMonthlyPortfolioLogicMixin:
         except ValueError as exc:
             messagebox.showerror("Entrada invalida", str(exc))
             return
+        log_path = self._start_ubs_monthly_generation_log(inputs)
+        inputs["generation_log_path"] = str(log_path)
         if hasattr(self, "_write_ui_settings"):
             try:
                 self._write_ui_settings()
@@ -179,14 +231,19 @@ class UBSMonthlyPortfolioLogicMixin:
         )
         threading.Thread(
             target=self._ubs_monthly_portfolio_worker,
-            args=(inputs,),
+            args=(inputs, log_path),
             daemon=True,
         ).start()
 
-    def _ubs_monthly_portfolio_worker(self, inputs: dict[str, object]) -> None:
+    def _ubs_monthly_portfolio_worker(self, inputs: dict[str, object], log_path: Path | None = None) -> None:
         try:
             portfolio_type = PortfolioType(str(inputs["portfolio_type"]))
             rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=True)
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "CANDIDATOS_FINAL_TICK_6M",
+                {"rows": len(rows)},
+            )
             if not rows:
                 raise ValueError("No hay candidatos con Final Tick 6M accepted en las memorias broker/cuenta.")
             month_filter_warnings: list[str] = []
@@ -196,9 +253,19 @@ class UBSMonthlyPortfolioLogicMixin:
                     min_positive_months=3,
                     window_months=6,
                 )
+                self._append_ubs_monthly_generation_log(
+                    log_path,
+                    "FILTRO_3_6_MESES",
+                    {"rows_after": len(rows), "warnings": month_filter_warnings},
+                )
             grid_warnings: list[str] = []
             if bool(inputs.get("grid_off")):
                 rows, grid_warnings = filter_rows_grid_off(rows)
+                self._append_ubs_monthly_generation_log(
+                    log_path,
+                    "FILTRO_GRID_OFF",
+                    {"rows_after": len(rows), "warnings": grid_warnings},
+                )
                 if not rows:
                     raise ValueError("No quedan candidatos tras aplicar Grid OFF.")
             availability = summarize_robust_rows(rows, [])
@@ -207,9 +274,27 @@ class UBSMonthlyPortfolioLogicMixin:
                 [],
                 progress=lambda msg: self.after(0, self.ubs_monthly_portfolio_status.set, msg),
             )
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "SETS_CARGADOS",
+                {
+                    "raw_sets": len(raw_sets),
+                    "symbols": len({getattr(item, "symbol", "") for item in raw_sets}),
+                    "warnings": load_warnings,
+                },
+            )
             monthly_sets, slice_warnings = slice_strategy_sets_to_month(
                 raw_sets,
                 int(inputs["target_month"]),
+            )
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "SETS_MES_OBJETIVO",
+                {
+                    "monthly_sets": len(monthly_sets),
+                    "target_month": int(inputs["target_month"]),
+                    "warnings": slice_warnings,
+                },
             )
             if not monthly_sets:
                 raise ValueError("Ningun candidato tiene trades fechados para el mes objetivo.")
@@ -219,32 +304,54 @@ class UBSMonthlyPortfolioLogicMixin:
                 target_month=int(inputs["target_month"]),
             )
             strict_retry_warnings: list[str] = []
-            base_inputs = dict(inputs)
-            base_inputs["use_deep_candidate_engine"] = False
-            proposals = self._optimize_ubs_portfolio_proposals(
-                monthly_sets,
-                base_inputs,
-                portfolio_type,
-                existing_curves,
-                strict_full_sets=raw_sets,
-                progress=lambda label, index: self.after(
-                    0,
-                    self.ubs_monthly_portfolio_status.set,
-                    (
-                        f"Calculando propuesta mensual estricta {index}/3 ({label})..."
-                        if bool(inputs.get("strict_yearly_month_validation"))
-                        else f"Calculando propuesta mensual {index}/3 ({label})..."
-                    ),
-                ),
+            engine_inputs = dict(inputs)
+            engine_inputs["use_deep_candidate_engine"] = (
+                bool(inputs.get("strict_yearly_month_validation"))
+                and bool(inputs.get("deep_optimization"))
+            )
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "MOTOR_SELECCIONADO",
+                {
+                    "strict": bool(inputs.get("strict_yearly_month_validation")),
+                    "deep_refinement": bool(engine_inputs.get("use_deep_candidate_engine")),
+                    "existing_monthly_curves": len(existing_curves),
+                },
             )
             try:
+                proposals = self._optimize_ubs_portfolio_proposals(
+                    monthly_sets,
+                    engine_inputs,
+                    portfolio_type,
+                    existing_curves,
+                    strict_full_sets=raw_sets,
+                    progress=lambda label, index: self.after(
+                        0,
+                        self.ubs_monthly_portfolio_status.set,
+                        (
+                            f"Calculando propuesta mensual estricta {index}/3 ({label})..."
+                            if bool(inputs.get("strict_yearly_month_validation"))
+                            else f"Calculando propuesta mensual {index}/3 ({label})..."
+                        ),
+                    ),
+                )
                 proposals = self._filter_strict_monthly_valid_proposals(raw_sets, proposals, inputs)
-            except ValueError:
+            except ValueError as exc:
+                self._append_ubs_monthly_generation_log(
+                    log_path,
+                    "MOTOR_PRINCIPAL_FALLO",
+                    {"error": str(exc)},
+                )
                 if not bool(inputs.get("strict_yearly_month_validation")):
                     raise
                 strict_raw_sets, strict_retry_warnings = self._strict_monthly_candidate_pool(
                     raw_sets,
                     inputs,
+                )
+                self._append_ubs_monthly_generation_log(
+                    log_path,
+                    "REINTENTO_POOL_ESTRICTO",
+                    {"strict_raw_sets": len(strict_raw_sets), "warnings": strict_retry_warnings},
                 )
                 if not strict_raw_sets:
                     raise
@@ -257,7 +364,7 @@ class UBSMonthlyPortfolioLogicMixin:
                     raise
                 proposals = self._optimize_ubs_portfolio_proposals(
                     strict_monthly_sets,
-                    base_inputs,
+                    engine_inputs,
                     portfolio_type,
                     existing_curves,
                     strict_full_sets=raw_sets,
@@ -272,33 +379,6 @@ class UBSMonthlyPortfolioLogicMixin:
                     proposals,
                     inputs,
                 )
-            if bool(inputs.get("strict_yearly_month_validation")) and bool(inputs.get("deep_optimization")):
-                try:
-                    deep_inputs = dict(inputs)
-                    deep_inputs["use_deep_candidate_engine"] = True
-                    deep_proposals = self._optimize_ubs_portfolio_proposals(
-                        monthly_sets,
-                        deep_inputs,
-                        portfolio_type,
-                        existing_curves,
-                        strict_full_sets=raw_sets,
-                        progress=lambda label, index: self.after(
-                            0,
-                            self.ubs_monthly_portfolio_status.set,
-                            f"Probando profunda {index}/3 ({label})...",
-                        ),
-                    )
-                    deep_proposals = self._filter_strict_monthly_valid_proposals(
-                        raw_sets,
-                        deep_proposals,
-                        inputs,
-                    )
-                    proposals = self._merge_deep_monthly_proposals(proposals, deep_proposals)
-                except Exception as exc:
-                    for proposal in proposals:
-                        proposal["result"].warnings.append(
-                            f"Optimizacion profunda descartada: {exc}"
-                        )
             for proposal in proposals:
                 proposal["result"].warnings[:0] = (
                     month_filter_warnings
@@ -307,16 +387,39 @@ class UBSMonthlyPortfolioLogicMixin:
                     + slice_warnings
                     + strict_retry_warnings
                 )
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "PROPUESTAS_OK",
+                [
+                    {
+                        "key": proposal.get("key"),
+                        "label": proposal.get("label"),
+                        "net": getattr(proposal.get("result"), "total_net_profit", None),
+                        "units": getattr(proposal.get("result"), "total_units", None),
+                        "strategies": getattr(proposal.get("result"), "active_strategies", None),
+                        "strict_passed": bool(
+                            (getattr(proposal.get("result"), "seasonal_validation", {}) or {}).get("passed")
+                        ),
+                    }
+                    for proposal in proposals
+                ],
+            )
         except Exception as exc:
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "ERROR_GENERACION",
+                {"error": str(exc)},
+            )
             self.after(0, self._ubs_monthly_portfolio_finished, {
                 "ok": False,
-                "error": f"Error generando portafolio mensual: {exc}",
+                "error": f"Error generando portafolio mensual: {exc} | log {log_path}" if log_path else f"Error generando portafolio mensual: {exc}",
             })
             return
         self.after(0, self._ubs_monthly_portfolio_finished, {
             "ok": True,
             "availability": availability,
             "proposals": proposals,
+            "log_path": str(log_path) if log_path else "",
         })
 
     def _merge_deep_monthly_proposals(
@@ -396,7 +499,11 @@ class UBSMonthlyPortfolioLogicMixin:
         proposals = info.get("proposals") or []
         self.ubs_monthly_portfolio_proposals_availability = info.get("availability")
         self._show_ubs_portfolio_proposals_preview(0, proposals, [], mode="generate_monthly")
-        self.ubs_monthly_portfolio_status.set("Selecciona una propuesta mensual para continuar.")
+        log_path = str(info.get("log_path") or "").strip()
+        suffix = f" Log: {log_path}" if log_path else ""
+        self.ubs_monthly_portfolio_status.set(
+            f"Selecciona una propuesta mensual para continuar.{suffix}"
+        )
 
     def _restore_selected_ubs_monthly_portfolio_after_failed_generate(self) -> bool:
         tree = getattr(self, "ubs_monthly_portfolio_saved_tree", None)
@@ -438,6 +545,14 @@ class UBSMonthlyPortfolioLogicMixin:
             return
         if not result.allocations:
             messagebox.showwarning("Guardar portafolio mensual", "El portafolio mensual no tiene asignaciones.")
+            return
+        if bool(inputs.get("strict_yearly_month_validation")) and not bool(
+            (getattr(result, "seasonal_validation", {}) or {}).get("passed")
+        ):
+            messagebox.showerror(
+                "Guardar portafolio mensual",
+                "Bloqueado: la propuesta estricta no tiene validacion 5A/DD mensual pasada.",
+            )
             return
         conn = self._ubs_portfolio_conn()
         try:

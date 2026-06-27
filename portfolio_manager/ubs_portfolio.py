@@ -2553,6 +2553,142 @@ def _portfolio_corr_allowed(
     return worst_corr <= max_portfolio_corr + 1e-9
 
 
+def _strict_monthly_violation_score(validation: dict[str, object]) -> float:
+    if bool(validation.get("passed")):
+        return 0.0
+    score = 0.0
+    target_valley = float(validation.get("target_valley_dd") or 0.0)
+    target_point = float(validation.get("target_point_dd") or 0.0)
+    monthly_dd = validation.get("monthly_dd")
+    if isinstance(monthly_dd, dict):
+        for item in monthly_dd.values():
+            if not isinstance(item, dict):
+                continue
+            score += max(float(item.get("valley_dd") or 0.0) - target_valley, 0.0) * 10.0
+            score += max(float(item.get("point_dd") or 0.0) - target_point, 0.0) * 10.0
+    yearly = validation.get("yearly")
+    if isinstance(yearly, list):
+        for item in yearly:
+            if not isinstance(item, dict):
+                continue
+            if int(item.get("trades") or 0) <= 0:
+                score += 1_000_000.0
+            if float(item.get("net") or 0.0) <= 0.0:
+                score += 1_000_000.0 + abs(float(item.get("net") or 0.0)) * 100.0
+            score += max(float(item.get("valley_dd") or 0.0) - target_valley, 0.0) * 20.0
+            score += max(float(item.get("point_dd") or 0.0) - target_point, 0.0) * 20.0
+    best_month = int(validation.get("best_month") or 0)
+    target_month = int(validation.get("target_month") or 0)
+    if best_month != target_month:
+        best_net = float(validation.get("best_month_net") or 0.0)
+        target_net = float(validation.get("target_month_net") or 0.0)
+        score += 1_000_000.0 + max(best_net - target_net, 0.0) * 100.0
+    return score + len(validation.get("reasons") or []) * 1_000.0
+
+
+def _repair_allocations_to_strict_monthly(
+    monthly_sets: list[RobustStrategySet],
+    full_by_id: dict[str, RobustStrategySet],
+    allocations: dict[str, int],
+    *,
+    target_month: int,
+    target_valley_dd: float,
+    target_point_dd: float,
+) -> tuple[dict[str, int], PortfolioEvaluation, dict[str, object], list[OptimizationDecision]]:
+    current_allocations = {
+        strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
+        for strategy in monthly_sets
+    }
+    current_eval = evaluate_portfolio(monthly_sets, current_allocations, target_valley_dd, target_point_dd)
+    current_validation = _strict_validation_for_allocations(
+        full_by_id,
+        current_allocations,
+        target_month=target_month,
+        target_valley_dd=target_valley_dd,
+        target_point_dd=target_point_dd,
+    )
+    decision_log: list[OptimizationDecision] = []
+    if bool(current_validation.get("passed")):
+        return current_allocations, current_eval, current_validation, decision_log
+
+    step = 0
+    while sum(current_allocations.values()) > 0:
+        current_score = _strict_monthly_violation_score(current_validation)
+        best_choice: tuple[
+            float,
+            float,
+            float,
+            str,
+            RobustStrategySet,
+            dict[str, int],
+            PortfolioEvaluation,
+            dict[str, object],
+        ] | None = None
+        for strategy in monthly_sets:
+            if current_allocations.get(strategy.set_id, 0) <= 0:
+                continue
+            trial_allocations = current_allocations.copy()
+            trial_allocations[strategy.set_id] -= 1
+            trial_eval = evaluate_portfolio(monthly_sets, trial_allocations, target_valley_dd, target_point_dd)
+            trial_validation = _strict_validation_for_allocations(
+                full_by_id,
+                trial_allocations,
+                target_month=target_month,
+                target_valley_dd=target_valley_dd,
+                target_point_dd=target_point_dd,
+            )
+            trial_score = _strict_monthly_violation_score(trial_validation)
+            choice = (
+                trial_score,
+                -trial_eval.total_net_profit,
+                -trial_eval.active_strategies,
+                strategy.set_id,
+                strategy,
+                trial_allocations,
+                trial_eval,
+                trial_validation,
+            )
+            if best_choice is None or choice[:4] < best_choice[:4]:
+                best_choice = choice
+        if best_choice is None or best_choice[0] >= current_score - 1e-9:
+            break
+        (
+            _score,
+            _negative_net,
+            _negative_active,
+            _set_id,
+            reduced_set,
+            next_allocations,
+            next_eval,
+            next_validation,
+        ) = best_choice
+        previous_eval = current_eval
+        current_allocations = next_allocations
+        current_eval = next_eval
+        current_validation = next_validation
+        step += 1
+        decision_log.append(
+            OptimizationDecision(
+                step=step,
+                action="strict_monthly_reduce_unit",
+                set_id=reduced_set.set_id,
+                from_set_id=reduced_set.set_id,
+                to_set_id=None,
+                gain=-reduced_set.net_profit_2020_2026_001,
+                valley_cost=current_eval.valley_dd - previous_eval.valley_dd,
+                point_cost=current_eval.point_dd - previous_eval.point_dd,
+                score=-float(best_choice[0]),
+                portfolio_net_profit_after=current_eval.total_net_profit,
+                portfolio_valley_dd_after=current_eval.valley_dd,
+                portfolio_point_dd_after=current_eval.point_dd,
+                reason="Reduccion necesaria para cumplir validacion mensual estricta 5A/DD",
+            )
+        )
+        if bool(current_validation.get("passed")):
+            break
+    return current_allocations, current_eval, current_validation, decision_log
+
+
 def _strict_monthly_deep_refine_allocations(
     candidate_pool: list[RobustStrategySet],
     full_by_id: dict[str, RobustStrategySet],
@@ -2789,6 +2925,7 @@ def optimize_strict_monthly_portfolio(
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
+    use_deep_refinement: bool = True,
 ) -> PortfolioResult:
     """Optimize a monthly portfolio with the 5-year seasonal test in the loop.
 
@@ -2859,15 +2996,63 @@ def optimize_strict_monthly_portfolio(
             for allocation in base_result.allocations
             if allocation.units > 0
         }
-        validation = _strict_validation_for_allocations(
+        repaired_units, repaired_eval, validation, repair_log = _repair_allocations_to_strict_monthly(
+            candidate_pool,
             full_by_id,
             base_units,
             target_month=month,
             target_valley_dd=base_result.target_valley_dd,
             target_point_dd=base_result.target_point_dd,
         )
-        base_result.seasonal_validation = validation
         if bool(validation.get("passed")):
+            active_repaired = _active_unit_allocations(repaired_units)
+            if not active_repaired:
+                errors.append(f"{label}: reparacion estricta dejo el portafolio sin estrategias")
+                continue
+            if active_repaired != base_units:
+                repaired_sets = [
+                    strategy for strategy in candidate_pool if strategy.set_id in active_repaired
+                ]
+                try:
+                    base_result = optimize_portfolio(
+                        raw_sets=repaired_sets,
+                        capital=capital,
+                        valley_dd_pct=valley_dd_pct,
+                        point_dd_pct=point_dd_pct,
+                        portfolio_type=portfolio_type,
+                        min_trades_2020_2026=min_trades_2020_2026,
+                        top_k_per_symbol=max(1, len(repaired_sets)),
+                        max_total_candidates=None,
+                        max_units_per_set=max_units_per_set,
+                        max_total_units=sum(active_repaired.values()),
+                        max_units_per_symbol=max_units_per_symbol,
+                        max_sets_per_symbol=max_sets_per_symbol,
+                        run_local_search=False,
+                        max_pair_corr=max_pair_corr,
+                        max_downside_corr=max_downside_corr,
+                        max_dd_overlap=max_dd_overlap,
+                        existing_portfolio_curves=existing_portfolio_curves,
+                        max_portfolio_corr=max_portfolio_corr,
+                        dd_reserve_pct=dd_reserve_pct,
+                        search_restarts=0,
+                        margin_balance=margin_balance,
+                        max_margin_pct=max_margin_pct,
+                        stock_leverage=stock_leverage,
+                        default_leverage=default_leverage,
+                        stock_contract_size=stock_contract_size,
+                        default_contract_size=default_contract_size,
+                        required_initial_allocations=active_repaired,
+                        preserve_required_allocations=True,
+                    )
+                except Exception as exc:
+                    errors.append(f"{label}: reparacion estricta no pudo reconstruirse: {exc}")
+                    continue
+                base_result.decision_log.extend(repair_log)
+                base_result.warnings.append(
+                    "Reparacion estricta mensual: se redujeron "
+                    f"{len(repair_log)} unidad(es) para cumplir DD de todos los meses y mejor mes 5A."
+                )
+            base_result.seasonal_validation = validation
             base_label = label
             break
         reasons = validation.get("reasons") or []
@@ -2879,6 +3064,12 @@ def optimize_strict_monthly_portfolio(
             "Ninguna variante de busqueda estricta mensual fue viable."
             + (f" {detail}" if detail else "")
         )
+
+    if not use_deep_refinement:
+        base_result.warnings.append(
+            f"Generacion estricta mensual OK sin optimizacion profunda; base '{base_label}'."
+        )
+        return base_result
 
     monthly_by_id = {strategy.set_id: strategy for strategy in monthly_sets}
     candidate_pool_by_id: dict[str, RobustStrategySet] = {}
