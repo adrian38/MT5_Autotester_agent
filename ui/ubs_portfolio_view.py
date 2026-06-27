@@ -193,6 +193,30 @@ class UBSPortfolioViewMixin:
                     deep_check,
                     "Si esta activo, refina la cartera estricta probando adiciones y swaps sin saltarse DD, margen, correlacion ni mejor mes 5A.",
                 )
+            exclude_monthly_used_var = getattr(self, "ubs_portfolio_exclude_monthly_used", None)
+            if exclude_monthly_used_var is not None:
+                exclude_monthly_used_check = ttk.Checkbutton(
+                    form,
+                    text="Excluir usados mensual",
+                    variable=exclude_monthly_used_var,
+                )
+                exclude_monthly_used_check.grid(row=4, column=8, columnspan=2, sticky="w", padx=(8, 4), pady=5)
+                self._tooltip_cls(
+                    exclude_monthly_used_check,
+                    "Si esta activo, descarta sets ya usados en portafolios guardados de UBS Portafolio Mensual.",
+                )
+            corr_monthly_var = getattr(self, "ubs_portfolio_corr_with_monthly_portfolios", None)
+            if corr_monthly_var is not None:
+                corr_monthly_check = ttk.Checkbutton(
+                    form,
+                    text="No corr mensual",
+                    variable=corr_monthly_var,
+                )
+                corr_monthly_check.grid(row=4, column=10, columnspan=2, sticky="w", padx=(8, 10), pady=5)
+                self._tooltip_cls(
+                    corr_monthly_check,
+                    "Si esta activo, el nuevo portafolio mensual debe respetar Max corr portfolios contra portafolios mensuales guardados.",
+                )
             margin_var = getattr(self, "ubs_portfolio_validate_roboforex_margin", None)
             margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
             if margin_var is not None and margin_pct_var is not None:

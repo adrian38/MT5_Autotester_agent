@@ -88,6 +88,20 @@ class UBSMonthlyPortfolioLogicMixin:
             self.ubs_monthly_portfolio_strict_yearly_month_validation.get()
         )
         inputs["deep_optimization"] = bool(self.ubs_monthly_portfolio_deep_optimization.get())
+        inputs["exclude_monthly_used"] = bool(self.ubs_monthly_portfolio_exclude_monthly_used.get())
+        inputs["corr_with_monthly_portfolios"] = bool(
+            self.ubs_monthly_portfolio_corr_with_monthly_portfolios.get()
+        )
+        if bool(inputs["corr_with_monthly_portfolios"]) and inputs.get("max_portfolio_corr") is None:
+            inputs["max_portfolio_corr"] = UBSPortfolioLogicMixin._parse_optional_float_setting(
+                adapter,
+                self.ubs_monthly_portfolio_max_portfolio_corr.get(),
+                "Max corr portafolios",
+            )
+            if inputs["max_portfolio_corr"] is None:
+                raise ValueError("Max corr portafolios es obligatorio si activas No corr mensual.")
+            if not (0 <= float(inputs["max_portfolio_corr"]) <= 1):
+                raise ValueError("Max corr portafolios debe estar entre 0 y 1.")
         inputs["validate_roboforex_margin"] = self._monthly_roboforex_margin_enabled()
         inputs["max_margin_pct"] = UBSPortfolioLogicMixin._parse_float_setting(
             adapter,
@@ -111,6 +125,8 @@ class UBSMonthlyPortfolioLogicMixin:
                 "inputs": self._monthly_log_safe(inputs),
                 "strict_yearly_month_validation": bool(inputs.get("strict_yearly_month_validation")),
                 "deep_optimization": bool(inputs.get("deep_optimization")),
+                "exclude_monthly_used": bool(inputs.get("exclude_monthly_used")),
+                "corr_with_monthly_portfolios": bool(inputs.get("corr_with_monthly_portfolios")),
                 "validate_roboforex_margin": bool(inputs.get("validate_roboforex_margin")),
             },
         )
@@ -194,6 +210,8 @@ class UBSMonthlyPortfolioLogicMixin:
         self.ubs_monthly_portfolio_target_month.set(MONTH_LABELS[0])
         self.ubs_monthly_portfolio_strict_yearly_month_validation.set(False)
         self.ubs_monthly_portfolio_deep_optimization.set(False)
+        self.ubs_monthly_portfolio_exclude_monthly_used.set(False)
+        self.ubs_monthly_portfolio_corr_with_monthly_portfolios.set(False)
         self.ubs_monthly_portfolio_validate_roboforex_margin.set(True)
         self.ubs_monthly_portfolio_max_margin_pct.set("100")
         self.ubs_monthly_portfolio_pending_result = None
@@ -268,10 +286,18 @@ class UBSMonthlyPortfolioLogicMixin:
                 )
                 if not rows:
                     raise ValueError("No quedan candidatos tras aplicar Grid OFF.")
-            availability = summarize_robust_rows(rows, [])
+            used_monthly_paths: list[str] = []
+            if bool(inputs.get("exclude_monthly_used")):
+                used_monthly_paths = self._used_monthly_set_paths_all_accounts()
+                self._append_ubs_monthly_generation_log(
+                    log_path,
+                    "FILTRO_USADOS_MENSUAL",
+                    {"used_monthly_sets": len(used_monthly_paths)},
+                )
+            availability = summarize_robust_rows(rows, used_monthly_paths)
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
-                [],
+                used_monthly_paths,
                 progress=lambda msg: self.after(0, self.ubs_monthly_portfolio_status.set, msg),
             )
             self._append_ubs_monthly_generation_log(
@@ -298,15 +324,12 @@ class UBSMonthlyPortfolioLogicMixin:
             )
             if not monthly_sets:
                 raise ValueError("Ningun candidato tiene trades fechados para el mes objetivo.")
-            saved_monthly_curves = self._saved_portfolio_curves_all_accounts(
-                portfolio_type,
-                portfolio_scope="monthly",
-                target_month=int(inputs["target_month"]),
+            saved_monthly_curves = self._saved_monthly_portfolio_curves_all_accounts()
+            existing_curves = (
+                saved_monthly_curves
+                if bool(inputs.get("corr_with_monthly_portfolios"))
+                else []
             )
-            # A new monthly portfolio is an independent search for the selected
-            # month.  It must not be penalized for looking like another saved
-            # monthly portfolio unless we add a dedicated UI option for that.
-            existing_curves = []
             strict_retry_warnings: list[str] = []
             engine_inputs = dict(inputs)
             engine_inputs["use_deep_candidate_engine"] = (
@@ -319,7 +342,9 @@ class UBSMonthlyPortfolioLogicMixin:
                 {
                     "strict": bool(inputs.get("strict_yearly_month_validation")),
                     "deep_refinement": bool(engine_inputs.get("use_deep_candidate_engine")),
-                    "saved_monthly_curves_ignored": len(saved_monthly_curves),
+                    "exclude_monthly_used": bool(inputs.get("exclude_monthly_used")),
+                    "corr_with_monthly_portfolios": bool(inputs.get("corr_with_monthly_portfolios")),
+                    "saved_monthly_curves_available": len(saved_monthly_curves),
                     "existing_monthly_curves": len(existing_curves),
                 },
             )
@@ -580,7 +605,10 @@ class UBSMonthlyPortfolioLogicMixin:
             rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=True)
             if bool(self.ubs_monthly_portfolio_grid_off.get()):
                 rows, _warnings = filter_rows_grid_off(rows)
-            availability = summarize_robust_rows(rows, [])
+            used_paths: list[str] = []
+            if bool(self.ubs_monthly_portfolio_exclude_monthly_used.get()):
+                used_paths = self._used_monthly_set_paths_all_accounts()
+            availability = summarize_robust_rows(rows, used_paths)
         except Exception as exc:
             self.ubs_monthly_portfolio_availability.set(f"Disponibilidad: error ({exc})")
             return
@@ -595,8 +623,12 @@ class UBSMonthlyPortfolioLogicMixin:
             return
         self.ubs_monthly_portfolio_availability.set(
             f"Final Tick 6M accepted: {availability.robust_accepted} | "
-            "Sin exclusion por cuarentena ni por uso | "
-            f"Simbolos: {availability.symbols_available}"
+            + (
+                "Excluyendo usados mensuales | "
+                if bool(self.ubs_monthly_portfolio_exclude_monthly_used.get())
+                else "Sin exclusion por cuarentena ni por uso | "
+            )
+            + f"Simbolos: {availability.symbols_available}"
             + (" | Grid OFF activo" if bool(self.ubs_monthly_portfolio_grid_off.get()) else "")
         )
         for symbol, count in availability.by_symbol.items():

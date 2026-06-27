@@ -486,6 +486,40 @@ class UBSPortfolioLogicMixin:
                 conn.close()
         return sorted(used)
 
+    def _used_monthly_set_paths_all_accounts(
+        self,
+        *,
+        exclude_portfolio_id: int | None = None,
+    ) -> list[str]:
+        used: set[str] = set()
+        active_memory = self._ubs_memory_path().resolve()
+        for _account_type, memory_path in self._ubs_portfolio_source_paths():
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                excluded = exclude_portfolio_id if memory_path.resolve() == active_memory else None
+                rows = conn.execute(
+                    """
+                    select pa.set_path
+                    from portfolio_allocations pa
+                    join portfolios p on p.id = pa.portfolio_id
+                    where pa.set_path is not null and pa.set_path <> ''
+                      and coalesce(nullif(p.portfolio_scope, ''), 'full_history') = 'monthly'
+                      and (? is null or pa.portfolio_id <> ?)
+                    union
+                    select pm.set_path
+                    from portfolio_members pm
+                    join portfolios p on p.id = pm.portfolio_id
+                    where pm.set_path is not null and pm.set_path <> ''
+                      and coalesce(nullif(p.portfolio_scope, ''), 'full_history') = 'monthly'
+                      and (? is null or pm.portfolio_id <> ?)
+                    """,
+                    (excluded, excluded, excluded, excluded),
+                ).fetchall()
+                used.update(str(row["set_path"]) for row in rows)
+            finally:
+                conn.close()
+        return sorted(used)
+
     def _portfolio_availability(
         self,
         _conn: sqlite3.Connection | None = None,
@@ -1369,6 +1403,40 @@ class UBSPortfolioLogicMixin:
                 conn.close()
         return curves
 
+    def _saved_monthly_portfolio_curves_all_accounts(
+        self,
+        *,
+        exclude_portfolio_id: int | None = None,
+    ) -> list[list[float]]:
+        curves: list[list[float]] = []
+        active_memory = self._ubs_memory_path().resolve()
+        for _account_type, memory_path in self._ubs_portfolio_source_paths():
+            conn = self._ubs_portfolio_conn_for_memory(memory_path)
+            try:
+                excluded = exclude_portfolio_id if memory_path.resolve() == active_memory else None
+                for row in conn.execute(
+                    """
+                    select metrics_json from portfolios
+                    where metrics_json is not null and metrics_json <> ''
+                      and coalesce(nullif(portfolio_scope, ''), 'full_history') = 'monthly'
+                      and (? is null or id <> ?)
+                    """,
+                    (excluded, excluded),
+                ):
+                    try:
+                        metrics = json.loads(row["metrics_json"])
+                    except Exception:
+                        continue
+                    curve = metrics.get("equity_curve_2020_2026") if isinstance(metrics, dict) else None
+                    if isinstance(curve, list) and len(curve) > 1:
+                        try:
+                            curves.append([float(value) for value in curve])
+                        except (TypeError, ValueError):
+                            continue
+            finally:
+                conn.close()
+        return curves
+
     def _ubs_portfolio_finished(self, info: dict) -> None:
         self._set_ubs_portfolio_running(False)
         if not info.get("ok"):
@@ -1885,6 +1953,8 @@ class UBSPortfolioLogicMixin:
             "target_month": int(portfolio["target_month"] or 0) or None,
             "strict_yearly_month_validation": False,
             "deep_optimization": False,
+            "exclude_monthly_used": False,
+            "corr_with_monthly_portfolios": False,
         }
         defaults.update(stored)
         return defaults
@@ -2032,10 +2102,19 @@ class UBSPortfolioLogicMixin:
             grid_warnings: list[str] = []
             if bool(inputs.get("grid_off")):
                 rows, grid_warnings = filter_rows_grid_off(rows)
-            used = [] if is_monthly else self._used_set_paths_all_accounts(
-                portfolio_type,
-                exclude_portfolio_id=portfolio_id,
-            )
+            if is_monthly:
+                used = (
+                    self._used_monthly_set_paths_all_accounts(
+                        exclude_portfolio_id=portfolio_id,
+                    )
+                    if bool(inputs.get("exclude_monthly_used"))
+                    else []
+                )
+            else:
+                used = self._used_set_paths_all_accounts(
+                    portfolio_type,
+                    exclude_portfolio_id=portfolio_id,
+                )
             raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
             full_sets_for_strict_validation = list(raw_sets)
             raw_sets, scope_warnings = self._scope_portfolio_sets(raw_sets, inputs)
@@ -2045,11 +2124,17 @@ class UBSPortfolioLogicMixin:
                 raw_sets,
                 inputs,
                 portfolio_type,
-                self._saved_portfolio_curves_all_accounts(
-                    portfolio_type,
-                    exclude_portfolio_id=portfolio_id,
-                    portfolio_scope="monthly" if is_monthly else "full_history",
-                    target_month=int(inputs.get("target_month") or 0) if is_monthly else None,
+                (
+                    self._saved_monthly_portfolio_curves_all_accounts(
+                        exclude_portfolio_id=portfolio_id,
+                    )
+                    if is_monthly and bool(inputs.get("corr_with_monthly_portfolios"))
+                    else self._saved_portfolio_curves_all_accounts(
+                        portfolio_type,
+                        exclude_portfolio_id=portfolio_id,
+                    )
+                    if not is_monthly
+                    else []
                 ),
                 strict_full_sets=full_sets_for_strict_validation if is_monthly else None,
                 progress=lambda label, index: self.after(

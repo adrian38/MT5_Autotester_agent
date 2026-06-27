@@ -913,6 +913,18 @@ class MT5AutotesterUI(
         self.ubs_monthly_portfolio_grid_off = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}grid_off"), False)
         )
+        self.ubs_monthly_portfolio_exclude_monthly_used = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}exclude_monthly_used"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_corr_with_monthly_portfolios = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}corr_with_monthly_portfolios"),
+                False,
+            )
+        )
         self.ubs_monthly_portfolio_strict_yearly_month_validation = tk.BooleanVar(
             value=self._bool_setting(
                 saved_general.get(f"{monthly_prefix}strict_yearly_month_validation"),
