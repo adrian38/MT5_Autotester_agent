@@ -12,7 +12,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from ubs.account import ACCOUNT_TYPES, account_memory_path
+from ubs.account import ACCOUNT_TYPES, BROKER_ACCOUNT_TYPES, account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -57,20 +57,57 @@ def audit_nonfinal_count(
 
 
 class UBSSearchLogicMixin:
+    def _ubs_account_context_label(self, broker: object, account_type: object) -> str:
+        broker_key = normalize_broker(broker)
+        account = normalize_account_type(account_type, broker_key)
+        return f"{broker_key}/{account}"
+
+    def _parse_ubs_account_context(self, value: object) -> tuple[str, str] | None:
+        text = str(value or "").strip().upper().replace("\\", "/")
+        if not text:
+            return self._ubs_broker(), self._ubs_account_type()
+        if "/" in text or ":" in text:
+            separator = "/" if "/" in text else ":"
+            broker_raw, account_raw = text.split(separator, 1)
+            broker = normalize_broker(broker_raw)
+            account = normalize_account_type(account_raw, broker)
+            if (broker, account) in BROKER_ACCOUNT_TYPES:
+                return broker, account
+            return None
+        if text in ACCOUNT_TYPES:
+            broker = self._ubs_broker()
+            account = text
+            if (broker, account) not in BROKER_ACCOUNT_TYPES:
+                broker = next((candidate_broker for candidate_broker, candidate_account in BROKER_ACCOUNT_TYPES if candidate_account == account), broker)
+            return broker, account
+        return None
+
+    def _refresh_ubs_audit_account_values(self) -> None:
+        combo = getattr(self, "ubs_audit_account_combo", None)
+        values = tuple(self._ubs_account_context_label(broker, account) for broker, account in BROKER_ACCOUNT_TYPES)
+        if combo is not None:
+            combo.configure(values=values)
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        current = self._ubs_account_context_label(*context) if context else values[0]
+        if self.ubs_audit_account.get() != current:
+            self.ubs_audit_account.set(current)
+
     def _refresh_ubs_audit_run_combo(self) -> None:
         combo = getattr(self, "ubs_audit_run_combo", None)
         if combo is None:
             return
-        account_type = str(self.ubs_audit_account.get() or self._ubs_account_type()).strip().upper()
-        if account_type not in ACCOUNT_TYPES:
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        if context is None:
             combo.configure(values=())
             self.ubs_audit_run_id.set("")
             return
-        memory_path = account_memory_path(BASE_DIR, account_type)
+        broker, account_type = context
+        memory_path = account_memory_path(BASE_DIR, account_type, broker)
+        account_label = self._ubs_account_context_label(broker, account_type)
         if not memory_path.exists():
             combo.configure(values=())
             self.ubs_audit_run_id.set("")
-            self.ubs_audit_status.set(f"Sin memoria {account_type}.")
+            self.ubs_audit_status.set(f"Sin memoria {account_label}.")
             return
         try:
             conn = connect_memory(memory_path)
@@ -96,7 +133,7 @@ class UBSSearchLogicMixin:
                 conn.close()
         except sqlite3.Error as exc:
             combo.configure(values=())
-            self.ubs_audit_status.set(f"Error runs {account_type}: {exc}")
+            self.ubs_audit_status.set(f"Error runs {account_label}: {exc}")
             return
 
         labels = []
@@ -122,20 +159,22 @@ class UBSSearchLogicMixin:
         return int(match.group(1)) if match else 0
 
     def _run_ubs_audit_from_search(self) -> None:
-        account_type = self.ubs_audit_account.get().strip().upper() or self._ubs_account_type()
-        if account_type not in ACCOUNT_TYPES:
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        if context is None:
             self.ubs_audit_status.set("Cuenta invalida.")
             return
+        broker, account_type = context
+        account_label = self._ubs_account_context_label(broker, account_type)
         run_id = self._parse_ubs_audit_run_id(self.ubs_audit_run_id.get())
         if run_id <= 0:
             self.ubs_audit_status.set("Run invalido.")
             return
-        memory_path = account_memory_path(BASE_DIR, account_type)
+        memory_path = account_memory_path(BASE_DIR, account_type, broker)
         if not memory_path.exists():
-            self.ubs_audit_status.set(f"No existe memoria {account_type}.")
+            self.ubs_audit_status.set(f"No existe memoria {account_label}.")
             return
         try:
-            summary, report_path = self._build_ubs_run_audit(memory_path, account_type, run_id)
+            summary, report_path = self._build_ubs_run_audit(memory_path, account_label, run_id)
         except (OSError, sqlite3.Error, ValueError) as exc:
             self._show_error("Auditoria run UBS", str(exc))
             return
@@ -409,13 +448,14 @@ class UBSSearchLogicMixin:
             messagebox.showinfo("Auditoria run UBS", "No pude identificar la prueba de esas filas.")
             return
 
-        account_type = str(self.ubs_audit_account.get() or self._ubs_account_type()).strip().upper()
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        if context is None:
+            messagebox.showerror("Auditoria run UBS", "Cuenta invalida.")
+            return
+        broker, account_type = context
         run_id = self._parse_ubs_audit_run_id(self.ubs_audit_run_id.get())
         if run_id <= 0:
             messagebox.showerror("Auditoria run UBS", "Run invalido.")
-            return
-        if account_type not in ACCOUNT_TYPES:
-            messagebox.showerror("Auditoria run UBS", "Cuenta invalida.")
             return
 
         selected_report_rows = len(selected_items)
@@ -437,7 +477,7 @@ class UBSSearchLogicMixin:
         ):
             return
 
-        memory_path = account_memory_path(BASE_DIR, account_type)
+        memory_path = account_memory_path(BASE_DIR, account_type, broker)
         try:
             conn = connect_memory(memory_path)
             try:
@@ -1410,14 +1450,15 @@ class UBSSearchLogicMixin:
 
         rows: list[dict[str, object]] = []
         errors: list[str] = []
-        for account_type in ACCOUNT_TYPES:
-            memory_path = account_memory_path(BASE_DIR, account_type)
+        for broker, account_type in BROKER_ACCOUNT_TYPES:
+            memory_path = account_memory_path(BASE_DIR, account_type, broker)
+            account_label = self._ubs_account_context_label(broker, account_type)
             if not memory_path.exists():
                 continue
             try:
-                rows.extend(self._ubs_search_rows(memory_path, account_type, query))
+                rows.extend(self._ubs_search_rows(memory_path, account_label, query))
             except sqlite3.Error as exc:
-                errors.append(f"{account_type}: {exc}")
+                errors.append(f"{account_label}: {exc}")
 
         rows.sort(
             key=lambda row: (

@@ -183,7 +183,7 @@ class UBSMonthlyPortfolioLogicMixin:
             portfolio_type = PortfolioType(str(inputs["portfolio_type"]))
             rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=True)
             if not rows:
-                raise ValueError("No hay candidatos con Final Tick 6M accepted en ECN/PRO.")
+                raise ValueError("No hay candidatos con Final Tick 6M accepted en las memorias broker/cuenta.")
             month_filter_warnings: list[str] = []
             if bool(inputs.get("require_3_positive_months_6m")):
                 rows, month_filter_warnings = filter_rows_by_recent_positive_months(

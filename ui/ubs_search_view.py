@@ -3,6 +3,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from ubs.account import BROKER_ACCOUNT_TYPES
+
 
 class UBSSearchViewMixin:
     def _build_ubs_search(self, parent: ttk.Frame) -> None:
@@ -50,10 +52,11 @@ class UBSSearchViewMixin:
         account_combo = ttk.Combobox(
             audit,
             textvariable=self.ubs_audit_account,
-            values=("ECN", "PRO"),
+            values=tuple(f"{broker}/{account}" for broker, account in BROKER_ACCOUNT_TYPES),
             state="readonly",
-            width=8,
+            width=18,
         )
+        self.ubs_audit_account_combo = account_combo
         account_combo.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
         account_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_audit_run_combo())
         tk.Label(
@@ -235,7 +238,7 @@ class UBSSearchViewMixin:
             "run": "RUN",
         }
         widths = {
-            "account": 70,
+            "account": 150,
             "candidate": 70,
             "status": 90,
             "robust": 90,

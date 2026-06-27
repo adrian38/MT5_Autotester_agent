@@ -62,7 +62,14 @@ from ui.ubs_universe_logic import UBSUniverseLogicMixin
 from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
-from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_memory_path, normalize_account_type
+from ubs.account import (
+    DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
+    account_memory_path,
+    migrate_legacy_roboforex_storage,
+    normalize_account_type,
+    normalize_broker,
+)
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
@@ -656,9 +663,11 @@ class MT5AutotesterUI(
         )
         self.ubs_long_tf_min_trades_w1 = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_w1", "12"))
         self.ubs_long_tf_min_trades_mn = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_mn", "4"))
+        self.ubs_broker = tk.StringVar(value=normalize_broker(saved_general.get("ubs_broker", DEFAULT_BROKER)))
         self.ubs_account_type = tk.StringVar(
-            value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE))
+            value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE), self.ubs_broker.get())
         )
+        self._legacy_ubs_migrations = migrate_legacy_roboforex_storage(BASE_DIR)
         self.ubs_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_pass_min_net_profit", "100"))
         self.ubs_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_profit_factor", "1.20"))
         self.ubs_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_pass_min_trades"), 50))
@@ -751,6 +760,7 @@ class MT5AutotesterUI(
         self.mt_selected_index: int | None = None
         self.mt_profile_enabled = tk.BooleanVar(value=True)
         self.mt_profile_portable = tk.BooleanVar(value=False)
+        self.mt_profile_broker = tk.StringVar(value=self.ubs_broker.get())
         self.mt_profile_name = tk.StringVar(value="")
         self.mt_profile_mt5_path = tk.StringVar(value="")
         self.mt_profile_data_dir = tk.StringVar(value="")
@@ -941,7 +951,7 @@ class MT5AutotesterUI(
         self.ubs_monthly_portfolio_pending_inputs = None
         self.ubs_search_query = tk.StringVar(value="")
         self.ubs_search_status = tk.StringVar(value="Escribe parte del nombre de un set UBS.")
-        self.ubs_audit_account = tk.StringVar(value=self._ubs_account_type())
+        self.ubs_audit_account = tk.StringVar(value=f"{self._ubs_broker()}/{self._ubs_account_type()}")
         self.ubs_audit_run_id = tk.StringVar(value="")
         self.ubs_audit_status = tk.StringVar(value="Selecciona cuenta/run y genera auditoria.")
         self.ubs_search_paths: dict[str, dict[str, str]] = {}
@@ -1548,7 +1558,7 @@ class MT5AutotesterUI(
 
     def _ubs_notification_memory_path(self, args: list[str]) -> Path:
         raw = self._arg_value(args, "--memory")
-        return Path(raw).expanduser() if raw else account_memory_path(BASE_DIR, self.ubs_account_type.get())
+        return Path(raw).expanduser() if raw else account_memory_path(BASE_DIR, self.ubs_account_type.get(), self.ubs_broker.get())
 
     def _ubs_status_counts(self, conn: sqlite3.Connection, table: str, where: str = "", params: tuple = ()) -> dict[str, int]:
         query = f"select status, count(*) as total from {table}"

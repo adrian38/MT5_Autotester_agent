@@ -205,6 +205,7 @@ class UBSSeedsLogicMixin:
             "--source-dir", str(source_dir),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--broker", self._ubs_broker(),
             "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--delay", str(self.delay.get()),
@@ -253,7 +254,7 @@ class UBSSeedsLogicMixin:
         ]
         if disabled:
             details.append(
-                "Symbols deshabilitados (Universo global): "
+                "Symbols deshabilitados (Universo del broker): "
                 f"{self._format_disabled_seed_counts(disabled_counts)}."
             )
             details.append("Ejemplo: XTIUSD cuenta como deshabilitado si el mapa activo lo traduce a WTI y WTI esta deshabilitado.")
@@ -633,6 +634,7 @@ class UBSSeedsLogicMixin:
             output_dir = self._ubs_generation_output_dir()
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--output-dir", str(output_dir),
                 "--template", self.template_path.get(),
@@ -1279,6 +1281,7 @@ class UBSSeedsLogicMixin:
                 "--rescore-seeds-only",
                 "--source-dir", str(self._ubs_generator_source_dir()),
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
             ]
             args.extend(self._ubs_seed_score_args())

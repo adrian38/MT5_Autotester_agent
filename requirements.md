@@ -65,12 +65,14 @@ requirement changes or a debt item is opened/closed.
 ### 1.3 Multiterminal execution
 
 - **FR-1.3.1** When `--multi-terminal` is passed, backtest jobs MUST be
-  distributed across all enabled terminal profiles defined in `ui_settings.ini`
-  `[Multiterminal]` / `[Terminal.N]` sections.
+  distributed across enabled terminal profiles for the active broker defined in
+  `ui_settings.ini` `[Multiterminal]` / `[Terminal.N]` sections. Profiles MAY
+  coexist for multiple brokers, but a run MUST NOT mix terminal profiles from
+  different brokers.
 - **FR-1.3.2** The concurrency limit MUST be `min(max_workers, enabled_terminal_count,
   job_count)`. The runner MUST never spawn more workers than there are jobs.
-- **FR-1.3.3** Each terminal profile MAY override: `enabled`, `name`, `mt5_path`,
-  `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`.
+- **FR-1.3.3** Each terminal profile MAY override: `enabled`, `broker`, `name`,
+  `mt5_path`, `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`.
 - **FR-1.3.4** Compilation MUST remain sequential even in multiterminal mode.
 - **FR-1.3.5** In UBS multiterminal mode, every enabled profile MUST point
   `ubs_ex5_file` to a UBS / Ultimate Breakout System `.ex5`. Profiles that
@@ -117,6 +119,22 @@ requirement changes or a debt item is opened/closed.
 
 ### 1.6 UBS agent — generation
 
+- **FR-1.6.0** UBS storage MUST be isolated by broker and account type. Supported
+  broker/account pairs are RoboForex ECN/PRO, ICTrading STANDARD, and AXI
+  STANDARD/PREMIUM. SQLite memory files, seed directories, output directories,
+  and run results MUST be broker/account-scoped. Asset universes and
+  disabled-symbol GEN/SEEDS policies MUST be broker-scoped and shared by the
+  accounts under that broker. Timeframe universes MUST already resolve through a
+  broker/account path so they can diverge later even though defaults are shared
+  today. All paths MUST be resolved through `ubs/account.py` helpers; code MUST
+  NOT assume `ECN`/`PRO` are globally unique.
+- **FR-1.6.0a** Existing account-only RoboForex ECN/PRO data MUST be preserved.
+  On app/CLI startup, legacy files and folders (`ubs_memory_ECN.sqlite`,
+  `ubs_memory_PRO.sqlite`, `sets/ubs_ready/ECN|PRO`, `outputs/ubs_agent/ECN|PRO`,
+  and old disabled-symbol JSON files) MUST be copied/merged into the new
+  `ROBOFOREX/{ECN|PRO}` and broker-policy layout only when the destination does
+  not already exist or can be merged safely. Migration MUST be non-destructive
+  and MUST NOT overwrite new data.
 - **FR-1.6.1** Each generation round MUST load `.set` seeds from the configured
   source directory (default `sets/ubs_ready/`), apply any stored `seed_overrides`,
   then mutate them into variant `.set` files.
@@ -365,9 +383,9 @@ requirement changes or a debt item is opened/closed.
   case, active seeds for that symbol MUST be evaluated, scored, included in
   Universe weights, and allowed as mutation sources. This MUST NOT re-enable
   generated candidate targets for the symbol; target generation still follows
-  the normal enabled universe only. The `GEN/SEEDS` policy MUST be account-scoped
-  by `--account-type` (`outputs/ubs_disabled_symbols_ECN.json` /
-  `outputs/ubs_disabled_symbols_PRO.json`).
+  the normal enabled universe only. The `GEN/SEEDS` policy MUST be
+  broker-scoped by `--broker` and shared by all accounts under that broker
+  (`outputs/ubs_disabled_symbols_{BROKER}.json`).
 - **FR-1.9.5** Seeds deleted from the source directory MUST be marked `active=0`
   in the DB and excluded from the UI active count, but their rows MUST be kept
   for historical reference.
@@ -499,11 +517,11 @@ requirement changes or a debt item is opened/closed.
   when any are checked, and fall back to the selected row otherwise.
 - **FR-1.12.19** The UBS Universo tab MUST expose a SEL checkbox column and
   controls to disable/enable checked symbols. Disabled symbols MUST be persisted
-  per account type in `outputs/ubs_disabled_symbols_ECN.json` /
-  `outputs/ubs_disabled_symbols_PRO.json`, remain visible as disabled in the UI,
+  per broker in `outputs/ubs_disabled_symbols_{BROKER}.json`,
+  remain visible as disabled in the UI,
   be excluded from generated candidate targets, and be excluded from seed
   evaluation/weights unless `SEEDS=si` is set for that symbol in the active
-  account.
+  broker.
 - **FR-1.12.20** UBS seed evaluation MUST skip any seed whose inferred or
   manually overridden symbol maps to a disabled Universe symbol. Skipped seeds
   MUST be recorded as `disabled_symbol`, MUST NOT launch MT5, MUST NOT count as
@@ -573,15 +591,17 @@ requirement changes or a debt item is opened/closed.
   robustness-accepted candidates into Final Tick. Incremental execution MUST
   pass `--final-tick-pending-only`; rerun execution MUST replace existing Final
   Tick rows for robust-accepted candidates.
-- **FR-1.12.32** `UBS Portafolio` MUST build its candidate pool from both ECN
-  and PRO memories, but only from strategies where base candidate, robustness,
-  AND Final Tick 6M (`candidate_final_tick_6m.status='accepted'`) are all
-  `accepted`. The probe Final Tick (`candidate_final_tick`) is NOT the portfolio
-  gate; only the 6M stage is. Portfolio history MUST still be built from the
-  base report plus the robustness report; Final Tick 6M is an eligibility gate,
-  not the curve source. Conservative/Balanced portfolios MUST share one lock
-  pool. Aggressive portfolios MUST use a separate lock pool: only sets selected
-  by another Aggressive portfolio are unavailable to a new or repaired
+- **FR-1.12.32** `UBS Portafolio` MUST build its candidate pool from the
+  accounts belonging to the active broker only. For RoboForex this means ECN
+  and PRO can be combined; AXI and ICTrading MUST remain separate broker pools.
+  Eligible strategies require base candidate, robustness, AND Final Tick 6M
+  (`candidate_final_tick_6m.status='accepted'`) all `accepted`. The probe Final
+  Tick (`candidate_final_tick`) is NOT the portfolio gate; only the 6M stage is.
+  Portfolio history MUST still be built from the base report plus the robustness
+  report; Final Tick 6M is an eligibility gate, not the curve source.
+  Conservative/Balanced portfolios MUST share one lock pool within the active
+  broker. Aggressive portfolios MUST use a separate lock pool: only sets
+  selected by another Aggressive portfolio are unavailable to a new or repaired
   Aggressive portfolio, and Aggressive portfolios MUST NOT block
   Conservative/Balanced generation.
 - **FR-1.12.33** `UBS Portafolio` MUST expose a "Requerir 3 meses positivos 6M"
@@ -655,8 +675,9 @@ requirement changes or a debt item is opened/closed.
   (`portafolio_ubs_mensual`) with the same generation, proposal comparison,
   save, detail, completion, reoptimization, export, correlation, DD-reserve,
   local-search, and bootstrap tools as `UBS Portafolio`, plus a calendar-month
-  selector. Its candidate universe MUST contain ECN/PRO strategies whose base,
-  robustness, and Final Tick 6M stages are accepted. Unlike the full-history
+  selector. Its candidate universe MUST contain only active-broker
+  broker/account strategies whose base, robustness, and Final Tick 6M stages are
+  accepted. Unlike the full-history
   portfolio, monthly generation MUST NOT exclude candidates because their set
   is quarantined or already allocated to another portfolio. For the selected
   month, every strategy curve MUST be rebuilt from trades closing in that month

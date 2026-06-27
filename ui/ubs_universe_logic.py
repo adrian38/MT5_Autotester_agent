@@ -8,6 +8,7 @@ from tkinter import messagebox
 
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
+from ubs.account import broker_asset_universe_path_with_fallback, load_account_timeframe_universe
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -34,7 +35,7 @@ class UBSUniverseLogicMixin:
             self._safe_refresh(label, callback)
 
     def _load_ubs_asset_universe(self) -> tuple[list[tuple[str, str, list[str]]], dict[str, str]]:
-        path = BASE_DIR / "assets" / "roboforex_assets.ini"
+        path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
         groups, aliases = load_asset_universe(path, include_disabled=True)
         return asset_rows_from_groups(groups, aliases), aliases
 
@@ -386,7 +387,14 @@ class UBSUniverseLogicMixin:
         valid_symbols = {info["symbol"] for info in self.ubs_universe_paths.values() if info.get("symbol")}
         self.ubs_universe_checked.intersection_update(valid_symbols)
 
-        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
+        timeframe_order = list(
+            load_account_timeframe_universe(
+                BASE_DIR,
+                self._ubs_account_type(),
+                self._ubs_broker(),
+                include_experimental_long=True,
+            )
+        )
         observed_timeframes = sorted(period for period in timeframe_stats if period not in timeframe_order)
         ordered_timeframes = timeframe_order + observed_timeframes
         tf_rows = []
@@ -451,7 +459,7 @@ class UBSUniverseLogicMixin:
 
     def _disabled_symbols_path(self):
         from ubs.account import account_disabled_symbols_path
-        return account_disabled_symbols_path(BASE_DIR, self._ubs_account_type())
+        return account_disabled_symbols_path(BASE_DIR, self._ubs_account_type(), self._ubs_broker())
 
     def _load_disabled_ubs_symbols(self) -> set:
         from ubs.universe import load_disabled_symbols

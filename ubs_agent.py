@@ -26,12 +26,18 @@ from run_tests import (
 from ubs_generate_sets import format_like, parse_numeric
 from ubs.account import (
     ACCOUNT_TYPES,
+    BROKERS,
     DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
     account_disabled_symbols_path,
     account_memory_path,
     account_output_dir,
     account_seed_dir,
+    broker_asset_universe_path_with_fallback,
+    load_account_timeframe_universe,
+    migrate_legacy_account_storage,
     normalize_account_type,
+    normalize_broker,
 )
 from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
@@ -57,10 +63,10 @@ MUTATION_OVERRIDES_FILE = BASE_DIR / "outputs" / "ubs_mutation_overrides.json"
 GLOBAL_PARAMS_FILE = BASE_DIR / "outputs" / "ubs_global_params.json"
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
 DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
-DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
+DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
-DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
+DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER)
 DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
@@ -278,7 +284,8 @@ def is_agent_mutable_key(key: str) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
-    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS: ECN o PRO.")
+    parser.add_argument("--broker", choices=BROKERS, default=DEFAULT_BROKER, help="Broker UBS: ROBOFOREX, ICTRADING o AXI.")
+    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS del broker seleccionado.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--memory", default=str(DEFAULT_MEMORY))
@@ -391,14 +398,18 @@ def parse_args() -> argparse.Namespace:
     if args.force_unseeded_universe:
         args.generation_mode = "discovery"
     args.force_unseeded_universe = args.generation_mode == "discovery"
-    args.account_type = normalize_account_type(args.account_type)
+    args.broker = normalize_broker(args.broker)
+    args.account_type = normalize_account_type(args.account_type, args.broker)
+    migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
-        args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type))
+        args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type, args.broker))
     if Path(args.output_dir).expanduser() == DEFAULT_OUTPUT:
-        args.output_dir = str(account_output_dir(BASE_DIR, args.account_type))
+        args.output_dir = str(account_output_dir(BASE_DIR, args.account_type, args.broker))
     legacy_memory = BASE_DIR / "outputs" / "ubs_memory.sqlite"
     if Path(args.memory).expanduser() in {DEFAULT_MEMORY, legacy_memory}:
-        args.memory = str(account_memory_path(BASE_DIR, args.account_type))
+        args.memory = str(account_memory_path(BASE_DIR, args.account_type, args.broker))
+    if Path(args.assets).expanduser() == DEFAULT_ASSETS:
+        args.assets = str(broker_asset_universe_path_with_fallback(BASE_DIR, args.broker))
     return args
 
 
@@ -668,11 +679,26 @@ def generation_source_seeds(
     return allowed, len(seeds) - len(allowed)
 
 
-def disabled_symbols_file_for_account(account_type: object) -> Path:
-    return account_disabled_symbols_path(BASE_DIR, account_type)
+def disabled_symbols_file_for_account(account_type: object, broker: object = DEFAULT_BROKER) -> Path:
+    return account_disabled_symbols_path(BASE_DIR, account_type, broker)
 
 
-def target_timeframe_universe(include_experimental_long: bool = False) -> tuple[str, ...]:
+def target_timeframe_universe(
+    include_experimental_long: bool = False,
+    *,
+    base_dir: Path | None = None,
+    broker: object = DEFAULT_BROKER,
+    account_type: object = DEFAULT_ACCOUNT_TYPE,
+) -> tuple[str, ...]:
+    if base_dir is not None:
+        return load_account_timeframe_universe(
+            base_dir,
+            account_type,
+            broker,
+            include_experimental_long=include_experimental_long,
+            default_timeframes=TIMEFRAME_UNIVERSE,
+            experimental_timeframes=EXPERIMENTAL_LONG_TIMEFRAMES,
+        )
     if include_experimental_long:
         return tuple(dict.fromkeys((*TIMEFRAME_UNIVERSE, *EXPERIMENTAL_LONG_TIMEFRAMES)))
     return TIMEFRAME_UNIVERSE
@@ -770,7 +796,8 @@ def target_symbol_disabled(
 ) -> bool:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
-    disabled = {symbol.upper() for symbol in (disabled_symbols or load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS))}
+    policy_symbols = load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS) if disabled_symbols is None else disabled_symbols
+    disabled = {symbol.upper() for symbol in policy_symbols}
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
@@ -1493,7 +1520,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     pending = [seed for seed in pending if seed not in invalid_pending]
     unchanged_count = len(seeds) - original_pending_count
     blocked_count = len(invalid_pending)
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
@@ -1535,7 +1562,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         print(f"Semillas bloqueadas por .set invalido: {len(invalid_set_reasons)}")
     if disabled_pending:
         print(
-            "Semillas omitidas por symbol deshabilitado en Universo global: "
+            "Semillas omitidas por symbol deshabilitado en Universo del broker: "
             f"{len(disabled_pending)} ({format_disabled_seed_counts(disabled_pending, symbol_map)})"
         )
         print("Estas seeds no abren MT5 ni aportan pesos; activa SEEDS para usarlas sin habilitar generacion.")
@@ -1576,7 +1603,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             if invalid_pending:
                 print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas sin inferencia.")
             elif disabled_pending:
-                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en Universo global.")
+                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en Universo del broker.")
         else:
             print("Evaluacion de semillas al dia. No hay backtests pendientes.")
         return 0
@@ -4106,11 +4133,17 @@ def build_run_config(
     disabled_symbol_count: int,
     seed_enabled_disabled_symbol_count: int,
 ) -> dict[str, object]:
-    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    timeframe_universe = target_timeframe_universe(
+        bool(args.experimental_long_timeframes),
+        base_dir=BASE_DIR,
+        broker=args.broker,
+        account_type=args.account_type,
+    )
     return {
         "schema_version": 2,
         "created_by": "ubs_agent.py",
-        "account_type": normalize_account_type(args.account_type),
+        "broker": normalize_broker(args.broker),
+        "account_type": normalize_account_type(args.account_type, args.broker),
         "paths": {
             "source_dir": str(source_dir),
             "output_root": str(output_root),
@@ -4236,7 +4269,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     pending_generation = memory.pending_generated_generation(run_id) if args.execute_backtests else 0
     current_seeds: list[Seed] = []
     did_work = False
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
@@ -4250,7 +4283,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
-    print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
+    print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
     print(f"Continuando run #{run_id}: plan={planned_generations}, ultima_gen={max_generation}")
 
@@ -4308,7 +4341,12 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
 
     all_generated = 0
     rng = random.Random(args.random_seed)
-    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    timeframe_universe = target_timeframe_universe(
+        bool(args.experimental_long_timeframes),
+        base_dir=BASE_DIR,
+        broker=args.broker,
+        account_type=args.account_type,
+    )
     print(f"Universo TF target: {', '.join(timeframe_universe)}")
     for generation in range(next_generation, planned_generations + 1):
         generation_dir = run_dir / f"gen_{generation:03d}"
@@ -4524,7 +4562,7 @@ def run_agent(args: argparse.Namespace) -> int:
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
@@ -4547,13 +4585,18 @@ def run_agent(args: argparse.Namespace) -> int:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
     group_by_symbol = asset_group_map(asset_groups, aliases)
-    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    timeframe_universe = target_timeframe_universe(
+        bool(args.experimental_long_timeframes),
+        base_dir=BASE_DIR,
+        broker=args.broker,
+        account_type=args.account_type,
+    )
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
     if blocked_source_count:
         print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
     if seed_enabled_when_disabled:
         print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
-    print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
+    print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
     print(f"Universo TF target: {', '.join(timeframe_universe)}")
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"

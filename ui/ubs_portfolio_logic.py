@@ -12,7 +12,13 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
-from ubs.account import ACCOUNT_TYPES, account_memory_path
+from ubs.account import (
+    ACCOUNT_TYPES,
+    BROKER_ACCOUNT_TYPES,
+    account_memory_path,
+    account_types_for_broker,
+    normalize_broker,
+)
 from ubs.db import connect_memory
 from ubs.set_utils import write_set_text
 from portfolio_manager.ubs_portfolio import (
@@ -277,11 +283,22 @@ class UBSPortfolioLogicMixin:
 
     def _ubs_portfolio_source_paths(self) -> list[tuple[str, Path]]:
         paths: list[tuple[str, Path]] = []
-        for account_type in ACCOUNT_TYPES:
-            path = account_memory_path(BASE_DIR, account_type)
+        broker_var = getattr(self, "ubs_broker", None)
+        active_broker = normalize_broker(broker_var.get() if broker_var is not None else "ROBOFOREX")
+        for account_type in account_types_for_broker(active_broker):
+            path = account_memory_path(BASE_DIR, account_type, active_broker)
             if path.exists():
-                paths.append((account_type, path))
+                paths.append((f"{active_broker}/{account_type}", path))
         return paths
+
+    def _ubs_portfolio_memory_from_label(self, label: str) -> Path:
+        text = str(label or "").strip().upper()
+        if "/" in text:
+            broker, account_type = text.split("/", 1)
+            return account_memory_path(BASE_DIR, account_type, broker)
+        broker_var = getattr(self, "ubs_broker", None)
+        broker = str(broker_var.get()) if broker_var is not None else "ROBOFOREX"
+        return account_memory_path(BASE_DIR, text or "ECN", broker)
 
     def _ensure_ubs_base_tables_for_portfolio(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -872,7 +889,7 @@ class UBSPortfolioLogicMixin:
         account_var = getattr(self, "ubs_account_type", None)
         current_account = str(account_var.get()) if account_var is not None else "ECN"
         fallback_account = account or current_account
-        return fallback_account, account_memory_path(BASE_DIR, fallback_account), candidate_id
+        return fallback_account, self._ubs_portfolio_memory_from_label(fallback_account), candidate_id
 
     def _recalculate_saved_portfolio(self, conn: sqlite3.Connection, portfolio_id: int) -> None:
         portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
@@ -1224,7 +1241,7 @@ class UBSPortfolioLogicMixin:
             return
         try:
             if not rows:
-                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick 6M accepted en ECN/PRO."})
+                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick 6M accepted en las memorias broker/cuenta."})
                 return
             month_warnings: list[str] = []
             if bool(inputs.get("require_3_positive_months_6m")):
@@ -1468,7 +1485,7 @@ class UBSPortfolioLogicMixin:
         if not hasattr(self, "ubs_portfolio_availability_tree"):
             return
         if not self._ubs_portfolio_source_paths():
-            self.ubs_portfolio_availability.set("Memorias UBS ECN/PRO no encontradas.")
+            self.ubs_portfolio_availability.set("Memorias UBS broker/cuenta no encontradas.")
             self._populate_ubs_portfolio_availability(None)
             return
         try:
@@ -1498,7 +1515,7 @@ class UBSPortfolioLogicMixin:
         if grid_off_var is not None and bool(grid_off_var.get()):
             filter_suffix += " | Grid OFF activo"
         self.ubs_portfolio_availability.set(
-            f"Sets Final Tick 6M OK ECN/PRO: {availability.robust_accepted} | "
+            f"Sets Final Tick 6M OK broker/cuenta: {availability.robust_accepted} | "
             f"Sets bloqueados: {availability.already_used} | "
             f"Sets disponibles: {availability.available} | "
             f"Simbolos disponibles: {availability.symbols_available}"
@@ -2941,12 +2958,15 @@ class UBSPortfolioLogicMixin:
 
     def _ubs_portfolio_member_account(self, member: dict[str, object]) -> str:
         account = str(member.get("account_type") or "").strip().upper()
+        valid_labels = {f"{broker}/{account_type}" for broker, account_type in BROKER_ACCOUNT_TYPES}
+        if account in valid_labels:
+            return account
         if account in ACCOUNT_TYPES:
             return account
         candidate_id = str(member.get("candidate_id") or "").strip()
         if ":" in candidate_id:
             prefix = candidate_id.split(":", 1)[0].strip().upper()
-            if prefix in ACCOUNT_TYPES:
+            if prefix in valid_labels or prefix in ACCOUNT_TYPES:
                 return prefix
         return ""
 
@@ -2954,7 +2974,8 @@ class UBSPortfolioLogicMixin:
         candidate_id = str(member.get("candidate_id") or "").strip()
         if ":" in candidate_id:
             prefix, value = candidate_id.split(":", 1)
-            if prefix.strip().upper() in ACCOUNT_TYPES:
+            valid_labels = {f"{broker}/{account_type}" for broker, account_type in BROKER_ACCOUNT_TYPES}
+            if prefix.strip().upper() in valid_labels or prefix.strip().upper() in ACCOUNT_TYPES:
                 return value
         return candidate_id
 

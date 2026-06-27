@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
 
-from ubs.account import account_memory_path, normalize_account_type
+from ubs.account import DEFAULT_BROKER, account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory
 from ubs.manual_status import mark_candidates
 
@@ -235,11 +235,15 @@ class UBSResultsLogicMixin:
             self._safe_refresh(label, callback)
 
     def _ubs_memory_path(self) -> Path:
-        return account_memory_path(BASE_DIR, self._ubs_account_type())
+        return account_memory_path(BASE_DIR, self._ubs_account_type(), self._ubs_broker())
+
+    def _ubs_broker(self) -> str:
+        variable = getattr(self, "ubs_broker", None)
+        return normalize_broker(variable.get() if variable is not None else DEFAULT_BROKER)
 
     def _ubs_account_type(self) -> str:
         variable = getattr(self, "ubs_account_type", None)
-        return normalize_account_type(variable.get() if variable is not None else "")
+        return normalize_account_type(variable.get() if variable is not None else "", self._ubs_broker())
 
     def _ensure_ubs_memory_schema(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"]) for row in conn.execute("pragma table_info(runs)")}
@@ -1519,6 +1523,7 @@ class UBSResultsLogicMixin:
         try:
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--delay", str(self.delay.get()),
@@ -1588,6 +1593,7 @@ class UBSResultsLogicMixin:
                 )
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-run-id", str(run_id),
@@ -1656,6 +1662,7 @@ class UBSResultsLogicMixin:
                 return
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-run-id", str(run_id),

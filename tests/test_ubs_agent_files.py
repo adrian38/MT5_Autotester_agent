@@ -194,17 +194,21 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target, "EURUSD")
         self.assertNotEqual(policy, "exploit")
 
-    def test_disabled_symbols_policy_is_account_scoped(self) -> None:
+    def test_disabled_symbols_policy_is_broker_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_dir = Path(temp_dir)
 
             self.assertEqual(
                 account_disabled_symbols_path(base_dir, "ECN"),
-                base_dir / "outputs" / "ubs_disabled_symbols_ECN.json",
+                account_disabled_symbols_path(base_dir, "PRO"),
             )
             self.assertEqual(
-                account_disabled_symbols_path(base_dir, "PRO"),
-                base_dir / "outputs" / "ubs_disabled_symbols_PRO.json",
+                account_disabled_symbols_path(base_dir, "ECN"),
+                base_dir / "outputs" / "ubs_disabled_symbols_ROBOFOREX.json",
+            )
+            self.assertEqual(
+                account_disabled_symbols_path(base_dir, "PREMIUM", "AXI"),
+                base_dir / "outputs" / "ubs_disabled_symbols_AXI.json",
             )
 
     def test_seed_validation_rejects_incomplete_ubs_set(self) -> None:
@@ -584,6 +588,7 @@ class UBSSetsFileTests(unittest.TestCase):
         limiter = TargetDiversityLimiter(4)
         limiter.record("META", "H4")
         limiter.record("META", "H1")
+        limiter.record("META", "D1")
 
         target_symbol, target_period, _policy = choose_diverse_target(
             seed,
@@ -593,6 +598,7 @@ class UBSSetsFileTests(unittest.TestCase):
             limiter,
             ("META", "AMZN", "MSFT"),
             {},
+            disabled_symbols=set(),
         )
 
         self.assertNotEqual(target_symbol, "META")

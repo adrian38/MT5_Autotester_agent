@@ -10,13 +10,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_memory_path
+from ubs.account import (
+    ACCOUNT_TYPES,
+    BROKERS,
+    DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
+    account_memory_path,
+    migrate_legacy_account_storage,
+    normalize_account_type,
+    normalize_broker,
+)
 from ubs.db import connect_memory
 from ubs.selection import SelectionFitnessModel, finalized_six_month_label
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Valida selection_fitness dejando un run completo fuera.")
+    parser.add_argument("--broker", choices=BROKERS, default=DEFAULT_BROKER)
     parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE)
     parser.add_argument("--memory", default="")
     parser.add_argument("--holdout-run-id", type=int)
@@ -45,7 +55,10 @@ def _auc(labels: list[int], scores: list[float]) -> float:
 
 def main() -> int:
     args = parse_args()
-    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, args.account_type)
+    broker = normalize_broker(args.broker)
+    account_type = normalize_account_type(args.account_type, broker)
+    migrate_legacy_account_storage(BASE_DIR, account_type, broker)
+    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, account_type, broker)
     if not memory_path.exists():
         print(f"ERROR: no existe memoria {memory_path}")
         return 1
@@ -99,4 +112,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

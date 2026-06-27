@@ -70,9 +70,13 @@ batch wrappers.
   modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, `ubs/account.py`,
   `ubs/manual_status.py`, etc.). Do NOT grow `app_ui.py` or `ubs_agent.py`
   with logic that belongs in a domain module.
-- **Account-type isolation**: ECN and PRO use completely separate SQLite DBs,
-  seed dirs, and output dirs. All path resolution goes through `ubs/account.py`
-  helpers. Never hardcode `ubs_memory.sqlite` — always call `account_memory_path()`.
+- **Broker/account isolation**: RoboForex ECN/PRO, ICTrading STANDARD, and AXI
+  STANDARD/PREMIUM use separate SQLite DBs, seed dirs, output dirs, and results.
+  Asset universes and disabled-symbol GEN/SEEDS policies are broker-scoped and
+  shared by accounts under that broker. Timeframe universes already use
+  broker/account paths for future divergence. All path resolution goes through
+  `ubs/account.py` helpers. Never hardcode `ubs_memory.sqlite`; always call
+  `account_memory_path()`.
 - For every substantial UI screen/tab use a view/logic pair inside `ui/`:
   `ui/<screen>_view.py` for widgets/layout and `ui/<screen>_logic.py` for
   behavior/state/persistence. This is the mandatory structure for all tabs.
@@ -504,16 +508,23 @@ multi-start search count. All are persisted in `ui_settings.ini` under the
 Do not reintroduce global scaling (`S = target_dd/current_dd`), risk-parity lot
 calibration, StartLots validation, or automatic lot normalization in this module.
 
+**Broker scope**: UBS full-history and monthly portfolios read candidate pools
+only from the accounts belonging to the currently selected broker. RoboForex can
+combine ECN+PRO; AXI and ICTrading remain separate pools. Used-set locks,
+saved-curve comparisons, quarantine, and repair are scoped to that active
+broker's memories.
+
 **Persistence**: `portfolios`, `portfolio_allocations`,
 `portfolio_decision_log`, plus legacy-compatible `portfolio_members` in
-`outputs/ubs_memory_{ECN|PRO}.sqlite` (account-scoped; resolved via
+`outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite` (broker/account-scoped; resolved via
 `account_memory_path()`). Used-set locks are portfolio-class scoped:
 Conservative/Balanced share one pool, while Aggressive only conflicts with
 other Aggressive portfolios. Deleting a portfolio frees its locks.
 
 **Quarantine and repair**: `portfolio_quarantine` is stored in the source
-candidate's ECN/PRO memory and is a hard cross-account exclusion from portfolio
-eligibility. The Portfolio Builder shows the quarantined-set table and allows
+candidate's source broker/account memory and is a hard cross-account exclusion
+inside the active broker's portfolio eligibility. The Portfolio Builder shows
+the quarantined-set table and allows
 explicit reinstatement. Double-clicking a saved portfolio opens a member window;
 quarantining a member removes it and recalculates the remaining saved metrics.
 "Completar portafolio" preserves all remaining members, fills the missing active
@@ -657,9 +668,13 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
 - **PanedWindow horizontal**: table | editor drag-resizable.
 - **Editor** has horizontal scrollbar via Canvas (long paths fully visible).
 - **Portable checkbox removed** from UI (kept in data for compatibility).
-- **"Principal"** (was "Habilitada"): only ONE terminal can be principal at a
-  time. Clicking SEL unmarks all others. "Aplicar fila" enforces exclusivity
-  by setting `enabled=False` on all other profiles when Principal=ON.
+- **"Principal"** (was "Habilitada"): only ONE terminal can be principal per
+  broker at a time. Clicking SEL unmarks all others visually. "Aplicar fila"
+  enforces exclusivity by setting `enabled=False` on other profiles for the same
+  broker when Principal=ON.
+- Each profile has a `broker` field. Legacy profiles without it are treated as
+  `ROBOFOREX`; the active UBS broker filters which terminals are validated,
+  cleaned, and passed to `run_tests.py`.
 - **SEL column** on Multiterminal tree + `self.multiterminal_checked`.
 - Toolbar bar buttons converted to Type B (`tk.Button` themed) — Validar and
   Guardar now follow the action-bar pattern.
@@ -684,7 +699,8 @@ The Settings tab also has two maintenance actions:
   `reports/` directory (quick cleanup without touching MT5).
 - **Eliminar datos históricos MT5**: runs `scripts/cleanOldTest.ps1` then
   `scripts/cleanOlddata.ps1` in sequence with a progress bar. Closes MT5, clears
-  tester cache, history, bases, and `.fxt`/`.tick` files in **all configured terminals**,
+  tester cache, history, bases, and `.fxt`/`.tick` files in configured terminals
+  for the active broker,
   and also deletes local project reports. Use before switching brokers or when
   history is corrupted. Blocked while any process is running.
 
@@ -745,10 +761,9 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   Seeds tab exposes "Repetir backtest" to relaunch one selected seed directly.
 - Seeds and Universe tables have a SEL checkbox column. Seed actions use checked
   rows when present, otherwise the selected row. Universe checked symbols can be
-  disabled/enabled; disabled symbols are persisted per account type in
-  `outputs/ubs_disabled_symbols_ECN.json` / `outputs/ubs_disabled_symbols_PRO.json`,
-  remain visible, and are excluded from agent target-symbol exploration for that
-  account. The same JSON can store
+  disabled/enabled; disabled symbols are persisted per broker in
+  `outputs/ubs_disabled_symbols_{BROKER}.json`, remain visible, and are excluded
+  from agent target-symbol exploration for all accounts under that broker. The same JSON can store
   `seed_enabled_when_disabled`: these symbols remain `GEN=no` for generation but
   `SEEDS=si` lets their seeds run, score, contribute weights, and act as
   mutation sources. Disabled symbols without `SEEDS=si` remain excluded from
@@ -760,38 +775,60 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
 - Refresh buttons now refresh full panel state, and `_refresh_all()` isolates
   section errors so one broken view does not block every tab.
 
-### Account type system (ECN / PRO)
+### Broker/account system
 
-`ubs/account.py` centralises account-type path resolution. Each account type gets
-completely separate storage and execution paths — they share no SQLite DB, seed
-directory, or output directory.
+`ubs/account.py` centralises broker/account path resolution. Each broker/account
+pair gets separate SQLite storage, ready-seed directories, generated output
+directories, and result/weight history. Broker-level data is shared by accounts
+inside the same broker: asset universe files and disabled-symbol GEN/SEEDS
+policy files. Timeframe universes currently use shared defaults but already
+resolve through broker/account-specific files for future changes.
 
 ```
-ACCOUNT_TYPES = ("ECN", "PRO")
+BROKER_ACCOUNTS = {
+    "ROBOFOREX": ("ECN", "PRO"),
+    "ICTRADING": ("STANDARD",),
+    "AXI": ("STANDARD", "PREMIUM"),
+}
+DEFAULT_BROKER = "ROBOFOREX"
 DEFAULT_ACCOUNT_TYPE = "ECN"
 ```
 
 | Helper | Returns |
 |--------|---------|
-| `normalize_account_type(value)` | `"ECN"` or `"PRO"` (defaults to ECN) |
-| `account_memory_path(base_dir, account_type)` | `outputs/ubs_memory_{ECN\|PRO}.sqlite` |
-| `account_output_dir(base_dir, account_type)` | `outputs/ubs_agent/{ECN\|PRO}/` |
-| `account_seed_dir(base_dir, account_type)` | `sets/ubs_ready/{ECN\|PRO}/` |
+| `normalize_broker(value)` | `"ROBOFOREX"`, `"ICTRADING"`, or `"AXI"` |
+| `normalize_account_type(value, broker)` | valid account for that broker |
+| `account_memory_path(base_dir, account_type, broker)` | `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite` |
+| `account_output_dir(base_dir, account_type, broker)` | `outputs/ubs_agent/{BROKER}/{ACCOUNT}/` |
+| `account_seed_dir(base_dir, account_type, broker)` | `sets/ubs_ready/{BROKER}/{ACCOUNT}/` |
+| `broker_asset_universe_path(base_dir, broker)` | `assets/{broker_lower}_assets.ini` |
+| `broker_disabled_symbols_path(base_dir, broker)` | `outputs/ubs_disabled_symbols_{BROKER}.json` |
+| `account_timeframe_universe_path(base_dir, account_type, broker)` | `outputs/ubs_timeframes_{BROKER}_{ACCOUNT}.json` |
 
-**CLI**: `ubs_agent.py --account-type ECN|PRO` (default `ECN`). When `--source-dir`,
-`--output-dir`, and `--memory` are not explicitly provided, `ubs_agent.py` auto-derives
-them from `--account-type` using the helpers above.
+**CLI**: `ubs_agent.py --broker ROBOFOREX|ICTRADING|AXI --account-type ...`.
+When `--source-dir`, `--output-dir`, and `--memory` are not explicitly provided,
+`ubs_agent.py` auto-derives them from the broker/account pair using the helpers
+above.
 
-**UI**: "UBS Agente UBS" has a **Tipo de cuenta** combobox (ECN/PRO) in the paths
-block. Changing it triggers `_on_ubs_account_type_changed()` in
-`ui/ubs_agent_logic.py`, which:
+**UI**: "UBS Agente UBS" has **Broker** and **Cuenta** comboboxes in the paths
+block. Changing either triggers `_on_ubs_broker_changed()` or
+`_on_ubs_account_type_changed()` in `ui/ubs_agent_logic.py`, which:
 1. Calls `_sync_ubs_account_paths()` — updates seed/output/memory path vars if
-   they still point to legacy (pre-separation) paths.
+   they still point to legacy account-only paths or another broker/account
+   default.
 2. Saves settings.
 3. Calls `_refresh_all()` to reload all panels with the new account's data.
 
-`app_ui.py` holds `self.ubs_account_type = tk.StringVar(...)` persisted in
-`ui_settings.ini` under `[General]`.
+`app_ui.py` holds `self.ubs_broker` and `self.ubs_account_type`, both persisted
+in `ui_settings.ini` under `[General]`.
+
+Legacy RoboForex data is preserved by `migrate_legacy_roboforex_storage()`:
+on UI startup (and in CLI tools before opening the default memory), old
+account-only ECN/PRO files and folders are copied into the new
+`ROBOFOREX/{ECN|PRO}` layout only when the new destination does not already
+exist. Legacy ECN/PRO disabled-symbol JSON files are merged into
+`outputs/ubs_disabled_symbols_ROBOFOREX.json`. The migration is non-destructive;
+it never deletes or overwrites the legacy paths.
 
 ### Manual status override
 
@@ -882,6 +919,9 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
 - `run_tests.py` accepts `--multi-terminal`, `--terminals-config`, and
   `--max-workers`.
 - `ui_settings.ini` stores `[Multiterminal]` and `[Terminal.N]` profiles.
+- `[Multiterminal].broker` selects the active broker for the run, and
+  `[Terminal.N].broker` scopes each terminal profile. Legacy terminal profiles
+  without a broker are treated as `ROBOFOREX`.
 - Compilation remains sequential; multiterminal applies to backtest queues.
 
 ### Portfolio parser English support
@@ -926,8 +966,8 @@ New portfolio filter: **"Requerir 3 meses positivos 6M"** checkbox (`ubs_portfol
 
 A new tab `buscador` ("UBS Buscador", `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`) has two vertical sections:
 
-**Auditoria de run** — per-account, per-run pipeline status summary:
-- Account and run selectors (ECN/PRO).
+**Auditoria de run** — per broker/account, per-run pipeline status summary:
+- Broker/account and run selectors.
 - Shows counts for each pipeline stage: seeds, base candidates (generated/accepted/rejected/no_trades/etc.), robustness, Final Tick probe, Final Tick 6M, portfolio membership.
 - "Non-final" counts identify how many rows are still in intermediate/pending states.
 - Weight breakdown: shows per-asset and per-TF current weight contribution from all stages.
@@ -957,11 +997,11 @@ A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It 
 
 ### UBS Portafolio Mensual
 
-The independent `UBS Portafolio Mensual` screen uses every ECN/PRO candidate
-that passed Final Tick 6M. It intentionally ignores quarantine and used-set
-locks. The selected calendar month is extracted from every available year in
-the combined base + robustness trade history; all portfolio metrics and
-optimization operate on that month-only curve. Saved rows use
+The independent `UBS Portafolio Mensual` screen uses every active-broker
+broker/account candidate that passed Final Tick 6M. It intentionally ignores
+quarantine and used-set locks. The selected calendar month is extracted from
+every available year in the combined base + robustness trade history; all
+portfolio metrics and optimization operate on that month-only curve. Saved rows use
 `portfolio_scope='monthly'` plus `target_month` and do not block the regular
 full-history portfolio pool.
 

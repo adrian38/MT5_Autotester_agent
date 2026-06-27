@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from run_tests import REPORT_DIR
+from ubs.account import BROKERS
 
 
 class MultiterminalViewMixin:
@@ -118,12 +119,13 @@ class MultiterminalViewMixin:
         table_frame.grid(row=0, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("mark", "enabled", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file")
+        columns = ("mark", "enabled", "broker", "name", "mt5_path", "data_dir", "experts_root", "ubs_ex5_file")
         self.multiterminal_tree = ttk.Treeview(table_frame, columns=columns, show="headings",
                                                height=14, selectmode="browse")
         headings = {
             "mark":         "SEL",
             "enabled":      "ON",
+            "broker":       "BROKER",
             "name":         "NOMBRE",
             "mt5_path":     "TERMINAL64.EXE",
             "data_dir":     "DATOS MT5",
@@ -133,6 +135,7 @@ class MultiterminalViewMixin:
         widths = {
             "mark":         48,
             "enabled":      52,
+            "broker":       100,
             "name":         150,
             "mt5_path":     260,
             "data_dir":     260,
@@ -204,17 +207,25 @@ class MultiterminalViewMixin:
             "Con multiterminal, solo las marcadas reciben trabajo.")
         ttk.Label(editor, text="Nombre", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=7)
         ttk.Entry(editor, textvariable=self.mt_profile_name).grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=7)
-        self._path_row(editor, "Terminal MT5",     self.mt_profile_mt5_path,     2, self._browse_file)
-        self._path_row(editor, "Carpeta datos MT5",self.mt_profile_data_dir,     3, self._browse_dir)
-        self._path_row(editor, "MQL5\\Experts",    self.mt_profile_experts_root, 4, self._browse_dir)
-        self._path_row(editor, "Archivo UBS .ex5", self.mt_profile_ubs_ex5_file, 5, self._browse_profile_ex5_file)
+        ttk.Label(editor, text="Broker", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(16, 10), pady=7)
+        ttk.Combobox(
+            editor,
+            textvariable=self.mt_profile_broker,
+            values=BROKERS,
+            state="readonly",
+            width=16,
+        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 16), pady=7)
+        self._path_row(editor, "Terminal MT5",     self.mt_profile_mt5_path,     3, self._browse_file)
+        self._path_row(editor, "Carpeta datos MT5",self.mt_profile_data_dir,     4, self._browse_dir)
+        self._path_row(editor, "MQL5\\Experts",    self.mt_profile_experts_root, 5, self._browse_dir)
+        self._path_row(editor, "Archivo UBS .ex5", self.mt_profile_ubs_ex5_file, 6, self._browse_profile_ex5_file)
         ttk.Button(editor, text="Aplicar fila", style="Primary.TButton",
                    command=self._apply_multiterminal_editor).grid(
-            row=6, column=0, columnspan=3, sticky="ew", padx=16, pady=(12, 8))
+            row=7, column=0, columnspan=3, sticky="ew", padx=16, pady=(12, 8))
         ttk.Label(editor,
                   text="La cantidad es un límite: se usan hasta N terminales habilitadas. Compilar sigue siendo secuencial.",
                   style="Muted.TLabel", wraplength=380, justify="left",
-                  ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 14))
+                  ).grid(row=8, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 14))
 
         self._refresh_multiterminal_tree()
         if self.multiterminal_profiles:

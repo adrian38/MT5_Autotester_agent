@@ -313,6 +313,7 @@ class UBSRobustnessLogicMixin:
             "--source-dir", str(self._ubs_generator_source_dir()),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--broker", self._ubs_broker(),
             "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--evaluate-robustness",

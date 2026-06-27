@@ -10,7 +10,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_disabled_symbols_path, account_memory_path
+from ubs.account import (
+    ACCOUNT_TYPES,
+    BROKERS,
+    DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
+    account_disabled_symbols_path,
+    broker_asset_universe_path_with_fallback,
+    account_memory_path,
+    migrate_legacy_account_storage,
+    normalize_account_type,
+    normalize_broker,
+)
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
 from ubs.universe import load_asset_universe, load_disabled_symbols
@@ -26,6 +37,7 @@ DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audita la memoria UBS SQLite y sus pesos.")
+    parser.add_argument("--broker", choices=BROKERS, default=DEFAULT_BROKER, help="Broker UBS a auditar.")
     parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Cuenta UBS a auditar.")
     parser.add_argument("--memory", default="", help="Ruta SQLite. Si se omite, usa la memoria de --account-type.")
     parser.add_argument("--assets", default=str(DEFAULT_ASSETS), help="Ruta al universo de activos.")
@@ -479,9 +491,9 @@ def audit_final_tick(conn, audit: Audit) -> None:
     print(f"elegibles por gate duro base+robust+final_tick_6m: {portfolio_eligible}")
 
 
-def audit_weights(memory_path: Path, assets_path: Path, account_type: str) -> None:
+def audit_weights(memory_path: Path, assets_path: Path, account_type: str, broker: str) -> None:
     print_heading("Pesos")
-    disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type))
+    disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type, broker))
     _groups, aliases = load_asset_universe(assets_path, disabled_symbols=disabled)
     memory = AgentMemory(memory_path)
     try:
@@ -533,8 +545,13 @@ def audit_json_metrics(conn, audit: Audit) -> None:
 
 def main() -> int:
     args = parse_args()
-    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, args.account_type)
+    args.broker = normalize_broker(args.broker)
+    args.account_type = normalize_account_type(args.account_type, args.broker)
+    migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
+    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, args.account_type, args.broker)
     assets_path = Path(args.assets).expanduser()
+    if assets_path == DEFAULT_ASSETS:
+        assets_path = broker_asset_universe_path_with_fallback(BASE_DIR, args.broker)
     if not memory_path.exists():
         print(f"ERROR: no existe memoria UBS: {memory_path}")
         return 1
@@ -553,7 +570,7 @@ def main() -> int:
     finally:
         conn.close()
 
-    audit_weights(memory_path, assets_path, args.account_type)
+    audit_weights(memory_path, assets_path, args.account_type, args.broker)
 
     print_heading("Resultado")
     if audit.warnings:

@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from run_tests import find_matching_running_terminals, looks_like_ubs_expert_file
+from ubs.account import DEFAULT_BROKER, normalize_broker
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -170,6 +171,7 @@ class MultiterminalLogicMixin:
             data = parser[section]
             profiles.append({
                 "enabled": self._bool_setting(data.get("enabled"), True),
+                "broker": normalize_broker(data.get("broker", DEFAULT_BROKER)),
                 "name": data.get("name", section).strip() or section,
                 "mt5_path": data.get("mt5_path", "").strip(),
                 "data_dir": data.get("data_dir", "").strip(),
@@ -181,6 +183,7 @@ class MultiterminalLogicMixin:
             return profiles
         return [{
             "enabled": bool(self.mt5_path.get().strip()),
+            "broker": self._active_multiterminal_broker(),
             "name": "MT5 principal",
             "mt5_path": self.mt5_path.get().strip(),
             "data_dir": self.mt5_data_root.get().strip(),
@@ -204,19 +207,43 @@ class MultiterminalLogicMixin:
         return workers
 
     def _active_multiterminal_profiles(self) -> list[dict[str, object]]:
-        return [profile for profile in self.multiterminal_profiles if bool(profile.get("enabled"))]
+        return [
+            profile
+            for profile in self._broker_multiterminal_profiles()
+            if bool(profile.get("enabled"))
+        ]
+
+    def _active_multiterminal_broker(self) -> str:
+        broker_var = getattr(self, "ubs_broker", None)
+        return normalize_broker(broker_var.get() if broker_var is not None else DEFAULT_BROKER)
+
+    def _profile_broker(self, profile: dict[str, object]) -> str:
+        return normalize_broker(profile.get("broker", DEFAULT_BROKER))
+
+    def _broker_multiterminal_profiles(self, *, include_disabled: bool = True) -> list[dict[str, object]]:
+        broker = self._active_multiterminal_broker()
+        profiles = [
+            profile
+            for profile in self.multiterminal_profiles
+            if self._profile_broker(profile) == broker
+        ]
+        if include_disabled:
+            return profiles
+        return [profile for profile in profiles if bool(profile.get("enabled"))]
 
     def _update_multiterminal_summary(self) -> None:
         if not hasattr(self, "multiterminal_summary"):
             return
         worker_limit = self._multiterminal_worker_limit()
         if worker_limit > 1:
-            available = len(self.multiterminal_profiles)
+            available = len(self._broker_multiterminal_profiles())
         else:
             available = len(self._active_multiterminal_profiles())
         workers = min(worker_limit, available) if available else 0
         mode = "on" if self.multiterminal_enabled.get() else "off"
-        self.multiterminal_summary.set(f"{available} activas / usando hasta {workers} / {mode}")
+        self.multiterminal_summary.set(
+            f"{self._active_multiterminal_broker()}: {available} activas / usando hasta {workers} / {mode}"
+        )
 
     def _save_current_multiterminal_editor(self) -> None:
         if not hasattr(self, "mt_profile_name"):
@@ -226,6 +253,9 @@ class MultiterminalLogicMixin:
             return
         self.multiterminal_profiles[index] = {
             "enabled": bool(self.mt_profile_enabled.get()),
+            "broker": normalize_broker(
+                self.mt_profile_broker.get() if hasattr(self, "mt_profile_broker") else self._active_multiterminal_broker()
+            ),
             "name": self.mt_profile_name.get().strip() or f"Terminal {index + 1}",
             "mt5_path": self.mt_profile_mt5_path.get().strip(),
             "data_dir": self.mt_profile_data_dir.get().strip(),
@@ -240,8 +270,9 @@ class MultiterminalLogicMixin:
             return
         if not bool(self.multiterminal_profiles[idx].get("enabled")):
             return
+        selected_broker = self._profile_broker(self.multiterminal_profiles[idx])
         for i, profile in enumerate(self.multiterminal_profiles):
-            if i != idx:
+            if i != idx and self._profile_broker(profile) == selected_broker:
                 profile["enabled"] = False
 
     def _multiterminal_tree_values(self, profile: dict[str, object], index: int) -> tuple:
@@ -249,6 +280,7 @@ class MultiterminalLogicMixin:
         return (
             self._checkbox_text(name in self.multiterminal_checked),
             "si" if bool(profile.get("enabled")) else "no",
+            self._profile_broker(profile),
             name,
             str(profile.get("mt5_path") or ""),
             str(profile.get("data_dir") or ""),
@@ -329,6 +361,8 @@ class MultiterminalLogicMixin:
             self.mt_selected_index = None
             self.mt_profile_enabled.set(False)
             self.mt_profile_portable.set(False)
+            if hasattr(self, "mt_profile_broker"):
+                self.mt_profile_broker.set(self._active_multiterminal_broker())
             self.mt_profile_name.set("")
             self.mt_profile_mt5_path.set("")
             self.mt_profile_data_dir.set("")
@@ -339,6 +373,8 @@ class MultiterminalLogicMixin:
         self.mt_selected_index = index
         self.mt_profile_enabled.set(bool(profile.get("enabled")))
         self.mt_profile_portable.set(bool(profile.get("portable")))
+        if hasattr(self, "mt_profile_broker"):
+            self.mt_profile_broker.set(self._profile_broker(profile))
         self.mt_profile_name.set(str(profile.get("name") or f"Terminal {index + 1}"))
         self.mt_profile_mt5_path.set(str(profile.get("mt5_path") or ""))
         self.mt_profile_data_dir.set(str(profile.get("data_dir") or ""))
@@ -376,8 +412,9 @@ class MultiterminalLogicMixin:
         self._enforce_single_primary_multiterminal_profile()
         # Si esta terminal se marca como Principal, desactivar todas las demás
         if idx is not None and self.mt_profile_enabled.get():
+            selected_broker = self._profile_broker(self.multiterminal_profiles[idx])
             for i, p in enumerate(self.multiterminal_profiles):
-                if i != idx:
+                if i != idx and self._profile_broker(p) == selected_broker:
                     p["enabled"] = False
         if idx is not None:
             self._update_multiterminal_tree_item(idx)
@@ -391,6 +428,7 @@ class MultiterminalLogicMixin:
         index = len(self.multiterminal_profiles) + 1
         return {
             "enabled": True,
+            "broker": self._active_multiterminal_broker(),
             "name": name or f"Terminal {index}",
             "mt5_path": self.mt5_path.get().strip(),
             "data_dir": self.mt5_data_root.get().strip(),
@@ -449,8 +487,10 @@ class MultiterminalLogicMixin:
         errors: list[str] = []
         active = self._active_multiterminal_profiles()
         if not active:
-            errors.append("No hay terminales habilitadas.")
+            errors.append(f"No hay terminales habilitadas para {self._active_multiterminal_broker()}.")
         for index, profile in enumerate(self.multiterminal_profiles, start=1):
+            if self._profile_broker(profile) != self._active_multiterminal_broker():
+                continue
             if not bool(profile.get("enabled")):
                 continue
             name = str(profile.get("name") or f"Terminal {index}")
@@ -513,7 +553,7 @@ class MultiterminalLogicMixin:
         data_dirs: list[Path] = []
         invalid_profiles: list[str] = []
         seen_running: set[tuple[int, str]] = set()
-        for index, profile in enumerate(self.multiterminal_profiles, start=1):
+        for index, profile in enumerate(self._broker_multiterminal_profiles(), start=1):
             name = str(profile.get("name") or f"Terminal {index}")
             data_dir = self._profile_path(profile, "data_dir")
             if data_dir is None or not data_dir.is_dir():
@@ -658,12 +698,13 @@ class MultiterminalLogicMixin:
             return ["Multiterminal: no"]
         worker_limit = self._multiterminal_worker_limit()
         if worker_limit > 1:
-            available = len(self.multiterminal_profiles)
+            available = len(self._broker_multiterminal_profiles())
         else:
             available = len(self._active_multiterminal_profiles())
         workers = min(worker_limit, available) if available else 0
         return [
             "Multiterminal: si",
+            f"Broker terminales: {self._active_multiterminal_broker()}",
             f"Terminales activas: {available}",
             f"Workers: {workers}",
         ]

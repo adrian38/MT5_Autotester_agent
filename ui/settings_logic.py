@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 import telegram_notify
 from mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR
-from ubs.account import ACCOUNT_TYPES, account_memory_path
+from ubs.account import BROKER_ACCOUNT_TYPES, account_memory_path
 from ubs.db import connect_memory
 
 
@@ -341,6 +341,7 @@ class SettingsLogicMixin:
             "ubs_experimental_long_timeframes": "1" if self.ubs_experimental_long_timeframes.get() else "0",
             "ubs_long_tf_min_trades_w1": self.ubs_long_tf_min_trades_w1.get().strip(),
             "ubs_long_tf_min_trades_mn": self.ubs_long_tf_min_trades_mn.get().strip(),
+            "ubs_broker": self.ubs_broker.get().strip().upper(),
             "ubs_account_type": self.ubs_account_type.get().strip().upper(),
             "ubs_pass_min_net_profit": self.ubs_pass_min_net_profit.get().strip(),
             "ubs_pass_min_profit_factor": self.ubs_pass_min_profit_factor.get().strip(),
@@ -452,6 +453,7 @@ class SettingsLogicMixin:
         }
         parser["Multiterminal"] = {
             "enabled": "1" if self.multiterminal_enabled.get() else "0",
+            "broker": self._active_multiterminal_broker() if hasattr(self, "_active_multiterminal_broker") else "ROBOFOREX",
             "workers": str(self._multiterminal_worker_limit()),
             "terminal_cooldown": saved_multiterminal_tuning["terminal_cooldown"],
             "tester_kick_after": saved_multiterminal_tuning["tester_kick_after"],
@@ -459,6 +461,7 @@ class SettingsLogicMixin:
         for index, profile in enumerate(self.multiterminal_profiles, start=1):
             parser[f"Terminal.{index}"] = {
                 "enabled": "1" if bool(profile.get("enabled")) else "0",
+                "broker": str(profile.get("broker") or "ROBOFOREX").strip().upper(),
                 "name": str(profile.get("name") or f"Terminal {index}").strip(),
                 "mt5_path": str(profile.get("mt5_path") or "").strip(),
                 "data_dir": str(profile.get("data_dir") or "").strip(),
@@ -536,8 +539,8 @@ class SettingsLogicMixin:
 
     def _protected_ubs_report_files(self) -> set[str]:
         protected: set[str] = set()
-        for account_type in ACCOUNT_TYPES:
-            memory_path = account_memory_path(BASE_DIR, account_type)
+        for broker, account_type in BROKER_ACCOUNT_TYPES:
+            memory_path = account_memory_path(BASE_DIR, account_type, broker)
             if not memory_path.exists():
                 continue
             try:
