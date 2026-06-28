@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import os
 import sqlite3
 import subprocess
 import sys
@@ -11,7 +12,15 @@ from tkinter import filedialog, messagebox
 import telegram_notify
 from mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR
-from ubs.account import ACCOUNT_TYPES, account_memory_path
+from ubs.account import (
+    BROKERS,
+    BROKER_ACCOUNT_TYPES,
+    DEFAULT_BROKER,
+    account_memory_path,
+    default_symbol_map_for_broker,
+    normalize_broker,
+    symbol_map_setting_key,
+)
 from ubs.db import connect_memory
 
 
@@ -328,6 +337,14 @@ class SettingsLogicMixin:
             "portfolio_input": self.portfolio_input.get().strip(),
             "portfolio_output": self.portfolio_output.get().strip(),
         }
+        symbol_maps = getattr(self, "_ubs_symbol_maps_by_broker", {})
+        if symbol_maps is None:
+            symbol_maps = {}
+        active_symbol_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", self.ubs_broker.get()))
+        symbol_maps[active_symbol_broker] = self.symbol_map.get().strip()
+        for broker in BROKERS:
+            symbol_maps.setdefault(broker, default_symbol_map_for_broker(broker))
+        self._ubs_symbol_maps_by_broker = symbol_maps
         parser["General"] = {
             "recursive": "1" if self.recursive.get() else "0",
             "delay": str(self.delay.get()),
@@ -335,10 +352,12 @@ class SettingsLogicMixin:
             "ubs_variants_per_seed": str(self.ubs_variants_per_seed.get()),
             "ubs_max_seeds": str(self.ubs_max_seeds.get()),
             "ubs_agent_execute": "1" if self.ubs_agent_execute.get() else "0",
-            "ubs_force_unseeded_universe": "1" if self.ubs_force_unseeded_universe.get() else "0",
+            "ubs_generation_mode": self.ubs_generation_mode.get().strip().lower(),
+            "ubs_force_unseeded_universe": "1" if self.ubs_generation_mode.get().strip().lower() == "discovery" else "0",
             "ubs_experimental_long_timeframes": "1" if self.ubs_experimental_long_timeframes.get() else "0",
             "ubs_long_tf_min_trades_w1": self.ubs_long_tf_min_trades_w1.get().strip(),
             "ubs_long_tf_min_trades_mn": self.ubs_long_tf_min_trades_mn.get().strip(),
+            "ubs_broker": self.ubs_broker.get().strip().upper(),
             "ubs_account_type": self.ubs_account_type.get().strip().upper(),
             "ubs_pass_min_net_profit": self.ubs_pass_min_net_profit.get().strip(),
             "ubs_pass_min_profit_factor": self.ubs_pass_min_profit_factor.get().strip(),
@@ -385,7 +404,7 @@ class SettingsLogicMixin:
             "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
             "symbol_suffix": self.symbol_suffix.get().strip(),
             "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
-            "symbol_map": self.symbol_map.get().strip(),
+            "symbol_map": symbol_maps.get(DEFAULT_BROKER, default_symbol_map_for_broker(DEFAULT_BROKER)),
             "telegram_enabled": "1" if self.telegram_enabled.get() else "0",
             "portfolio_threshold": self.portfolio_threshold.get().strip(),
             "ubs_portfolio_num_symbols": str(self.ubs_portfolio_num_symbols.get()),
@@ -405,14 +424,63 @@ class SettingsLogicMixin:
             "ubs_portfolio_require_3_positive_months_6m": (
                 "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"
             ),
+            "ubs_portfolio_grid_off": "1" if self.ubs_portfolio_grid_off.get() else "0",
+            "ubs_portfolio_dd_reserve_pct": self.ubs_portfolio_dd_reserve_pct.get().strip(),
+            "ubs_portfolio_search_restarts": str(self.ubs_portfolio_search_restarts.get()),
             "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
             "ubs_portfolio_max_downside_corr": self.ubs_portfolio_max_downside_corr.get().strip(),
             "ubs_portfolio_max_dd_overlap": self.ubs_portfolio_max_dd_overlap.get().strip(),
             "ubs_portfolio_max_portfolio_corr": self.ubs_portfolio_max_portfolio_corr.get().strip(),
+            "ubs_monthly_portfolio_target_month": self.ubs_monthly_portfolio_target_month.get().strip(),
+            "ubs_monthly_portfolio_type": self.ubs_monthly_portfolio_type.get().strip(),
+            "ubs_monthly_portfolio_valley_pct": self.ubs_monthly_portfolio_valley_pct.get().strip(),
+            "ubs_monthly_portfolio_point_pct": self.ubs_monthly_portfolio_point_pct.get().strip(),
+            "ubs_monthly_portfolio_capital": self.ubs_monthly_portfolio_capital.get().strip(),
+            "ubs_monthly_portfolio_top_k": str(self.ubs_monthly_portfolio_top_k.get()),
+            "ubs_monthly_portfolio_max_candidates": str(self.ubs_monthly_portfolio_max_candidates.get()),
+            "ubs_monthly_portfolio_min_trades": str(self.ubs_monthly_portfolio_min_trades.get()),
+            "ubs_monthly_portfolio_max_units_per_set": self.ubs_monthly_portfolio_max_units_per_set.get().strip(),
+            "ubs_monthly_portfolio_max_total_units": self.ubs_monthly_portfolio_max_total_units.get().strip(),
+            "ubs_monthly_portfolio_max_units_per_symbol": self.ubs_monthly_portfolio_max_units_per_symbol.get().strip(),
+            "ubs_monthly_portfolio_max_sets_per_symbol": str(self.ubs_monthly_portfolio_max_sets_per_symbol.get()),
+            "ubs_monthly_portfolio_run_local_search": "1" if self.ubs_monthly_portfolio_run_local_search.get() else "0",
+            "ubs_monthly_portfolio_use_correlation": "1" if self.ubs_monthly_portfolio_use_correlation.get() else "0",
+            "ubs_monthly_portfolio_require_3_positive_months_6m": (
+                "1" if self.ubs_monthly_portfolio_require_3_positive_months_6m.get() else "0"
+            ),
+            "ubs_monthly_portfolio_grid_off": "1" if self.ubs_monthly_portfolio_grid_off.get() else "0",
+            "ubs_monthly_portfolio_exclude_monthly_used": (
+                "1" if self.ubs_monthly_portfolio_exclude_monthly_used.get() else "0"
+            ),
+            "ubs_monthly_portfolio_corr_with_monthly_portfolios": (
+                "1" if self.ubs_monthly_portfolio_corr_with_monthly_portfolios.get() else "0"
+            ),
+            "ubs_monthly_portfolio_strict_yearly_month_validation": (
+                "1" if self.ubs_monthly_portfolio_strict_yearly_month_validation.get() else "0"
+            ),
+            "ubs_monthly_portfolio_deep_optimization": (
+                "1" if self.ubs_monthly_portfolio_deep_optimization.get() else "0"
+            ),
+            "ubs_monthly_portfolio_validate_roboforex_margin": (
+                "1" if self.ubs_monthly_portfolio_validate_roboforex_margin.get() else "0"
+            ),
+            "ubs_monthly_portfolio_max_margin_pct": self.ubs_monthly_portfolio_max_margin_pct.get().strip(),
+            "ubs_monthly_portfolio_dd_reserve_pct": self.ubs_monthly_portfolio_dd_reserve_pct.get().strip(),
+            "ubs_monthly_portfolio_search_restarts": str(self.ubs_monthly_portfolio_search_restarts.get()),
+            "ubs_monthly_portfolio_max_pair_corr": self.ubs_monthly_portfolio_max_pair_corr.get().strip(),
+            "ubs_monthly_portfolio_max_downside_corr": self.ubs_monthly_portfolio_max_downside_corr.get().strip(),
+            "ubs_monthly_portfolio_max_dd_overlap": self.ubs_monthly_portfolio_max_dd_overlap.get().strip(),
+            "ubs_monthly_portfolio_max_portfolio_corr": self.ubs_monthly_portfolio_max_portfolio_corr.get().strip(),
             "theme": self.theme_mode.get(),
         }
+        for broker in BROKERS:
+            parser["General"][symbol_map_setting_key(broker)] = symbol_maps.get(
+                broker,
+                default_symbol_map_for_broker(broker),
+            )
         parser["Multiterminal"] = {
             "enabled": "1" if self.multiterminal_enabled.get() else "0",
+            "broker": self._active_multiterminal_broker() if hasattr(self, "_active_multiterminal_broker") else "ROBOFOREX",
             "workers": str(self._multiterminal_worker_limit()),
             "terminal_cooldown": saved_multiterminal_tuning["terminal_cooldown"],
             "tester_kick_after": saved_multiterminal_tuning["tester_kick_after"],
@@ -420,6 +488,7 @@ class SettingsLogicMixin:
         for index, profile in enumerate(self.multiterminal_profiles, start=1):
             parser[f"Terminal.{index}"] = {
                 "enabled": "1" if bool(profile.get("enabled")) else "0",
+                "broker": str(profile.get("broker") or "ROBOFOREX").strip().upper(),
                 "name": str(profile.get("name") or f"Terminal {index}").strip(),
                 "mt5_path": str(profile.get("mt5_path") or "").strip(),
                 "data_dir": str(profile.get("data_dir") or "").strip(),
@@ -497,8 +566,8 @@ class SettingsLogicMixin:
 
     def _protected_ubs_report_files(self) -> set[str]:
         protected: set[str] = set()
-        for account_type in ACCOUNT_TYPES:
-            memory_path = account_memory_path(BASE_DIR, account_type)
+        for broker, account_type in BROKER_ACCOUNT_TYPES:
+            memory_path = account_memory_path(BASE_DIR, account_type, broker)
             if not memory_path.exists():
                 continue
             try:
@@ -566,6 +635,62 @@ class SettingsLogicMixin:
                 return paths
         return []
 
+    def _historical_data_roots(self) -> list[Path]:
+        roots: list[Path] = []
+
+        def add_root(value: object) -> None:
+            text = str(value or "").strip()
+            if not text:
+                return
+            root = Path(text).expanduser().resolve(strict=False)
+            if root not in roots:
+                roots.append(root)
+
+        if hasattr(self, "mt5_data_root"):
+            add_root(self.mt5_data_root.get())
+        for profile in getattr(self, "multiterminal_profiles", []):
+            add_root(profile.get("data_dir"))
+
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            global_tester = Path(appdata) / "MetaQuotes" / "Tester"
+            if global_tester.is_dir():
+                add_root(global_tester)
+            terminal_base = Path(appdata) / "MetaQuotes" / "Terminal"
+            if terminal_base.is_dir():
+                for child in terminal_base.iterdir():
+                    if child.is_dir():
+                        add_root(child)
+        return roots
+
+    def _historical_data_leftovers(self) -> list[tuple[Path, int, int]]:
+        leftovers: list[tuple[Path, int, int]] = []
+        for root in self._historical_data_roots():
+            subdirs = (".",) if root.name.casefold() == "tester" else ("Tester", "tester", "bases", "history")
+            for subdir in subdirs:
+                path = root / subdir
+                if not path.exists() or not path.is_dir():
+                    continue
+                file_count = 0
+                total_bytes = 0
+                try:
+                    for item in path.rglob("*"):
+                        if not item.is_file():
+                            continue
+                        file_count += 1
+                        try:
+                            total_bytes += item.stat().st_size
+                        except OSError:
+                            pass
+                except OSError:
+                    file_count += 1
+                if file_count > 0 or total_bytes > 0:
+                    leftovers.append((path, file_count, total_bytes))
+        unique: dict[str, tuple[Path, int, int]] = {}
+        for path, file_count, total_bytes in leftovers:
+            unique[str(path).casefold()] = (path, file_count, total_bytes)
+        return sorted(unique.values(), key=lambda item: item[2], reverse=True)
+
     def _run_clean_scripts(self, scripts: list[Path]) -> None:
         total = max(1, len(scripts))
         failures = 0
@@ -592,6 +717,16 @@ class SettingsLogicMixin:
                 self.output_queue.put(f"\nERROR ejecutando {script.name}: {exc}\n")
             slot_end = 100.0 * (index + 1) / total
             self.after(0, lambda v=slot_end: self._set_clean_progress(v))
+        leftovers = self._historical_data_leftovers()
+        if leftovers:
+            failures += 1
+            self.output_queue.put("\nAVISO: quedan datos historicos despues de limpiar:\n")
+            for path, file_count, total_bytes in leftovers[:20]:
+                self.output_queue.put(
+                    f" - {path} | {file_count:,} archivos | {total_bytes / (1024 ** 3):.2f} GB\n"
+                )
+            if len(leftovers) > 20:
+                self.output_queue.put(f" - ... {len(leftovers) - 20} carpeta(s) mas\n")
         self.after(0, lambda: self._set_clean_progress(100.0))
         self.output_queue.put("\n=== Limpieza terminada ===\n")
         self.after(0, self._finish_clean, failures)
@@ -610,10 +745,11 @@ class SettingsLogicMixin:
         if failures:
             self._set_progress_color("danger")
             self.active_task_text.set("Limpieza con errores")
-            self.status_text.set(f"Limpieza terminada con {failures} script(s) fallido(s)")
+            self.status_text.set(f"Limpieza terminada con {failures} problema(s)")
             messagebox.showwarning(
                 "Limpieza con errores",
-                f"La limpieza termino con {failures} script(s) fallido(s).\nRevisa la consola en la pestaña Logs."
+                f"La limpieza termino con {failures} problema(s).\n"
+                "Revisa la consola en la pestana Logs para ver scripts fallidos o carpetas restantes."
             )
         else:
             self._set_progress_color("accent")

@@ -272,4 +272,4 @@ class UBSFinalTickViewMixin:
         self._make_tree_sortable(self.ubs_final_tick_tree)
         self.ubs_final_tick_tree.bind("<Button-1>", self._on_ubs_final_tick_tree_click)
         self.ubs_final_tick_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_final_tick_real_report())
-        self._attach_tree_scrollbars(table_frame, self.ubs_final_tick_tree, 0)
+        self._attach_tree_scrollbars(table_frame, self.ubs_final_tick_tree, 0, vertical=True)

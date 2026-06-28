@@ -6,7 +6,16 @@ from pathlib import Path
 from tkinter import messagebox
 
 from run_tests import infer_tester_fields_from_set, load_set_files
-from ubs.account import ACCOUNT_TYPES, account_output_dir, account_seed_dir
+from ubs.account import (
+    ACCOUNT_TYPES,
+    BROKERS,
+    account_output_dir,
+    account_seed_dir,
+    account_types_for_broker,
+    default_symbol_map_for_broker,
+    normalize_account_type,
+    normalize_broker,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -28,7 +37,15 @@ class UBSAgentLogicMixin:
         except OSError:
             resolved = path
             resolved_root = root
-        return resolved.parent == resolved_root and resolved.name.upper() in ACCOUNT_TYPES
+        rel = self._relative_to_or_none(resolved, resolved_root)
+        if rel is None:
+            return False
+        parts = tuple(part.upper() for part in rel.parts)
+        if len(parts) == 1:
+            return parts[0] in ACCOUNT_TYPES
+        if len(parts) == 2:
+            return parts[0] in BROKERS and parts[1] in account_types_for_broker(parts[0])
+        return False
 
     def _account_scoped_path(self, raw: str, *, legacy: Path, scoped: Path) -> Path:
         text = str(raw or "").strip()
@@ -54,15 +71,36 @@ class UBSAgentLogicMixin:
         if rel is None:
             return path
         parts = rel.parts
-        if parts and parts[0].upper() in ACCOUNT_TYPES:
+        if len(parts) >= 2 and parts[0].upper() in BROKERS and parts[1].upper() in account_types_for_broker(parts[0]):
+            rel = Path(*parts[2:]) if len(parts) > 2 else Path()
+        elif parts and parts[0].upper() in ACCOUNT_TYPES:
             rel = Path(*parts[1:]) if len(parts) > 1 else Path()
         return self._ubs_default_source_dir() / rel
 
     def _ubs_default_source_dir(self) -> Path:
-        return account_seed_dir(BASE_DIR, self._ubs_account_type())
+        return account_seed_dir(BASE_DIR, self._ubs_account_type(), self._ubs_broker())
 
     def _ubs_default_output_dir(self) -> Path:
-        return account_output_dir(BASE_DIR, self._ubs_account_type())
+        return account_output_dir(BASE_DIR, self._ubs_account_type(), self._ubs_broker())
+
+    def _normalize_ubs_account_selection(self) -> None:
+        broker = normalize_broker(self.ubs_broker.get())
+        account = normalize_account_type(self.ubs_account_type.get(), broker)
+        if self.ubs_broker.get() != broker:
+            self.ubs_broker.set(broker)
+        if self.ubs_account_type.get() != account:
+            self.ubs_account_type.set(account)
+
+    def _sync_ubs_symbol_map_for_broker(self, broker: str | None = None) -> None:
+        maps = getattr(self, "_ubs_symbol_maps_by_broker", None)
+        symbol_map_var = getattr(self, "symbol_map", None)
+        if maps is None or symbol_map_var is None:
+            return
+        target_broker = normalize_broker(broker or self.ubs_broker.get())
+        active_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", target_broker))
+        maps[active_broker] = symbol_map_var.get().strip()
+        symbol_map_var.set(maps.get(target_broker, default_symbol_map_for_broker(target_broker)))
+        self._ubs_symbol_map_active_broker = target_broker
 
     def _ubs_generation_output_dir(self) -> Path:
         return self._account_scoped_path(
@@ -100,9 +138,10 @@ class UBSAgentLogicMixin:
                     set_file_var.set("")
 
     def _refresh_ubs_account_context(self, *, force: bool = False) -> None:
+        self._normalize_ubs_account_selection()
         self._sync_ubs_account_paths(force=force)
         self._write_ui_settings()
-        self.status_text.set(f"Cuenta UBS activa: {self._ubs_account_type()}")
+        self.status_text.set(f"Cuenta UBS activa: {self._ubs_broker()} / {self._ubs_account_type()}")
         for label, callback_name in (
             ("ubs_seeds", "_refresh_ubs_seeds_panel"),
             ("ubs_results", "_refresh_ubs_results_panel"),
@@ -117,6 +156,18 @@ class UBSAgentLogicMixin:
                 self._safe_refresh(label, callback)
 
     def _on_ubs_account_type_changed(self) -> None:
+        self._refresh_ubs_account_context()
+
+    def _on_ubs_broker_changed(self) -> None:
+        self._normalize_ubs_account_selection()
+        self._sync_ubs_symbol_map_for_broker(self._ubs_broker())
+        account_combo = getattr(self, "ubs_account_combo", None)
+        if account_combo is not None:
+            account_combo.configure(values=account_types_for_broker(self._ubs_broker()))
+        audit_combo = getattr(self, "ubs_audit_account_combo", None)
+        refresh_audit_accounts = getattr(self, "_refresh_ubs_audit_account_values", None)
+        if audit_combo is not None and refresh_audit_accounts is not None:
+            refresh_audit_accounts()
         self._refresh_ubs_account_context()
 
     def _apply_ubs_account_type_to_app(self) -> None:
@@ -152,6 +203,7 @@ class UBSAgentLogicMixin:
             "--source-dir", str(source_dir),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--broker", self._ubs_broker(),
             "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--generations", str(generations),
@@ -165,8 +217,11 @@ class UBSAgentLogicMixin:
             args.extend(["--to-date", self.ubs_agent_to_date.get().strip()])
         if continue_last:
             args.append("--continue-last-run")
-        if self.ubs_force_unseeded_universe.get():
-            args.append("--force-unseeded-universe")
+        generation_mode = self.ubs_generation_mode.get().strip().lower()
+        if generation_mode not in {"production", "discovery"}:
+            raise ValueError("Modo de generacion UBS invalido.")
+        args.extend(["--generation-mode", generation_mode])
+        self.ubs_force_unseeded_universe.set(generation_mode == "discovery")
         if self.ubs_experimental_long_timeframes.get():
             args.append("--experimental-long-timeframes")
         args.extend(self._ubs_score_args())
@@ -217,7 +272,7 @@ class UBSAgentLogicMixin:
             f"Variantes por set: {shown_variants}",
             f"Max seeds/gen: {shown_max_seeds}",
             f"Backtests: {'si' if shown_backtests else 'no'}",
-            f"Explorar universo sin seed: {'si' if self.ubs_force_unseeded_universe.get() else 'no'}",
+            f"Modo de generacion: {self.ubs_generation_mode.get().strip().lower()}",
             f"Experimentar W1/MN: {'si' if self.ubs_experimental_long_timeframes.get() else 'no'}",
             f"Trades W1/MN base: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
             f"Trades W1/MN Final Tick: W1>={self.ubs_final_tick_min_trades_w1.get().strip()} | MN>={self.ubs_final_tick_min_trades_mn.get().strip()}",

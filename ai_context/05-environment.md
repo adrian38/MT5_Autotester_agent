@@ -45,7 +45,8 @@ keys include:
 - `telegram_enabled`
 - `portfolio_threshold`
 - `ubs_generation_count`, `ubs_variants_per_seed`, `ubs_max_seeds`
-- `ubs_agent_execute`, `ubs_force_unseeded_universe`
+- `ubs_agent_execute`, `ubs_generation_mode` (`production` / `discovery`),
+  `ubs_force_unseeded_universe` (legacy compatibility)
 - `ubs_pass_min_net_profit`, `ubs_pass_min_profit_factor`, `ubs_pass_min_trades`,
   `ubs_pass_max_drawdown_pct`, `ubs_pass_min_recovery_factor`
 - `ubs_seed_pass_min_net_profit`, `ubs_seed_pass_min_profit_factor`, `ubs_seed_pass_min_trades`,
@@ -98,12 +99,12 @@ The project also uses simple text files for source discovery:
   `last_compile.log`.
 - `reports/`: copied MT5 `.htm/.html` reports, images, and `.set` files.
 - `outputs/`: generated Excel workbooks.
-- `outputs/ubs_memory.sqlite`: UBS SQLite database; tables: `runs`, `candidates`,
+- `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`: UBS SQLite database; tables: `runs`, `candidates`,
   `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`,
   `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members`.
-- `outputs/ubs_agent/<run>/robustness/`: copied accepted candidate `.set` files
+- `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/`: copied accepted candidate `.set` files
   for out-of-sample robustness batches.
-- `outputs/ubs_agent/<run>/final_tick/`: OHLC and real-tick `.set` copies for
+- `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/`: OHLC and real-tick `.set` copies for
   Final Tick evaluation batches.
 - `outputs/ubs_global_params.json`: global UBS EA parameter values.
 - `outputs/ubs_mutation_overrides.json`: user mutability overrides for UBS

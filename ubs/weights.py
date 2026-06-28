@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 import json
+import math
 
 
 DEFAULT_ROBUST_POSITIVE_BONUS = 70.0
@@ -18,6 +20,26 @@ REJECTED_BASE_PENALTY = 50.0
 NO_TRADES_WEIGHT = -40.0
 WEIGHT_SHRINKAGE_K = 20.0
 SEED_WEIGHT_SCALE = 1.0
+
+# Probability feedback replaces the old unbounded additive score when the
+# agent chooses assets, timeframes and mutation keys.  The legacy row utility
+# below is intentionally kept for audit/backwards compatibility.
+STAGE_PRIOR_STRENGTH = 20.0
+RELATIVE_SCORE_SCALE = 10.0
+RELATIVE_SCORE_LIMIT = 40.0
+DEFAULT_STAGE_PRIORS = {
+    "base": 0.50,
+    "robust": 0.50,
+    "probe": 0.50,
+    "six_month": 0.05,
+}
+
+TIMEFRAME_PATCH_KEYS = frozenset({
+    "ST1_Timeframe",
+    "VolTimeframe",
+    "Entry_Timing",
+    "ATR_Timeframe",
+})
 
 REJECTED_REASON_PENALTIES = {
     "net_profit": 40.0,
@@ -45,6 +67,24 @@ FINAL_TICK_REASON_PENALTIES = {
     "ohlc_trades": 45.0,
     "history_quality": 60.0,
 }
+
+
+@dataclass(frozen=True)
+class StageEvidence:
+    successes: float = 0.0
+    trials: float = 0.0
+
+
+@dataclass(frozen=True)
+class FeedbackSignal:
+    """Smoothed end-to-end probability and its relative selection score."""
+
+    score: float
+    probability: float
+    confidence: float
+    groups: int
+    final_trials: float
+    stage_probabilities: dict[str, float]
 
 
 def row_get(row: object, key: str, default: object = None) -> object:
@@ -80,6 +120,146 @@ def metric_reasons(metrics_json: object) -> tuple[str, ...]:
     if isinstance(reasons, Iterable):
         return tuple(str(reason) for reason in reasons if str(reason))
     return ()
+
+
+def row_stage_outcome(row: object, stage: str) -> tuple[bool, float]:
+    """Return ``(is_trial, success)`` for one lifecycle stage.
+
+    Missing reports and retryable technical states do not become statistical
+    failures.  ``pending_ohlc_trades`` is probe-eligible by design because the
+    longer six-month window supplies the missing sample.
+    """
+
+    if stage == "base":
+        status = row_text(row, "status").lower()
+        if status in {"accepted", "rejected", "no_trades"}:
+            return True, 1.0 if status == "accepted" else 0.0
+        return False, 0.0
+    if stage == "robust":
+        status = row_text(row, "robust_status").lower()
+        if status in {"accepted", "rejected", "no_trades"}:
+            return True, 1.0 if status == "accepted" else 0.0
+        return False, 0.0
+    if stage == "probe":
+        status = row_text(row, "final_tick_status").lower()
+        if status in {"accepted", "rejected", "pending_ohlc_trades"}:
+            return True, 1.0 if status in {"accepted", "pending_ohlc_trades"} else 0.0
+        return False, 0.0
+    if stage == "six_month":
+        status = row_text(row, "final_tick_6m_status").lower()
+        if status in {"accepted", "rejected"}:
+            return True, 1.0 if status == "accepted" else 0.0
+        return False, 0.0
+    raise ValueError(f"Etapa de feedback desconocida: {stage}")
+
+
+def grouped_stage_evidence(grouped_rows: Mapping[object, Iterable[object]]) -> dict[str, StageEvidence]:
+    """Give every correlated source group at most one trial per stage."""
+
+    totals = {stage: [0.0, 0.0] for stage in DEFAULT_STAGE_PRIORS}
+    for rows in grouped_rows.values():
+        items = list(rows)
+        for stage in totals:
+            outcomes = [success for row in items for trial, success in [row_stage_outcome(row, stage)] if trial]
+            if not outcomes:
+                continue
+            totals[stage][0] += sum(outcomes) / len(outcomes)
+            totals[stage][1] += 1.0
+    return {
+        stage: StageEvidence(successes=values[0], trials=values[1])
+        for stage, values in totals.items()
+    }
+
+
+def _posterior_probability(evidence: StageEvidence, prior: float, strength: float) -> float:
+    return (evidence.successes + prior * strength) / (evidence.trials + strength)
+
+
+def _logit(value: float) -> float:
+    bounded = min(max(float(value), 1e-9), 1.0 - 1e-9)
+    return math.log(bounded / (1.0 - bounded))
+
+
+def probability_feedback_signals(
+    grouped_by_key: Mapping[str, Mapping[object, Iterable[object]]],
+    global_groups: Mapping[object, Iterable[object]],
+    *,
+    prior_strength: float = STAGE_PRIOR_STRENGTH,
+    normalize_keys: bool = True,
+) -> dict[str, FeedbackSignal]:
+    """Build bounded, neutral-centred feedback from lifecycle probabilities."""
+
+    global_evidence = grouped_stage_evidence(global_groups)
+    priors: dict[str, float] = {}
+    for stage, fallback in DEFAULT_STAGE_PRIORS.items():
+        evidence = global_evidence[stage]
+        priors[stage] = evidence.successes / evidence.trials if evidence.trials else fallback
+    global_probability = math.prod(priors.values())
+
+    result: dict[str, FeedbackSignal] = {}
+    for raw_key, groups in grouped_by_key.items():
+        key = str(raw_key).strip()
+        if normalize_keys:
+            key = key.upper()
+        if not key or not groups:
+            continue
+        evidence = grouped_stage_evidence(groups)
+        stage_probabilities = {
+            stage: _posterior_probability(evidence[stage], priors[stage], prior_strength)
+            for stage in priors
+        }
+        probability = math.prod(stage_probabilities.values())
+        score = RELATIVE_SCORE_SCALE * (_logit(probability) - _logit(global_probability))
+        score = max(-RELATIVE_SCORE_LIMIT, min(RELATIVE_SCORE_LIMIT, score))
+        weighted_trials = (
+            evidence["base"].trials
+            + 2.0 * evidence["robust"].trials
+            + 3.0 * evidence["probe"].trials
+            + 4.0 * evidence["six_month"].trials
+        )
+        confidence = weighted_trials / (weighted_trials + prior_strength * 4.0)
+        result[key] = FeedbackSignal(
+            score=round(score, 6),
+            probability=round(probability, 8),
+            confidence=round(confidence, 6),
+            groups=len(groups),
+            final_trials=evidence["six_month"].trials,
+            stage_probabilities={stage: round(value, 8) for stage, value in stage_probabilities.items()},
+        )
+    return result
+
+
+def percentile_multipliers(
+    feedback: Mapping[str, float],
+    keys: Iterable[str],
+    *,
+    minimum: float = 0.5,
+    maximum: float = 1.5,
+) -> dict[str, float]:
+    """Map relative ordering to bounded mutation multipliers.
+
+    Missing feedback is neutral. Ties receive the same averaged percentile, so
+    an all-equal history produces multiplier 1.0 instead of an arbitrary rank.
+    """
+
+    requested = list(dict.fromkeys(str(key) for key in keys))
+    known = [(key, float(feedback[key])) for key in requested if key in feedback]
+    if not known:
+        return {key: 1.0 for key in requested}
+    ordered = sorted(known, key=lambda item: (item[1], item[0]))
+    ranks: dict[str, float] = {}
+    index = 0
+    while index < len(ordered):
+        end = index + 1
+        while end < len(ordered) and ordered[end][1] == ordered[index][1]:
+            end += 1
+        average_rank = (index + end - 1) / 2.0
+        percentile = 0.5 if len(ordered) == 1 else average_rank / (len(ordered) - 1)
+        multiplier = minimum + percentile * (maximum - minimum)
+        for key, _value in ordered[index:end]:
+            ranks[key] = multiplier
+        index = end
+    return {key: ranks.get(key, 1.0) for key in requested}
 
 
 def reason_penalty(reasons: Iterable[str], penalties: Mapping[str, float]) -> float:

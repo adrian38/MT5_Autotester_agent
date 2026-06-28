@@ -8,14 +8,15 @@ from pathlib import Path
 from ubs.db import connect_memory
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
+from ubs.selection import SelectionFitnessModel, SelectionPrediction
 from ubs.weights import (
-    ASSET_ACCEPTED_BONUS,
+    FeedbackSignal,
     MUTATION_ACCEPTED_BONUS,
-    SEED_WEIGHT_SCALE,
-    TIMEFRAME_ACCEPTED_BONUS,
+    TIMEFRAME_PATCH_KEYS,
     candidate_group_key,
     feedback_weight,
     grouped_shrunk_mean,
+    probability_feedback_signals,
     seed_group_key,
 )
 
@@ -44,6 +45,7 @@ class AgentMemory:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.active_final_tick_stage = "probe"
+        self._selection_fitness_models: dict[int | None, SelectionFitnessModel | None] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = connect_memory(self.path, enable_wal=True)
         self._init()
@@ -194,6 +196,9 @@ class AgentMemory:
         self._ensure_column("runs", "config_json", "text not null default ''")
         self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
         self._ensure_column("candidates", "mutation_details_json", "text not null default ''")
+        self._ensure_column("generation_seed_selection", "fitness_probability", "real not null default 0.0")
+        self._ensure_column("generation_seed_selection", "fitness_weight", "real not null default 0.0")
+        self._ensure_column("generation_seed_selection", "fitness_evidence", "real not null default 0.0")
         self.conn.execute(
             """
             update seed_scores
@@ -278,7 +283,9 @@ class AgentMemory:
         run_id: int,
         generation: int,
         ranked_seeds: list[tuple[float, Seed, float, float, float]],
+        fitness_predictions: dict[str, SelectionPrediction] | None = None,
     ) -> None:
+        fitness_predictions = fitness_predictions or {}
         now = datetime.now().isoformat(timespec="seconds")
         self.conn.execute(
             "delete from generation_seed_selection where run_id=? and generation=?",
@@ -288,8 +295,9 @@ class AgentMemory:
             """
             insert into generation_seed_selection (
                 run_id, generation, rank, seed_path, symbol, period, family, run_strategy,
-                selection_score, asset_weight, timeframe_weight, diversity, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                selection_score, asset_weight, timeframe_weight, diversity,
+                fitness_probability, fitness_weight, fitness_evidence, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -305,6 +313,9 @@ class AgentMemory:
                     float(asset_weight),
                     float(timeframe_weight),
                     float(diversity),
+                    float(fitness_predictions.get(str(seed.path), SelectionPrediction(0.0, 0.0, 0.0)).probability),
+                    float(fitness_predictions.get(str(seed.path), SelectionPrediction(0.0, 0.0, 0.0)).weight),
+                    float(fitness_predictions.get(str(seed.path), SelectionPrediction(0.0, 0.0, 0.0)).evidence),
                     now,
                 )
                 for rank, (selection_score, seed, asset_weight, timeframe_weight, diversity)
@@ -312,6 +323,74 @@ class AgentMemory:
             ],
         )
         self.conn.commit()
+
+    def selection_fitness_model(self, *, exclude_run_id: int | None = None) -> SelectionFitnessModel | None:
+        if exclude_run_id in self._selection_fitness_models:
+            return self._selection_fitness_models[exclude_run_id]
+        params: tuple[object, ...] = ()
+        run_filter = ""
+        if exclude_run_id is not None:
+            run_filter = "and c.run_id != ?"
+            params = (int(exclude_run_id),)
+        rows = self.conn.execute(
+            f"""
+            select
+                c.run_id, c.period, c.score, c.metrics_json, c.status,
+                cr.status as robust_status,
+                ft.status as final_tick_status,
+                ft6.status as final_tick_6m_status
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            left join candidate_final_tick ft on ft.candidate_id = c.id
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
+            where c.status='accepted'
+              and c.score is not null
+              and coalesce(c.metrics_json, '') != ''
+              {run_filter}
+            """,
+            params,
+        ).fetchall()
+        model = SelectionFitnessModel.train(rows)
+        self._selection_fitness_models[exclude_run_id] = model
+        return model
+
+    def seed_selection_predictions(
+        self,
+        seeds: list[Seed],
+        *,
+        exclude_run_id: int | None = None,
+    ) -> dict[str, SelectionPrediction]:
+        model = self.selection_fitness_model(exclude_run_id=exclude_run_id)
+        if model is None:
+            return {str(seed.path): SelectionPrediction(0.0, 0.0, 0.0) for seed in seeds}
+        result: dict[str, SelectionPrediction] = {}
+        for seed in seeds:
+            path = str(seed.path)
+            row = self.conn.execute(
+                """
+                select score, metrics_json, period
+                from candidates
+                where set_path=? and score is not null and coalesce(metrics_json, '') != ''
+                order by id desc limit 1
+                """,
+                (path,),
+            ).fetchone()
+            if row is None:
+                row = self.conn.execute(
+                    """
+                    select score, metrics_json, period
+                    from seed_scores
+                    where seed_path=? and active=1 and score is not null and coalesce(metrics_json, '') != ''
+                    limit 1
+                    """,
+                    (path,),
+                ).fetchone()
+            result[path] = (
+                model.predict(row["score"], row["metrics_json"], row["period"])
+                if row is not None
+                else SelectionPrediction(model.prior_probability, 0.0, 0.0)
+            )
+        return result
 
     def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
         accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
@@ -829,12 +908,13 @@ class AgentMemory:
             self.conn.execute("delete from candidate_final_tick_6m where candidate_id=?", (int(candidate_id),))
         self.conn.commit()
 
-    def mutation_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
+    def _candidate_feedback_rows(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
             """
             select
                 c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.mutated_keys, c.score, c.accepted, c.metrics_json, c.status, c.report_path,
+                c.mutated_keys, c.mutation_details_json,
+                c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                 cr.status as robust_status,
                 cr.positive_bonus as robust_positive_bonus,
                 cr.negative_bonus as robust_negative_bonus,
@@ -856,57 +936,39 @@ class AgentMemory:
              and c.status='accepted'
              and cr.status='accepted'
              and ft.status in ('accepted', 'pending_ohlc_trades')
-            where c.mutated_keys != ''
-              and c.status in ('accepted', 'rejected', 'no_trades')
+            where c.status in ('accepted', 'rejected', 'no_trades')
               and (c.score is not null or c.status = 'no_trades')
             """
         ).fetchall()
-        totals: dict[str, dict[object, list[float]]] = {}
+
+    def _seed_feedback_rows(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select seed_path, symbol, period, score, accepted, metrics_json, status, report_path
+            from seed_scores
+            where active=1
+              and status in ('accepted', 'rejected', 'no_trades')
+              and (score is not null or status = 'no_trades')
+            """
+        ).fetchall()
+
+    def mutation_feedback_signals(self) -> dict[str, FeedbackSignal]:
+        rows = [row for row in self._candidate_feedback_rows() if str(row["mutated_keys"] or "")]
+        global_groups: dict[object, list[object]] = {}
+        grouped: dict[str, dict[object, list[object]]] = {}
         for row in rows:
-            value = feedback_weight(row, accepted_bonus=MUTATION_ACCEPTED_BONUS)
-            if value is None:
-                continue
+            global_groups.setdefault(candidate_group_key(row), []).append(row)
             for key in str(row["mutated_keys"]).split(";"):
-                if key:
-                    totals.setdefault(key, {}).setdefault(candidate_group_key(row, key), []).append(value)
-        return {
-            key: value
-            for key, groups in totals.items()
-            if (value := aggregate_feedback_value(groups)) is not None
-        }
+                key = key.strip()
+                if key and key not in TIMEFRAME_PATCH_KEYS:
+                    grouped.setdefault(key, {}).setdefault(candidate_group_key(row, key), []).append(row)
+        return probability_feedback_signals(grouped, global_groups, normalize_keys=False)
+
+    def mutation_feedback(self) -> dict[str, float]:
+        return {key: signal.score for key, signal in self.mutation_feedback_signals().items()}
 
     def mutation_direction_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select
-                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.mutation_details_json, c.score, c.accepted, c.metrics_json, c.status, c.report_path,
-                cr.status as robust_status,
-                cr.positive_bonus as robust_positive_bonus,
-                cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json,
-                ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json,
-                ft6.status as final_tick_6m_status,
-                ft6.similarity_json as final_tick_6m_similarity_json
-            from candidates c
-            left join candidate_robustness cr
-              on cr.candidate_id = c.id
-             and c.status='accepted'
-            left join candidate_final_tick ft
-              on ft.candidate_id = c.id
-             and c.status='accepted'
-             and cr.status='accepted'
-            left join candidate_final_tick_6m ft6
-              on ft6.candidate_id = c.id
-             and c.status='accepted'
-             and cr.status='accepted'
-             and ft.status in ('accepted', 'pending_ohlc_trades')
-            where coalesce(c.mutation_details_json, '') != ''
-              and c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status = 'no_trades')
-            """
-        ).fetchall()
+        rows = [row for row in self._candidate_feedback_rows() if str(row["mutation_details_json"] or "")]
         totals: dict[str, dict[object, list[float]]] = {}
         for row in rows:
             value = feedback_weight(row, accepted_bonus=MUTATION_ACCEPTED_BONUS)
@@ -922,7 +984,7 @@ class AgentMemory:
                 if not isinstance(detail, dict):
                     continue
                 key = str(detail.get("key") or "").strip()
-                if not key:
+                if not key or key in TIMEFRAME_PATCH_KEYS:
                     continue
                 try:
                     delta = float(detail.get("delta") or 0.0)
@@ -938,129 +1000,51 @@ class AgentMemory:
             if (value := aggregate_feedback_value(groups)) is not None
         }
 
-    def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
+    def asset_feedback_signals(self, aliases: dict[str, str] | None = None) -> dict[str, FeedbackSignal]:
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
 
         def _canonical(symbol: object) -> str:
             raw = str(symbol or "").upper()
             return aliases.get(raw, raw)
 
-        rows = self.conn.execute(
-            """
-            select
-                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.score, c.accepted, c.metrics_json, c.status, c.report_path,
-                cr.status as robust_status,
-                cr.positive_bonus as robust_positive_bonus,
-                cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json,
-                ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json,
-                ft6.status as final_tick_6m_status,
-                ft6.similarity_json as final_tick_6m_similarity_json
-            from candidates c
-            left join candidate_robustness cr
-              on cr.candidate_id = c.id
-             and c.status='accepted'
-            left join candidate_final_tick ft
-              on ft.candidate_id = c.id
-             and c.status='accepted'
-             and cr.status='accepted'
-            left join candidate_final_tick_6m ft6
-              on ft6.candidate_id = c.id
-             and c.status='accepted'
-             and cr.status='accepted'
-             and ft.status in ('accepted', 'pending_ohlc_trades')
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status = 'no_trades')
-            """
-        ).fetchall()
-        seed_rows = self.conn.execute(
-            """
-            select seed_path, symbol, period, score, accepted, metrics_json, status, report_path
-            from seed_scores
-            where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status = 'no_trades')
-            """
-        ).fetchall()
-        totals: dict[str, dict[object, list[float]]] = {}
+        rows = self._candidate_feedback_rows()
+        seed_rows = self._seed_feedback_rows()
+        global_groups: dict[object, list[object]] = {}
+        grouped: dict[str, dict[object, list[object]]] = {}
         for row in rows:
-            value = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
-            if value is None:
-                continue
             key = _canonical(row["target_symbol"])
-            totals.setdefault(key, {}).setdefault(candidate_group_key(row), []).append(value)
+            group = candidate_group_key(row)
+            global_groups.setdefault(group, []).append(row)
+            grouped.setdefault(key, {}).setdefault(group, []).append(row)
         for row in seed_rows:
-            value = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
-            if value is None:
-                continue
             key = _canonical(row["symbol"])
-            totals.setdefault(key, {}).setdefault(seed_group_key(row), []).append(value * SEED_WEIGHT_SCALE)
-        return {
-            symbol: value
-            for symbol, groups in totals.items()
-            if (value := grouped_shrunk_mean(groups)) is not None
-        }
+            group = seed_group_key(row)
+            global_groups.setdefault(group, []).append(row)
+            grouped.setdefault(key, {}).setdefault(group, []).append(row)
+        return probability_feedback_signals(grouped, global_groups)
+
+    def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
+        return {key: signal.score for key, signal in self.asset_feedback_signals(aliases).items()}
+
+    def timeframe_feedback_signals(self) -> dict[str, FeedbackSignal]:
+        rows = self._candidate_feedback_rows()
+        seed_rows = self._seed_feedback_rows()
+        global_groups: dict[object, list[object]] = {}
+        grouped: dict[str, dict[object, list[object]]] = {}
+        for row in rows:
+            key = str(row["period"]).upper()
+            group = candidate_group_key(row)
+            global_groups.setdefault(group, []).append(row)
+            grouped.setdefault(key, {}).setdefault(group, []).append(row)
+        for row in seed_rows:
+            key = str(row["period"]).upper()
+            group = seed_group_key(row)
+            global_groups.setdefault(group, []).append(row)
+            grouped.setdefault(key, {}).setdefault(group, []).append(row)
+        return probability_feedback_signals(grouped, global_groups)
 
     def timeframe_feedback(self) -> dict[str, float]:
-        rows = self.conn.execute(
-            """
-            select
-                c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                c.score, c.accepted, c.metrics_json, c.status, c.report_path,
-                cr.status as robust_status,
-                cr.positive_bonus as robust_positive_bonus,
-                cr.negative_bonus as robust_negative_bonus,
-                cr.metrics_json as robust_metrics_json,
-                ft.status as final_tick_status,
-                ft.similarity_json as final_tick_similarity_json,
-                ft6.status as final_tick_6m_status,
-                ft6.similarity_json as final_tick_6m_similarity_json
-            from candidates c
-            left join candidate_robustness cr
-              on cr.candidate_id = c.id
-             and c.status='accepted'
-            left join candidate_final_tick ft
-              on ft.candidate_id = c.id
-             and c.status='accepted'
-             and cr.status='accepted'
-            left join candidate_final_tick_6m ft6
-              on ft6.candidate_id = c.id
-             and c.status='accepted'
-             and cr.status='accepted'
-             and ft.status in ('accepted', 'pending_ohlc_trades')
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and (c.score is not null or c.status = 'no_trades')
-            """
-        ).fetchall()
-        seed_rows = self.conn.execute(
-            """
-            select seed_path, symbol, period, score, accepted, metrics_json, status, report_path
-            from seed_scores
-            where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status = 'no_trades')
-            """
-        ).fetchall()
-        totals: dict[str, dict[object, list[float]]] = {}
-        for row in rows:
-            value = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
-            if value is None:
-                continue
-            key = str(row["period"]).upper()
-            totals.setdefault(key, {}).setdefault(candidate_group_key(row), []).append(value)
-        for row in seed_rows:
-            value = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
-            if value is None:
-                continue
-            key = str(row["period"]).upper()
-            totals.setdefault(key, {}).setdefault(seed_group_key(row), []).append(value * SEED_WEIGHT_SCALE)
-        return {
-            period: value
-            for period, groups in totals.items()
-            if (value := grouped_shrunk_mean(groups)) is not None
-        }
+        return {key: signal.score for key, signal in self.timeframe_feedback_signals().items()}
 
     def continuation_seeds(self, limit: int = 0) -> tuple[int, int, list[Seed]]:
         run = self.conn.execute("select id from runs order by id desc limit 1").fetchone()

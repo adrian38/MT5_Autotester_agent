@@ -65,12 +65,14 @@ requirement changes or a debt item is opened/closed.
 ### 1.3 Multiterminal execution
 
 - **FR-1.3.1** When `--multi-terminal` is passed, backtest jobs MUST be
-  distributed across all enabled terminal profiles defined in `ui_settings.ini`
-  `[Multiterminal]` / `[Terminal.N]` sections.
+  distributed across enabled terminal profiles for the active broker defined in
+  `ui_settings.ini` `[Multiterminal]` / `[Terminal.N]` sections. Profiles MAY
+  coexist for multiple brokers, but a run MUST NOT mix terminal profiles from
+  different brokers.
 - **FR-1.3.2** The concurrency limit MUST be `min(max_workers, enabled_terminal_count,
   job_count)`. The runner MUST never spawn more workers than there are jobs.
-- **FR-1.3.3** Each terminal profile MAY override: `enabled`, `name`, `mt5_path`,
-  `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`.
+- **FR-1.3.3** Each terminal profile MAY override: `enabled`, `broker`, `name`,
+  `mt5_path`, `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`.
 - **FR-1.3.4** Compilation MUST remain sequential even in multiterminal mode.
 - **FR-1.3.5** In UBS multiterminal mode, every enabled profile MUST point
   `ubs_ex5_file` to a UBS / Ultimate Breakout System `.ex5`. Profiles that
@@ -117,9 +119,25 @@ requirement changes or a debt item is opened/closed.
 
 ### 1.6 UBS agent — generation
 
+- **FR-1.6.0** UBS storage MUST be isolated by broker and account type. Supported
+  broker/account pairs are RoboForex ECN/PRO, ICTrading STANDARD, and AXI
+  STANDARD/PREMIUM. SQLite memory files, seed directories, output directories,
+  and run results MUST be broker/account-scoped. Asset universes MUST be
+  broker-scoped, while disabled-symbol GEN/SEEDS policies MUST be
+  broker/account-scoped. Timeframe universe configuration is the only shared
+  universe for now and MUST use the same file for every broker/account. All
+  paths MUST be resolved through `ubs/account.py` helpers; code MUST NOT assume
+  `ECN`/`PRO` are globally unique.
+- **FR-1.6.0a** Existing account-only RoboForex ECN/PRO data MUST be preserved.
+  On app/CLI startup, legacy files and folders (`ubs_memory_ECN.sqlite`,
+  `ubs_memory_PRO.sqlite`, `sets/ubs_ready/ECN|PRO`, `outputs/ubs_agent/ECN|PRO`,
+  and old disabled-symbol JSON files) MUST be copied into the new
+  `ROBOFOREX/{ECN|PRO}` and account-policy layout only when the destination
+  does not already exist or can be migrated safely. Migration MUST be
+  non-destructive and MUST NOT overwrite new data.
 - **FR-1.6.1** Each generation round MUST load `.set` seeds from the configured
-  source directory (default `sets/ubs_ready/`), apply any stored `seed_overrides`,
-  then mutate them into variant `.set` files.
+  source directory (default `sets/ubs_ready/{BROKER}/{ACCOUNT}/`), apply any
+  stored `seed_overrides`, then mutate them into variant `.set` files.
 - **FR-1.6.2** Variant mutation MUST only replace keys that already exist in the
   seed; it MUST NOT add new keys.
 - **FR-1.6.3** Lot sizing in every generated variant MUST be normalised via
@@ -140,13 +158,22 @@ requirement changes or a debt item is opened/closed.
   reports are produced the agent MUST exit with an error.
 - **FR-1.6.7** Continuation MUST be supported via `--continue-last-run`. The
   agent MUST pick up the pending generation count, variants-per-seed, and
-  max-seeds from the last stored run.
+  max-seeds from the last stored run. UI responsibilities MUST remain separate:
+  `Completar run` handles already-generated pending backtests and remaining
+  generations; `Continuar run` handles only retryable
+  `report_mismatch`/`no_report` rows. Retrying problem rows MUST pass the
+  original base dates stored in `runs.config_json`; it MUST NOT silently fall
+  back to the current tester template dates.
 - **FR-1.6.8** Before mutating a variant, the agent MUST apply any values from
   `outputs/ubs_global_params.json` for keys listed in
   `outputs/ubs_mutation_overrides.json` `frozen_override`. This injects the
   globally configured fixed value into every generated variant regardless of
   what value the seed file holds for that key.
-- **FR-1.6.9** When `--force-unseeded-universe` is enabled, target selection
+- **FR-1.6.9** `--generation-mode` MUST support `production` and `discovery`.
+  `production` MUST use existing evidence without a forced unseeded quota.
+  `discovery` MUST enable the existing forced-unseeded policy. The legacy
+  `--force-unseeded-universe` flag MUST remain an alias for `discovery`.
+  When discovery is enabled, target selection
   MUST reserve exploration for universe assets and timeframes not represented
   by the current seed pool. The forced branch MUST prefer assets/TFs with no
   feedback yet, use an adaptive exploration quota that decreases after early
@@ -161,7 +188,8 @@ requirement changes or a debt item is opened/closed.
   agent MUST add it to the generated `.set` so tester symbol inference cannot
   fall back to inherited source-seed aliases.
 - **FR-1.6.11** Generation MUST persist the selected source seeds for each
-  generation, including rank and the asset/timeframe/diversity components used
+  generation, including rank, asset/timeframe/diversity components, predicted
+  Final Tick 6M fitness probability, fitness weight, and fitness evidence used
   to choose them, so missing or skipped generation slots can be audited.
 - **FR-1.6.12** Parameter mutation feedback MUST separate true mutated
   parameters from target-timeframe patch keys (`ST1_Timeframe`, `VolTimeframe`,
@@ -169,7 +197,7 @@ requirement changes or a debt item is opened/closed.
   audit, but MUST NOT pollute parameter-mutation weights.
 - **FR-1.6.13** New generation runs MUST persist their launch configuration in
   `runs.config_json`. The JSON MUST include the account type, paths, generation
-  flags such as `force_unseeded_universe`, exploration probabilities, execution
+  mode, legacy-derived flags such as `force_unseeded_universe`, exploration probabilities, execution
   dates, score thresholds, universe counts, and the serialized CLI arguments so
   later audits can verify how the run was created without inferring from
   candidate policies.
@@ -191,12 +219,26 @@ requirement changes or a debt item is opened/closed.
   MUST apply the same group/symbol/timeframe/symbol+timeframe diversity caps
   before allowing overflow, so a single profitable niche cannot monopolize all
   seeds in later generations when alternatives exist.
-- **FR-1.6.18** When `force_unseeded_universe` is enabled, each generation MUST
+- **FR-1.6.18** In `discovery` mode, each generation MUST
   reserve target slots for underrepresented intraday timeframes before normal
   target creation: M1 at 2%, M5 at 2%, M15 at 3%, and M30 at 5% of planned
   generation size. It MUST also reserve at least one target slot for any allowed
   timeframe missing from the selected source seed set, subject to normal target
   diversity caps and enabled universe symbols.
+- **FR-1.6.19** Report score and evolutionary selection fitness MUST remain
+  separate. The score continues to classify/report base quality. A regularized
+  model trained only on finalized candidates from prior runs MUST estimate
+  `candidate_final_tick_6m.status='accepted'`, excluding the current run, and
+  persist its probability, raw weight and evidence for prospective audit. The
+  model MUST operate in `soft_weight` mode with applied weight scale `0.15`:
+  source-seed ranking and next-generation survivor selection MAY use the
+  scaled weight, but the raw report score MUST remain the base-quality
+  classifier and the fitness contribution MUST be visible in run metadata.
+- **FR-1.6.20** Mutation sampling MUST convert mutation feedback to relative
+  percentile multipliers in the range `0.5..1.5`; missing feedback is neutral
+  (`1.0`) and tied values receive the same multiplier. Core parameters retain
+  their separate 4x base preference. Legacy timeframe patch keys MUST be
+  excluded from mutation and direction feedback.
 
 ### 1.7 UBS agent — scoring
 
@@ -217,11 +259,11 @@ requirement changes or a debt item is opened/closed.
   the failing metric names in `reasons`.
 - **FR-1.7.3** UBS scoring MUST keep `net_profit` as the raw report result, but
   the net-profit threshold and profit score component MUST use
-  `normalized_net_profit`. The current RoboForex-only normalization lives in
-  `assets/roboforex_normalization.json`: Forex/metals/crypto default to `1.0`,
-  indices/energies to `2.0`, and stocks to `5.0`. Metrics JSON MUST include the
-  raw net, normalized net, factor, basis, and asset group so old results can be
-  audited after rescoring.
+  `normalized_net_profit`. Normalization MUST be broker-scoped via
+  `assets/<broker>_normalization.json` and the active broker's asset universe;
+  missing broker config defaults to factor `1.0` instead of falling back to
+  RoboForex. Metrics JSON MUST include the raw net, normalized net, factor,
+  basis, and asset group so old results can be audited after rescoring.
 - **FR-1.7.4** The score formula MUST be:
   ```
   score = profit_component + pf_component + recovery_component
@@ -241,17 +283,17 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.1** Candidate statuses in SQLite `candidates` table MUST be one of:
   `generated` → `accepted` | `rejected` | `no_report` | `parse_error` |
   `report_mismatch` | `no_trades`.
-- **FR-1.8.2** `accepted`, `rejected`, and `no_trades` candidates MUST
-  contribute to Universe asset/timeframe feedback. `accepted` rows contribute
-  score plus accepted bonus. `rejected` rows contribute score minus a fixed
-  rejection penalty and per-cause penalties from `metrics_json.reasons`, capped
-  so a rejected row can never contribute positive weight.
-  `no_trades` contributes a fixed negative execution/reliability penalty.
-  `report_mismatch`, `no_report`, and `parse_error` MUST NOT contribute to
-  weights.
+- **FR-1.8.2** Universe and mutation feedback MUST estimate the smoothed
+  end-to-end probability of the four-stage chain: base accepted, robustness
+  accepted, probe eligible (`accepted` or `pending_ohlc_trades`), and Final Tick
+  6M accepted. Each correlated candidate source group contributes at most one
+  effective trial per stage. Technical/retryable states (`report_mismatch`,
+  `no_report`, `parse_error`, `pending_history_quality`) MUST NOT become
+  statistical failures. Stage probabilities MUST use an empirical global prior
+  with shrinkage for small samples.
 - **FR-1.8.3** `report_mismatch` and `no_report` rows MUST be retryable:
   - Single candidate: UI "Reprobar mismatch" → copies `.set` to
-    `outputs/ubs_agent/<run>/retry_mismatch/`, re-evaluates, updates the
+    `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/retry_mismatch/`, re-evaluates, updates the
     original DB row.
   - Run-level: "Reprobar run" → copies all mismatches from the run, evaluates
     all produced reports. Partial failures leave failed candidates as `no_report`.
@@ -261,7 +303,7 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.4** Accepted candidates MAY be evaluated in a separate OOS robustness
   pass with `ubs_agent.py --evaluate-robustness --robust-run-id <id>`.
   Robustness MUST copy accepted candidate `.set` files into
-  `outputs/ubs_agent/<run>/robustness/...`, run `run_tests.py` on that folder,
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/...`, run `run_tests.py` on that folder,
   validate report symbol/timeframe using the same `symbol_map` rules, and store
   results in `candidate_robustness` without overwriting base `candidates.score`.
   `--robust-pending-only` MUST limit the pass to accepted candidates with no
@@ -269,13 +311,12 @@ requirement changes or a debt item is opened/closed.
   all accepted candidates and replace their stored OOS row.
 - **FR-1.8.5** Robustness statuses MUST be one of: `accepted`, `rejected`,
   `no_report`, `parse_error`, `report_mismatch`, `no_trades`.
-- **FR-1.8.6** All base `accepted`/`rejected`/`no_trades` candidates MUST
-  continue contributing to weights through the shared `ubs.weights` formula.
-  Robustness adds an OOS adjustment only for evaluated rows: `accepted` adds
-  `positive_bonus`; `rejected` adds `negative_bonus` plus per-cause OOS
-  penalties; `no_report`, `parse_error`, `report_mismatch`, and OOS
-  `no_trades` add no robustness bonus. `AgentMemory` feedback methods and the
-  `UBS Universo` UI MUST use identical logic.
+- **FR-1.8.6** The probability product MUST be converted to a bounded relative
+  log-odds score centred on the global end-to-end probability. Unknown evidence
+  is therefore neutral instead of automatically outranking known negative
+  values. `AgentMemory` and `UBS Universo` MUST use the identical shared model.
+  The UI MUST expose relative score, estimated 6M probability, confidence, and
+  number of effective 6M trials separately.
 - **FR-1.8.7** Robustness-accepted candidates MAY be evaluated in a Final Tick
   pass with `ubs_agent.py --evaluate-final-tick --final-tick-run-id <id>`.
   Final Tick MUST only select rows where `candidates.status='accepted'` and
@@ -331,9 +372,9 @@ requirement changes or a debt item is opened/closed.
   `pending` | `accepted` | `rejected` | `report_mismatch` | `no_report` |
   `parse_error` | `no_trades` | `disabled_symbol` | `invalid_seed`.
 - **FR-1.9.4** `accepted`, `rejected`, and `no_trades` seeds with stored reports
-  MUST contribute to Universe weights at full base strength, the same as
-  generated candidates. Seeds MUST NOT receive robustness/date bonus unless a
-  separate seed bonus rule is explicitly configured.
+  MUST contribute evidence to the base stage of the shared probability model.
+  They MUST NOT invent robustness/probe/6M trials; missing later-stage evidence
+  is filled only by the global shrunk prior.
   `report_mismatch` is ready for the purpose of pending counts, but it MUST NOT
   contribute to weights.
 - **FR-1.9.4a** A parsed MT5 report with zero closed trades MUST be stored as
@@ -343,9 +384,9 @@ requirement changes or a debt item is opened/closed.
   case, active seeds for that symbol MUST be evaluated, scored, included in
   Universe weights, and allowed as mutation sources. This MUST NOT re-enable
   generated candidate targets for the symbol; target generation still follows
-  the normal enabled universe only. The `GEN/SEEDS` policy MUST be account-scoped
-  by `--account-type` (`outputs/ubs_disabled_symbols_ECN.json` /
-  `outputs/ubs_disabled_symbols_PRO.json`).
+  the normal enabled universe only. The `GEN/SEEDS` policy MUST be
+  broker/account-scoped by `--broker` and `--account-type`
+  (`outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`).
 - **FR-1.9.5** Seeds deleted from the source directory MUST be marked `active=0`
   in the DB and excluded from the UI active count, but their rows MUST be kept
   for historical reference.
@@ -372,7 +413,8 @@ requirement changes or a debt item is opened/closed.
   MUST do the same for base candidates and OOS robustness rows. These commands
   MUST be run with the correct threshold set for seeds, generation, and OOS.
 - **FR-1.9.12** Before launching new seed backtests, `--evaluate-seeds` MUST
-  reconcile reports left by interrupted `outputs/ubs_agent/seed_eval/eval_*`
+  reconcile reports left by interrupted
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/seed_eval/eval_*`
   batches. It MUST match copied `.set` files back to source seeds by file
   content, validate symbol/TF against the report, and update `seed_scores` so
   completed jobs do not remain stuck as `pending`.
@@ -388,7 +430,10 @@ requirement changes or a debt item is opened/closed.
   before comparing against the parsed report symbol.
 - **FR-1.10.2** The map MUST be stored as a whitespace-separated list of
   `BROKER_SYMBOL=CANONICAL_SYMBOL` pairs passed via `--symbol-map`.
-- **FR-1.10.3** Symbol normalisation MUST strip only trailing broker suffixes
+- **FR-1.10.3** `symbol_map` configuration MUST be broker-scoped. The legacy
+  `symbol_map` setting is RoboForex compatibility data; new settings use
+  `symbol_map_<broker>`.
+- **FR-1.10.4** Symbol normalisation MUST strip only trailing broker suffixes
   (e.g. `.a`, `.b`). Symbols starting with a dot (e.g. `.US30Cash`) MUST be
   preserved intact.
 
@@ -477,11 +522,11 @@ requirement changes or a debt item is opened/closed.
   when any are checked, and fall back to the selected row otherwise.
 - **FR-1.12.19** The UBS Universo tab MUST expose a SEL checkbox column and
   controls to disable/enable checked symbols. Disabled symbols MUST be persisted
-  per account type in `outputs/ubs_disabled_symbols_ECN.json` /
-  `outputs/ubs_disabled_symbols_PRO.json`, remain visible as disabled in the UI,
+  per broker/account in `outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`,
+  remain visible as disabled in the UI,
   be excluded from generated candidate targets, and be excluded from seed
   evaluation/weights unless `SEEDS=si` is set for that symbol in the active
-  account.
+  broker/account.
 - **FR-1.12.20** UBS seed evaluation MUST skip any seed whose inferred or
   manually overridden symbol maps to a disabled Universe symbol. Skipped seeds
   MUST be recorded as `disabled_symbol`, MUST NOT launch MT5, MUST NOT count as
@@ -492,7 +537,8 @@ requirement changes or a debt item is opened/closed.
   independent OOS dates, independent thresholds, positive/negative bonus values,
   and an auto-run toggle. Defaults: robust thresholds copy agent thresholds when
   no saved setting exists; positive bonus `+70`; negative bonus `-70`; dates
-  empty = template dates.
+  empty = template dates. Bonus values are retained as legacy audit metadata;
+  probability feedback uses stage outcomes rather than additive bonuses.
 - **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
   for the latest visible run and must confirm the number of candidates before
   launching MT5. This action MUST be incremental: it passes
@@ -507,9 +553,10 @@ requirement changes or a debt item is opened/closed.
   normal UBS agent run with backtests MUST launch robustness automatically for
   accepted candidates. Auto-run MUST NOT trigger after seed evaluation, seed
   rescoring, retry actions, or another robustness run.
-- **FR-1.12.25** The UI MUST expose a `Poblar universo sin seed` toggle in
-  `UBS Agente UBS`. It MUST persist as `ubs_force_unseeded_universe` and pass
-  `--force-unseeded-universe` to normal and continuation UBS agent runs.
+- **FR-1.12.25** The UI MUST expose a `production` / `discovery` generation-mode
+  selector in `UBS Agente UBS`, persist it as `ubs_generation_mode`, and pass
+  `--generation-mode` to normal and continuation runs. Loading old settings
+  MUST map `ubs_force_unseeded_universe=1` to `discovery`.
 - **FR-1.12.25a** The UI MUST expose an `Experimentar W1/MN` toggle in
   `UBS Agente UBS`. It MUST persist as `ubs_experimental_long_timeframes` and
   pass `--experimental-long-timeframes` to normal and continuation UBS agent
@@ -549,16 +596,19 @@ requirement changes or a debt item is opened/closed.
   robustness-accepted candidates into Final Tick. Incremental execution MUST
   pass `--final-tick-pending-only`; rerun execution MUST replace existing Final
   Tick rows for robust-accepted candidates.
-- **FR-1.12.32** `UBS Portafolio` MUST build its candidate pool from both ECN
-  and PRO memories, but only from strategies where base candidate, robustness,
-  AND Final Tick 6M (`candidate_final_tick_6m.status='accepted'`) are all
-  `accepted`. The probe Final Tick (`candidate_final_tick`) is NOT the portfolio
-  gate; only the 6M stage is. Portfolio history MUST still be built from the
-  base report plus the robustness report; Final Tick 6M is an eligibility gate,
-  not the curve source. Saved Conservative/Balanced portfolios MUST lock their
-  selected sets for every future portfolio. Saved Aggressive portfolios MUST
-  lock their selected sets only for future Aggressive portfolios; they MUST NOT
-  block Conservative/Balanced generation.
+- **FR-1.12.32** `UBS Portafolio` MUST build its candidate pool from the
+  accounts belonging to the active broker only. For RoboForex this means ECN
+  and PRO can be combined; AXI and ICTrading MUST remain separate broker pools.
+  Eligible strategies require base candidate, robustness, AND Final Tick 6M
+  (`candidate_final_tick_6m.status='accepted'`) all `accepted`. The probe Final
+  Tick (`candidate_final_tick`) is NOT the portfolio gate; only the 6M stage is.
+  Portfolio history MUST still be built from the base report plus the robustness
+  report; Final Tick 6M is an eligibility gate, not the curve source.
+  Conservative/Balanced portfolios MUST share one lock pool within the active
+  broker. Aggressive portfolios MUST use a separate lock pool: only sets
+  selected by another Aggressive portfolio are unavailable to a new or repaired
+  Aggressive portfolio, and Aggressive portfolios MUST NOT block
+  Conservative/Balanced generation.
 - **FR-1.12.33** `UBS Portafolio` MUST expose a "Requerir 3 meses positivos 6M"
   checkbox (`ubs_portfolio_require_3_positive_months_6m`). When enabled, the
   optimizer MUST filter out candidates whose 6M report curve has fewer than 3
@@ -571,13 +621,92 @@ requirement changes or a debt item is opened/closed.
   and **Reintentar calidad baja** buttons plus a date configuration block.
 - **FR-1.12.35** The UI MUST include a `UBS Buscador` tab (`buscador`) with two
   sections: (1) a run auditor showing per-stage counts and non-final pending
-  counts for a selected account+run; (2) a free-text set search across all
-  pipeline stages and accounts, with open/export actions on results.
+  counts for a selected active-broker account+run; (2) a free-text set search
+  across pipeline stages and accounts belonging to the active broker only, with
+  open/export actions on results.
 - **FR-1.12.36** The Multiterminal tab MUST expose a **"Limpiar Tester"** danger
   button that safely removes disposable Tester cache/log/temp files from all
   configured MT5 data directories. It MUST show a preview (file count + size)
   and require confirmation before deleting. It MUST be blocked while any process
   is active or while MT5 terminals are open.
+- **FR-1.12.37** `UBS Portafolio` MUST persist a cross-account set quarantine.
+  Quarantined sets MUST be excluded from every future portfolio candidate pool
+  until explicitly reinstated. Double-clicking a saved portfolio MUST open its
+  strategy list; quarantining a member there MUST remove it from that portfolio
+  and recalculate the remaining metrics. The detail window MUST offer a
+  **Completar portafolio** action that preserves every remaining member, finds
+  eligible replacement strategies up to the pre-quarantine strategy count, and
+  preserves every existing unit/lot whenever the resulting portfolio remains
+  feasible. If removing the quarantined member makes the saved allocation
+  violate DD, the repair MAY reduce only the minimum existing units needed to
+  restore feasibility; it MUST NOT rebuild or globally redistribute the
+  portfolio. Only replacement strategies MAY receive newly optimized units.
+  Drawdowns, correlations, curve, decision log, and portfolio metrics MUST be
+  recalculated before replacing the saved allocations transactionally. If no
+  valid replacement exists, the incomplete portfolio MUST remain unchanged.
+- **FR-1.12.38** Portfolio generation MUST support a configurable DD reserve
+  percentage and deterministic multi-start local search. The DD reserve reduces
+  the effective valley and point-DD budgets without changing the user-entered
+  nominal percentages. A saved-portfolio recomposition MUST show a set-by-set
+  before/after preview and require explicit application. Immediately before
+  application, the current portfolio row, allocations, members, and decision
+  log MUST be stored as a compressed version snapshot. The detail window MUST
+  allow restoring the latest snapshot.
+- **FR-1.12.39** The saved-portfolio detail window MUST expose
+  **Revalidar / optimizar** for complete portfolios. It MUST rebuild the
+  candidate allocation with the saved portfolio constraints plus the currently
+  selected DD reserve and multi-start count, exclude the current portfolio from
+  used-set and saved-curve locks, and route the result through the same
+  before/after preview, version snapshot, and explicit-apply workflow.
+- **FR-1.12.40** New generation and full reoptimization MUST calculate three
+  comparable proposals from the same candidate universe: `profit` (configured
+  portfolio objective and reserve), `balanced` (Balanced objective with at
+  least 15% DD reserve), and `margin` (Conservative objective with at least 25%
+  DD reserve). The selector MUST show net, effective valley/point DD, nominal DD
+  margin, reserve, units, strategy count, maximum asset-group concentration,
+  and number of changed allocations. Selecting a proposal MUST update a
+  set-level before/after diff. New generation continues through the normal
+  pending-save workflow; reoptimization uses versioned explicit application.
+- **FR-1.12.41** Every generated, reoptimized, or recalculated UBS portfolio
+  MUST run a deterministic 1,000-simulation circular moving-block bootstrap on
+  the combined portfolio P/L increments. The analysis MUST preserve contiguous
+  loss sequences within sampled blocks and report valley-DD P50/P95 plus the
+  probability of exceeding both the nominal and effective valley-DD limits.
+  All three comparable proposals MUST display these values. A proposal whose
+  DD P95 exceeds the effective limit MUST be shown as a red alert, but MUST NOT
+  be rejected automatically. The complete method, seed, simulation count,
+  observation count, block size, thresholds, percentiles, probabilities, and
+  alert state MUST be persisted in the portfolio `metrics_json` for audit.
+- **FR-1.12.42** The UI MUST include a separate `UBS Portafolio Mensual` screen
+  (`portafolio_ubs_mensual`) with the same generation, proposal comparison,
+  save, detail, completion, reoptimization, export, correlation, DD-reserve,
+  local-search, and bootstrap tools as `UBS Portafolio`, plus a calendar-month
+  selector. Its candidate universe MUST contain only active-broker
+  broker/account strategies whose base, robustness, and Final Tick 6M stages are
+  accepted. Unlike the full-history
+  portfolio, monthly generation MUST NOT exclude candidates because their set
+  is quarantined or already allocated to another portfolio. For the selected
+  month, every strategy curve MUST be rebuilt from trades closing in that month
+  across every year available in the combined base + robustness history. Trade
+  count, net profit, PF, DD, correlations, ranking, allocation, and bootstrap
+  MUST use that month-only curve. Saved monthly portfolios MUST persist
+  `portfolio_scope='monthly'` and `target_month`; they MUST be listed separately
+  and MUST NOT lock sets in the full-history `UBS Portafolio` screen.
+  The screen MAY expose a strict seasonal checkbox. When enabled, every
+  generated proposal MUST also pass the selected month year-by-year over the
+  latest five years where that month exists in the historical data: yearly net
+  MUST be positive and yearly valley/point DD MUST remain inside the same
+  effective DD limits. The selected month MUST also be the highest-net calendar
+  month for that fixed portfolio allocation over the same five-year window.
+  Proposals that fail this strict seasonal validation MUST be rejected before
+  the proposal preview/save step, and the audit details MUST be persisted in
+  `metrics_json`.
+- **FR-1.12.43** `UBS Portafolio` and `UBS Portafolio Mensual` MAY expose a
+  `Grid OFF` checkbox. When enabled, portfolio generation, reoptimization, and
+  completion MUST exclude candidate rows whose source `.set` file explicitly
+  contains `EnableGrid=true` as the current value. Missing/unreadable
+  `EnableGrid` keys MUST NOT be treated as grid-enabled. The selected setting
+  MUST be persisted in portfolio inputs and UI settings.
 
 ### 1.13 Packaging & runtime
 
@@ -888,11 +1017,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   columns; `UBS Historico` candidates gained a ROBUST column; `UBS Comparar`
   auto-selects a newly created latest visible run.
 
-- **2026-06** - RoboForex net-profit normalization: UBS scoring keeps raw
+- **2026-06** - Broker-scoped net-profit normalization: UBS scoring keeps raw
   report `net_profit` but uses `normalized_net_profit` for pass/fail and the
   profit score component. Factors are configured in
-  `assets/roboforex_normalization.json`; existing seed, candidate, and OOS
-  reports were rescored offline so Universe weights use the updated metrics.
+  `assets/<broker>_normalization.json`; RoboForex keeps its existing factors
+  while brokers without a file use neutral factor `1.0`.
 
 - **2026-06** — Fixed UBS generated symbol safety: generated variants now add
   `ForceSymbol` when missing, and `run_tests.py` recognizes `.JP225Cash` /
@@ -902,6 +1031,14 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   the `Poblar universo sin seed` UI toggle. When enabled, generation reserves
   part of asset/TF target selection for universe items not represented in the
   current seed pool, preferring items with no feedback yet.
+
+- **2026-06** — Generation learning v2: report score and evolutionary fitness
+  are separated. A regularized prior-run model predicts Final Tick 6M fitness;
+  asset/TF/mutation feedback uses smoothed stage probabilities and relative
+  log-odds; mutation sampling uses percentile multipliers without negative
+  saturation; Universe displays probability/confidence/effective 6M trials;
+  and generation exposes explicit `production` / `discovery` modes while
+  retaining the old force-unseeded flag as a compatibility alias.
 
 - **2026-06** — UBS Final Tick implemented end-to-end: `candidate_final_tick`
   DB table, `ubs_agent.py --evaluate-final-tick` with flags
@@ -922,8 +1059,8 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   New `UBS Final Tick 6M` tab added. Portfolio gate changed from probe to 6M stage.
 
 - **2026-06** — `UBS Buscador` tab added: run auditor (per-account per-run pipeline
-  status and weight breakdown) plus free-text set search across all pipeline stages
-  and accounts. `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`.
+  status and weight breakdown) plus free-text set search across pipeline stages
+  and accounts within the active broker. `ui/ubs_search_view.py` + `ui/ubs_search_logic.py`.
 
 - **2026-06** — Multiterminal `Limpiar Tester` button: pre-deletion scan +
   confirmation + safe deletion of `Tester/` temp files, `Tester/cache/`,

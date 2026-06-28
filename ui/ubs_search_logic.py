@@ -12,7 +12,14 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from ubs.account import ACCOUNT_TYPES, account_memory_path
+from ubs.account import (
+    ACCOUNT_TYPES,
+    BROKERS,
+    account_memory_path,
+    account_types_for_broker,
+    normalize_account_type,
+    normalize_broker,
+)
 from ubs.db import connect_memory
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -57,20 +64,67 @@ def audit_nonfinal_count(
 
 
 class UBSSearchLogicMixin:
+    def _ubs_active_broker_account_contexts(self) -> tuple[tuple[str, str], ...]:
+        broker = self._ubs_broker()
+        return tuple((broker, account) for account in account_types_for_broker(broker))
+
+    def _ubs_account_context_label(self, broker: object, account_type: object) -> str:
+        broker_key = normalize_broker(broker)
+        account = normalize_account_type(account_type, broker_key)
+        return f"{broker_key}/{account}"
+
+    def _ubs_account_context_file_label(self, value: object) -> str:
+        return str(value or "").strip().replace("\\", "_").replace("/", "_") or "UBS"
+
+    def _parse_ubs_account_context(self, value: object) -> tuple[str, str] | None:
+        text = str(value or "").strip().upper().replace("\\", "/")
+        if not text:
+            return self._ubs_broker(), self._ubs_account_type()
+        if "/" in text or ":" in text:
+            separator = "/" if "/" in text else ":"
+            broker_raw, account_raw = text.split(separator, 1)
+            broker = normalize_broker(broker_raw)
+            account = normalize_account_type(account_raw, broker)
+            if (broker, account) in self._ubs_active_broker_account_contexts():
+                return broker, account
+            return None
+        if text in ACCOUNT_TYPES:
+            broker = self._ubs_broker()
+            account = normalize_account_type(text, broker)
+            if (broker, account) not in self._ubs_active_broker_account_contexts():
+                return None
+            return broker, account
+        return None
+
+    def _refresh_ubs_audit_account_values(self) -> None:
+        combo = getattr(self, "ubs_audit_account_combo", None)
+        values = tuple(
+            self._ubs_account_context_label(broker, account)
+            for broker, account in self._ubs_active_broker_account_contexts()
+        )
+        if combo is not None:
+            combo.configure(values=values)
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        current = self._ubs_account_context_label(*context) if context else (values[0] if values else "")
+        if self.ubs_audit_account.get() != current:
+            self.ubs_audit_account.set(current)
+
     def _refresh_ubs_audit_run_combo(self) -> None:
         combo = getattr(self, "ubs_audit_run_combo", None)
         if combo is None:
             return
-        account_type = str(self.ubs_audit_account.get() or self._ubs_account_type()).strip().upper()
-        if account_type not in ACCOUNT_TYPES:
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        if context is None:
             combo.configure(values=())
             self.ubs_audit_run_id.set("")
             return
-        memory_path = account_memory_path(BASE_DIR, account_type)
+        broker, account_type = context
+        memory_path = account_memory_path(BASE_DIR, account_type, broker)
+        account_label = self._ubs_account_context_label(broker, account_type)
         if not memory_path.exists():
             combo.configure(values=())
             self.ubs_audit_run_id.set("")
-            self.ubs_audit_status.set(f"Sin memoria {account_type}.")
+            self.ubs_audit_status.set(f"Sin memoria {account_label}.")
             return
         try:
             conn = connect_memory(memory_path)
@@ -96,7 +150,7 @@ class UBSSearchLogicMixin:
                 conn.close()
         except sqlite3.Error as exc:
             combo.configure(values=())
-            self.ubs_audit_status.set(f"Error runs {account_type}: {exc}")
+            self.ubs_audit_status.set(f"Error runs {account_label}: {exc}")
             return
 
         labels = []
@@ -121,21 +175,86 @@ class UBSSearchLogicMixin:
         match = re.search(r"#?(\d+)", str(value or "").strip())
         return int(match.group(1)) if match else 0
 
+    def _detect_ubs_report_account_header(self, path: Path, expected_broker: object) -> tuple[str, str, str]:
+        try:
+            raw = path.read_bytes()[:12000]
+        except OSError:
+            return "", "", ""
+        for encoding in ("utf-8-sig", "utf-16", "cp1252"):
+            try:
+                text = raw.decode(encoding)
+                break
+            except UnicodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+
+        cleaned = re.sub(r"<[^>]+>", " ", text)
+        cleaned = unescape(re.sub(r"\s+", " ", cleaned)).strip()
+        token_map = {
+            "ROBOFOREX": ("RoboForex",),
+            "ICTRADING": ("ICTrading", "IC Trading", "ICMarkets", "IC Markets"),
+            "AXI": ("AXI",),
+        }
+        detected_broker = ""
+        for broker in BROKERS:
+            if any(re.search(rf"\b{re.escape(token)}\b", cleaned, flags=re.IGNORECASE) for token in token_map.get(broker, ())):
+                detected_broker = broker
+                break
+        if not detected_broker:
+            expected = normalize_broker(expected_broker)
+            if any(re.search(rf"\b{re.escape(token)}\b", cleaned, flags=re.IGNORECASE) for token in token_map.get(expected, ())):
+                detected_broker = expected
+        if not detected_broker:
+            return "", "", ""
+
+        header = ""
+        broker_tokens = token_map.get(detected_broker, ())
+        if broker_tokens:
+            token_pattern = "|".join(re.escape(token) for token in broker_tokens)
+            match = re.search(
+                rf"([^<\r\n]*?(?:{token_pattern})[^<\r\n(]*\s*\(Build\s+\d+\))",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                match = re.search(
+                    rf"([A-Za-z0-9 ._-]*(?:{token_pattern})[A-Za-z0-9 ._-]*\s*\(Build\s+\d+\))",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+            header = unescape(match.group(1)).strip() if match else ""
+        if not header:
+            header = cleaned[:160]
+
+        accounts = account_types_for_broker(detected_broker)
+        detected_account = ""
+        account_probe = re.sub(r"[^A-Z0-9]+", " ", header.upper())
+        for account in accounts:
+            if account in account_probe:
+                detected_account = account
+                break
+        if not detected_account and len(accounts) == 1:
+            detected_account = accounts[0]
+        return header, detected_broker, detected_account
+
     def _run_ubs_audit_from_search(self) -> None:
-        account_type = self.ubs_audit_account.get().strip().upper() or self._ubs_account_type()
-        if account_type not in ACCOUNT_TYPES:
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        if context is None:
             self.ubs_audit_status.set("Cuenta invalida.")
             return
+        broker, account_type = context
+        account_label = self._ubs_account_context_label(broker, account_type)
         run_id = self._parse_ubs_audit_run_id(self.ubs_audit_run_id.get())
         if run_id <= 0:
             self.ubs_audit_status.set("Run invalido.")
             return
-        memory_path = account_memory_path(BASE_DIR, account_type)
+        memory_path = account_memory_path(BASE_DIR, account_type, broker)
         if not memory_path.exists():
-            self.ubs_audit_status.set(f"No existe memoria {account_type}.")
+            self.ubs_audit_status.set(f"No existe memoria {account_label}.")
             return
         try:
-            summary, report_path = self._build_ubs_run_audit(memory_path, account_type, run_id)
+            summary, report_path = self._build_ubs_run_audit(memory_path, account_label, run_id)
         except (OSError, sqlite3.Error, ValueError) as exc:
             self._show_error("Auditoria run UBS", str(exc))
             return
@@ -409,13 +528,14 @@ class UBSSearchLogicMixin:
             messagebox.showinfo("Auditoria run UBS", "No pude identificar la prueba de esas filas.")
             return
 
-        account_type = str(self.ubs_audit_account.get() or self._ubs_account_type()).strip().upper()
+        context = self._parse_ubs_account_context(self.ubs_audit_account.get())
+        if context is None:
+            messagebox.showerror("Auditoria run UBS", "Cuenta invalida.")
+            return
+        broker, account_type = context
         run_id = self._parse_ubs_audit_run_id(self.ubs_audit_run_id.get())
         if run_id <= 0:
             messagebox.showerror("Auditoria run UBS", "Run invalido.")
-            return
-        if account_type not in ACCOUNT_TYPES:
-            messagebox.showerror("Auditoria run UBS", "Cuenta invalida.")
             return
 
         selected_report_rows = len(selected_items)
@@ -437,7 +557,7 @@ class UBSSearchLogicMixin:
         ):
             return
 
-        memory_path = account_memory_path(BASE_DIR, account_type)
+        memory_path = account_memory_path(BASE_DIR, account_type, broker)
         try:
             conn = connect_memory(memory_path)
             try:
@@ -622,7 +742,7 @@ class UBSSearchLogicMixin:
             out, summary = self._compose_ubs_run_audit(conn, account_type, run)
         finally:
             conn.close()
-        report_path = BASE_DIR / "outputs" / f"run{run_id}_{account_type}_audit.txt"
+        report_path = BASE_DIR / "outputs" / f"run{run_id}_{self._ubs_account_context_file_label(account_type)}_audit.txt"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("\n".join(out) + "\n", encoding="utf-8")
         return summary, report_path
@@ -671,34 +791,19 @@ class UBSSearchLogicMixin:
                 return {}
             return data if isinstance(data, dict) else {}
 
-        def report_account_header(path: Path) -> tuple[str, str]:
-            try:
-                raw = path.read_bytes()[:12000]
-            except OSError:
-                return "", ""
-            for encoding in ("utf-8-sig", "utf-16", "cp1252"):
-                try:
-                    text = raw.decode(encoding)
-                    break
-                except UnicodeError:
-                    continue
+        expected_context = self._parse_ubs_account_context(account_type)
+        if expected_context is None:
+            if "/" in str(account_type):
+                broker_raw, account_raw = str(account_type).split("/", 1)
+                expected_context = (
+                    normalize_broker(broker_raw),
+                    normalize_account_type(account_raw, normalize_broker(broker_raw)),
+                )
             else:
-                text = raw.decode("utf-8", errors="ignore")
-            match = re.search(r"(RoboForex-[^<\r\n(]+)\s*\(Build\s+\d+\)", text, flags=re.IGNORECASE)
-            if not match:
-                cleaned = re.sub(r"<[^>]+>", " ", text)
-                cleaned = unescape(re.sub(r"\s+", " ", cleaned))
-                match = re.search(r"(RoboForex-\S+)\s*\(Build\s+\d+\)", cleaned, flags=re.IGNORECASE)
-            if not match:
-                return "", ""
-            header = unescape(match.group(0)).strip()
-            account_name = match.group(1).strip()
-            suffix = account_name.split("-", 1)[1].strip().upper() if "-" in account_name else account_name.upper()
-            if "ECN" in suffix:
-                return header, "ECN"
-            if "PRO" in suffix:
-                return header, "PRO"
-            return header, suffix or "OTRA"
+                expected_broker = self._ubs_broker()
+                expected_context = (expected_broker, normalize_account_type(account_type, expected_broker))
+        expected_broker, expected_account = expected_context
+        expected_label = self._ubs_account_context_label(expected_broker, expected_account)
 
         out: list[str] = []
 
@@ -711,7 +816,7 @@ class UBSSearchLogicMixin:
         score_cfg = config.get("score") if isinstance(config.get("score"), dict) else {}
         caps = generation.get("target_diversity_caps") if isinstance(generation.get("target_diversity_caps"), dict) else {}
 
-        line(f"AUDITORIA RUN #{run_id} - {account_type}")
+        line(f"AUDITORIA RUN #{run_id} - {expected_label}")
         line("=" * 96)
         line(f"created_at: {run['created_at']}")
         line(f"run_dir: {run['output_dir']}")
@@ -836,7 +941,7 @@ class UBSSearchLogicMixin:
             ("FT 6M OHLC", "ft6_ohlc_report"),
             ("FT 6M Tick", "ft6_tick_report"),
         ]
-        account_cache: dict[str, tuple[str, str]] = {}
+        account_cache: dict[str, tuple[str, str, str]] = {}
         account_by_gen: dict[int, dict[str, dict[str, int]]] = {}
         account_ids_by_gen: dict[int, dict[str, dict[str, set[int]]]] = {}
         account_bad_types_by_process: dict[str, dict[str, int]] = {}
@@ -856,10 +961,15 @@ class UBSSearchLogicMixin:
                     continue
                 cache_key = str(report_path.resolve()).casefold()
                 checked_report_files.add(cache_key)
-                header, detected_account = account_cache.get(cache_key, ("", ""))
+                header, detected_broker, detected_account = account_cache.get(cache_key, ("", "", ""))
                 if not header and cache_key not in account_cache:
-                    header, detected_account = report_account_header(report_path)
-                    account_cache[cache_key] = (header, detected_account)
+                    header, detected_broker, detected_account = self._detect_ubs_report_account_header(report_path, expected_broker)
+                    account_cache[cache_key] = (header, detected_broker, detected_account)
+                detected_label = (
+                    self._ubs_account_context_label(detected_broker, detected_account)
+                    if detected_broker and detected_account
+                    else ""
+                )
                 bucket = account_by_gen.setdefault(gen_no, {}).setdefault(
                     process,
                     {"ok": 0, "mismatch": 0, "unknown": 0},
@@ -874,20 +984,20 @@ class UBSSearchLogicMixin:
                     id_bucket["unknown"].add(candidate_id)
                     detail = (
                         f"{gen_no}\t{row['id']}\t{Path(str(row['set_path'] or '')).name}\t{process}\t"
-                        f"{account_type}\tSIN_ENCABEZADO\t\t{report_path.name}"
+                        f"{expected_label}\tSIN_ENCABEZADO\t\t{report_path.name}"
                     )
                     account_details_by_process.setdefault(process, []).append(detail)
                     account_unknowns.append(detail)
-                elif detected_account != account_type:
+                elif (detected_broker, detected_account) != expected_context:
                     bucket["mismatch"] += 1
                     id_bucket["mismatch"].add(candidate_id)
-                    account_bad_types_by_process.setdefault(process, {})[detected_account] = (
-                        account_bad_types_by_process.setdefault(process, {}).get(detected_account, 0) + 1
+                    account_bad_types_by_process.setdefault(process, {})[detected_label] = (
+                        account_bad_types_by_process.setdefault(process, {}).get(detected_label, 0) + 1
                     )
-                    account_bad_ids_by_process.setdefault(process, {}).setdefault(detected_account, set()).add(candidate_id)
+                    account_bad_ids_by_process.setdefault(process, {}).setdefault(detected_label, set()).add(candidate_id)
                     detail = (
                         f"{gen_no}\t{row['id']}\t{Path(str(row['set_path'] or '')).name}\t{process}\t"
-                        f"{account_type}\t{detected_account}\t{header}\t{report_path.name}"
+                        f"{expected_label}\t{detected_label}\t{header}\t{report_path.name}"
                     )
                     account_details_by_process.setdefault(process, []).append(detail)
                     account_mismatches.append(detail)
@@ -1259,11 +1369,11 @@ class UBSSearchLogicMixin:
             weights_by_ft6.setdefault(str(row["final_tick_6m_status"] or "sin_6m"), []).append(value)
             weights_by_asset.setdefault(str(row["target_symbol"] or row["symbol"]).upper(), []).append(value)
             weights_by_tf.setdefault(str(row["period"]).upper(), []).append(value)
-        line("\nPESOS / FEEDBACK")
+        line("\nUTILIDAD LEGACY POR FILA (DIAGNOSTICO; NO USADA PARA SELECCION)")
         line("-" * 96)
         for item in formula_detail[1:]:
             line(item.replace("\t", ": "))
-        line(f"asset feedback run: {stat(weights)}")
+        line(f"utilidad legacy run: {stat(weights)}")
         line(f"detalle pesos verificable: filas={max(len(weight_detail) - 1, 0)} mismatch_formula_vs_funcion={weight_mismatches}")
         for status, values in sorted(weights_by_ft6.items()):
             line(f"  ft6 {status}: {stat(values)}")
@@ -1338,7 +1448,7 @@ class UBSSearchLogicMixin:
                 f"robust={nonfinal_robust} ft={nonfinal_ft} ft6={nonfinal_ft6}"
             )
         if weight_mismatches:
-            issues.append(f"mismatch formula pesos vs feedback_weight={weight_mismatches}")
+            issues.append(f"mismatch diagnostico legacy vs feedback_weight={weight_mismatches}")
         if not issues:
             issues.append(f"sin inconsistencias estructurales detectadas en run {run_id}")
         line("\nHALLAZGOS")
@@ -1410,14 +1520,15 @@ class UBSSearchLogicMixin:
 
         rows: list[dict[str, object]] = []
         errors: list[str] = []
-        for account_type in ACCOUNT_TYPES:
-            memory_path = account_memory_path(BASE_DIR, account_type)
+        for broker, account_type in self._ubs_active_broker_account_contexts():
+            memory_path = account_memory_path(BASE_DIR, account_type, broker)
+            account_label = self._ubs_account_context_label(broker, account_type)
             if not memory_path.exists():
                 continue
             try:
-                rows.extend(self._ubs_search_rows(memory_path, account_type, query))
+                rows.extend(self._ubs_search_rows(memory_path, account_label, query))
             except sqlite3.Error as exc:
-                errors.append(f"{account_type}: {exc}")
+                errors.append(f"{account_label}: {exc}")
 
         rows.sort(
             key=lambda row: (

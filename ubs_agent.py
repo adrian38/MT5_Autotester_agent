@@ -26,12 +26,19 @@ from run_tests import (
 from ubs_generate_sets import format_like, parse_numeric
 from ubs.account import (
     ACCOUNT_TYPES,
+    BROKERS,
     DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
     account_disabled_symbols_path,
     account_memory_path,
     account_output_dir,
     account_seed_dir,
+    broker_asset_universe_path_with_fallback,
+    default_symbol_map_for_broker,
+    load_account_timeframe_universe,
+    migrate_legacy_account_storage,
     normalize_account_type,
+    normalize_broker,
 )
 from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
@@ -45,7 +52,11 @@ from ubs.universe import (
     load_seed_enabled_disabled_symbols,
     seed_symbol_disabled,
 )
-from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
+from ubs.weights import (
+    DEFAULT_ROBUST_NEGATIVE_BONUS,
+    DEFAULT_ROBUST_POSITIVE_BONUS,
+    percentile_multipliers,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -53,16 +64,18 @@ MUTATION_OVERRIDES_FILE = BASE_DIR / "outputs" / "ubs_mutation_overrides.json"
 GLOBAL_PARAMS_FILE = BASE_DIR / "outputs" / "ubs_global_params.json"
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
 DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_agent"
-DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
+DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER)
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
-DEFAULT_DISABLED_SYMBOLS = account_disabled_symbols_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE)
-DEFAULT_SYMBOL_MAP = "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash"
+DEFAULT_SYMBOL_MAP = default_symbol_map_for_broker(DEFAULT_BROKER)
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
 TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
+GENERATION_MODES = ("production", "discovery")
+SELECTION_FITNESS_MODE = "soft_weight"
+SELECTION_FITNESS_APPLIED_SCALE = 0.15
 ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
 ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
@@ -271,7 +284,8 @@ def is_agent_mutable_key(key: str) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
-    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS: ECN o PRO.")
+    parser.add_argument("--broker", choices=BROKERS, default=DEFAULT_BROKER, help="Broker UBS: ROBOFOREX, ICTRADING o AXI.")
+    parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS del broker seleccionado.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--memory", default=str(DEFAULT_MEMORY))
@@ -283,16 +297,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminals-config", help="Archivo .ini con perfiles multiterminal.")
     parser.add_argument("--multi-terminal", action="store_true", help="Ejecuta backtests UBS repartidos entre terminales configuradas.")
     parser.add_argument("--max-workers", type=int, default=1, help="Maximo de terminales simultaneas con --multi-terminal.")
-    parser.add_argument("--symbol-map", default=DEFAULT_SYMBOL_MAP)
+    parser.add_argument("--symbol-map")
     parser.add_argument("--generations", type=int, default=1)
     parser.add_argument("--variants-per-seed", type=int, default=3)
     parser.add_argument("--max-seeds", type=int, default=30)
     parser.add_argument("--mutations-per-variant", type=int, default=6)
     parser.add_argument("--top-percent", type=float, default=20.0)
     parser.add_argument(
+        "--generation-mode",
+        choices=GENERATION_MODES,
+        default="production",
+        help="production prioriza rendimiento conocido; discovery activa exploracion del universo sin seed.",
+    )
+    parser.add_argument(
         "--force-unseeded-universe",
         action="store_true",
-        help="Reserva exploracion para activos/TF del universo que no existen en las seeds base.",
+        help="Alias legacy de --generation-mode discovery.",
     )
     parser.add_argument(
         "--experimental-long-timeframes",
@@ -375,14 +395,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
     args = parser.parse_args()
-    args.account_type = normalize_account_type(args.account_type)
+    if args.force_unseeded_universe:
+        args.generation_mode = "discovery"
+    args.force_unseeded_universe = args.generation_mode == "discovery"
+    args.broker = normalize_broker(args.broker)
+    args.account_type = normalize_account_type(args.account_type, args.broker)
+    if args.symbol_map is None:
+        args.symbol_map = default_symbol_map_for_broker(args.broker)
+    migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
-        args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type))
+        args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type, args.broker))
     if Path(args.output_dir).expanduser() == DEFAULT_OUTPUT:
-        args.output_dir = str(account_output_dir(BASE_DIR, args.account_type))
+        args.output_dir = str(account_output_dir(BASE_DIR, args.account_type, args.broker))
     legacy_memory = BASE_DIR / "outputs" / "ubs_memory.sqlite"
     if Path(args.memory).expanduser() in {DEFAULT_MEMORY, legacy_memory}:
-        args.memory = str(account_memory_path(BASE_DIR, args.account_type))
+        args.memory = str(account_memory_path(BASE_DIR, args.account_type, args.broker))
+    if Path(args.assets).expanduser() == DEFAULT_ASSETS:
+        args.assets = str(broker_asset_universe_path_with_fallback(BASE_DIR, args.broker))
     return args
 
 
@@ -412,8 +441,10 @@ def ranked_seed_selection(
     rng: random.Random,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
 ) -> list[tuple[float, Seed, float, float, float]]:
     aliases = aliases or {}
+    fitness_feedback = fitness_feedback or {}
     valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
     if not valid:
         valid = seeds
@@ -423,7 +454,11 @@ def ranked_seed_selection(
         asset_weight = asset_feedback.get(asset_key, 0.0)
         timeframe_weight = timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
         diversity = rng.random() * 5.0
-        scored.append((asset_weight + timeframe_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
+        fitness_weight = (
+            fitness_feedback.get(str(seed.path), 0.0)
+            * SELECTION_FITNESS_APPLIED_SCALE
+        )
+        scored.append((asset_weight + timeframe_weight + fitness_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
     scored.sort(key=lambda item: item[0], reverse=True)
     limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
     if limit <= 0:
@@ -455,11 +490,12 @@ def choose_seeds(
     rng: random.Random,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
 ) -> list[Seed]:
     return [
         seed
         for _, seed, _, _, _ in ranked_seed_selection(
-            seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases, group_by_symbol
+            seeds, max_seeds, asset_feedback, timeframe_feedback, rng, aliases, group_by_symbol, fitness_feedback
         )
     ]
 
@@ -645,11 +681,26 @@ def generation_source_seeds(
     return allowed, len(seeds) - len(allowed)
 
 
-def disabled_symbols_file_for_account(account_type: object) -> Path:
-    return account_disabled_symbols_path(BASE_DIR, account_type)
+def disabled_symbols_file_for_account(account_type: object, broker: object = DEFAULT_BROKER) -> Path:
+    return account_disabled_symbols_path(BASE_DIR, account_type, broker)
 
 
-def target_timeframe_universe(include_experimental_long: bool = False) -> tuple[str, ...]:
+def target_timeframe_universe(
+    include_experimental_long: bool = False,
+    *,
+    base_dir: Path | None = None,
+    broker: object = DEFAULT_BROKER,
+    account_type: object = DEFAULT_ACCOUNT_TYPE,
+) -> tuple[str, ...]:
+    if base_dir is not None:
+        return load_account_timeframe_universe(
+            base_dir,
+            account_type,
+            broker,
+            include_experimental_long=include_experimental_long,
+            default_timeframes=TIMEFRAME_UNIVERSE,
+            experimental_timeframes=EXPERIMENTAL_LONG_TIMEFRAMES,
+        )
     if include_experimental_long:
         return tuple(dict.fromkeys((*TIMEFRAME_UNIVERSE, *EXPERIMENTAL_LONG_TIMEFRAMES)))
     return TIMEFRAME_UNIVERSE
@@ -747,7 +798,8 @@ def target_symbol_disabled(
 ) -> bool:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
-    disabled = {symbol.upper() for symbol in (disabled_symbols or load_disabled_symbols(DEFAULT_DISABLED_SYMBOLS))}
+    policy_symbols = set() if disabled_symbols is None else disabled_symbols
+    disabled = {symbol.upper() for symbol in policy_symbols}
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
@@ -1035,11 +1087,11 @@ def line_candidates(
             continue
         if step <= 0 or stop <= start:
             continue
-        weight = 1.0
-        if key in preferred:
-            weight += 3.0
-        weight += max(min(mutation_feedback.get(key, 0.0) / 25.0, 4.0), -0.5)
-        candidates[key] = (index, parts, max(weight, 0.1))
+        base_weight = 4.0 if key in preferred else 1.0
+        candidates[key] = (index, parts, base_weight)
+    multipliers = percentile_multipliers(mutation_feedback, candidates)
+    for key, (index, parts, base_weight) in tuple(candidates.items()):
+        candidates[key] = (index, parts, base_weight * multipliers[key])
     return candidates
 
 
@@ -1328,6 +1380,7 @@ def reconcile_seed_eval_reports(
     output_root: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
 ) -> tuple[dict[str, int], set[str]]:
     seed_eval_root = output_root / "seed_eval"
     if not pending or not seed_eval_root.exists():
@@ -1372,7 +1425,7 @@ def reconcile_seed_eval_reports(
                 if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
                     continue
                 try:
-                    probe = score_report_file(report, config=score_config)
+                    probe = score_report_file(report, config=score_config, broker=broker)
                 except Exception:
                     continue
                 probe_variant = Variant(
@@ -1388,7 +1441,15 @@ def reconcile_seed_eval_reports(
                 if not matches:
                     continue
             seed_path = str(seed.path)
-            status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
+            status, _ = evaluate_seed_report(
+                memory,
+                seed,
+                report,
+                score_config,
+                symbol_map,
+                broker,
+                label=copied_set.name,
+            )
             status_counts[status] = status_counts.get(status, 0) + 1
             processed_paths.add(seed_path)
             if len(processed_paths) >= len(pending):
@@ -1401,6 +1462,7 @@ def rescore_existing_seed_scores(
     seeds: list[Seed],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     exclude_paths: set[str],
 ) -> dict[str, int]:
@@ -1417,7 +1479,7 @@ def rescore_existing_seed_scores(
         report = Path(report_raw)
         if not report.exists():
             continue
-        status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map)
+        status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, broker)
         status_counts[status] = status_counts.get(status, 0) + 1
     return status_counts
 
@@ -1470,7 +1532,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     pending = [seed for seed in pending if seed not in invalid_pending]
     unchanged_count = len(seeds) - original_pending_count
     blocked_count = len(invalid_pending)
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
@@ -1512,7 +1574,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         print(f"Semillas bloqueadas por .set invalido: {len(invalid_set_reasons)}")
     if disabled_pending:
         print(
-            "Semillas omitidas por symbol deshabilitado en Universo global: "
+            "Semillas omitidas por symbol deshabilitado en politica GEN/SEEDS de la cuenta: "
             f"{len(disabled_pending)} ({format_disabled_seed_counts(disabled_pending, symbol_map)})"
         )
         print("Estas seeds no abren MT5 ni aportan pesos; activa SEEDS para usarlas sin habilitar generacion.")
@@ -1525,6 +1587,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         output_root,
         score_config,
         symbol_map,
+        args.broker,
     )
     if reconciled_counts:
         pending = [seed for seed in pending if str(seed.path) not in reconciled_paths]
@@ -1542,6 +1605,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             seeds,
             score_config,
             symbol_map,
+            args.broker,
             exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
         )
         if rescored_counts:
@@ -1553,7 +1617,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             if invalid_pending:
                 print("No hay backtests pendientes validos. Corrige Symbol/TF de las semillas sin inferencia.")
             elif disabled_pending:
-                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en Universo global.")
+                print("No hay backtests pendientes validos. Las restantes estan deshabilitadas en la politica GEN/SEEDS de la cuenta.")
         else:
             print("Evaluacion de semillas al dia. No hay backtests pendientes.")
         return 0
@@ -1591,7 +1655,15 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             status_counts["no_report"] = status_counts.get("no_report", 0) + 1
             handled_issues += 1
             continue
-        status, result = evaluate_seed_report(memory, seed, report, score_config, symbol_map, label=copied_set.name)
+        status, result = evaluate_seed_report(
+            memory,
+            seed,
+            report,
+            score_config,
+            symbol_map,
+            args.broker,
+            label=copied_set.name,
+        )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status in {"accepted", "rejected"} and result is not None:
             scored += 1
@@ -1603,6 +1675,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         seeds,
         score_config,
         symbol_map,
+        args.broker,
         exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
     )
     rescored_total = sum(rescored_counts.values())
@@ -1635,6 +1708,7 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
         seeds,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         exclude_paths=set(),
     )
     total = sum(status_counts.values())
@@ -1744,7 +1818,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
                 min_trades_w1=args.min_trades_w1,
                 min_trades_mn=args.min_trades_mn,
             )
-            result = score_report_file(report, config=period_score_config)
+            result = score_report_file(report, config=period_score_config, broker=args.broker)
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez candidate #{candidate_id}: {exc}")
             memory.record_candidate_robustness(
@@ -1836,12 +1910,13 @@ def evaluate_seed_report(
     report: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     label: str | None = None,
 ) -> tuple[str, ScoreResult | None]:
     display_name = label or seed.path.name
     try:
-        result = score_report_file(report, config=score_config)
+        result = score_report_file(report, config=score_config, broker=broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear seed {display_name}: {exc}")
         memory.record_seed_score(seed, None, "parse_error", report)
@@ -1894,6 +1969,7 @@ def evaluate_variants(
     variants: list[Variant],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_report_mtime: float | None = None,
     min_trades_w1: int = 12,
@@ -1906,6 +1982,7 @@ def evaluate_variants(
             variant,
             score_config,
             symbol_map,
+            broker,
             min_report_mtime=min_report_mtime,
             min_trades_w1=min_trades_w1,
             min_trades_mn=min_trades_mn,
@@ -1921,6 +1998,7 @@ def evaluate_variant(
     variant: Variant,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_report_mtime: float | None = None,
     min_trades_w1: int = 12,
@@ -1936,6 +2014,7 @@ def evaluate_variant(
         report,
         score_config,
         symbol_map,
+        broker,
         min_trades_w1=min_trades_w1,
         min_trades_mn=min_trades_mn,
     )
@@ -1947,6 +2026,7 @@ def evaluate_variant_report(
     report: Path,
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
@@ -1958,7 +2038,7 @@ def evaluate_variant_report(
         min_trades_mn=min_trades_mn,
     )
     try:
-        result = score_report_file(report, config=period_score_config)
+        result = score_report_file(report, config=period_score_config, broker=broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
@@ -1993,10 +2073,20 @@ def select_next_seed_survivors(
     max_seeds: int,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
 ) -> list[tuple[Variant, ScoreResult]]:
     survivors = select_survivors(scored, top_percent)
     if not survivors:
         return []
+    if fitness_feedback and SELECTION_FITNESS_APPLIED_SCALE:
+        survivors.sort(
+            key=lambda item: (
+                fitness_feedback.get(str(item[0].path), 0.0)
+                * SELECTION_FITNESS_APPLIED_SCALE,
+                item[1].score,
+            ),
+            reverse=True,
+        )
     if max_seeds <= 0:
         limit = len(survivors)
     else:
@@ -2019,6 +2109,31 @@ def select_next_seed_survivors(
             break
         selected.append(item)
     return selected
+
+
+def select_next_generation_survivors(
+    memory: AgentMemory,
+    run_id: int,
+    scored: list[tuple[Variant, ScoreResult]],
+    top_percent: float,
+    max_seeds: int,
+    aliases: dict[str, str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
+) -> list[tuple[Variant, ScoreResult]]:
+    accepted = select_survivors(scored, top_percent)
+    predictions = memory.seed_selection_predictions(
+        seeds_from_survivors(accepted),
+        exclude_run_id=run_id,
+    )
+    fitness_feedback = {path: prediction.weight for path, prediction in predictions.items()}
+    return select_next_seed_survivors(
+        scored,
+        top_percent,
+        max_seeds,
+        aliases,
+        group_by_symbol,
+        fitness_feedback,
+    )
 
 
 def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Path) -> list[Path]:
@@ -2065,6 +2180,7 @@ def count_valid_existing_reports(
     variants: list[Variant],
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
+    broker: object,
     *,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
@@ -2083,6 +2199,7 @@ def count_valid_existing_reports(
                     min_trades_w1=min_trades_w1,
                     min_trades_mn=min_trades_mn,
                 ),
+                broker=broker,
             )
         except Exception:
             continue
@@ -2099,7 +2216,7 @@ def prepare_final_tick_exec_dir(path: Path, variants: list[Variant]) -> Path:
     return exec_dir
 
 
-ROBUST_RETRYABLE_STATUSES = {"pending", "no_report", "parse_error", "report_mismatch"}
+ROBUST_RETRYABLE_STATUSES = {"pending", "no_report", "parse_error", "report_mismatch", "no_trades"}
 
 
 def robust_status_pending_for_retry(status: object) -> bool:
@@ -2216,7 +2333,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             min_trades_mn=args.min_trades_mn,
         )
         try:
-            result = score_report_file(report, config=period_score_config)
+            result = score_report_file(report, config=period_score_config, broker=args.broker)
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez {report}: {exc}")
             memory.record_candidate_robustness(
@@ -2828,6 +2945,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             ohlc_variants,
             score_config,
             symbol_map,
+            args.broker,
             min_trades_w1=args.final_tick_min_trades_w1,
             min_trades_mn=args.final_tick_min_trades_mn,
         )
@@ -2948,7 +3066,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 min_trades_mn=args.final_tick_min_trades_mn,
             )
             try:
-                ohlc_result = score_report_file(ohlc_report, config=ohlc_score_config)
+                ohlc_result = score_report_file(ohlc_report, config=ohlc_score_config, broker=args.broker)
             except Exception as exc:
                 print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
                 memory.record_candidate_final_tick(
@@ -3158,7 +3276,7 @@ def _evaluate_final_tick_tick_report(
         min_trades_mn=args.final_tick_min_trades_mn,
     )
     try:
-        real_tick_result = score_report_file(real_tick_report, config=tick_score_config)
+        real_tick_result = score_report_file(real_tick_report, config=tick_score_config, broker=args.broker)
     except Exception as exc:
         if reconcile:
             return False
@@ -3293,6 +3411,7 @@ def reconcile_final_tick_reports(
                     min_trades_w1=min_trades_w1,
                     min_trades_mn=min_trades_mn,
                 ),
+                broker=args.broker,
             )
         except Exception:
             continue
@@ -3416,6 +3535,7 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
                     min_trades_w1=args.final_tick_min_trades_w1,
                     min_trades_mn=args.final_tick_min_trades_mn,
                 ),
+                broker=args.broker,
             )
         except Exception as exc:
             print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
@@ -3576,6 +3696,7 @@ def _retry_single_candidate(
         variant,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         min_report_mtime=batch_started_at - 1.0,
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
@@ -3666,6 +3787,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
                 report,
                 score_config,
                 parse_symbol_map(args.symbol_map),
+                args.broker,
                 label=retry_set.name,
             )
             statuses[status] = statuses.get(status, 0) + 1
@@ -3732,6 +3854,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         report,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         label=retry_set.name,
     )
     print(f"Retry seed estado={status}; score={result.score if result else 'n/a'}")
@@ -3802,6 +3925,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
             variant,
             score_config,
             symbol_map,
+            args.broker,
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
@@ -3875,6 +3999,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
             variant,
             score_config,
             symbol_map,
+            args.broker,
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
@@ -3964,6 +4089,7 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
             variant,
             score_config,
             symbol_map,
+            args.broker,
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
@@ -4012,6 +4138,7 @@ def evaluate_generation(
         variants,
         score_config,
         parse_symbol_map(args.symbol_map),
+        args.broker,
         min_report_mtime=batch_started_at - 1.0,
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
@@ -4048,11 +4175,17 @@ def build_run_config(
     disabled_symbol_count: int,
     seed_enabled_disabled_symbol_count: int,
 ) -> dict[str, object]:
-    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    timeframe_universe = target_timeframe_universe(
+        bool(args.experimental_long_timeframes),
+        base_dir=BASE_DIR,
+        broker=args.broker,
+        account_type=args.account_type,
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_by": "ubs_agent.py",
-        "account_type": normalize_account_type(args.account_type),
+        "broker": normalize_broker(args.broker),
+        "account_type": normalize_account_type(args.account_type, args.broker),
         "paths": {
             "source_dir": str(source_dir),
             "output_root": str(output_root),
@@ -4062,6 +4195,7 @@ def build_run_config(
             "assets": str(Path(args.assets).expanduser()),
         },
         "generation": {
+            "mode": str(args.generation_mode),
             "generations": int(args.generations),
             "variants_per_seed": int(args.variants_per_seed),
             "max_seeds": int(args.max_seeds),
@@ -4106,6 +4240,18 @@ def build_run_config(
                 "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
+            },
+            "selection_fitness": {
+                "model": "regularized_logistic_final_tick_6m_v1",
+                "target": "final_tick_6m_accepted",
+                "exclude_current_run": True,
+                "mode": SELECTION_FITNESS_MODE,
+                "applied_weight_scale": SELECTION_FITNESS_APPLIED_SCALE,
+            },
+            "feedback_model": {
+                "model": "smoothed_stage_probability_v1",
+                "stages": ["base", "robust", "probe", "six_month"],
+                "mutation_sampling": "percentile_multiplier_0.5_1.5",
             },
         },
         "execution": {
@@ -4165,7 +4311,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     pending_generation = memory.pending_generated_generation(run_id) if args.execute_backtests else 0
     current_seeds: list[Seed] = []
     did_work = False
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
@@ -4179,7 +4325,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
-    print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
+    print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
     print(f"Continuando run #{run_id}: plan={planned_generations}, ultima_gen={max_generation}")
 
@@ -4200,7 +4346,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             return 1
         if scored:
             current_seeds = seeds_from_survivors(
-                select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                select_next_generation_survivors(
+                    memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+                )
             )
         else:
             current_seeds = seeds_from_variants(variants)
@@ -4235,7 +4383,12 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
 
     all_generated = 0
     rng = random.Random(args.random_seed)
-    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    timeframe_universe = target_timeframe_universe(
+        bool(args.experimental_long_timeframes),
+        base_dir=BASE_DIR,
+        broker=args.broker,
+        account_type=args.account_type,
+    )
     print(f"Universo TF target: {', '.join(timeframe_universe)}")
     for generation in range(next_generation, planned_generations + 1):
         generation_dir = run_dir / f"gen_{generation:03d}"
@@ -4243,6 +4396,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         mutation_direction_feedback = memory.mutation_direction_feedback()
         asset_feedback = memory.asset_feedback(aliases)
         timeframe_feedback = memory.timeframe_feedback()
+        fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
+        fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
         selected_seed_rankings = ranked_seed_selection(
             current_seeds,
             args.max_seeds,
@@ -4251,9 +4406,10 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             rng,
             aliases,
             group_by_symbol,
+            fitness_feedback,
         )
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
-        memory.record_seed_selection(run_id, generation, selected_seed_rankings)
+        memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
         unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
             current_seeds,
             universe_symbols,
@@ -4349,7 +4505,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             return 1
         if scored:
             current_seeds = seeds_from_survivors(
-                select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                select_next_generation_survivors(
+                    memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+                )
             )
         else:
             current_seeds = seeds_from_variants(variants)
@@ -4446,7 +4604,7 @@ def run_agent(args: argparse.Namespace) -> int:
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
         return 1
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type)
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
@@ -4469,13 +4627,18 @@ def run_agent(args: argparse.Namespace) -> int:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
     group_by_symbol = asset_group_map(asset_groups, aliases)
-    timeframe_universe = target_timeframe_universe(bool(args.experimental_long_timeframes))
+    timeframe_universe = target_timeframe_universe(
+        bool(args.experimental_long_timeframes),
+        base_dir=BASE_DIR,
+        broker=args.broker,
+        account_type=args.account_type,
+    )
     print(f"Seeds disponibles: {len(seeds)} ({seed_source})")
     if blocked_source_count:
         print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
     if seed_enabled_when_disabled:
         print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
-    print(f"Universo RoboForex cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
+    print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
     print(f"Universo TF target: {', '.join(timeframe_universe)}")
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
@@ -4522,6 +4685,8 @@ def run_agent(args: argparse.Namespace) -> int:
             mutation_direction_feedback = memory.mutation_direction_feedback()
             asset_feedback = memory.asset_feedback(aliases)
             timeframe_feedback = memory.timeframe_feedback()
+            fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
+            fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
             selected_seed_rankings = ranked_seed_selection(
                 current_seeds,
                 args.max_seeds,
@@ -4530,9 +4695,10 @@ def run_agent(args: argparse.Namespace) -> int:
                 rng,
                 aliases,
                 group_by_symbol,
+                fitness_feedback,
             )
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
-            memory.record_seed_selection(run_id, generation, selected_seed_rankings)
+            memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
             unseeded_symbols, unseeded_timeframes = unseeded_universe_targets(
                 current_seeds,
                 universe_symbols,
@@ -4636,6 +4802,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         variants,
                         score_config,
                         parse_symbol_map(args.symbol_map),
+                        args.broker,
                         min_report_mtime=batch_started_at - 1.0,
                         min_trades_w1=args.min_trades_w1,
                         min_trades_mn=args.min_trades_mn,
@@ -4649,7 +4816,9 @@ def run_agent(args: argparse.Namespace) -> int:
 
             if scored:
                 current_seeds = seeds_from_survivors(
-                    select_next_seed_survivors(scored, args.top_percent, args.max_seeds, aliases, group_by_symbol)
+                    select_next_generation_survivors(
+                        memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+                    )
                 )
             else:
                 current_seeds = [variant_as_next_seed(variant) for variant in variants]

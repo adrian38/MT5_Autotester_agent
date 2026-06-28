@@ -5,21 +5,28 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from ubs.account import broker_asset_universe_path, normalize_broker
 from ubs.universe import canonical_symbol, load_asset_universe
 
 
 DEFAULT_BASIS = "raw_net_profit"
 
 
-def net_profit_normalization(symbol: str, *, base_dir: Path | None = None) -> tuple[float, str, str]:
+def net_profit_normalization(
+    symbol: str,
+    *,
+    broker: object = "ROBOFOREX",
+    base_dir: Path | None = None,
+) -> tuple[float, str, str]:
     """Return multiplier, group and basis for scoring net profit.
 
     The factor is intentionally limited to scoring. Backtests still run with the
     lot defined by the generated .set file, currently forced to 0.01.
     """
     root = base_dir or Path(__file__).resolve().parent.parent
-    config = _load_config(root / "assets" / "roboforex_normalization.json")
-    group_by_symbol, aliases = _asset_group_index(root / "assets" / "roboforex_assets.ini")
+    broker_key = normalize_broker(broker)
+    config = _load_config(root / "assets" / f"{broker_key.lower()}_normalization.json")
+    group_by_symbol, aliases = _asset_group_index(broker_asset_universe_path(root, broker_key))
 
     canonical = canonical_symbol(str(symbol or ""), aliases)
     factor = float(config.get("default_net_profit_factor") or 1.0)

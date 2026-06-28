@@ -195,7 +195,8 @@ exclusive allow-list. `load_seeds()` must load manifest rows and then include
 any additional `.set` files present under the source directory. Otherwise the UI
 can show files as pending while the agent never evaluates them.
 
-Seed results are stored in `outputs/ubs_memory.sqlite`:
+Seed results are stored in the active
+`outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`:
 
 - `seed_scores`: one row per source seed, including score, accepted flag,
   status, report path, active/inactive state, symbol, and timeframe.
@@ -227,7 +228,8 @@ Seed acceptance thresholds in the UI are independent from UBS Agent generation
 thresholds. The default seed net-profit threshold is `0`, which means strict
 `normalized_net_profit > 0` because the scorer rejects
 `normalized_net_profit <= min_net_profit`. The raw report `net_profit` remains
-stored for audit/display; current RoboForex scoring factors are configured in
+stored for audit/display; current scoring factors are configured in the active
+broker normalization file, for example
 `assets/roboforex_normalization.json`.
 When `--evaluate-seeds` runs, already evaluated `accepted`/`rejected` seeds are
 re-scored from their stored reports using the current seed thresholds, without
@@ -237,7 +239,8 @@ Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`, and
 should not be launched.
 
 Seed evaluation is resumable after an interrupted MT5 batch. Before launching
-new backtests, `--evaluate-seeds` scans `outputs/ubs_agent/seed_eval/eval_*`,
+new backtests, `--evaluate-seeds` scans
+`outputs/ubs_agent/{BROKER}/{ACCOUNT}/seed_eval/eval_*`,
 matches copied `.set` files back to source seeds by file content, validates the
 fresh report symbol/timeframe, and updates `seed_scores`. Use
 `ubs_agent.py --evaluate-seeds --reconcile-seed-eval-only` to do only this
@@ -256,15 +259,19 @@ The UI can reset seed evaluation from `UBS Seeds`:
 
 Seeds and Universe tables use a SEL checkbox column for multi-row operations.
 Seed actions use checked rows when any exist, otherwise the selected row.
-Universe symbols can be disabled/enabled from checked rows; the disabled set is
-stored in `outputs/ubs_disabled_symbols.json`. Disabled symbols remain visible
-in the Universe table, but are excluded from displayed weights and from UBS
-agent target-symbol exploration. During seed evaluation, a seed whose inferred
-or overridden symbol maps to a disabled symbol is recorded as `disabled_symbol`
-and is not sent to MT5, including after a seed reset.
+Universe symbols can be disabled/enabled from checked rows. The asset universe
+is broker-scoped, while GEN/SEEDS disabled-symbol policy is broker/account
+scoped and stored in
+`outputs/ubs_disabled_symbols_{BROKER}_{ACCOUNT}.json`. Disabled symbols remain
+visible in the Universe table, but are excluded from displayed weights and from
+UBS agent target-symbol exploration for that broker/account. During seed
+evaluation, a seed whose inferred or overridden symbol maps to a disabled symbol
+is recorded as `disabled_symbol` and is not sent to MT5, including after a seed
+reset.
 
 For single-candidate retry, `ubs_agent.py --retry-candidate-id <id>` copies the
-candidate `.set` into `outputs/ubs_agent/<run>/retry_mismatch/...`, runs
+candidate `.set` into
+`outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/retry_mismatch/...`, runs
 `run_tests.py` only on that retry folder, and then re-evaluates the original
 candidate row.
 
@@ -291,7 +298,8 @@ as:
 - `UBS Robustez` -> OOS result table plus the same continue/rerun actions.
 
 The full robustness run copies every accepted candidate `.set` from the
-selected run into `outputs/ubs_agent/<run>/robustness/run_<id>_<timestamp>/`,
+selected run into
+`outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/run_<id>_<timestamp>/`,
 then calls `run_tests.py` on that folder. `--robust-pending-only` filters that
 queue to accepted candidates with no existing `candidate_robustness` row. The
 UI's "Continuar" action uses that flag; "Reprobar" intentionally omits it.
@@ -352,11 +360,13 @@ quality cannot be proven. `no_report`, `parse_error`, `report_mismatch`, and
 ## UBS Unseeded Universe Exploration
 
 Normal target selection is intentionally biased toward the current seed symbol
-and toward assets/timeframes with positive feedback. To force coverage of
-assets or timeframes with no seed representation, enable `Poblar universo sin
-seed` in `UBS Agente UBS` or pass `ubs_agent.py --force-unseeded-universe`.
+and toward assets/timeframes with positive feedback. Use the `production` mode
+for normal runs without a forced unseeded quota. Use `discovery` in `UBS Agente
+UBS`, or pass `ubs_agent.py --generation-mode discovery`, when deliberate
+coverage of assets or timeframes with no seed representation is required. The
+legacy `--force-unseeded-universe` flag remains an alias for `discovery`.
 
-When enabled:
+In discovery mode:
 
 - `choose_target_symbol()` computes universe symbols not represented by the
   current seed pool and gets a 65% early chance to choose one of them before

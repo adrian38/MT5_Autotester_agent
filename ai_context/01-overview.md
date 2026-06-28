@@ -54,7 +54,8 @@ The CLI scripts are the automation core:
 - `run_tests.py`: generate Strategy Tester configs and launch MT5.
 - `compile_and_backtest.py`: orchestrate compile first, then backtest.
 - `ubs_agent.py`: generate UBS variants, run backtests, score reports, evaluate
-  robustness OOS for accepted candidates, and update `outputs/ubs_memory.sqlite`.
+  robustness OOS for accepted candidates, and update the active
+  `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`.
 
 Batch files call those scripts for double-click usage:
 
@@ -129,15 +130,15 @@ Weight semantics:
 UBS agent flow:
 
 ```text
-sets/ubs_ready/*.set
+sets/ubs_ready/{BROKER}/{ACCOUNT}/**/*.set
     -> optional seed evaluation / seed_overrides
     -> seed_scores rows at full base weight when reports are valid
     -> ubs_agent.py
-    -> generated outputs/ubs_agent/<run>/gen_*/**/*.set
+    -> generated outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/gen_*/**/*.set
     -> run_tests.py + terminal64.exe
     -> reports/*.htm
     -> ubs_score.py
-    -> outputs/ubs_memory.sqlite
+    -> outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite
     -> accepted_gen_* or report_mismatch/rejected state
     -> optional robustness OOS for accepted candidates
     -> candidate_robustness rows + robustness bonus/penalty in weights

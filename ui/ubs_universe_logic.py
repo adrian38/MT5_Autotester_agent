@@ -7,6 +7,8 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.memory import AgentMemory
+from ubs.account import broker_asset_universe_path_with_fallback, load_account_timeframe_universe
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -33,12 +35,35 @@ class UBSUniverseLogicMixin:
             self._safe_refresh(label, callback)
 
     def _load_ubs_asset_universe(self) -> tuple[list[tuple[str, str, list[str]]], dict[str, str]]:
-        path = BASE_DIR / "assets" / "roboforex_assets.ini"
+        path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
         groups, aliases = load_asset_universe(path, include_disabled=True)
         return asset_rows_from_groups(groups, aliases), aliases
 
     def _canonical_ubs_symbol(self, symbol: str, aliases: dict[str, str]) -> str:
         return canonical_symbol(symbol, aliases)
+
+    def _canonical_ubs_symbol_set(self, symbols: set[str], aliases: dict[str, str]) -> set[str]:
+        return {
+            self._canonical_ubs_symbol(symbol, aliases).upper()
+            for symbol in symbols
+            if str(symbol or "").strip()
+        }
+
+    def _selected_ubs_universe_symbols(self) -> set[str]:
+        symbols = set(self.ubs_universe_checked)
+        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
+            selected = self.ubs_universe_assets_tree.selection()
+            symbols = {
+                self.ubs_universe_paths.get(item, {}).get("symbol", "")
+                for item in selected
+            }
+            symbols.discard("")
+        return symbols
+
+    def _active_ubs_symbol_policy(self, aliases: dict[str, str]) -> tuple[set[str], set[str]]:
+        disabled = self._canonical_ubs_symbol_set(self._load_disabled_ubs_symbols(), aliases)
+        seed_enabled = self._canonical_ubs_symbol_set(self._load_seed_enabled_disabled_ubs_symbols(), aliases)
+        return disabled, seed_enabled & disabled
 
     def _empty_ubs_stat(self) -> dict[str, object]:
         return {
@@ -102,43 +127,31 @@ class UBSUniverseLogicMixin:
         return "break"
 
     def _set_checked_universe_symbols_enabled(self, enabled: bool) -> None:
-        symbols = set(self.ubs_universe_checked)
-        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
-            selected = self.ubs_universe_assets_tree.selection()
-            symbols = {
-                self.ubs_universe_paths.get(item, {}).get("symbol", "")
-                for item in selected
-            }
-            symbols.discard("")
+        _, aliases = self._load_ubs_asset_universe()
+        symbols = self._canonical_ubs_symbol_set(self._selected_ubs_universe_symbols(), aliases)
         if not symbols:
             messagebox.showinfo("Universo UBS", "Marca uno o mas simbolos primero.")
             return
-        disabled = self._load_disabled_ubs_symbols()
+        disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
         if enabled:
             disabled.difference_update(symbols)
             action = "habilitados"
         else:
             disabled.update(symbols)
             action = "deshabilitados"
-        self._save_disabled_ubs_symbols(disabled)
+        seed_enabled.difference_update(symbols)
+        self._save_disabled_ubs_symbols(disabled, seed_enabled)
         self.ubs_universe_checked.clear()
         self.status_text.set(f"Simbolos {action}: {len(symbols)}")
         self._refresh_ubs_universe()
 
     def _set_checked_universe_symbols_seed_enabled(self, enabled: bool) -> None:
-        symbols = set(self.ubs_universe_checked)
-        if not symbols and hasattr(self, "ubs_universe_assets_tree"):
-            selected = self.ubs_universe_assets_tree.selection()
-            symbols = {
-                self.ubs_universe_paths.get(item, {}).get("symbol", "")
-                for item in selected
-            }
-            symbols.discard("")
+        _, aliases = self._load_ubs_asset_universe()
+        symbols = self._canonical_ubs_symbol_set(self._selected_ubs_universe_symbols(), aliases)
         if not symbols:
             messagebox.showinfo("Universo UBS", "Marca uno o mas simbolos primero.")
             return
-        disabled = self._load_disabled_ubs_symbols()
-        seed_enabled = self._load_seed_enabled_disabled_ubs_symbols()
+        disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
         if enabled:
             eligible = {symbol for symbol in symbols if symbol in disabled}
             if not eligible:
@@ -179,9 +192,7 @@ class UBSUniverseLogicMixin:
             return
 
         assets, aliases = self._load_ubs_asset_universe()
-        disabled_symbols = self._load_disabled_ubs_symbols()
-        seed_enabled_when_disabled = self._load_seed_enabled_disabled_ubs_symbols()
-        seed_enabled_when_disabled &= disabled_symbols
+        disabled_symbols, seed_enabled_when_disabled = self._active_ubs_symbol_policy(aliases)
         checked_symbols = set(self.ubs_universe_checked)
         memory_path = self._ubs_memory_path()
         asset_stats: dict[str, dict[str, object]] = {}
@@ -194,6 +205,8 @@ class UBSUniverseLogicMixin:
         total_seed_mismatch = 0
         total_robust_accepted = 0
         total_robust_rejected = 0
+        asset_signals = {}
+        timeframe_signals = {}
 
         if memory_path.exists():
             try:
@@ -233,6 +246,12 @@ class UBSUniverseLogicMixin:
                         """
                     ).fetchall()
                 conn.close()
+                memory = AgentMemory(memory_path)
+                try:
+                    asset_signals = memory.asset_feedback_signals(aliases)
+                    timeframe_signals = memory.timeframe_feedback_signals()
+                finally:
+                    memory.close()
             except sqlite3.Error as exc:
                 self.ubs_universe_summary.set(f"No se pudo leer memoria UBS: {exc}")
                 self.ubs_timeframe_summary.set("Sin pesos por error SQLite")
@@ -329,11 +348,14 @@ class UBSUniverseLogicMixin:
         ranked_assets = []
         for group, symbol, symbol_aliases in all_assets:
             stat = asset_stats.get(symbol.upper(), self._empty_ubs_stat())
-            weight_groups = stat["weight_groups"]
             scores = stat["scores"]
-            weight_value = grouped_shrunk_mean(weight_groups) if isinstance(weight_groups, dict) else None
+            signal = asset_signals.get(symbol.upper())
+            weight_value = signal.score if signal is not None else None
+            probability = signal.probability if signal is not None else None
+            confidence = signal.confidence if signal is not None else None
+            final_trials = signal.final_trials if signal is not None else 0
             avg_score = (sum(scores) / len(scores)) if scores else None
-            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, avg_score))
+            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, avg_score))
         ranked_assets.sort(key=lambda item: (item[0], item[4]["pending"]), reverse=True)
         asset_total_before_filter = len(ranked_assets)
         asset_search_terms = self._ubs_universe_search_terms("ubs_universe_asset_search")
@@ -344,7 +366,7 @@ class UBSUniverseLogicMixin:
             ]
 
         if hasattr(self, "ubs_universe_assets_tree"):
-            for _, group, symbol, symbol_aliases, stat, weight_value, avg_score in ranked_assets:
+            for _, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, avg_score in ranked_assets:
                 is_disabled = symbol.upper() in disabled_symbols
                 seed_enabled = (not is_disabled) or symbol.upper() in seed_enabled_when_disabled
                 item = self.ubs_universe_assets_tree.insert(
@@ -358,6 +380,9 @@ class UBSUniverseLogicMixin:
                         symbol,
                         ", ".join(symbol_aliases),
                         self._format_ubs_number(weight_value),
+                        self._format_ubs_number(probability * 100.0 if probability is not None else None),
+                        self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
+                        int(final_trials),
                         self._format_ubs_number(avg_score),
                         self._format_ubs_number(stat["best"]),
                         int(stat["tests"]),
@@ -371,17 +396,27 @@ class UBSUniverseLogicMixin:
         valid_symbols = {info["symbol"] for info in self.ubs_universe_paths.values() if info.get("symbol")}
         self.ubs_universe_checked.intersection_update(valid_symbols)
 
-        timeframe_order = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
+        timeframe_order = list(
+            load_account_timeframe_universe(
+                BASE_DIR,
+                self._ubs_account_type(),
+                self._ubs_broker(),
+                include_experimental_long=True,
+            )
+        )
         observed_timeframes = sorted(period for period in timeframe_stats if period not in timeframe_order)
         ordered_timeframes = timeframe_order + observed_timeframes
         tf_rows = []
         for period in ordered_timeframes:
             stat = timeframe_stats.get(period, self._empty_ubs_stat())
-            weight_groups = stat["weight_groups"]
             scores = stat["scores"]
-            weight_value = grouped_shrunk_mean(weight_groups) if isinstance(weight_groups, dict) else None
+            signal = timeframe_signals.get(period.upper())
+            weight_value = signal.score if signal is not None else None
+            probability = signal.probability if signal is not None else None
+            confidence = signal.confidence if signal is not None else None
+            final_trials = signal.final_trials if signal is not None else 0
             avg_score = (sum(scores) / len(scores)) if scores else None
-            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, avg_score))
+            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, probability, confidence, final_trials, avg_score))
         tf_rows.sort(key=lambda item: item[0], reverse=True)
         tf_total_before_filter = len(tf_rows)
         tf_search_terms = self._ubs_universe_search_terms("ubs_universe_tf_search")
@@ -390,7 +425,7 @@ class UBSUniverseLogicMixin:
 
         if hasattr(self, "ubs_timeframes_tree"):
             valid_tfs: set[str] = set()
-            for _, period, stat, weight_value, avg_score in tf_rows:
+            for _, period, stat, weight_value, probability, confidence, final_trials, avg_score in tf_rows:
                 valid_tfs.add(period.upper())
                 self.ubs_timeframes_tree.insert(
                     "",
@@ -399,6 +434,9 @@ class UBSUniverseLogicMixin:
                         self._checkbox_text(period.upper() in self.ubs_timeframe_checked),
                         period,
                         self._format_ubs_number(weight_value),
+                        self._format_ubs_number(probability * 100.0 if probability is not None else None),
+                        self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
+                        int(final_trials),
                         self._format_ubs_number(avg_score),
                         self._format_ubs_number(stat["best"]),
                         int(stat["tests"]),
@@ -430,7 +468,7 @@ class UBSUniverseLogicMixin:
 
     def _disabled_symbols_path(self):
         from ubs.account import account_disabled_symbols_path
-        return account_disabled_symbols_path(BASE_DIR, self._ubs_account_type())
+        return account_disabled_symbols_path(BASE_DIR, self._ubs_account_type(), self._ubs_broker())
 
     def _load_disabled_ubs_symbols(self) -> set:
         from ubs.universe import load_disabled_symbols

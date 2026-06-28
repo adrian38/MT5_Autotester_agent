@@ -10,7 +10,7 @@ class UBSBackupTests(unittest.TestCase):
     def test_backup_memory_creates_readable_sqlite_copy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source = root / "outputs" / "ubs_memory_ECN.sqlite"
+            source = root / "outputs" / "ubs_memory_ROBOFOREX_ECN.sqlite"
             source.parent.mkdir(parents=True)
             conn = sqlite3.connect(source)
             try:

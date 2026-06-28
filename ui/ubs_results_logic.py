@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
 
-from ubs.account import account_memory_path, normalize_account_type
+from ubs.account import DEFAULT_BROKER, account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory
 from ubs.manual_status import mark_candidates
 
@@ -23,6 +23,24 @@ from ubs.manual_status import mark_candidates
 BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
+
+
+def ubs_run_base_dates(config_json: object) -> tuple[str, str]:
+    """Read the immutable base-test range stored when a UBS run was created."""
+
+    try:
+        config = json.loads(str(config_json or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "", ""
+    if not isinstance(config, dict):
+        return "", ""
+    execution = config.get("execution")
+    args = config.get("args")
+    execution = execution if isinstance(execution, dict) else {}
+    args = args if isinstance(args, dict) else {}
+    from_date = str(execution.get("from_date") or args.get("from_date") or "").strip()
+    to_date = str(execution.get("to_date") or args.get("to_date") or "").strip()
+    return from_date, to_date
 
 
 class UBSResultsLogicMixin:
@@ -217,11 +235,15 @@ class UBSResultsLogicMixin:
             self._safe_refresh(label, callback)
 
     def _ubs_memory_path(self) -> Path:
-        return account_memory_path(BASE_DIR, self._ubs_account_type())
+        return account_memory_path(BASE_DIR, self._ubs_account_type(), self._ubs_broker())
+
+    def _ubs_broker(self) -> str:
+        variable = getattr(self, "ubs_broker", None)
+        return normalize_broker(variable.get() if variable is not None else DEFAULT_BROKER)
 
     def _ubs_account_type(self) -> str:
         variable = getattr(self, "ubs_account_type", None)
-        return normalize_account_type(variable.get() if variable is not None else "")
+        return normalize_account_type(variable.get() if variable is not None else "", self._ubs_broker())
 
     def _ensure_ubs_memory_schema(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"]) for row in conn.execute("pragma table_info(runs)")}
@@ -336,6 +358,14 @@ class UBSResultsLogicMixin:
                 ).fetchone()["total"] or 0)
             else:
                 pending_count = 0
+            retryable_count = int(conn.execute(
+                """
+                select count(*) as total
+                from candidates
+                where run_id=? and status in ('report_mismatch', 'no_report')
+                """,
+                (run["id"],),
+            ).fetchone()["total"] or 0)
             rows = conn.execute(
                 "select set_path from candidates where run_id=? and generation=?",
                 (run["id"], latest_generation),
@@ -364,6 +394,7 @@ class UBSResultsLogicMixin:
                 "latest_generation": latest_generation,
                 "pending_generation": pending_generation,
                 "pending_count": pending_count,
+                "retryable_count": retryable_count,
                 "planned_generations": planned_generations,
                 "remaining": remaining_after_pending,
                 "seed_count": pending_count,
@@ -381,6 +412,7 @@ class UBSResultsLogicMixin:
                 "latest_generation": latest_generation,
                 "planned_generations": planned_generations,
                 "remaining": 0,
+                "retryable_count": retryable_count,
                 "seed_count": seed_count,
                 "variants_per_seed": variants_per_seed,
                 "max_seeds": max_seeds,
@@ -393,6 +425,7 @@ class UBSResultsLogicMixin:
             "latest_generation": latest_generation,
             "pending_generation": 0,
             "pending_count": 0,
+            "retryable_count": retryable_count,
             "planned_generations": planned_generations,
             "remaining": remaining,
             "seed_count": seed_count,
@@ -416,6 +449,12 @@ class UBSResultsLogicMixin:
 
     def _set_ubs_results_complete_run_enabled(self, enabled: bool) -> None:
         button = getattr(self, "ubs_results_complete_run_btn", None)
+        if button is None:
+            return
+        button.configure(state=("normal" if enabled else "disabled"), cursor=("hand2" if enabled else ""))
+
+    def _set_ubs_results_continue_run_enabled(self, enabled: bool) -> None:
+        button = getattr(self, "ubs_results_continue_run_btn", None)
         if button is None:
             return
         button.configure(state=("normal" if enabled else "disabled"), cursor=("hand2" if enabled else ""))
@@ -581,6 +620,7 @@ class UBSResultsLogicMixin:
             self.ubs_results_status.set(f"No existe memoria: {memory_path}")
             self._set_ubs_results_execute_backtests_enabled(False)
             self._set_ubs_results_complete_run_enabled(False)
+            self._set_ubs_results_continue_run_enabled(False)
             return
 
         try:
@@ -600,6 +640,7 @@ class UBSResultsLogicMixin:
                 conn.close()
                 self._set_ubs_results_execute_backtests_enabled(False)
                 self._set_ubs_results_complete_run_enabled(False)
+                self._set_ubs_results_continue_run_enabled(False)
                 return
             latest_run = conn.execute(
                 "select * from runs where id=?", (selected_run_id,)
@@ -614,6 +655,7 @@ class UBSResultsLogicMixin:
                 conn.close()
                 self._set_ubs_results_execute_backtests_enabled(False)
                 self._set_ubs_results_complete_run_enabled(False)
+                self._set_ubs_results_continue_run_enabled(False)
                 return
 
             counts = conn.execute(
@@ -654,6 +696,7 @@ class UBSResultsLogicMixin:
             self.ubs_results_status.set(str(exc))
             self._set_ubs_results_execute_backtests_enabled(False)
             self._set_ubs_results_complete_run_enabled(False)
+            self._set_ubs_results_continue_run_enabled(False)
             return
 
         total = int(counts["total"] or 0)
@@ -688,9 +731,9 @@ class UBSResultsLogicMixin:
         complete_enabled = (
             bool(continuation_info.get("available"))
             and int(continuation_info.get("run_id") or 0) == int(latest_run["id"])
-            and int(continuation_info.get("remaining") or 0) > 0
         )
         self._set_ubs_results_complete_run_enabled(complete_enabled)
+        self._set_ubs_results_continue_run_enabled((report_mismatch + no_report) > 0)
 
         if not hasattr(self, "ubs_results_tree"):
             return
@@ -1480,6 +1523,7 @@ class UBSResultsLogicMixin:
         try:
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--delay", str(self.delay.get()),
@@ -1535,12 +1579,27 @@ class UBSResultsLogicMixin:
             if problem_count <= 0:
                 messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch/sin reporte pendientes.")
                 return
+            conn = connect_memory(self._ubs_memory_path())
+            try:
+                run = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
+            finally:
+                conn.close()
+            if run is None:
+                raise ValueError(f"No existe el run #{run_id} en memoria.")
+            from_date, to_date = ubs_run_base_dates(run["config_json"])
+            if not from_date or not to_date:
+                raise ValueError(
+                    f"El run #{run_id} no guarda sus fechas base; se cancela el retry para no usar la plantilla actual."
+                )
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-run-id", str(run_id),
                 "--retry-mismatch-run",
+                "--from-date", from_date,
+                "--to-date", to_date,
                 "--delay", str(self.delay.get()),
             ]
             if self.multiterminal_enabled.get():
@@ -1560,8 +1619,9 @@ class UBSResultsLogicMixin:
             return
 
         details = [
-            "Accion: Continuar run UBS (solo mismatch/sin reporte)",
+            "Accion: Continuar run UBS (recuperar mismatch/sin reporte)",
             f"Run: #{run_id}",
+            f"Fechas base originales: {from_date} -> {to_date}",
             f"Backtests previstos: {problem_count}",
             "Al terminar actualiza esas mismas filas SQLite.",
         ]
@@ -1602,6 +1662,7 @@ class UBSResultsLogicMixin:
                 return
             args = [
                 "--memory", str(self._ubs_memory_path()),
+                "--broker", self._ubs_broker(),
                 "--account-type", self._ubs_account_type(),
                 "--template", self.template_path.get(),
                 "--retry-run-id", str(run_id),

@@ -2,11 +2,14 @@ Write-Host "========================================="
 Write-Host "LIMPIEZA GLOBAL META TRADER TESTER"
 Write-Host "========================================="
 
-Write-Host "Cerrando MetaTrader..."
-Get-Process terminal* -ErrorAction SilentlyContinue | Stop-Process -Force
+Write-Host "Cerrando MetaTrader y agentes Tester..."
+foreach ($pattern in @("terminal*", "metatester*", "metaeditor*")) {
+    Get-Process $pattern -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
 Start-Sleep -Seconds 2
 
 $basePath = Join-Path $env:APPDATA "MetaQuotes\Terminal"
+$globalTesterPath = Join-Path $env:APPDATA "MetaQuotes\Tester"
 
 if (!(Test-Path $basePath)) {
     Write-Host "No se encontro carpeta MetaQuotes."
@@ -53,6 +56,11 @@ Get-ChildItem $basePath -Directory | ForEach-Object {
         Remove-Item -Force -ErrorAction SilentlyContinue
 
     Write-Host "Limpieza completada en esta terminal"
+}
+
+if (Test-Path $globalTesterPath) {
+    Remove-Item $globalTesterPath -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "MetaQuotes\Tester eliminado"
 }
 
 Write-Host ""

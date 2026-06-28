@@ -40,6 +40,8 @@ from ui.portfolio_logic import PortfolioLogicMixin
 from ui.portfolio_view import PortfolioViewMixin
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 from ui.ubs_portfolio_view import UBSPortfolioViewMixin
+from ui.ubs_monthly_portfolio_logic import MONTH_LABELS, UBSMonthlyPortfolioLogicMixin
+from ui.ubs_monthly_portfolio_view import UBSMonthlyPortfolioViewMixin
 from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_search_view import UBSSearchViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
@@ -60,7 +62,17 @@ from ui.ubs_universe_logic import UBSUniverseLogicMixin
 from ui.ubs_universe_view import UBSUniverseViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
-from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_memory_path, normalize_account_type
+from ubs.account import (
+    BROKERS,
+    DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
+    account_memory_path,
+    default_symbol_map_for_broker,
+    migrate_legacy_roboforex_storage,
+    normalize_account_type,
+    normalize_broker,
+    symbol_map_setting_key,
+)
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
@@ -560,6 +572,8 @@ class MT5AutotesterUI(
     PortfolioLogicMixin,
     UBSPortfolioViewMixin,
     UBSPortfolioLogicMixin,
+    UBSMonthlyPortfolioViewMixin,
+    UBSMonthlyPortfolioLogicMixin,
     UBSSearchViewMixin,
     UBSSearchLogicMixin,
     SettingsViewMixin,
@@ -643,14 +657,20 @@ class MT5AutotesterUI(
         self.ubs_force_unseeded_universe = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_force_unseeded_universe"), False)
         )
+        saved_generation_mode = saved_general.get("ubs_generation_mode", "").strip().lower()
+        if saved_generation_mode not in {"production", "discovery"}:
+            saved_generation_mode = "discovery" if self.ubs_force_unseeded_universe.get() else "production"
+        self.ubs_generation_mode = tk.StringVar(value=saved_generation_mode)
         self.ubs_experimental_long_timeframes = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_experimental_long_timeframes"), False)
         )
         self.ubs_long_tf_min_trades_w1 = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_w1", "12"))
         self.ubs_long_tf_min_trades_mn = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_mn", "4"))
+        self.ubs_broker = tk.StringVar(value=normalize_broker(saved_general.get("ubs_broker", DEFAULT_BROKER)))
         self.ubs_account_type = tk.StringVar(
-            value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE))
+            value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE), self.ubs_broker.get())
         )
+        self._legacy_ubs_migrations = migrate_legacy_roboforex_storage(BASE_DIR)
         self.ubs_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_pass_min_net_profit", "100"))
         self.ubs_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_profit_factor", "1.20"))
         self.ubs_pass_min_trades = tk.IntVar(value=self._saved_int(saved_general.get("ubs_pass_min_trades"), 50))
@@ -732,7 +752,20 @@ class MT5AutotesterUI(
         self.symbol_suffix_enabled = tk.BooleanVar(value=saved_general.get("symbol_suffix_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_suffix = tk.StringVar(value=saved_general.get("symbol_suffix", ""))
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
-        self.symbol_map = tk.StringVar(value=saved_general.get("symbol_map", ""))
+        self._ubs_symbol_maps_by_broker = {
+            broker: saved_general.get(symbol_map_setting_key(broker), default_symbol_map_for_broker(broker))
+            for broker in BROKERS
+        }
+        if not saved_general.get(symbol_map_setting_key(DEFAULT_BROKER)):
+            self._ubs_symbol_maps_by_broker[DEFAULT_BROKER] = saved_general.get(
+                "symbol_map",
+                default_symbol_map_for_broker(DEFAULT_BROKER),
+            )
+        self._ubs_symbol_map_active_broker = self.ubs_broker.get()
+        self.symbol_map = tk.StringVar(value=self._ubs_symbol_maps_by_broker.get(
+            self._ubs_symbol_map_active_broker,
+            default_symbol_map_for_broker(self._ubs_symbol_map_active_broker),
+        ))
         _tg_default = "1" if (env_value("TELEGRAM_BOT_TOKEN") and env_value("TELEGRAM_CHAT_ID")) else "0"
         self.telegram_enabled = tk.BooleanVar(value=self._bool_setting(saved_general.get("telegram_enabled", _tg_default)))
         self.telegram_bot_token = tk.StringVar(value=env_value("TELEGRAM_BOT_TOKEN") or "")
@@ -743,6 +776,7 @@ class MT5AutotesterUI(
         self.mt_selected_index: int | None = None
         self.mt_profile_enabled = tk.BooleanVar(value=True)
         self.mt_profile_portable = tk.BooleanVar(value=False)
+        self.mt_profile_broker = tk.StringVar(value=self.ubs_broker.get())
         self.mt_profile_name = tk.StringVar(value="")
         self.mt_profile_mt5_path = tk.StringVar(value="")
         self.mt_profile_data_dir = tk.StringVar(value="")
@@ -796,6 +830,15 @@ class MT5AutotesterUI(
         self.ubs_portfolio_require_3_positive_months_6m = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_require_3_positive_months_6m"), False)
         )
+        self.ubs_portfolio_grid_off = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_grid_off"), False)
+        )
+        self.ubs_portfolio_dd_reserve_pct = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_dd_reserve_pct", "10")
+        )
+        self.ubs_portfolio_search_restarts = tk.IntVar(
+            value=self._saved_int(saved_general.get("ubs_portfolio_search_restarts"), 4)
+        )
         self.ubs_portfolio_max_pair_corr = tk.StringVar(
             value=saved_general.get("ubs_portfolio_max_pair_corr", "0.35")
         )
@@ -821,9 +864,122 @@ class MT5AutotesterUI(
         self.ubs_portfolio_member_paths: dict[str, dict[str, str]] = {}
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        monthly_prefix = "ubs_monthly_portfolio_"
+        self.ubs_monthly_portfolio_target_month = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}target_month", MONTH_LABELS[0])
+        )
+        self.ubs_monthly_portfolio_type = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}type", saved_portfolio_type)
+        )
+        self.ubs_monthly_portfolio_valley_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}valley_pct", "10")
+        )
+        self.ubs_monthly_portfolio_point_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}point_pct", "4")
+        )
+        self.ubs_monthly_portfolio_capital = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}capital", "10000")
+        )
+        self.ubs_monthly_portfolio_top_k = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}top_k"), 3)
+        )
+        self.ubs_monthly_portfolio_max_candidates = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}max_candidates"), 30)
+        )
+        self.ubs_monthly_portfolio_min_trades = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}min_trades"), 15)
+        )
+        self.ubs_monthly_portfolio_max_units_per_set = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_units_per_set", "")
+        )
+        self.ubs_monthly_portfolio_max_total_units = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_total_units", "")
+        )
+        self.ubs_monthly_portfolio_max_units_per_symbol = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_units_per_symbol", "")
+        )
+        self.ubs_monthly_portfolio_max_sets_per_symbol = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}max_sets_per_symbol"), 1)
+        )
+        self.ubs_monthly_portfolio_run_local_search = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}run_local_search"), True)
+        )
+        self.ubs_monthly_portfolio_use_correlation = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}use_correlation"), True)
+        )
+        self.ubs_monthly_portfolio_require_3_positive_months_6m = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}require_3_positive_months_6m"), False)
+        )
+        self.ubs_monthly_portfolio_grid_off = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}grid_off"), False)
+        )
+        self.ubs_monthly_portfolio_exclude_monthly_used = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}exclude_monthly_used"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_corr_with_monthly_portfolios = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}corr_with_monthly_portfolios"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_strict_yearly_month_validation = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}strict_yearly_month_validation"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_deep_optimization = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}deep_optimization"),
+                False,
+            )
+        )
+        self.ubs_monthly_portfolio_validate_roboforex_margin = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}validate_roboforex_margin"),
+                True,
+            )
+        )
+        self.ubs_monthly_portfolio_max_margin_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_margin_pct", "100")
+        )
+        self.ubs_monthly_portfolio_dd_reserve_pct = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}dd_reserve_pct", "10")
+        )
+        self.ubs_monthly_portfolio_search_restarts = tk.IntVar(
+            value=self._saved_int(saved_general.get(f"{monthly_prefix}search_restarts"), 4)
+        )
+        self.ubs_monthly_portfolio_max_pair_corr = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_pair_corr", "0.35")
+        )
+        self.ubs_monthly_portfolio_max_downside_corr = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_downside_corr", "0.25")
+        )
+        self.ubs_monthly_portfolio_max_dd_overlap = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_dd_overlap", "0.35")
+        )
+        self.ubs_monthly_portfolio_max_portfolio_corr = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_portfolio_corr", "0.50")
+        )
+        self.ubs_monthly_portfolio_status = tk.StringVar(value="Selecciona un mes objetivo.")
+        self.ubs_monthly_portfolio_availability = tk.StringVar(value="Disponibilidad: sin datos")
+        self.ubs_monthly_portfolio_metric_net = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_valley = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_point = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_count = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_lot = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_metric_units = tk.StringVar(value="—")
+        self.ubs_monthly_portfolio_running = False
+        self.ubs_monthly_portfolio_buttons: list = []
+        self.ubs_monthly_portfolio_member_paths: dict[str, dict[str, str]] = {}
+        self.ubs_monthly_portfolio_pending_result = None
+        self.ubs_monthly_portfolio_pending_inputs = None
         self.ubs_search_query = tk.StringVar(value="")
         self.ubs_search_status = tk.StringVar(value="Escribe parte del nombre de un set UBS.")
-        self.ubs_audit_account = tk.StringVar(value=self._ubs_account_type())
+        self.ubs_audit_account = tk.StringVar(value=f"{self._ubs_broker()}/{self._ubs_account_type()}")
         self.ubs_audit_run_id = tk.StringVar(value="")
         self.ubs_audit_status = tk.StringVar(value="Selecciona cuenta/run y genera auditoria.")
         self.ubs_search_paths: dict[str, dict[str, str]] = {}
@@ -1046,8 +1202,46 @@ class MT5AutotesterUI(
                         foreground=COLORS["text"], rowheight=26, borderwidth=0)
         style.map("Treeview", background=[("selected", COLORS["panel_highest"])], foreground=[("selected", COLORS["text"])])
         style.configure("Treeview.Heading", background=COLORS["panel_alt"], foreground=COLORS["muted"], font=("Segoe UI", 8, "bold"), padding=(6, 4))
-        style.configure("TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
-        style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"])
+        style.configure("TCheckbutton", background=COLORS["panel_alt"], foreground=COLORS["text"], focuscolor=COLORS["panel_alt"])
+        style.map(
+            "TCheckbutton",
+            background=[
+                ("disabled", COLORS["panel_alt"]),
+                ("pressed", COLORS["panel_alt"]),
+                ("active", COLORS["panel_alt"]),
+                ("focus", COLORS["panel_alt"]),
+                ("selected", COLORS["panel_alt"]),
+                ("!disabled", COLORS["panel_alt"]),
+            ],
+            foreground=[
+                ("disabled", COLORS["muted"]),
+                ("pressed", COLORS["text"]),
+                ("active", COLORS["text"]),
+                ("focus", COLORS["text"]),
+                ("selected", COLORS["text"]),
+                ("!disabled", COLORS["text"]),
+            ],
+        )
+        style.configure("Panel.TCheckbutton", background=COLORS["panel"], foreground=COLORS["text"], focuscolor=COLORS["panel"])
+        style.map(
+            "Panel.TCheckbutton",
+            background=[
+                ("disabled", COLORS["panel"]),
+                ("pressed", COLORS["panel"]),
+                ("active", COLORS["panel"]),
+                ("focus", COLORS["panel"]),
+                ("selected", COLORS["panel"]),
+                ("!disabled", COLORS["panel"]),
+            ],
+            foreground=[
+                ("disabled", COLORS["muted"]),
+                ("pressed", COLORS["text"]),
+                ("active", COLORS["text"]),
+                ("focus", COLORS["text"]),
+                ("selected", COLORS["text"]),
+                ("!disabled", COLORS["text"]),
+            ],
+        )
         style.configure("TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.configure("Panel.TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"])
         style.map("TRadiobutton",
@@ -1062,12 +1256,14 @@ class MT5AutotesterUI(
         row: int,
         column: int = 0,
         *,
-        vertical: bool = True,
+        vertical: bool = False,
         horizontal: bool = True,
     ) -> None:
         tree.grid(row=row, column=column, sticky="nsew")
-        # Treeview keeps native wheel, keyboard and trackpad scrolling. The
-        # visual vertical bar is intentionally hidden application-wide.
+        if vertical:
+            y_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+            y_scroll.grid(row=row, column=column + 1, sticky="ns")
+            tree.configure(yscrollcommand=y_scroll.set)
         if horizontal:
             x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
             x_scroll.grid(row=row + 1, column=column, sticky="ew")
@@ -1114,7 +1310,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -1132,6 +1328,7 @@ class MT5AutotesterUI(
         self._build_ubs_params(self.section_frames["ubs_params"])
         self._build_portfolio(self.section_frames["portfolio"])
         self._build_ubs_portfolio(self.section_frames["portafolio_ubs"])
+        self._build_ubs_monthly_portfolio(self.section_frames["portafolio_ubs_mensual"])
         self._build_ubs_search(self.section_frames["buscador"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
@@ -1203,6 +1400,7 @@ class MT5AutotesterUI(
             ("ubs_comparar", "UBS  Comparar"),
             ("ubs_params", "UBS  Parámetros"),
             ("portafolio_ubs", "UBS  Portafolio"),
+            ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
             ("buscador", "UBS  Buscador"),
         ]
         for index, (key, label) in enumerate(items):
@@ -1388,7 +1586,7 @@ class MT5AutotesterUI(
 
     def _ubs_notification_memory_path(self, args: list[str]) -> Path:
         raw = self._arg_value(args, "--memory")
-        return Path(raw).expanduser() if raw else account_memory_path(BASE_DIR, self.ubs_account_type.get())
+        return Path(raw).expanduser() if raw else account_memory_path(BASE_DIR, self.ubs_account_type.get(), self.ubs_broker.get())
 
     def _ubs_status_counts(self, conn: sqlite3.Connection, table: str, where: str = "", params: tuple = ()) -> dict[str, int]:
         query = f"select status, count(*) as total from {table}"
@@ -1624,6 +1822,7 @@ class MT5AutotesterUI(
             ("ubs_continue", self._refresh_ubs_continue_state),
             ("portfolio", self._refresh_portfolio_count),
             ("ubs_portfolios", self._refresh_ubs_portfolios),
+            ("ubs_monthly_portfolios", self._refresh_ubs_monthly_portfolios),
             ("last_log", self._refresh_last_log),
             ("multiterminal", self._refresh_multiterminal_tree),
         ):

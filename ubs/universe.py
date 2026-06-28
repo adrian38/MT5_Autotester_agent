@@ -9,6 +9,7 @@ from ubs.models import Seed
 
 
 def disabled_symbols_path(base_dir: Path) -> Path:
+    """Legacy global policy path; broker/account callers should pass account_disabled_symbols_path()."""
     return base_dir / "outputs" / "ubs_disabled_symbols.json"
 
 

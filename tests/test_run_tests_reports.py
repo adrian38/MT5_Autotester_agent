@@ -190,6 +190,36 @@ class CopyReportsToProjectTests(unittest.TestCase):
 
             self.assertEqual(errors, [])
 
+    def test_multiterminal_config_loads_only_selected_broker_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            config = root / "ui_settings.ini"
+            config.write_text(
+                "\n".join(
+                    [
+                        "[Multiterminal]",
+                        "broker=AXI",
+                        "[Terminal.1]",
+                        "enabled=1",
+                        "broker=ROBOFOREX",
+                        "name=Robo",
+                        f"mt5_path={root / 'Robo' / 'terminal64.exe'}",
+                        f"experts_root={root / 'Robo' / 'MQL5' / 'Experts'}",
+                        "[Terminal.2]",
+                        "enabled=1",
+                        "broker=AXI",
+                        "name=Axi",
+                        f"mt5_path={root / 'Axi' / 'terminal64.exe'}",
+                        f"experts_root={root / 'Axi' / 'MQL5' / 'Experts'}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = run_tests.load_terminal_profiles(config)
+
+            self.assertEqual([profile.name for profile in profiles], ["Axi"])
+
 
 if __name__ == "__main__":
     unittest.main()

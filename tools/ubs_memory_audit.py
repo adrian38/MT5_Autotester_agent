@@ -10,7 +10,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from ubs.account import ACCOUNT_TYPES, DEFAULT_ACCOUNT_TYPE, account_disabled_symbols_path, account_memory_path
+from ubs.account import (
+    ACCOUNT_TYPES,
+    BROKERS,
+    DEFAULT_ACCOUNT_TYPE,
+    DEFAULT_BROKER,
+    account_disabled_symbols_path,
+    broker_asset_universe_path_with_fallback,
+    account_memory_path,
+    migrate_legacy_account_storage,
+    normalize_account_type,
+    normalize_broker,
+)
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
 from ubs.universe import load_asset_universe, load_disabled_symbols
@@ -26,6 +37,7 @@ DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audita la memoria UBS SQLite y sus pesos.")
+    parser.add_argument("--broker", choices=BROKERS, default=DEFAULT_BROKER, help="Broker UBS a auditar.")
     parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Cuenta UBS a auditar.")
     parser.add_argument("--memory", default="", help="Ruta SQLite. Si se omite, usa la memoria de --account-type.")
     parser.add_argument("--assets", default=str(DEFAULT_ASSETS), help="Ruta al universo de activos.")
@@ -82,6 +94,7 @@ def run_config_summary(run) -> str:
     execution = config.get("execution", {}) if isinstance(config, dict) else {}
     score = config.get("score", {}) if isinstance(config, dict) else {}
     force = bool(generation.get("force_unseeded_universe")) if isinstance(generation, dict) else False
+    mode = str(generation.get("mode") or ("discovery" if force else "production")) if isinstance(generation, dict) else "production"
     long_tf = bool(generation.get("experimental_long_timeframes")) if isinstance(generation, dict) else False
     timeframe_universe = generation.get("timeframe_universe", ()) if isinstance(generation, dict) else ()
     long_min_trades = generation.get("long_timeframe_min_trades", {}) if isinstance(generation, dict) else {}
@@ -115,7 +128,7 @@ def run_config_summary(run) -> str:
     tf_min_text = ""
     if isinstance(tf_min_ratios, dict) and tf_min_ratios:
         tf_min_text = " tf_min=" + ",".join(f"{key}:{value}" for key, value in sorted(tf_min_ratios.items()))
-    return f"force_unseeded={'si' if force else 'no'} long_tf={'si' if long_tf else 'no'}{tf_text}{long_min_text}{ft_long_text}{dates}{score_text}{cap_text}{tf_min_text}"
+    return f"mode={mode} force_unseeded={'si' if force else 'no'} long_tf={'si' if long_tf else 'no'}{tf_text}{long_min_text}{ft_long_text}{dates}{score_text}{cap_text}{tf_min_text}"
 
 
 def print_heading(title: str) -> None:
@@ -138,6 +151,27 @@ def audit_runs(conn, audit: Audit) -> None:
         print(f"run visible/latest: #{visible['id']} creado={visible['created_at']}")
         if "config_json" in run_columns:
             print(f"config latest: {run_config_summary(visible)}")
+        if table_exists(conn, "generation_seed_selection"):
+            selection_columns = table_columns(conn, "generation_seed_selection")
+            if {"fitness_probability", "fitness_weight", "fitness_evidence"} <= selection_columns:
+                summary = conn.execute(
+                    """
+                    select count(*) n,
+                           avg(fitness_probability) probability,
+                           avg(fitness_weight) weight,
+                           avg(fitness_evidence) evidence
+                    from generation_seed_selection
+                    where run_id=?
+                    """,
+                    (visible["id"],),
+                ).fetchone()
+                if summary and int(summary["n"] or 0):
+                    print(
+                        "selection fitness observed latest: "
+                        f"n={summary['n']} p6m_avg={float(summary['probability'] or 0.0):.4f} "
+                        f"observed_weight_avg={float(summary['weight'] or 0.0):.2f} "
+                        f"evidence_avg={float(summary['evidence'] or 0.0):.2f}"
+                    )
     for run in rows:
         counts = conn.execute(
             "select status, count(*) n from candidates where run_id=? group by status order by status",
@@ -390,17 +424,43 @@ def audit_final_tick(conn, audit: Audit) -> None:
     else:
         print("sin resultados Final Tick")
 
+    if table_exists(conn, "candidate_final_tick_6m"):
+        print("Final Tick 6M:")
+        rows_6m = conn.execute(
+            """
+            select status, count(*) n
+            from candidate_final_tick_6m
+            group by status
+            order by n desc, status
+            """
+        ).fetchall()
+        for row in rows_6m:
+            print(f"  {row['status']}: {row['n']}")
+
     pending = conn.execute(
         """
         select ft.status, count(*) n
         from candidate_final_tick ft
-        where ft.status in ('pending_history_quality','pending_ohlc_trades')
+        left join candidate_final_tick_6m ft6 on ft6.candidate_id=ft.candidate_id
+        where ft.status='pending_history_quality'
+           or (ft.status='pending_ohlc_trades' and ft6.candidate_id is null)
         group by ft.status
         order by ft.status
         """
     ).fetchall()
     for row in pending:
         audit.warn(f"Final Tick conserva {row['n']} fila(s) {row['status']} retryable(s).")
+    short_ops_handoff = scalar(
+        conn,
+        """
+        select count(*)
+        from candidate_final_tick ft
+        join candidate_final_tick_6m ft6 on ft6.candidate_id=ft.candidate_id
+        where ft.status='pending_ohlc_trades'
+        """,
+    )
+    if short_ops_handoff:
+        print(f"probe pending_ohlc_trades resuelto/derivado a 6M: {short_ops_handoff}")
 
     robust_ready_without_final = scalar(
         conn,
@@ -422,18 +482,18 @@ def audit_final_tick(conn, audit: Audit) -> None:
         select count(*)
         from candidates c
         join candidate_robustness cr on cr.candidate_id=c.id
-        join candidate_final_tick ft on ft.candidate_id=c.id
+        join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
         where c.status='accepted'
           and cr.status='accepted'
-          and ft.status='accepted'
+          and ft6.status='accepted'
         """,
     )
-    print(f"elegibles por gate duro base+robust+final_tick: {portfolio_eligible}")
+    print(f"elegibles por gate duro base+robust+final_tick_6m: {portfolio_eligible}")
 
 
-def audit_weights(memory_path: Path, assets_path: Path, account_type: str) -> None:
+def audit_weights(memory_path: Path, assets_path: Path, account_type: str, broker: str) -> None:
     print_heading("Pesos")
-    disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type))
+    disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type, broker))
     _groups, aliases = load_asset_universe(assets_path, disabled_symbols=disabled)
     memory = AgentMemory(memory_path)
     try:
@@ -485,8 +545,13 @@ def audit_json_metrics(conn, audit: Audit) -> None:
 
 def main() -> int:
     args = parse_args()
-    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, args.account_type)
+    args.broker = normalize_broker(args.broker)
+    args.account_type = normalize_account_type(args.account_type, args.broker)
+    migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
+    memory_path = Path(args.memory).expanduser() if args.memory else account_memory_path(BASE_DIR, args.account_type, args.broker)
     assets_path = Path(args.assets).expanduser()
+    if assets_path == DEFAULT_ASSETS:
+        assets_path = broker_asset_universe_path_with_fallback(BASE_DIR, args.broker)
     if not memory_path.exists():
         print(f"ERROR: no existe memoria UBS: {memory_path}")
         return 1
@@ -505,7 +570,7 @@ def main() -> int:
     finally:
         conn.close()
 
-    audit_weights(memory_path, assets_path, args.account_type)
+    audit_weights(memory_path, assets_path, args.account_type, args.broker)
 
     print_heading("Resultado")
     if audit.warnings:

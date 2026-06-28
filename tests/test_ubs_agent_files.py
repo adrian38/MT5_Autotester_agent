@@ -24,6 +24,7 @@ from ubs_agent import (
     related_timeframes,
     robust_status_pending_for_retry,
     score_config_for_period,
+    target_symbol_disabled,
     target_timeframe_universe,
     min_trades_for_period,
     ranked_seed_selection,
@@ -194,17 +195,24 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target, "EURUSD")
         self.assertNotEqual(policy, "exploit")
 
+    def test_target_disabled_without_policy_does_not_read_default_account_file(self) -> None:
+        self.assertFalse(target_symbol_disabled("WTI", ("WTI",), {}, disabled_symbols=None))
+
     def test_disabled_symbols_policy_is_account_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_dir = Path(temp_dir)
 
             self.assertEqual(
                 account_disabled_symbols_path(base_dir, "ECN"),
-                base_dir / "outputs" / "ubs_disabled_symbols_ECN.json",
+                base_dir / "outputs" / "ubs_disabled_symbols_ROBOFOREX_ECN.json",
             )
             self.assertEqual(
                 account_disabled_symbols_path(base_dir, "PRO"),
-                base_dir / "outputs" / "ubs_disabled_symbols_PRO.json",
+                base_dir / "outputs" / "ubs_disabled_symbols_ROBOFOREX_PRO.json",
+            )
+            self.assertEqual(
+                account_disabled_symbols_path(base_dir, "PREMIUM", "AXI"),
+                base_dir / "outputs" / "ubs_disabled_symbols_AXI_PREMIUM.json",
             )
 
     def test_seed_validation_rejects_incomplete_ubs_set(self) -> None:
@@ -456,6 +464,34 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertGreater(len(pairs), 1)
         self.assertLess(sum(1 for _score, seed, _asset, _tf, _div in selected if seed.symbol == "XAUUSD"), 10)
 
+    def test_ranked_seed_selection_applies_final_fitness_softly(self) -> None:
+        ordinary = Seed(Path("ordinary.set"), "XAUUSD", "H4", "family", "1")
+        compatible = Seed(Path("compatible.set"), "XAUUSD", "H4", "family", "1")
+
+        observed = ranked_seed_selection(
+            [ordinary, compatible],
+            2,
+            {},
+            {},
+            random.Random(4),
+            {},
+            {},
+            {str(ordinary.path): -15.0, str(compatible.path): 15.0},
+        )
+        neutral = ranked_seed_selection(
+            [ordinary, compatible],
+            2,
+            {},
+            {},
+            random.Random(4),
+            {},
+            {},
+            {},
+        )
+
+        self.assertNotEqual(observed, neutral)
+        self.assertEqual(observed[0][1], compatible)
+
     def test_next_seed_survivors_are_diversified_without_changing_accepted_copy_pool(self) -> None:
         dominant = [
             (
@@ -485,6 +521,29 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 8)
         self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
+
+    def test_next_seed_survivors_apply_final_fitness_softly(self) -> None:
+        higher_score = Variant(
+            Path("higher.set"),
+            Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
+            "XAUUSD", "H4", (), (), "", (), (),
+        )
+        lower_score = Variant(
+            Path("lower.set"),
+            Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+            "EURUSD", "H1", (), (), "", (), (),
+        )
+
+        selected = select_next_seed_survivors(
+            [(higher_score, score(100.0)), (lower_score, score(50.0))],
+            20.0,
+            1,
+            {},
+            {},
+            {str(higher_score.path): -15.0, str(lower_score.path): 15.0},
+        )
+
+        self.assertEqual(selected[0][0], lower_score)
 
     def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
         selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]
@@ -534,6 +593,7 @@ class UBSSetsFileTests(unittest.TestCase):
         limiter = TargetDiversityLimiter(4)
         limiter.record("META", "H4")
         limiter.record("META", "H1")
+        limiter.record("META", "D1")
 
         target_symbol, target_period, _policy = choose_diverse_target(
             seed,
@@ -543,6 +603,7 @@ class UBSSetsFileTests(unittest.TestCase):
             limiter,
             ("META", "AMZN", "MSFT"),
             {},
+            disabled_symbols=set(),
         )
 
         self.assertNotEqual(target_symbol, "META")

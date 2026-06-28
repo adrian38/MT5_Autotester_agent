@@ -366,6 +366,19 @@ def parse_bool(value: str | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
 
 
+def normalize_terminal_broker(value: object) -> str:
+    text = str(value or "ROBOFOREX").strip().upper().replace(" ", "")
+    aliases = {
+        "ROBO": "ROBOFOREX",
+        "ROBOFOREX": "ROBOFOREX",
+        "IC": "ICTRADING",
+        "ICTRADING": "ICTRADING",
+        "ICMARKETS": "ICTRADING",
+        "AXI": "AXI",
+    }
+    return aliases.get(text, "ROBOFOREX")
+
+
 def parse_non_negative_int(value: object, default: int = 0) -> int:
     try:
         parsed = int(str(value).strip())
@@ -415,6 +428,9 @@ def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
     parser.read(config_path, encoding="utf-8-sig")
+    target_broker = "ROBOFOREX"
+    if parser.has_section("Multiterminal"):
+        target_broker = normalize_terminal_broker(parser["Multiterminal"].get("broker", target_broker))
     profiles: list[TerminalProfile] = []
     sections = sorted(
         (section for section in parser.sections() if section.lower().startswith("terminal.")),
@@ -422,6 +438,8 @@ def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -
     )
     for index, section in enumerate(sections, start=1):
         values = parser[section]
+        if normalize_terminal_broker(values.get("broker", target_broker)) != target_broker:
+            continue
         if not ignore_enabled and not parse_bool(values.get("enabled"), True):
             continue
         mt5_raw = values.get("mt5_path", "").strip()

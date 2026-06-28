@@ -1,6 +1,9 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
+from ubs.normalization import net_profit_normalization
 from ubs.score import SCORE_FORMULA_VERSION, ScoreConfig, ScoreResult
 
 
@@ -45,6 +48,33 @@ class UBSScoreTests(unittest.TestCase):
 
         self.assertEqual(base.stable_hash(), same.stable_hash())
         self.assertNotEqual(base.stable_hash(), changed.stable_hash())
+
+    def test_net_profit_normalization_is_broker_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            assets = base / "assets"
+            assets.mkdir()
+            (assets / "roboforex_assets.ini").write_text("[Stocks]\nsymbols=BA\n", encoding="utf-8")
+            (assets / "axi_assets.ini").write_text("[Stocks]\nsymbols=BA\n", encoding="utf-8")
+            (assets / "roboforex_normalization.json").write_text(
+                json.dumps(
+                    {
+                        "basis": "roboforex_test_basis",
+                        "default_net_profit_factor": 1.0,
+                        "group_net_profit_factors": {"Stocks": 5.0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                net_profit_normalization("BA", broker="ROBOFOREX", base_dir=base),
+                (5.0, "Stocks", "roboforex_test_basis"),
+            )
+            self.assertEqual(
+                net_profit_normalization("BA", broker="AXI", base_dir=base),
+                (1.0, "Stocks", "raw_net_profit"),
+            )
 
 
 if __name__ == "__main__":

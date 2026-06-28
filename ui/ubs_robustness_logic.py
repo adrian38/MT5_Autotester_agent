@@ -313,6 +313,7 @@ class UBSRobustnessLogicMixin:
             "--source-dir", str(self._ubs_generator_source_dir()),
             "--output-dir", str(output_dir),
             "--memory", str(self._ubs_memory_path()),
+            "--broker", self._ubs_broker(),
             "--account-type", self._ubs_account_type(),
             "--template", self.template_path.get(),
             "--evaluate-robustness",
@@ -440,6 +441,18 @@ class UBSRobustnessLogicMixin:
         if any(flag in args for flag in excluded):
             self._append_console("\n[Robustez auto] No se lanza: el proceso terminado no es generacion/backtests base.\n", tag="info")
             return False
+        if "--retry-mismatch-run" in args:
+            continuation = self._ubs_continuation_info()
+            if (
+                int(continuation.get("remaining") or 0) > 0
+                or int(continuation.get("pending_count") or 0) > 0
+                or int(continuation.get("retryable_count") or 0) > 0
+            ):
+                self._append_console(
+                    "\n[Robustez auto] No se lanza: el run base aun necesita otra continuacion.\n",
+                    tag="info",
+                )
+                return False
         runs_base_backtests = (
             "--execute-backtests" in args
             or "--backtest-pending-only" in args

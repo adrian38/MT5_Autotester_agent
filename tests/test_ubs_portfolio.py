@@ -1,27 +1,37 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+import tempfile
 import unittest
 
 from portfolio_manager.ubs_portfolio import (
+    ClosedTrade,
     PeriodReport,
     PortfolioType,
     RobustStrategySet,
     build_portfolio_greedy,
     build_correlation_pairs,
+    bootstrap_valley_drawdown,
     calc_point_dd,
     calc_valley_dd,
     curve_increment_correlation,
     evaluate_portfolio,
     execution_units_from_step,
     filter_eligible_sets,
+    filter_rows_grid_off,
     improve_with_local_search,
     merge_accumulated_curves,
     optimize_portfolio,
+    optimize_strict_monthly_portfolio,
     portfolio_group_key,
     recent_positive_month_count,
     score_set_for_portfolio,
     select_top_k_per_symbol,
+    set_file_has_enabled_grid,
+    slice_strategy_set_to_month,
+    slice_strategy_sets_to_month,
+    validate_strict_monthly_portfolio,
 )
 
 
@@ -35,6 +45,7 @@ def make_strategy(
     already_used: bool = False,
     trades: int = 120,
     profit_factor: float = 1.5,
+    price: float | None = None,
 ) -> RobustStrategySet:
     valley = calc_valley_dd(curve)
     point = calc_point_dd(curve)
@@ -54,6 +65,19 @@ def make_strategy(
         trades=trades,
         gross_profit=max(net, 0),
         gross_loss=-max(valley, 1),
+        closed_trades=[
+            ClosedTrade(
+                open_time=datetime(2026, 1, 1),
+                close_time=datetime(2026, 1, 2),
+                symbol=symbol,
+                volume=0.01,
+                profit=net,
+                open_price=price,
+                close_price=price,
+            )
+        ]
+        if price is not None
+        else [],
     )
     return RobustStrategySet(
         set_id=set_id,
@@ -77,6 +101,199 @@ def make_strategy(
 
 
 class UBSPortfolioOptimizerTests(unittest.TestCase):
+    def test_month_slice_uses_only_target_month_trade_increments_across_years(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10, 5, 25, 15, 30], trades=5)
+        strategy.curve_points_2020_2026_001 = [
+            (datetime(2020, 1, 10), 10.0),
+            (datetime(2020, 2, 10), 5.0),
+            (datetime(2021, 1, 10), 25.0),
+            (datetime(2022, 1, 10), 15.0),
+            (datetime(2022, 3, 10), 30.0),
+        ]
+
+        monthly = slice_strategy_set_to_month(strategy, 1)
+
+        self.assertEqual(monthly.curve_2020_2026_001, [0.0, 10.0, 30.0, 20.0])
+        self.assertEqual(monthly.net_profit_2020_2026_001, 20.0)
+        self.assertEqual(monthly.trades_2020_2026, 3)
+        self.assertEqual(monthly.month_years, (2020, 2021, 2022))
+        self.assertEqual(monthly.positive_month_years, (2020, 2021))
+        self.assertEqual(monthly.target_month, 1)
+
+    def test_month_slice_reports_candidates_without_timestamped_curves(self) -> None:
+        sliced, warnings = slice_strategy_sets_to_month(
+            [make_strategy("missing-dates", "EURUSD", [0, 10])],
+            1,
+        )
+        self.assertEqual(sliced, [])
+        self.assertTrue(any("curva historica con fechas" in warning for warning in warnings))
+
+    def test_grid_off_filter_excludes_only_explicit_enable_grid_true(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            grid_on = root / "grid_on.set"
+            grid_off = root / "grid_off.set"
+            missing = root / "missing_key.set"
+            grid_on.write_text("EnableGrid=true||false||0||true||N\n", encoding="utf-8")
+            grid_off.write_text("EnableGrid=false||false||0||true||N\n", encoding="utf-8")
+            missing.write_text("OtherParam=true\n", encoding="utf-8")
+
+            self.assertTrue(set_file_has_enabled_grid(grid_on))
+            self.assertFalse(set_file_has_enabled_grid(grid_off))
+            self.assertFalse(set_file_has_enabled_grid(missing))
+
+            rows = [
+                {"set_path": str(grid_on), "candidate_id": 1},
+                {"set_path": str(grid_off), "candidate_id": 2},
+                {"set_path": str(missing), "candidate_id": 3},
+                {"set_path": str(root / "does_not_exist.set"), "candidate_id": 4},
+            ]
+            filtered, warnings = filter_rows_grid_off(rows)
+
+            self.assertEqual([row["candidate_id"] for row in filtered], [2, 3, 4])
+            self.assertTrue(any("EnableGrid=true" in warning for warning in warnings))
+
+    def test_strict_monthly_validation_requires_target_month_best_in_last_five_years(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 10.0
+            points.append((datetime(year, 7, 10), accumulated))
+            accumulated += 8.0
+            points.append((datetime(year, 8, 10), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=100,
+            target_point_dd=100,
+            lookback_years=5,
+        )
+
+        self.assertTrue(validation["passed"])
+        self.assertEqual(validation["best_month"], 7)
+        self.assertEqual(len(validation["yearly"]), 5)
+
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 10.0
+            points.append((datetime(year, 7, 10), accumulated))
+            accumulated += 20.0
+            points.append((datetime(year, 8, 10), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=100,
+            target_point_dd=100,
+            lookback_years=5,
+        )
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["best_month"], 8)
+        self.assertTrue(any("no es el mejor" in reason for reason in validation["reasons"]))
+
+    def test_strict_monthly_validation_rejects_yearly_dd_break(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 20.0
+            points.append((datetime(year, 7, 5), accumulated))
+            accumulated -= 15.0
+            points.append((datetime(year, 7, 10), accumulated))
+            accumulated += 20.0
+            points.append((datetime(year, 7, 20), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=10,
+            target_point_dd=20,
+            lookback_years=5,
+        )
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("DD valle" in reason for reason in validation["reasons"]))
+
+    def test_strict_monthly_validation_rejects_any_month_dd_break(self) -> None:
+        strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
+        accumulated = 0.0
+        points = []
+        for year in range(2021, 2026):
+            accumulated += 100.0
+            points.append((datetime(year, 7, 5), accumulated))
+            accumulated += 10.0
+            points.append((datetime(year, 8, 5), accumulated))
+            accumulated -= 20.0
+            points.append((datetime(year, 8, 10), accumulated))
+            accumulated += 20.0
+            points.append((datetime(year, 8, 20), accumulated))
+        strategy.curve_points_2020_2026_001 = points
+
+        validation = validate_strict_monthly_portfolio(
+            [strategy],
+            {"seasonal": 1},
+            target_month=7,
+            target_valley_dd=15,
+            target_point_dd=15,
+            lookback_years=5,
+        )
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["best_month"], 7)
+        self.assertFalse(validation["monthly_dd"]["08"]["passed_dd"])
+        self.assertTrue(any("mes 08" in reason for reason in validation["reasons"]))
+
+    def test_block_bootstrap_is_deterministic_and_reports_audit_parameters(self) -> None:
+        curve = [0, 12, 5, -4, 9, 3, 18, 7, 4, 22]
+        first = bootstrap_valley_drawdown(
+            curve,
+            nominal_valley_dd_limit=14,
+            effective_valley_dd_limit=10,
+            simulations=250,
+            block_size=3,
+            seed=77,
+        )
+        second = bootstrap_valley_drawdown(
+            curve,
+            nominal_valley_dd_limit=14,
+            effective_valley_dd_limit=10,
+            simulations=250,
+            block_size=3,
+            seed=77,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.method, "circular_moving_block")
+        self.assertEqual(first.simulations, 250)
+        self.assertEqual(first.observations, len(curve) - 1)
+        self.assertEqual(first.block_size, 3)
+        self.assertGreaterEqual(first.valley_dd_p95, first.valley_dd_p50)
+        self.assertGreaterEqual(first.probability_exceed_effective_pct, first.probability_exceed_nominal_pct)
+        self.assertEqual(first.alert, first.valley_dd_p95 > 10)
+
+    def test_optimizer_attaches_one_thousand_simulation_stress_analysis(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("stress", "EURUSD", [0, 20, 10, 30, 5, 40])],
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=2,
+        )
+
+        self.assertIsNotNone(result.stress_bootstrap)
+        self.assertEqual(result.stress_bootstrap.simulations, 1000)
+        self.assertEqual(result.stress_bootstrap.nominal_valley_dd_limit, 200)
+        self.assertEqual(result.stress_bootstrap.effective_valley_dd_limit, result.target_valley_dd)
+
     def test_merge_accumulated_curves(self) -> None:
         self.assertEqual(
             merge_accumulated_curves([0, 100, 80, 150], [0, 30, 10, 70]),
@@ -104,6 +321,61 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         )
         self.assertLessEqual(result.actual_valley_dd, result.target_valley_dd)
         self.assertLessEqual(result.actual_point_dd, result.target_point_dd)
+
+    def test_optimizer_applies_configured_dd_reserve(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("s1", "EURUSD", [0, 100, 80, 160])],
+            capital=1000,
+            valley_dd_pct=10,
+            point_dd_pct=5,
+            dd_reserve_pct=10,
+            max_total_units=5,
+        )
+        self.assertEqual(result.target_valley_dd, 90.0)
+        self.assertEqual(result.target_point_dd, 45.0)
+        self.assertTrue(any("DD reserve 10.0%" in warning for warning in result.warnings))
+
+    def test_multi_start_search_is_deterministic_and_never_worsens_greedy_result(self) -> None:
+        sets = [
+            make_strategy("a", "EURUSD", [0, 60, 50, 100]),
+            make_strategy("b", "GBPUSD", [0, 45, 43, 130]),
+            make_strategy("c", "XAUUSD", [0, 20, 19, 60]),
+            make_strategy("d", "US30", [0, 30, 25, 75]),
+        ]
+        baseline = optimize_portfolio(
+            sets,
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=8,
+            max_sets_per_symbol=1,
+            search_restarts=0,
+        )
+        first = optimize_portfolio(
+            sets,
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=8,
+            max_sets_per_symbol=1,
+            search_restarts=3,
+        )
+        second = optimize_portfolio(
+            sets,
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            max_total_units=8,
+            max_sets_per_symbol=1,
+            search_restarts=3,
+        )
+        self.assertGreaterEqual(first.total_net_profit, baseline.total_net_profit)
+        self.assertEqual(first.total_net_profit, second.total_net_profit)
+        self.assertEqual(
+            [(item.set_id, item.units) for item in first.allocations],
+            [(item.set_id, item.units) for item in second.allocations],
+        )
+        self.assertTrue(any("Multi-start search evaluated" in warning for warning in first.warnings))
 
     def test_zero_units_are_allowed_for_selected_candidates(self) -> None:
         sets = [
@@ -229,6 +501,187 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertIn("Metals", selected_groups)
         self.assertIn("Stocks", selected_groups)
         self.assertIn("Forex", selected_groups)
+
+    def test_candidate_cap_reserves_symbols_inside_same_asset_group(self) -> None:
+        sets = []
+        for symbol_index, symbol in enumerate(("EURUSD", "USDJPY", "GBPUSD")):
+            for variant in range(3):
+                net = 200 - symbol_index * 20 - variant * 2
+                sets.append(make_strategy(f"{symbol}-{variant}", symbol, [0, net, net - 1, net * 2]))
+
+        selected = select_top_k_per_symbol(
+            sets,
+            top_k_per_symbol=3,
+            max_total_candidates=3,
+        )
+
+        self.assertEqual(
+            {portfolio_group_key(item.symbol) for item in selected},
+            {"Forex"},
+        )
+        self.assertEqual(
+            {item.symbol for item in selected},
+            {"EURUSD", "USDJPY", "GBPUSD"},
+        )
+
+    def test_strict_monthly_optimizer_can_combine_non_individually_best_sets(self) -> None:
+        july = 7
+        a = make_strategy("a", "EURUSD", [0, 1], trades=1)
+        b = make_strategy("b", "USDJPY", [0, 1], trades=1)
+        total_a = 0.0
+        total_b = 0.0
+        a_points = []
+        b_points = []
+        for year in range(2021, 2026):
+            total_a += 20.0
+            a_points.append((datetime(year, 7, 10), total_a))
+            total_a += 30.0
+            a_points.append((datetime(year, 8, 10), total_a))
+
+            total_b += 1.0
+            b_points.append((datetime(year, 7, 11), total_b))
+            total_b -= 50.0
+            b_points.append((datetime(year, 8, 11), total_b))
+            total_b += 2.0
+            b_points.append((datetime(year, 9, 11), total_b))
+        a.curve_points_2020_2026_001 = a_points
+        b.curve_points_2020_2026_001 = b_points
+        monthly, _warnings = slice_strategy_sets_to_month([a, b], july)
+
+        self.assertFalse(
+            validate_strict_monthly_portfolio(
+                [a],
+                {"a": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+        self.assertFalse(
+            validate_strict_monthly_portfolio(
+                [b],
+                {"b": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+
+        result = optimize_strict_monthly_portfolio(
+            monthly,
+            [a, b],
+            target_month=july,
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=3,
+            max_total_candidates=2,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+        )
+
+        self.assertEqual({item.set_id for item in result.allocations}, {"a", "b"})
+        self.assertTrue(result.seasonal_validation["passed"])
+        self.assertEqual(result.seasonal_validation["best_month"], july)
+
+    def test_strict_monthly_deep_refinement_adds_valid_improver(self) -> None:
+        july = 7
+        anchor = make_strategy("anchor", "EURUSD", [0, 1], trades=1)
+        improver = make_strategy("improver", "USDJPY", [0, 1], trades=1)
+        anchor_total = 0.0
+        improver_total = 0.0
+        anchor_points = []
+        improver_points = []
+        for year in range(2021, 2026):
+            anchor_total += 100.0
+            anchor_points.append((datetime(year, 7, 10), anchor_total))
+            improver_total += 10.0
+            improver_points.append((datetime(year, 7, 11), improver_total))
+            improver_total += 20.0
+            improver_points.append((datetime(year, 8, 11), improver_total))
+        anchor.curve_points_2020_2026_001 = anchor_points
+        improver.curve_points_2020_2026_001 = improver_points
+        monthly, _warnings = slice_strategy_sets_to_month([anchor, improver], july)
+
+        self.assertTrue(
+            validate_strict_monthly_portfolio(
+                [anchor],
+                {"anchor": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+        self.assertFalse(
+            validate_strict_monthly_portfolio(
+                [improver],
+                {"improver": 1},
+                target_month=july,
+                target_valley_dd=1_000,
+                target_point_dd=1_000,
+            )["passed"]
+        )
+
+        result = optimize_strict_monthly_portfolio(
+            monthly,
+            [anchor, improver],
+            target_month=july,
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=3,
+            max_total_candidates=2,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+        )
+
+        self.assertEqual({item.set_id for item in result.allocations}, {"anchor", "improver"})
+        self.assertEqual(result.active_strategies, 2)
+        self.assertTrue(result.seasonal_validation["passed"])
+        self.assertTrue(any("Optimizacion profunda aplicada" in warning for warning in result.warnings))
+
+    def test_strict_monthly_optimizer_can_run_without_deep_refinement(self) -> None:
+        july = 7
+        strategy = make_strategy("anchor", "EURUSD", [0, 1], trades=1)
+        total = 0.0
+        points = []
+        for year in range(2021, 2026):
+            total += 100.0
+            points.append((datetime(year, 7, 10), total))
+            total += 10.0
+            points.append((datetime(year, 8, 10), total))
+        strategy.curve_points_2020_2026_001 = points
+        monthly, _warnings = slice_strategy_sets_to_month([strategy], july)
+
+        result = optimize_strict_monthly_portfolio(
+            monthly,
+            [strategy],
+            target_month=july,
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=3,
+            max_total_candidates=1,
+            max_units_per_set=1,
+            max_total_units=1,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+            use_deep_refinement=False,
+        )
+
+        self.assertTrue(result.seasonal_validation["passed"])
+        self.assertTrue(any("sin optimizacion profunda" in warning for warning in result.warnings))
+        self.assertFalse(any("Optimizacion profunda aplicada" in warning for warning in result.warnings))
 
     def test_balanced_limits_active_sets_by_asset_group(self) -> None:
         result = optimize_portfolio(
@@ -424,6 +877,177 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         allocation = result.allocations[0]
         self.assertEqual(allocation.units, execution_units_from_step(5000, allocation.lot_size_step))
         self.assertEqual(allocation.lot, allocation.units * 0.01)
+
+    def test_roboforex_margin_guard_limits_stock_lot_by_balance(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("meta", "META", [0, 50, 49.9, 100], price=700.0)],
+            capital=5000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=1000,
+            margin_balance=5000,
+            max_margin_pct=100,
+            stock_leverage=20,
+            default_leverage=500,
+            stock_contract_size=100,
+            default_contract_size=1,
+        )
+
+        allocation = result.allocations[0]
+        self.assertLessEqual(allocation.units, 142)
+        self.assertLess(allocation.lot, 10.0)
+        self.assertLessEqual(float(result.margin_summary["total"]), 5000.0)
+        self.assertEqual(allocation.margin_leverage, 20.0)
+        self.assertEqual(allocation.margin_contract_size, 100.0)
+
+    def test_portfolio_repair_retains_required_sets(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("remaining", "EURUSD", [0, 20, 19, 40]),
+                make_strategy("replacement", "GBPUSD", [0, 80, 79, 160]),
+                make_strategy("best", "XAUUSD", [0, 100, 99, 200]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=3,
+            max_sets_per_symbol=1,
+            run_local_search=True,
+            required_set_ids=["remaining"],
+            minimum_active_strategies=2,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertGreaterEqual(allocations["remaining"], 1)
+        self.assertEqual(result.active_strategies, 2)
+
+    def test_portfolio_repair_fills_missing_strategy_slots_before_extra_units(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 99, 200]),
+                make_strategy("b", "GBPUSD", [0, 80, 79, 160]),
+                make_strategy("c", "XAUUSD", [0, 60, 59, 120]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=3,
+            run_local_search=False,
+            required_set_ids=["a", "b"],
+            minimum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        self.assertEqual(result.active_strategies, 3)
+        self.assertEqual({allocation.set_id for allocation in result.allocations}, {"a", "b", "c"})
+
+    def test_portfolio_repair_preserves_existing_units_and_only_sizes_replacement(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 99, 200]),
+                make_strategy("b", "GBPUSD", [0, 80, 79, 160]),
+                make_strategy("c", "XAUUSD", [0, 60, 59, 120]),
+                make_strategy("d", "US30", [0, 50, 49, 100]),
+            ],
+            capital=1000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            max_total_units=12,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 4, "b": 3},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations["a"], 4)
+        self.assertEqual(allocations["b"], 3)
+        self.assertEqual(result.active_strategies, 3)
+        self.assertEqual(len(set(allocations) - {"a", "b"}), 1)
+
+    def test_portfolio_repair_reduces_only_units_required_to_restore_dd(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 20]),
+                make_strategy("b", "GBPUSD", [0, 10, 20]),
+                make_strategy("c", "XAUUSD", [0, 10, 1]),
+            ],
+            capital=1000,
+            valley_dd_pct=14.9,
+            point_dd_pct=14.9,
+            max_total_units=4,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 2, "b": 1},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations["a"], 1)
+        self.assertEqual(allocations["b"], 1)
+        self.assertGreaterEqual(allocations["c"], 1)
+        self.assertTrue(any("changed only 1 existing unit" in warning for warning in result.warnings))
+
+    def test_portfolio_repair_can_add_replacement_progressively_before_reducing_existing_units(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 20]),
+                make_strategy("b", "GBPUSD", [0, 10, 20]),
+                make_strategy("c", "XAUUSD", [0, 0, 5]),
+            ],
+            capital=1000,
+            valley_dd_pct=14,
+            point_dd_pct=14,
+            max_total_units=5,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 2, "b": 1},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations, {"a": 2, "b": 1, "c": 2})
+        self.assertTrue(any("units were preserved" in warning for warning in result.warnings))
+
+    def test_portfolio_repair_stops_reducing_existing_units_once_complete_and_valid(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("a", "EURUSD", [0, 100, 20]),
+                make_strategy("b", "GBPUSD", [0, 10, 20]),
+                make_strategy("c", "XAUUSD", [0, 10, 1]),
+            ],
+            capital=1000,
+            valley_dd_pct=23,
+            point_dd_pct=23,
+            max_total_units=20,
+            run_local_search=True,
+            required_set_ids=["a", "b"],
+            required_initial_allocations={"a": 4, "b": 1},
+            preserve_required_allocations=True,
+            minimum_active_strategies=3,
+            maximum_active_strategies=3,
+            max_units_per_group_pct=1.0,
+            max_sets_per_group=10,
+        )
+        allocations = {allocation.set_id: allocation.units for allocation in result.allocations}
+        self.assertEqual(allocations["a"], 2)
+        self.assertEqual(allocations["b"], 1)
+        self.assertGreaterEqual(allocations["c"], 1)
+        reductions = [
+            decision for decision in result.decision_log
+            if decision.action == "reduce_unit_for_repair"
+        ]
+        self.assertEqual(len(reductions), 2)
 
 
 if __name__ == "__main__":

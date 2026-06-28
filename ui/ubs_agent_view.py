@@ -4,7 +4,7 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk
 
-from ubs.account import ACCOUNT_TYPES
+from ubs.account import BROKERS, account_types_for_broker
 
 from run_tests import REPORT_DIR
 
@@ -40,23 +40,39 @@ class UBSAgentViewMixin:
         paths = self._card(inner, "Rutas Agente UBS")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
-        ttk.Label(paths, text="Tipo de cuenta", style="CardDesc.TLabel").grid(
-            row=1, column=0, sticky="w", padx=20, pady=7
+        account_row = ttk.Frame(paths, style="Panel.TFrame")
+        account_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=20, pady=7)
+        account_row.columnconfigure(5, weight=1)
+        ttk.Label(account_row, text="Broker", style="CardDesc.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
+        broker_combo = ttk.Combobox(
+            account_row,
+            textvariable=self.ubs_broker,
+            values=BROKERS,
+            width=12,
+            state="readonly",
+        )
+        broker_combo.grid(row=0, column=1, sticky="w", padx=(0, 14))
+        broker_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_ubs_broker_changed())
+        ttk.Label(account_row, text="Cuenta", style="CardDesc.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(0, 8)
         )
         account_combo = ttk.Combobox(
-            paths,
+            account_row,
             textvariable=self.ubs_account_type,
-            values=ACCOUNT_TYPES,
+            values=account_types_for_broker(self.ubs_broker.get()),
             width=10,
             state="readonly",
         )
-        account_combo.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=7)
+        self.ubs_account_combo = account_combo
+        account_combo.grid(row=0, column=3, sticky="w", padx=(0, 14))
         account_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_ubs_account_type_changed())
         ttk.Button(
-            paths,
-            text="Ajustar cuenta",
+            account_row,
+            text="Ajustar",
             command=self._apply_ubs_account_type_to_app,
-        ).grid(row=1, column=2, sticky="w", padx=(0, 20), pady=7)
+        ).grid(row=0, column=4, sticky="w")
         self._path_row(paths, "Archivo .ex5 UBS", self.ubs_ex5_file, 2, self._browse_ex5_file)
         self._path_row(paths, "Carpeta seeds UBS", self.set_files_root, 3, self._browse_dir)
         self._path_row(paths, "Salida Agente UBS", self.ubs_generation_output, 4, self._browse_dir)
@@ -137,25 +153,25 @@ class UBSAgentViewMixin:
         explore_text.grid(row=0, column=0, sticky="w")
         tk.Label(
             explore_text,
-            text="Poblar universo sin seed",
+            text="Modo de generacion",
             bg=self.colors["panel"],
             fg=self.colors["text"],
             font=("Segoe UI", 10, "bold"),
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
             explore_text,
-            text="Reserva exploracion para activos/TF del universo que no existen en las seeds actuales.",
+            text="production prioriza evidencia existente; discovery reserva cobertura sin seed.",
             bg=self.colors["panel"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=1, column=0, sticky="w")
-        self._toggle_switch_cls(
+        ttk.Combobox(
             explore_row,
-            variable=self.ubs_force_unseeded_universe,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+            textvariable=self.ubs_generation_mode,
+            values=("production", "discovery"),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e", pady=(4, 0))
 
         long_tf_row = tk.Frame(agent, bg=self.colors["panel"])
         long_tf_row.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(6, 6))
@@ -328,8 +344,8 @@ class UBSAgentViewMixin:
             ("Trades min", self.ubs_robust_pass_min_trades, "spin"),
             ("DD max %", self.ubs_robust_pass_max_drawdown_pct, "entry"),
             ("Recovery min", self.ubs_robust_pass_min_recovery_factor, "entry"),
-            ("Bonus OK", self.ubs_robust_positive_bonus, "entry"),
-            ("Bonus FAIL", self.ubs_robust_negative_bonus, "entry"),
+            ("Bonus OK legacy", self.ubs_robust_positive_bonus, "entry"),
+            ("Bonus FAIL legacy", self.ubs_robust_negative_bonus, "entry"),
         ]
         for index, (label, variable, kind) in enumerate(robust_fields):
             row = 2 + index // 3

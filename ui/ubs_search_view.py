@@ -50,10 +50,11 @@ class UBSSearchViewMixin:
         account_combo = ttk.Combobox(
             audit,
             textvariable=self.ubs_audit_account,
-            values=("ECN", "PRO"),
+            values=(),
             state="readonly",
-            width=8,
+            width=18,
         )
+        self.ubs_audit_account_combo = account_combo
         account_combo.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
         account_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_audit_run_combo())
         tk.Label(
@@ -93,6 +94,7 @@ class UBSSearchViewMixin:
         ttk.Label(audit, textvariable=self.ubs_audit_status, style="Muted.TLabel").grid(
             row=0, column=6, sticky="w", padx=(8, 10), pady=6
         )
+        self._refresh_ubs_audit_account_values()
         self._refresh_ubs_audit_run_combo()
 
         self._ubs_search_section_title(audit_pane, 2, "Auditoria por test")
@@ -235,7 +237,7 @@ class UBSSearchViewMixin:
             "run": "RUN",
         }
         widths = {
-            "account": 70,
+            "account": 150,
             "candidate": 70,
             "status": 90,
             "robust": 90,

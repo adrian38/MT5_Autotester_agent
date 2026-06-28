@@ -147,7 +147,7 @@ Owns the Strategy Tester workflow:
 
 Owns the UBS agent workflow:
 
-- Load source `.set` seeds from `sets/ubs_ready` or a supplied source folder.
+- Load source `.set` seeds from `sets/ubs_ready/{BROKER}/{ACCOUNT}` or a supplied source folder.
 - Generate variants via `create_variant()`: reads seed, applies symbol/TF,
   injects global frozen values from `ubs_global_params.json` for any key listed
   in `ubs_mutation_overrides.json` `frozen_override`, then mutates the remaining
@@ -159,13 +159,13 @@ Owns the UBS agent workflow:
 - Explore related assets and timeframes (`M15`, `M30`, `H1`, `H4`, `D1`) using
   SQLite feedback from prior scored candidates.
 - Run MT5 backtests through `run_tests.py` when `--execute-backtests` is set.
-- Score reports via `ubs_score.py` and store candidates in
-  `outputs/ubs_memory.sqlite`.
+- Score reports via `ubs_score.py` and store candidates in the active
+  `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`.
 - Validate parsed report `Symbol`/`Period` against the intended target after
   applying `symbol_map`; invalid executions become `report_mismatch`.
 - Evaluate out-of-sample robustness with `--evaluate-robustness` for accepted
   candidates from a run. It copies candidate `.set` files into
-  `outputs/ubs_agent/<run>/robustness/...`, forwards robustness dates/criteria
+  `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/...`, forwards robustness dates/criteria
   to `run_tests.py`, validates symbol/timeframe again, and stores results in
   `candidate_robustness` without overwriting the base candidate score.
 - Evaluate Final Tick with `--evaluate-final-tick` for robustness-accepted
@@ -210,7 +210,8 @@ Owns the UBS agent workflow:
 | `--final-tick-max-dd-delta-pct` (default 35) | Max DD divergence % |
 | `--final-tick-max-trades-delta-pct` (default 35) | Max trade count divergence % |
 | `--from-date` / `--to-date` | Override template dates for any run |
-| `--force-unseeded-universe` | Reserve generation quota for universe items not in seed pool |
+| `--generation-mode production\|discovery` | Normal evidence-driven generation or explicit unseeded exploration |
+| `--force-unseeded-universe` | Legacy alias for `--generation-mode discovery` |
 | `--retry-candidate-id` | Re-run one candidate |
 | `--retry-run-id` + `--retry-mismatch-run` | Re-run all problem candidates in a run |
 | `--rescore-seeds-only` / `--rescore-candidates-only` / `--rescore-robustness-only` | Rescore without MT5 |
@@ -223,17 +224,22 @@ UBS support code lives in the `ubs/` package:
   writes are less likely to collide.
 - `ubs/memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
   and conversion from candidate rows to `Variant`.
-- `ubs/weights.py`: shared weight formula for `AgentMemory` and `UBS Universo`.
-  It applies accepted bonuses, rejected/cause penalties, no-trades penalty,
-  robustness OOS adjustments, correlated-group averaging, and shrinkage toward
-  zero for small samples. Seed rows with valid scored reports use the same base
-  formula as candidates.
+- `ubs/weights.py`: shared probability feedback for `AgentMemory` and
+  `UBS Universo`. It estimates the smoothed four-stage end-to-end probability,
+  groups correlated sources, returns bounded relative log-odds plus confidence,
+  and maps mutation evidence to percentile multipliers. The old additive row
+  utility remains only for legacy audit detail.
+- `ubs/selection.py`: regularized evolutionary fitness observer. It trains only
+  on finalized prior runs, predicts Final Tick 6M acceptance from report metrics
+  and timeframe, and keeps this fitness separate from the report score. Its
+  predictions are persisted and applied as a bounded soft ranking nudge with
+  selection scale `0.15`.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
-- `ubs/universe.py`: RoboForex universe parsing, common alias canonicalisation,
+- `ubs/universe.py`: broker universe parsing, common alias canonicalisation,
   disabled symbol JSON persistence, and disabled-seed filtering.
-- `ubs/normalization.py`: RoboForex-only score normalization helpers. It loads
-  `assets/roboforex_normalization.json` and returns the net-profit factor,
+- `ubs/normalization.py`: broker-scoped score normalization helpers. It loads
+  `assets/{broker}_normalization.json` and returns the net-profit factor,
   group, and basis used by scoring.
 - `ubs/score.py`: `ScoreConfig`, `ScoreResult`, scoring formula. Raw
   `net_profit` is preserved, while `normalized_net_profit` drives net pass/fail
@@ -339,10 +345,10 @@ explicitly about packaging.
 | `logs/` | Compile and backtest logs plus `last_*` pointers |
 | `reports/` | Copied MT5 HTML reports, `.set` files, chart images |
 | `outputs/` | Generated Excel workbooks |
-| `outputs/ubs_agent/` | Generated UBS variants and copied accepted sets |
-| `outputs/ubs_agent/<run>/robustness/` | Copied `.set` files for OOS robustness batches |
-| `outputs/ubs_agent/<run>/final_tick/` | OHLC and real-tick `.set` copies for Final Tick evaluation |
-| `outputs/ubs_memory.sqlite` | UBS agent SQLite: `runs`, `candidates`, `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`, `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members` |
+| `outputs/ubs_agent/{BROKER}/{ACCOUNT}/` | Generated UBS variants and copied accepted sets for that broker/account |
+| `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/robustness/` | Copied `.set` files for OOS robustness batches |
+| `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/` | OHLC and real-tick `.set` copies for Final Tick evaluation |
+| `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite` | UBS agent SQLite: `runs`, `candidates`, `seed_scores`, `seed_overrides`, `candidate_robustness`, `candidate_final_tick`, `portfolios`, `portfolio_allocations`, `portfolio_decision_log`, `portfolio_members` |
 | `outputs/ubs_global_params.json` | Global EA parameter values edited in the UBS Parámetros tab |
 | `outputs/ubs_mutation_overrides.json` | User mutability overrides: `frozen_override` and `mutable_override` |
 
