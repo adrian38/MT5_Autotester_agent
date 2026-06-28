@@ -201,9 +201,9 @@ generation scoring:
   relative percentile multipliers `0.5..1.5`; timeframe patch keys are excluded.
 - Report score and evolutionary fitness are separate. `ubs/selection.py`
   trains only on finalized prior runs, targets Final Tick 6M acceptance, and
-  persists probability/weight/evidence in `generation_seed_selection`. After
-  prospective validation on run 21, fitness is `observe_only`: its applied
-  scale is `0.0`, so it cannot alter source-seed or survivor selection.
+  persists probability/weight/evidence in `generation_seed_selection`. Fitness
+  now runs in `soft_weight` mode with applied scale `0.15`, so it can nudge
+  source-seed and survivor ranking without replacing the report score.
 - The following additive row utility is retained only for legacy audit detail;
   it is no longer used by asset/TF/mutation selection:
   - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).

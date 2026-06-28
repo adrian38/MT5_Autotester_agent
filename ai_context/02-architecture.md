@@ -232,7 +232,8 @@ UBS support code lives in the `ubs/` package:
 - `ubs/selection.py`: regularized evolutionary fitness observer. It trains only
   on finalized prior runs, predicts Final Tick 6M acceptance from report metrics
   and timeframe, and keeps this fitness separate from the report score. Its
-  predictions are persisted but currently have applied selection scale `0.0`.
+  predictions are persisted and applied as a bounded soft ranking nudge with
+  selection scale `0.15`.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
 - `ubs/universe.py`: broker universe parsing, common alias canonicalisation,

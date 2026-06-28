@@ -129,9 +129,9 @@ For UBS agent changes:
 - Validate selection-fitness changes with
   `tools/ubs_selection_fitness_audit.py --holdout-run-id <id>`, which excludes a
   complete run from training and reports its held-out AUC. Current-run rows must
-  never train the model. While fitness is `observe_only`, confirm its raw
-  probability/weight/evidence are persisted but changing those observed values
-  does not change source-seed ranking or next-generation survivor order.
+  never train the model. Fitness is currently `soft_weight` with applied scale
+  `0.15`; confirm its raw probability/weight/evidence are persisted and audit
+  its prospective AUC before increasing the scale.
 - For discovery-mode exploration changes, use a fixed `--random-seed` and
   confirm generated candidates include policy labels `asset_unseeded_force` or
   `tf_unseeded_force` with `--generation-mode discovery`, and neither forced

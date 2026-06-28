@@ -464,7 +464,7 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertGreater(len(pairs), 1)
         self.assertLess(sum(1 for _score, seed, _asset, _tf, _div in selected if seed.symbol == "XAUUSD"), 10)
 
-    def test_ranked_seed_selection_observes_but_does_not_apply_final_fitness(self) -> None:
+    def test_ranked_seed_selection_applies_final_fitness_softly(self) -> None:
         ordinary = Seed(Path("ordinary.set"), "XAUUSD", "H4", "family", "1")
         compatible = Seed(Path("compatible.set"), "XAUUSD", "H4", "family", "1")
 
@@ -476,7 +476,7 @@ class UBSSetsFileTests(unittest.TestCase):
             random.Random(4),
             {},
             {},
-            {str(ordinary.path): -10.0, str(compatible.path): 10.0},
+            {str(ordinary.path): -15.0, str(compatible.path): 15.0},
         )
         neutral = ranked_seed_selection(
             [ordinary, compatible],
@@ -489,7 +489,8 @@ class UBSSetsFileTests(unittest.TestCase):
             {},
         )
 
-        self.assertEqual(observed, neutral)
+        self.assertNotEqual(observed, neutral)
+        self.assertEqual(observed[0][1], compatible)
 
     def test_next_seed_survivors_are_diversified_without_changing_accepted_copy_pool(self) -> None:
         dominant = [
@@ -521,7 +522,7 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(len(selected), 8)
         self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
 
-    def test_next_seed_survivors_ignore_observed_fitness(self) -> None:
+    def test_next_seed_survivors_apply_final_fitness_softly(self) -> None:
         higher_score = Variant(
             Path("higher.set"),
             Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
@@ -542,7 +543,7 @@ class UBSSetsFileTests(unittest.TestCase):
             {str(higher_score.path): -15.0, str(lower_score.path): 15.0},
         )
 
-        self.assertEqual(selected[0][0], higher_score)
+        self.assertEqual(selected[0][0], lower_score)
 
     def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
         selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]

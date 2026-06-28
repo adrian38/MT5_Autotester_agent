@@ -230,9 +230,10 @@ requirement changes or a debt item is opened/closed.
   model trained only on finalized candidates from prior runs MUST estimate
   `candidate_final_tick_6m.status='accepted'`, excluding the current run, and
   persist its probability, raw weight and evidence for prospective audit. The
-  model MUST operate in `observe_only` mode with applied weight scale `0.0`:
-  neither source-seed ranking nor next-generation survivor selection may use
-  its weight until a later validated change explicitly re-enables it.
+  model MUST operate in `soft_weight` mode with applied weight scale `0.15`:
+  source-seed ranking and next-generation survivor selection MAY use the
+  scaled weight, but the raw report score MUST remain the base-quality
+  classifier and the fitness contribution MUST be visible in run metadata.
 - **FR-1.6.20** Mutation sampling MUST convert mutation feedback to relative
   percentile multipliers in the range `0.5..1.5`; missing feedback is neutral
   (`1.0`) and tied values receive the same multiplier. Core parameters retain
