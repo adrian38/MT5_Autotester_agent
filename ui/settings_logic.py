@@ -449,6 +449,18 @@ class SettingsLogicMixin:
                 "1" if self.ubs_monthly_portfolio_require_3_positive_months_6m.get() else "0"
             ),
             "ubs_monthly_portfolio_grid_off": "1" if self.ubs_monthly_portfolio_grid_off.get() else "0",
+            "ubs_monthly_portfolio_allow_forex": (
+                "1" if self.ubs_monthly_portfolio_allow_forex.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_indices_energies": (
+                "1" if self.ubs_monthly_portfolio_allow_indices_energies.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_metals": (
+                "1" if self.ubs_monthly_portfolio_allow_metals.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_stocks": (
+                "1" if self.ubs_monthly_portfolio_allow_stocks.get() else "0"
+            ),
             "ubs_monthly_portfolio_exclude_monthly_used": (
                 "1" if self.ubs_monthly_portfolio_exclude_monthly_used.get() else "0"
             ),

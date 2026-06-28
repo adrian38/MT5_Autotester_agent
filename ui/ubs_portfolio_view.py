@@ -234,6 +234,34 @@ class UBSPortfolioViewMixin:
                 ttk.Entry(form, textvariable=margin_pct_var, width=8).grid(
                     row=4, column=3, sticky="w", pady=5
                 )
+            allow_group_vars = (
+                ("Forex", getattr(self, "ubs_portfolio_allow_forex", None)),
+                ("Indices/Energias", getattr(self, "ubs_portfolio_allow_indices_energies", None)),
+                ("Metales", getattr(self, "ubs_portfolio_allow_metals", None)),
+                ("Stocks", getattr(self, "ubs_portfolio_allow_stocks", None)),
+            )
+            if any(var is not None for _label_text, var in allow_group_vars):
+                label(5, 0, "Grupos permitidos")
+                for offset, (label_text, variable) in enumerate(allow_group_vars):
+                    if variable is None:
+                        continue
+                    group_check = ttk.Checkbutton(
+                        form,
+                        text=label_text,
+                        variable=variable,
+                    )
+                    group_check.grid(
+                        row=5,
+                        column=1 + offset * 2,
+                        columnspan=2,
+                        sticky="w",
+                        padx=(4, 8),
+                        pady=5,
+                    )
+                    self._tooltip_cls(
+                        group_check,
+                        "Si esta activo, permite este grupo de activos para formar el portafolio mensual.",
+                    )
         elif grid_off_var is not None:
             grid_off_check = ttk.Checkbutton(
                 form,

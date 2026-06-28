@@ -8,11 +8,13 @@ from tkinter import messagebox
 from types import MethodType
 
 from portfolio_manager.ubs_portfolio import (
+    PortfolioAvailability,
     PortfolioResult,
     PortfolioType,
     filter_rows_grid_off,
     filter_rows_by_recent_positive_months,
     load_robust_sets_from_rows,
+    portfolio_group_key,
     slice_strategy_sets_to_month,
     summarize_robust_rows,
     validate_strict_monthly_portfolio,
@@ -29,6 +31,13 @@ MONTH_LABELS = (
     "01 - Enero", "02 - Febrero", "03 - Marzo", "04 - Abril",
     "05 - Mayo", "06 - Junio", "07 - Julio", "08 - Agosto",
     "09 - Septiembre", "10 - Octubre", "11 - Noviembre", "12 - Diciembre",
+)
+
+MONTHLY_ASSET_GROUP_FLAGS = (
+    ("Forex", "allow_forex"),
+    ("IndicesEnergies", "allow_indices_energies"),
+    ("Metals", "allow_metals"),
+    ("Stocks", "allow_stocks"),
 )
 
 
@@ -64,6 +73,66 @@ class UBSMonthlyPortfolioLogicMixin:
     def _monthly_portfolio_adapter(self) -> _MonthlyPortfolioLogicAdapter:
         return _MonthlyPortfolioLogicAdapter(self)
 
+    def _ubs_monthly_allowed_asset_groups(self) -> set[str]:
+        groups: set[str] = set()
+        for group, suffix in MONTHLY_ASSET_GROUP_FLAGS:
+            var = getattr(self, f"ubs_monthly_portfolio_{suffix}", None)
+            if var is not None and bool(var.get()):
+                groups.add(group)
+        return groups
+
+    def _monthly_row_group(self, row: object) -> str:
+        if isinstance(row, dict):
+            symbol = str(row.get("target_symbol") or row.get("symbol") or "")
+        else:
+            getter = getattr(row, "get", None)
+            if callable(getter):
+                symbol = str(getter("target_symbol") or getter("symbol") or "")
+            else:
+                symbol = str(getattr(row, "target_symbol", "") or getattr(row, "symbol", ""))
+        return portfolio_group_key(symbol)
+
+    def _filter_monthly_rows_by_allowed_groups(
+        self,
+        rows: list[dict[str, object]],
+        allowed_groups: set[str],
+    ) -> tuple[list[dict[str, object]], dict[str, int]]:
+        counts: dict[str, int] = {}
+        filtered: list[dict[str, object]] = []
+        for row in rows:
+            group = self._monthly_row_group(row)
+            counts[group] = counts.get(group, 0) + 1
+            if group in allowed_groups:
+                filtered.append(row)
+        return filtered, counts
+
+    def _filter_monthly_sets_by_allowed_groups(
+        self,
+        sets: list,
+        allowed_groups: set[str],
+    ) -> tuple[list, dict[str, int]]:
+        counts: dict[str, int] = {}
+        filtered: list = []
+        for strategy in sets:
+            group = portfolio_group_key(str(getattr(strategy, "symbol", "")))
+            counts[group] = counts.get(group, 0) + 1
+            if group in allowed_groups:
+                filtered.append(strategy)
+        return filtered, counts
+
+    def _monthly_availability_from_sets(self, sets: list) -> PortfolioAvailability:
+        by_symbol: dict[str, int] = {}
+        for strategy in sets:
+            symbol = str(getattr(strategy, "symbol", "") or "")
+            by_symbol[symbol] = by_symbol.get(symbol, 0) + 1
+        return PortfolioAvailability(
+            robust_accepted=len(sets),
+            already_used=0,
+            available=len(sets),
+            symbols_available=len(by_symbol),
+            by_symbol=dict(sorted(by_symbol.items())),
+        )
+
     def _monthly_roboforex_margin_enabled(self) -> bool:
         broker_getter = getattr(self, "_ubs_broker", None)
         broker = broker_getter() if callable(broker_getter) else "ROBOFOREX"
@@ -84,6 +153,10 @@ class UBSMonthlyPortfolioLogicMixin:
         inputs["portfolio_scope"] = "monthly"
         inputs["target_month"] = target_month
         inputs["target_month_label"] = MONTH_LABELS[target_month - 1]
+        allowed_groups = self._ubs_monthly_allowed_asset_groups()
+        if not allowed_groups:
+            raise ValueError("Selecciona al menos un grupo permitido: Forex, Indices/Energias, Metales o Stocks.")
+        inputs["allowed_asset_groups"] = sorted(allowed_groups)
         inputs["strict_yearly_month_validation"] = bool(
             self.ubs_monthly_portfolio_strict_yearly_month_validation.get()
         )
@@ -123,6 +196,7 @@ class UBSMonthlyPortfolioLogicMixin:
             "INICIO_GENERACION_MENSUAL",
             {
                 "inputs": self._monthly_log_safe(inputs),
+                "allowed_asset_groups": self._monthly_log_safe(inputs.get("allowed_asset_groups")),
                 "strict_yearly_month_validation": bool(inputs.get("strict_yearly_month_validation")),
                 "deep_optimization": bool(inputs.get("deep_optimization")),
                 "exclude_monthly_used": bool(inputs.get("exclude_monthly_used")),
@@ -201,6 +275,10 @@ class UBSMonthlyPortfolioLogicMixin:
             DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"]
         )
         self.ubs_monthly_portfolio_grid_off.set(False)
+        self.ubs_monthly_portfolio_allow_forex.set(True)
+        self.ubs_monthly_portfolio_allow_indices_energies.set(True)
+        self.ubs_monthly_portfolio_allow_metals.set(True)
+        self.ubs_monthly_portfolio_allow_stocks.set(True)
         self.ubs_monthly_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
         self.ubs_monthly_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_monthly_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
@@ -286,6 +364,19 @@ class UBSMonthlyPortfolioLogicMixin:
                 )
                 if not rows:
                     raise ValueError("No quedan candidatos tras aplicar Grid OFF.")
+            allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
+            rows, row_group_counts = self._filter_monthly_rows_by_allowed_groups(rows, allowed_groups)
+            self._append_ubs_monthly_generation_log(
+                log_path,
+                "FILTRO_GRUPOS_ACTIVO",
+                {
+                    "allowed_asset_groups": sorted(allowed_groups),
+                    "row_group_counts_before": row_group_counts,
+                    "rows_after": len(rows),
+                },
+            )
+            if not rows:
+                raise ValueError("No quedan candidatos tras aplicar grupos permitidos.")
             used_monthly_paths: list[str] = []
             if bool(inputs.get("exclude_monthly_used")):
                 used_monthly_paths = self._used_monthly_set_paths_all_accounts()
@@ -294,21 +385,25 @@ class UBSMonthlyPortfolioLogicMixin:
                     "FILTRO_USADOS_MENSUAL",
                     {"used_monthly_sets": len(used_monthly_paths)},
                 )
-            availability = summarize_robust_rows(rows, used_monthly_paths)
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
                 used_monthly_paths,
                 progress=lambda msg: self.after(0, self.ubs_monthly_portfolio_status.set, msg),
             )
+            raw_sets, set_group_counts = self._filter_monthly_sets_by_allowed_groups(raw_sets, allowed_groups)
+            availability = self._monthly_availability_from_sets(raw_sets)
             self._append_ubs_monthly_generation_log(
                 log_path,
                 "SETS_CARGADOS",
                 {
                     "raw_sets": len(raw_sets),
                     "symbols": len({getattr(item, "symbol", "") for item in raw_sets}),
+                    "set_group_counts_after_load": set_group_counts,
                     "warnings": load_warnings,
                 },
             )
+            if not raw_sets:
+                raise ValueError("No quedan sets cargados tras aplicar grupos permitidos.")
             monthly_sets, slice_warnings = slice_strategy_sets_to_month(
                 raw_sets,
                 int(inputs["target_month"]),
@@ -605,6 +700,9 @@ class UBSMonthlyPortfolioLogicMixin:
             rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=True)
             if bool(self.ubs_monthly_portfolio_grid_off.get()):
                 rows, _warnings = filter_rows_grid_off(rows)
+            allowed_groups = self._ubs_monthly_allowed_asset_groups()
+            if allowed_groups:
+                rows, _group_counts = self._filter_monthly_rows_by_allowed_groups(rows, allowed_groups)
             used_paths: list[str] = []
             if bool(self.ubs_monthly_portfolio_exclude_monthly_used.get()):
                 used_paths = self._used_monthly_set_paths_all_accounts()
@@ -629,6 +727,7 @@ class UBSMonthlyPortfolioLogicMixin:
                 else "Sin exclusion por cuarentena ni por uso | "
             )
             + f"Simbolos: {availability.symbols_available}"
+            + f" | Grupos: {','.join(sorted(self._ubs_monthly_allowed_asset_groups()))}"
             + (" | Grid OFF activo" if bool(self.ubs_monthly_portfolio_grid_off.get()) else "")
         )
         for symbol, count in availability.by_symbol.items():

@@ -32,6 +32,7 @@ from portfolio_manager.ubs_portfolio import (
     load_robust_sets_from_rows,
     optimize_portfolio,
     optimize_strict_monthly_portfolio,
+    portfolio_group_key,
     portfolio_group_summary,
     portfolio_margin_summary,
     portfolio_symbol_key,
@@ -1955,6 +1956,7 @@ class UBSPortfolioLogicMixin:
             "deep_optimization": False,
             "exclude_monthly_used": False,
             "corr_with_monthly_portfolios": False,
+            "allowed_asset_groups": ["Forex", "IndicesEnergies", "Metals", "Stocks"],
         }
         defaults.update(stored)
         return defaults
@@ -2102,6 +2104,12 @@ class UBSPortfolioLogicMixin:
             grid_warnings: list[str] = []
             if bool(inputs.get("grid_off")):
                 rows, grid_warnings = filter_rows_grid_off(rows)
+            allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
+            if is_monthly and allowed_groups:
+                rows = [
+                    row for row in rows
+                    if portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
+                ]
             if is_monthly:
                 used = (
                     self._used_monthly_set_paths_all_accounts(
@@ -2116,6 +2124,11 @@ class UBSPortfolioLogicMixin:
                     exclude_portfolio_id=portfolio_id,
                 )
             raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+            if is_monthly and allowed_groups:
+                raw_sets = [
+                    strategy for strategy in raw_sets
+                    if portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
+                ]
             full_sets_for_strict_validation = list(raw_sets)
             raw_sets, scope_warnings = self._scope_portfolio_sets(raw_sets, inputs)
             if not raw_sets:
