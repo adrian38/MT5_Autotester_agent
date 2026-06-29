@@ -70,6 +70,13 @@ DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_SYMBOL_MAP = default_symbol_map_for_broker(DEFAULT_BROKER)
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
+LEGACY_TIMEFRAME_TO_ENUM = {
+    "60": TIMEFRAME_TO_ENUM["H1"],
+    "240": TIMEFRAME_TO_ENUM["H4"],
+    "1440": TIMEFRAME_TO_ENUM["D1"],
+    "10080": TIMEFRAME_TO_ENUM["W1"],
+    "43200": TIMEFRAME_TO_ENUM["MN"],
+}
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
 TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
@@ -1176,6 +1183,97 @@ def write_set_force_symbol(source: Path, destination: Path, symbol: str) -> bool
         replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
     write_set_text(destination, "\n".join(lines), encoding)
     return changed
+
+
+def _set_param_active(params: dict[str, str], key: str) -> bool:
+    value = str(params.get(key) or "").strip()
+    return bool(value and value != "0")
+
+
+def infer_missing_run_strategy_from_set(path: Path, params: dict[str, str]) -> str:
+    current = str(params.get("Run_Strategy") or "").strip()
+    if current in {"1", "2"}:
+        return current
+
+    stem = path.stem.lower()
+    has_st1 = "ST1_Timeframe" in params or "Entry_Timing" in params
+    has_vol = "VolTimeframe" in params
+    st1_active = _set_param_active(params, "ST1_Timeframe") or _set_param_active(params, "Entry_Timing")
+    vol_active = _set_param_active(params, "VolTimeframe")
+
+    if st1_active and not vol_active:
+        return "1"
+    if vol_active and not st1_active:
+        return "2"
+    if any(token in stem for token in ("bitcoin_reaper", "scalp", "aggressive_sl")) and has_st1:
+        return "1"
+    if "volatility_breakout" in stem and has_vol:
+        return "2"
+    return ""
+
+
+def replace_or_add_current_value(lines: list[str], key: str, value: str, default_value: str) -> bool:
+    if replace_existing_current_value(lines, key, value):
+        return True
+    replace_or_add_plain_key(lines, key, default_value)
+    return True
+
+
+def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, object]:
+    text, encoding = read_set_with_encoding(path)
+    lines = text.splitlines()
+    params = load_set_params(path)
+    changes: list[str] = []
+
+    normalized_symbol = normalize_set_symbol(symbol)
+    if normalized_symbol and normalize_set_symbol(params.get("ForceSymbol", "")) != normalized_symbol:
+        if replace_existing_current_value(lines, "ForceSymbol", normalized_symbol):
+            changes.append("ForceSymbol")
+        else:
+            replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
+            changes.append("ForceSymbol")
+
+    run_strategy = infer_missing_run_strategy_from_set(path, params)
+    if run_strategy and str(params.get("Run_Strategy") or "").strip() != run_strategy:
+        replace_or_add_current_value(
+            lines,
+            "Run_Strategy",
+            run_strategy,
+            f"{run_strategy}||1||0||2||N",
+        )
+        changes.append("Run_Strategy")
+
+    enum_value = TIMEFRAME_TO_ENUM.get(str(period or "").strip().upper())
+    if enum_value and run_strategy == "1" and str(params.get("ST1_Timeframe") or "").strip() in {"", "0"}:
+        replace_or_add_current_value(
+            lines,
+            "ST1_Timeframe",
+            enum_value,
+            f"{enum_value}||0||0||49153||N",
+        )
+        changes.append("ST1_Timeframe")
+    elif enum_value and run_strategy == "2" and str(params.get("VolTimeframe") or "").strip() in {"", "0"}:
+        replace_or_add_current_value(
+            lines,
+            "VolTimeframe",
+            enum_value,
+            f"{enum_value}||0||0||49153||N",
+        )
+        changes.append("VolTimeframe")
+
+    valid_timeframe_values = set(TIMEFRAME_ENUM)
+    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+        raw = str(params.get(key) or "").strip()
+        if raw in {"", "0"} or raw in valid_timeframe_values:
+            continue
+        replacement = LEGACY_TIMEFRAME_TO_ENUM.get(raw)
+        if replacement:
+            replace_existing_current_value(lines, key, replacement)
+            changes.append(key)
+
+    if changes:
+        write_set_text(path, "\n".join(lines), encoding)
+    return {"changed": changes, "run_strategy": run_strategy}
 
 
 def validate_seed_backtest_set(seed: Seed) -> list[str]:

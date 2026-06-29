@@ -784,6 +784,25 @@ def load_template(template_path: Path) -> configparser.ConfigParser:
     return parser
 
 
+TESTER_DEFAULTS: dict[str, str] = {
+    "Deposit": "1000",
+    "Currency": "EUR",
+    "Leverage": "1:500",
+    "Optimization": "0",
+    "Visual": "0",
+    "ReplaceReport": "1",
+    "ShutdownTerminal": "1",
+}
+
+
+def ensure_tester_defaults(config: configparser.ConfigParser) -> None:
+    if "Tester" not in config:
+        config["Tester"] = {}
+    for key, value in TESTER_DEFAULTS.items():
+        if not config["Tester"].get(key, "").strip():
+            config["Tester"][key] = value
+
+
 def apply_symbol_suffix(symbol: str, suffix: str) -> str:
     symbol = symbol.strip()
     suffix = suffix.strip()
@@ -1047,6 +1066,7 @@ def create_ini(
     config = configparser.ConfigParser(interpolation=None)
     config.optionxform = str
     config.read_dict({section: dict(template[section]) for section in template.sections()})
+    ensure_tester_defaults(config)
     config["Tester"]["Expert"] = normalize_expert_for_tester(expert_path)
     inferred_fields = infer_tester_fields_from_set(set_file) if infer_tester_from_set else {}
     if set_file and infer_tester_from_set and prefer_set_path_timeframe:
@@ -1150,7 +1170,7 @@ def copy_reports_to_project(report_files: list[Path], logger: RunLogger) -> list
     return copied
 
 
-def filter_fresh_report_files(report_files: list[Path], started_at: float, logger: RunLogger) -> list[Path]:
+def filter_fresh_report_files(report_files: list[Path], started_at: float, logger: RunLogger | None) -> list[Path]:
     fresh: list[Path] = []
     cutoff = started_at - 1.0
     for path in report_files:
@@ -1160,7 +1180,7 @@ def filter_fresh_report_files(report_files: list[Path], started_at: float, logge
             continue
         if mtime >= cutoff:
             fresh.append(path)
-        else:
+        elif logger is not None:
             logger.write(f"  Reporte viejo ignorado: {path}")
     return fresh
 
@@ -1302,8 +1322,6 @@ def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None
 
 
 _LOG_CHECK_INTERVAL = 10  # seconds between tester journal polls
-
-
 def wait_for_mt5_process(
     process: subprocess.Popen,
     logger: RunLogger,

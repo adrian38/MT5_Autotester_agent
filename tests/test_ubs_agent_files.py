@@ -31,6 +31,7 @@ from ubs_agent import (
     min_trades_for_period,
     ranked_seed_selection,
     reserved_timeframe_plan,
+    repair_seed_backtest_set,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
     run_backtests,
@@ -293,6 +294,75 @@ class UBSSetsFileTests(unittest.TestCase):
             write_set_force_symbol(path, path, "XAUUSD")
 
             self.assertIn("ForceSymbol=XAUUSD", path.read_text(encoding="utf-8"))
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+
+    def test_repair_seed_backtest_set_fixes_bitcoin_reaper_st1_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "BTC_H1__Bitcoin_Reaper__updated__k.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=16385||0||0||49153||N",
+                        "EA_Comment=Ultimate Breakout System_k",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "BTCUSD", "H1")
+            text = path.read_text(encoding="utf-8")
+
+            self.assertEqual(result["run_strategy"], "1")
+            self.assertIn("ForceSymbol=BTCUSD", text)
+            self.assertIn("Run_Strategy=1||1||0||2||N", text)
+            self.assertIn("ST1_Timeframe=16385||0||0||49153||N", text)
+            self.assertEqual(validate_seed_backtest_set(Seed(path, "BTCUSD", "H1", "family", "1")), [])
+
+    def test_repair_seed_backtest_set_uses_volatility_strategy_when_vol_key_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Volatility_Breakout__BTCUSD__H1_A.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                        "VolTimeframe=16385||0||0||49153||N",
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=0||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "BTCUSD", "H1")
+            text = path.read_text(encoding="utf-8")
+
+            self.assertEqual(result["run_strategy"], "2")
+            self.assertIn("ForceSymbol=BTCUSD", text)
+            self.assertIn("Run_Strategy=2||1||0||2||N", text)
+            self.assertEqual(validate_seed_backtest_set(Seed(path, "BTCUSD", "H1", "family", "2")), [])
+
+    def test_repair_seed_backtest_set_converts_legacy_timeframe_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Old_Optimizations_H1__MT4A.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=60||0||0||49153||N",
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "XAUUSD", "H1")
+            text = path.read_text(encoding="utf-8")
+
+            self.assertIn("Entry_Timing=16385||0||0||49153||N", text)
+            self.assertEqual(result["run_strategy"], "1")
+            self.assertEqual(validate_seed_backtest_set(Seed(path, "XAUUSD", "H1", "family", "1")), [])
 
     def test_copy_accepted_replaces_previous_copy_for_same_set(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
