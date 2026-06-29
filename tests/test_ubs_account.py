@@ -192,6 +192,24 @@ class UBSAccountTests(unittest.TestCase):
         self.assertEqual(agent._ubs_symbol_maps_by_broker["ROBOFOREX"], "XTIUSD=WTI")
         self.assertEqual(agent.symbol_map.get(), "GER40=GER40.cash")
 
+    def test_account_context_refresh_updates_multiterminal_tree(self) -> None:
+        agent = _FakeAgent("STANDARD", "", "", broker="ICTRADING")
+        agent.status_text = _FakeVar("")
+        refreshed: list[str] = []
+
+        def safe_refresh(label: str, callback) -> None:
+            refreshed.append(label)
+            callback()
+
+        agent._write_ui_settings = lambda: None
+        agent._safe_refresh = safe_refresh
+        agent._refresh_multiterminal_tree = lambda: refreshed.append("multiterminal_tree")
+
+        agent._refresh_ubs_account_context()
+
+        self.assertIn("multiterminal", refreshed)
+        self.assertIn("multiterminal_tree", refreshed)
+
     def test_ubs_portfolio_sources_are_limited_to_active_broker(self) -> None:
         import ui.ubs_portfolio_logic as portfolio_logic
         from unittest.mock import patch
