@@ -1367,6 +1367,52 @@ def roboforex_contract_size(symbol: str) -> float:
     return 100.0 if portfolio_group_key(symbol) == "Stocks" else 1.0
 
 
+def normalize_margin_profile(profile: str | None) -> str:
+    value = str(profile or "roboforex").strip().lower()
+    if value in {"ttp", "thetradingpit", "tradingpit", "the_trading_pit"}:
+        return "ttp"
+    return "roboforex"
+
+
+def margin_profile_label(profile: str | None) -> str:
+    return "TTP" if normalize_margin_profile(profile) == "ttp" else "RoboForex"
+
+
+def margin_leverage_for_profile(
+    symbol: str,
+    *,
+    margin_profile: str | None = "roboforex",
+    stock_leverage: float = 20.0,
+    default_leverage: float = 500.0,
+) -> float:
+    profile = normalize_margin_profile(margin_profile)
+    if profile == "ttp":
+        group = portfolio_group_key(symbol)
+        symbol_key = portfolio_symbol_key(symbol)
+        if group == "Stocks" or group == "Crypto":
+            return 2.0
+        if group == "Metals":
+            return 10.0
+        if group == "IndicesEnergies":
+            return 10.0 if symbol_key in {"BRENT", "WTI"} else 15.0
+        if group == "Forex":
+            return 50.0
+        return 50.0
+    return stock_leverage if portfolio_group_key(symbol) == "Stocks" else default_leverage
+
+
+def margin_contract_size_for_profile(
+    symbol: str,
+    *,
+    margin_profile: str | None = "roboforex",
+    stock_contract_size: float = 100.0,
+    default_contract_size: float = 1.0,
+) -> float:
+    # Contract size is kept explicit and broker-independent for now: stocks use
+    # 100 and every other group uses 1, matching the portfolio margin model.
+    return stock_contract_size if portfolio_group_key(symbol) == "Stocks" else default_contract_size
+
+
 def strategy_reference_price(strategy: RobustStrategySet) -> float:
     """Conservative price estimate from parsed MT5 closed trades."""
     prices: list[float] = []
@@ -1384,6 +1430,7 @@ def allocation_margin_required(
     strategy: RobustStrategySet,
     units: int,
     *,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1393,9 +1440,18 @@ def allocation_margin_required(
     if units <= 0:
         return 0.0
     lot = units * 0.01
-    is_stock = portfolio_group_key(strategy.symbol) == "Stocks"
-    leverage = stock_leverage if is_stock else default_leverage
-    contract_size = stock_contract_size if is_stock else default_contract_size
+    leverage = margin_leverage_for_profile(
+        strategy.symbol,
+        margin_profile=margin_profile,
+        stock_leverage=stock_leverage,
+        default_leverage=default_leverage,
+    )
+    contract_size = margin_contract_size_for_profile(
+        strategy.symbol,
+        margin_profile=margin_profile,
+        stock_contract_size=stock_contract_size,
+        default_contract_size=default_contract_size,
+    )
     if leverage <= 0:
         return float("inf")
     return lot * contract_size * strategy_reference_price(strategy) / leverage
@@ -1407,6 +1463,7 @@ def portfolio_margin_summary(
     *,
     balance: float,
     max_margin_pct: float,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1418,13 +1475,23 @@ def portfolio_margin_summary(
         units = max(int(allocations.get(strategy.set_id, 0)), 0)
         if units <= 0:
             continue
-        is_stock = portfolio_group_key(strategy.symbol) == "Stocks"
-        leverage = stock_leverage if is_stock else default_leverage
-        contract_size = stock_contract_size if is_stock else default_contract_size
+        leverage = margin_leverage_for_profile(
+            strategy.symbol,
+            margin_profile=margin_profile,
+            stock_leverage=stock_leverage,
+            default_leverage=default_leverage,
+        )
+        contract_size = margin_contract_size_for_profile(
+            strategy.symbol,
+            margin_profile=margin_profile,
+            stock_contract_size=stock_contract_size,
+            default_contract_size=default_contract_size,
+        )
         price = strategy_reference_price(strategy)
         margin = allocation_margin_required(
             strategy,
             units,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -1449,6 +1516,8 @@ def portfolio_margin_summary(
         "limit": limit,
         "total": total,
         "usage_pct": total / limit * 100.0 if limit > 0 else 0.0,
+        "profile": normalize_margin_profile(margin_profile),
+        "profile_label": margin_profile_label(margin_profile),
         "stock_leverage": float(stock_leverage),
         "default_leverage": float(default_leverage),
         "stock_contract_size": float(stock_contract_size),
@@ -1463,6 +1532,7 @@ def allocations_respect_margin_limit(
     *,
     balance: float | None,
     max_margin_pct: float | None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1475,6 +1545,7 @@ def allocations_respect_margin_limit(
         allocations,
         balance=float(balance),
         max_margin_pct=float(max_margin_pct),
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -1545,6 +1616,7 @@ def can_add_unit(
     group_unit_cap_bootstrap: int = 10,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1597,6 +1669,7 @@ def can_add_unit(
         temp_allocations,
         balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -1642,6 +1715,7 @@ def _allocations_respect_constraints(
     max_sets_per_group: int | None = None,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1684,6 +1758,7 @@ def _allocations_respect_constraints(
         allocations,
         balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -1761,6 +1836,7 @@ def build_portfolio_greedy(
     allow_fixed_reductions_for_repair: bool = False,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1782,6 +1858,7 @@ def build_portfolio_greedy(
         max_sets_per_group,
         margin_balance,
         max_margin_pct,
+        margin_profile,
         stock_leverage,
         default_leverage,
         stock_contract_size,
@@ -1834,6 +1911,7 @@ def build_portfolio_greedy(
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -2042,6 +2120,7 @@ def improve_with_local_search(
     minimum_active_strategies: int | None = None,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -2079,6 +2158,7 @@ def improve_with_local_search(
                     max_sets_per_group,
                     margin_balance,
                     max_margin_pct,
+                    margin_profile,
                     stock_leverage,
                     default_leverage,
                     stock_contract_size,
@@ -2181,6 +2261,7 @@ def improve_with_multi_start_search(
     group_unit_cap_bootstrap: int = 10,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -2221,6 +2302,7 @@ def improve_with_multi_start_search(
                     max_sets_per_group,
                     margin_balance,
                     max_margin_pct,
+                    margin_profile,
                     stock_leverage,
                     default_leverage,
                     stock_contract_size,
@@ -2305,6 +2387,7 @@ def improve_with_multi_start_search(
             max_iterations=200,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -2710,6 +2793,7 @@ def _strict_monthly_safe_refill_allocations(
     max_portfolio_corr: float | None,
     margin_balance: float | None,
     max_margin_pct: float | None,
+    margin_profile: str | None,
     stock_leverage: float,
     default_leverage: float,
     stock_contract_size: float,
@@ -2746,6 +2830,7 @@ def _strict_monthly_safe_refill_allocations(
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -2849,6 +2934,7 @@ def _strict_monthly_deep_refine_allocations(
     max_portfolio_corr: float | None,
     margin_balance: float | None,
     max_margin_pct: float | None,
+    margin_profile: str | None,
     stock_leverage: float,
     default_leverage: float,
     stock_contract_size: float,
@@ -2886,6 +2972,7 @@ def _strict_monthly_deep_refine_allocations(
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -2949,6 +3036,7 @@ def _strict_monthly_deep_refine_allocations(
                     max_sets_per_group,
                     margin_balance,
                     max_margin_pct,
+                    margin_profile,
                     stock_leverage,
                     default_leverage,
                     stock_contract_size,
@@ -3059,6 +3147,7 @@ def optimize_strict_monthly_portfolio(
     search_restarts: int = 0,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -3121,6 +3210,7 @@ def optimize_strict_monthly_portfolio(
                 search_restarts=int(search_restarts),
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -3175,6 +3265,7 @@ def optimize_strict_monthly_portfolio(
                         search_restarts=0,
                         margin_balance=margin_balance,
                         max_margin_pct=max_margin_pct,
+                        margin_profile=margin_profile,
                         stock_leverage=stock_leverage,
                         default_leverage=default_leverage,
                         stock_contract_size=stock_contract_size,
@@ -3244,6 +3335,7 @@ def optimize_strict_monthly_portfolio(
             max_portfolio_corr=max_portfolio_corr,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -3288,6 +3380,7 @@ def optimize_strict_monthly_portfolio(
                 search_restarts=0,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -3344,6 +3437,7 @@ def optimize_strict_monthly_portfolio(
         max_portfolio_corr=max_portfolio_corr,
         margin_balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -3400,6 +3494,7 @@ def optimize_strict_monthly_portfolio(
         search_restarts=0,
         margin_balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -3454,6 +3549,7 @@ def optimize_portfolio(
     bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -3522,6 +3618,7 @@ def optimize_portfolio(
         allow_fixed_reductions_for_repair=preserve_required_allocations,
         margin_balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -3552,6 +3649,7 @@ def optimize_portfolio(
             minimum_active_strategies=minimum_active_strategies,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -3596,6 +3694,7 @@ def optimize_portfolio(
             allow_fixed_reductions_for_repair=preserve_required_allocations,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -3625,6 +3724,7 @@ def optimize_portfolio(
                 minimum_active_strategies=minimum_active_strategies,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -3663,6 +3763,7 @@ def optimize_portfolio(
             group_unit_cap_bootstrap=group_unit_cap_bootstrap,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -3692,6 +3793,7 @@ def optimize_portfolio(
             allocations,
             balance=float(margin_balance),
             max_margin_pct=float(max_margin_pct),
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -3799,8 +3901,16 @@ def optimize_portfolio(
             + ", ".join(group_limit_overages)
         )
     if margin_summary:
+        profile_label = str(margin_summary.get("profile_label") or margin_profile_label(margin_profile))
+        if normalize_margin_profile(str(margin_summary.get("profile") or margin_profile)) == "ttp":
+            rule_text = (
+                "Forex 1:50; indices 1:15; commodities/metales/energias 1:10; "
+                "stocks/crypto 1:2; contract_size stocks 100/resto 1."
+            )
+        else:
+            rule_text = "Stocks 1:20 contract_size 100; resto 1:500 contract_size 1."
         warnings.append(
-            "Margen RoboForex aplicado: Stocks 1:20 contract_size 100; resto 1:500 contract_size 1. "
+            f"Margen {profile_label} aplicado: {rule_text} "
             f"Uso estimado {float(margin_summary['total']):.2f}/"
             f"{float(margin_summary['limit']):.2f} "
             f"({float(margin_summary['usage_pct']):.1f}% del limite)."

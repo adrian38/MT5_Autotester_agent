@@ -955,6 +955,12 @@ class MT5AutotesterUI(
                 True,
             )
         )
+        self.ubs_monthly_portfolio_validate_ttp_margin = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}validate_ttp_margin"),
+                False,
+            )
+        )
         self.ubs_monthly_portfolio_max_margin_pct = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}max_margin_pct", "100")
         )

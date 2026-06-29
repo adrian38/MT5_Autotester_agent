@@ -57,6 +57,14 @@ class _MonthlyPortfolioLogicAdapter:
                 shared = getattr(UBSPortfolioLogicMixin, name, None)
                 if callable(shared):
                     return MethodType(shared, self)
+                try:
+                    from ui.ubs_portfolio_view import UBSPortfolioViewMixin
+
+                    shared_view = getattr(UBSPortfolioViewMixin, name, None)
+                    if callable(shared_view):
+                        return MethodType(shared_view, self)
+                except Exception:
+                    pass
         return getattr(app, name)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -133,12 +141,28 @@ class UBSMonthlyPortfolioLogicMixin:
             by_symbol=dict(sorted(by_symbol.items())),
         )
 
+    def _select_ubs_monthly_margin_profile(self, profile: str) -> None:
+        """Keep RoboForex/TTP margin checks mutually exclusive in the monthly UI."""
+        profile_key = str(profile or "").strip().lower()
+        if profile_key == "ttp" and bool(self.ubs_monthly_portfolio_validate_ttp_margin.get()):
+            self.ubs_monthly_portfolio_validate_roboforex_margin.set(False)
+        elif profile_key == "roboforex" and bool(self.ubs_monthly_portfolio_validate_roboforex_margin.get()):
+            self.ubs_monthly_portfolio_validate_ttp_margin.set(False)
+
+    def _monthly_margin_profile(self) -> str:
+        ttp_enabled = bool(self.ubs_monthly_portfolio_validate_ttp_margin.get())
+        roboforex_enabled = bool(self.ubs_monthly_portfolio_validate_roboforex_margin.get())
+        if ttp_enabled:
+            if roboforex_enabled:
+                self.ubs_monthly_portfolio_validate_roboforex_margin.set(False)
+            return "ttp"
+        if roboforex_enabled:
+            return "roboforex"
+        self.ubs_monthly_portfolio_validate_roboforex_margin.set(True)
+        return "roboforex"
+
     def _monthly_roboforex_margin_enabled(self) -> bool:
-        broker_getter = getattr(self, "_ubs_broker", None)
-        broker = broker_getter() if callable(broker_getter) else "ROBOFOREX"
-        return str(broker).strip().upper() == "ROBOFOREX" and bool(
-            self.ubs_monthly_portfolio_validate_roboforex_margin.get()
-        )
+        return self._monthly_margin_profile() == "roboforex"
 
     def _read_ubs_monthly_portfolio_inputs(self) -> dict[str, object]:
         adapter = self._monthly_portfolio_adapter()
@@ -175,7 +199,11 @@ class UBSMonthlyPortfolioLogicMixin:
                 raise ValueError("Max corr portafolios es obligatorio si activas No corr mensual.")
             if not (0 <= float(inputs["max_portfolio_corr"]) <= 1):
                 raise ValueError("Max corr portafolios debe estar entre 0 y 1.")
-        inputs["validate_roboforex_margin"] = self._monthly_roboforex_margin_enabled()
+        margin_profile = self._monthly_margin_profile()
+        inputs["margin_profile"] = margin_profile
+        inputs["validate_margin"] = True
+        inputs["validate_roboforex_margin"] = margin_profile == "roboforex"
+        inputs["validate_ttp_margin"] = margin_profile == "ttp"
         inputs["max_margin_pct"] = UBSPortfolioLogicMixin._parse_float_setting(
             adapter,
             self.ubs_monthly_portfolio_max_margin_pct.get(),
@@ -201,7 +229,10 @@ class UBSMonthlyPortfolioLogicMixin:
                 "deep_optimization": bool(inputs.get("deep_optimization")),
                 "exclude_monthly_used": bool(inputs.get("exclude_monthly_used")),
                 "corr_with_monthly_portfolios": bool(inputs.get("corr_with_monthly_portfolios")),
+                "margin_profile": str(inputs.get("margin_profile") or "roboforex"),
+                "validate_margin": bool(inputs.get("validate_margin")),
                 "validate_roboforex_margin": bool(inputs.get("validate_roboforex_margin")),
+                "validate_ttp_margin": bool(inputs.get("validate_ttp_margin")),
             },
         )
         return path
@@ -291,6 +322,7 @@ class UBSMonthlyPortfolioLogicMixin:
         self.ubs_monthly_portfolio_exclude_monthly_used.set(False)
         self.ubs_monthly_portfolio_corr_with_monthly_portfolios.set(False)
         self.ubs_monthly_portfolio_validate_roboforex_margin.set(True)
+        self.ubs_monthly_portfolio_validate_ttp_margin.set(False)
         self.ubs_monthly_portfolio_max_margin_pct.set("100")
         self.ubs_monthly_portfolio_pending_result = None
         self.ubs_monthly_portfolio_pending_inputs = None
@@ -796,9 +828,53 @@ class UBSMonthlyPortfolioLogicMixin:
             event,
         )
 
+    def _create_ubs_monthly_portfolio_detail_window(self, portfolio_id: int) -> None:
+        from ui.ubs_monthly_portfolio_view import _MonthlyPortfolioScreenAdapter
+        from ui.ubs_portfolio_view import UBSPortfolioViewMixin
+
+        UBSPortfolioViewMixin._create_ubs_portfolio_detail_window(
+            _MonthlyPortfolioScreenAdapter(self),
+            portfolio_id,
+        )
+
     def _open_selected_ubs_monthly_portfolio_member(self) -> None:
         UBSPortfolioLogicMixin._open_selected_ubs_portfolio_member(
             self._monthly_portfolio_adapter()
+        )
+
+    def _populate_ubs_monthly_portfolio_detail(self, portfolio_id: int) -> None:
+        UBSPortfolioLogicMixin._populate_ubs_portfolio_detail(
+            self._monthly_portfolio_adapter(),
+            portfolio_id,
+        )
+
+    def _open_selected_ubs_monthly_portfolio_detail_member(self) -> None:
+        UBSPortfolioLogicMixin._open_selected_ubs_portfolio_detail_member(
+            self._monthly_portfolio_adapter()
+        )
+
+    def _quarantine_selected_ubs_monthly_portfolio_member(self, portfolio_id: int) -> None:
+        UBSPortfolioLogicMixin._quarantine_selected_ubs_portfolio_member(
+            self._monthly_portfolio_adapter(),
+            portfolio_id,
+        )
+
+    def _complete_saved_ubs_monthly_portfolio(self, portfolio_id: int) -> None:
+        UBSPortfolioLogicMixin._complete_saved_ubs_portfolio(
+            self._monthly_portfolio_adapter(),
+            portfolio_id,
+        )
+
+    def _reoptimize_saved_ubs_monthly_portfolio(self, portfolio_id: int) -> None:
+        UBSPortfolioLogicMixin._reoptimize_saved_ubs_portfolio(
+            self._monthly_portfolio_adapter(),
+            portfolio_id,
+        )
+
+    def _undo_latest_ubs_monthly_portfolio_completion(self, portfolio_id: int) -> None:
+        UBSPortfolioLogicMixin._undo_latest_ubs_portfolio_completion(
+            self._monthly_portfolio_adapter(),
+            portfolio_id,
         )
 
     def _delete_selected_ubs_monthly_portfolio(self) -> None:

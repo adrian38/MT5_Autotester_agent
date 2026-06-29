@@ -82,9 +82,10 @@ class _FakeSearch(UBSSearchLogicMixin):
 
 
 class _FakeMonthlyPortfolio(UBSMonthlyPortfolioLogicMixin):
-    def __init__(self, broker: str, margin_enabled: bool = True) -> None:
+    def __init__(self, broker: str, margin_enabled: bool = True, ttp_enabled: bool = False) -> None:
         self.ubs_broker = _FakeVar(broker)
         self.ubs_monthly_portfolio_validate_roboforex_margin = _FakeVar(margin_enabled)
+        self.ubs_monthly_portfolio_validate_ttp_margin = _FakeVar(ttp_enabled)
 
     def _ubs_broker(self) -> str:
         return normalize_broker(self.ubs_broker.get())
@@ -314,11 +315,15 @@ class UBSAccountTests(unittest.TestCase):
                 ("ICTRADING", "STANDARD"),
             )
 
-    def test_monthly_roboforex_margin_guard_only_applies_to_roboforex(self) -> None:
+    def test_monthly_margin_profile_defaults_to_roboforex_unless_ttp_is_selected(self) -> None:
         self.assertTrue(_FakeMonthlyPortfolio("ROBOFOREX")._monthly_roboforex_margin_enabled())
-        self.assertFalse(_FakeMonthlyPortfolio("AXI")._monthly_roboforex_margin_enabled())
-        self.assertFalse(_FakeMonthlyPortfolio("ICTRADING")._monthly_roboforex_margin_enabled())
-        self.assertFalse(_FakeMonthlyPortfolio("ROBOFOREX", margin_enabled=False)._monthly_roboforex_margin_enabled())
+        self.assertTrue(_FakeMonthlyPortfolio("AXI")._monthly_roboforex_margin_enabled())
+        self.assertTrue(_FakeMonthlyPortfolio("ICTRADING")._monthly_roboforex_margin_enabled())
+        self.assertTrue(_FakeMonthlyPortfolio("ROBOFOREX", margin_enabled=False)._monthly_roboforex_margin_enabled())
+        self.assertFalse(
+            _FakeMonthlyPortfolio("ROBOFOREX", margin_enabled=False, ttp_enabled=True)
+            ._monthly_roboforex_margin_enabled()
+        )
 
     def test_disabling_generation_clears_stale_seed_permission(self) -> None:
         universe = _FakeUniverse()

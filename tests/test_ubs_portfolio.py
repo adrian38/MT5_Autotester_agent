@@ -24,6 +24,7 @@ from portfolio_manager.ubs_portfolio import (
     merge_accumulated_curves,
     optimize_portfolio,
     optimize_strict_monthly_portfolio,
+    portfolio_margin_summary,
     portfolio_group_key,
     recent_positive_month_count,
     score_set_for_portfolio,
@@ -899,6 +900,34 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertLessEqual(float(result.margin_summary["total"]), 5000.0)
         self.assertEqual(allocation.margin_leverage, 20.0)
         self.assertEqual(allocation.margin_contract_size, 100.0)
+
+    def test_ttp_margin_profile_uses_asset_specific_leverage(self) -> None:
+        strategies = [
+            make_strategy("eurusd", "EURUSD", [0, 10], price=1.1),
+            make_strategy("us30", "US30", [0, 10], price=40000.0),
+            make_strategy("xauusd", "XAUUSD", [0, 10], price=2400.0),
+            make_strategy("wti", "WTI", [0, 10], price=80.0),
+            make_strategy("meta", "META", [0, 10], price=700.0),
+        ]
+        summary = portfolio_margin_summary(
+            strategies,
+            {strategy.set_id: 1 for strategy in strategies},
+            balance=5000,
+            max_margin_pct=100,
+            margin_profile="ttp",
+            stock_leverage=20,
+            default_leverage=500,
+            stock_contract_size=100,
+            default_contract_size=1,
+        )
+        by_set = summary["by_set"]
+
+        self.assertEqual(by_set["eurusd"]["leverage"], 50.0)
+        self.assertEqual(by_set["us30"]["leverage"], 15.0)
+        self.assertEqual(by_set["xauusd"]["leverage"], 10.0)
+        self.assertEqual(by_set["wti"]["leverage"], 10.0)
+        self.assertEqual(by_set["meta"]["leverage"], 2.0)
+        self.assertEqual(by_set["meta"]["contract_size"], 100.0)
 
     def test_portfolio_repair_retains_required_sets(self) -> None:
         result = optimize_portfolio(

@@ -1905,14 +1905,21 @@ class UBSPortfolioLogicMixin:
                 int(portfolio["active_strategies"] or 0),
             )
             conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
-            conn.execute(
+            allocation_delete = conn.execute(
                 "delete from portfolio_allocations where portfolio_id=? and set_path=?",
                 (portfolio_id, set_path),
             )
+            if allocation_delete.rowcount == 0 and member.get("id") is not None:
+                allocation_delete = conn.execute(
+                    "delete from portfolio_allocations where portfolio_id=? and id=?",
+                    (portfolio_id, int(member["id"])),
+                )
             conn.execute(
                 "delete from portfolio_members where portfolio_id=? and set_path=?",
                 (portfolio_id, set_path),
             )
+            if allocation_delete.rowcount == 0:
+                raise ValueError("No se encontro la asignacion seleccionada dentro del portafolio.")
             self._recalculate_saved_portfolio(conn, portfolio_id)
             conn.commit()
         except Exception:
@@ -2260,11 +2267,12 @@ class UBSPortfolioLogicMixin:
                     "dd_reserve_pct": reserve,
                     "search_restarts": int(inputs.get("search_restarts") or 0),
                     "margin_balance": float(inputs["capital"])
-                    if bool(inputs.get("validate_roboforex_margin"))
+                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
                     else None,
                     "max_margin_pct": float(inputs.get("max_margin_pct") or 100.0)
-                    if bool(inputs.get("validate_roboforex_margin"))
+                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
                     else None,
+                    "margin_profile": str(inputs.get("margin_profile") or "roboforex"),
                     "stock_leverage": 20.0,
                     "default_leverage": 500.0,
                     "stock_contract_size": 100.0,

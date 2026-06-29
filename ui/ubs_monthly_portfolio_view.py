@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import MethodType
 from tkinter import ttk
 
 from ui.ubs_portfolio_view import UBSPortfolioViewMixin
@@ -13,6 +14,8 @@ class _MonthlyPortfolioScreenAdapter:
 
     def __getattr__(self, name: str):
         app = object.__getattribute__(self, "_app")
+        if name == "_build_ubs_monthly_portfolio_input_groups":
+            return MethodType(getattr(UBSPortfolioViewMixin, name), self)
         if "ubs_portfolio" in name:
             monthly_name = name.replace("ubs_portfolio", "ubs_monthly_portfolio")
             try:
