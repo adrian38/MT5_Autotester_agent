@@ -192,6 +192,24 @@ class UBSAccountTests(unittest.TestCase):
         self.assertEqual(agent._ubs_symbol_maps_by_broker["ROBOFOREX"], "XTIUSD=WTI")
         self.assertEqual(agent.symbol_map.get(), "GER40=GER40.cash")
 
+    def test_account_context_refresh_updates_multiterminal_tree(self) -> None:
+        agent = _FakeAgent("STANDARD", "", "", broker="ICTRADING")
+        agent.status_text = _FakeVar("")
+        refreshed: list[str] = []
+
+        def safe_refresh(label: str, callback) -> None:
+            refreshed.append(label)
+            callback()
+
+        agent._write_ui_settings = lambda: None
+        agent._safe_refresh = safe_refresh
+        agent._refresh_multiterminal_tree = lambda: refreshed.append("multiterminal_tree")
+
+        agent._refresh_ubs_account_context()
+
+        self.assertIn("multiterminal", refreshed)
+        self.assertIn("multiterminal_tree", refreshed)
+
     def test_ubs_portfolio_sources_are_limited_to_active_broker(self) -> None:
         import ui.ubs_portfolio_logic as portfolio_logic
         from unittest.mock import patch
@@ -220,14 +238,30 @@ class UBSAccountTests(unittest.TestCase):
     def test_multiterminal_summary_counts_enabled_profiles_only(self) -> None:
         robo = _FakeMultiterminal("ROBOFOREX")
         robo.multiterminal_profiles.append({"name": "Robo disabled", "broker": "ROBOFOREX", "enabled": False})
-        robo.multiterminal_workers = _FakeVar("4")
+        robo.multiterminal_workers = _FakeVar("1")
         robo.multiterminal_enabled = _FakeVar("1")
         robo.multiterminal_summary = _FakeVar("")
 
         robo._update_multiterminal_summary()
 
-        self.assertEqual(robo.multiterminal_summary.get(), "ROBOFOREX: 2 activas / usando hasta 2 / on")
-        self.assertIn("Terminales activas: 2", robo._multiterminal_execution_details())
+        self.assertEqual(robo.multiterminal_summary.get(), "ROBOFOREX: 2 perfiles / usando hasta 1 / on")
+        self.assertIn("Terminales disponibles: 2", robo._multiterminal_execution_details())
+
+    def test_multiterminal_workers_above_one_use_broker_profiles_regardless_enabled(self) -> None:
+        ic = _FakeMultiterminal("ICTRADING")
+        ic.multiterminal_profiles = [
+            {"name": "IC 1", "broker": "ICTRADING", "enabled": True},
+            {"name": "IC 2", "broker": "ICTRADING", "enabled": False},
+            {"name": "IC 3", "broker": "ICTRADING", "enabled": False},
+        ]
+        ic.multiterminal_workers = _FakeVar("5")
+        ic.multiterminal_enabled = _FakeVar("1")
+        ic.multiterminal_summary = _FakeVar("")
+
+        ic._update_multiterminal_summary()
+
+        self.assertEqual([profile["name"] for profile in ic._active_multiterminal_profiles()], ["IC 1", "IC 2", "IC 3"])
+        self.assertEqual(ic.multiterminal_summary.get(), "ICTRADING: 3 perfiles / usando hasta 3 / on")
 
     def test_multiterminal_select_ignores_filtered_tree_item(self) -> None:
         axi = _FakeMultiterminal("AXI")

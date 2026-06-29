@@ -143,6 +143,7 @@ class UBSAgentLogicMixin:
         self._write_ui_settings()
         self.status_text.set(f"Cuenta UBS activa: {self._ubs_broker()} / {self._ubs_account_type()}")
         for label, callback_name in (
+            ("multiterminal", "_refresh_multiterminal_tree"),
             ("ubs_seeds", "_refresh_ubs_seeds_panel"),
             ("ubs_results", "_refresh_ubs_results_panel"),
             ("ubs_robustness", "_refresh_ubs_robustness_panel"),
