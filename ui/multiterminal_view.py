@@ -201,10 +201,9 @@ class MultiterminalViewMixin:
                                         style="Panel.TCheckbutton")
         _cb_principal.grid(row=0, column=0, sticky="w")
         self._tooltip_cls(_cb_principal,
-            "Marca esta terminal como activa.\n"
-            "Solo puede haber una Principal a la vez.\n"
-            "Con modo single-terminal (N=1) es la que se abre.\n"
-            "Con multiterminal, solo las marcadas reciben trabajo.")
+            "Marca la terminal principal del broker.\n"
+            "Con Terminales a usar = 1 se usa esta.\n"
+            "Con Terminales a usar > 1 se usan hasta N perfiles del broker.")
         ttk.Label(editor, text="Nombre", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=7)
         ttk.Entry(editor, textvariable=self.mt_profile_name).grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=7)
         ttk.Label(editor, text="Broker", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(16, 10), pady=7)

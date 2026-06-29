@@ -220,6 +220,36 @@ class CopyReportsToProjectTests(unittest.TestCase):
 
             self.assertEqual([profile.name for profile in profiles], ["Axi"])
 
+    def test_multiterminal_config_can_ignore_enabled_for_multi_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            config = root / "ui_settings.ini"
+            config.write_text(
+                "\n".join(
+                    [
+                        "[Multiterminal]",
+                        "broker=ICTRADING",
+                        "[Terminal.1]",
+                        "enabled=1",
+                        "broker=ICTRADING",
+                        "name=IC enabled",
+                        f"mt5_path={root / 'IC1' / 'terminal64.exe'}",
+                        f"experts_root={root / 'IC1' / 'MQL5' / 'Experts'}",
+                        "[Terminal.2]",
+                        "enabled=0",
+                        "broker=ICTRADING",
+                        "name=IC disabled",
+                        f"mt5_path={root / 'IC2' / 'terminal64.exe'}",
+                        f"experts_root={root / 'IC2' / 'MQL5' / 'Experts'}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = run_tests.load_terminal_profiles(config, ignore_enabled=True)
+
+            self.assertEqual([profile.name for profile in profiles], ["IC enabled", "IC disabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

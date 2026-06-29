@@ -1656,9 +1656,9 @@ def main() -> int:
     if args.multi_terminal:
         try:
             configured_profiles = load_terminal_profiles(
-            Path(args.terminals_config).expanduser(),
-            ignore_enabled=args.max_workers > 1,
-        )
+                Path(args.terminals_config).expanduser(),
+                ignore_enabled=args.max_workers > 1,
+            )
         except (OSError, ValueError) as exc:
             logger.write(f"ERROR: {exc}")
             return 1
