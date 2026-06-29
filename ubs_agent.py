@@ -1634,7 +1634,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     print(f"Backtests semillas: {len(copied)}")
     print(f"Directorio evaluacion: {eval_dir}")
     batch_started_at = time.time()
-    code = run_backtests(args, eval_dir)
+    code = run_backtests(args, eval_dir, model="1")
     if code == RUNNING_TERMINAL_EXIT_CODE:
         print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
         return 1
@@ -3763,7 +3763,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         print(f"Retry seeds: {len(copied)}")
         print(f"Directorio retry: {retry_dir}")
         batch_started_at = time.time()
-        code = run_backtests(args, retry_dir)
+        code = run_backtests(args, retry_dir, model="1")
         if code == RUNNING_TERMINAL_EXIT_CODE:
             print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
             return 1
@@ -3832,7 +3832,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     print(f"Retry seed: {source_seed}")
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
-    code = run_backtests(args, retry_dir)
+    code = run_backtests(args, retry_dir, model="1")
     if code == RUNNING_TERMINAL_EXIT_CODE:
         print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
         return 1

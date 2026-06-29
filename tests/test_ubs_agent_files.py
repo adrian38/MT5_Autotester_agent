@@ -1,6 +1,8 @@
 import random
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 from ubs.models import Seed, Variant
@@ -31,6 +33,7 @@ from ubs_agent import (
     reserved_timeframe_plan,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
+    run_backtests,
     select_next_seed_survivors,
     validate_final_tick_stage_dates,
     validate_seed_backtest_set,
@@ -77,6 +80,33 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_run_backtests_forwards_model_override(self) -> None:
+        args = SimpleNamespace(
+            expert="Ultimate Breakout System.ex5",
+            multi_terminal=False,
+            template="tester_template.ini",
+            delay=0,
+            mt5_path="",
+            data_dir="",
+            max_workers=1,
+            terminals_config="",
+            symbol_map="",
+            dry_run=True,
+            from_date="",
+            to_date="",
+        )
+        completed = SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            set_dir = Path(temp_dir)
+            with patch("ubs_agent.subprocess.run", return_value=completed) as run_mock:
+                code = run_backtests(args, set_dir, model="1")
+
+        self.assertEqual(code, 0)
+        command = run_mock.call_args.args[0]
+        self.assertIn("--model", command)
+        self.assertEqual(command[command.index("--model") + 1], "1")
+
     def test_final_tick_6m_requires_at_least_180_days(self) -> None:
         message = validate_final_tick_stage_dates("six_month", "2026.01.01", "2026.06.01")
 
