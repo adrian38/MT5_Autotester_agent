@@ -101,6 +101,8 @@ TARGET_GROUP_CAP_RATIOS = {
     "Forex": 0.60,
     "Stocks": 0.60,
     "Metals": 0.40,
+    "Indices": 0.35,
+    "Energies": 0.25,
     "IndicesEnergies": 0.35,
     "Crypto": 0.25,
 }

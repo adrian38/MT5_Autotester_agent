@@ -76,6 +76,46 @@ class UBSScoreTests(unittest.TestCase):
                 (1.0, "Stocks", "raw_net_profit"),
             )
 
+    def test_ictrading_normalization_splits_indices_energies_and_stocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            assets = base / "assets"
+            assets.mkdir()
+            (assets / "ictrading_assets.ini").write_text(
+                "[Indices]\nsymbols=USTEC,US500\n\n"
+                "[Energies]\nsymbols=XTIUSD,XBRUSD\n\n"
+                "[Stocks]\nsymbols=ABN.AMS\n\n"
+                "[CommonAliases]\nUS100=USTEC\nWTI=XTIUSD\n",
+                encoding="utf-8",
+            )
+            (assets / "ictrading_normalization.json").write_text(
+                json.dumps(
+                    {
+                        "basis": "ictrading_lot_0.01_equivalent_net_profit",
+                        "default_net_profit_factor": 1.0,
+                        "group_net_profit_factors": {
+                            "Indices": 0.1,
+                            "Energies": 0.02,
+                            "Stocks": 0.01,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                net_profit_normalization("US100", broker="ICTRADING", base_dir=base),
+                (0.1, "Indices", "ictrading_lot_0.01_equivalent_net_profit"),
+            )
+            self.assertEqual(
+                net_profit_normalization("WTI", broker="ICTRADING", base_dir=base),
+                (0.02, "Energies", "ictrading_lot_0.01_equivalent_net_profit"),
+            )
+            self.assertEqual(
+                net_profit_normalization("ABN.AMS", broker="ICTRADING", base_dir=base),
+                (0.01, "Stocks", "ictrading_lot_0.01_equivalent_net_profit"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

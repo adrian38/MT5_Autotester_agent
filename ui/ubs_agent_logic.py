@@ -98,9 +98,16 @@ class UBSAgentLogicMixin:
             return
         target_broker = normalize_broker(broker or self.ubs_broker.get())
         active_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", target_broker))
-        maps[active_broker] = symbol_map_var.get().strip()
-        symbol_map_var.set(maps.get(target_broker, default_symbol_map_for_broker(target_broker)))
+        maps[active_broker] = symbol_map_var.get().strip() or default_symbol_map_for_broker(active_broker)
+        target_map = maps.get(target_broker, "") or default_symbol_map_for_broker(target_broker)
+        maps[target_broker] = target_map
+        symbol_map_var.set(target_map)
         self._ubs_symbol_map_active_broker = target_broker
+
+    def _effective_ubs_symbol_map_text(self) -> str:
+        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
+            return self.symbol_map.get().strip()
+        return default_symbol_map_for_broker(self._ubs_broker())
 
     def _ubs_generation_output_dir(self) -> Path:
         return self._account_scoped_path(
@@ -241,8 +248,9 @@ class UBSAgentLogicMixin:
                     args.extend(["--mt5-path", self.mt5_path.get()])
                 if self.mt5_data_root.get().strip():
                     args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         return args
     def _run_ubs_generator(self) -> None:
         self._run_ubs_agent(continue_last=False)
@@ -466,8 +474,9 @@ class UBSAgentLogicMixin:
             args.extend(["--set-file", set_file])
         if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
             args.extend(["--symbol-suffix", self.symbol_suffix.get().strip()])
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map:
+            args.extend(["--symbol-map", symbol_map])
         if self.experts_root.get().strip():
             args.extend(["--experts-dir", self.experts_root.get()])
         if self.mt5_path.get().strip():

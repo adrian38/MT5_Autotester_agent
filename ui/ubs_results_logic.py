@@ -1540,8 +1540,9 @@ class UBSResultsLogicMixin:
                     args.extend(["--mt5-path", self.mt5_path.get()])
                 if self.mt5_data_root.get().strip():
                     args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error(error_label, str(exc))
             return
@@ -1612,8 +1613,9 @@ class UBSResultsLogicMixin:
                     args.extend(["--mt5-path", self.mt5_path.get()])
                 if self.mt5_data_root.get().strip():
                     args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error("No se pudo preparar continuar run", str(exc))
             return
@@ -1681,8 +1683,9 @@ class UBSResultsLogicMixin:
                     args.extend(["--mt5-path", self.mt5_path.get()])
                 if self.mt5_data_root.get().strip():
                     args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error("No se pudo preparar reprobar run completo", str(exc))
             return

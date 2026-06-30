@@ -77,9 +77,7 @@ class UBSFinalTickLogicMixin:
             max_drawdown_pct=float(self.ubs_pass_max_drawdown_pct.get() or 25),
             min_recovery_factor=float(self.ubs_pass_min_recovery_factor.get() or 1.0),
         )
-        symbol_map = {}
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            symbol_map = parse_symbol_map(self.symbol_map.get().strip())
+        symbol_map = parse_symbol_map(self._effective_ubs_symbol_map_text())
         memory = AgentMemory(memory_path)
         try:
             counts = reconcile_final_tick_reports(
@@ -433,8 +431,9 @@ class UBSFinalTickLogicMixin:
                 args.extend(["--mt5-path", self.mt5_path.get()])
             if self.mt5_data_root.get().strip():
                 args.extend(["--data-dir", self.mt5_data_root.get()])
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map:
+            args.extend(["--symbol-map", symbol_map])
         return args
 
     def _run_ubs_final_tick_for_latest_run(

@@ -98,9 +98,7 @@ class UBSSeedsLogicMixin:
         return len(files), str(source_dir)
 
     def _active_ubs_symbol_map(self) -> dict[str, str]:
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            return parse_symbol_map(self.symbol_map.get().strip())
-        return {}
+        return parse_symbol_map(self._effective_ubs_symbol_map_text())
 
     def _format_disabled_seed_counts(self, counts: Counter[tuple[str, str]]) -> str:
         parts = []
@@ -223,8 +221,9 @@ class UBSSeedsLogicMixin:
                 args.extend(["--mt5-path", self.mt5_path.get()])
             if self.mt5_data_root.get().strip():
                 args.extend(["--data-dir", self.mt5_data_root.get()])
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map:
+            args.extend(["--symbol-map", symbol_map])
         return args
 
     def _run_ubs_seed_evaluation(self) -> None:
@@ -651,8 +650,9 @@ class UBSSeedsLogicMixin:
                     args.extend(["--mt5-path", self.mt5_path.get()])
                 if self.mt5_data_root.get().strip():
                     args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error("No se pudo preparar retry seed", str(exc))
             return
@@ -1404,8 +1404,9 @@ class UBSSeedsLogicMixin:
                 "--account-type", self._ubs_account_type(),
             ]
             args.extend(self._ubs_seed_score_args())
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error("No se pudieron aplicar criterios Seeds", str(exc))
             return
