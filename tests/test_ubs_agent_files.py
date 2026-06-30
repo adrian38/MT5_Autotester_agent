@@ -17,6 +17,7 @@ from ubs_agent import (
     choose_target_symbol,
     copy_accepted,
     create_variant,
+    evaluate_variant_report,
     final_tick_row_pending_for_dates,
     final_tick_ohlc_retry_needed_for_dates,
     final_tick_ohlc_retry_exhausted_for_dates,
@@ -32,6 +33,7 @@ from ubs_agent import (
     ranked_seed_selection,
     reserved_timeframe_plan,
     repair_seed_backtest_set,
+    report_matches_variant,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
     run_backtests,
@@ -41,12 +43,14 @@ from ubs_agent import (
     variant_as_next_seed,
     write_set_force_symbol,
 )
-from run_tests import parse_symbol_map
+from run_tests import normalize_set_symbol, parse_symbol_map
 
 
 def score(
     value: float,
     *,
+    symbol: str = "XAUUSD",
+    timeframe: str = "H1",
     net_profit: float = 100.0,
     profit_factor: float = 2.0,
     drawdown_pct: float = 1.0,
@@ -56,8 +60,8 @@ def score(
     return ScoreResult(
         report_path="report.htm",
         name="report",
-        symbol="XAUUSD",
-        timeframe="H1",
+        symbol=symbol,
+        timeframe=timeframe,
         score=value,
         accepted=True,
         net_profit=net_profit,
@@ -81,6 +85,63 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_normalize_set_symbol_preserves_exchange_suffixes(self) -> None:
+        self.assertEqual(normalize_set_symbol("WULF.NAS-24"), "WULF.NAS-24")
+        self.assertEqual(normalize_set_symbol("DPZ.NAS"), "DPZ.NAS")
+        self.assertEqual(normalize_set_symbol("UBER.NYSE"), "UBER.NYSE")
+        self.assertEqual(normalize_set_symbol("EURUSD.a"), "EURUSD")
+
+    def test_report_match_preserves_ictrading_stock_symbol(self) -> None:
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "BTCUSD", "M1", "family", "1"),
+            target_symbol="WULF.NAS-24",
+            target_period="M1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="test",
+        )
+
+        matches, reason = report_matches_variant(
+            variant,
+            score(0.0, symbol="WULF.NAS-24", timeframe="M1", trades=0),
+            {},
+        )
+
+        self.assertTrue(matches, reason)
+
+    def test_empty_tester_report_is_no_trades_not_mismatch(self) -> None:
+        class Memory:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def record_score(self, set_path, result, status, report_path=None) -> None:
+                self.calls.append((set_path, result, status, report_path))
+
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "BTCUSD", "M1", "family", "1"),
+            target_symbol="DPZ.NAS-24",
+            target_period="M1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="test",
+        )
+        memory = Memory()
+
+        with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+            status, _result = evaluate_variant_report(
+                memory,
+                variant,
+                Path("empty.htm"),
+                ScoreConfig(),
+                {},
+                "ICTRADING",
+            )
+
+        self.assertEqual(status, "no_trades")
+        self.assertEqual(memory.calls[0][2], "no_trades")
+
     def test_run_backtests_forwards_model_override(self) -> None:
         args = SimpleNamespace(
             expert="Ultimate Breakout System.ex5",

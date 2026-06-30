@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import shutil
@@ -68,6 +69,7 @@ DEFAULT_MEMORY = account_memory_path(BASE_DIR, DEFAULT_ACCOUNT_TYPE, DEFAULT_BRO
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 DEFAULT_ASSETS = BASE_DIR / "assets" / "roboforex_assets.ini"
 DEFAULT_SYMBOL_MAP = default_symbol_map_for_broker(DEFAULT_BROKER)
+DIAG_LOG_FILE = BASE_DIR / "logs" / "ubs_agent_diag.log"
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 LEGACY_TIMEFRAME_TO_ENUM = {
@@ -78,6 +80,26 @@ LEGACY_TIMEFRAME_TO_ENUM = {
     "43200": TIMEFRAME_TO_ENUM["MN"],
 }
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+
+
+def diag_log(message: str) -> None:
+    """Append a lightweight diagnostic line without changing run behaviour."""
+    try:
+        DIAG_LOG_FILE.parent.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with DIAG_LOG_FILE.open("a", encoding="utf-8") as file:
+            file.write(f"[{timestamp}] pid={os.getpid()} {message}\n")
+    except OSError:
+        pass
+
+
+def diag_args_summary(args: argparse.Namespace) -> str:
+    return (
+        f"broker={getattr(args, 'broker', '')} account={getattr(args, 'account_type', '')} "
+        f"generations={getattr(args, 'generations', '')} variants_per_seed={getattr(args, 'variants_per_seed', '')} "
+        f"max_seeds={getattr(args, 'max_seeds', '')} execute_backtests={bool(getattr(args, 'execute_backtests', False))} "
+        f"multi_terminal={bool(getattr(args, 'multi_terminal', False))} max_workers={getattr(args, 'max_workers', '')}"
+    )
 EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
 TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
 GENERATION_MODES = ("production", "discovery")
@@ -1447,7 +1469,13 @@ def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -
     if model:
         command.extend(["--model", str(model)])
     print("Ejecutando:", " ".join(f'"{part}"' if " " in part else part for part in command))
+    diag_log(f"RUN_TESTS_START set_dir={set_dir} model={model or '(template)'} command={' '.join(command)}")
+    started = time.time()
     process = subprocess.run(command, cwd=BASE_DIR, text=True)
+    diag_log(
+        f"RUN_TESTS_END set_dir={set_dir} model={model or '(template)'} "
+        f"returncode={process.returncode} elapsed={time.time() - started:.1f}s"
+    )
     return process.returncode
 
 
@@ -1863,6 +1891,7 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             report,
             score_config,
             symbol_map,
+            args.broker,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
         )
@@ -2004,6 +2033,13 @@ def report_matches_variant(variant: Variant, result: ScoreResult, symbol_map: di
     return not issues, "; ".join(issues)
 
 
+def report_has_empty_tester_context(result: ScoreResult) -> bool:
+    return result.trades <= 0 and (
+        not str(result.symbol or "").strip()
+        or str(result.timeframe or "").strip().upper() in {"", "M0"}
+    )
+
+
 def evaluate_seed_report(
     memory: AgentMemory,
     seed: Seed,
@@ -2143,6 +2179,9 @@ def evaluate_variant_report(
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
         return "parse_error", None
+    if report_has_empty_tester_context(result):
+        memory.record_score(variant.path, result, "no_trades", report)
+        return "no_trades", result
     matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
     if not matches:
         print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")
@@ -4833,6 +4872,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 )
                 if reserved_timeframes:
                     print(f"Cuota/reserva TF exploratoria: {timeframe_plan_summary(reserved_timeframes)}")
+            planned_variants = len(selected_seeds) * args.variants_per_seed
+            diag_log(
+                f"GENERATION_START run_id={run_id} generation={generation} "
+                f"seeds={len(selected_seeds)} planned_variants={planned_variants} dir={generation_dir}"
+            )
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
                     target_symbol, target_period, policy = choose_diverse_target(
@@ -4881,13 +4925,23 @@ def run_agent(args: argparse.Namespace) -> int:
                     memory.record_variant(run_id, generation, variant)
                     target_limiter.record(target_symbol, target_period)
                     variants.append(variant)
+                    if len(variants) == 1 or len(variants) % 25 == 0 or len(variants) == planned_variants:
+                        diag_log(
+                            f"GENERATION_PROGRESS run_id={run_id} generation={generation} "
+                            f"variants={len(variants)}/{planned_variants} seed_index={seed_index} "
+                            f"variant_index={variant_index} target={target_symbol}/{target_period} "
+                            f"set={variant.path}"
+                        )
             all_generated += len(variants)
             print(f"Generados: {len(variants)} en {generation_dir}")
+            diag_log(f"GENERATION_DONE run_id={run_id} generation={generation} variants={len(variants)}")
 
             scored: list[tuple[Variant, ScoreResult]] = []
             if args.execute_backtests or args.dry_run:
                 batch_started_at = time.time()
+                diag_log(f"GENERATION_BACKTESTS_BEFORE run_id={run_id} generation={generation} variants={len(variants)}")
                 code = run_backtests(args, generation_dir)
+                diag_log(f"GENERATION_BACKTESTS_AFTER run_id={run_id} generation={generation} code={code}")
                 if code == RUNNING_TERMINAL_EXIT_CODE:
                     print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
                     return code
@@ -4897,6 +4951,7 @@ def run_agent(args: argparse.Namespace) -> int:
                     if args.dry_run:
                         return code
                 if not args.dry_run:
+                    diag_log(f"EVALUATE_VARIANTS_START run_id={run_id} generation={generation} variants={len(variants)}")
                     scored = evaluate_variants(
                         memory,
                         variants,
@@ -4910,6 +4965,10 @@ def run_agent(args: argparse.Namespace) -> int:
                     survivors = select_survivors(scored, args.top_percent)
                     copied = copy_accepted(survivors, accepted_dir)
                     print(f"Reportes puntuados: {len(scored)}; accepted/copied: {len(copied)}")
+                    diag_log(
+                        f"EVALUATE_VARIANTS_DONE run_id={run_id} generation={generation} "
+                        f"scored={len(scored)} survivors={len(survivors)} copied={len(copied)}"
+                    )
                     if partial_failure and not scored:
                         print(f"ERROR: run_tests.py termino con codigo {code} y no produjo reportes puntuables")
                         return code
@@ -4933,6 +4992,7 @@ def run_agent(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
+    diag_log(f"MAIN_START ppid={os.getppid()} {diag_args_summary(args)}")
     if args.generations <= 0 or args.variants_per_seed <= 0:
         print("ERROR: generations y variants-per-seed deben ser mayores que 0")
         return 1

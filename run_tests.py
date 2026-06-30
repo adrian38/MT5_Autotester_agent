@@ -1,5 +1,6 @@
 import argparse
 import configparser
+import os
 import queue
 import re
 import shutil
@@ -269,6 +270,55 @@ def get_running_terminal_processes() -> list[dict[str, str]]:
         }
         for item in data
     ]
+
+
+def log_runner_diagnostics(
+    logger: RunLogger,
+    label: str,
+    profiles: list[TerminalProfile] | None = None,
+) -> None:
+    logger.write(
+        f"DIAG {label}: runner_pid={os.getpid()} ppid={os.getppid()} "
+        f"python_threads={threading.active_count()} logical_cpus={os.cpu_count()}"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"Get-Process -Id {os.getpid()} | "
+                    "Select-Object Id,CPU,PriorityClass,ProcessorAffinity,"
+                    "@{Name='Threads';Expression={$_.Threads.Count}},Path | "
+                    "ConvertTo-Json -Compress"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            creationflags=NO_WINDOW,
+        )
+        if result.stdout.strip():
+            logger.write(f"DIAG {label}: runner_process={result.stdout.strip()}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.write(f"DIAG {label}: runner_process_snapshot_error={exc}")
+
+    if profiles:
+        for profile in profiles:
+            logger.write(
+                f"DIAG {label}: profile={profile.name} mt5={profile.mt5_path} "
+                f"data_dir={profile.data_dir} portable={'si' if profile.portable else 'no'}"
+            )
+
+    running = get_running_terminal_processes()
+    logger.write(f"DIAG {label}: running_terminal64_count={len(running)}")
+    for process in running[:30]:
+        logger.write(
+            f"DIAG {label}: terminal pid={process.get('pid', '')} "
+            f"path={process.get('path', '')} cmd={process.get('command', '')}"
+        )
 
 
 def find_matching_running_terminals(mt5_path: Path) -> list[dict[str, str]]:
@@ -919,8 +969,30 @@ def load_set_params(path: Path) -> dict[str, str]:
     return params
 
 
+EXCHANGE_SYMBOL_SUFFIXES = {
+    "AMS",
+    "ETR",
+    "IE",
+    "IT",
+    "LSE",
+    "MAD",
+    "NAS",
+    "NYSE",
+    "PAR",
+    "SWX",
+    "TSE",
+    "US",
+}
+
+
 def normalize_set_symbol(symbol: str) -> str:
-    return re.sub(r"(?<=[A-Za-z0-9])\.[A-Za-z0-9]+$", "", symbol.strip()).upper()
+    value = symbol.strip()
+    match = re.search(r"(?<=[A-Za-z0-9])\.([A-Za-z0-9]+)$", value)
+    if match:
+        suffix = match.group(1)
+        if suffix.upper() not in EXCHANGE_SYMBOL_SUFFIXES and suffix.islower():
+            value = value[: match.start()]
+    return value.upper()
 
 
 def infer_symbol_from_set(set_file: Path, params: dict[str, str]) -> str:
@@ -1472,7 +1544,12 @@ def run_test(
         )
 
         before = time.time()
+        logger.write(f"DIAG MT5_POPEN_BEFORE mt5={settings.mt5_path} attempt={attempt}/{max_attempts}")
         process = subprocess.Popen(command, creationflags=NO_WINDOW)
+        logger.write(
+            f"DIAG MT5_POPEN_AFTER pid={process.pid} mt5={settings.mt5_path} "
+            f"attempt={attempt}/{max_attempts}"
+        )
         attempt_kick_after = kick_after_seconds if attempt < max_attempts else max(0, kick_after_seconds * 2)
         exit_code, restarted, elapsed = wait_for_mt5_process(
             process,
@@ -1590,6 +1667,10 @@ def run_jobs_parallel(
 
     def worker(profile: TerminalProfile) -> int:
         failures = 0
+        logger.write(
+            f"DIAG WORKER_START profile={profile.name} thread={threading.current_thread().name} "
+            f"mt5={profile.mt5_path}"
+        )
         settings = settings_from_profile(
             profile,
             args.delay,
@@ -1601,6 +1682,10 @@ def run_jobs_parallel(
                 job = job_queue.get_nowait()
             except queue.Empty:
                 break
+            logger.write(
+                f"DIAG WORKER_JOB_START profile={profile.name} thread={threading.current_thread().name} "
+                f"job={job.index} remaining_queue={job_queue.qsize()}"
+            )
             try:
                 exit_code = run_backtest_job(
                     job,
@@ -1617,11 +1702,22 @@ def run_jobs_parallel(
                 exit_code = 1
             if exit_code != 0:
                 failures += 1
+            logger.write(
+                f"DIAG WORKER_JOB_DONE profile={profile.name} thread={threading.current_thread().name} "
+                f"job={job.index} exit_code={exit_code} failures={failures}"
+            )
             job_queue.task_done()
+        logger.write(
+            f"DIAG WORKER_DONE profile={profile.name} thread={threading.current_thread().name} "
+            f"failures={failures}"
+        )
         return failures
 
+    log_runner_diagnostics(logger, "PARALLEL_BEFORE", profiles)
     with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
-        return sum(future.result() for future in [executor.submit(worker, profile) for profile in profiles])
+        result = sum(future.result() for future in [executor.submit(worker, profile) for profile in profiles])
+    log_runner_diagnostics(logger, "PARALLEL_AFTER", profiles)
+    return result
 
 
 def ensure_directories() -> None:
@@ -1685,6 +1781,7 @@ def main() -> int:
             return 1
         worker_limit = args.max_workers if args.max_workers > 0 else len(configured_profiles)
         terminal_profiles = configured_profiles[: max(1, min(worker_limit, len(configured_profiles)))]
+        log_runner_diagnostics(logger, "AFTER_PROFILE_LOAD", terminal_profiles)
 
     experts_dir = (
         Path(args.experts_dir).expanduser()
@@ -1803,8 +1900,10 @@ def main() -> int:
         else [(expert, None) for expert in experts]
     )
     jobs = [BacktestJob(index, expert, set_file) for index, (expert, set_file) in enumerate(raw_jobs, start=1)]
+    logger.write(f"DIAG JOBS_READY jobs={len(jobs)} multi_terminal={'si' if args.multi_terminal else 'no'}")
 
     if args.multi_terminal:
+        log_runner_diagnostics(logger, "BEFORE_MULTITERMINAL_VALIDATE", terminal_profiles)
         profile_errors = validate_terminal_profiles(
             terminal_profiles,
             jobs,
