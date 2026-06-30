@@ -65,15 +65,24 @@ class UBSPortfolioViewMixin:
         self.ubs_portfolio_type_combo.grid(row=1, column=3, sticky="w", padx=(0, 10), pady=4)
         label(risk, 2, 0, "DD valle %")
         entry(risk, 2, 1, self.ubs_portfolio_valley_pct)
-        label(risk, 2, 2, "DD puntual %")
-        entry(risk, 2, 3, self.ubs_portfolio_point_pct)
-        label(risk, 3, 0, "Reserva DD %")
-        reserve_entry = entry(risk, 3, 1, self.ubs_portfolio_dd_reserve_pct)
+        max_daily_var = getattr(self, "ubs_portfolio_max_daily_dd", None)
+        if max_daily_var is not None:
+            label(risk, 2, 2, "DD diario max")
+            max_daily_entry = entry(risk, 2, 3, max_daily_var)
+            self._tooltip_cls(
+                max_daily_entry,
+                "Limite monetario diario: DD cerrado del dia + flotante estimado de posiciones abiertas. Default 150.",
+            )
+        else:
+            label(risk, 2, 2, "DD puntual %")
+            entry(risk, 2, 3, self.ubs_portfolio_point_pct)
+        label(risk, 4, 0, "Reserva DD %")
+        reserve_entry = entry(risk, 4, 1, self.ubs_portfolio_dd_reserve_pct)
         self._tooltip_cls(
             reserve_entry,
             "Margen de seguridad sin utilizar. Con 10%, un limite DD de 350 optimiza hasta 315.",
         )
-        label(risk, 3, 2, "Mes objetivo")
+        label(risk, 4, 2, "Mes objetivo")
         self.ubs_portfolio_target_month_combo = ttk.Combobox(
             risk,
             textvariable=self.ubs_portfolio_target_month,
@@ -85,10 +94,10 @@ class UBSPortfolioViewMixin:
                 "09 - Septiembre", "10 - Octubre", "11 - Noviembre", "12 - Diciembre",
             ),
         )
-        self.ubs_portfolio_target_month_combo.grid(row=3, column=3, sticky="w", padx=(0, 10), pady=4)
+        self.ubs_portfolio_target_month_combo.grid(row=4, column=3, sticky="w", padx=(0, 10), pady=4)
         self._tooltip_cls(
             self.ubs_portfolio_target_month_combo,
-            "Evalua solamente este mes en cada ano disponible del historico base y robustez.",
+            "Evalua solamente este mes en cada año disponible del historico base y robustez.",
         )
 
         limits = section(0, 1, "Busqueda y limites")
@@ -177,13 +186,25 @@ class UBSPortfolioViewMixin:
         if strict_month_var is not None:
             strict_check = ttk.Checkbutton(
                 filters,
-                text="Validar anos + mejor mes 5A",
+                text="Validar años + mejor mes 5A",
                 variable=strict_month_var,
             )
             strict_check.grid(row=2, column=0, columnspan=4, sticky="w", padx=10, pady=4)
             self._tooltip_cls(
                 strict_check,
-                "Si esta activo, todos los meses deben respetar el DD en los ultimos 5 anos; el mes objetivo ademas debe pasar ano a ano y ser el mejor por net.",
+                "Si esta activo, todos los meses deben respetar el DD en los ultimos 5 años; el mes objetivo ademas debe pasar año a año y ser el mejor por net.",
+            )
+        daily_full_var = getattr(self, "ubs_portfolio_daily_dd_full_history", None)
+        if daily_full_var is not None:
+            daily_full_check = ttk.Checkbutton(
+                filters,
+                text="DD diario todo el año",
+                variable=daily_full_var,
+            )
+            daily_full_check.grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=4)
+            self._tooltip_cls(
+                daily_full_check,
+                "Si esta activo, DD diario max se valida en todo el historico disponible; si no, solo en el mes objetivo.",
             )
         exclude_monthly_used_var = getattr(self, "ubs_portfolio_exclude_monthly_used", None)
         if exclude_monthly_used_var is not None:
@@ -192,7 +213,7 @@ class UBSPortfolioViewMixin:
                 text="Excluir usados mensual",
                 variable=exclude_monthly_used_var,
             )
-            exclude_monthly_used_check.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 8))
+            exclude_monthly_used_check.grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 8))
             self._tooltip_cls(
                 exclude_monthly_used_check,
                 "Si esta activo, descarta sets ya usados en portafolios guardados de UBS Portafolio Mensual.",
@@ -269,10 +290,22 @@ class UBSPortfolioViewMixin:
         panel = self._card(parent, "Portfolio Builder")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(7, weight=1)
+        panel.rowconfigure(1, weight=1)
 
-        form = tk.Frame(panel, bg=colors["panel_alt"])
-        form.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 6))
+        main_split = ttk.PanedWindow(panel, orient="vertical")
+        main_split.grid(row=1, column=0, sticky="nsew", padx=20, pady=(4, 18))
+        self.ubs_portfolio_config_split = main_split
+
+        config_pane = ttk.Frame(main_split, style="Panel.TFrame")
+        content_pane = ttk.Frame(main_split, style="Panel.TFrame")
+        main_split.add(config_pane, weight=0)
+        main_split.add(content_pane, weight=1)
+        config_pane.columnconfigure(0, weight=1)
+        content_pane.columnconfigure(0, weight=1)
+        content_pane.rowconfigure(4, weight=1)
+
+        form = tk.Frame(config_pane, bg=colors["panel_alt"])
+        form.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         for col in range(12):
             form.columnconfigure(col, weight=0)
         form.columnconfigure(11, weight=1)
@@ -412,7 +445,7 @@ class UBSPortfolioViewMixin:
             )
             self._tooltip_cls(
                 self.ubs_portfolio_target_month_combo,
-                "Evalua solamente este mes en cada ano disponible del historico base y robustez.",
+                "Evalua solamente este mes en cada año disponible del historico base y robustez.",
             )
             if grid_off_var is not None:
                 grid_off_check = ttk.Checkbutton(
@@ -435,7 +468,19 @@ class UBSPortfolioViewMixin:
                 strict_check.grid(row=3, column=8, columnspan=4, sticky="w", padx=(8, 10), pady=5)
                 self._tooltip_cls(
                     strict_check,
-                    "Si esta activo, todos los meses deben respetar el DD en los ultimos 5 anos; el mes objetivo ademas debe pasar ano a ano y ser el mejor por net.",
+                    "Si esta activo, todos los meses deben respetar el DD en los ultimos 5 años; el mes objetivo ademas debe pasar año a año y ser el mejor por net.",
+                )
+            daily_full_var = getattr(self, "ubs_portfolio_daily_dd_full_history", None)
+            if daily_full_var is not None:
+                daily_full_check = ttk.Checkbutton(
+                    form,
+                    text="DD diario todo el año",
+                    variable=daily_full_var,
+                )
+                daily_full_check.grid(row=4, column=4, columnspan=2, sticky="w", padx=(8, 4), pady=5)
+                self._tooltip_cls(
+                    daily_full_check,
+                    "Si esta activo, DD diario max se valida en todo el historico disponible; si no, solo en el mes objetivo.",
                 )
             deep_var = getattr(self, "ubs_portfolio_deep_optimization", None)
             if deep_var is not None:
@@ -563,8 +608,17 @@ class UBSPortfolioViewMixin:
                 child.destroy()
             self._build_ubs_monthly_portfolio_input_groups(form)
 
-        actions = tk.Frame(panel, bg=colors["panel_alt"])
-        actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
+        resize_hint = tk.Label(
+            config_pane,
+            text="↕ arrastra la barra para redimensionar configuracion",
+            bg=colors["panel"],
+            fg=colors["muted"],
+            font=("Segoe UI", 8),
+        )
+        resize_hint.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+
+        actions = tk.Frame(content_pane, bg=colors["panel_alt"])
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         actions.columnconfigure(0, weight=1)
         tk.Label(
             actions,
@@ -633,11 +687,11 @@ class UBSPortfolioViewMixin:
         refresh_btn.grid(row=0, column=4, sticky="e", padx=(0, 10), pady=6)
         self.ubs_portfolio_buttons = [generate_btn, reset_btn, refresh_btn]
 
-        self.ubs_portfolio_progress = ttk.Progressbar(panel, mode="indeterminate")
-        self.ubs_portfolio_progress.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 6))
+        self.ubs_portfolio_progress = ttk.Progressbar(content_pane, mode="indeterminate")
+        self.ubs_portfolio_progress.grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
-        metrics = tk.Frame(panel, bg=colors["panel_alt"])
-        metrics.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 6))
+        metrics = tk.Frame(content_pane, bg=colors["panel_alt"])
+        metrics.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         for col in range(6):
             metrics.columnconfigure(col, weight=1)
 
@@ -656,8 +710,8 @@ class UBSPortfolioViewMixin:
         metric(4, "Unidades", self.ubs_portfolio_metric_units)
         metric(5, "Estrategias", self.ubs_portfolio_metric_count)
 
-        body = ttk.PanedWindow(panel, orient="horizontal")
-        body.grid(row=7, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        body = ttk.PanedWindow(content_pane, orient="horizontal")
+        body.grid(row=4, column=0, sticky="nsew")
 
         left = ttk.Frame(body, style="Panel.TFrame")
         right = ttk.Frame(body, style="Panel.TFrame")
@@ -1174,7 +1228,7 @@ class UBSPortfolioViewMixin:
         compare_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
         compare_frame.columnconfigure(0, weight=1)
         compare_columns = (
-            "profile", "net", "valley", "point", "p50", "p95",
+            "profile", "net", "valley", "point", "daily", "p50", "p95",
             "prob_nominal", "prob_effective", "margin", "reserve",
             "real_margin", "real_margin_pct", "units", "strategies", "group", "changes", "stress",
         )
@@ -1191,6 +1245,7 @@ class UBSPortfolioViewMixin:
             ("net", "NET", 100),
             ("valley", "DD VALLE", 130),
             ("point", "DD PUNT.", 130),
+            ("daily", "DD DIA", 120),
             ("p50", "DD P50", 90),
             ("p95", "DD P95", 90),
             ("prob_nominal", "P(> NOM.)", 90),

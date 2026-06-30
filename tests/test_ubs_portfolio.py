@@ -323,6 +323,22 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertLessEqual(result.actual_valley_dd, result.target_valley_dd)
         self.assertLessEqual(result.actual_point_dd, result.target_point_dd)
 
+    def test_monthly_optimizer_can_ignore_point_dd_when_daily_dd_is_the_control(self) -> None:
+        result = optimize_portfolio(
+            [make_strategy("s1", "EURUSD", [0, 100, 0, 200])],
+            capital=1000,
+            valley_dd_pct=20,
+            point_dd_pct=5,
+            max_total_units=1,
+            max_units_per_group_pct=1.0,
+            enforce_point_dd=False,
+        )
+
+        self.assertFalse(result.enforce_point_dd)
+        self.assertEqual(result.active_strategies, 1)
+        self.assertLessEqual(result.actual_valley_dd, result.target_valley_dd)
+        self.assertGreater(result.actual_point_dd, result.target_point_dd)
+
     def test_optimizer_applies_configured_dd_reserve(self) -> None:
         result = optimize_portfolio(
             [make_strategy("s1", "EURUSD", [0, 100, 80, 160])],
@@ -708,6 +724,118 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             if portfolio_group_key(allocation.symbol) == "IndicesEnergies"
         ]
         self.assertLessEqual(len(index_sets), 3)
+
+    def test_monthly_daily_dd_limit_blocks_closed_plus_floating_risk(self) -> None:
+        risky = make_strategy("risky", "EURUSD", [0, 100, 250], trades=120)
+        risky.report_2020_2024.closed_trades = [
+            ClosedTrade(
+                open_time=datetime(2026, 7, 1, 10),
+                close_time=datetime(2026, 7, 1, 12),
+                symbol="EURUSD",
+                volume=0.01,
+                profit=-100.0,
+            ),
+            ClosedTrade(
+                open_time=datetime(2026, 7, 2, 10),
+                close_time=datetime(2026, 7, 2, 12),
+                symbol="EURUSD",
+                volume=0.01,
+                profit=350.0,
+            ),
+        ]
+        risky.target_month = 7
+        safe = make_strategy("safe", "GBPUSD", [0, 40, 80], trades=120)
+        safe.report_2020_2024.closed_trades = [
+            ClosedTrade(
+                open_time=datetime(2026, 7, 3, 10),
+                close_time=datetime(2026, 7, 3, 12),
+                symbol="GBPUSD",
+                volume=0.01,
+                profit=80.0,
+            )
+        ]
+        safe.target_month = 7
+
+        result = optimize_portfolio(
+            [risky, safe],
+            capital=5000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=5,
+            max_total_candidates=None,
+            max_total_units=1,
+            max_daily_dd=150,
+        )
+
+        self.assertEqual([allocation.set_id for allocation in result.allocations], ["safe"])
+        self.assertLessEqual(result.max_daily_dd, 150)
+        self.assertEqual(result.target_daily_dd, 150)
+
+    def test_monthly_daily_dd_full_history_blocks_non_target_month_risk(self) -> None:
+        risky = make_strategy("risky", "XAUUSD", [0, 200, 400], trades=120)
+        risky.target_month = 7
+        risky.report_2020_2024.closed_trades = [
+            ClosedTrade(
+                open_time=datetime(2026, 4, 20, 10),
+                close_time=datetime(2026, 4, 20, 12),
+                symbol="XAUUSD",
+                volume=0.01,
+                profit=-160.0,
+            ),
+            ClosedTrade(
+                open_time=datetime(2026, 7, 10, 10),
+                close_time=datetime(2026, 7, 10, 12),
+                symbol="XAUUSD",
+                volume=0.01,
+                profit=560.0,
+            ),
+        ]
+        safe = make_strategy("safe", "EURUSD", [0, 50, 100], trades=120)
+        safe.target_month = 7
+        safe.report_2020_2024.closed_trades = [
+            ClosedTrade(
+                open_time=datetime(2026, 7, 11, 10),
+                close_time=datetime(2026, 7, 11, 12),
+                symbol="EURUSD",
+                volume=0.01,
+                profit=100.0,
+            )
+        ]
+
+        month_only = optimize_portfolio(
+            [risky, safe],
+            capital=5000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=5,
+            max_total_candidates=None,
+            max_total_units=1,
+            max_daily_dd=150,
+            daily_dd_full_history=False,
+        )
+        full_history = optimize_portfolio(
+            [risky, safe],
+            capital=5000,
+            valley_dd_pct=20,
+            point_dd_pct=20,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=5,
+            max_total_candidates=None,
+            max_total_units=1,
+            max_daily_dd=150,
+            daily_dd_full_history=True,
+        )
+
+        self.assertEqual([allocation.set_id for allocation in month_only.allocations], ["risky"])
+        self.assertFalse(month_only.daily_dd_full_history)
+        self.assertEqual([allocation.set_id for allocation in full_history.allocations], ["safe"])
+        self.assertTrue(full_history.daily_dd_full_history)
+        self.assertLessEqual(full_history.max_daily_dd, 150)
 
     def test_balanced_warns_when_only_one_asset_group_is_eligible(self) -> None:
         result = optimize_portfolio(

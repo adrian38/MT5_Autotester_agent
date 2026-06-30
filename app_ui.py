@@ -877,6 +877,12 @@ class MT5AutotesterUI(
         self.ubs_monthly_portfolio_point_pct = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}point_pct", "4")
         )
+        self.ubs_monthly_portfolio_max_daily_dd = tk.StringVar(
+            value=saved_general.get(f"{monthly_prefix}max_daily_dd", "150")
+        )
+        self.ubs_monthly_portfolio_daily_dd_full_history = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}daily_dd_full_history"), False)
+        )
         self.ubs_monthly_portfolio_capital = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}capital", "10000")
         )

@@ -435,6 +435,10 @@ class SettingsLogicMixin:
             "ubs_monthly_portfolio_type": self.ubs_monthly_portfolio_type.get().strip(),
             "ubs_monthly_portfolio_valley_pct": self.ubs_monthly_portfolio_valley_pct.get().strip(),
             "ubs_monthly_portfolio_point_pct": self.ubs_monthly_portfolio_point_pct.get().strip(),
+            "ubs_monthly_portfolio_max_daily_dd": self.ubs_monthly_portfolio_max_daily_dd.get().strip(),
+            "ubs_monthly_portfolio_daily_dd_full_history": (
+                "1" if self.ubs_monthly_portfolio_daily_dd_full_history.get() else "0"
+            ),
             "ubs_monthly_portfolio_capital": self.ubs_monthly_portfolio_capital.get().strip(),
             "ubs_monthly_portfolio_top_k": str(self.ubs_monthly_portfolio_top_k.get()),
             "ubs_monthly_portfolio_max_candidates": str(self.ubs_monthly_portfolio_max_candidates.get()),

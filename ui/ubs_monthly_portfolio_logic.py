@@ -166,6 +166,11 @@ class UBSMonthlyPortfolioLogicMixin:
 
     def _read_ubs_monthly_portfolio_inputs(self) -> dict[str, object]:
         adapter = self._monthly_portfolio_adapter()
+        # En mensual el DD puntual ya no es una restriccion de construccion.
+        # El lector compartido todavia exige un valor valido, asi que lo
+        # normalizamos al DD valle antes de leer para que un campo oculto no
+        # bloquee la generacion.
+        self.ubs_monthly_portfolio_point_pct.set(self.ubs_monthly_portfolio_valley_pct.get())
         inputs = UBSPortfolioLogicMixin._read_ubs_portfolio_inputs(adapter)
         month_text = str(self.ubs_monthly_portfolio_target_month.get()).strip()
         try:
@@ -177,6 +182,15 @@ class UBSMonthlyPortfolioLogicMixin:
         inputs["portfolio_scope"] = "monthly"
         inputs["target_month"] = target_month
         inputs["target_month_label"] = MONTH_LABELS[target_month - 1]
+        inputs["enforce_point_dd"] = False
+        inputs["max_daily_dd"] = UBSPortfolioLogicMixin._parse_float_setting(
+            adapter,
+            self.ubs_monthly_portfolio_max_daily_dd.get(),
+            "DD diario max",
+        )
+        if float(inputs["max_daily_dd"]) <= 0:
+            raise ValueError("DD diario max debe ser mayor que 0.")
+        inputs["daily_dd_full_history"] = bool(self.ubs_monthly_portfolio_daily_dd_full_history.get())
         allowed_groups = self._ubs_monthly_allowed_asset_groups()
         if not allowed_groups:
             raise ValueError("Selecciona al menos un grupo permitido: Forex, Indices/Energias, Metales o Stocks.")
@@ -229,7 +243,10 @@ class UBSMonthlyPortfolioLogicMixin:
                 "deep_optimization": bool(inputs.get("deep_optimization")),
                 "exclude_monthly_used": bool(inputs.get("exclude_monthly_used")),
                 "corr_with_monthly_portfolios": bool(inputs.get("corr_with_monthly_portfolios")),
+                "enforce_point_dd": bool(inputs.get("enforce_point_dd", True)),
                 "margin_profile": str(inputs.get("margin_profile") or "roboforex"),
+                "max_daily_dd": float(inputs.get("max_daily_dd") or 0.0),
+                "daily_dd_full_history": bool(inputs.get("daily_dd_full_history")),
                 "validate_margin": bool(inputs.get("validate_margin")),
                 "validate_roboforex_margin": bool(inputs.get("validate_roboforex_margin")),
                 "validate_ttp_margin": bool(inputs.get("validate_ttp_margin")),
@@ -292,6 +309,8 @@ class UBSMonthlyPortfolioLogicMixin:
         self.ubs_monthly_portfolio_capital.set(DEFAULT_PORTFOLIO_FORM["capital"])
         self.ubs_monthly_portfolio_valley_pct.set(DEFAULT_PORTFOLIO_FORM["valley_dd_pct"])
         self.ubs_monthly_portfolio_point_pct.set(DEFAULT_PORTFOLIO_FORM["point_dd_pct"])
+        self.ubs_monthly_portfolio_max_daily_dd.set("150")
+        self.ubs_monthly_portfolio_daily_dd_full_history.set(False)
         self.ubs_monthly_portfolio_type.set(DEFAULT_PORTFOLIO_FORM["portfolio_type"])
         self.ubs_monthly_portfolio_top_k.set(DEFAULT_PORTFOLIO_FORM["top_k_per_symbol"])
         self.ubs_monthly_portfolio_max_candidates.set(DEFAULT_PORTFOLIO_FORM["max_total_candidates"])
@@ -554,6 +573,8 @@ class UBSMonthlyPortfolioLogicMixin:
                         "net": getattr(proposal.get("result"), "total_net_profit", None),
                         "units": getattr(proposal.get("result"), "total_units", None),
                         "strategies": getattr(proposal.get("result"), "active_strategies", None),
+                        "max_daily_dd": getattr(proposal.get("result"), "max_daily_dd", None),
+                        "target_daily_dd": getattr(proposal.get("result"), "target_daily_dd", None),
                         "strict_passed": bool(
                             (getattr(proposal.get("result"), "seasonal_validation", {}) or {}).get("passed")
                         ),
