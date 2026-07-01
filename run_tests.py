@@ -1339,6 +1339,51 @@ def read_tester_journal_tail(log_path: Path) -> tuple[str, int]:
         return "", 0
 
 
+def read_tester_journal_tail_text(log_path: Path, max_bytes: int = 65536) -> str:
+    try:
+        size = log_path.stat().st_size
+        if size <= 0:
+            return ""
+        read_bytes = min(size, max(4096, int(max_bytes)))
+        with log_path.open("rb") as f:
+            f.seek(size - read_bytes)
+            raw = f.read()
+        for enc in ("utf-16-le", "utf-8"):
+            try:
+                return raw.decode(enc)
+            except (UnicodeDecodeError, ValueError):
+                continue
+        return raw.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def tester_journal_sidecar_path(report_path: Path) -> Path:
+    return report_path.with_name(f"{report_path.stem}.mt5log.txt")
+
+
+def write_tester_journal_sidecars(
+    copied_reports: list[Path],
+    terminal_data_dirs: list[Path],
+    min_mtime: float,
+    logger: RunLogger,
+) -> None:
+    journal = find_tester_journal_log(terminal_data_dirs, min_mtime=min_mtime)
+    if journal is None:
+        return
+    text = read_tester_journal_tail_text(journal)
+    if not text.strip():
+        return
+    payload = f"MT5 tester journal: {journal}\n\n{text}"
+    for report in copied_reports:
+        try:
+            sidecar = tester_journal_sidecar_path(report)
+            sidecar.write_text(payload, encoding="utf-8")
+            logger.write(f"  Log tester guardado: {sidecar}")
+        except OSError as exc:
+            logger.write(f"  Aviso: no pude guardar log tester para {report.name}: {exc}")
+
+
 def _tester_log_is_stuck(last_line: str) -> bool:
     lower = last_line.lower()
     return any(marker.lower() in lower for marker in TESTER_STUCK_MARKERS)
@@ -1587,6 +1632,7 @@ def run_test(
             if not copied_reports:
                 logger.write("ERROR: No quedo ningun reporte nuevo copiado a reports.")
                 return 1
+            write_tester_journal_sidecars(copied_reports, terminal_data_dirs, before, logger)
             return exit_code
 
         if real_tick_model and attempt < max_attempts:

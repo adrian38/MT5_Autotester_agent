@@ -1,3 +1,4 @@
+import json
 import random
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from pathlib import Path
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult
 from ubs.account import account_disabled_symbols_path
+from ubs.memory import AgentMemory
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
 from ubs_agent import (
     TargetDiversityLimiter,
@@ -110,7 +112,7 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertTrue(matches, reason)
 
-    def test_empty_tester_report_is_no_trades_not_mismatch(self) -> None:
+    def test_empty_tester_report_is_report_mismatch_not_no_trades(self) -> None:
         class Memory:
             def __init__(self) -> None:
                 self.calls = []
@@ -139,8 +141,98 @@ class UBSSetsFileTests(unittest.TestCase):
                 "ICTRADING",
             )
 
-        self.assertEqual(status, "no_trades")
-        self.assertEqual(memory.calls[0][2], "no_trades")
+        self.assertEqual(status, "report_mismatch")
+        self.assertEqual(memory.calls[0][2], "report_mismatch")
+
+    def test_empty_tester_report_with_no_history_log_is_no_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "SPRY.NAS_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tSPRY.NAS: found history data from 2026.02.23 00:00 to 2026.06.30 00:00, specified period is out of this range",
+                        "Tester\tSPRY.NAS: no history data from 2020.01.01 00:00 to 2024.12.31 00:00",
+                        "Tester\tno history data, stop testing",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "BTCUSD", "H1", "family", "1")
+                variant = Variant(root / "candidate.set", seed, "SPRY.NAS", "H1", (), (), "test")
+                memory.record_variant(run_id, 1, variant)
+
+                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                    status, _result = evaluate_variant_report(
+                        memory,
+                        variant,
+                        report,
+                        ScoreConfig(),
+                        {},
+                        "ICTRADING",
+                    )
+
+                row = memory.conn.execute("select status, score, accepted, metrics_json from candidates where set_path=?", (str(variant.path),)).fetchone()
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "no_history")
+                self.assertEqual(row["status"], "no_history")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertIsNone(data["score"])
+                self.assertEqual(data["reasons"], ["no_history_data"])
+                self.assertEqual(data["history_available_from"], "2026.02.23 00:00")
+                self.assertEqual(data["history_requested_from"], "2020.01.01 00:00")
+            finally:
+                memory.close()
+
+    def test_existing_empty_context_no_trades_are_migrated_to_report_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "memory.sqlite"
+            memory = AgentMemory(db_path)
+            run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+            seed = Seed(root / "seed.set", "XAUUSD", "H1", "family", "1")
+            seed.path.write_text("set", encoding="utf-8")
+            empty_variant = Variant(root / "empty.set", seed, "DPZ.NAS-24", "M1", (), (), "test")
+            valid_zero_variant = Variant(root / "valid_zero.set", seed, "WULF.NAS-24", "M1", (), (), "test")
+            for variant in (empty_variant, valid_zero_variant):
+                memory.record_variant(run_id, 1, variant)
+            memory.record_score(
+                empty_variant.path,
+                score(-55.0, symbol="", timeframe="M0", trades=0),
+                "no_trades",
+                Path("empty.htm"),
+            )
+            memory.record_score(
+                valid_zero_variant.path,
+                score(-55.0, symbol="WULF.NAS-24", timeframe="M1", trades=0),
+                "no_trades",
+                Path("valid_zero.htm"),
+            )
+            memory.prepare_single_seed_evaluation(seed, force=True)
+            memory.record_seed_score(
+                seed,
+                score(-55.0, symbol="", timeframe="M0", trades=0),
+                "no_trades",
+                Path("seed_empty.htm"),
+            )
+            memory.close()
+
+            memory = AgentMemory(db_path)
+            try:
+                empty_row = memory.conn.execute("select status from candidates where set_path=?", (str(empty_variant.path),)).fetchone()
+                valid_row = memory.conn.execute("select status from candidates where set_path=?", (str(valid_zero_variant.path),)).fetchone()
+                seed_row = memory.conn.execute("select status from seed_scores where seed_path=?", (str(seed.path),)).fetchone()
+
+                self.assertEqual(empty_row["status"], "report_mismatch")
+                self.assertEqual(valid_row["status"], "no_trades")
+                self.assertEqual(seed_row["status"], "report_mismatch")
+            finally:
+                memory.close()
 
     def test_run_backtests_forwards_model_override(self) -> None:
         args = SimpleNamespace(

@@ -207,12 +207,43 @@ class AgentMemory:
               and (upper(symbol)='UNKNOWN' or upper(period)='UNKNOWN')
             """
         )
+        self._reclassify_empty_context_no_trades()
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")}
         if column not in columns:
             self.conn.execute(f"alter table {table} add column {column} {definition}")
+
+    def _reclassify_empty_context_no_trades(self) -> None:
+        for table in ("candidates", "seed_scores"):
+            rows = self.conn.execute(
+                f"""
+                select id, metrics_json
+                from {table}
+                where status='no_trades' and coalesce(metrics_json, '') != ''
+                """
+            ).fetchall()
+            ids: list[int] = []
+            for row in rows:
+                try:
+                    metrics = json.loads(row["metrics_json"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                symbol = str(metrics.get("symbol") or "").strip()
+                timeframe = str(metrics.get("timeframe") or "").strip().upper()
+                try:
+                    trades = int(metrics.get("trades") or 0)
+                except (TypeError, ValueError):
+                    trades = 0
+                if trades <= 0 and (not symbol or timeframe in {"", "M0"}):
+                    ids.append(int(row["id"]))
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"update {table} set status='report_mismatch', accepted=null where id in ({placeholders})",
+                    tuple(ids),
+                )
 
     def create_run(
         self,
@@ -394,6 +425,7 @@ class AgentMemory:
 
     def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
         accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
+        score_value = None if status == "no_history" else (result.score if result else None)
         self.conn.execute(
             """
             update candidates
@@ -402,7 +434,7 @@ class AgentMemory:
             """,
             (
                 str(report_path) if report_path else (result.report_path if result else None),
-                result.score if result else None,
+                score_value,
                 accepted,
                 result.to_json() if result else None,
                 status,
@@ -696,6 +728,7 @@ class AgentMemory:
 
     def record_seed_score(self, seed: Seed, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
         accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
+        score_value = None if status == "no_history" else (result.score if result else None)
         self.conn.execute(
             """
             update seed_scores
@@ -710,7 +743,7 @@ class AgentMemory:
                 seed.family,
                 seed.run_strategy,
                 str(report_path) if report_path else (result.report_path if result else None),
-                result.score if result else None,
+                score_value,
                 accepted,
                 result.to_json() if result else None,
                 status,

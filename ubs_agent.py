@@ -23,6 +23,7 @@ from run_tests import (
     load_set_params,
     normalize_set_symbol,
     parse_symbol_map,
+    tester_journal_sidecar_path,
 )
 from ubs_generate_sets import format_like, parse_numeric
 from ubs.account import (
@@ -1871,7 +1872,7 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
         select *
         from candidates
         where status in (
-            'accepted', 'rejected', 'no_trades', 'report_mismatch',
+            'accepted', 'rejected', 'no_trades', 'no_history', 'report_mismatch',
             'parse_error', 'no_report', 'generated'
         )
         order by run_id, generation, id
@@ -2040,6 +2041,67 @@ def report_has_empty_tester_context(result: ScoreResult) -> bool:
     )
 
 
+def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, object] | None:
+    sidecar = tester_journal_sidecar_path(report)
+    if not sidecar.exists():
+        return None
+    try:
+        text = sidecar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    symbol = str(variant.target_symbol or "").strip()
+    if not symbol:
+        return None
+    escaped = re.escape(symbol)
+    found_pattern = re.compile(
+        rf"{escaped}:\s+found history data from\s+(.+?)\s+to\s+(.+?),\s+specified period is out of this range",
+        re.IGNORECASE,
+    )
+    missing_pattern = re.compile(
+        rf"{escaped}:\s+no history data from\s+(.+?)\s+to\s+(.+?)(?:\r?\n|$)",
+        re.IGNORECASE,
+    )
+    found_matches = list(found_pattern.finditer(text))
+    missing_matches = list(missing_pattern.finditer(text))
+    if not missing_matches:
+        return None
+    found = found_matches[-1] if found_matches else None
+    missing = missing_matches[-1]
+    return {
+        "reasons": ["no_history_data"],
+        "no_score": True,
+        "recommendation": "desactivar simbolo y revisar historico del broker",
+        "log_source": str(sidecar),
+        "history_available_from": found.group(1).strip() if found else "",
+        "history_available_to": found.group(2).strip() if found else "",
+        "history_requested_from": missing.group(1).strip(),
+        "history_requested_to": missing.group(2).strip().rstrip("."),
+    }
+
+
+def record_score_with_metadata(
+    memory: AgentMemory,
+    set_path: Path,
+    result: ScoreResult,
+    status: str,
+    report_path: Path,
+    metadata: dict[str, object],
+) -> None:
+    memory.record_score(set_path, result, status, report_path)
+    try:
+        payload = json.loads(result.to_json())
+    except (TypeError, ValueError):
+        payload = {}
+    payload.update(metadata)
+    payload["score"] = None
+    payload["accepted"] = False
+    memory.conn.execute(
+        "update candidates set metrics_json=?, score=null, accepted=null where set_path=?",
+        (json.dumps(payload, ensure_ascii=True, sort_keys=True), str(set_path)),
+    )
+    memory.conn.commit()
+
+
 def evaluate_seed_report(
     memory: AgentMemory,
     seed: Seed,
@@ -2180,8 +2242,17 @@ def evaluate_variant_report(
         memory.record_score(variant.path, None, "parse_error", report)
         return "parse_error", None
     if report_has_empty_tester_context(result):
-        memory.record_score(variant.path, result, "no_trades", report)
-        return "no_trades", result
+        no_history = tester_log_no_history_metadata(report, variant)
+        if no_history:
+            print(
+                f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
+                "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
+            )
+            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+            return "no_history", result
+        print(f"AVISO: reporte sin contexto tester para {variant.path.name}; marcado como report_mismatch.")
+        memory.record_score(variant.path, result, "report_mismatch", report)
+        return "report_mismatch", result
     matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
     if not matches:
         print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")

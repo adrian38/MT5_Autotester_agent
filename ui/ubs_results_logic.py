@@ -53,6 +53,27 @@ class UBSResultsLogicMixin:
             return "sin reporte"
         if status == "no_trades":
             return "reporte sin operaciones"
+        if status == "no_history":
+            metrics_json = None
+            try:
+                metrics_json = row["metrics_json"]  # type: ignore[index]
+            except (TypeError, KeyError, IndexError):
+                pass
+            try:
+                data = json.loads(metrics_json) if metrics_json else {}
+            except (TypeError, json.JSONDecodeError):
+                data = {}
+            available_from = str(data.get("history_available_from") or "").strip()
+            available_to = str(data.get("history_available_to") or "").strip()
+            requested_from = str(data.get("history_requested_from") or "").strip()
+            requested_to = str(data.get("history_requested_to") or "").strip()
+            parts = ["sin historico broker"]
+            if available_from or available_to:
+                parts.append(f"disponible {available_from} -> {available_to}")
+            if requested_from or requested_to:
+                parts.append(f"pedido {requested_from} -> {requested_to}")
+            parts.append("recom.: desactivar simbolo")
+            return " | ".join(parts)
         if status in ("generated",):
             return "sin backtest"
         metrics_json = None
@@ -668,6 +689,7 @@ class UBSResultsLogicMixin:
                     sum(case when status = 'generated' then 1 else 0 end) as generated,
                     sum(case when status = 'no_report' then 1 else 0 end) as no_report,
                     sum(case when status = 'no_trades' then 1 else 0 end) as no_trades,
+                    sum(case when status = 'no_history' then 1 else 0 end) as no_history,
                     sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
                 from candidates
                 where run_id = ?
@@ -706,6 +728,7 @@ class UBSResultsLogicMixin:
         generated = int(counts["generated"] or 0)
         no_report = int(counts["no_report"] or 0)
         no_trades = int(counts["no_trades"] or 0)
+        no_history = int(counts["no_history"] or 0)
         report_mismatch = int(counts["report_mismatch"] or 0)
         self.ubs_results_summary.set(
             f"Run #{latest_run['id']} | {latest_run['created_at']} | "
@@ -718,6 +741,8 @@ class UBSResultsLogicMixin:
             extra.append(f"sin reporte {no_report}")
         if no_trades:
             extra.append(f"sin operaciones {no_trades}")
+        if no_history:
+            extra.append(f"sin historico {no_history}")
         if report_mismatch:
             extra.append(f"mismatch reporte {report_mismatch}")
         extra_text = f" | {', '.join(extra)}" if extra else ""
@@ -1414,6 +1439,7 @@ class UBSResultsLogicMixin:
             "generated": "generado",
             "no_report": "pend. reporte",
             "no_trades": "0 ops/no aceptado",
+            "no_history": "sin historico",
             "disabled_symbol": "deshabilitado",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
@@ -1454,7 +1480,7 @@ class UBSResultsLogicMixin:
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
-        if status == "rejected":
+        if status in {"rejected", "no_history"}:
             return "rejected"
         return "pending"
 
