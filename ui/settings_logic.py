@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox
 
 import telegram_notify
 from mt5_env import ENV_FILE
-from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR
+from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR, TESTER_DEFAULTS
 from ubs.account import (
     BROKERS,
     BROKER_ACCOUNT_TYPES,
@@ -32,6 +32,14 @@ COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 REPORT_SUFFIXES = {".htm", ".html", ".xml", ".png", ".gif", ".set"}
+TEMPLATE_FIELD_DEFAULTS = {
+    "Symbol": "XAUUSD",
+    "Period": "M30",
+    "Model": "1",
+    "FromDate": "2020.01.01",
+    "ToDate": "2026.05.22",
+    **TESTER_DEFAULTS,
+}
 
 
 class SettingsLogicMixin:
@@ -70,11 +78,23 @@ class SettingsLogicMixin:
 
         template = Path(template_text).expanduser()
         template.parent.mkdir(parents=True, exist_ok=True)
+        existing_tester: dict[str, str] = {}
+        if template.exists():
+            existing = configparser.ConfigParser(interpolation=None)
+            existing.optionxform = str
+            existing.read(template, encoding="utf-8-sig")
+            if existing.has_section("Tester"):
+                existing_tester = {key: value for key, value in existing["Tester"].items()}
         parser = configparser.ConfigParser(interpolation=None)
         parser.optionxform = str
         parser["Tester"] = {"Expert": ""}
         for key, variable in self.tester_vars.items():
-            parser["Tester"][key] = variable.get().strip()
+            value = variable.get().strip()
+            if not value:
+                value = existing_tester.get(key, "").strip()
+            if not value:
+                value = TEMPLATE_FIELD_DEFAULTS.get(key, "")
+            parser["Tester"][key] = value
         parser["Tester"]["Report"] = ""
         with template.open("w", encoding="utf-8", newline="\n") as file:
             parser.write(file, space_around_delimiters=False)

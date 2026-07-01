@@ -1,11 +1,15 @@
+import json
 import random
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult
 from ubs.account import account_disabled_symbols_path
+from ubs.memory import AgentMemory
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
 from ubs_agent import (
     TargetDiversityLimiter,
@@ -15,6 +19,7 @@ from ubs_agent import (
     choose_target_symbol,
     copy_accepted,
     create_variant,
+    evaluate_variant_report,
     final_tick_row_pending_for_dates,
     final_tick_ohlc_retry_needed_for_dates,
     final_tick_ohlc_retry_exhausted_for_dates,
@@ -29,20 +34,25 @@ from ubs_agent import (
     min_trades_for_period,
     ranked_seed_selection,
     reserved_timeframe_plan,
+    repair_seed_backtest_set,
+    report_matches_variant,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
+    run_backtests,
     select_next_seed_survivors,
     validate_final_tick_stage_dates,
     validate_seed_backtest_set,
     variant_as_next_seed,
     write_set_force_symbol,
 )
-from run_tests import parse_symbol_map
+from run_tests import normalize_set_symbol, parse_symbol_map
 
 
 def score(
     value: float,
     *,
+    symbol: str = "XAUUSD",
+    timeframe: str = "H1",
     net_profit: float = 100.0,
     profit_factor: float = 2.0,
     drawdown_pct: float = 1.0,
@@ -52,8 +62,8 @@ def score(
     return ScoreResult(
         report_path="report.htm",
         name="report",
-        symbol="XAUUSD",
-        timeframe="H1",
+        symbol=symbol,
+        timeframe=timeframe,
         score=value,
         accepted=True,
         net_profit=net_profit,
@@ -77,6 +87,180 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_normalize_set_symbol_preserves_exchange_suffixes(self) -> None:
+        self.assertEqual(normalize_set_symbol("WULF.NAS-24"), "WULF.NAS-24")
+        self.assertEqual(normalize_set_symbol("DPZ.NAS"), "DPZ.NAS")
+        self.assertEqual(normalize_set_symbol("UBER.NYSE"), "UBER.NYSE")
+        self.assertEqual(normalize_set_symbol("EURUSD.a"), "EURUSD")
+
+    def test_report_match_preserves_ictrading_stock_symbol(self) -> None:
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "BTCUSD", "M1", "family", "1"),
+            target_symbol="WULF.NAS-24",
+            target_period="M1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="test",
+        )
+
+        matches, reason = report_matches_variant(
+            variant,
+            score(0.0, symbol="WULF.NAS-24", timeframe="M1", trades=0),
+            {},
+        )
+
+        self.assertTrue(matches, reason)
+
+    def test_empty_tester_report_is_report_mismatch_not_no_trades(self) -> None:
+        class Memory:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def record_score(self, set_path, result, status, report_path=None) -> None:
+                self.calls.append((set_path, result, status, report_path))
+
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "BTCUSD", "M1", "family", "1"),
+            target_symbol="DPZ.NAS-24",
+            target_period="M1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="test",
+        )
+        memory = Memory()
+
+        with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+            status, _result = evaluate_variant_report(
+                memory,
+                variant,
+                Path("empty.htm"),
+                ScoreConfig(),
+                {},
+                "ICTRADING",
+            )
+
+        self.assertEqual(status, "report_mismatch")
+        self.assertEqual(memory.calls[0][2], "report_mismatch")
+
+    def test_empty_tester_report_with_no_history_log_is_no_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "SPRY.NAS_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tSPRY.NAS: found history data from 2026.02.23 00:00 to 2026.06.30 00:00, specified period is out of this range",
+                        "Tester\tSPRY.NAS: no history data from 2020.01.01 00:00 to 2024.12.31 00:00",
+                        "Tester\tno history data, stop testing",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "BTCUSD", "H1", "family", "1")
+                variant = Variant(root / "candidate.set", seed, "SPRY.NAS", "H1", (), (), "test")
+                memory.record_variant(run_id, 1, variant)
+
+                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                    status, _result = evaluate_variant_report(
+                        memory,
+                        variant,
+                        report,
+                        ScoreConfig(),
+                        {},
+                        "ICTRADING",
+                    )
+
+                row = memory.conn.execute("select status, score, accepted, metrics_json from candidates where set_path=?", (str(variant.path),)).fetchone()
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "no_history")
+                self.assertEqual(row["status"], "no_history")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertIsNone(data["score"])
+                self.assertEqual(data["reasons"], ["no_history_data"])
+                self.assertEqual(data["history_available_from"], "2026.02.23 00:00")
+                self.assertEqual(data["history_requested_from"], "2020.01.01 00:00")
+            finally:
+                memory.close()
+
+    def test_existing_empty_context_no_trades_are_migrated_to_report_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "memory.sqlite"
+            memory = AgentMemory(db_path)
+            run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+            seed = Seed(root / "seed.set", "XAUUSD", "H1", "family", "1")
+            seed.path.write_text("set", encoding="utf-8")
+            empty_variant = Variant(root / "empty.set", seed, "DPZ.NAS-24", "M1", (), (), "test")
+            valid_zero_variant = Variant(root / "valid_zero.set", seed, "WULF.NAS-24", "M1", (), (), "test")
+            for variant in (empty_variant, valid_zero_variant):
+                memory.record_variant(run_id, 1, variant)
+            memory.record_score(
+                empty_variant.path,
+                score(-55.0, symbol="", timeframe="M0", trades=0),
+                "no_trades",
+                Path("empty.htm"),
+            )
+            memory.record_score(
+                valid_zero_variant.path,
+                score(-55.0, symbol="WULF.NAS-24", timeframe="M1", trades=0),
+                "no_trades",
+                Path("valid_zero.htm"),
+            )
+            memory.prepare_single_seed_evaluation(seed, force=True)
+            memory.record_seed_score(
+                seed,
+                score(-55.0, symbol="", timeframe="M0", trades=0),
+                "no_trades",
+                Path("seed_empty.htm"),
+            )
+            memory.close()
+
+            memory = AgentMemory(db_path)
+            try:
+                empty_row = memory.conn.execute("select status from candidates where set_path=?", (str(empty_variant.path),)).fetchone()
+                valid_row = memory.conn.execute("select status from candidates where set_path=?", (str(valid_zero_variant.path),)).fetchone()
+                seed_row = memory.conn.execute("select status from seed_scores where seed_path=?", (str(seed.path),)).fetchone()
+
+                self.assertEqual(empty_row["status"], "report_mismatch")
+                self.assertEqual(valid_row["status"], "no_trades")
+                self.assertEqual(seed_row["status"], "report_mismatch")
+            finally:
+                memory.close()
+
+    def test_run_backtests_forwards_model_override(self) -> None:
+        args = SimpleNamespace(
+            expert="Ultimate Breakout System.ex5",
+            multi_terminal=False,
+            template="tester_template.ini",
+            delay=0,
+            mt5_path="",
+            data_dir="",
+            max_workers=1,
+            terminals_config="",
+            symbol_map="",
+            dry_run=True,
+            from_date="",
+            to_date="",
+        )
+        completed = SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            set_dir = Path(temp_dir)
+            with patch("ubs_agent.subprocess.run", return_value=completed) as run_mock:
+                code = run_backtests(args, set_dir, model="1")
+
+        self.assertEqual(code, 0)
+        command = run_mock.call_args.args[0]
+        self.assertIn("--model", command)
+        self.assertEqual(command[command.index("--model") + 1], "1")
+
     def test_final_tick_6m_requires_at_least_180_days(self) -> None:
         message = validate_final_tick_stage_dates("six_month", "2026.01.01", "2026.06.01")
 
@@ -263,6 +447,75 @@ class UBSSetsFileTests(unittest.TestCase):
             write_set_force_symbol(path, path, "XAUUSD")
 
             self.assertIn("ForceSymbol=XAUUSD", path.read_text(encoding="utf-8"))
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+
+    def test_repair_seed_backtest_set_fixes_bitcoin_reaper_st1_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "BTC_H1__Bitcoin_Reaper__updated__k.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=16385||0||0||49153||N",
+                        "EA_Comment=Ultimate Breakout System_k",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "BTCUSD", "H1")
+            text = path.read_text(encoding="utf-8")
+
+            self.assertEqual(result["run_strategy"], "1")
+            self.assertIn("ForceSymbol=BTCUSD", text)
+            self.assertIn("Run_Strategy=1||1||0||2||N", text)
+            self.assertIn("ST1_Timeframe=16385||0||0||49153||N", text)
+            self.assertEqual(validate_seed_backtest_set(Seed(path, "BTCUSD", "H1", "family", "1")), [])
+
+    def test_repair_seed_backtest_set_uses_volatility_strategy_when_vol_key_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Volatility_Breakout__BTCUSD__H1_A.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                        "VolTimeframe=16385||0||0||49153||N",
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=0||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "BTCUSD", "H1")
+            text = path.read_text(encoding="utf-8")
+
+            self.assertEqual(result["run_strategy"], "2")
+            self.assertIn("ForceSymbol=BTCUSD", text)
+            self.assertIn("Run_Strategy=2||1||0||2||N", text)
+            self.assertEqual(validate_seed_backtest_set(Seed(path, "BTCUSD", "H1", "family", "2")), [])
+
+    def test_repair_seed_backtest_set_converts_legacy_timeframe_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Old_Optimizations_H1__MT4A.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ST1_Timeframe=0||0||0||49153||N",
+                        "Entry_Timing=60||0||0||49153||N",
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "XAUUSD", "H1")
+            text = path.read_text(encoding="utf-8")
+
+            self.assertIn("Entry_Timing=16385||0||0||49153||N", text)
+            self.assertEqual(result["run_strategy"], "1")
+            self.assertEqual(validate_seed_backtest_set(Seed(path, "XAUUSD", "H1", "family", "1")), [])
 
     def test_copy_accepted_replaces_previous_copy_for_same_set(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

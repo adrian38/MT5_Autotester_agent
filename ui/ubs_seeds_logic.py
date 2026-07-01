@@ -98,9 +98,7 @@ class UBSSeedsLogicMixin:
         return len(files), str(source_dir)
 
     def _active_ubs_symbol_map(self) -> dict[str, str]:
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            return parse_symbol_map(self.symbol_map.get().strip())
-        return {}
+        return parse_symbol_map(self._effective_ubs_symbol_map_text())
 
     def _format_disabled_seed_counts(self, counts: Counter[tuple[str, str]]) -> str:
         parts = []
@@ -223,8 +221,9 @@ class UBSSeedsLogicMixin:
                 args.extend(["--mt5-path", self.mt5_path.get()])
             if self.mt5_data_root.get().strip():
                 args.extend(["--data-dir", self.mt5_data_root.get()])
-        if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-            args.extend(["--symbol-map", self.symbol_map.get().strip()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map:
+            args.extend(["--symbol-map", symbol_map])
         return args
 
     def _run_ubs_seed_evaluation(self) -> None:
@@ -651,8 +650,9 @@ class UBSSeedsLogicMixin:
                     args.extend(["--mt5-path", self.mt5_path.get()])
                 if self.mt5_data_root.get().strip():
                     args.extend(["--data-dir", self.mt5_data_root.get()])
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error("No se pudo preparar retry seed", str(exc))
             return
@@ -1264,6 +1264,125 @@ class UBSSeedsLogicMixin:
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 
+    def _repair_selected_ubs_seed_sets(self) -> None:
+        infos = self._checked_ubs_seed_infos()
+        active_infos = [
+            info for info in infos
+            if info.get("active") != "0" and Path(info.get("seed_path", "")).expanduser().exists()
+        ]
+        if not active_infos:
+            messagebox.showinfo("Reparar sets", "Marca una o mas seeds existentes para reparar.")
+            return
+        if not messagebox.askyesno(
+            "Reparar sets",
+            f"Reparar {len(active_infos)} seed(s) marcada(s)?\n\n"
+            "Se rellenara ForceSymbol y, si se puede inferir, Run_Strategy. "
+            "Las seeds modificadas quedaran pendientes para reevaluar.",
+        ):
+            return
+
+        memory_path = self._ubs_memory_path()
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        repaired = 0
+        unchanged = 0
+        failed: list[str] = []
+        still_invalid = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        try:
+            conn = connect_memory(memory_path)
+            self._ensure_ubs_seed_override_schema(conn)
+            from ubs.models import Seed
+            from ubs_agent import repair_seed_backtest_set, validate_seed_backtest_set
+
+            for info in active_infos:
+                seed_path_text = info.get("seed_path", "")
+                seed_path = Path(seed_path_text).expanduser()
+                symbol, period = self._inferred_ubs_seed_fields(seed_path)
+                if symbol in {"", "UNKNOWN"} or period in {"", "UNKNOWN"}:
+                    failed.append(f"{seed_path.name}: no pude inferir Symbol/TF")
+                    continue
+                row = None
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    row = conn.execute(
+                        "select family, run_strategy from seed_scores where seed_path=?",
+                        (str(seed_path),),
+                    ).fetchone()
+                try:
+                    result = repair_seed_backtest_set(seed_path, symbol, period)
+                except OSError as exc:
+                    failed.append(f"{seed_path.name}: {exc}")
+                    continue
+                changed = list(result.get("changed") or [])
+                if not changed:
+                    unchanged += 1
+                    continue
+
+                repaired += 1
+                stat = seed_path.stat()
+                seed = Seed(
+                    seed_path,
+                    symbol,
+                    period,
+                    str(row["family"] or "") if row else "",
+                    str(result.get("run_strategy") or (row["run_strategy"] if row else "") or ""),
+                )
+                reasons = validate_seed_backtest_set(seed)
+                if reasons:
+                    still_invalid += 1
+                    status = "invalid_seed"
+                    metrics_json = json.dumps({"reasons": reasons, "repair": changed}, ensure_ascii=False)
+                    evaluated_at = now
+                else:
+                    status = "pending"
+                    metrics_json = None
+                    evaluated_at = None
+                if self._sqlite_table_exists(conn, "seed_scores"):
+                    conn.execute(
+                        """
+                        update seed_scores
+                        set seed_mtime=?,
+                            seed_size=?,
+                            symbol=?,
+                            period=?,
+                            run_strategy=?,
+                            report_path=null,
+                            score=null,
+                            accepted=null,
+                            metrics_json=?,
+                            status=?,
+                            evaluated_at=?
+                        where seed_path=?
+                        """,
+                        (
+                            float(stat.st_mtime),
+                            int(stat.st_size),
+                            symbol,
+                            period,
+                            str(result.get("run_strategy") or ""),
+                            metrics_json,
+                            status,
+                            evaluated_at,
+                            str(seed_path),
+                        ),
+                    )
+            conn.commit()
+            conn.close()
+        except (sqlite3.Error, OSError) as exc:
+            self._show_error("Error reparando sets", str(exc))
+            return
+
+        self.ubs_seed_checked.clear()
+        parts = [f"reparadas={repaired}", f"sin cambios={unchanged}"]
+        if still_invalid:
+            parts.append(f"aun invalidas={still_invalid}")
+        if failed:
+            parts.append(f"fallos={len(failed)}")
+        self.status_text.set("Reparar sets: " + " | ".join(parts))
+        if failed:
+            messagebox.showwarning("Reparar sets", "\n".join(failed[:12]))
+        self._refresh_ubs_seed_eval_summary()
+        self._refresh_ubs_seeds()
+
     def _save_seed_criteria_clicked(self) -> None:
         try:
             self._ubs_seed_score_args()
@@ -1285,8 +1404,9 @@ class UBSSeedsLogicMixin:
                 "--account-type", self._ubs_account_type(),
             ]
             args.extend(self._ubs_seed_score_args())
-            if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
-                args.extend(["--symbol-map", self.symbol_map.get().strip()])
+            symbol_map = self._effective_ubs_symbol_map_text()
+            if symbol_map:
+                args.extend(["--symbol-map", symbol_map])
         except Exception as exc:
             self._show_error("No se pudieron aplicar criterios Seeds", str(exc))
             return

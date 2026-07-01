@@ -174,8 +174,10 @@ class UBSAccountTests(unittest.TestCase):
 
     def test_symbol_map_defaults_are_broker_scoped(self) -> None:
         self.assertIn("CRUDEOIL=WTI", default_symbol_map_for_broker("ROBOFOREX"))
+        self.assertIn("US100=USTEC", default_symbol_map_for_broker("ICTRADING"))
+        self.assertIn("DAX=DE40", default_symbol_map_for_broker("ICTRADING"))
+        self.assertIn("WTI=XTIUSD", default_symbol_map_for_broker("ICTRADING"))
         self.assertEqual(default_symbol_map_for_broker("AXI"), "")
-        self.assertEqual(default_symbol_map_for_broker("ICTRADING"), "")
 
     def test_symbol_map_switch_keeps_values_per_broker(self) -> None:
         agent = _FakeAgent("ECN", "", "", broker="ROBOFOREX")
@@ -192,6 +194,21 @@ class UBSAccountTests(unittest.TestCase):
 
         self.assertEqual(agent._ubs_symbol_maps_by_broker["ROBOFOREX"], "XTIUSD=WTI")
         self.assertEqual(agent.symbol_map.get(), "GER40=GER40.cash")
+
+    def test_symbol_map_switch_fills_empty_broker_default(self) -> None:
+        agent = _FakeAgent("STANDARD", "", "", broker="ICTRADING")
+        agent.symbol_map = _FakeVar("")
+        agent._ubs_symbol_maps_by_broker = {
+            "ROBOFOREX": "",
+            "AXI": "",
+            "ICTRADING": "",
+        }
+        agent._ubs_symbol_map_active_broker = "ICTRADING"
+
+        agent._sync_ubs_symbol_map_for_broker("ICTRADING")
+
+        self.assertIn("US100=USTEC", agent.symbol_map.get())
+        self.assertIn("US100=USTEC", agent._ubs_symbol_maps_by_broker["ICTRADING"])
 
     def test_account_context_refresh_updates_multiterminal_tree(self) -> None:
         agent = _FakeAgent("STANDARD", "", "", broker="ICTRADING")

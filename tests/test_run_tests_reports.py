@@ -142,6 +142,49 @@ class CopyReportsToProjectTests(unittest.TestCase):
             parser.read(ini_path, encoding="utf-8")
             self.assertEqual(parser["Tester"]["Model"], "4")
 
+    def test_create_ini_fills_required_tester_defaults_when_template_has_blanks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            configs_dir = root / "configs"
+            reports_dir = root / "reports"
+            configs_dir.mkdir()
+            reports_dir.mkdir()
+            template = configparser.ConfigParser(interpolation=None)
+            template.optionxform = str
+            template.read_dict({
+                "Tester": {
+                    "Expert": "",
+                    "Symbol": "XAUUSD",
+                    "Period": "H1",
+                    "Model": "1",
+                    "Deposit": "",
+                    "Currency": "",
+                    "Leverage": "",
+                    "Optimization": "",
+                    "Visual": "",
+                    "ReplaceReport": "",
+                    "ShutdownTerminal": "",
+                }
+            })
+
+            with patch.object(run_tests, "CONFIG_DIR", configs_dir), patch.object(run_tests, "REPORT_DIR", reports_dir):
+                ini_path, _report_path = run_tests.create_ini(
+                    "Ultimate Breakout System_4.3.ex5",
+                    1,
+                    template,
+                )
+
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.optionxform = str
+            parser.read(ini_path, encoding="utf-8")
+            self.assertEqual(parser["Tester"]["Deposit"], "1000")
+            self.assertEqual(parser["Tester"]["Currency"], "EUR")
+            self.assertEqual(parser["Tester"]["Leverage"], "1:500")
+            self.assertEqual(parser["Tester"]["Optimization"], "0")
+            self.assertEqual(parser["Tester"]["Visual"], "0")
+            self.assertEqual(parser["Tester"]["ReplaceReport"], "1")
+            self.assertEqual(parser["Tester"]["ShutdownTerminal"], "1")
+
     def test_multiterminal_ubs_profile_accepts_ubs_name_without_exact_expected_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)

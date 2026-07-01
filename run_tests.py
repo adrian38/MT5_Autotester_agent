@@ -834,6 +834,25 @@ def load_template(template_path: Path) -> configparser.ConfigParser:
     return parser
 
 
+TESTER_DEFAULTS: dict[str, str] = {
+    "Deposit": "1000",
+    "Currency": "EUR",
+    "Leverage": "1:500",
+    "Optimization": "0",
+    "Visual": "0",
+    "ReplaceReport": "1",
+    "ShutdownTerminal": "1",
+}
+
+
+def ensure_tester_defaults(config: configparser.ConfigParser) -> None:
+    if "Tester" not in config:
+        config["Tester"] = {}
+    for key, value in TESTER_DEFAULTS.items():
+        if not config["Tester"].get(key, "").strip():
+            config["Tester"][key] = value
+
+
 def apply_symbol_suffix(symbol: str, suffix: str) -> str:
     symbol = symbol.strip()
     suffix = suffix.strip()
@@ -950,8 +969,30 @@ def load_set_params(path: Path) -> dict[str, str]:
     return params
 
 
+EXCHANGE_SYMBOL_SUFFIXES = {
+    "AMS",
+    "ETR",
+    "IE",
+    "IT",
+    "LSE",
+    "MAD",
+    "NAS",
+    "NYSE",
+    "PAR",
+    "SWX",
+    "TSE",
+    "US",
+}
+
+
 def normalize_set_symbol(symbol: str) -> str:
-    return re.sub(r"(?<=[A-Za-z0-9])\.[A-Za-z0-9]+$", "", symbol.strip()).upper()
+    value = symbol.strip()
+    match = re.search(r"(?<=[A-Za-z0-9])\.([A-Za-z0-9]+)$", value)
+    if match:
+        suffix = match.group(1)
+        if suffix.upper() not in EXCHANGE_SYMBOL_SUFFIXES and suffix.islower():
+            value = value[: match.start()]
+    return value.upper()
 
 
 def infer_symbol_from_set(set_file: Path, params: dict[str, str]) -> str:
@@ -1097,6 +1138,7 @@ def create_ini(
     config = configparser.ConfigParser(interpolation=None)
     config.optionxform = str
     config.read_dict({section: dict(template[section]) for section in template.sections()})
+    ensure_tester_defaults(config)
     config["Tester"]["Expert"] = normalize_expert_for_tester(expert_path)
     inferred_fields = infer_tester_fields_from_set(set_file) if infer_tester_from_set else {}
     if set_file and infer_tester_from_set and prefer_set_path_timeframe:
@@ -1200,7 +1242,7 @@ def copy_reports_to_project(report_files: list[Path], logger: RunLogger) -> list
     return copied
 
 
-def filter_fresh_report_files(report_files: list[Path], started_at: float, logger: RunLogger) -> list[Path]:
+def filter_fresh_report_files(report_files: list[Path], started_at: float, logger: RunLogger | None) -> list[Path]:
     fresh: list[Path] = []
     cutoff = started_at - 1.0
     for path in report_files:
@@ -1210,7 +1252,7 @@ def filter_fresh_report_files(report_files: list[Path], started_at: float, logge
             continue
         if mtime >= cutoff:
             fresh.append(path)
-        else:
+        elif logger is not None:
             logger.write(f"  Reporte viejo ignorado: {path}")
     return fresh
 
@@ -1297,6 +1339,51 @@ def read_tester_journal_tail(log_path: Path) -> tuple[str, int]:
         return "", 0
 
 
+def read_tester_journal_tail_text(log_path: Path, max_bytes: int = 65536) -> str:
+    try:
+        size = log_path.stat().st_size
+        if size <= 0:
+            return ""
+        read_bytes = min(size, max(4096, int(max_bytes)))
+        with log_path.open("rb") as f:
+            f.seek(size - read_bytes)
+            raw = f.read()
+        for enc in ("utf-16-le", "utf-8"):
+            try:
+                return raw.decode(enc)
+            except (UnicodeDecodeError, ValueError):
+                continue
+        return raw.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def tester_journal_sidecar_path(report_path: Path) -> Path:
+    return report_path.with_name(f"{report_path.stem}.mt5log.txt")
+
+
+def write_tester_journal_sidecars(
+    copied_reports: list[Path],
+    terminal_data_dirs: list[Path],
+    min_mtime: float,
+    logger: RunLogger,
+) -> None:
+    journal = find_tester_journal_log(terminal_data_dirs, min_mtime=min_mtime)
+    if journal is None:
+        return
+    text = read_tester_journal_tail_text(journal)
+    if not text.strip():
+        return
+    payload = f"MT5 tester journal: {journal}\n\n{text}"
+    for report in copied_reports:
+        try:
+            sidecar = tester_journal_sidecar_path(report)
+            sidecar.write_text(payload, encoding="utf-8")
+            logger.write(f"  Log tester guardado: {sidecar}")
+        except OSError as exc:
+            logger.write(f"  Aviso: no pude guardar log tester para {report.name}: {exc}")
+
+
 def _tester_log_is_stuck(last_line: str) -> bool:
     lower = last_line.lower()
     return any(marker.lower() in lower for marker in TESTER_STUCK_MARKERS)
@@ -1352,8 +1439,6 @@ def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None
 
 
 _LOG_CHECK_INTERVAL = 10  # seconds between tester journal polls
-
-
 def wait_for_mt5_process(
     process: subprocess.Popen,
     logger: RunLogger,
@@ -1547,6 +1632,7 @@ def run_test(
             if not copied_reports:
                 logger.write("ERROR: No quedo ningun reporte nuevo copiado a reports.")
                 return 1
+            write_tester_journal_sidecars(copied_reports, terminal_data_dirs, before, logger)
             return exit_code
 
         if real_tick_model and attempt < max_attempts:

@@ -23,6 +23,7 @@ from run_tests import (
     load_set_params,
     normalize_set_symbol,
     parse_symbol_map,
+    tester_journal_sidecar_path,
 )
 from ubs_generate_sets import format_like, parse_numeric
 from ubs.account import (
@@ -72,6 +73,13 @@ DEFAULT_SYMBOL_MAP = default_symbol_map_for_broker(DEFAULT_BROKER)
 DIAG_LOG_FILE = BASE_DIR / "logs" / "ubs_agent_diag.log"
 FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
+LEGACY_TIMEFRAME_TO_ENUM = {
+    "60": TIMEFRAME_TO_ENUM["H1"],
+    "240": TIMEFRAME_TO_ENUM["H4"],
+    "1440": TIMEFRAME_TO_ENUM["D1"],
+    "10080": TIMEFRAME_TO_ENUM["W1"],
+    "43200": TIMEFRAME_TO_ENUM["MN"],
+}
 BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 
 
@@ -116,6 +124,8 @@ TARGET_GROUP_CAP_RATIOS = {
     "Forex": 0.60,
     "Stocks": 0.60,
     "Metals": 0.40,
+    "Indices": 0.35,
+    "Energies": 0.25,
     "IndicesEnergies": 0.35,
     "Crypto": 0.25,
 }
@@ -1200,6 +1210,97 @@ def write_set_force_symbol(source: Path, destination: Path, symbol: str) -> bool
     return changed
 
 
+def _set_param_active(params: dict[str, str], key: str) -> bool:
+    value = str(params.get(key) or "").strip()
+    return bool(value and value != "0")
+
+
+def infer_missing_run_strategy_from_set(path: Path, params: dict[str, str]) -> str:
+    current = str(params.get("Run_Strategy") or "").strip()
+    if current in {"1", "2"}:
+        return current
+
+    stem = path.stem.lower()
+    has_st1 = "ST1_Timeframe" in params or "Entry_Timing" in params
+    has_vol = "VolTimeframe" in params
+    st1_active = _set_param_active(params, "ST1_Timeframe") or _set_param_active(params, "Entry_Timing")
+    vol_active = _set_param_active(params, "VolTimeframe")
+
+    if st1_active and not vol_active:
+        return "1"
+    if vol_active and not st1_active:
+        return "2"
+    if any(token in stem for token in ("bitcoin_reaper", "scalp", "aggressive_sl")) and has_st1:
+        return "1"
+    if "volatility_breakout" in stem and has_vol:
+        return "2"
+    return ""
+
+
+def replace_or_add_current_value(lines: list[str], key: str, value: str, default_value: str) -> bool:
+    if replace_existing_current_value(lines, key, value):
+        return True
+    replace_or_add_plain_key(lines, key, default_value)
+    return True
+
+
+def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, object]:
+    text, encoding = read_set_with_encoding(path)
+    lines = text.splitlines()
+    params = load_set_params(path)
+    changes: list[str] = []
+
+    normalized_symbol = normalize_set_symbol(symbol)
+    if normalized_symbol and normalize_set_symbol(params.get("ForceSymbol", "")) != normalized_symbol:
+        if replace_existing_current_value(lines, "ForceSymbol", normalized_symbol):
+            changes.append("ForceSymbol")
+        else:
+            replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
+            changes.append("ForceSymbol")
+
+    run_strategy = infer_missing_run_strategy_from_set(path, params)
+    if run_strategy and str(params.get("Run_Strategy") or "").strip() != run_strategy:
+        replace_or_add_current_value(
+            lines,
+            "Run_Strategy",
+            run_strategy,
+            f"{run_strategy}||1||0||2||N",
+        )
+        changes.append("Run_Strategy")
+
+    enum_value = TIMEFRAME_TO_ENUM.get(str(period or "").strip().upper())
+    if enum_value and run_strategy == "1" and str(params.get("ST1_Timeframe") or "").strip() in {"", "0"}:
+        replace_or_add_current_value(
+            lines,
+            "ST1_Timeframe",
+            enum_value,
+            f"{enum_value}||0||0||49153||N",
+        )
+        changes.append("ST1_Timeframe")
+    elif enum_value and run_strategy == "2" and str(params.get("VolTimeframe") or "").strip() in {"", "0"}:
+        replace_or_add_current_value(
+            lines,
+            "VolTimeframe",
+            enum_value,
+            f"{enum_value}||0||0||49153||N",
+        )
+        changes.append("VolTimeframe")
+
+    valid_timeframe_values = set(TIMEFRAME_ENUM)
+    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+        raw = str(params.get(key) or "").strip()
+        if raw in {"", "0"} or raw in valid_timeframe_values:
+            continue
+        replacement = LEGACY_TIMEFRAME_TO_ENUM.get(raw)
+        if replacement:
+            replace_existing_current_value(lines, key, replacement)
+            changes.append(key)
+
+    if changes:
+        write_set_text(path, "\n".join(lines), encoding)
+    return {"changed": changes, "run_strategy": run_strategy}
+
+
 def validate_seed_backtest_set(seed: Seed) -> list[str]:
     try:
         params = load_set_params(seed.path)
@@ -1662,7 +1763,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     print(f"Backtests semillas: {len(copied)}")
     print(f"Directorio evaluacion: {eval_dir}")
     batch_started_at = time.time()
-    code = run_backtests(args, eval_dir)
+    code = run_backtests(args, eval_dir, model="1")
     if code == RUNNING_TERMINAL_EXIT_CODE:
         print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
         return 1
@@ -1771,7 +1872,7 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
         select *
         from candidates
         where status in (
-            'accepted', 'rejected', 'no_trades', 'report_mismatch',
+            'accepted', 'rejected', 'no_trades', 'no_history', 'report_mismatch',
             'parse_error', 'no_report', 'generated'
         )
         order by run_id, generation, id
@@ -1791,6 +1892,7 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             report,
             score_config,
             symbol_map,
+            args.broker,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
         )
@@ -1932,6 +2034,74 @@ def report_matches_variant(variant: Variant, result: ScoreResult, symbol_map: di
     return not issues, "; ".join(issues)
 
 
+def report_has_empty_tester_context(result: ScoreResult) -> bool:
+    return result.trades <= 0 and (
+        not str(result.symbol or "").strip()
+        or str(result.timeframe or "").strip().upper() in {"", "M0"}
+    )
+
+
+def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, object] | None:
+    sidecar = tester_journal_sidecar_path(report)
+    if not sidecar.exists():
+        return None
+    try:
+        text = sidecar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    symbol = str(variant.target_symbol or "").strip()
+    if not symbol:
+        return None
+    escaped = re.escape(symbol)
+    found_pattern = re.compile(
+        rf"{escaped}:\s+found history data from\s+(.+?)\s+to\s+(.+?),\s+specified period is out of this range",
+        re.IGNORECASE,
+    )
+    missing_pattern = re.compile(
+        rf"{escaped}:\s+no history data from\s+(.+?)\s+to\s+(.+?)(?:\r?\n|$)",
+        re.IGNORECASE,
+    )
+    found_matches = list(found_pattern.finditer(text))
+    missing_matches = list(missing_pattern.finditer(text))
+    if not missing_matches:
+        return None
+    found = found_matches[-1] if found_matches else None
+    missing = missing_matches[-1]
+    return {
+        "reasons": ["no_history_data"],
+        "no_score": True,
+        "recommendation": "desactivar simbolo y revisar historico del broker",
+        "log_source": str(sidecar),
+        "history_available_from": found.group(1).strip() if found else "",
+        "history_available_to": found.group(2).strip() if found else "",
+        "history_requested_from": missing.group(1).strip(),
+        "history_requested_to": missing.group(2).strip().rstrip("."),
+    }
+
+
+def record_score_with_metadata(
+    memory: AgentMemory,
+    set_path: Path,
+    result: ScoreResult,
+    status: str,
+    report_path: Path,
+    metadata: dict[str, object],
+) -> None:
+    memory.record_score(set_path, result, status, report_path)
+    try:
+        payload = json.loads(result.to_json())
+    except (TypeError, ValueError):
+        payload = {}
+    payload.update(metadata)
+    payload["score"] = None
+    payload["accepted"] = False
+    memory.conn.execute(
+        "update candidates set metrics_json=?, score=null, accepted=null where set_path=?",
+        (json.dumps(payload, ensure_ascii=True, sort_keys=True), str(set_path)),
+    )
+    memory.conn.commit()
+
+
 def evaluate_seed_report(
     memory: AgentMemory,
     seed: Seed,
@@ -2071,6 +2241,18 @@ def evaluate_variant_report(
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
         return "parse_error", None
+    if report_has_empty_tester_context(result):
+        no_history = tester_log_no_history_metadata(report, variant)
+        if no_history:
+            print(
+                f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
+                "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
+            )
+            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+            return "no_history", result
+        print(f"AVISO: reporte sin contexto tester para {variant.path.name}; marcado como report_mismatch.")
+        memory.record_score(variant.path, result, "report_mismatch", report)
+        return "report_mismatch", result
     matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
     if not matches:
         print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")
@@ -3791,7 +3973,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         print(f"Retry seeds: {len(copied)}")
         print(f"Directorio retry: {retry_dir}")
         batch_started_at = time.time()
-        code = run_backtests(args, retry_dir)
+        code = run_backtests(args, retry_dir, model="1")
         if code == RUNNING_TERMINAL_EXIT_CODE:
             print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
             return 1
@@ -3860,7 +4042,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     print(f"Retry seed: {source_seed}")
     print(f"Set retry: {retry_set}")
     batch_started_at = time.time()
-    code = run_backtests(args, retry_dir)
+    code = run_backtests(args, retry_dir, model="1")
     if code == RUNNING_TERMINAL_EXIT_CODE:
         print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
         return 1

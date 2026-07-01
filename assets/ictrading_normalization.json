@@ -1,0 +1,14 @@
+{
+  "broker": "ICTrading",
+  "basis": "ictrading_lot_0.01_equivalent_net_profit",
+  "default_net_profit_factor": 1.0,
+  "group_net_profit_factors": {
+    "Forex": 1.0,
+    "Metals": 1.0,
+    "Crypto": 1.0,
+    "Indices": 0.1,
+    "Energies": 0.02,
+    "Stocks": 0.01
+  },
+  "symbol_net_profit_factors": {}
+}

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import os
 import re
+import tempfile
 
 
 LOTS_REPLACEMENTS = {
@@ -27,7 +29,23 @@ def read_set_with_encoding(path: Path) -> tuple[str, str]:
 
 def write_set_text(path: Path, text: str, encoding: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding=encoding, newline="\n")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="\n") as file:
+            file.write(text)
+        temp_path.replace(path)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def force_fixed_lot_text(text: str) -> tuple[str, set[str], set[str]]:
