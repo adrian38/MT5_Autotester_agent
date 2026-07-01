@@ -561,6 +561,11 @@ class UBSPortfolioLogicMixin:
             "seasonal_coverage": result.seasonal_coverage,
             "seasonal_validation": result.seasonal_validation,
             "margin_summary": result.margin_summary,
+            "daily_dd_summary": result.daily_dd_summary,
+            "max_daily_dd": result.max_daily_dd,
+            "target_daily_dd": result.target_daily_dd,
+            "daily_dd_full_history": result.daily_dd_full_history,
+            "enforce_point_dd": result.enforce_point_dd,
         }
         cur = conn.execute(
             """
@@ -595,7 +600,9 @@ class UBSPortfolioLogicMixin:
                 result.active_strategies,
                 result.active_strategies,
                 result.stop_reason,
-                "valley" if result.valley_usage_pct >= result.point_usage_pct else "point",
+                "valley"
+                if (not result.enforce_point_dd or result.valley_usage_pct >= result.point_usage_pct)
+                else "point",
                 portfolio_scope,
                 target_month,
                 json.dumps(metrics, ensure_ascii=True),
@@ -992,7 +999,15 @@ class UBSPortfolioLogicMixin:
         }
         target_valley = float(portfolio["target_valley_dd"] or 0)
         target_point = float(portfolio["target_point_dd"] or 0)
-        evaluation = evaluate_portfolio(strategies, units, target_valley, target_point)
+        evaluation = evaluate_portfolio(
+            strategies,
+            units,
+            target_valley,
+            target_point,
+            saved_inputs.get("max_daily_dd"),  # type: ignore[arg-type]
+            bool(saved_inputs.get("enforce_point_dd", True)),
+            bool(saved_inputs.get("daily_dd_full_history", False)),
+        )
         metrics["equity_curve_2020_2026"] = evaluation.equity_curve_2020_2026
         metrics["group_summary"] = portfolio_group_summary(strategies, units)
         metrics["seasonal_coverage"] = {
@@ -1014,6 +1029,7 @@ class UBSPortfolioLogicMixin:
                 target_month=int(saved_inputs.get("target_month") or 0),
                 target_valley_dd=target_valley,
                 target_point_dd=target_point,
+                enforce_point_dd=bool(saved_inputs.get("enforce_point_dd", True)),
                 lookback_years=5,
             )
         else:
@@ -1109,6 +1125,7 @@ class UBSPortfolioLogicMixin:
             "point_dd_pct": point_pct,
             "portfolio_type": portfolio_type.value,
             "portfolio_type_label": PORTFOLIO_TYPE_DISPLAY[portfolio_type.value],
+            "enforce_point_dd": True,
             "top_k_per_symbol": top_k,
             "max_total_candidates": max_candidates,
             "min_trades_2020_2026": min_trades,
@@ -1905,14 +1922,21 @@ class UBSPortfolioLogicMixin:
                 int(portfolio["active_strategies"] or 0),
             )
             conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
-            conn.execute(
+            allocation_delete = conn.execute(
                 "delete from portfolio_allocations where portfolio_id=? and set_path=?",
                 (portfolio_id, set_path),
             )
+            if allocation_delete.rowcount == 0 and member.get("id") is not None:
+                allocation_delete = conn.execute(
+                    "delete from portfolio_allocations where portfolio_id=? and id=?",
+                    (portfolio_id, int(member["id"])),
+                )
             conn.execute(
                 "delete from portfolio_members where portfolio_id=? and set_path=?",
                 (portfolio_id, set_path),
             )
+            if allocation_delete.rowcount == 0:
+                raise ValueError("No se encontro la asignacion seleccionada dentro del portafolio.")
             self._recalculate_saved_portfolio(conn, portfolio_id)
             conn.commit()
         except Exception:
@@ -1956,9 +1980,13 @@ class UBSPortfolioLogicMixin:
             "deep_optimization": False,
             "exclude_monthly_used": False,
             "corr_with_monthly_portfolios": False,
+            "enforce_point_dd": str(portfolio["portfolio_scope"] or "full_history") != "monthly",
+            "daily_dd_full_history": False,
             "allowed_asset_groups": ["Forex", "IndicesEnergies", "Metals", "Stocks"],
         }
         defaults.update(stored)
+        if str(defaults.get("portfolio_scope") or "full_history") == "monthly":
+            defaults["enforce_point_dd"] = False
         return defaults
 
     def _scope_portfolio_sets(
@@ -2000,13 +2028,14 @@ class UBSPortfolioLogicMixin:
                 target_month=target_month,
                 target_valley_dd=result.target_valley_dd,
                 target_point_dd=result.target_point_dd,
+                enforce_point_dd=bool(inputs.get("enforce_point_dd", True)),
                 lookback_years=5,
             )
             result.seasonal_validation = validation
             if bool(validation.get("passed")):
                 result.warnings.append(
-                    "Validacion estricta mensual OK: el mes objetivo pasa ano a ano "
-                    "todos los meses respetan el DD y el objetivo es el mejor mes neto de los ultimos 5 anos."
+                    "Validacion estricta mensual OK: el mes objetivo pasa año a año "
+                    "todos los meses respetan el DD y el objetivo es el mejor mes neto de los ultimos 5 años."
                 )
                 valid.append(proposal)
             else:
@@ -2219,6 +2248,8 @@ class UBSPortfolioLogicMixin:
         progress=None,
     ) -> list[dict[str, object]]:
         configured_reserve = float(inputs.get("dd_reserve_pct") or 0)
+        is_monthly_scope = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+        enforce_point_dd = bool(inputs.get("enforce_point_dd", not is_monthly_scope))
         specs = (
             ("profit", "Maximo beneficio", base_type, configured_reserve),
             ("balanced", "Equilibrada", PortfolioType.BALANCED, max(configured_reserve, 15.0)),
@@ -2236,7 +2267,7 @@ class UBSPortfolioLogicMixin:
             try:
                 strict_monthly = (
                     bool(inputs.get("strict_yearly_month_validation"))
-                    and str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+                    and is_monthly_scope
                     and strict_full_sets is not None
                 )
                 optimizer_kwargs = {
@@ -2260,15 +2291,19 @@ class UBSPortfolioLogicMixin:
                     "dd_reserve_pct": reserve,
                     "search_restarts": int(inputs.get("search_restarts") or 0),
                     "margin_balance": float(inputs["capital"])
-                    if bool(inputs.get("validate_roboforex_margin"))
+                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
                     else None,
                     "max_margin_pct": float(inputs.get("max_margin_pct") or 100.0)
-                    if bool(inputs.get("validate_roboforex_margin"))
+                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
                     else None,
+                    "margin_profile": str(inputs.get("margin_profile") or "roboforex"),
                     "stock_leverage": 20.0,
                     "default_leverage": 500.0,
                     "stock_contract_size": 100.0,
                     "default_contract_size": 1.0,
+                    "max_daily_dd": inputs.get("max_daily_dd"),
+                    "enforce_point_dd": enforce_point_dd,
+                    "daily_dd_full_history": bool(inputs.get("daily_dd_full_history", False)),
                 }
                 if strict_monthly:
                     result = optimize_strict_monthly_portfolio(
@@ -2352,13 +2387,20 @@ class UBSPortfolioLogicMixin:
             margin_total = float(margin_summary.get("total", 0.0) or 0.0)
             margin_limit = float(margin_summary.get("limit", 0.0) or 0.0)
             margin_usage = float(margin_summary.get("usage_pct", 0.0) or 0.0)
+            daily_limit = result.target_daily_dd
+            point_text = (
+                f"{result.actual_point_dd:,.2f} info"
+                if not result.enforce_point_dd
+                else f"{result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f}"
+            )
             comparison_rows.append(
                 (
                     proposal["key"],
                     proposal["label"],
                     f"{result.total_net_profit:,.0f}",
                     f"{result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f}",
-                    f"{result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f}",
+                    point_text,
+                    f"{result.max_daily_dd:,.2f}/{daily_limit:,.2f}" if daily_limit else "-",
                     f"{stress.valley_dd_p50:,.2f}" if stress else "-",
                     f"{stress.valley_dd_p95:,.2f}" if stress else "-",
                     f"{stress.probability_exceed_nominal_pct:.1f}%" if stress else "-",
@@ -2433,10 +2475,19 @@ class UBSPortfolioLogicMixin:
                     f"{float(result.margin_summary.get('limit', 0.0)):,.2f} "
                     f"({float(result.margin_summary.get('usage_pct', 0.0)):.1f}%) | "
                 )
+            daily_text = ""
+            if result.target_daily_dd:
+                daily_text = f"DD diario {result.max_daily_dd:.2f}/{float(result.target_daily_dd):.2f} | "
+            point_text = (
+                f"DD puntual {result.actual_point_dd:.2f} info | "
+                if not result.enforce_point_dd
+                else f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
+            )
             summary_var.set(
                 f"{month_prefix}{proposal['label']}: net {result.total_net_profit:,.2f} | "
                 f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
-                f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
+                f"{point_text}"
+                f"{daily_text}"
                 f"{stress_text}"
                 f"{margin_text}"
                 f"reserva {float(proposal['reserve_pct']):.1f}% | "
@@ -2646,6 +2697,20 @@ class UBSPortfolioLogicMixin:
                 preserve_required_allocations=True,
                 dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
                 search_restarts=int(inputs.get("search_restarts") or 0),
+                margin_balance=float(inputs["capital"])
+                if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
+                else None,
+                max_margin_pct=float(inputs.get("max_margin_pct") or 100.0)
+                if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
+                else None,
+                margin_profile=str(inputs.get("margin_profile") or "roboforex"),
+                stock_leverage=20.0,
+                default_leverage=500.0,
+                stock_contract_size=100.0,
+                default_contract_size=1.0,
+                max_daily_dd=inputs.get("max_daily_dd"),  # type: ignore[arg-type]
+                enforce_point_dd=bool(inputs.get("enforce_point_dd", True)),
+                daily_dd_full_history=bool(inputs.get("daily_dd_full_history", False)),
             )
             raw_by_id = {strategy.set_id: strategy for strategy in raw_sets}
             result.seasonal_coverage = {
@@ -2862,6 +2927,11 @@ class UBSPortfolioLogicMixin:
             "seasonal_coverage": result.seasonal_coverage,
             "seasonal_validation": result.seasonal_validation,
             "margin_summary": result.margin_summary,
+            "daily_dd_summary": result.daily_dd_summary,
+            "max_daily_dd": result.max_daily_dd,
+            "target_daily_dd": result.target_daily_dd,
+            "daily_dd_full_history": result.daily_dd_full_history,
+            "enforce_point_dd": result.enforce_point_dd,
             "last_completed_at": datetime.now().isoformat(timespec="seconds"),
         }
         conn.execute(
@@ -2893,7 +2963,9 @@ class UBSPortfolioLogicMixin:
                 result.active_strategies,
                 target_strategies,
                 result.stop_reason,
-                "valley" if result.valley_usage_pct >= result.point_usage_pct else "point",
+                "valley"
+                if (not result.enforce_point_dd or result.valley_usage_pct >= result.point_usage_pct)
+                else "point",
                 json.dumps(metrics, ensure_ascii=True),
                 portfolio_id,
             ),

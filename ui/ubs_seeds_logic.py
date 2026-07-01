@@ -1266,16 +1266,45 @@ class UBSSeedsLogicMixin:
 
     def _repair_selected_ubs_seed_sets(self) -> None:
         infos = self._checked_ubs_seed_infos()
+        self._repair_ubs_seed_sets(
+            infos,
+            title="Reparar sets",
+            empty_message="Marca una o mas seeds existentes para reparar.",
+            confirm_label="marcada(s)",
+        )
+
+    def _repair_all_ubs_seed_sets(self) -> None:
+        try:
+            seed_files = self._current_ubs_seed_files()
+        except Exception as exc:
+            self._show_error("Carpeta de seeds no valida", str(exc))
+            return
+        infos = [{"seed_path": str(path), "active": "1"} for path in seed_files]
+        self._repair_ubs_seed_sets(
+            infos,
+            title="Reparar todas",
+            empty_message="No hay seeds activas/existentes para reparar.",
+            confirm_label="activa(s)",
+        )
+
+    def _repair_ubs_seed_sets(
+        self,
+        infos: list[dict[str, str]],
+        *,
+        title: str,
+        empty_message: str,
+        confirm_label: str,
+    ) -> None:
         active_infos = [
             info for info in infos
             if info.get("active") != "0" and Path(info.get("seed_path", "")).expanduser().exists()
         ]
         if not active_infos:
-            messagebox.showinfo("Reparar sets", "Marca una o mas seeds existentes para reparar.")
+            messagebox.showinfo(title, empty_message)
             return
         if not messagebox.askyesno(
-            "Reparar sets",
-            f"Reparar {len(active_infos)} seed(s) marcada(s)?\n\n"
+            title,
+            f"Reparar {len(active_infos)} seed(s) {confirm_label}?\n\n"
             "Se rellenara ForceSymbol y, si se puede inferir, Run_Strategy. "
             "Las seeds modificadas quedaran pendientes para reevaluar.",
         ):
@@ -1379,7 +1408,7 @@ class UBSSeedsLogicMixin:
             parts.append(f"fallos={len(failed)}")
         self.status_text.set("Reparar sets: " + " | ".join(parts))
         if failed:
-            messagebox.showwarning("Reparar sets", "\n".join(failed[:12]))
+            messagebox.showwarning(title, "\n".join(failed[:12]))
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 

@@ -10,7 +10,7 @@ can be accepted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 import math
 from pathlib import Path
@@ -179,6 +179,11 @@ class PortfolioEvaluation:
     total_units: int
     total_lot: float
     active_strategies: int
+    daily_dd: float = 0.0
+    target_daily_dd: float | None = None
+    daily_usage_pct: float = 0.0
+    daily_dd_full_history: bool = False
+    enforce_point_dd: bool = True
 
 
 @dataclass(frozen=True)
@@ -280,6 +285,11 @@ class PortfolioResult:
     seasonal_coverage: dict[str, dict[str, object]] = field(default_factory=dict)
     seasonal_validation: dict[str, object] = field(default_factory=dict)
     margin_summary: dict[str, object] = field(default_factory=dict)
+    max_daily_dd: float = 0.0
+    target_daily_dd: float | None = None
+    daily_dd_summary: dict[str, object] = field(default_factory=dict)
+    daily_dd_full_history: bool = False
+    enforce_point_dd: bool = True
 
 
 @dataclass(frozen=True)
@@ -334,6 +344,107 @@ def daily_pnl_series(strategy: RobustStrategySet) -> dict[str, float]:
         for previous, current in zip(strategy.curve_2020_2026_001, strategy.curve_2020_2026_001[1:])
     ]
     return {str(index): value for index, value in enumerate(increments)}
+
+
+def strategy_daily_closed_floating_dd(
+    strategy: RobustStrategySet,
+    *,
+    full_history: bool = False,
+) -> dict[str, float]:
+    """Estimate per-day closed + floating DD for one 0.01-lot strategy unit.
+
+    MT5 HTML reports parsed by this project expose closed deals/trades but do
+    not expose a timestamped equity/floating-PnL series.  The closed component
+    is the worst intraday closed-trade drawdown.  The floating component is a
+    conservative proxy: the absolute final loss of each open losing trade is
+    counted on every calendar day where the trade was open.  Winning trades do
+    not add floating risk because their MAE is not present in the HTML.
+
+    Monthly portfolios normally check only the selected target month.  When
+    ``full_history`` is enabled, the same daily cap scans all historical days
+    from the base + OOS reports.
+    """
+    month = 0 if full_history else int(strategy.target_month or 0)
+    closed_by_day: dict[str, list[ClosedTrade]] = {}
+    floating_by_day: dict[str, float] = {}
+    for report in (strategy.report_2020_2024, strategy.report_2025_2026):
+        for trade in report.closed_trades:
+            close_time = trade.close_time
+            if not month or close_time.month == month:
+                closed_by_day.setdefault(close_time.date().isoformat(), []).append(trade)
+
+            floating_risk = max(-float(trade.net_profit), 0.0)
+            if floating_risk <= 0:
+                continue
+            open_time = trade.open_time or trade.close_time
+            start_day = min(open_time.date(), trade.close_time.date())
+            end_day = max(open_time.date(), trade.close_time.date())
+            day = start_day
+            while day <= end_day:
+                if not month or day.month == month:
+                    day_key = day.isoformat()
+                    floating_by_day[day_key] = floating_by_day.get(day_key, 0.0) + floating_risk
+                day += timedelta(days=1)
+
+    closed_dd_by_day: dict[str, float] = {}
+    for day_key, trades in closed_by_day.items():
+        cumulative = 0.0
+        trough = 0.0
+        for trade in sorted(trades, key=lambda item: item.close_time):
+            cumulative += float(trade.net_profit)
+            trough = min(trough, cumulative)
+        closed_dd_by_day[day_key] = max(-trough, 0.0)
+
+    all_days = set(closed_dd_by_day) | set(floating_by_day)
+    return {
+        day: closed_dd_by_day.get(day, 0.0) + floating_by_day.get(day, 0.0)
+        for day in all_days
+    }
+
+
+def portfolio_daily_closed_floating_dd(
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    *,
+    full_history: bool = False,
+) -> tuple[float, dict[str, object]]:
+    totals_by_day: dict[str, float] = {}
+    by_set: dict[str, dict[str, object]] = {}
+    for strategy in sets:
+        units = max(int(allocations.get(strategy.set_id, 0)), 0)
+        if units <= 0:
+            continue
+        series = strategy_daily_closed_floating_dd(strategy, full_history=full_history)
+        if not series:
+            continue
+        worst_day, worst_unit_dd = max(series.items(), key=lambda item: item[1])
+        by_set[strategy.set_id] = {
+            "symbol": strategy.symbol,
+            "units": units,
+            "worst_day": worst_day,
+            "worst_unit_dd": float(worst_unit_dd),
+            "worst_allocated_dd": float(worst_unit_dd) * units,
+        }
+        for day, value in series.items():
+            totals_by_day[day] = totals_by_day.get(day, 0.0) + float(value) * units
+
+    if not totals_by_day:
+        return 0.0, {
+            "enabled": False,
+            "full_history": bool(full_history),
+            "worst_day": None,
+            "by_day": {},
+            "by_set": by_set,
+        }
+    worst_day, worst_dd = max(totals_by_day.items(), key=lambda item: item[1])
+    return float(worst_dd), {
+        "enabled": True,
+        "full_history": bool(full_history),
+        "worst_day": worst_day,
+        "worst_dd": float(worst_dd),
+        "by_day": totals_by_day,
+        "by_set": by_set,
+    }
 
 
 def pearson_correlation(values_a: Sequence[float], values_b: Sequence[float]) -> float:
@@ -829,6 +940,7 @@ def validate_strict_monthly_portfolio(
     target_valley_dd: float,
     target_point_dd: float,
     lookback_years: int = 5,
+    enforce_point_dd: bool = True,
 ) -> dict[str, object]:
     """Validate a monthly portfolio year-by-year, by DD caps, and by dominance.
 
@@ -867,6 +979,7 @@ def validate_strict_monthly_portfolio(
             "best_month_net": 0.0,
             "target_month_net": 0.0,
             "reasons": ["sin trades fechados para validar el portafolio mensual"],
+            "enforce_point_dd": bool(enforce_point_dd),
         }
 
     target_month_years = [
@@ -905,7 +1018,10 @@ def validate_strict_monthly_portfolio(
             bool(year_month_increments)
             and total > 0
             and valley_dd <= float(target_valley_dd) + 1e-9
-            and point_dd <= float(target_point_dd) + 1e-9
+            and (
+                not enforce_point_dd
+                or point_dd <= float(target_point_dd) + 1e-9
+            )
         )
         if not passed_year:
             if not year_month_increments:
@@ -916,7 +1032,7 @@ def validate_strict_monthly_portfolio(
                 reasons.append(
                     f"{year}: DD valle {valley_dd:,.2f} > {float(target_valley_dd):,.2f}"
                 )
-            elif point_dd > float(target_point_dd) + 1e-9:
+            elif enforce_point_dd and point_dd > float(target_point_dd) + 1e-9:
                 reasons.append(
                     f"{year}: DD puntual {point_dd:,.2f} > {float(target_point_dd):,.2f}"
                 )
@@ -952,7 +1068,10 @@ def validate_strict_monthly_portfolio(
         point_dd = calc_point_dd(curve)
         passed_dd = (
             valley_dd <= float(target_valley_dd) + 1e-9
-            and point_dd <= float(target_point_dd) + 1e-9
+            and (
+                not enforce_point_dd
+                or point_dd <= float(target_point_dd) + 1e-9
+            )
         )
         if not passed_dd:
             label = f"mes {month_no:02d}"
@@ -960,7 +1079,7 @@ def validate_strict_monthly_portfolio(
                 reasons.append(
                     f"{label}: DD valle {valley_dd:,.2f} > {float(target_valley_dd):,.2f}"
                 )
-            if point_dd > float(target_point_dd) + 1e-9:
+            if enforce_point_dd and point_dd > float(target_point_dd) + 1e-9:
                 reasons.append(
                     f"{label}: DD puntual {point_dd:,.2f} > {float(target_point_dd):,.2f}"
                 )
@@ -979,7 +1098,7 @@ def validate_strict_monthly_portfolio(
     target_month_net = month_net_by_month.get(month, 0.0)
     if best_month != month:
         reasons.append(
-            f"mes {month:02d} no es el mejor de los ultimos {years_back} anos "
+            f"mes {month:02d} no es el mejor de los ultimos {years_back} años "
             f"(mejor {best_month:02d}: {best_month_net:,.2f} vs {target_month_net:,.2f})"
         )
 
@@ -998,6 +1117,7 @@ def validate_strict_monthly_portfolio(
         "target_month_net": target_month_net,
         "target_valley_dd": float(target_valley_dd),
         "target_point_dd": float(target_point_dd),
+        "enforce_point_dd": bool(enforce_point_dd),
         "reasons": reasons,
     }
 
@@ -1286,6 +1406,9 @@ def evaluate_portfolio(
     allocations: dict[str, int],
     target_valley_dd: float,
     target_point_dd: float,
+    target_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> PortfolioEvaluation:
     active_sets = [strategy for strategy in sets if allocations.get(strategy.set_id, 0) > 0]
     if not active_sets:
@@ -1302,6 +1425,11 @@ def evaluate_portfolio(
             total_units=0,
             total_lot=0.0,
             active_strategies=0,
+            daily_dd=0.0,
+            target_daily_dd=target_daily_dd,
+            daily_usage_pct=0.0,
+            daily_dd_full_history=bool(daily_dd_full_history),
+            enforce_point_dd=bool(enforce_point_dd),
         )
 
     if all(strategy.curve_points_2020_2026_001 for strategy in active_sets):
@@ -1320,6 +1448,13 @@ def evaluate_portfolio(
     total_net_profit = portfolio_curve[-1]
     valley_dd = calc_valley_dd(portfolio_curve)
     point_dd = calc_point_dd(portfolio_curve)
+    daily_dd = 0.0
+    if target_daily_dd is not None:
+        daily_dd, _daily_summary = portfolio_daily_closed_floating_dd(
+            active_sets,
+            allocations,
+            full_history=bool(daily_dd_full_history),
+        )
     return PortfolioEvaluation(
         allocations=allocations.copy(),
         equity_curve_2020_2026=portfolio_curve,
@@ -1333,6 +1468,11 @@ def evaluate_portfolio(
         total_units=sum(max(value, 0) for value in allocations.values()),
         total_lot=sum(max(value, 0) for value in allocations.values()) * 0.01,
         active_strategies=sum(1 for value in allocations.values() if value > 0),
+        daily_dd=daily_dd,
+        target_daily_dd=target_daily_dd,
+        daily_usage_pct=daily_dd / target_daily_dd * 100 if target_daily_dd and target_daily_dd > 0 else 0.0,
+        daily_dd_full_history=bool(daily_dd_full_history),
+        enforce_point_dd=bool(enforce_point_dd),
     )
 
 
@@ -1357,6 +1497,30 @@ def portfolio_group_summary(
     return dict(sorted(stats.items(), key=lambda item: (-float(item[1]["units"]), item[0])))
 
 
+def _evaluation_violates_dd_limits(evaluation: PortfolioEvaluation) -> bool:
+    if evaluation.valley_dd > evaluation.target_valley_dd + 1e-9:
+        return True
+    if evaluation.enforce_point_dd and evaluation.point_dd > evaluation.target_point_dd + 1e-9:
+        return True
+    if (
+        evaluation.target_daily_dd is not None
+        and evaluation.daily_dd > float(evaluation.target_daily_dd) + 1e-9
+    ):
+        return True
+    return False
+
+
+def _evaluation_violation_ratio(evaluation: PortfolioEvaluation) -> float:
+    ratios = [
+        evaluation.valley_dd / max(evaluation.target_valley_dd, 1e-9),
+    ]
+    if evaluation.enforce_point_dd:
+        ratios.append(evaluation.point_dd / max(evaluation.target_point_dd, 1e-9))
+    if evaluation.target_daily_dd is not None:
+        ratios.append(evaluation.daily_dd / max(float(evaluation.target_daily_dd), 1e-9))
+    return max(ratios)
+
+
 def roboforex_margin_leverage(symbol: str) -> float:
     """Portfolio leverage rule requested for RoboForex portfolios."""
     return 20.0 if portfolio_group_key(symbol) == "Stocks" else 500.0
@@ -1365,6 +1529,52 @@ def roboforex_margin_leverage(symbol: str) -> float:
 def roboforex_contract_size(symbol: str) -> float:
     """Contract-size rule requested for the portfolio margin guard."""
     return 100.0 if portfolio_group_key(symbol) == "Stocks" else 1.0
+
+
+def normalize_margin_profile(profile: str | None) -> str:
+    value = str(profile or "roboforex").strip().lower()
+    if value in {"ttp", "thetradingpit", "tradingpit", "the_trading_pit"}:
+        return "ttp"
+    return "roboforex"
+
+
+def margin_profile_label(profile: str | None) -> str:
+    return "TTP" if normalize_margin_profile(profile) == "ttp" else "RoboForex"
+
+
+def margin_leverage_for_profile(
+    symbol: str,
+    *,
+    margin_profile: str | None = "roboforex",
+    stock_leverage: float = 20.0,
+    default_leverage: float = 500.0,
+) -> float:
+    profile = normalize_margin_profile(margin_profile)
+    if profile == "ttp":
+        group = portfolio_group_key(symbol)
+        symbol_key = portfolio_symbol_key(symbol)
+        if group == "Stocks" or group == "Crypto":
+            return 2.0
+        if group == "Metals":
+            return 10.0
+        if group == "IndicesEnergies":
+            return 10.0 if symbol_key in {"BRENT", "WTI"} else 15.0
+        if group == "Forex":
+            return 50.0
+        return 50.0
+    return stock_leverage if portfolio_group_key(symbol) == "Stocks" else default_leverage
+
+
+def margin_contract_size_for_profile(
+    symbol: str,
+    *,
+    margin_profile: str | None = "roboforex",
+    stock_contract_size: float = 100.0,
+    default_contract_size: float = 1.0,
+) -> float:
+    # Contract size is kept explicit and broker-independent for now: stocks use
+    # 100 and every other group uses 1, matching the portfolio margin model.
+    return stock_contract_size if portfolio_group_key(symbol) == "Stocks" else default_contract_size
 
 
 def strategy_reference_price(strategy: RobustStrategySet) -> float:
@@ -1384,6 +1594,7 @@ def allocation_margin_required(
     strategy: RobustStrategySet,
     units: int,
     *,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1393,9 +1604,18 @@ def allocation_margin_required(
     if units <= 0:
         return 0.0
     lot = units * 0.01
-    is_stock = portfolio_group_key(strategy.symbol) == "Stocks"
-    leverage = stock_leverage if is_stock else default_leverage
-    contract_size = stock_contract_size if is_stock else default_contract_size
+    leverage = margin_leverage_for_profile(
+        strategy.symbol,
+        margin_profile=margin_profile,
+        stock_leverage=stock_leverage,
+        default_leverage=default_leverage,
+    )
+    contract_size = margin_contract_size_for_profile(
+        strategy.symbol,
+        margin_profile=margin_profile,
+        stock_contract_size=stock_contract_size,
+        default_contract_size=default_contract_size,
+    )
     if leverage <= 0:
         return float("inf")
     return lot * contract_size * strategy_reference_price(strategy) / leverage
@@ -1407,6 +1627,7 @@ def portfolio_margin_summary(
     *,
     balance: float,
     max_margin_pct: float,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1418,13 +1639,23 @@ def portfolio_margin_summary(
         units = max(int(allocations.get(strategy.set_id, 0)), 0)
         if units <= 0:
             continue
-        is_stock = portfolio_group_key(strategy.symbol) == "Stocks"
-        leverage = stock_leverage if is_stock else default_leverage
-        contract_size = stock_contract_size if is_stock else default_contract_size
+        leverage = margin_leverage_for_profile(
+            strategy.symbol,
+            margin_profile=margin_profile,
+            stock_leverage=stock_leverage,
+            default_leverage=default_leverage,
+        )
+        contract_size = margin_contract_size_for_profile(
+            strategy.symbol,
+            margin_profile=margin_profile,
+            stock_contract_size=stock_contract_size,
+            default_contract_size=default_contract_size,
+        )
         price = strategy_reference_price(strategy)
         margin = allocation_margin_required(
             strategy,
             units,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -1449,6 +1680,8 @@ def portfolio_margin_summary(
         "limit": limit,
         "total": total,
         "usage_pct": total / limit * 100.0 if limit > 0 else 0.0,
+        "profile": normalize_margin_profile(margin_profile),
+        "profile_label": margin_profile_label(margin_profile),
         "stock_leverage": float(stock_leverage),
         "default_leverage": float(default_leverage),
         "stock_contract_size": float(stock_contract_size),
@@ -1463,6 +1696,7 @@ def allocations_respect_margin_limit(
     *,
     balance: float | None,
     max_margin_pct: float | None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1475,6 +1709,7 @@ def allocations_respect_margin_limit(
         allocations,
         balance=float(balance),
         max_margin_pct=float(max_margin_pct),
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -1545,6 +1780,7 @@ def can_add_unit(
     group_unit_cap_bootstrap: int = 10,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1597,6 +1833,7 @@ def can_add_unit(
         temp_allocations,
         balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -1642,6 +1879,7 @@ def _allocations_respect_constraints(
     max_sets_per_group: int | None = None,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
@@ -1684,6 +1922,7 @@ def _allocations_respect_constraints(
         allocations,
         balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
@@ -1707,12 +1946,16 @@ def score_increment(
     point_cost = temp.point_dd - current.point_dd
     epsilon = 1e-9
     valley_cost_pct = max(valley_cost, 0.0) / max(temp.target_valley_dd, epsilon)
-    point_cost_pct = max(point_cost, 0.0) / max(temp.target_point_dd, epsilon)
+    point_cost_pct = (
+        max(point_cost, 0.0) / max(temp.target_point_dd, epsilon)
+        if temp.enforce_point_dd
+        else 0.0
+    )
     risk_cost = max(valley_cost_pct, point_cost_pct, epsilon)
 
-    if valley_cost < 0 and point_cost <= 0:
+    if valley_cost < 0 and (point_cost <= 0 or not temp.enforce_point_dd):
         base_score = gain * 10.0 + abs(valley_cost)
-    elif valley_cost <= 0 and point_cost <= 0:
+    elif valley_cost <= 0 and (point_cost <= 0 or not temp.enforce_point_dd):
         base_score = gain * 5.0
     else:
         if portfolio_type == PortfolioType.CONSERVATIVE:
@@ -1729,7 +1972,7 @@ def score_increment(
             base_score = gain / risk_cost
         base_score = base_score / concentration_penalty
 
-    if temp.point_usage_pct > 95:
+    if temp.enforce_point_dd and temp.point_usage_pct > 95:
         base_score *= 0.70
     if temp.valley_usage_pct > 98:
         base_score *= 0.85
@@ -1761,10 +2004,14 @@ def build_portfolio_greedy(
     allow_fixed_reductions_for_repair: bool = False,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
+    max_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], str, int]:
     target_valley_dd = capital * valley_dd_pct / 100.0
     target_point_dd = capital * point_dd_pct / 100.0
@@ -1782,16 +2029,23 @@ def build_portfolio_greedy(
         max_sets_per_group,
         margin_balance,
         max_margin_pct,
+        margin_profile,
         stock_leverage,
         default_leverage,
         stock_contract_size,
         default_contract_size,
     ):
         raise ValueError("Initial portfolio allocations violate configured limits")
-    current = evaluate_portfolio(sets, allocations, target_valley_dd, target_point_dd)
-    if (
-        current.valley_dd > target_valley_dd or current.point_dd > target_point_dd
-    ) and not allow_fixed_reductions_for_repair:
+    current = evaluate_portfolio(
+        sets,
+        allocations,
+        target_valley_dd,
+        target_point_dd,
+        max_daily_dd,
+        enforce_point_dd,
+        daily_dd_full_history,
+    )
+    if _evaluation_violates_dd_limits(current) and not allow_fixed_reductions_for_repair:
         raise ValueError("Initial portfolio allocations violate DD limits")
     decision_log: list[OptimizationDecision] = []
     step = sum(allocations.values())
@@ -1834,6 +2088,7 @@ def build_portfolio_greedy(
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -1870,18 +2125,20 @@ def build_portfolio_greedy(
                 continue
             temp_allocations = allocations.copy()
             temp_allocations[strategy.set_id] += 1
-            temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
-            if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
+            temp = evaluate_portfolio(
+                sets,
+                temp_allocations,
+                target_valley_dd,
+                target_point_dd,
+                max_daily_dd,
+                enforce_point_dd,
+                daily_dd_full_history,
+            )
+            if _evaluation_violates_dd_limits(temp):
                 blocked_by_risk = True
                 if allow_fixed_reductions_for_repair:
-                    current_violation = max(
-                        current.valley_dd / max(target_valley_dd, 1e-9),
-                        current.point_dd / max(target_point_dd, 1e-9),
-                    )
-                    temp_violation = max(
-                        temp.valley_dd / max(target_valley_dd, 1e-9),
-                        temp.point_dd / max(target_point_dd, 1e-9),
-                    )
+                    current_violation = _evaluation_violation_ratio(current)
+                    temp_violation = _evaluation_violation_ratio(temp)
                     if temp_violation < current_violation - 1e-9:
                         repair_score = (current_violation - temp_violation) * 1_000_000_000.0
                         repair_score += max(temp.total_net_profit - current.total_net_profit, 0.0)
@@ -1939,10 +2196,7 @@ def build_portfolio_greedy(
             best_candidate = best_repair_candidate
 
         if best_candidate is None and allow_fixed_reductions_for_repair:
-            current_violation = max(
-                current.valley_dd / max(target_valley_dd, 1e-9),
-                current.point_dd / max(target_point_dd, 1e-9),
-            )
+            current_violation = _evaluation_violation_ratio(current)
             missing_required_strategy = (
                 minimum_active_strategies is not None
                 and current.active_strategies < minimum_active_strategies
@@ -1954,11 +2208,16 @@ def build_portfolio_greedy(
                         continue
                     temp_allocations = allocations.copy()
                     temp_allocations[strategy.set_id] -= 1
-                    temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
-                    temp_violation = max(
-                        temp.valley_dd / max(target_valley_dd, 1e-9),
-                        temp.point_dd / max(target_point_dd, 1e-9),
+                    temp = evaluate_portfolio(
+                        sets,
+                        temp_allocations,
+                        target_valley_dd,
+                        target_point_dd,
+                        max_daily_dd,
+                        enforce_point_dd,
+                        daily_dd_full_history,
                     )
+                    temp_violation = _evaluation_violation_ratio(temp)
                     if temp_violation >= current_violation - 1e-9:
                         continue
                     choice = (temp_violation, -temp.total_net_profit, strategy, temp_allocations, temp)
@@ -2042,10 +2301,14 @@ def improve_with_local_search(
     minimum_active_strategies: int | None = None,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
+    max_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision]]:
     decision_log: list[OptimizationDecision] = []
     iteration = 0
@@ -2079,6 +2342,7 @@ def improve_with_local_search(
                     max_sets_per_group,
                     margin_balance,
                     max_margin_pct,
+                    margin_profile,
                     stock_leverage,
                     default_leverage,
                     stock_contract_size,
@@ -2106,8 +2370,16 @@ def improve_with_local_search(
                     )
                     if rejected_by_corr:
                         continue
-                temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
-                if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
+                temp = evaluate_portfolio(
+                    sets,
+                    temp_allocations,
+                    target_valley_dd,
+                    target_point_dd,
+                    max_daily_dd,
+                    enforce_point_dd,
+                    daily_dd_full_history,
+                )
+                if _evaluation_violates_dd_limits(temp):
                     continue
                 if max_portfolio_corr is not None and portfolio_curves:
                     worst_portfolio_corr = max(
@@ -2181,10 +2453,14 @@ def improve_with_multi_start_search(
     group_unit_cap_bootstrap: int = 10,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
+    max_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
     if restarts <= 0 or perturbations <= 0 or len(sets) < 2:
         return allocations, current, [], 0
@@ -2221,6 +2497,7 @@ def improve_with_multi_start_search(
                     max_sets_per_group,
                     margin_balance,
                     max_margin_pct,
+                    margin_profile,
                     stock_leverage,
                     default_leverage,
                     stock_contract_size,
@@ -2248,8 +2525,16 @@ def improve_with_multi_start_search(
                     )
                     if rejected:
                         continue
-                temp = evaluate_portfolio(sets, temp_allocations, target_valley_dd, target_point_dd)
-                if temp.valley_dd > target_valley_dd or temp.point_dd > target_point_dd:
+                temp = evaluate_portfolio(
+                    sets,
+                    temp_allocations,
+                    target_valley_dd,
+                    target_point_dd,
+                    max_daily_dd,
+                    enforce_point_dd,
+                    daily_dd_full_history,
+                )
+                if _evaluation_violates_dd_limits(temp):
                     continue
                 if max_portfolio_corr is not None and portfolio_curves:
                     if max(
@@ -2305,10 +2590,14 @@ def improve_with_multi_start_search(
             max_iterations=200,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
             default_contract_size=default_contract_size,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
         )
         if trial.total_net_profit > best.total_net_profit + 1e-9:
             best_allocations = trial_allocations
@@ -2329,6 +2618,7 @@ def _strict_validation_for_allocations(
     target_month: int,
     target_valley_dd: float,
     target_point_dd: float,
+    enforce_point_dd: bool = True,
 ) -> dict[str, object]:
     active_units = _active_unit_allocations(allocations)
     return validate_strict_monthly_portfolio(
@@ -2338,6 +2628,7 @@ def _strict_validation_for_allocations(
         target_valley_dd=target_valley_dd,
         target_point_dd=target_point_dd,
         lookback_years=5,
+        enforce_point_dd=enforce_point_dd,
     )
 
 
@@ -2347,6 +2638,7 @@ def _strict_monthly_candidate_validation(
     target_month: int,
     target_valley_dd: float,
     target_point_dd: float,
+    enforce_point_dd: bool = True,
 ) -> dict[str, object]:
     return validate_strict_monthly_portfolio(
         [strategy],
@@ -2355,6 +2647,7 @@ def _strict_monthly_candidate_validation(
         target_valley_dd=target_valley_dd,
         target_point_dd=target_point_dd,
         lookback_years=5,
+        enforce_point_dd=enforce_point_dd,
     )
 
 
@@ -2366,12 +2659,14 @@ def _strict_monthly_candidate_score(
     target_valley_dd: float,
     target_point_dd: float,
     min_trades_2020_2026: int,
+    enforce_point_dd: bool = True,
 ) -> float:
     validation = _strict_monthly_candidate_validation(
         full_strategy,
         target_month=target_month,
         target_valley_dd=target_valley_dd,
         target_point_dd=target_point_dd,
+        enforce_point_dd=enforce_point_dd,
     )
     target_net = float(validation.get("target_month_net") or 0.0)
     best_net = float(validation.get("best_month_net") or 0.0)
@@ -2387,7 +2682,8 @@ def _strict_monthly_candidate_score(
         if int(item.get("trades") or 0) > 0 and net > 0:
             positive_years += 1
         dd_over += max(float(item.get("valley_dd") or 0.0) - target_valley_dd, 0.0)
-        dd_over += max(float(item.get("point_dd") or 0.0) - target_point_dd, 0.0)
+        if enforce_point_dd:
+            dd_over += max(float(item.get("point_dd") or 0.0) - target_point_dd, 0.0)
     base_score = score_set_for_portfolio(monthly_strategy, min_trades_2020_2026)
     return (
         target_net * 4.0
@@ -2443,6 +2739,7 @@ def _strict_monthly_candidate_variants(
     min_trades_2020_2026: int,
     top_k_per_symbol: int,
     max_total_candidates: int | None,
+    enforce_point_dd: bool = True,
 ) -> list[tuple[str, list[RobustStrategySet]]]:
     full_by_id = {strategy.set_id: strategy for strategy in full_sets}
     eligible = [
@@ -2472,6 +2769,7 @@ def _strict_monthly_candidate_variants(
             target_month=target_month,
             target_valley_dd=target_valley_dd,
             target_point_dd=target_point_dd,
+            enforce_point_dd=enforce_point_dd,
         )
         for strategy in eligible
     }
@@ -2496,6 +2794,7 @@ def _strict_monthly_candidate_variants(
             target_valley_dd=target_valley_dd,
             target_point_dd=target_point_dd,
             min_trades_2020_2026=min_trades_2020_2026,
+            enforce_point_dd=enforce_point_dd,
         ),
         reverse=True,
     )
@@ -2557,6 +2856,7 @@ def _strict_monthly_violation_score(validation: dict[str, object]) -> float:
     if bool(validation.get("passed")):
         return 0.0
     score = 0.0
+    enforce_point_dd = bool(validation.get("enforce_point_dd", True))
     target_valley = float(validation.get("target_valley_dd") or 0.0)
     target_point = float(validation.get("target_point_dd") or 0.0)
     monthly_dd = validation.get("monthly_dd")
@@ -2565,7 +2865,8 @@ def _strict_monthly_violation_score(validation: dict[str, object]) -> float:
             if not isinstance(item, dict):
                 continue
             score += max(float(item.get("valley_dd") or 0.0) - target_valley, 0.0) * 10.0
-            score += max(float(item.get("point_dd") or 0.0) - target_point, 0.0) * 10.0
+            if enforce_point_dd:
+                score += max(float(item.get("point_dd") or 0.0) - target_point, 0.0) * 10.0
     yearly = validation.get("yearly")
     if isinstance(yearly, list):
         for item in yearly:
@@ -2576,7 +2877,8 @@ def _strict_monthly_violation_score(validation: dict[str, object]) -> float:
             if float(item.get("net") or 0.0) <= 0.0:
                 score += 1_000_000.0 + abs(float(item.get("net") or 0.0)) * 100.0
             score += max(float(item.get("valley_dd") or 0.0) - target_valley, 0.0) * 20.0
-            score += max(float(item.get("point_dd") or 0.0) - target_point, 0.0) * 20.0
+            if enforce_point_dd:
+                score += max(float(item.get("point_dd") or 0.0) - target_point, 0.0) * 20.0
     best_month = int(validation.get("best_month") or 0)
     target_month = int(validation.get("target_month") or 0)
     if best_month != target_month:
@@ -2594,18 +2896,30 @@ def _repair_allocations_to_strict_monthly(
     target_month: int,
     target_valley_dd: float,
     target_point_dd: float,
+    max_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, dict[str, object], list[OptimizationDecision]]:
     current_allocations = {
         strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
         for strategy in monthly_sets
     }
-    current_eval = evaluate_portfolio(monthly_sets, current_allocations, target_valley_dd, target_point_dd)
+    current_eval = evaluate_portfolio(
+        monthly_sets,
+        current_allocations,
+        target_valley_dd,
+        target_point_dd,
+        max_daily_dd,
+        enforce_point_dd,
+        daily_dd_full_history,
+    )
     current_validation = _strict_validation_for_allocations(
         full_by_id,
         current_allocations,
         target_month=target_month,
         target_valley_dd=target_valley_dd,
         target_point_dd=target_point_dd,
+        enforce_point_dd=enforce_point_dd,
     )
     decision_log: list[OptimizationDecision] = []
     if bool(current_validation.get("passed")):
@@ -2629,13 +2943,22 @@ def _repair_allocations_to_strict_monthly(
                 continue
             trial_allocations = current_allocations.copy()
             trial_allocations[strategy.set_id] -= 1
-            trial_eval = evaluate_portfolio(monthly_sets, trial_allocations, target_valley_dd, target_point_dd)
+            trial_eval = evaluate_portfolio(
+                monthly_sets,
+                trial_allocations,
+                target_valley_dd,
+                target_point_dd,
+                max_daily_dd,
+                enforce_point_dd,
+                daily_dd_full_history,
+            )
             trial_validation = _strict_validation_for_allocations(
                 full_by_id,
                 trial_allocations,
                 target_month=target_month,
                 target_valley_dd=target_valley_dd,
                 target_point_dd=target_point_dd,
+                enforce_point_dd=enforce_point_dd,
             )
             trial_score = _strict_monthly_violation_score(trial_validation)
             choice = (
@@ -2710,10 +3033,14 @@ def _strict_monthly_safe_refill_allocations(
     max_portfolio_corr: float | None,
     margin_balance: float | None,
     max_margin_pct: float | None,
+    margin_profile: str | None,
     stock_leverage: float,
     default_leverage: float,
     stock_contract_size: float,
     default_contract_size: float,
+    max_daily_dd: float | None,
+    enforce_point_dd: bool,
+    daily_dd_full_history: bool,
     max_iterations: int = 160,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
     sets = list({strategy.set_id: strategy for strategy in candidate_pool}.values())
@@ -2746,6 +3073,7 @@ def _strict_monthly_safe_refill_allocations(
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -2770,10 +3098,11 @@ def _strict_monthly_safe_refill_allocations(
                 trial_allocations,
                 current.target_valley_dd,
                 current.target_point_dd,
+                max_daily_dd,
+                enforce_point_dd,
+                daily_dd_full_history,
             )
-            if trial.valley_dd > current.target_valley_dd + 1e-9:
-                continue
-            if trial.point_dd > current.target_point_dd + 1e-9:
+            if _evaluation_violates_dd_limits(trial):
                 continue
             if not _portfolio_corr_allowed(trial, existing_portfolio_curves, max_portfolio_corr):
                 continue
@@ -2783,6 +3112,7 @@ def _strict_monthly_safe_refill_allocations(
                 target_month=target_month,
                 target_valley_dd=current.target_valley_dd,
                 target_point_dd=current.target_point_dd,
+                enforce_point_dd=enforce_point_dd,
             )
             if not bool(validation.get("passed")):
                 continue
@@ -2849,10 +3179,14 @@ def _strict_monthly_deep_refine_allocations(
     max_portfolio_corr: float | None,
     margin_balance: float | None,
     max_margin_pct: float | None,
+    margin_profile: str | None,
     stock_leverage: float,
     default_leverage: float,
     stock_contract_size: float,
     default_contract_size: float,
+    max_daily_dd: float | None,
+    enforce_point_dd: bool,
+    daily_dd_full_history: bool,
     max_iterations: int = 120,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
     sets = list({strategy.set_id: strategy for strategy in candidate_pool}.values())
@@ -2886,6 +3220,7 @@ def _strict_monthly_deep_refine_allocations(
                 group_unit_cap_bootstrap=group_unit_cap_bootstrap,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
@@ -2904,14 +3239,23 @@ def _strict_monthly_deep_refine_allocations(
                         continue
                 temp_allocations = allocations.copy()
                 temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
-                temp = evaluate_portfolio(sets, temp_allocations, current.target_valley_dd, current.target_point_dd)
-                if temp.valley_dd <= current.target_valley_dd and temp.point_dd <= current.target_point_dd:
+                temp = evaluate_portfolio(
+                    sets,
+                    temp_allocations,
+                    current.target_valley_dd,
+                    current.target_point_dd,
+                    max_daily_dd,
+                    enforce_point_dd,
+                    daily_dd_full_history,
+                )
+                if not _evaluation_violates_dd_limits(temp):
                     validation = _strict_validation_for_allocations(
                         full_by_id,
                         temp_allocations,
                         target_month=target_month,
                         target_valley_dd=current.target_valley_dd,
                         target_point_dd=current.target_point_dd,
+                        enforce_point_dd=enforce_point_dd,
                     )
                     gain = temp.total_net_profit - current.total_net_profit
                     if (
@@ -2949,6 +3293,7 @@ def _strict_monthly_deep_refine_allocations(
                     max_sets_per_group,
                     margin_balance,
                     max_margin_pct,
+                    margin_profile,
                     stock_leverage,
                     default_leverage,
                     stock_contract_size,
@@ -2976,8 +3321,16 @@ def _strict_monthly_deep_refine_allocations(
                     )
                     if rejected_by_corr:
                         continue
-                temp = evaluate_portfolio(sets, temp_allocations, current.target_valley_dd, current.target_point_dd)
-                if temp.valley_dd > current.target_valley_dd or temp.point_dd > current.target_point_dd:
+                temp = evaluate_portfolio(
+                    sets,
+                    temp_allocations,
+                    current.target_valley_dd,
+                    current.target_point_dd,
+                    max_daily_dd,
+                    enforce_point_dd,
+                    daily_dd_full_history,
+                )
+                if _evaluation_violates_dd_limits(temp):
                     continue
                 if not _portfolio_corr_allowed(temp, existing_portfolio_curves, max_portfolio_corr):
                     continue
@@ -2987,6 +3340,7 @@ def _strict_monthly_deep_refine_allocations(
                     target_month=target_month,
                     target_valley_dd=current.target_valley_dd,
                     target_point_dd=current.target_point_dd,
+                    enforce_point_dd=enforce_point_dd,
                 )
                 gain = temp.total_net_profit - current.total_net_profit
                 if (
@@ -3059,11 +3413,15 @@ def optimize_strict_monthly_portfolio(
     search_restarts: int = 0,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
     use_deep_refinement: bool = True,
+    max_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> PortfolioResult:
     """Optimize a monthly portfolio with the 5-year seasonal test in the loop.
 
@@ -3089,6 +3447,7 @@ def optimize_strict_monthly_portfolio(
         min_trades_2020_2026=min_trades_2020_2026,
         top_k_per_symbol=top_k_per_symbol,
         max_total_candidates=max_total_candidates,
+        enforce_point_dd=enforce_point_dd,
     )
     if not variants:
         raise ValueError("No hay candidatos mensuales elegibles para la busqueda estricta.")
@@ -3121,10 +3480,14 @@ def optimize_strict_monthly_portfolio(
                 search_restarts=int(search_restarts),
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
                 default_contract_size=default_contract_size,
+                max_daily_dd=max_daily_dd,
+                enforce_point_dd=enforce_point_dd,
+                daily_dd_full_history=daily_dd_full_history,
             )
         except Exception as exc:
             errors.append(f"{label}: {exc}")
@@ -3141,6 +3504,9 @@ def optimize_strict_monthly_portfolio(
             target_month=month,
             target_valley_dd=base_result.target_valley_dd,
             target_point_dd=base_result.target_point_dd,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
         )
         if bool(validation.get("passed")):
             active_repaired = _active_unit_allocations(repaired_units)
@@ -3175,10 +3541,14 @@ def optimize_strict_monthly_portfolio(
                         search_restarts=0,
                         margin_balance=margin_balance,
                         max_margin_pct=max_margin_pct,
+                        margin_profile=margin_profile,
                         stock_leverage=stock_leverage,
                         default_leverage=default_leverage,
                         stock_contract_size=stock_contract_size,
                         default_contract_size=default_contract_size,
+                        max_daily_dd=max_daily_dd,
+                        enforce_point_dd=enforce_point_dd,
+                        daily_dd_full_history=daily_dd_full_history,
                         required_initial_allocations=active_repaired,
                         preserve_required_allocations=True,
                     )
@@ -3228,6 +3598,9 @@ def optimize_strict_monthly_portfolio(
                 {allocation.set_id: allocation.units for allocation in base_result.allocations if allocation.units > 0},
                 base_result.target_valley_dd,
                 base_result.target_point_dd,
+                max_daily_dd,
+                enforce_point_dd,
+                daily_dd_full_history,
             ),
             target_month=month,
             max_units_per_set=max_units_per_set,
@@ -3244,10 +3617,14 @@ def optimize_strict_monthly_portfolio(
             max_portfolio_corr=max_portfolio_corr,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
             default_contract_size=default_contract_size,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
         )
         active_safe = _active_unit_allocations(safe_allocations)
         validation = _strict_validation_for_allocations(
@@ -3256,6 +3633,7 @@ def optimize_strict_monthly_portfolio(
             target_month=month,
             target_valley_dd=base_result.target_valley_dd,
             target_point_dd=base_result.target_point_dd,
+            enforce_point_dd=enforce_point_dd,
         )
         if safe_eval.total_net_profit > base_result.total_net_profit + 1e-9 and bool(validation.get("passed")):
             safe_sets = [
@@ -3288,10 +3666,14 @@ def optimize_strict_monthly_portfolio(
                 search_restarts=0,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
                 default_contract_size=default_contract_size,
+                max_daily_dd=max_daily_dd,
+                enforce_point_dd=enforce_point_dd,
+                daily_dd_full_history=daily_dd_full_history,
             )
             safe_result.seasonal_validation = validation
             safe_result.warnings = [
@@ -3327,6 +3709,9 @@ def optimize_strict_monthly_portfolio(
             {allocation.set_id: allocation.units for allocation in base_result.allocations if allocation.units > 0},
             base_result.target_valley_dd,
             base_result.target_point_dd,
+            max_daily_dd,
+            enforce_point_dd,
+            daily_dd_full_history,
         ),
         target_month=month,
         minimum_active_strategies=base_result.active_strategies,
@@ -3344,10 +3729,14 @@ def optimize_strict_monthly_portfolio(
         max_portfolio_corr=max_portfolio_corr,
         margin_balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
         default_contract_size=default_contract_size,
+        max_daily_dd=max_daily_dd,
+        enforce_point_dd=enforce_point_dd,
+        daily_dd_full_history=daily_dd_full_history,
     )
     if refined_eval.total_net_profit <= base_result.total_net_profit + 1e-9:
         base_result.warnings.append(
@@ -3363,6 +3752,7 @@ def optimize_strict_monthly_portfolio(
         target_month=month,
         target_valley_dd=base_result.target_valley_dd,
         target_point_dd=base_result.target_point_dd,
+        enforce_point_dd=enforce_point_dd,
     )
     if _portfolio_active_count(active_refined) < base_result.active_strategies or not bool(validation.get("passed")):
         base_result.warnings.append(
@@ -3400,10 +3790,14 @@ def optimize_strict_monthly_portfolio(
         search_restarts=0,
         margin_balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
         default_contract_size=default_contract_size,
+        max_daily_dd=max_daily_dd,
+        enforce_point_dd=enforce_point_dd,
+        daily_dd_full_history=daily_dd_full_history,
     )
     refined_result.seasonal_validation = validation
     refined_result.warnings = [
@@ -3454,10 +3848,14 @@ def optimize_portfolio(
     bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
     margin_balance: float | None = None,
     max_margin_pct: float | None = None,
+    margin_profile: str | None = "roboforex",
     stock_leverage: float = 20.0,
     default_leverage: float = 500.0,
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
+    max_daily_dd: float | None = None,
+    enforce_point_dd: bool = True,
+    daily_dd_full_history: bool = False,
 ) -> PortfolioResult:
     reserve_factor = 1.0 - min(max(float(dd_reserve_pct), 0.0), 99.0) / 100.0
     effective_valley_dd_pct = valley_dd_pct * reserve_factor
@@ -3522,10 +3920,14 @@ def optimize_portfolio(
         allow_fixed_reductions_for_repair=preserve_required_allocations,
         margin_balance=margin_balance,
         max_margin_pct=max_margin_pct,
+        margin_profile=margin_profile,
         stock_leverage=stock_leverage,
         default_leverage=default_leverage,
         stock_contract_size=stock_contract_size,
         default_contract_size=default_contract_size,
+        max_daily_dd=max_daily_dd,
+        enforce_point_dd=enforce_point_dd,
+        daily_dd_full_history=daily_dd_full_history,
     )
 
     local_log: list[OptimizationDecision] = []
@@ -3552,10 +3954,14 @@ def optimize_portfolio(
             minimum_active_strategies=minimum_active_strategies,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
             default_contract_size=default_contract_size,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
         )
 
     group_cap_relaxed = False
@@ -3596,10 +4002,14 @@ def optimize_portfolio(
             allow_fixed_reductions_for_repair=preserve_required_allocations,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
             default_contract_size=default_contract_size,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
         )
         relaxed_local_log: list[OptimizationDecision] = []
         if run_local_search and not preserve_required_allocations:
@@ -3625,10 +4035,14 @@ def optimize_portfolio(
                 minimum_active_strategies=minimum_active_strategies,
                 margin_balance=margin_balance,
                 max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
                 stock_leverage=stock_leverage,
                 default_leverage=default_leverage,
                 stock_contract_size=stock_contract_size,
                 default_contract_size=default_contract_size,
+                max_daily_dd=max_daily_dd,
+                enforce_point_dd=enforce_point_dd,
+                daily_dd_full_history=daily_dd_full_history,
             )
         if relaxed_current.total_net_profit > current.total_net_profit and relaxed_current.total_units > current.total_units:
             allocations = relaxed_allocations
@@ -3663,10 +4077,14 @@ def optimize_portfolio(
             group_unit_cap_bootstrap=group_unit_cap_bootstrap,
             margin_balance=margin_balance,
             max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
             default_contract_size=default_contract_size,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
         )
         if multi_start_log:
             stop_reason += "; multi-start search improved the local solution"
@@ -3678,13 +4096,23 @@ def optimize_portfolio(
         if units > 0 and executable_allocations.get(set_id, 0) != units
     }
     if execution_adjustments:
-        current = evaluate_portfolio(selected, executable_allocations, target_valley_dd, target_point_dd)
+        current = evaluate_portfolio(
+            selected,
+            executable_allocations,
+            target_valley_dd,
+            target_point_dd,
+            max_daily_dd,
+            enforce_point_dd,
+            daily_dd_full_history,
+        )
         allocations = executable_allocations
 
     if current.valley_dd > target_valley_dd:
         raise ValueError("Final portfolio violates valley DD")
-    if current.point_dd > target_point_dd:
+    if enforce_point_dd and current.point_dd > target_point_dd:
         raise ValueError("Final portfolio violates point DD")
+    if max_daily_dd is not None and current.daily_dd > float(max_daily_dd) + 1e-9:
+        raise ValueError("Final portfolio violates daily DD")
 
     margin_summary = (
         portfolio_margin_summary(
@@ -3692,6 +4120,7 @@ def optimize_portfolio(
             allocations,
             balance=float(margin_balance),
             max_margin_pct=float(max_margin_pct),
+            margin_profile=margin_profile,
             stock_leverage=stock_leverage,
             default_leverage=default_leverage,
             stock_contract_size=stock_contract_size,
@@ -3701,6 +4130,15 @@ def optimize_portfolio(
         else {}
     )
     margin_by_set = margin_summary.get("by_set", {}) if isinstance(margin_summary, dict) else {}
+    daily_dd_summary: dict[str, object] = {}
+    if max_daily_dd is not None:
+        _daily_dd, daily_dd_summary = portfolio_daily_closed_floating_dd(
+            selected,
+            allocations,
+            full_history=bool(daily_dd_full_history),
+        )
+        daily_dd_summary["limit"] = float(max_daily_dd)
+        daily_dd_summary["usage_pct"] = current.daily_dd / float(max_daily_dd) * 100.0 if float(max_daily_dd) > 0 else 0.0
 
     result_allocations: list[StrategyAllocation] = []
     for strategy in selected:
@@ -3782,7 +4220,7 @@ def optimize_portfolio(
         warnings.append(
             "Valley DD usage is below 70%. This can be acceptable if no efficient increments remained."
         )
-    if current.point_usage_pct > 95:
+    if enforce_point_dd and current.point_usage_pct > 95:
         warnings.append("Point DD usage is above 95%. Portfolio is close to point DD limit.")
     if not result_allocations:
         warnings.append("No eligible robust sets found.")
@@ -3799,11 +4237,27 @@ def optimize_portfolio(
             + ", ".join(group_limit_overages)
         )
     if margin_summary:
+        profile_label = str(margin_summary.get("profile_label") or margin_profile_label(margin_profile))
+        if normalize_margin_profile(str(margin_summary.get("profile") or margin_profile)) == "ttp":
+            rule_text = (
+                "Forex 1:50; indices 1:15; commodities/metales/energias 1:10; "
+                "stocks/crypto 1:2; contract_size stocks 100/resto 1."
+            )
+        else:
+            rule_text = "Stocks 1:20 contract_size 100; resto 1:500 contract_size 1."
         warnings.append(
-            "Margen RoboForex aplicado: Stocks 1:20 contract_size 100; resto 1:500 contract_size 1. "
+            f"Margen {profile_label} aplicado: {rule_text} "
             f"Uso estimado {float(margin_summary['total']):.2f}/"
             f"{float(margin_summary['limit']):.2f} "
             f"({float(margin_summary['usage_pct']):.1f}% del limite)."
+        )
+    if max_daily_dd is not None:
+        worst_day = str(daily_dd_summary.get("worst_day") or "-")
+        warnings.append(
+            "DD diario max aplicado: cerrado + flotante estimado "
+            f"({'historico completo' if daily_dd_full_history else 'mes objetivo'}) "
+            f"{current.daily_dd:.2f}/{float(max_daily_dd):.2f}"
+            + (f" en {worst_day}." if worst_day != "-" else ".")
         )
 
     unused_sets = _build_unused_sets(raw_sets, eligible, selected, allocations, min_trades_2020_2026)
@@ -3841,6 +4295,11 @@ def optimize_portfolio(
         group_summary=group_summary,
         stress_bootstrap=stress_bootstrap,
         margin_summary=margin_summary,
+        max_daily_dd=current.daily_dd,
+        target_daily_dd=float(max_daily_dd) if max_daily_dd is not None else None,
+        daily_dd_summary=daily_dd_summary,
+        daily_dd_full_history=bool(daily_dd_full_history),
+        enforce_point_dd=bool(enforce_point_dd),
     )
 
 

@@ -455,6 +455,10 @@ class SettingsLogicMixin:
             "ubs_monthly_portfolio_type": self.ubs_monthly_portfolio_type.get().strip(),
             "ubs_monthly_portfolio_valley_pct": self.ubs_monthly_portfolio_valley_pct.get().strip(),
             "ubs_monthly_portfolio_point_pct": self.ubs_monthly_portfolio_point_pct.get().strip(),
+            "ubs_monthly_portfolio_max_daily_dd": self.ubs_monthly_portfolio_max_daily_dd.get().strip(),
+            "ubs_monthly_portfolio_daily_dd_full_history": (
+                "1" if self.ubs_monthly_portfolio_daily_dd_full_history.get() else "0"
+            ),
             "ubs_monthly_portfolio_capital": self.ubs_monthly_portfolio_capital.get().strip(),
             "ubs_monthly_portfolio_top_k": str(self.ubs_monthly_portfolio_top_k.get()),
             "ubs_monthly_portfolio_max_candidates": str(self.ubs_monthly_portfolio_max_candidates.get()),
@@ -495,6 +499,9 @@ class SettingsLogicMixin:
             ),
             "ubs_monthly_portfolio_validate_roboforex_margin": (
                 "1" if self.ubs_monthly_portfolio_validate_roboforex_margin.get() else "0"
+            ),
+            "ubs_monthly_portfolio_validate_ttp_margin": (
+                "1" if self.ubs_monthly_portfolio_validate_ttp_margin.get() else "0"
             ),
             "ubs_monthly_portfolio_max_margin_pct": self.ubs_monthly_portfolio_max_margin_pct.get().strip(),
             "ubs_monthly_portfolio_dd_reserve_pct": self.ubs_monthly_portfolio_dd_reserve_pct.get().strip(),
