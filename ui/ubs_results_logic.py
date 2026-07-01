@@ -17,7 +17,7 @@ from tkinter import ttk
 
 from ubs.account import DEFAULT_BROKER, account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory
-from ubs.manual_status import mark_candidates
+from ubs.manual_status import mark_candidates, sync_manual_accepted_candidate_copies
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -225,14 +225,16 @@ class UBSResultsLogicMixin:
             conn.row_factory = sqlite3.Row
             self._ensure_ubs_memory_schema(conn)
             updated = mark_candidates(conn, ids, status)
+            copied = sync_manual_accepted_candidate_copies(conn, ids) if status == "accepted" else 0
             conn.commit()
             conn.close()
-        except sqlite3.Error as exc:
+        except (OSError, sqlite3.Error) as exc:
             self._show_error("No se pudo aplicar estado manual", str(exc))
             return
         self.ubs_result_checked.clear()
         self.ubs_weights_locked.set(False)
-        self.status_text.set(f"Estado manual aplicado a {updated} resultado(s)")
+        copy_text = f" | copias accepted={copied}" if status == "accepted" else ""
+        self.status_text.set(f"Estado manual aplicado a {updated} resultado(s){copy_text}")
         self._refresh_ubs_results_panel()
 
     def _manual_accept_selected_ubs_results(self) -> None:
