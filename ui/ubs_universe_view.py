@@ -34,11 +34,12 @@ class UBSUniverseViewMixin:
             ("Habilitar marcados",  self.colors["accent_soft_text"], True, lambda: self._set_checked_universe_symbols_enabled(True)),
             ("Permitir seeds",      self.colors["accent_soft_text"], False, lambda: self._set_checked_universe_symbols_seed_enabled(True)),
             ("Bloquear seeds",      self.colors["muted"],          False, lambda: self._set_checked_universe_symbols_seed_enabled(False)),
+            ("Extraer MT5",         self.colors["accent_soft_text"], True,  self._extract_mt5_universe_symbols),
             ("Limpiar marcados",    self.colors["muted"],          False, self._clear_selected_weights),
             ("Reset pesos activos", self.colors["muted"],          False, self._clear_all_asset_weights),
             ("Reset pesos TF",      self.colors["muted"],          False, self._clear_all_tf_weights),
         ], start=1):
-            padx = (0, 10) if col == 9 else (0, 6)
+            padx = (0, 10) if col == 10 else (0, 6)
             font = ("Segoe UI", 9, "bold") if bold else ("Segoe UI", 9)
             tk.Button(bar, text=label, bg=self.colors["panel"], fg=fg,
                       relief="solid", borderwidth=1, padx=8, pady=5,
@@ -51,7 +52,7 @@ class UBSUniverseViewMixin:
             font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._ubs_apply_weights,
         )
-        self._ubs_calc_weights_btn.grid(row=0, column=10, sticky="e", padx=(0, 10), pady=5)
+        self._ubs_calc_weights_btn.grid(row=0, column=11, sticky="e", padx=(0, 10), pady=5)
 
         filter_bar = ttk.Frame(panel, style="Panel.TFrame")
         filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
