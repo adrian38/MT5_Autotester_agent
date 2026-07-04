@@ -1634,7 +1634,9 @@ class MT5AutotesterUI(
         memory_path = self._ubs_notification_memory_path(args)
         account_label = self._ubs_notification_account_label(args)
         mode = "UBS Agente"
-        if "--evaluate-robustness" in args:
+        if "--probe-universe-history" in args:
+            mode = "UBS Probe historico"
+        elif "--evaluate-robustness" in args:
             mode = "UBS Robustez OOS"
         elif "--evaluate-final-tick" in args:
             stage = (self._arg_value(args, "--final-tick-stage") or "").strip().lower().replace("-", "_")
@@ -1746,6 +1748,17 @@ class MT5AutotesterUI(
                     f"no_report: {counts.get('no_report', 0)}"
                 )
 
+            if "--probe-universe-history" in args:
+                counts = self._ubs_status_counts(conn, "candidates", "policy='history_probe'")
+                total = sum(counts.values())
+                pending = total - counts.get("history_ok", 0) - counts.get("no_history", 0)
+                return (
+                    f"{self._ubs_notification_header(mode, prefix, account_label)}\n"
+                    f"Probe historico | simbolos: {total} | history_ok: {counts.get('history_ok', 0)} | "
+                    f"no_history: {counts.get('no_history', 0)} | pendientes: {pending} | "
+                    f"mismatch: {counts.get('report_mismatch', 0)} | no_report: {counts.get('no_report', 0)}"
+                )
+
             if "--retry-candidate-id" in args:
                 candidate_id = int(self._arg_value(args, "--retry-candidate-id") or 0)
                 row = conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()
@@ -1785,6 +1798,7 @@ class MT5AutotesterUI(
                 f"{self._ubs_notification_header(mode, prefix, account_label)}\n"
                 f"Run #{run_id} | candidatos: {total} | accepted: {counts.get('accepted', 0)} | "
                 f"rejected: {counts.get('rejected', 0)} | no_trades: {counts.get('no_trades', 0)} | "
+                f"history_ok: {counts.get('history_ok', 0)} | no_history: {counts.get('no_history', 0)} | "
                 f"mismatch: {counts.get('report_mismatch', 0)} | no_report: {counts.get('no_report', 0)} | "
                 f"robust OK/FAIL: {int(robust['ok'] or 0)}/{int(robust['fail'] or 0)}"
             )
@@ -1964,6 +1978,7 @@ class MT5AutotesterUI(
         ubs_runs_backtests = (
             self.ubs_agent_execute.get()
             or "--execute-backtests" in args
+            or "--probe-universe-history" in args
             or "--evaluate-seeds" in args
             or "--evaluate-robustness" in args
             or "--evaluate-final-tick" in args
@@ -2250,6 +2265,8 @@ class MT5AutotesterUI(
     def _script_label(self, script_name: str, args: list[str] | None = None) -> str:
         args = args or []
         if script_name == "ubs_agent.py":
+            if "--probe-universe-history" in args:
+                return "Probando history universo"
             if "--evaluate-robustness" in args:
                 return "Robustez UBS"
             if "--evaluate-seeds" in args:

@@ -53,6 +53,8 @@ class UBSResultsLogicMixin:
             return "sin reporte"
         if status == "no_trades":
             return "reporte sin operaciones"
+        if status == "history_ok":
+            return "historico disponible para el rango pedido"
         if status == "no_history":
             metrics_json = None
             try:
@@ -1442,6 +1444,7 @@ class UBSResultsLogicMixin:
             "no_report": "pend. reporte",
             "no_trades": "0 ops/no aceptado",
             "no_history": "sin historico",
+            "history_ok": "historico OK",
             "disabled_symbol": "deshabilitado",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",

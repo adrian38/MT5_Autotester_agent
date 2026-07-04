@@ -199,6 +199,7 @@ class AgentMemory:
         self._ensure_column("generation_seed_selection", "fitness_probability", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_weight", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_evidence", "real not null default 0.0")
+        self._detach_history_probe_runs()
         self.conn.execute(
             """
             update seed_scores
@@ -214,6 +215,25 @@ class AgentMemory:
         columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")}
         if column not in columns:
             self.conn.execute(f"alter table {table} add column {column} {definition}")
+
+    def _detach_history_probe_runs(self) -> None:
+        rows = self.conn.execute("select id, config_json from runs").fetchall()
+        probe_run_ids: list[int] = []
+        for row in rows:
+            try:
+                data = json.loads(row["config_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(data, dict) and data.get("mode") == "history_probe":
+                probe_run_ids.append(int(row["id"]))
+        if not probe_run_ids:
+            return
+        placeholders = ",".join("?" for _ in probe_run_ids)
+        self.conn.execute(
+            f"update candidates set run_id=0, generation=0 where run_id in ({placeholders})",
+            tuple(probe_run_ids),
+        )
+        self.conn.execute(f"delete from runs where id in ({placeholders})", tuple(probe_run_ids))
 
     def _reclassify_empty_context_no_trades(self) -> None:
         for table in ("candidates", "seed_scores"):

@@ -18,7 +18,9 @@ from ubs_agent import (
     choose_target_period,
     choose_target_symbol,
     copy_accepted,
+    create_history_probe_variant,
     create_variant,
+    evaluate_history_probe,
     evaluate_variant_report,
     final_tick_row_pending_for_dates,
     final_tick_ohlc_retry_needed_for_dates,
@@ -186,6 +188,57 @@ class UBSSetsFileTests(unittest.TestCase):
                 self.assertEqual(data["reasons"], ["no_history_data"])
                 self.assertEqual(data["history_available_from"], "2026.02.23 00:00")
                 self.assertEqual(data["history_requested_from"], "2020.01.01 00:00")
+            finally:
+                memory.close()
+
+    def test_history_probe_ok_is_neutral_for_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "META_H1_history_probe_0001.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 1, True, False)
+                seed_path = root / "seed.set"
+                seed_path.write_text(
+                    "\n".join(
+                        [
+                            "ForceSymbol=XAUUSD",
+                            "Run_Strategy=1||1||0||2||N",
+                            "ST1_Timeframe=16385||0||0||49153||N",
+                            "Entry_Timing=16385||0||0||49153||N",
+                            "ATR_Timeframe=16385||0||0||49153||N",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                seed = Seed(seed_path, "XAUUSD", "H1", "family", "1")
+                variant = create_history_probe_variant(seed, "META", "H1", root / "probe", 1)
+                memory.record_variant(run_id, 1, variant, status="history_probe")
+
+                with patch("ubs_agent.find_report_for_set", return_value=report), patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(42.0, symbol="META", timeframe="H1", trades=12),
+                ):
+                    status, _result = evaluate_history_probe(
+                        memory,
+                        variant,
+                        ScoreConfig(),
+                        {},
+                        "ICTRADING",
+                    )
+
+                row = memory.conn.execute(
+                    "select status, score, accepted, metrics_json from candidates where set_path=?",
+                    (str(variant.path),),
+                ).fetchone()
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "history_ok")
+                self.assertEqual(row["status"], "history_ok")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertTrue(data["history_probe"])
+                self.assertEqual(memory.asset_feedback({}), {})
             finally:
                 memory.close()
 

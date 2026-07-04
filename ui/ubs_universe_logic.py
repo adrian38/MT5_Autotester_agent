@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import tkinter as tk
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox
 
@@ -434,6 +435,108 @@ class UBSUniverseLogicMixin:
         )
         self._refresh_ubs_universe()
 
+    def _count_ubs_history_probe_symbols(self) -> int:
+        assets, aliases = self._load_ubs_asset_universe()
+        disabled, _seed_enabled = self._active_ubs_symbol_policy(aliases)
+        active = [
+            symbol
+            for _group, symbol, _symbol_aliases in assets
+            if self._canonical_ubs_symbol(symbol, aliases).upper() not in disabled
+        ]
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return len(active)
+        try:
+            conn = connect_memory(memory_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select target_symbol, status
+                from candidates
+                where policy='history_probe'
+                order by id
+                """
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error:
+            return len(active)
+        final_statuses = {"history_ok", "no_history"}
+        latest = {
+            self._canonical_ubs_symbol(str(row["target_symbol"] or ""), aliases).upper(): str(row["status"] or "")
+            for row in rows
+            if str(row["target_symbol"] or "").strip()
+        }
+        return sum(
+            1
+            for symbol in active
+            if latest.get(self._canonical_ubs_symbol(symbol, aliases).upper()) not in final_statuses
+        )
+
+    def _ubs_history_probe_date_range(self) -> tuple[str, str]:
+        start_text = self.ubs_agent_from_date.get().strip() or "2020.01.01"
+        try:
+            start = datetime.strptime(start_text, "%Y.%m.%d")
+        except ValueError as exc:
+            raise ValueError("La fecha Desde del Agente UBS debe estar en formato YYYY.MM.DD.") from exc
+        try:
+            end = start.replace(year=start.year + 1)
+        except ValueError:
+            end = start + timedelta(days=365)
+        return start_text, end.strftime("%Y.%m.%d")
+
+    def _ubs_history_probe_args(self) -> list[str]:
+        source_dir = self._ubs_generator_source_dir()
+        from_date, to_date = self._ubs_history_probe_date_range()
+        args = [
+            "--probe-universe-history",
+            "--source-dir", str(source_dir),
+            "--output-dir", str(self._ubs_generation_output_dir()),
+            "--memory", str(self._ubs_memory_path()),
+            "--broker", self._ubs_broker(),
+            "--account-type", self._ubs_account_type(),
+            "--template", self.template_path.get(),
+            "--delay", str(self.delay.get()),
+            "--probe-history-timeframe", "H1",
+            "--execute-backtests",
+            "--from-date", from_date,
+            "--to-date", to_date,
+        ]
+        if self.multiterminal_enabled.get():
+            args.extend(self._multiterminal_args(require_ubs=True))
+        else:
+            args.extend(["--expert", self._required_ubs_ex5_file()])
+            if self.mt5_path.get().strip():
+                args.extend(["--mt5-path", self.mt5_path.get()])
+            if self.mt5_data_root.get().strip():
+                args.extend(["--data-dir", self.mt5_data_root.get()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map:
+            args.extend(["--symbol-map", symbol_map])
+        return args
+
+    def _run_ubs_universe_history_probe(self) -> None:
+        try:
+            total = self._count_ubs_history_probe_symbols()
+            if total <= 0:
+                messagebox.showinfo("Probe historico", "No hay simbolos GEN=si pendientes de probe historico.")
+                return
+            from_date, to_date = self._ubs_history_probe_date_range()
+            args = self._ubs_history_probe_args()
+        except Exception as exc:
+            self._show_error("No se pudo iniciar probe historico", str(exc))
+            return
+        details = [
+            "Accion: Probar historico del universo",
+            f"Broker/cuenta: {self._ubs_broker()} / {self._ubs_account_type()}",
+            f"Simbolos GEN=si pendientes: {total}",
+            "TF probe: H1",
+            f"Rango: {from_date} -> {to_date}",
+            "Resultado: no_history si el log MT5 indica historico insuficiente; history_ok no pesa.",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar probe historico", total, details):
+            self._run_script("ubs_agent.py", args)
+
     def _refresh_ubs_universe(self) -> None:
         if hasattr(self, "ubs_universe_assets_tree"):
             for item in self.ubs_universe_assets_tree.get_children():
@@ -450,8 +553,6 @@ class UBSUniverseLogicMixin:
                 )
             if hasattr(self, "ubs_timeframe_summary"):
                 self.ubs_timeframe_summary.set("Sin pesos hasta que completes la evaluación")
-            return
-
         assets, aliases = self._load_ubs_asset_universe()
         disabled_symbols, seed_enabled_when_disabled = self._active_ubs_symbol_policy(aliases)
         checked_symbols = set(self.ubs_universe_checked)
@@ -479,7 +580,7 @@ class UBSUniverseLogicMixin:
                     """
                     select
                         c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                        c.score, c.accepted, c.metrics_json, c.status, c.report_path,
+                        c.policy, c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                         cr.status as robust_status,
                         cr.positive_bonus as robust_positive_bonus,
                         cr.negative_bonus as robust_negative_bonus,
@@ -520,6 +621,8 @@ class UBSUniverseLogicMixin:
 
             for row in rows:
                 status = str(row["status"] or "")
+                if str(row["policy"] or "") == "history_probe":
+                    continue
                 if status == "report_mismatch":
                     total_mismatch += 1
                     continue
@@ -723,8 +826,8 @@ class UBSUniverseLogicMixin:
             f"deshabilitados: {len(disabled_symbols)} | seeds en deshab.: {len(seed_enabled_when_disabled)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO = aceptados, rechazados y sin-ops con reporte (-40 fijo); pendientes/mismatch no aportan; "
-            "GEN=no bloquea generacion; SEEDS=si permite usar seeds de ese simbolo."
+            "PESO REL = score probabilistico relativo end-to-end; P 6M = probabilidad estimada hasta Final Tick 6M; "
+            "pendientes/mismatch/history_probe no aportan; GEN=no bloquea generacion."
         )
 
     def _disabled_symbols_path(self):
