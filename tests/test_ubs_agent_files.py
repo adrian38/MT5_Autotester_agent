@@ -191,6 +191,50 @@ class UBSSetsFileTests(unittest.TestCase):
             finally:
                 memory.close()
 
+    def test_generation_no_history_log_does_not_override_history_probe_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "US30_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tUS30: no history data from 2020.01.01 00:00 to 2024.12.31 00:00",
+                        "Tester\tno history data, stop testing",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "BTCUSD", "H1", "family", "1")
+                probe = Variant(root / "probe.set", seed, "US30", "H1", (), (), "history_probe")
+                variant = Variant(root / "candidate.set", seed, "US30", "H1", (), (), "test")
+                memory.record_variant(0, 0, probe, status="history_ok")
+                memory.record_variant(run_id, 1, variant)
+
+                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                    status, _result = evaluate_variant_report(
+                        memory,
+                        variant,
+                        report,
+                        ScoreConfig(),
+                        {},
+                        "ICTRADING",
+                    )
+
+                row = memory.conn.execute(
+                    "select status, score, accepted from candidates where set_path=?",
+                    (str(variant.path),),
+                ).fetchone()
+                self.assertEqual(status, "report_mismatch")
+                self.assertEqual(row["status"], "report_mismatch")
+                self.assertEqual(row["score"], -55.0)
+                self.assertEqual(row["accepted"], 0)
+            finally:
+                memory.close()
+
     def test_history_probe_ok_is_neutral_for_weights(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
