@@ -3,12 +3,18 @@ from __future__ import annotations
 import sqlite3
 import sys
 import tkinter as tk
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
 from ubs.account import broker_asset_universe_path_with_fallback, load_account_timeframe_universe
+from ubs.mt5_symbol_extract import (
+    MT5SymbolExtractionError,
+    extract_symbols_from_mt5,
+    write_asset_universe_from_symbols,
+)
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -107,6 +113,203 @@ class UBSUniverseLogicMixin:
                 changed = True
         if not changed:
             self._refresh_ubs_universe()
+
+    def _default_mt5_symbol_extract_profile(self) -> dict[str, str]:
+        profile: dict[str, str] = {
+            "mt5_path": self.mt5_path.get().strip() if hasattr(self, "mt5_path") else "",
+            "name": "MT5 principal",
+        }
+        try:
+            if hasattr(self, "_save_current_multiterminal_editor"):
+                self._save_current_multiterminal_editor()
+            profiles = self._broker_multiterminal_profiles(include_disabled=False)
+        except Exception:
+            profiles = []
+        if profiles:
+            selected = profiles[0]
+            return {
+                "mt5_path": str(selected.get("mt5_path") or profile["mt5_path"]).strip(),
+                "name": str(selected.get("name") or profile["name"]).strip(),
+            }
+        return profile
+
+    def _ask_mt5_symbol_extract_credentials(self) -> dict[str, object] | None:
+        profile = self._default_mt5_symbol_extract_profile()
+        dialog = tk.Toplevel(self)
+        dialog.title("Extraer simbolos MT5")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(bg=self.colors["panel"])
+        dialog.columnconfigure(1, weight=1)
+
+        mt5_path_var = tk.StringVar(value=profile["mt5_path"])
+        login_var = tk.StringVar(value="")
+        server_var = tk.StringVar(value="")
+        password_var = tk.StringVar(value="")
+        result: dict[str, object] | None = None
+
+        fields = (
+            ("Terminal", mt5_path_var, False),
+            ("Login", login_var, False),
+            ("Servidor", server_var, False),
+            ("Password", password_var, True),
+        )
+        for row, (label, variable, secret) in enumerate(fields):
+            tk.Label(
+                dialog,
+                text=label,
+                bg=self.colors["panel"],
+                fg=self.colors["text"],
+                font=("Segoe UI", 10),
+            ).grid(row=row, column=0, sticky="w", padx=(16, 8), pady=7)
+            entry = tk.Entry(
+                dialog,
+                textvariable=variable,
+                show="*" if secret else "",
+                bg=self.colors["panel_alt"],
+                fg=self.colors["text"],
+                insertbackground=self.colors["text"],
+                relief="solid",
+                borderwidth=1,
+                width=62,
+            )
+            entry.grid(row=row, column=1, sticky="ew", padx=(0, 16), pady=7)
+
+        hint = (
+            f"Perfil: {profile['name']}. Login/servidor/password son opcionales si el terminal ya esta conectado."
+        )
+        tk.Label(
+            dialog,
+            text=hint,
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+            wraplength=560,
+        ).grid(row=len(fields), column=0, columnspan=2, sticky="ew", padx=16, pady=(4, 12))
+
+        button_bar = tk.Frame(dialog, bg=self.colors["panel_alt"])
+        button_bar.grid(row=len(fields) + 1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 16))
+        button_bar.columnconfigure(0, weight=1)
+
+        def accept() -> None:
+            nonlocal result
+            login_text = login_var.get().strip()
+            if login_text:
+                try:
+                    login_value = int(login_text)
+                except ValueError:
+                    messagebox.showerror("Extraer simbolos MT5", "Login debe ser numerico.", parent=dialog)
+                    return
+            else:
+                login_value = None
+            result = {
+                "mt5_path": mt5_path_var.get().strip(),
+                "login": login_value,
+                "server": server_var.get().strip(),
+                "password": password_var.get(),
+            }
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        tk.Button(
+            button_bar,
+            text="Cancelar",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=cancel,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
+        tk.Button(
+            button_bar,
+            text="Extraer",
+            bg=self.colors["accent"],
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=accept,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 10), pady=5)
+
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - dialog.winfo_width()) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - dialog.winfo_height()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.wait_window()
+        return result
+
+    def _extract_mt5_universe_symbols(self) -> None:
+        credentials = self._ask_mt5_symbol_extract_credentials()
+        if credentials is None:
+            return
+        raw_path = str(credentials.get("mt5_path") or "").strip()
+        terminal_path = Path(raw_path).expanduser() if raw_path else None
+        if terminal_path is not None and not terminal_path.exists():
+            messagebox.showerror("Extraer simbolos MT5", f"No existe el terminal:\n{terminal_path}")
+            return
+        if not messagebox.askyesno(
+            "Extraer simbolos MT5",
+            "Se leera la lista de simbolos del servidor MT5 y se sincronizara el universo del broker activo.\n\n"
+            "Se eliminaran los simbolos que ya no existan, se agregaran los nuevos y se creara un backup antes de escribir.",
+        ):
+            return
+        self.status_text.set("Extrayendo simbolos MT5...")
+        self.update_idletasks()
+        try:
+            extraction = extract_symbols_from_mt5(
+                terminal_path=terminal_path,
+                login=credentials.get("login"),
+                password=str(credentials.get("password") or ""),
+                server=str(credentials.get("server") or ""),
+            )
+            universe_path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
+            sync_result = write_asset_universe_from_symbols(universe_path, extraction.symbols)
+        except MT5SymbolExtractionError as exc:
+            messagebox.showerror("Extraer simbolos MT5", str(exc))
+            self.status_text.set("Extraccion MT5 fallida")
+            return
+        except Exception as exc:
+            messagebox.showerror("Extraer simbolos MT5", f"Error inesperado:\n{exc}")
+            self.status_text.set("Extraccion MT5 fallida")
+            return
+
+        total = sum(sync_result.counts.values())
+        details = ", ".join(f"{group}: {count}" for group, count in sync_result.counts.items())
+        backup_text = f"\nBackup: {sync_result.backup_path}" if sync_result.backup_path else ""
+        added_preview = ", ".join(sync_result.added_symbols[:12])
+        removed_preview = ", ".join(sync_result.removed_symbols[:12])
+        if len(sync_result.added_symbols) > 12:
+            added_preview += f", ... (+{len(sync_result.added_symbols) - 12})"
+        if len(sync_result.removed_symbols) > 12:
+            removed_preview += f", ... (+{len(sync_result.removed_symbols) - 12})"
+        messagebox.showinfo(
+            "Extraer simbolos MT5",
+            f"Simbolos en universo: {total}\n"
+            f"Agregados: {len(sync_result.added_symbols)}"
+            + (f" ({added_preview})" if added_preview else "")
+            + "\n"
+            f"Eliminados: {len(sync_result.removed_symbols)}"
+            + (f" ({removed_preview})" if removed_preview else "")
+            + "\n"
+            f"Cuenta: {extraction.account_login or '(sesion actual)'}\n"
+            f"Servidor: {extraction.server or '(sin dato)'}\n"
+            f"{details}{backup_text}",
+        )
+        self.ubs_universe_checked.clear()
+        self.status_text.set(
+            f"Universo MT5 sincronizado: {total} simbolos, "
+            f"+{len(sync_result.added_symbols)} / -{len(sync_result.removed_symbols)}"
+        )
+        self._refresh_ubs_universe()
 
     def _on_ubs_universe_tree_click(self, event: tk.Event) -> None:
         item, column = self._tree_item_from_event(self.ubs_universe_assets_tree, event)
@@ -232,6 +435,108 @@ class UBSUniverseLogicMixin:
         )
         self._refresh_ubs_universe()
 
+    def _count_ubs_history_probe_symbols(self) -> int:
+        assets, aliases = self._load_ubs_asset_universe()
+        disabled, _seed_enabled = self._active_ubs_symbol_policy(aliases)
+        active = [
+            symbol
+            for _group, symbol, _symbol_aliases in assets
+            if self._canonical_ubs_symbol(symbol, aliases).upper() not in disabled
+        ]
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return len(active)
+        try:
+            conn = connect_memory(memory_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select target_symbol, status
+                from candidates
+                where policy='history_probe'
+                order by id
+                """
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error:
+            return len(active)
+        final_statuses = {"history_ok", "no_history"}
+        latest = {
+            self._canonical_ubs_symbol(str(row["target_symbol"] or ""), aliases).upper(): str(row["status"] or "")
+            for row in rows
+            if str(row["target_symbol"] or "").strip()
+        }
+        return sum(
+            1
+            for symbol in active
+            if latest.get(self._canonical_ubs_symbol(symbol, aliases).upper()) not in final_statuses
+        )
+
+    def _ubs_history_probe_date_range(self) -> tuple[str, str]:
+        start_text = self.ubs_agent_from_date.get().strip() or "2020.01.01"
+        try:
+            start = datetime.strptime(start_text, "%Y.%m.%d")
+        except ValueError as exc:
+            raise ValueError("La fecha Desde del Agente UBS debe estar en formato YYYY.MM.DD.") from exc
+        try:
+            end = start.replace(year=start.year + 1)
+        except ValueError:
+            end = start + timedelta(days=365)
+        return start_text, end.strftime("%Y.%m.%d")
+
+    def _ubs_history_probe_args(self) -> list[str]:
+        source_dir = self._ubs_generator_source_dir()
+        from_date, to_date = self._ubs_history_probe_date_range()
+        args = [
+            "--probe-universe-history",
+            "--source-dir", str(source_dir),
+            "--output-dir", str(self._ubs_generation_output_dir()),
+            "--memory", str(self._ubs_memory_path()),
+            "--broker", self._ubs_broker(),
+            "--account-type", self._ubs_account_type(),
+            "--template", self.template_path.get(),
+            "--delay", str(self.delay.get()),
+            "--probe-history-timeframe", "H1",
+            "--execute-backtests",
+            "--from-date", from_date,
+            "--to-date", to_date,
+        ]
+        if self.multiterminal_enabled.get():
+            args.extend(self._multiterminal_args(require_ubs=True))
+        else:
+            args.extend(["--expert", self._required_ubs_ex5_file()])
+            if self.mt5_path.get().strip():
+                args.extend(["--mt5-path", self.mt5_path.get()])
+            if self.mt5_data_root.get().strip():
+                args.extend(["--data-dir", self.mt5_data_root.get()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map:
+            args.extend(["--symbol-map", symbol_map])
+        return args
+
+    def _run_ubs_universe_history_probe(self) -> None:
+        try:
+            total = self._count_ubs_history_probe_symbols()
+            if total <= 0:
+                messagebox.showinfo("Probe historico", "No hay simbolos GEN=si pendientes de probe historico.")
+                return
+            from_date, to_date = self._ubs_history_probe_date_range()
+            args = self._ubs_history_probe_args()
+        except Exception as exc:
+            self._show_error("No se pudo iniciar probe historico", str(exc))
+            return
+        details = [
+            "Accion: Probar historico del universo",
+            f"Broker/cuenta: {self._ubs_broker()} / {self._ubs_account_type()}",
+            f"Simbolos GEN=si pendientes: {total}",
+            "TF probe: H1",
+            f"Rango: {from_date} -> {to_date}",
+            "Resultado: no_history si el log MT5 indica historico insuficiente; history_ok no pesa.",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar probe historico", total, details):
+            self._run_script("ubs_agent.py", args)
+
     def _refresh_ubs_universe(self) -> None:
         if hasattr(self, "ubs_universe_assets_tree"):
             for item in self.ubs_universe_assets_tree.get_children():
@@ -248,8 +553,6 @@ class UBSUniverseLogicMixin:
                 )
             if hasattr(self, "ubs_timeframe_summary"):
                 self.ubs_timeframe_summary.set("Sin pesos hasta que completes la evaluación")
-            return
-
         assets, aliases = self._load_ubs_asset_universe()
         disabled_symbols, seed_enabled_when_disabled = self._active_ubs_symbol_policy(aliases)
         checked_symbols = set(self.ubs_universe_checked)
@@ -277,7 +580,7 @@ class UBSUniverseLogicMixin:
                     """
                     select
                         c.run_id, c.seed_path, c.target_symbol, c.symbol, c.period, c.family,
-                        c.score, c.accepted, c.metrics_json, c.status, c.report_path,
+                        c.policy, c.score, c.accepted, c.metrics_json, c.status, c.report_path,
                         cr.status as robust_status,
                         cr.positive_bonus as robust_positive_bonus,
                         cr.negative_bonus as robust_negative_bonus,
@@ -318,6 +621,8 @@ class UBSUniverseLogicMixin:
 
             for row in rows:
                 status = str(row["status"] or "")
+                if str(row["policy"] or "") == "history_probe":
+                    continue
                 if status == "report_mismatch":
                     total_mismatch += 1
                     continue
@@ -521,8 +826,8 @@ class UBSUniverseLogicMixin:
             f"deshabilitados: {len(disabled_symbols)} | seeds en deshab.: {len(seed_enabled_when_disabled)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO = aceptados, rechazados y sin-ops con reporte (-40 fijo); pendientes/mismatch no aportan; "
-            "GEN=no bloquea generacion; SEEDS=si permite usar seeds de ese simbolo."
+            "PESO REL = score probabilistico relativo end-to-end; P 6M = probabilidad estimada hasta Final Tick 6M; "
+            "pendientes/mismatch/history_probe no aportan; GEN=no bloquea generacion."
         )
 
     def _disabled_symbols_path(self):

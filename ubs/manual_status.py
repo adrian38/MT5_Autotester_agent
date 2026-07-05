@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable
 
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
@@ -89,6 +91,58 @@ def mark_candidates(conn: sqlite3.Connection, candidate_ids: Iterable[object], s
         conn.execute(f"delete from candidate_final_tick where candidate_id in ({placeholders})", tuple(ids))
         conn.execute(f"delete from candidate_robustness where candidate_id in ({placeholders})", tuple(ids))
     return int(cur.rowcount or 0)
+
+
+def sync_manual_accepted_candidate_copies(
+    conn: sqlite3.Connection,
+    candidate_ids: Iterable[object],
+) -> int:
+    ids = _ids(candidate_ids)
+    if not ids:
+        return 0
+    rows = conn.execute(
+        f"""
+        select
+            c.id,
+            c.generation,
+            c.set_path,
+            c.score,
+            r.output_dir
+        from candidates c
+        join runs r on r.id = c.run_id
+        where c.id in ({_placeholders(len(ids))})
+          and c.status='accepted'
+        """,
+        tuple(ids),
+    ).fetchall()
+    copied = 0
+    for row in rows:
+        source = Path(str(row["set_path"] or ""))
+        if not source.exists() or not source.is_file():
+            continue
+        run_dir_raw = str(row["output_dir"] or "").strip()
+        if not run_dir_raw:
+            continue
+        run_dir = Path(run_dir_raw)
+        try:
+            generation = int(row["generation"] or 0)
+        except (TypeError, ValueError):
+            generation = 0
+        if generation <= 0:
+            continue
+        accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
+        accepted_dir.mkdir(parents=True, exist_ok=True)
+        for previous in accepted_dir.glob(f"*__{source.name}"):
+            if previous.is_file():
+                previous.unlink()
+        try:
+            score = float(row["score"])
+            prefix = f"score_{score:07.2f}"
+        except (TypeError, ValueError):
+            prefix = "score_manual"
+        shutil.copy2(source, accepted_dir / f"{prefix}__{source.name}")
+        copied += 1
+    return copied
 
 
 def mark_candidate_robustness(

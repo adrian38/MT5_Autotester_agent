@@ -358,6 +358,9 @@ def parse_args() -> argparse.Namespace:
         help="Con --continue-last-run, ejecuta solo candidatos generated pendientes y no crea generaciones nuevas.",
     )
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
+    parser.add_argument("--probe-universe-history", action="store_true", help="Prueba si los simbolos activos del universo tienen historico para el rango configurado.")
+    parser.add_argument("--probe-history-timeframe", default="H1", help="Timeframe usado para el probe de historico del universo.")
+    parser.add_argument("--probe-history-limit", type=int, default=0, help="Limita el numero de simbolos a probar; 0 = todos los GEN=si.")
     parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
     parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
     parser.add_argument(
@@ -1431,6 +1434,34 @@ def create_variant(
     )
 
 
+def create_history_probe_variant(
+    seed: Seed,
+    target_symbol: str,
+    target_period: str,
+    output_dir: Path,
+    index: int,
+) -> Variant:
+    text, encoding = read_set_with_encoding(seed.path)
+    lines = text.splitlines()
+    replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
+    timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
+    normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    filename = f"{safe_part(target_symbol)}_{safe_part(target_period)}_history_probe_{index:04d}.set"
+    target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
+    write_set_text(target, normalized, encoding)
+    return Variant(
+        target,
+        seed,
+        target_symbol,
+        target_period,
+        (),
+        tuple(sorted(missing)),
+        "history_probe",
+        tuple(timeframe_keys),
+        (),
+    )
+
+
 def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -> int:
     if not args.expert and not args.multi_terminal:
         print("AVISO: --expert no indicado; se omiten backtests.")
@@ -2100,6 +2131,124 @@ def record_score_with_metadata(
         (json.dumps(payload, ensure_ascii=True, sort_keys=True), str(set_path)),
     )
     memory.conn.commit()
+
+
+def record_history_probe_status(
+    memory: AgentMemory,
+    variant: Variant,
+    result: ScoreResult | None,
+    status: str,
+    report_path: Path | None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "symbol": variant.target_symbol,
+        "timeframe": variant.target_period,
+        "history_probe": True,
+        "reasons": [],
+    }
+    if result is not None:
+        try:
+            stored = json.loads(result.to_json())
+            if isinstance(stored, dict):
+                payload.update(stored)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    if metadata:
+        payload.update(metadata)
+    payload["score"] = None
+    payload["accepted"] = False
+    memory.conn.execute(
+        """
+        update candidates
+        set report_path=?, score=null, accepted=null, metrics_json=?, status=?
+        where set_path=?
+        """,
+        (
+            str(report_path) if report_path else None,
+            json.dumps(payload, ensure_ascii=True, sort_keys=True),
+            status,
+            str(variant.path),
+        ),
+    )
+    memory.conn.commit()
+
+
+def evaluate_history_probe(
+    memory: AgentMemory,
+    variant: Variant,
+    score_config: ScoreConfig,
+    symbol_map: dict[str, str],
+    broker: object,
+    *,
+    min_report_mtime: float | None = None,
+) -> tuple[str, ScoreResult | None]:
+    report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
+    if not report:
+        record_history_probe_status(
+            memory,
+            variant,
+            None,
+            "no_report",
+            None,
+            {"reasons": ["no_report"], "history_probe": True},
+        )
+        return "no_report", None
+    try:
+        result = score_report_file(report, config=score_config, broker=broker)
+    except Exception as exc:
+        print(f"AVISO: no pude parsear probe historico {report}: {exc}")
+        record_history_probe_status(
+            memory,
+            variant,
+            None,
+            "parse_error",
+            report,
+            {"reasons": ["parse_error"], "error": str(exc), "history_probe": True},
+        )
+        return "parse_error", None
+    if report_has_empty_tester_context(result):
+        no_history = tester_log_no_history_metadata(report, variant)
+        if no_history:
+            print(
+                f"AVISO: {variant.target_symbol} sin historico completo para el rango pedido; "
+                "marcado como no_history."
+            )
+            no_history["history_probe"] = True
+            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+            return "no_history", result
+        record_history_probe_status(
+            memory,
+            variant,
+            result,
+            "report_mismatch",
+            report,
+            {"reasons": ["empty_tester_context"], "history_probe": True},
+        )
+        return "report_mismatch", result
+
+    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+    if not matches:
+        print(f"AVISO: probe historico no coincide para {variant.path.name}: {mismatch_reason}")
+        record_history_probe_status(
+            memory,
+            variant,
+            result,
+            "report_mismatch",
+            report,
+            {"reasons": ["report_mismatch"], "mismatch": mismatch_reason, "history_probe": True},
+        )
+        return "report_mismatch", result
+
+    record_history_probe_status(
+        memory,
+        variant,
+        result,
+        "history_ok",
+        report,
+        {"reasons": [], "history_probe": True},
+    )
+    return "history_ok", result
 
 
 def evaluate_seed_report(
@@ -4320,6 +4469,143 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
     return 0
 
 
+def select_history_probe_seed(seeds: list[Seed]) -> Seed | None:
+    for seed in seeds:
+        if seed.run_strategy in {"1", "2"} and seed.path.exists():
+            return seed
+    for seed in seeds:
+        if seed.path.exists():
+            return seed
+    return None
+
+
+HISTORY_PROBE_FINAL_STATUSES = {"history_ok", "no_history"}
+
+
+def history_probe_latest_statuses(memory: AgentMemory, aliases: dict[str, str]) -> dict[str, str]:
+    rows = memory.conn.execute(
+        """
+        select target_symbol, status
+        from candidates
+        where policy='history_probe'
+        order by id
+        """
+    ).fetchall()
+    statuses: dict[str, str] = {}
+    for row in rows:
+        key = canonical_symbol(str(row["target_symbol"] or ""), aliases).upper()
+        if key:
+            statuses[key] = str(row["status"] or "")
+    return statuses
+
+
+def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if not args.execute_backtests and not args.dry_run:
+        print("ERROR: probe de historico requiere --execute-backtests o --dry-run")
+        return 1
+    if args.execute_backtests and not args.expert and not args.multi_terminal:
+        print("ERROR: probe de historico requiere --expert o --multi-terminal")
+        return 1
+
+    target_period = str(args.probe_history_timeframe or "H1").strip().upper()
+    if target_period not in TIMEFRAME_TO_ENUM:
+        print(f"ERROR: timeframe probe invalido: {target_period}")
+        return 1
+
+    source_dir = Path(args.source_dir).expanduser()
+    output_root = Path(args.output_dir).expanduser()
+    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
+    disabled_symbols = load_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
+    seed_enabled_when_disabled &= disabled_symbols
+    symbol_map = parse_symbol_map(args.symbol_map)
+
+    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
+    source_seeds, blocked_source_count = generation_source_seeds(
+        seeds,
+        symbol_map,
+        disabled_symbols,
+        seed_enabled_when_disabled,
+    )
+    template_seed = select_history_probe_seed(source_seeds)
+    if template_seed is None:
+        print("ERROR: no hay una seed valida para usar como plantilla del probe")
+        return 1
+
+    asset_groups, aliases = load_asset_universe(
+        Path(args.assets).expanduser(),
+        disabled_symbols=disabled_symbols,
+    )
+    existing_statuses = history_probe_latest_statuses(memory, aliases)
+    all_universe_symbols = tuple(dict.fromkeys(symbol for symbols in asset_groups.values() for symbol in symbols))
+    universe_symbols = tuple(
+        symbol
+        for symbol in all_universe_symbols
+        if existing_statuses.get(canonical_symbol(symbol, aliases).upper()) not in HISTORY_PROBE_FINAL_STATUSES
+    )
+    if args.probe_history_limit > 0:
+        universe_symbols = universe_symbols[: args.probe_history_limit]
+    if not universe_symbols:
+        print("No hay simbolos GEN=si pendientes de probe historico.")
+        return 0
+
+    run_dir = output_root / datetime.now().strftime("history_probe_%Y%m%d_%H%M%S")
+    probe_dir = recreate_work_dir(run_dir / "gen_001")
+
+    variants: list[Variant] = []
+    for index, symbol in enumerate(universe_symbols, start=1):
+        variant = create_history_probe_variant(template_seed, symbol, target_period, probe_dir, index)
+        memory.conn.execute(
+            """
+            delete from candidates
+            where policy='history_probe'
+              and upper(target_symbol)=upper(?)
+              and upper(period)=upper(?)
+            """,
+            (symbol, target_period),
+        )
+        memory.record_variant(0, 0, variant, status="history_probe")
+        variants.append(variant)
+
+    print(
+        f"Probe historico universo: pendientes GEN=si={len(variants)} de {len(all_universe_symbols)} | "
+        f"TF={target_period} | seed plantilla={template_seed.path.name}"
+    )
+    if blocked_source_count:
+        print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
+    print(f"Directorio probe: {run_dir}")
+    if args.dry_run:
+        print("Dry-run: sets de probe generados, MT5 no se abre.")
+        return 0
+
+    batch_started_at = time.time()
+    code = run_backtests(args, probe_dir, model="1")
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza historico.")
+        return 1
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+
+    status_counts: dict[str, int] = {}
+    for variant in variants:
+        status, _ = evaluate_history_probe(
+            memory,
+            variant,
+            score_config,
+            symbol_map,
+            args.broker,
+            min_report_mtime=batch_started_at - 1.0,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    print(
+        "Probe historico terminado: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+    )
+    print(f"Memoria: {memory.path}")
+    return 0 if status_counts else 1
+
+
 def evaluate_generation(
     args: argparse.Namespace,
     memory: AgentMemory,
@@ -4743,6 +5029,11 @@ def run_agent(args: argparse.Namespace) -> int:
         min_positive_month_ratio=args.min_positive_month_ratio,
     )
 
+    if args.probe_universe_history:
+        try:
+            return probe_universe_history(args, memory, score_config)
+        finally:
+            memory.close()
     if args.evaluate_seeds:
         try:
             return evaluate_seed_scores(args, memory, score_config)

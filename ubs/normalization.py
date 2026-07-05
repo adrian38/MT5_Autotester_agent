@@ -36,6 +36,13 @@ def net_profit_normalization(
     if isinstance(group_factors, dict) and group:
         factor = _safe_float(group_factors.get(group), factor)
 
+    suffix_factors = config.get("symbol_suffix_net_profit_factors")
+    if isinstance(suffix_factors, dict):
+        for suffix, suffix_factor in suffix_factors.items():
+            if canonical.upper().endswith(str(suffix).upper()):
+                factor = _safe_float(suffix_factor, factor)
+                break
+
     symbol_factors = config.get("symbol_net_profit_factors")
     if isinstance(symbol_factors, dict):
         factor = _safe_float(symbol_factors.get(canonical.upper()), factor)

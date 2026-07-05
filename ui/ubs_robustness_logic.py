@@ -428,6 +428,7 @@ class UBSRobustnessLogicMixin:
             self._append_console(f"\n[Robustez auto] No se lanza: proceso UBS termino con codigo {code}.\n", tag="error")
             return False
         excluded = {
+            "--probe-universe-history",
             "--evaluate-robustness",
             "--evaluate-seeds",
             "--rescore-seeds-only",

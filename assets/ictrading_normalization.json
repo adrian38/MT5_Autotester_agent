@@ -10,5 +10,11 @@
     "Energies": 0.02,
     "Stocks": 0.01
   },
+  "symbol_suffix_net_profit_factors": {
+    ".NAS": 0.1,
+    ".NAS-24": 0.1,
+    ".NYSE": 0.1,
+    ".NYSE-24": 0.1
+  },
   "symbol_net_profit_factors": {}
 }
