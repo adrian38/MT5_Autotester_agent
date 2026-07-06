@@ -227,7 +227,7 @@ def _raw_to_deals(raw_deals: list[RawDeal]) -> list[Deal]:
 
 
 def _build_trades(raw_deals: list[RawDeal]) -> list[Trade]:
-    open_positions: dict[tuple[str, str], list[RawDeal]] = defaultdict(list)
+    open_positions: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     trades: list[Trade] = []
 
     for deal in raw_deals:
@@ -236,26 +236,61 @@ def _build_trades(raw_deals: list[RawDeal]) -> list[Trade]:
         if trade_type not in {"buy", "sell"}:
             continue
         if direction == "in":
-            open_positions[(deal.symbol, trade_type)].append(deal)
+            open_positions[(deal.symbol, trade_type)].append({"deal": deal, "remaining": deal.volume})
             continue
         if direction != "out":
             continue
 
         open_type = "buy" if trade_type == "sell" else "sell"
         queue = open_positions.get((deal.symbol, open_type), [])
-        if not queue:
+        remaining_close = max(float(deal.volume), 0.0)
+        if not queue or remaining_close <= 0.0:
             continue
-        opened = queue.pop(0)
+        matched_volume = 0.0
+        weighted_open_price = 0.0
+        entry_net = 0.0
+        close_net = 0.0
+        open_time: datetime | None = None
+        ticket = ""
+
+        while queue and remaining_close > 1e-9:
+            slot = queue[0]
+            opened = slot["deal"]
+            if not isinstance(opened, RawDeal):
+                queue.pop(0)
+                continue
+            available = max(float(slot.get("remaining") or 0.0), 0.0)
+            if available <= 1e-9:
+                queue.pop(0)
+                continue
+            volume = min(available, remaining_close)
+            entry_ratio = volume / opened.volume if opened.volume else 0.0
+            close_ratio = volume / deal.volume if deal.volume else 0.0
+            matched_volume += volume
+            weighted_open_price += opened.price * volume
+            entry_net += opened.net_profit * entry_ratio
+            close_net += deal.net_profit * close_ratio
+            if open_time is None or opened.timestamp < open_time:
+                open_time = opened.timestamp
+            if not ticket:
+                ticket = opened.ticket
+            slot["remaining"] = available - volume
+            remaining_close -= volume
+            if float(slot["remaining"]) <= 1e-9:
+                queue.pop(0)
+
+        if matched_volume <= 0.0 or open_time is None:
+            continue
         trades.append(
             Trade(
-                ticket=opened.ticket,
-                trade_type=opened.trade_type.capitalize(),
-                open_time=opened.timestamp,
-                open_price=opened.price,
-                size=opened.volume,
+                ticket=ticket,
+                trade_type=open_type.capitalize(),
+                open_time=open_time,
+                open_price=weighted_open_price / matched_volume,
+                size=matched_volume,
                 close_time=deal.timestamp,
                 close_price=deal.price,
-                profit_loss=opened.net_profit + deal.net_profit,
+                profit_loss=entry_net + close_net,
                 comment=deal.comment,
             )
         )
@@ -324,8 +359,26 @@ def _format_date(value: datetime | None) -> str:
 
 
 def _to_float(value: str) -> float:
-    cleaned = value.replace(" ", "").replace("%", "").replace(",", ".").strip()
-    if not cleaned:
+    text = str(value or "").replace("\xa0", " ").replace("%", "").strip()
+    if not text:
         return 0.0
-    match = re.match(r"([-+]?\d+(?:\.\d+)?)", cleaned)
-    return float(match.group(1)) if match else 0.0
+    match = re.search(r"[-+]?\d(?:[\d\s.,]*\d)?", text)
+    if not match:
+        return 0.0
+    cleaned = re.sub(r"\s+", "", match.group(0))
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) > 2 and all(len(part) == 3 for part in parts[1:]):
+            cleaned = "".join(parts)
+        else:
+            cleaned = cleaned.replace(",", ".")
+    elif cleaned.count(".") > 1:
+        parts = cleaned.split(".")
+        if all(len(part) == 3 for part in parts[1:]):
+            cleaned = "".join(parts)
+    return float(cleaned)

@@ -1550,6 +1550,7 @@ class UBSSearchLogicMixin:
                     row.get("status", ""),
                     row.get("robust_status", ""),
                     row.get("final_tick_status", ""),
+                    row.get("final_tick_6m_status", ""),
                     row.get("target_symbol", "") or row.get("symbol", ""),
                     row.get("period", ""),
                     self._ubs_search_score(row.get("score")),
@@ -1564,6 +1565,8 @@ class UBSSearchLogicMixin:
                 "robust_report": str(row.get("robust_report_path") or ""),
                 "ohlc_report": str(row.get("ohlc_report_path") or ""),
                 "tick_report": str(row.get("real_tick_report_path") or ""),
+                "ohlc_6m_report": str(row.get("ohlc_6m_report_path") or ""),
+                "tick_6m_report": str(row.get("real_tick_6m_report_path") or ""),
             }
 
         message = f"{len(rows)} resultado(s) para: {query}"
@@ -1592,17 +1595,26 @@ class UBSSearchLogicMixin:
                        cr.report_path as robust_report_path,
                        ft.status as final_tick_status,
                        ft.ohlc_report_path,
-                       ft.real_tick_report_path
+                       ft.real_tick_report_path,
+                       ft6.status as final_tick_6m_status,
+                       ft6.ohlc_report_path as ohlc_6m_report_path,
+                       ft6.real_tick_report_path as real_tick_6m_report_path
                 from candidates c
                 left join candidate_robustness cr on cr.candidate_id = c.id
                 left join candidate_final_tick ft on ft.candidate_id = c.id
+                left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
                 where lower(c.set_path) like ?
                    or lower(coalesce(c.seed_path, '')) like ?
                    or lower(coalesce(c.report_path, '')) like ?
+                   or lower(coalesce(cr.report_path, '')) like ?
+                   or lower(coalesce(ft.ohlc_report_path, '')) like ?
+                   or lower(coalesce(ft.real_tick_report_path, '')) like ?
+                   or lower(coalesce(ft6.ohlc_report_path, '')) like ?
+                   or lower(coalesce(ft6.real_tick_report_path, '')) like ?
                 order by c.id desc
                 limit 1000
                 """,
-                (account_type, pattern, pattern, pattern),
+                (account_type, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern),
             ).fetchall()
         finally:
             conn.close()
@@ -1620,14 +1632,17 @@ class UBSSearchLogicMixin:
             return ""
 
     def _ubs_search_row_tag(self, row: dict[str, object]) -> str:
+        final_6m_status = str(row.get("final_tick_6m_status") or "").strip().lower()
         final_status = str(row.get("final_tick_status") or "").strip().lower()
         robust_status = str(row.get("robust_status") or "").strip().lower()
         base_status = str(row.get("status") or "").strip().lower()
-        if final_status == "accepted" or (not final_status and robust_status == "accepted") or (
+        if final_6m_status == "accepted" or (
+            not final_6m_status and final_status == "accepted"
+        ) or (not final_6m_status and not final_status and robust_status == "accepted") or (
             not final_status and not robust_status and base_status == "accepted"
         ):
             return "accepted"
-        if final_status == "rejected" or robust_status == "rejected" or base_status == "rejected":
+        if final_6m_status == "rejected" or final_status == "rejected" or robust_status == "rejected" or base_status == "rejected":
             return "rejected"
         return "pending"
 
@@ -1657,7 +1672,7 @@ class UBSSearchLogicMixin:
         paths = self._selected_ubs_search_paths()
         if not paths:
             return
-        for key in ("tick_report", "ohlc_report", "robust_report", "base_report"):
+        for key in ("tick_6m_report", "ohlc_6m_report", "tick_report", "ohlc_report", "robust_report", "base_report"):
             value = paths.get(key)
             if value and Path(value).exists():
                 self._open_local_file(Path(value))

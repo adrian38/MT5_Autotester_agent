@@ -2110,6 +2110,27 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
     }
 
 
+def latest_history_probe_status_for_symbol(memory: AgentMemory, symbol: str) -> str:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return ""
+    try:
+        row = memory.conn.execute(
+            """
+            select status
+            from candidates
+            where policy='history_probe'
+              and upper(coalesce(target_symbol, symbol, ''))=?
+            order by id desc
+            limit 1
+            """,
+            (normalized,),
+        ).fetchone()
+    except Exception:
+        return ""
+    return str(row["status"] or "") if row is not None else ""
+
+
 def record_score_with_metadata(
     memory: AgentMemory,
     set_path: Path,
@@ -2393,6 +2414,14 @@ def evaluate_variant_report(
     if report_has_empty_tester_context(result):
         no_history = tester_log_no_history_metadata(report, variant)
         if no_history:
+            probe_status = latest_history_probe_status_for_symbol(memory, variant.target_symbol)
+            if probe_status == "history_ok":
+                print(
+                    f"AVISO: {variant.target_symbol} tuvo contexto tester vacio y log no_history, "
+                    "pero el probe historico esta history_ok; marcado como report_mismatch."
+                )
+                memory.record_score(variant.path, result, "report_mismatch", report)
+                return "report_mismatch", result
             print(
                 f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
                 "marcado como no_history. Recomendacion: desactivar simbolo y revisar."

@@ -386,9 +386,11 @@ class UBSUniverseLogicMixin:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                select target_symbol, symbol
+                select target_symbol, status
                 from candidates
-                where status='no_history'
+                where policy='history_probe'
+                  and coalesce(target_symbol, '') != ''
+                order by id
                 """
             ).fetchall()
         except sqlite3.Error as exc:
@@ -397,12 +399,12 @@ class UBSUniverseLogicMixin:
         finally:
             if conn is not None:
                 conn.close()
-        symbols = {
-            str(row["target_symbol"] or row["symbol"] or "").strip()
-            for row in rows
-            if str(row["target_symbol"] or row["symbol"] or "").strip()
-        }
-        return self._canonical_ubs_symbol_set(symbols, aliases)
+        latest: dict[str, str] = {}
+        for row in rows:
+            symbol = self._canonical_ubs_symbol(str(row["target_symbol"] or ""), aliases).upper()
+            if symbol:
+                latest[symbol] = str(row["status"] or "")
+        return {symbol for symbol, status in latest.items() if status == "no_history"}
 
     def _disable_no_history_universe_symbols(self) -> None:
         _, aliases = self._load_ubs_asset_universe()
@@ -413,25 +415,33 @@ class UBSUniverseLogicMixin:
         disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
         new_symbols = symbols - disabled
         already_disabled = symbols & disabled
-        detail = ", ".join(sorted(symbols)[:20])
-        if len(symbols) > 20:
-            detail += f", ... (+{len(symbols) - 20})"
+        if not new_symbols:
+            messagebox.showinfo(
+                "Deshabilitar sin historico",
+                "No hay simbolos nuevos para deshabilitar.\n\n"
+                f"Clasificados no_history por probe: {len(symbols)}\n"
+                f"Ya deshabilitados: {len(already_disabled)}",
+            )
+            return
+        detail = ", ".join(sorted(new_symbols)[:20])
+        if len(new_symbols) > 20:
+            detail += f", ... (+{len(new_symbols) - 20})"
         if not messagebox.askyesno(
             "Deshabilitar sin historico",
-            "Se deshabilitaran en GEN los simbolos con clasificacion no_history en cualquier generacion.\n\n"
-            f"Simbolos detectados: {len(symbols)}\n"
+            "Se deshabilitaran en GEN solo los simbolos con veredicto no_history del probe historico.\n\n"
+            f"Simbolos probe no_history: {len(symbols)}\n"
             f"Nuevos a deshabilitar: {len(new_symbols)}\n"
             f"Ya deshabilitados: {len(already_disabled)}\n\n"
             f"{detail}\n\n"
             "Revisa luego el universo si quieres volver a habilitar alguno.",
         ):
             return
-        disabled.update(symbols)
-        seed_enabled.difference_update(symbols)
+        disabled.update(new_symbols)
+        seed_enabled.difference_update(new_symbols)
         self._save_disabled_ubs_symbols(disabled, seed_enabled)
         self.ubs_universe_checked.clear()
         self.status_text.set(
-            f"Simbolos sin historico deshabilitados: {len(new_symbols)} nuevos / {len(symbols)} detectados"
+            f"Simbolos sin historico deshabilitados: {len(new_symbols)} nuevos / {len(symbols)} probe no_history"
         )
         self._refresh_ubs_universe()
 

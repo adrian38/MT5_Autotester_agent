@@ -306,7 +306,8 @@ def _first_metric(report: StrategyReport, *keys: str) -> str:
 
 
 def _extract_drawdown(value: str) -> tuple[float, float]:
-    match = re.search(r"([-+]?\d+(?:[ .]\d{3})*(?:[.,]\d+)?)\s*\(([-+]?\d+(?:[.,]\d+)?)%", value)
+    number_pattern = r"[-+]?\d(?:[\d\s.,]*\d)?"
+    match = re.search(rf"({number_pattern})\s*\(({number_pattern})\s*%", value)
     if not match:
         return _to_float(value), 0.0
     return _to_float(match.group(1)), _to_float(match.group(2))
@@ -345,11 +346,29 @@ def _safe_div(a: float, b: float) -> float:
 
 
 def _to_float(value: object) -> float:
-    cleaned = str(value).replace(" ", "").replace("%", "").replace(",", ".").strip()
-    if not cleaned:
+    text = str(value or "").replace("\xa0", " ").replace("%", "").strip()
+    if not text:
         return 0.0
-    match = re.match(r"([-+]?\d+(?:\.\d+)?)", cleaned)
-    return float(match.group(1)) if match else 0.0
+    match = re.search(r"[-+]?\d(?:[\d\s.,]*\d)?", text)
+    if not match:
+        return 0.0
+    cleaned = re.sub(r"\s+", "", match.group(0))
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) > 2 and all(len(part) == 3 for part in parts[1:]):
+            cleaned = "".join(parts)
+        else:
+            cleaned = cleaned.replace(",", ".")
+    elif cleaned.count(".") > 1:
+        parts = cleaned.split(".")
+        if all(len(part) == 3 for part in parts[1:]):
+            cleaned = "".join(parts)
+    return float(cleaned)
 
 
 def _money(value: object) -> str:
