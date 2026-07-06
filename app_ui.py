@@ -42,6 +42,8 @@ from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 from ui.ubs_portfolio_view import UBSPortfolioViewMixin
 from ui.ubs_monthly_portfolio_logic import MONTH_LABELS, UBSMonthlyPortfolioLogicMixin
 from ui.ubs_monthly_portfolio_view import UBSMonthlyPortfolioViewMixin
+from ui.ubs_copilot_logic import UBSCopilotLogicMixin
+from ui.ubs_copilot_view import UBSCopilotViewMixin
 from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_search_view import UBSSearchViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
@@ -574,6 +576,8 @@ class MT5AutotesterUI(
     UBSPortfolioLogicMixin,
     UBSMonthlyPortfolioViewMixin,
     UBSMonthlyPortfolioLogicMixin,
+    UBSCopilotViewMixin,
+    UBSCopilotLogicMixin,
     UBSSearchViewMixin,
     UBSSearchLogicMixin,
     SettingsViewMixin,
@@ -1008,6 +1012,19 @@ class MT5AutotesterUI(
         self.ubs_audit_status = tk.StringVar(value="Selecciona cuenta/run y genera auditoria.")
         self.ubs_search_paths: dict[str, dict[str, str]] = {}
         self.ubs_audit_report_path = tk.StringVar(value="")
+        self.ubs_copilot_account = tk.StringVar(value=f"{self._ubs_broker()}/{self._ubs_account_type()}")
+        self.ubs_copilot_run_id = tk.StringVar(value="")
+        self.ubs_copilot_provider = tk.StringVar(value="local")
+        self.ubs_copilot_model = tk.StringVar(value=saved_general.get("ubs_copilot_model", "gpt-5.4-mini"))
+        self.ubs_copilot_include_manual = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_copilot_include_manual"), True)
+        )
+        self.ubs_copilot_max_manual_keys = tk.StringVar(value=saved_general.get("ubs_copilot_max_manual_keys", "20"))
+        self.ubs_copilot_status = tk.StringVar(value="Selecciona cuenta/run y diagnostica.")
+        self.ubs_copilot_summary = tk.StringVar(value="")
+        self.ubs_copilot_report_path = tk.StringVar(value="")
+        self.ubs_copilot_details: dict[str, str] = {}
+        self.ubs_copilot_running = False
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
@@ -1334,7 +1351,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "ubs_copiloto", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -1353,6 +1370,7 @@ class MT5AutotesterUI(
         self._build_portfolio(self.section_frames["portfolio"])
         self._build_ubs_portfolio(self.section_frames["portafolio_ubs"])
         self._build_ubs_monthly_portfolio(self.section_frames["portafolio_ubs_mensual"])
+        self._build_ubs_copilot(self.section_frames["ubs_copiloto"])
         self._build_ubs_search(self.section_frames["buscador"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
@@ -1425,6 +1443,7 @@ class MT5AutotesterUI(
             ("ubs_params", "UBS  Parámetros"),
             ("portafolio_ubs", "UBS  Portafolio"),
             ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
+            ("ubs_copiloto", "UBS  Copiloto IA"),
             ("buscador", "UBS  Buscador"),
         ]
         for index, (key, label) in enumerate(items):
@@ -1899,6 +1918,7 @@ class MT5AutotesterUI(
             ("portfolio", self._refresh_portfolio_count),
             ("ubs_portfolios", self._refresh_ubs_portfolios),
             ("ubs_monthly_portfolios", self._refresh_ubs_monthly_portfolios),
+            ("ubs_copilot_runs", self._refresh_ubs_copilot_run_combo),
             ("last_log", self._refresh_last_log),
             ("multiterminal", self._refresh_multiterminal_tree),
         ):

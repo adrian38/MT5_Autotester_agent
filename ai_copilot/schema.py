@@ -54,7 +54,18 @@ COPILOT_REPORT_JSON_SCHEMA: dict[str, Any] = {
                     "source": {"type": "string"},
                     "title": {"type": "string"},
                     "value": {"type": "string"},
-                    "rows": {"type": "array", "items": {"type": "object"}},
+                    "rows": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["field", "value"],
+                            "properties": {
+                                "field": {"type": "string"},
+                                "value": {"type": "string"},
+                            },
+                        },
+                    },
                 },
             },
         },
@@ -101,7 +112,7 @@ COPILOT_REPORT_JSON_SCHEMA: dict[str, Any] = {
         },
         "usage": {
             "type": "object",
-            "additionalProperties": True,
+            "additionalProperties": False,
             "required": ["provider", "model", "input_tokens", "output_tokens", "estimated_cost_usd"],
             "properties": {
                 "provider": {"type": "string"},

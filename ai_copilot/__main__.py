@@ -46,7 +46,7 @@ def _diagnose(args: argparse.Namespace) -> int:
     provider_response = None
     report = local_report
     if args.provider == "openai":
-        from .providers.openai_provider import call_openai
+        from .providers.openai_provider import OpenAIProviderError, call_openai
 
         request_payload = build_api_payload(
             snapshot,
@@ -54,12 +54,25 @@ def _diagnose(args: argparse.Namespace) -> int:
             manual_context,
             max_evidence_rows=max(1, int(args.max_evidence_rows or 25)),
         )
-        report, provider_response = call_openai(
-            request_payload,
-            model=str(args.model),
-            reasoning_effort=str(args.reasoning_effort or "low"),
-            allowed_evidence_ids=evidence_ids(local_report),
-        )
+        try:
+            report, provider_response = call_openai(
+                request_payload,
+                model=str(args.model),
+                reasoning_effort=str(args.reasoning_effort or "low"),
+                allowed_evidence_ids=evidence_ids(local_report),
+            )
+        except OpenAIProviderError as exc:
+            if exc.status_code == 429 or exc.error_code == "insufficient_quota":
+                report = local_report
+                report["summary"] = f"{report['summary']} | OpenAI sin cuota: mostrando diagnostico local."
+                provider_response = {
+                    "error": str(exc),
+                    "status_code": exc.status_code,
+                    "error_code": exc.error_code,
+                    "fallback": "local",
+                }
+            else:
+                raise
     out_dir = Path(args.out_dir) if args.out_dir else BASE_DIR / "outputs" / "ai_copilot" / broker / account
     paths = write_audit_bundle(
         out_dir,

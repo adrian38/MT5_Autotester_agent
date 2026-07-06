@@ -1,7 +1,7 @@
 import unittest
 
 from ai_copilot.redaction import redact_payload
-from ai_copilot.schema import validate_report
+from ai_copilot.schema import COPILOT_REPORT_JSON_SCHEMA, validate_report
 
 
 def valid_report() -> dict:
@@ -32,6 +32,23 @@ def valid_report() -> dict:
 
 
 class AICopilotSchemaTests(unittest.TestCase):
+    def test_openai_strict_schema_objects_are_closed(self) -> None:
+        missing = []
+
+        def visit(node: dict, path: str) -> None:
+            if node.get("type") == "object" and node.get("additionalProperties") is not False:
+                missing.append(path)
+            for key, value in node.get("properties", {}).items():
+                if isinstance(value, dict):
+                    visit(value, f"{path}.{key}")
+            items = node.get("items")
+            if isinstance(items, dict):
+                visit(items, f"{path}[]")
+
+        visit(COPILOT_REPORT_JSON_SCHEMA, "$")
+
+        self.assertEqual(missing, [])
+
     def test_rejects_unknown_evidence_id(self) -> None:
         report = valid_report()
         report["findings"][0]["evidence_ids"] = ["sql:missing"]

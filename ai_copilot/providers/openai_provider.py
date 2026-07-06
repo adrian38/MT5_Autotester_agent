@@ -5,11 +5,15 @@ import os
 from typing import Any
 from urllib import error, request
 
+from mt5_env import env_value
 from ai_copilot.schema import COPILOT_REPORT_JSON_SCHEMA, validate_report
 
 
 class OpenAIProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None, error_code: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 def call_openai(
@@ -22,7 +26,7 @@ def call_openai(
     allowed_evidence_ids: set[str] | None = None,
     timeout: float = 60.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    key = api_key or os.environ.get("OPENAI_API_KEY", "")
+    key = api_key or os.environ.get("OPENAI_API_KEY", "") or env_value("OPENAI_API_KEY") or ""
     if not key:
         raise OpenAIProviderError("OPENAI_API_KEY is required for --provider openai.")
     root = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com").rstrip("/")
@@ -85,7 +89,20 @@ def _post_json(url: str, body: dict[str, Any], api_key: str, *, timeout: float) 
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise OpenAIProviderError(f"OpenAI HTTP {exc.code}: {detail}") from exc
+        error_code = ""
+        try:
+            payload = json.loads(detail)
+            if isinstance(payload, dict):
+                err = payload.get("error")
+                if isinstance(err, dict):
+                    error_code = str(err.get("code") or err.get("type") or "")
+        except json.JSONDecodeError:
+            pass
+        raise OpenAIProviderError(
+            f"OpenAI HTTP {exc.code}: {detail}",
+            status_code=int(exc.code),
+            error_code=error_code,
+        ) from exc
     except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise OpenAIProviderError(f"OpenAI request failed: {exc}") from exc
 

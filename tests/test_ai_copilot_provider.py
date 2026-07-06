@@ -1,8 +1,10 @@
 import json
+import io
 import unittest
 from unittest import mock
 
 from ai_copilot.providers.openai_provider import call_openai
+from ai_copilot.providers.openai_provider import OpenAIProviderError
 
 
 class FakeResponse:
@@ -71,6 +73,18 @@ class AICopilotProviderTests(unittest.TestCase):
         body = json.loads(req.data.decode("utf-8"))
         self.assertEqual(body["model"], "gpt-test")
         self.assertEqual(body["text"]["format"]["type"], "json_schema")
+
+    def test_http_error_exposes_quota_code(self) -> None:
+        from urllib.error import HTTPError
+
+        detail = json.dumps({"error": {"code": "insufficient_quota"}}).encode("utf-8")
+        err = HTTPError("https://example.test/v1/responses", 429, "Too Many Requests", {}, io.BytesIO(detail))
+        with mock.patch("ai_copilot.providers.openai_provider.request.urlopen", side_effect=err):
+            with self.assertRaises(OpenAIProviderError) as ctx:
+                call_openai({"hello": "world"}, model="gpt-test", api_key="sk-test", base_url="https://example.test")
+
+        self.assertEqual(ctx.exception.status_code, 429)
+        self.assertEqual(ctx.exception.error_code, "insufficient_quota")
 
 
 if __name__ == "__main__":
