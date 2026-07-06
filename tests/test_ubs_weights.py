@@ -45,6 +45,39 @@ class UBSWeightsTests(unittest.TestCase):
         self.assertLess(signals["BAD"].score, 0.0)
         self.assertGreater(signals["GOOD"].probability, signals["BAD"].probability)
 
+    def test_probe_rejected_without_six_month_acceptance_is_terminal_negative_weight(self) -> None:
+        terminal = {
+            "status": "accepted",
+            "robust_status": "accepted",
+            "final_tick_status": "rejected",
+            "final_tick_6m_status": "",
+        }
+        good = {
+            "status": "accepted",
+            "robust_status": "accepted",
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "accepted",
+        }
+        bad = {
+            "status": "rejected",
+            "robust_status": "",
+            "final_tick_status": "",
+            "final_tick_6m_status": "",
+        }
+        signals = probability_feedback_signals(
+            {
+                "TERMINAL": {("terminal",): [terminal]},
+                "GOOD": {("good",): [good]},
+                "BAD": {("bad",): [bad]},
+            },
+            {("terminal",): [terminal], ("good",): [good], ("bad",): [bad]},
+            prior_strength=20.0,
+        )
+
+        self.assertLess(signals["TERMINAL"].score, 0.0)
+        self.assertEqual(signals["TERMINAL"].probability, 0.0)
+        self.assertGreater(signals["GOOD"].score, signals["TERMINAL"].score)
+
     def test_percentile_mutation_multipliers_preserve_order_and_ties(self) -> None:
         ordered = percentile_multipliers({"a": -100.0, "b": -50.0, "c": 10.0}, ("a", "b", "c", "new"))
         self.assertEqual(ordered["a"], 0.5)
