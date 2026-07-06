@@ -119,6 +119,8 @@ FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS = {
 TARGET_PAIR_CAP_RATIO = 0.30
 TARGET_SYMBOL_CAP_RATIO = 0.45
 TARGET_TIMEFRAME_CAP_RATIO = 0.60
+DISCOVERY_SEED_SYMBOL_RESERVE_RATIO = 0.40
+DISCOVERY_TARGET_SYMBOL_CAP_RATIO = 0.20
 DEFAULT_TARGET_GROUP_CAP_RATIO = 0.40
 TARGET_GROUP_CAP_RATIOS = {
     "Forex": 0.60,
@@ -477,6 +479,7 @@ def ranked_seed_selection(
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
     fitness_feedback: dict[str, float] | None = None,
+    symbol_reserve_ratio: float = 0.0,
 ) -> list[tuple[float, Seed, float, float, float]]:
     aliases = aliases or {}
     fitness_feedback = fitness_feedback or {}
@@ -500,11 +503,33 @@ def ranked_seed_selection(
         return []
     limiter = TargetDiversityLimiter(limit, aliases, group_by_symbol=group_by_symbol)
     selected: list[tuple[float, Seed, float, float, float]] = []
+    selected_ids: set[int] = set()
     overflow: list[tuple[float, Seed, float, float, float]] = []
+    if symbol_reserve_ratio > 0:
+        reserve_limit = min(limit, capped_count(limit, symbol_reserve_ratio))
+        reserved_symbols: set[str] = set()
+        for item in scored:
+            seed = item[1]
+            symbol_key = limiter.symbol_key(seed.symbol)
+            if symbol_key in reserved_symbols:
+                continue
+            if not limiter.allows(seed.symbol, seed.period):
+                continue
+            selected.append(item)
+            selected_ids.add(id(seed))
+            reserved_symbols.add(symbol_key)
+            limiter.record(seed.symbol, seed.period)
+            if len(selected) >= reserve_limit:
+                break
+        if len(selected) >= limit:
+            return selected
     for item in scored:
         seed = item[1]
+        if id(seed) in selected_ids:
+            continue
         if limiter.allows(seed.symbol, seed.period):
             selected.append(item)
+            selected_ids.add(id(seed))
             limiter.record(seed.symbol, seed.period)
             if len(selected) >= limit:
                 return selected
@@ -4747,7 +4772,11 @@ def build_run_config(
             "target_diversity_caps": {
                 "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
                 "group_ratios": TARGET_GROUP_CAP_RATIOS,
-                "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
+                "symbol_ratio": (
+                    DISCOVERY_TARGET_SYMBOL_CAP_RATIO
+                    if bool(args.force_unseeded_universe)
+                    else TARGET_SYMBOL_CAP_RATIO
+                ),
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
                 "reroll_attempts": DIVERSITY_REROLL_ATTEMPTS,
@@ -4758,6 +4787,7 @@ def build_run_config(
                 "symbol_ratio": TARGET_SYMBOL_CAP_RATIO,
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
+                "discovery_symbol_reserve_ratio": DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
             },
             "next_seed_diversity_caps": {
                 "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
@@ -4932,6 +4962,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             aliases,
             group_by_symbol,
             fitness_feedback,
+            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO if args.force_unseeded_universe else 0.0,
         )
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
         memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
@@ -4947,6 +4978,11 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             len(selected_seeds) * args.variants_per_seed,
             aliases,
             group_by_symbol=group_by_symbol,
+            symbol_cap_ratio=(
+                DISCOVERY_TARGET_SYMBOL_CAP_RATIO
+                if args.force_unseeded_universe
+                else TARGET_SYMBOL_CAP_RATIO
+            ),
         )
         variants: list[Variant] = []
         reserved_timeframes = (
@@ -5226,6 +5262,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 aliases,
                 group_by_symbol,
                 fitness_feedback,
+                DISCOVERY_SEED_SYMBOL_RESERVE_RATIO if args.force_unseeded_universe else 0.0,
             )
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
             memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
@@ -5241,6 +5278,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 len(selected_seeds) * args.variants_per_seed,
                 aliases,
                 group_by_symbol=group_by_symbol,
+                symbol_cap_ratio=(
+                    DISCOVERY_TARGET_SYMBOL_CAP_RATIO
+                    if args.force_unseeded_universe
+                    else TARGET_SYMBOL_CAP_RATIO
+                ),
             )
             variants: list[Variant] = []
             reserved_timeframes = (

@@ -12,6 +12,7 @@ from ubs.account import account_disabled_symbols_path
 from ubs.memory import AgentMemory
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
 from ubs_agent import (
+    DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
     TargetDiversityLimiter,
     apply_reserved_timeframe,
     choose_diverse_target,
@@ -814,6 +815,31 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertGreater(len(pairs), 1)
         self.assertLess(sum(1 for _score, seed, _asset, _tf, _div in selected if seed.symbol == "XAUUSD"), 10)
 
+    def test_ranked_seed_selection_symbol_reserve_keeps_discovery_broad(self) -> None:
+        seeds = [
+            *(Seed(Path(f"xau_{idx}.set"), "XAUUSD", "H4", "family", "1") for idx in range(20)),
+            Seed(Path("xti.set"), "XTIUSD", "D1", "family", "1"),
+            Seed(Path("eur.set"), "EURUSD", "H1", "family", "1"),
+            Seed(Path("btc.set"), "BTCUSD", "M15", "family", "1"),
+            Seed(Path("us30.set"), "US30", "M30", "family", "1"),
+        ]
+
+        selected = ranked_seed_selection(
+            seeds,
+            10,
+            {"XAUUSD": 100.0, "XTIUSD": 10.0, "EURUSD": 9.0, "BTCUSD": 8.0, "US30": 7.0},
+            {"H4": 10.0, "D1": 1.0, "H1": 1.0, "M15": 1.0, "M30": 1.0},
+            random.Random(11),
+            {},
+            {"XAUUSD": "Metals", "XTIUSD": "Energies", "EURUSD": "Forex", "BTCUSD": "Crypto", "US30": "Indices"},
+            {},
+            0.40,
+        )
+
+        selected_symbols = {seed.symbol for _score, seed, _asset, _tf, _div in selected}
+        self.assertGreaterEqual(len(selected_symbols), 4)
+        self.assertIn("XTIUSD", selected_symbols)
+
     def test_ranked_seed_selection_applies_final_fitness_softly(self) -> None:
         ordinary = Seed(Path("ordinary.set"), "XAUUSD", "H4", "family", "1")
         compatible = Seed(Path("compatible.set"), "XAUUSD", "H4", "family", "1")
@@ -871,6 +897,18 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 8)
         self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
+
+    def test_discovery_target_symbol_cap_is_stricter_than_default(self) -> None:
+        limiter = TargetDiversityLimiter(
+            10,
+            symbol_cap_ratio=DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
+        )
+
+        self.assertTrue(limiter.allows("XAUUSD", "H1"))
+        limiter.record("XAUUSD", "H1")
+        self.assertTrue(limiter.allows("XAUUSD", "H4"))
+        limiter.record("XAUUSD", "H4")
+        self.assertFalse(limiter.allows("XAUUSD", "D1"))
 
     def test_next_seed_survivors_apply_final_fitness_softly(self) -> None:
         higher_score = Variant(
