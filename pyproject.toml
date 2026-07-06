@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["Pillow"]
+ai = ["pypdf"]
 packaging = ["pyinstaller"]
 
 [project.scripts]
@@ -17,3 +18,4 @@ mt5-autotester  = "app_ui:main"
 ubs-agent       = "ubs_agent:main"
 compile-mq5     = "compile_mq5:main"
 run-tests       = "run_tests:main"
+ai-copilot      = "ai_copilot.__main__:main"
