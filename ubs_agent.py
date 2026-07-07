@@ -2039,7 +2039,7 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
         select *
         from candidates
         where status in (
-            'accepted', 'rejected', 'no_trades', 'no_history', 'report_mismatch',
+            'accepted', 'rejected', 'no_trades', 'history_ok', 'no_history', 'report_mismatch',
             'parse_error', 'no_report', 'generated'
         )
         order by run_id, generation, id
@@ -2053,17 +2053,28 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             skipped_no_report += 1
             continue
         variant = variant_from_candidate_row(row)
-        status, _ = evaluate_variant_report(
-            memory,
-            variant,
-            report,
-            score_config,
-            symbol_map,
-            args.broker,
-            min_trades_w1=args.min_trades_w1,
-            min_trades_mn=args.min_trades_mn,
-            symbol_suffix=args.symbol_suffix,
-        )
+        if str(row["policy"] or "") == "history_probe":
+            status, _ = evaluate_history_probe(
+                memory,
+                variant,
+                score_config,
+                symbol_map,
+                args.broker,
+                report_path=report,
+                symbol_suffix=args.symbol_suffix,
+            )
+        else:
+            status, _ = evaluate_variant_report(
+                memory,
+                variant,
+                report,
+                score_config,
+                symbol_map,
+                args.broker,
+                min_trades_w1=args.min_trades_w1,
+                min_trades_mn=args.min_trades_mn,
+                symbol_suffix=args.symbol_suffix,
+            )
         status_counts[status] = status_counts.get(status, 0) + 1
 
     total = sum(status_counts.values())
@@ -2347,9 +2358,10 @@ def evaluate_history_probe(
     broker: object,
     *,
     min_report_mtime: float | None = None,
+    report_path: Path | None = None,
     symbol_suffix: str = "",
 ) -> tuple[str, ScoreResult | None]:
-    report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
+    report = report_path or find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
         record_history_probe_status(
             memory,
