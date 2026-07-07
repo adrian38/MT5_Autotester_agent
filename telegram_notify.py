@@ -1,10 +1,16 @@
 import threading
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import lru_cache
+from pathlib import Path
 from typing import Callable
 
 from mt5_env import env_value
+
+
+SERVER_AUTH_OID = "1.3.6.1.5.5.7.3.1"
 
 
 def _resolve(token: str | None, chat_id: str | None) -> tuple[str, str] | None:
@@ -17,6 +23,48 @@ def _resolve(token: str | None, chat_id: str | None) -> tuple[str, str] | None:
     return token, chat_id
 
 
+def _trust_allows_server_auth(trust: object) -> bool:
+    return trust is True or SERVER_AUTH_OID in {str(item) for item in (trust or ())}
+
+
+def _windows_ca_pem() -> str:
+    if not hasattr(ssl, "enum_certificates"):
+        return ""
+    pems: list[str] = []
+    for store in ("ROOT", "CA"):
+        try:
+            certs = ssl.enum_certificates(store)  # type: ignore[attr-defined]
+        except OSError:
+            continue
+        for cert_bytes, encoding, trust in certs:
+            if encoding != "x509_asn" or not _trust_allows_server_auth(trust):
+                continue
+            try:
+                pems.append(ssl.DER_cert_to_PEM_cert(cert_bytes))
+            except (ValueError, TypeError):
+                continue
+    return "".join(dict.fromkeys(pems))
+
+
+@lru_cache(maxsize=1)
+def _ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    ca_bundle = env_value("TELEGRAM_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+    if ca_bundle:
+        path = Path(ca_bundle).expanduser()
+        if path.exists():
+            context.load_verify_locations(cafile=str(path))
+    windows_pem = _windows_ca_pem()
+    if windows_pem:
+        context.load_verify_locations(cadata=windows_pem)
+    return context
+
+
+def _insecure_ssl_allowed() -> bool:
+    value = (env_value("TELEGRAM_ALLOW_INSECURE_SSL") or "").strip().lower()
+    return value in {"1", "true", "yes", "on", "si", "sí"}
+
+
 def send_message(text: str, token: str | None = None, chat_id: str | None = None) -> str | None:
     creds = _resolve(token, chat_id)
     if not creds:
@@ -26,7 +74,8 @@ def send_message(text: str, token: str | None = None, chat_id: str | None = None
     payload = urllib.parse.urlencode({"chat_id": cid, "text": text}).encode()
     try:
         req = urllib.request.Request(url, data=payload, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as response:
+        context = ssl._create_unverified_context() if _insecure_ssl_allowed() else _ssl_context()
+        with urllib.request.urlopen(req, timeout=10, context=context) as response:
             status = getattr(response, "status", 200)
             if 200 <= status < 300:
                 return None

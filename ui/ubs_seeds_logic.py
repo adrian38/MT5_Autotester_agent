@@ -224,6 +224,7 @@ class UBSSeedsLogicMixin:
         symbol_map = self._effective_ubs_symbol_map_text()
         if symbol_map:
             args.extend(["--symbol-map", symbol_map])
+        args.extend(self._effective_symbol_suffix_args())
         return args
 
     def _run_ubs_seed_evaluation(self) -> None:
@@ -653,6 +654,7 @@ class UBSSeedsLogicMixin:
             symbol_map = self._effective_ubs_symbol_map_text()
             if symbol_map:
                 args.extend(["--symbol-map", symbol_map])
+            args.extend(self._effective_symbol_suffix_args())
         except Exception as exc:
             self._show_error("No se pudo preparar retry seed", str(exc))
             return
@@ -1436,6 +1438,7 @@ class UBSSeedsLogicMixin:
             symbol_map = self._effective_ubs_symbol_map_text()
             if symbol_map:
                 args.extend(["--symbol-map", symbol_map])
+            args.extend(self._effective_symbol_suffix_args())
         except Exception as exc:
             self._show_error("No se pudieron aplicar criterios Seeds", str(exc))
             return

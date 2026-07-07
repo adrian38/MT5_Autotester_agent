@@ -1574,6 +1574,7 @@ class UBSResultsLogicMixin:
             symbol_map = self._effective_ubs_symbol_map_text()
             if symbol_map:
                 args.extend(["--symbol-map", symbol_map])
+            args.extend(self._effective_symbol_suffix_args())
         except Exception as exc:
             self._show_error(error_label, str(exc))
             return
@@ -1647,6 +1648,7 @@ class UBSResultsLogicMixin:
             symbol_map = self._effective_ubs_symbol_map_text()
             if symbol_map:
                 args.extend(["--symbol-map", symbol_map])
+            args.extend(self._effective_symbol_suffix_args())
         except Exception as exc:
             self._show_error("No se pudo preparar continuar run", str(exc))
             return
@@ -1717,6 +1719,7 @@ class UBSResultsLogicMixin:
             symbol_map = self._effective_ubs_symbol_map_text()
             if symbol_map:
                 args.extend(["--symbol-map", symbol_map])
+            args.extend(self._effective_symbol_suffix_args())
         except Exception as exc:
             self._show_error("No se pudo preparar reprobar run completo", str(exc))
             return

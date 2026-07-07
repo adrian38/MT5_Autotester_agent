@@ -93,6 +93,7 @@ class UBSFinalTickLogicMixin:
                 max_pf_delta_pct=thresholds["pf_delta"],
                 max_dd_delta_pct=thresholds["dd_delta"],
                 max_trades_delta_pct=thresholds["trades_delta"],
+                symbol_suffix=self._effective_symbol_suffix_text(),
             )
         finally:
             memory.close()
@@ -434,6 +435,7 @@ class UBSFinalTickLogicMixin:
         symbol_map = self._effective_ubs_symbol_map_text()
         if symbol_map:
             args.extend(["--symbol-map", symbol_map])
+        args.extend(self._effective_symbol_suffix_args())
         return args
 
     def _run_ubs_final_tick_for_latest_run(

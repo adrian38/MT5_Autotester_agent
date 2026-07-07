@@ -116,6 +116,21 @@ def parse_args() -> argparse.Namespace:
         help="Sufijo a agregar al Symbol del template, por ejemplo .a. Vacio no modifica el simbolo.",
     )
     parser.add_argument(
+        "--symbol-futures-suffix",
+        default="",
+        help="Sufijo para futuros/CFDs especiales cuando el universo lo indique, por ejemplo .fs.",
+    )
+    parser.add_argument(
+        "--symbol-shares-suffix",
+        default="",
+        help="Sufijo para shares/ETFs cuando el universo lo indique, por ejemplo +.",
+    )
+    parser.add_argument(
+        "--symbol-universe",
+        default="",
+        help="Archivo assets.ini usado para elegir entre sufijo general, futuros y shares.",
+    )
+    parser.add_argument(
         "--symbol-map",
         default="",
         help="Correspondencias de simbolos del broker, por ejemplo XTIUSD=USOIL,GER40=DAX.",
@@ -751,8 +766,15 @@ def _is_auxiliary_generated_set(set_dir: Path, path: Path) -> bool:
     return root in GENERATED_SET_ROOT_NAMES or any(root.startswith(prefix) for prefix in GENERATED_SET_ROOT_PREFIXES)
 
 
-def mapped_set_text_for_tester(set_file: Path, symbol_map: dict[str, str]) -> tuple[str | None, list[str]]:
-    if not symbol_map:
+def mapped_set_text_for_tester(
+    set_file: Path,
+    symbol_map: dict[str, str],
+    symbol_suffix: str = "",
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+    suffix_universe: dict[str, str] | None = None,
+) -> tuple[str | None, list[str]]:
+    if not symbol_map and not any(value.strip() for value in (symbol_suffix, futures_suffix, shares_suffix)):
         return None, []
     text = read_set_text(set_file)
     lines = text.splitlines()
@@ -766,7 +788,13 @@ def mapped_set_text_for_tester(set_file: Path, symbol_map: dict[str, str]) -> tu
         if key not in {"ForceSymbol", "Symbol"}:
             continue
         current = raw_value.split("||", 1)[0].strip()
-        mapped = apply_symbol_map(current, symbol_map).strip()
+        mapped = apply_symbol_suffix(
+            apply_symbol_map(current, symbol_map),
+            symbol_suffix,
+            futures_suffix,
+            shares_suffix,
+            suffix_universe,
+        ).strip()
         if not current or mapped.upper() == current.upper():
             continue
         lhs = line.split("=", 1)[0]
@@ -787,8 +815,19 @@ def copy_set_file_to_tester_profiles(
     terminal_data_dirs: list[Path],
     logger: RunLogger,
     symbol_map: dict[str, str] | None = None,
+    symbol_suffix: str = "",
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+    suffix_universe: dict[str, str] | None = None,
 ) -> None:
-    mapped_text, changes = mapped_set_text_for_tester(set_file, symbol_map or {})
+    mapped_text, changes = mapped_set_text_for_tester(
+        set_file,
+        symbol_map or {},
+        symbol_suffix,
+        futures_suffix,
+        shares_suffix,
+        suffix_universe,
+    )
     copied_to: list[Path] = []
     for data_dir in terminal_data_dirs:
         for target_dir in (data_dir / "MQL5" / "Profiles" / "Tester", data_dir / "tester"):
@@ -805,7 +844,7 @@ def copy_set_file_to_tester_profiles(
     if copied_to:
         logger.write(f"Set file preparado: {set_file.name}")
         for change in changes:
-            logger.write(f"  Symbol map aplicado al .set: {change}")
+            logger.write(f"  Symbol ajustado en .set: {change}")
         for destination in copied_to:
             logger.write(f"  {destination}")
 
@@ -853,12 +892,100 @@ def ensure_tester_defaults(config: configparser.ConfigParser) -> None:
             config["Tester"][key] = value
 
 
-def apply_symbol_suffix(symbol: str, suffix: str) -> str:
+def _symbol_endswith(value: str, suffix: str) -> bool:
+    return bool(suffix) and value.upper().endswith(suffix.upper())
+
+
+def _symbol_has_explicit_suffix(symbol: str, suffixes: tuple[str, ...]) -> bool:
+    if any(_symbol_endswith(symbol, suffix) for suffix in suffixes if suffix):
+        return True
+    if symbol.endswith("+"):
+        return True
+    return bool(re.search(r"(?<=[A-Za-z0-9])\.[A-Za-z0-9-]+$", symbol))
+
+
+def load_symbol_suffix_universe(
+    path: Path | None,
+    symbol_suffix: str = "",
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+) -> dict[str, str]:
+    suffixes = tuple(
+        suffix.strip()
+        for suffix in (shares_suffix, futures_suffix, symbol_suffix)
+        if suffix and suffix.strip()
+    )
+    universe: dict[str, str] = {}
+    for source, target in load_symbol_suffix_target_map(path, symbol_suffix, futures_suffix, shares_suffix).items():
+        for suffix in suffixes:
+            if _symbol_endswith(target, suffix):
+                universe[source] = target[-len(suffix):]
+                break
+    return universe
+
+
+def load_symbol_suffix_target_map(
+    path: Path | None,
+    symbol_suffix: str = "",
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+) -> dict[str, str]:
+    suffixes = tuple(
+        suffix.strip()
+        for suffix in (shares_suffix, futures_suffix, symbol_suffix)
+        if suffix and suffix.strip()
+    )
+    if not path or not suffixes or not path.exists():
+        return {}
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read(path, encoding="utf-8-sig")
+    except configparser.Error:
+        return {}
+    mapping: dict[str, str] = {}
+    for section in parser.sections():
+        if section == "CommonAliases":
+            continue
+        raw_symbols = parser[section].get("symbols", "")
+        for item in raw_symbols.split(","):
+            listed = item.strip()
+            if not listed:
+                continue
+            for suffix in suffixes:
+                if _symbol_endswith(listed, suffix):
+                    base = listed[: -len(suffix)]
+                    if base:
+                        mapping.setdefault(normalize_set_symbol(base), listed)
+                    break
+    return mapping
+
+
+def apply_symbol_suffix(
+    symbol: str,
+    suffix: str,
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+    suffix_universe: dict[str, str] | None = None,
+) -> str:
     symbol = symbol.strip()
     suffix = suffix.strip()
-    if not symbol or not suffix or symbol.endswith(suffix):
+    futures_suffix = futures_suffix.strip()
+    shares_suffix = shares_suffix.strip()
+    suffixes = (suffix, futures_suffix, shares_suffix)
+    if not symbol:
         return symbol
-    return f"{symbol}{suffix}"
+    if any(_symbol_endswith(symbol, configured_suffix) for configured_suffix in suffixes if configured_suffix):
+        return symbol
+    universe_suffix = (suffix_universe or {}).get(normalize_set_symbol(symbol), "")
+    if universe_suffix:
+        return f"{symbol}{universe_suffix}"
+    if _symbol_has_explicit_suffix(symbol, suffixes):
+        return symbol
+    selected_suffix = suffix
+    if not selected_suffix:
+        return symbol
+    return f"{symbol}{selected_suffix}"
 
 
 def parse_symbol_map(value: str) -> dict[str, str]:
@@ -879,6 +1006,8 @@ def parse_symbol_map(value: str) -> dict[str, str]:
 
 
 def apply_symbol_map(symbol: str, symbol_map: dict[str, str]) -> str:
+    if _symbol_has_explicit_suffix(symbol.strip(), ()):
+        return symbol.strip()
     base_symbol = normalize_set_symbol(symbol)
     return symbol_map.get(base_symbol, symbol.strip())
 
@@ -1092,6 +1221,9 @@ def validate_set_symbol(
     inferred_fields: dict[str, str],
     symbol_map: dict[str, str],
     symbol_suffix: str,
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+    suffix_universe: dict[str, str] | None = None,
 ) -> None:
     if not set_file:
         return
@@ -1105,7 +1237,13 @@ def validate_set_symbol(
             "y el template no tiene Symbol."
         )
 
-    expected_symbol = apply_symbol_suffix(apply_symbol_map(inferred_symbol, symbol_map), symbol_suffix)
+    expected_symbol = apply_symbol_suffix(
+        apply_symbol_map(inferred_symbol, symbol_map),
+        symbol_suffix,
+        futures_suffix,
+        shares_suffix,
+        suffix_universe,
+    )
     actual_symbol = config["Tester"].get("Symbol", "").strip()
     if actual_symbol.upper() != expected_symbol.upper():
         raise ValueError(
@@ -1120,6 +1258,9 @@ def create_ini(
     template: configparser.ConfigParser,
     set_file: Path | None = None,
     symbol_suffix: str = "",
+    futures_suffix: str = "",
+    shares_suffix: str = "",
+    suffix_universe: dict[str, str] | None = None,
     symbol_map: dict[str, str] | None = None,
     infer_tester_from_set: bool = False,
     prefer_set_path_timeframe: bool = False,
@@ -1154,6 +1295,9 @@ def create_ini(
         config["Tester"]["Symbol"] = apply_symbol_suffix(
             apply_symbol_map(config["Tester"]["Symbol"], symbol_map),
             symbol_suffix,
+            futures_suffix,
+            shares_suffix,
+            suffix_universe,
         )
     if set_file:
         config["Tester"]["ExpertParameters"] = set_file.name
@@ -1170,7 +1314,16 @@ def create_ini(
                 f"Period={config['Tester'].get('Period', '').strip() or '(vacio)'}"
             )
         try:
-            validate_set_symbol(config, set_file, inferred_fields, symbol_map, symbol_suffix)
+            validate_set_symbol(
+                config,
+                set_file,
+                inferred_fields,
+                symbol_map,
+                symbol_suffix,
+                futures_suffix,
+                shares_suffix,
+                suffix_universe,
+            )
         except ValueError:
             if logger:
                 delete_test_artifacts(ini_path, report_path, logger)
@@ -1682,6 +1835,9 @@ def run_backtest_job(
             template,
             job.set_file,
             args.symbol_suffix,
+            args.symbol_futures_suffix,
+            args.symbol_shares_suffix,
+            getattr(args, "symbol_suffix_universe", {}),
             symbol_map,
             args.infer_tester_from_set,
             args.prefer_set_path_timeframe,
@@ -1692,7 +1848,16 @@ def run_backtest_job(
         logger.write(f"[{profile.name}] ERROR: {exc}")
         return 1
     if job.set_file and not args.dry_run:
-        copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
+        copy_set_file_to_tester_profiles(
+            job.set_file,
+            terminal_data_dirs,
+            logger,
+            symbol_map,
+            args.symbol_suffix,
+            args.symbol_futures_suffix,
+            args.symbol_shares_suffix,
+            getattr(args, "symbol_suffix_universe", {}),
+        )
     protected_set_name = job.set_file.name if job.set_file else ""
     return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs, protected_set_name)
 
@@ -1793,6 +1958,13 @@ def main() -> int:
     except ValueError as exc:
         print(f"ERROR: {exc}")
         return 1
+    symbol_universe_path = Path(args.symbol_universe).expanduser() if args.symbol_universe.strip() else None
+    args.symbol_suffix_universe = load_symbol_suffix_universe(
+        symbol_universe_path,
+        args.symbol_suffix,
+        args.symbol_futures_suffix,
+        args.symbol_shares_suffix,
+    )
     tester_kick_after_seconds, terminal_cooldown_seconds = load_runner_tuning(
         Path(args.terminals_config).expanduser(),
         tester_kick_after=args.tester_kick_after,
@@ -2017,6 +2189,9 @@ def main() -> int:
                     template,
                     job.set_file,
                     args.symbol_suffix,
+                    args.symbol_futures_suffix,
+                    args.symbol_shares_suffix,
+                    getattr(args, "symbol_suffix_universe", {}),
                     symbol_map,
                     args.infer_tester_from_set,
                     args.prefer_set_path_timeframe,
@@ -2029,7 +2204,16 @@ def main() -> int:
                 failures += 1
                 continue
             if job.set_file and not args.dry_run:
-                copy_set_file_to_tester_profiles(job.set_file, terminal_data_dirs, logger, symbol_map)
+                copy_set_file_to_tester_profiles(
+                    job.set_file,
+                    terminal_data_dirs,
+                    logger,
+                    symbol_map,
+                    args.symbol_suffix,
+                    args.symbol_futures_suffix,
+                    args.symbol_shares_suffix,
+                    getattr(args, "symbol_suffix_universe", {}),
+                )
             exit_code = run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
             if exit_code != 0:
                 failures += 1
