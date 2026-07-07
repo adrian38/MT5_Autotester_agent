@@ -22,7 +22,32 @@ GROUP_ORDER = (
     "Other",
 )
 
-FOREX_BASES = ("AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD", "NOK", "SEK", "SGD", "CNH")
+FOREX_BASES = (
+    "AED",
+    "AUD",
+    "CAD",
+    "CHF",
+    "CNH",
+    "CZK",
+    "EUR",
+    "GBP",
+    "GBX",
+    "HKD",
+    "HUF",
+    "ILS",
+    "INR",
+    "JPY",
+    "MXN",
+    "NOK",
+    "NZD",
+    "PLN",
+    "RON",
+    "SEK",
+    "SGD",
+    "THB",
+    "USD",
+    "ZAR",
+)
 METAL_PREFIXES = ("XAU", "XAG", "XPT", "XPD", "GC", "SI")
 CRYPTO_HINTS = (
     "BTC",
@@ -56,7 +81,7 @@ INDEX_HINTS = (
     "DXY",
 )
 COMMODITY_HINTS = ("COCOA", "COFFEE", "CORN", "COTTON", "SUGAR", "WHEAT", "SBEAN", "OJ_")
-BOND_HINTS = ("BOND", "BND", "UST", "GB", "B10Y", "BUND")
+BOND_HINTS = ("BOND", "BND", "B10Y", "BUND")
 
 
 @dataclass(frozen=True)
@@ -156,12 +181,32 @@ def extract_symbols_from_mt5(
 
 def classify_symbol_group(symbol: ExtractedSymbol) -> str:
     name = symbol.name.upper()
+    base_name = _classification_symbol_base(name)
     path = symbol.path.upper()
     combined = f"{path}\\{name}"
 
+    if path.startswith("AXISELECT_STANDARD_FX\\"):
+        return "Forex"
+    if path.startswith("AXISELECT_STANDARD_METALS\\"):
+        return "Metals"
+    if path.startswith("AXISELECT_CASH\\CASH_INDICES"):
+        return "Indices"
+    if path.startswith("AXISELECT_CASH\\CASH_OIL"):
+        return "Energies"
+    if path.startswith("AXISELECT_CRYPTO\\"):
+        return "Crypto"
+    if path.startswith("FUTURES\\FUT_INDICES"):
+        return "Indices"
+    if path.startswith("FUTURES\\FUT_COMMODITY"):
+        return "Energies" if any(token in base_name for token in ENERGY_HINTS) else "Commodities"
+    if path.startswith("SHARES_COMMFREE\\"):
+        return "Stocks"
+
     if any(token in combined for token in ("METAL", "PRECIOUS")) or name.startswith(METAL_PREFIXES):
         return "Metals"
-    if "CRYPTO" in path or ("USD" in name and any(token in name for token in CRYPTO_HINTS if token != "USD")):
+    if "FOREX" in path or _looks_like_forex_pair(base_name):
+        return "Forex"
+    if "CRYPTO" in path or ("USD" in base_name and any(token in base_name for token in CRYPTO_HINTS if token != "USD")):
         return "Crypto"
     if any(token in combined for token in ("INDEX", "INDICES")) or any(token in name for token in INDEX_HINTS):
         return "Indices"
@@ -177,11 +222,21 @@ def classify_symbol_group(symbol: ExtractedSymbol) -> str:
         return "Stocks"
     if re.search(r"\.(NAS|NYSE|US|TSE|AMS|ETR|MAD|PAR|LSE|SWX|IT|IE)(?:-24)?$", name):
         return "Stocks"
-    if "FOREX" in path or (
-        len(name) == 6 and name[:3] in FOREX_BASES and name[3:] in FOREX_BASES
-    ):
-        return "Forex"
     return "Other"
+
+
+def _classification_symbol_base(symbol: str) -> str:
+    value = str(symbol or "").strip().upper()
+    for suffix in (".SA", ".FS", "+"):
+        if value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
+def _looks_like_forex_pair(symbol: str) -> bool:
+    if len(symbol) != 6:
+        return False
+    return symbol[:3] in FOREX_BASES and symbol[3:] in FOREX_BASES
 
 
 def group_symbols_for_universe(symbols: Iterable[ExtractedSymbol]) -> dict[str, list[str]]:
@@ -236,6 +291,8 @@ def _dedupe_sorted(symbols: Iterable[str]) -> list[str]:
 def sync_asset_universe_groups(
     existing_groups: dict[str, list[str]],
     symbols: Iterable[ExtractedSymbol],
+    *,
+    preserve_existing_groups: bool = True,
 ) -> tuple[dict[str, list[str]], tuple[str, ...], tuple[str, ...]]:
     extracted_by_key: dict[str, ExtractedSymbol] = {}
     for symbol in symbols:
@@ -243,10 +300,33 @@ def sync_asset_universe_groups(
         if key and key not in extracted_by_key:
             extracted_by_key[key] = symbol
 
+    existing_by_key: dict[str, str] = {}
+    for current_symbols in existing_groups.values():
+        for current in current_symbols:
+            key = _symbol_key(current)
+            if key and key not in existing_by_key:
+                existing_by_key[key] = current
+
     if not existing_groups:
         groups = group_symbols_for_universe(extracted_by_key.values())
         added = tuple(sorted((symbol.name for symbol in extracted_by_key.values()), key=str.upper))
         return groups, added, ()
+
+    if not preserve_existing_groups:
+        groups = group_symbols_for_universe(extracted_by_key.values())
+        added = tuple(
+            sorted(
+                (symbol.name for key, symbol in extracted_by_key.items() if key not in existing_by_key),
+                key=str.upper,
+            )
+        )
+        removed = tuple(
+            sorted(
+                (symbol for key, symbol in existing_by_key.items() if key not in extracted_by_key),
+                key=str.upper,
+            )
+        )
+        return groups, added, removed
 
     synced_groups: dict[str, list[str]] = {group: [] for group in existing_groups}
     kept_keys: set[str] = set()
@@ -287,9 +367,14 @@ def write_asset_universe_from_symbols(
     symbols: Iterable[ExtractedSymbol],
     *,
     backup: bool = True,
+    preserve_existing_groups: bool = True,
 ) -> AssetUniverseSyncResult:
     existing_groups, aliases = _load_existing_asset_universe(path)
-    groups, added_symbols, removed_symbols = sync_asset_universe_groups(existing_groups, symbols)
+    groups, added_symbols, removed_symbols = sync_asset_universe_groups(
+        existing_groups,
+        symbols,
+        preserve_existing_groups=preserve_existing_groups,
+    )
     backup_path: Path | None = None
     if backup and path.exists():
         backup_path = path.with_suffix(path.suffix + f".bak_{time.strftime('%Y%m%d_%H%M%S')}")

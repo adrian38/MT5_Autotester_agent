@@ -9,6 +9,7 @@ from ubs.account import (
     account_output_dir,
     account_seed_dir,
     account_timeframe_universe_path,
+    axi_cash_future_family_targets,
     broker_asset_universe_path,
     broker_asset_universe_path_with_fallback,
     default_symbol_map_for_broker,
@@ -92,12 +93,22 @@ class _FakeMonthlyPortfolio(UBSMonthlyPortfolioLogicMixin):
 
 
 class _FakeUniverse(UBSUniverseLogicMixin):
-    def __init__(self) -> None:
+    def __init__(self, broker: str = "ROBOFOREX") -> None:
+        self.ubs_broker = _FakeVar(broker)
         self.ubs_universe_checked = {"US100"}
         self.disabled_symbols = set()
         self.seed_enabled = {"US100"}
         self.saved: tuple[set[str], set[str]] | None = None
         self.status_text = _FakeVar("")
+        self.symbol_suffix_enabled = _FakeVar(False)
+        self.symbol_suffix = _FakeVar("")
+        self.symbol_futures_suffix = _FakeVar("")
+        self.symbol_shares_suffix = _FakeVar("")
+        self.symbol_map_enabled = _FakeVar(False)
+        self.symbol_map = _FakeVar("")
+
+    def _ubs_broker(self) -> str:
+        return normalize_broker(self.ubs_broker.get())
 
     def _load_ubs_asset_universe(self):
         return [], {"US100": ".USTECHCASH"}
@@ -177,7 +188,24 @@ class UBSAccountTests(unittest.TestCase):
         self.assertIn("US100=USTEC", default_symbol_map_for_broker("ICTRADING"))
         self.assertIn("DAX=DE40", default_symbol_map_for_broker("ICTRADING"))
         self.assertIn("WTI=XTIUSD", default_symbol_map_for_broker("ICTRADING"))
-        self.assertEqual(default_symbol_map_for_broker("AXI"), "")
+        axi_map = default_symbol_map_for_broker("AXI")
+        self.assertIn("US100=USTECH", axi_map)
+        self.assertIn("USTEC=USTECH", axi_map)
+        self.assertIn("NAS100=NAS100.fs", axi_map)
+        self.assertIn("USOIL=USOIL", axi_map)
+        self.assertIn("WTI=WTI.fs", axi_map)
+        self.assertIn("UKOIL=UKOIL", axi_map)
+        self.assertIn("BRENT=BRENT.fs", axi_map)
+        self.assertIn("GOLD=XAUUSD", axi_map)
+        self.assertNotIn(".sa", axi_map)
+
+    def test_axi_cash_future_family_targets_are_filtered_to_loaded_universe(self) -> None:
+        universe = ("GER40.sa", "DAX40.fs", "USOIL.sa", "WTI.fs", "BTCUSD.sa")
+
+        self.assertEqual(axi_cash_future_family_targets("DE40", universe), ("GER40.sa", "DAX40.fs"))
+        self.assertEqual(axi_cash_future_family_targets("GER40.sa", universe), ("GER40.sa", "DAX40.fs"))
+        self.assertEqual(axi_cash_future_family_targets("CRUDEOIL", universe), ("USOIL.sa", "WTI.fs"))
+        self.assertEqual(axi_cash_future_family_targets("BTCUSD", universe), ())
 
     def test_symbol_map_switch_keeps_values_per_broker(self) -> None:
         agent = _FakeAgent("ECN", "", "", broker="ROBOFOREX")
@@ -348,6 +376,135 @@ class UBSAccountTests(unittest.TestCase):
         universe._set_checked_universe_symbols_enabled(False)
 
         self.assertEqual(universe.saved, ({".USTECHCASH"}, set()))
+
+    def test_axi_universe_resolves_memory_symbols_to_broker_symbols(self) -> None:
+        universe = _FakeUniverse("AXI")
+        universe.symbol_suffix_enabled = _FakeVar(True)
+        universe.symbol_suffix = _FakeVar(".sa")
+        universe.symbol_futures_suffix = _FakeVar(".fs")
+        universe.symbol_shares_suffix = _FakeVar("+")
+        symbol_map = universe._ubs_universe_symbol_map()
+        suffix_universe = {
+            "XAUUSD": ".sa",
+            "US30": ".sa",
+            "USOIL": ".sa",
+            "USTECH": ".sa",
+            "NAS100": ".fs",
+        }
+
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "XAUUSD",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "XAUUSD.SA",
+        )
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "USTEC",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "USTECH.SA",
+        )
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "XTIUSD",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "USOIL.SA",
+        )
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "NAS100",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "NAS100.FS",
+        )
+
+    def test_axi_universe_signal_aliases_match_broker_symbols(self) -> None:
+        universe = _FakeUniverse("AXI")
+        symbol_map = universe._ubs_universe_symbol_map()
+        suffix_universe = {
+            "XAUUSD": ".sa",
+            "US30": ".sa",
+            "USOIL": ".sa",
+            "USTECH": ".sa",
+            "NAS100": ".fs",
+        }
+
+        aliases = universe._ubs_universe_signal_aliases(
+            {},
+            symbol_map,
+            suffix_universe,
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        self.assertEqual(aliases["XAUUSD"], "XAUUSD.SA")
+        self.assertEqual(aliases["US30"], "US30.SA")
+        self.assertEqual(aliases["USTEC"], "USTECH.SA")
+        self.assertEqual(aliases["US100"], "USTECH.SA")
+        self.assertEqual(aliases["XTIUSD"], "USOIL.SA")
+        self.assertEqual(aliases["NAS100"], "NAS100.FS")
+
+    def test_axi_seed_row_can_feed_cash_and_future_symbols(self) -> None:
+        universe = _FakeUniverse("AXI")
+        universe.symbol_suffix_enabled = _FakeVar(True)
+        universe.symbol_suffix = _FakeVar(".sa")
+        universe.symbol_futures_suffix = _FakeVar(".fs")
+        universe.symbol_shares_suffix = _FakeVar("+")
+        symbol_map = universe._ubs_universe_symbol_map()
+        suffix_universe = {
+            "GER40": ".sa",
+            "DAX40": ".fs",
+            "USOIL": ".sa",
+            "WTI": ".fs",
+        }
+
+        dax_symbols = universe._ubs_seed_row_canonical_symbols(
+            {"symbol": "DE40", "metrics_json": '{"symbol": "GER40.sa"}'},
+            ("GER40.sa", "DAX40.fs", "USOIL.sa", "WTI.fs"),
+            {},
+            symbol_map,
+            suffix_universe,
+            ".sa",
+            ".fs",
+            "+",
+        )
+        oil_symbols = universe._ubs_seed_row_canonical_symbols(
+            {"symbol": "XTIUSD", "metrics_json": '{"symbol": "USOIL.sa"}'},
+            ("GER40.sa", "DAX40.fs", "USOIL.sa", "WTI.fs"),
+            {},
+            symbol_map,
+            suffix_universe,
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        self.assertEqual(dax_symbols, ("GER40.SA", "DAX40.FS"))
+        self.assertEqual(oil_symbols, ("USOIL.SA", "WTI.FS"))
 
     def test_sync_switches_previous_account_defaults_to_active_account(self) -> None:
         from ui.ubs_agent_logic import BASE_DIR

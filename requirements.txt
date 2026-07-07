@@ -7,3 +7,6 @@ Pillow
 
 # Packaging only; not required for normal source execution.
 PyInstaller
+
+# Packaging Metatrader.
+MetaTrader5

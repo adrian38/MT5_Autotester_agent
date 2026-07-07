@@ -32,8 +32,7 @@ class DashboardLogicMixin:
         return len(experts), root
     def _backtest_args(self) -> list[str]:
         args = ["--template", self.template_path.get(), "--delay", str(self.delay.get())]
-        if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
-            args.extend(["--symbol-suffix", self.symbol_suffix.get().strip()])
+        args.extend(self._effective_symbol_suffix_args(include_universe=True))
         if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
             args.extend(["--symbol-map", self.symbol_map.get().strip()])
         if not self.recursive.get():
@@ -134,8 +133,7 @@ class DashboardLogicMixin:
             args.extend(["--data-dir", self.mt5_data_root.get()])
         if self.template_path.get().strip():
             args.extend(["--template", self.template_path.get()])
-        if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
-            args.extend(["--symbol-suffix", self.symbol_suffix.get().strip()])
+        args.extend(self._effective_symbol_suffix_args(include_universe=True))
         if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
             args.extend(["--symbol-map", self.symbol_map.get().strip()])
         args.extend(["--delay", str(self.delay.get())])
@@ -162,4 +160,3 @@ class DashboardLogicMixin:
         if not compile_root:
             raise ValueError("Carpeta .mq5 es obligatoria si Archivo .mq5 no es una ruta completa.")
         return compile_root, compile_file
-

@@ -142,6 +142,88 @@ class CopyReportsToProjectTests(unittest.TestCase):
             parser.read(ini_path, encoding="utf-8")
             self.assertEqual(parser["Tester"]["Model"], "4")
 
+    def test_mapped_set_text_applies_symbol_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            set_file = root / "seed.set"
+            set_file.write_text(
+                "\n".join([
+                    "ForceSymbol=XAUUSD||1||0||2||N",
+                    "Symbol=EURUSD",
+                ]),
+                encoding="utf-8",
+            )
+
+            text, changes = run_tests.mapped_set_text_for_tester(set_file, {}, ".sa")
+
+            self.assertIsNotNone(text)
+            self.assertIn("ForceSymbol=XAUUSD.sa||1||0||2||N", text)
+            self.assertIn("Symbol=EURUSD.sa", text)
+            self.assertIn("ForceSymbol: XAUUSD -> XAUUSD.sa", changes)
+            self.assertIn("Symbol: EURUSD -> EURUSD.sa", changes)
+
+    def test_mapped_set_text_uses_universe_specific_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            assets = root / "axi_assets.ini"
+            assets.write_text(
+                "\n".join([
+                    "[Indices]",
+                    "symbols=DAX40.fs,US500.sa",
+                    "[Stocks]",
+                    "symbols=Apple+",
+                ]),
+                encoding="utf-8",
+            )
+            set_file = root / "seed.set"
+            set_file.write_text(
+                "\n".join([
+                    "ForceSymbol=DAX40||1||0||2||N",
+                    "Symbol=Apple",
+                ]),
+                encoding="utf-8",
+            )
+            suffix_universe = run_tests.load_symbol_suffix_universe(assets, ".sa", ".fs", "+")
+
+            text, changes = run_tests.mapped_set_text_for_tester(
+                set_file,
+                {},
+                ".sa",
+                ".fs",
+                "+",
+                suffix_universe,
+            )
+
+            self.assertIsNotNone(text)
+            self.assertIn("ForceSymbol=DAX40.fs||1||0||2||N", text)
+            self.assertIn("Symbol=Apple+", text)
+            self.assertIn("ForceSymbol: DAX40 -> DAX40.fs", changes)
+            self.assertIn("Symbol: Apple -> Apple+", changes)
+
+    def test_symbol_map_preserves_explicit_broker_suffix(self) -> None:
+        symbol_map = run_tests.parse_symbol_map("NAS100=USTECH,WTI=USOIL")
+
+        self.assertEqual(run_tests.apply_symbol_map("NAS100.fs", symbol_map), "NAS100.fs")
+        self.assertEqual(run_tests.apply_symbol_map("WTI.fs", symbol_map), "WTI.fs")
+        self.assertEqual(run_tests.apply_symbol_map("Apple+", symbol_map), "Apple+")
+
+    def test_axi_ustec_alias_resolves_to_cash_symbol(self) -> None:
+        from ubs.account import default_symbol_map_for_broker
+
+        symbol_map = run_tests.parse_symbol_map(default_symbol_map_for_broker("AXI"))
+        suffix_universe = run_tests.load_symbol_suffix_universe(
+            run_tests.Path("assets/axi_assets.ini"),
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        mapped = run_tests.apply_symbol_map("USTEC", symbol_map)
+        resolved = run_tests.apply_symbol_suffix(mapped, ".sa", ".fs", "+", suffix_universe)
+
+        self.assertEqual(mapped, "USTECH")
+        self.assertEqual(resolved, "USTECH.sa")
+
     def test_create_ini_fills_required_tester_defaults_when_template_has_blanks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)

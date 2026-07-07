@@ -157,18 +157,30 @@ class DashboardViewMixin:
         self._toggle_switch_cls(suffix_lbl, variable=self.symbol_suffix_enabled, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
         ttk.Entry(config_card, textvariable=self.symbol_suffix).grid(row=5, column=0, sticky="ew", padx=20)
 
+        futures_lbl = tk.Frame(config_card, bg=self.colors["panel"])
+        futures_lbl.grid(row=6, column=0, sticky="ew", padx=20, pady=(12, 4))
+        tk.Label(futures_lbl, text="Sufijo futuros", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(futures_lbl, text="Ejemplo AXI: .fs para DAX40.fs", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
+        ttk.Entry(config_card, textvariable=self.symbol_futures_suffix).grid(row=7, column=0, sticky="ew", padx=20)
+
+        shares_lbl = tk.Frame(config_card, bg=self.colors["panel"])
+        shares_lbl.grid(row=8, column=0, sticky="ew", padx=20, pady=(12, 4))
+        tk.Label(shares_lbl, text="Sufijo shares", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(shares_lbl, text="Ejemplo AXI: + para Apple+", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
+        ttk.Entry(config_card, textvariable=self.symbol_shares_suffix).grid(row=9, column=0, sticky="ew", padx=20)
+
         map_lbl = tk.Frame(config_card, bg=self.colors["panel"])
-        map_lbl.grid(row=6, column=0, sticky="ew", padx=20, pady=(18, 6))
+        map_lbl.grid(row=10, column=0, sticky="ew", padx=20, pady=(18, 6))
         map_lbl.columnconfigure(0, weight=1)
         map_text = tk.Frame(map_lbl, bg=self.colors["panel"])
         map_text.grid(row=0, column=0, sticky="w")
         tk.Label(map_text, text="Correspondencia simbolos", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
         tk.Label(map_text, text="Ejemplo: XTIUSD=USOIL, GER40=DAX", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
         self._toggle_switch_cls(map_lbl, variable=self.symbol_map_enabled, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
-        ttk.Entry(config_card, textvariable=self.symbol_map).grid(row=7, column=0, sticky="ew", padx=20)
+        ttk.Entry(config_card, textvariable=self.symbol_map).grid(row=11, column=0, sticky="ew", padx=20)
 
         tg_row = tk.Frame(config_card, bg=self.colors["panel"])
-        tg_row.grid(row=8, column=0, sticky="ew", padx=20, pady=(18, 0))
+        tg_row.grid(row=12, column=0, sticky="ew", padx=20, pady=(18, 0))
         tg_row.columnconfigure(0, weight=1)
         tg_text = tk.Frame(tg_row, bg=self.colors["panel"])
         tg_text.grid(row=0, column=0, sticky="w")
@@ -183,7 +195,7 @@ class DashboardViewMixin:
             style="TButton",
             command=self._toggle_theme,
         )
-        self.theme_button.grid(row=9, column=0, sticky="ew", padx=20, pady=(16, 8))
+        self.theme_button.grid(row=13, column=0, sticky="ew", padx=20, pady=(16, 8))
 
         save_cfg = self._rounded_button_cls(
             config_card, text="Guardar configuracion",
@@ -193,7 +205,7 @@ class DashboardViewMixin:
             parent_bg=self.colors["panel"],
             command=self._save_config_clicked,
         )
-        save_cfg.grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 8))
+        save_cfg.grid(row=14, column=0, sticky="ew", padx=20, pady=(0, 8))
 
         del_btn = self._rounded_button_cls(
             config_card, text="🗑  Eliminar datos historicos",
@@ -205,6 +217,6 @@ class DashboardViewMixin:
             parent_bg=self.colors["panel"],
             command=self._delete_historical_data,
         )
-        del_btn.grid(row=11, column=0, sticky="ew", padx=20, pady=(0, 18))
+        del_btn.grid(row=15, column=0, sticky="ew", padx=20, pady=(0, 18))
 
     # ------------------------------------------------------------------

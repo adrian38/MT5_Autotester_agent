@@ -20,6 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-file", help="Nombre o ruta de un .mq5 concreto dentro de --source-dir.")
     parser.add_argument("--template", help="Archivo .ini general para backtest.")
     parser.add_argument("--symbol-suffix", default="", help="Sufijo a agregar al simbolo del template.")
+    parser.add_argument("--symbol-futures-suffix", default="", help="Sufijo de futuros/CFDs para run_tests.py.")
+    parser.add_argument("--symbol-shares-suffix", default="", help="Sufijo de shares/ETFs para run_tests.py.")
+    parser.add_argument("--symbol-universe", default="", help="Archivo assets.ini usado para resolver sufijos por familia.")
     parser.add_argument("--symbol-map", default="", help="Correspondencias de simbolos, por ejemplo XTIUSD=USOIL.")
     parser.add_argument("--delay", type=int, default=5, help="Pausa en segundos entre tests.")
     parser.add_argument("--recursive", action="store_true", help="Procesar todos los .mq5/.ex5 de la carpeta indicada.")
@@ -124,6 +127,12 @@ def main() -> int:
         backtest_command.extend(["--template", args.template])
     if args.symbol_suffix:
         backtest_command.extend(["--symbol-suffix", args.symbol_suffix])
+    if args.symbol_futures_suffix:
+        backtest_command.extend(["--symbol-futures-suffix", args.symbol_futures_suffix])
+    if args.symbol_shares_suffix:
+        backtest_command.extend(["--symbol-shares-suffix", args.symbol_shares_suffix])
+    if args.symbol_universe:
+        backtest_command.extend(["--symbol-universe", args.symbol_universe])
     if args.symbol_map:
         backtest_command.extend(["--symbol-map", args.symbol_map])
     if args.skip_running_check:

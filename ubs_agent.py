@@ -20,6 +20,8 @@ from run_tests import (
     RUNNING_TERMINAL_EXIT_CODE,
     TIMEFRAME_ENUM,
     apply_symbol_map,
+    apply_symbol_suffix,
+    load_symbol_suffix_target_map,
     load_set_params,
     normalize_set_symbol,
     parse_symbol_map,
@@ -35,6 +37,7 @@ from ubs.account import (
     account_memory_path,
     account_output_dir,
     account_seed_dir,
+    axi_cash_future_family_targets,
     broker_asset_universe_path_with_fallback,
     default_symbol_map_for_broker,
     load_account_timeframe_universe,
@@ -336,6 +339,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminals-config", help="Archivo .ini con perfiles multiterminal.")
     parser.add_argument("--multi-terminal", action="store_true", help="Ejecuta backtests UBS repartidos entre terminales configuradas.")
     parser.add_argument("--max-workers", type=int, default=1, help="Maximo de terminales simultaneas con --multi-terminal.")
+    parser.add_argument("--symbol-suffix", default="", help="Sufijo de simbolo del broker, por ejemplo .sa para AXI.")
+    parser.add_argument("--symbol-futures-suffix", default="", help="Sufijo de futuros/CFDs del broker, por ejemplo .fs para AXI.")
+    parser.add_argument("--symbol-shares-suffix", default="", help="Sufijo de shares/ETFs del broker, por ejemplo + para AXI.")
     parser.add_argument("--symbol-map")
     parser.add_argument("--generations", type=int, default=1)
     parser.add_argument("--variants-per-seed", type=int, default=3)
@@ -444,6 +450,7 @@ def parse_args() -> argparse.Namespace:
     args.account_type = normalize_account_type(args.account_type, args.broker)
     if args.symbol_map is None:
         args.symbol_map = default_symbol_map_for_broker(args.broker)
+    args.run_tests_symbol_map = args.symbol_map
     migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
         args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type, args.broker))
@@ -454,7 +461,32 @@ def parse_args() -> argparse.Namespace:
         args.memory = str(account_memory_path(BASE_DIR, args.account_type, args.broker))
     if Path(args.assets).expanduser() == DEFAULT_ASSETS:
         args.assets = str(broker_asset_universe_path_with_fallback(BASE_DIR, args.broker))
+    args.symbol_map = augment_symbol_map_with_suffix_targets(args.symbol_map, args)
     return args
+
+
+def augment_symbol_map_with_suffix_targets(symbol_map_text: str, args: argparse.Namespace) -> str:
+    suffix_targets = load_symbol_suffix_target_map(
+        Path(args.assets).expanduser(),
+        getattr(args, "symbol_suffix", ""),
+        getattr(args, "symbol_futures_suffix", ""),
+        getattr(args, "symbol_shares_suffix", ""),
+    )
+    if not suffix_targets:
+        return symbol_map_text
+    try:
+        existing = parse_symbol_map(symbol_map_text)
+    except ValueError:
+        return symbol_map_text
+    additions = [
+        f"{source}={target}"
+        for source, target in sorted(suffix_targets.items())
+        if source not in existing
+    ]
+    if not additions:
+        return symbol_map_text
+    base = symbol_map_text.strip()
+    return ",".join([base, *additions]) if base else ",".join(additions)
 
 
 def seeds_from_variants(variants: list[Variant]) -> list[Seed]:
@@ -967,10 +999,32 @@ def choose_target_symbol(
             disabled_symbols=disabled_symbols,
         )
 
-    current_disabled = target_disabled(current)
+    current_family_targets = tuple(
+        target
+        for target in dict.fromkeys(
+            (
+                *axi_cash_future_family_targets(current, universe_symbols),
+                *axi_cash_future_family_targets(mapped_current, universe_symbols),
+            )
+        )
+        if target and not target_disabled(target)
+    )
+    current_targets = current_family_targets or tuple(
+        target
+        for target in (resolved_current,)
+        if target and not target_disabled(target)
+    )
 
     related = tuple(
-        symbol for symbol in dict.fromkeys(exact_by_key.get(symbol.upper(), symbol) for symbol in related_assets(current))
+        symbol
+        for symbol in dict.fromkeys(
+            candidate
+            for source in related_assets(current)
+            for candidate in (
+                *axi_cash_future_family_targets(source, universe_symbols),
+                exact_by_key.get(source.upper(), source),
+            )
+        )
         if not target_disabled(symbol)
     )
     universe_choices = tuple(
@@ -985,37 +1039,48 @@ def choose_target_symbol(
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
         return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
+    def asset_weight(symbol: str) -> float:
+        canonical = canonical_symbol(symbol, aliases).upper()
+        return asset_feedback.get(canonical, asset_feedback.get(symbol.upper(), 0.0))
+
     if production_mode:
-        related_choices = tuple(symbol for symbol in related if symbol.upper() != resolved_current.upper())
+        current_choices = tuple(dict.fromkeys(current_targets))
+        current_choice_keys = {symbol.upper() for symbol in current_choices}
+        related_choices = tuple(symbol for symbol in related if symbol.upper() not in current_choice_keys)
         evidence_choices = tuple(
             symbol
             for symbol in universe_choices
-            if asset_feedback.get(canonical_symbol(symbol, aliases).upper(), 0.0) > 0.0
+            if asset_weight(symbol) > 0.0
         )
-        if not current_disabled and rng.random() < PRODUCTION_CURRENT_SYMBOL_PROBABILITY:
-            return resolved_current, "production_exploit"
+        if current_choices and rng.random() < PRODUCTION_CURRENT_SYMBOL_PROBABILITY:
+            ranked = sorted(current_choices, key=asset_weight, reverse=True)
+            return ranked[0], "production_exploit"
         if evidence_choices:
             ranked = sorted(
                 evidence_choices,
-                key=lambda item: asset_feedback.get(canonical_symbol(item, aliases).upper(), 0.0),
+                key=asset_weight,
                 reverse=True,
             )
             return ranked[0], "production_asset_feedback"
         if related_choices:
             ranked = sorted(
                 related_choices,
-                key=lambda item: asset_feedback.get(canonical_symbol(item, aliases).upper(), 0.0),
+                key=asset_weight,
                 reverse=True,
             )
             return ranked[0], "production_asset_related"
-        if not current_disabled:
-            return resolved_current, "production_exploit"
+        if current_choices:
+            ranked = sorted(current_choices, key=asset_weight, reverse=True)
+            return ranked[0], "production_exploit"
         if universe_choices:
             return rng.choice(universe_choices), "production_asset_fallback"
         return resolved_current, "production_exploit"
 
-    if not current_disabled and rng.random() < 0.70:
-        return resolved_current, "exploit"
+    if current_targets and rng.random() < 0.70:
+        ranked = sorted(current_targets, key=asset_weight, reverse=True)
+        if ranked and rng.random() < 0.55:
+            return ranked[0], "exploit"
+        return rng.choice(current_targets), "exploit"
     if universe_choices and rng.random() < 0.65:
         ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
         ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
@@ -1124,15 +1189,21 @@ def diverse_target_fallback(
     production_mode: bool = False,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
+    family_candidates = tuple(
+        target
+        for source in (seed.symbol, *related_assets(seed.symbol))
+        for target in axi_cash_future_family_targets(source, universe_symbols)
+    )
+    related_candidates = tuple(dict.fromkeys((*family_candidates, *related_assets(seed.symbol))))
     if production_mode:
         evidence_symbols = tuple(
             symbol
             for symbol in universe_symbols
             if asset_feedback.get(canonical_symbol(symbol, aliases).upper(), 0.0) > 0.0
         )
-        symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_assets(seed.symbol), *evidence_symbols)))
+        symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *evidence_symbols)))
     else:
-        symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_assets(seed.symbol), *universe_symbols)))
+        symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *universe_symbols)))
     if production_mode:
         positive_periods = tuple(
             period
@@ -1368,12 +1439,20 @@ def replace_timeframe_keys(lines: list[str], run_strategy: str, target_period: s
 def write_set_force_symbol(source: Path, destination: Path, symbol: str) -> bool:
     text, encoding = read_set_with_encoding(source)
     lines = text.splitlines()
-    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_symbol = str(symbol or "").strip()
     changed = not replace_existing_current_value(lines, "ForceSymbol", normalized_symbol)
     if changed:
         replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
     write_set_text(destination, "\n".join(lines), encoding)
     return changed
+
+
+def copy_seed_for_backtest(seed: Seed, destination: Path, symbol_map: dict[str, str], symbol_suffix: str = "") -> None:
+    tester_symbol = apply_symbol_suffix(apply_symbol_map(seed.symbol, symbol_map), symbol_suffix).strip()
+    if tester_symbol:
+        write_set_force_symbol(seed.path, destination, tester_symbol)
+    else:
+        shutil.copy2(seed.path, destination)
 
 
 def _set_param_active(params: dict[str, str], key: str) -> bool:
@@ -1653,8 +1732,17 @@ def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -
         command.extend(["--max-workers", str(args.max_workers)])
         if args.terminals_config:
             command.extend(["--terminals-config", args.terminals_config])
-    if args.symbol_map:
-        command.extend(["--symbol-map", args.symbol_map])
+    run_tests_symbol_map = getattr(args, "run_tests_symbol_map", args.symbol_map)
+    if run_tests_symbol_map:
+        command.extend(["--symbol-map", run_tests_symbol_map])
+    if getattr(args, "symbol_suffix", "").strip():
+        command.extend(["--symbol-suffix", args.symbol_suffix.strip()])
+    if getattr(args, "symbol_futures_suffix", "").strip():
+        command.extend(["--symbol-futures-suffix", args.symbol_futures_suffix.strip()])
+    if getattr(args, "symbol_shares_suffix", "").strip():
+        command.extend(["--symbol-shares-suffix", args.symbol_shares_suffix.strip()])
+    if getattr(args, "assets", "").strip():
+        command.extend(["--symbol-universe", str(Path(args.assets).expanduser())])
     if args.dry_run:
         command.append("--dry-run")
     if getattr(args, "from_date", ""):
@@ -1704,6 +1792,7 @@ def reconcile_seed_eval_reports(
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
     broker: object,
+    symbol_suffix: str = "",
 ) -> tuple[dict[str, int], set[str]]:
     seed_eval_root = output_root / "seed_eval"
     if not pending or not seed_eval_root.exists():
@@ -1760,7 +1849,7 @@ def reconcile_seed_eval_reports(
                     missing_lot_keys=(),
                     policy="seed_eval",
                 )
-                matches, _ = report_matches_variant(probe_variant, probe, symbol_map)
+                matches, _ = report_matches_variant(probe_variant, probe, symbol_map, symbol_suffix)
                 if not matches:
                     continue
             seed_path = str(seed.path)
@@ -1772,6 +1861,7 @@ def reconcile_seed_eval_reports(
                 symbol_map,
                 broker,
                 label=copied_set.name,
+                symbol_suffix=symbol_suffix,
             )
             status_counts[status] = status_counts.get(status, 0) + 1
             processed_paths.add(seed_path)
@@ -1788,6 +1878,7 @@ def rescore_existing_seed_scores(
     broker: object,
     *,
     exclude_paths: set[str],
+    symbol_suffix: str = "",
 ) -> dict[str, int]:
     status_counts: dict[str, int] = {}
     for seed in seeds:
@@ -1802,7 +1893,15 @@ def rescore_existing_seed_scores(
         report = Path(report_raw)
         if not report.exists():
             continue
-        status, _ = evaluate_seed_report(memory, seed, report, score_config, symbol_map, broker)
+        status, _ = evaluate_seed_report(
+            memory,
+            seed,
+            report,
+            score_config,
+            symbol_map,
+            broker,
+            symbol_suffix=symbol_suffix,
+        )
         status_counts[status] = status_counts.get(status, 0) + 1
     return status_counts
 
@@ -1911,6 +2010,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         score_config,
         symbol_map,
         args.broker,
+        args.symbol_suffix,
     )
     if reconciled_counts:
         pending = [seed for seed in pending if str(seed.path) not in reconciled_paths]
@@ -1930,6 +2030,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             symbol_map,
             args.broker,
             exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
+            symbol_suffix=args.symbol_suffix,
         )
         if rescored_counts:
             print(
@@ -1951,7 +2052,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     used_names: set[str] = set()
     for index, seed in enumerate(pending, start=1):
         destination = eval_dir / seed_eval_filename(index, seed, used_names)
-        shutil.copy2(seed.path, destination)
+        copy_seed_for_backtest(seed, destination, symbol_map, args.symbol_suffix)
         copied.append((seed, destination))
 
     print(f"Backtests semillas: {len(copied)}")
@@ -1986,6 +2087,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
             symbol_map,
             args.broker,
             label=copied_set.name,
+            symbol_suffix=args.symbol_suffix,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status in {"accepted", "rejected"} and result is not None:
@@ -2000,6 +2102,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         symbol_map,
         args.broker,
         exclude_paths=original_pending_paths | invalid_paths | disabled_paths | set(invalid_set_reasons),
+        symbol_suffix=args.symbol_suffix,
     )
     rescored_total = sum(rescored_counts.values())
 
@@ -2033,6 +2136,7 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
         parse_symbol_map(args.symbol_map),
         args.broker,
         exclude_paths=set(),
+        symbol_suffix=args.symbol_suffix,
     )
     total = sum(status_counts.values())
     if status_counts:
@@ -2066,7 +2170,7 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
         select *
         from candidates
         where status in (
-            'accepted', 'rejected', 'no_trades', 'no_history', 'report_mismatch',
+            'accepted', 'rejected', 'no_trades', 'history_ok', 'no_history', 'report_mismatch',
             'parse_error', 'no_report', 'generated'
         )
         order by run_id, generation, id
@@ -2080,16 +2184,28 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             skipped_no_report += 1
             continue
         variant = variant_from_candidate_row(row)
-        status, _ = evaluate_variant_report(
-            memory,
-            variant,
-            report,
-            score_config,
-            symbol_map,
-            args.broker,
-            min_trades_w1=args.min_trades_w1,
-            min_trades_mn=args.min_trades_mn,
-        )
+        if str(row["policy"] or "") == "history_probe":
+            status, _ = evaluate_history_probe(
+                memory,
+                variant,
+                score_config,
+                symbol_map,
+                args.broker,
+                report_path=report,
+                symbol_suffix=args.symbol_suffix,
+            )
+        else:
+            status, _ = evaluate_variant_report(
+                memory,
+                variant,
+                report,
+                score_config,
+                symbol_map,
+                args.broker,
+                min_trades_w1=args.min_trades_w1,
+                min_trades_mn=args.min_trades_mn,
+                symbol_suffix=args.symbol_suffix,
+            )
         status_counts[status] = status_counts.get(status, 0) + 1
 
     total = sum(status_counts.values())
@@ -2158,7 +2274,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             )
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
-        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, args.symbol_suffix)
         if not matches:
             print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
             status = "report_mismatch"
@@ -2215,9 +2331,16 @@ def find_report_for_set(set_path: Path, *, min_mtime: float | None = None) -> Pa
     return candidates[0] if candidates else None
 
 
-def report_matches_variant(variant: Variant, result: ScoreResult, symbol_map: dict[str, str]) -> tuple[bool, str]:
+def report_matches_variant(
+    variant: Variant,
+    result: ScoreResult,
+    symbol_map: dict[str, str],
+    symbol_suffix: str = "",
+) -> tuple[bool, str]:
     report_symbol = normalize_set_symbol(result.symbol)
-    target_symbol = normalize_set_symbol(apply_symbol_map(variant.target_symbol, symbol_map))
+    target_symbol = normalize_set_symbol(
+        apply_symbol_suffix(apply_symbol_map(variant.target_symbol, symbol_map), symbol_suffix)
+    )
     report_timeframe = str(result.timeframe or "").upper()
     target_timeframe = str(variant.target_period or "").upper()
     issues: list[str] = []
@@ -2366,8 +2489,10 @@ def evaluate_history_probe(
     broker: object,
     *,
     min_report_mtime: float | None = None,
+    report_path: Path | None = None,
+    symbol_suffix: str = "",
 ) -> tuple[str, ScoreResult | None]:
-    report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
+    report = report_path or find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
         record_history_probe_status(
             memory,
@@ -2411,7 +2536,7 @@ def evaluate_history_probe(
         )
         return "report_mismatch", result
 
-    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, symbol_suffix)
     if not matches:
         print(f"AVISO: probe historico no coincide para {variant.path.name}: {mismatch_reason}")
         record_history_probe_status(
@@ -2444,6 +2569,7 @@ def evaluate_seed_report(
     broker: object,
     *,
     label: str | None = None,
+    symbol_suffix: str = "",
 ) -> tuple[str, ScoreResult | None]:
     display_name = label or seed.path.name
     try:
@@ -2479,7 +2605,7 @@ def evaluate_seed_report(
         missing_lot_keys=(),
         policy="seed_eval",
     )
-    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, symbol_suffix)
     if not matches:
         print(f"AVISO: reporte seed no coincide para {seed.path.name}: {mismatch_reason}")
         memory.record_seed_score(evaluated_seed, result, "report_mismatch", report)
@@ -2505,6 +2631,7 @@ def evaluate_variants(
     min_report_mtime: float | None = None,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
+    symbol_suffix: str = "",
 ) -> list[tuple[Variant, ScoreResult]]:
     scored: list[tuple[Variant, ScoreResult]] = []
     for variant in variants:
@@ -2517,6 +2644,7 @@ def evaluate_variants(
             min_report_mtime=min_report_mtime,
             min_trades_w1=min_trades_w1,
             min_trades_mn=min_trades_mn,
+            symbol_suffix=symbol_suffix,
         )
         if status not in {"accepted", "rejected"} or result is None:
             continue
@@ -2534,6 +2662,7 @@ def evaluate_variant(
     min_report_mtime: float | None = None,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
+    symbol_suffix: str = "",
 ) -> tuple[str, ScoreResult | None]:
     report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
@@ -2548,6 +2677,7 @@ def evaluate_variant(
         broker,
         min_trades_w1=min_trades_w1,
         min_trades_mn=min_trades_mn,
+        symbol_suffix=symbol_suffix,
     )
 
 
@@ -2561,6 +2691,7 @@ def evaluate_variant_report(
     *,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
+    symbol_suffix: str = "",
 ) -> tuple[str, ScoreResult | None]:
     period_score_config = score_config_for_variant(
         score_config,
@@ -2594,7 +2725,7 @@ def evaluate_variant_report(
         print(f"AVISO: reporte sin contexto tester para {variant.path.name}; marcado como report_mismatch.")
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
-    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, symbol_suffix)
     if not matches:
         print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")
         memory.record_score(variant.path, result, "report_mismatch", report)
@@ -2743,6 +2874,7 @@ def count_valid_existing_reports(
     *,
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
+    symbol_suffix: str = "",
 ) -> int:
     valid = 0
     for variant in variants:
@@ -2762,7 +2894,7 @@ def count_valid_existing_reports(
             )
         except Exception:
             continue
-        matches, _ = report_matches_variant(variant, result, symbol_map)
+        matches, _ = report_matches_variant(variant, result, symbol_map, symbol_suffix)
         if matches:
             valid += 1
     return valid
@@ -2908,7 +3040,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             )
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
-        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map)
+        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, args.symbol_suffix)
         if not matches:
             print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
             memory.record_candidate_robustness(
@@ -3507,6 +3639,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             args.broker,
             min_trades_w1=args.final_tick_min_trades_w1,
             min_trades_mn=args.final_tick_min_trades_mn,
+            symbol_suffix=args.symbol_suffix,
         )
         if valid_ohlc_reports == len(ohlc_variants):
             # Verify the OHLC reports on disk have the expected dates.
@@ -3649,7 +3782,12 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
                 continue
 
-            ohlc_matches, ohlc_mismatch = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+            ohlc_matches, ohlc_mismatch = report_matches_variant(
+                ohlc_variant,
+                ohlc_result,
+                symbol_map,
+                args.symbol_suffix,
+            )
             if not ohlc_matches:
                 print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
                 memory.record_candidate_final_tick(
@@ -3850,7 +3988,12 @@ def _evaluate_final_tick_tick_report(
         status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
         return True
 
-    real_matches, real_mismatch = report_matches_variant(real_tick_variant, real_tick_result, symbol_map)
+    real_matches, real_mismatch = report_matches_variant(
+        real_tick_variant,
+        real_tick_result,
+        symbol_map,
+        getattr(args, "symbol_suffix", ""),
+    )
     if not real_matches:
         if reconcile:
             return False
@@ -3920,6 +4063,7 @@ def reconcile_final_tick_reports(
     max_pf_delta_pct: float = 35.0,
     max_dd_delta_pct: float = 35.0,
     max_trades_delta_pct: float = 35.0,
+    symbol_suffix: str = "",
 ) -> dict[str, int]:
     """Concilia desde disco los reportes Final Tick ya generados, sin abrir MT5.
 
@@ -3974,11 +4118,12 @@ def reconcile_final_tick_reports(
             )
         except Exception:
             continue
-        ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+        ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map, symbol_suffix)
         if not ohlc_matches:
             continue
         thresholds = argparse.Namespace(
             final_tick_min_history_quality=float(min_history_quality),
+            symbol_suffix=symbol_suffix,
             from_date=ohlc_dates[0],
             to_date=ohlc_dates[1],
             final_tick_max_net_delta_pct=float(max_net_delta_pct),
@@ -4076,6 +4221,7 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
         )
         thresholds = argparse.Namespace(
             final_tick_min_history_quality=float(args.final_tick_min_history_quality),
+            symbol_suffix=args.symbol_suffix,
             from_date=from_date,
             to_date=to_date,
             final_tick_max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
@@ -4108,7 +4254,12 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             )
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
-        ohlc_matches, ohlc_mismatch = report_matches_variant(ohlc_variant, ohlc_result, symbol_map)
+        ohlc_matches, ohlc_mismatch = report_matches_variant(
+            ohlc_variant,
+            ohlc_result,
+            symbol_map,
+            args.symbol_suffix,
+        )
         if not ohlc_matches:
             print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
             memory.record_candidate_final_tick(
@@ -4259,6 +4410,7 @@ def _retry_single_candidate(
         min_report_mtime=batch_started_at - 1.0,
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
+        symbol_suffix=args.symbol_suffix,
     )
     if status == "accepted" and result is not None:
         copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
@@ -4317,7 +4469,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         used_names: set[str] = set()
         for index, seed in enumerate(seeds, start=1):
             retry_set = retry_dir / seed_eval_filename(index, seed, used_names)
-            shutil.copy2(seed.path, retry_set)
+            copy_seed_for_backtest(seed, retry_set, parse_symbol_map(args.symbol_map), args.symbol_suffix)
             copied.append((seed, retry_set))
         print(f"Retry seeds: {len(copied)}")
         print(f"Directorio retry: {retry_dir}")
@@ -4348,6 +4500,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
                 parse_symbol_map(args.symbol_map),
                 args.broker,
                 label=retry_set.name,
+                symbol_suffix=args.symbol_suffix,
             )
             statuses[status] = statuses.get(status, 0) + 1
         print(
@@ -4386,7 +4539,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     retry_dir.mkdir(parents=True, exist_ok=True)
     used_names: set[str] = set()
     retry_set = retry_dir / seed_eval_filename(1, seed, used_names)
-    shutil.copy2(source_seed, retry_set)
+    copy_seed_for_backtest(seed, retry_set, parse_symbol_map(args.symbol_map), args.symbol_suffix)
 
     print(f"Retry seed: {source_seed}")
     print(f"Set retry: {retry_set}")
@@ -4415,6 +4568,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         parse_symbol_map(args.symbol_map),
         args.broker,
         label=retry_set.name,
+        symbol_suffix=args.symbol_suffix,
     )
     print(f"Retry seed estado={status}; score={result.score if result else 'n/a'}")
     if status in {"accepted", "rejected", "no_trades", "report_mismatch", "parse_error"}:
@@ -4488,6 +4642,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
+            symbol_suffix=args.symbol_suffix,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -4562,6 +4717,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
+            symbol_suffix=args.symbol_suffix,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -4652,6 +4808,7 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
             min_report_mtime=batch_started_at - 1.0,
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
+            symbol_suffix=args.symbol_suffix,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -4795,6 +4952,7 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
             symbol_map,
             args.broker,
             min_report_mtime=batch_started_at - 1.0,
+            symbol_suffix=args.symbol_suffix,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
 
@@ -4838,6 +4996,7 @@ def evaluate_generation(
         min_report_mtime=batch_started_at - 1.0,
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
+        symbol_suffix=args.symbol_suffix,
     )
     survivors = select_survivors(
         scored,
@@ -5637,6 +5796,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         min_report_mtime=batch_started_at - 1.0,
                         min_trades_w1=args.min_trades_w1,
                         min_trades_mn=args.min_trades_mn,
+                        symbol_suffix=args.symbol_suffix,
                     )
                     survivors = select_survivors(
                         scored,
