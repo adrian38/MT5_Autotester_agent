@@ -519,6 +519,7 @@ class ToggleSwitch(tk.Canvas):
                  bg: str = "#ffffff", on_color: str = "#006c49", off_color: str = "#c5c6cd"):
         super().__init__(parent, width=width, height=height, bg=bg, highlightthickness=0, borderwidth=0, cursor="hand2")
         self._var = variable
+        self._trace = None
         self._on_color = on_color
         self._off_color = off_color
         self._cmd = command
@@ -528,6 +529,7 @@ class ToggleSwitch(tk.Canvas):
         self._knob = None
         self._redraw()
         self.bind("<Button-1>", self._toggle)
+        self.bind("<Destroy>", self._on_destroy, add="+")
         try:
             self._trace = variable.trace_add("write", lambda *_: self._redraw())
         except Exception:
@@ -541,19 +543,44 @@ class ToggleSwitch(tk.Canvas):
         ]
         return self.create_polygon(points, smooth=True, **kwargs)
 
+    def _remove_trace(self):
+        if self._trace is None:
+            return
+        try:
+            self._var.trace_remove("write", self._trace)
+        except (tk.TclError, ValueError):
+            pass
+        self._trace = None
+
+    def _on_destroy(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        self._remove_trace()
+
     def _redraw(self):
-        self.delete("all")
-        on = bool(self._var.get())
-        color = self._on_color if on else self._off_color
-        self._round_rect(1, 1, self._sw - 1, self._sh - 1, self._sh // 2, fill=color, outline=color)
-        pad = 3
-        kr = self._sh - pad * 2
-        kx = self._sw - pad - kr if on else pad
-        self.create_oval(kx, pad, kx + kr, pad + kr, fill="#ffffff", outline="#ffffff")
+        try:
+            self.delete("all")
+            on = bool(self._var.get())
+            color = self._on_color if on else self._off_color
+            self._round_rect(1, 1, self._sw - 1, self._sh - 1, self._sh // 2, fill=color, outline=color)
+            pad = 3
+            kr = self._sh - pad * 2
+            kx = self._sw - pad - kr if on else pad
+            self.create_oval(kx, pad, kx + kr, pad + kr, fill="#ffffff", outline="#ffffff")
+        except tk.TclError as exc:
+            if "invalid command name" not in str(exc):
+                raise
+            self._remove_trace()
 
     def _toggle(self, _event=None):
-        self._var.set(not bool(self._var.get()))
-        self._redraw()
+        try:
+            self._var.set(not bool(self._var.get()))
+            self._redraw()
+        except tk.TclError as exc:
+            if "invalid command name" not in str(exc):
+                raise
+            self._remove_trace()
+            return
         if self._cmd is not None:
             try:
                 self._cmd()
