@@ -120,7 +120,7 @@ TARGET_PAIR_CAP_RATIO = 0.30
 TARGET_SYMBOL_CAP_RATIO = 0.45
 TARGET_TIMEFRAME_CAP_RATIO = 0.60
 DISCOVERY_SEED_SYMBOL_RESERVE_RATIO = 0.40
-DISCOVERY_TARGET_SYMBOL_CAP_RATIO = 0.20
+DISCOVERY_TARGET_SYMBOL_CAP_RATIO = 0.10
 DEFAULT_TARGET_GROUP_CAP_RATIO = 0.40
 TARGET_GROUP_CAP_RATIOS = {
     "Forex": 0.60,
@@ -458,6 +458,18 @@ def seeds_from_variants(variants: list[Variant]) -> list[Seed]:
 
 def seeds_from_survivors(survivors: list[tuple[Variant, ScoreResult]]) -> list[Seed]:
     return [variant_as_next_seed(variant) for variant, _ in survivors]
+
+
+def discovery_seed_pool(next_seeds: list[Seed], source_seeds: list[Seed]) -> list[Seed]:
+    pool = list(next_seeds)
+    seen_paths = {str(seed.path).lower() for seed in pool}
+    for seed in source_seeds:
+        key = str(seed.path).lower()
+        if key in seen_paths:
+            continue
+        pool.append(seed)
+        seen_paths.add(key)
+    return pool
 
 
 def variant_as_next_seed(variant: Variant) -> Seed:
@@ -889,6 +901,10 @@ def choose_target_symbol(
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
 
+    normalized_current = normalize_set_symbol(current)
+    mapped_current = normalize_set_symbol(apply_symbol_map(current, symbol_map))
+    resolved_current = exact_by_key.get(mapped_current, exact_by_key.get(normalized_current, current))
+
     def target_disabled(symbol: str) -> bool:
         return target_symbol_disabled(
             symbol,
@@ -906,18 +922,18 @@ def choose_target_symbol(
     )
     universe_choices = tuple(
         symbol for symbol in dict.fromkeys(universe_symbols)
-        if symbol.upper() != current.upper() and not target_disabled(symbol)
+        if symbol.upper() != resolved_current.upper() and not target_disabled(symbol)
     )
     unseeded_choices = tuple(
         symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
-        if symbol.upper() != current.upper() and not target_disabled(symbol)
+        if symbol.upper() != resolved_current.upper() and not target_disabled(symbol)
     )
     if force_unseeded_universe and unseeded_choices and rng.random() < force_unseeded_probability:
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
         return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
     if not current_disabled and rng.random() < 0.70:
-        return current, "exploit"
+        return resolved_current, "exploit"
     if universe_choices and rng.random() < 0.65:
         ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
         ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
@@ -929,7 +945,7 @@ def choose_target_symbol(
     if not choices:
         if universe_choices:
             return rng.choice(universe_choices), "asset_universe_fallback"
-        return seed.symbol, "exploit"
+        return resolved_current, "exploit"
     ranked = sorted(choices, key=lambda item: asset_feedback.get(item.upper(), 0.0), reverse=True)
     if ranked and rng.random() < 0.50:
         return ranked[0], "asset_feedback"
@@ -4788,6 +4804,7 @@ def build_run_config(
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
                 "discovery_symbol_reserve_ratio": DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
+                "discovery_reinject_source_seeds": bool(args.force_unseeded_universe),
             },
             "next_seed_diversity_caps": {
                 "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
@@ -4883,6 +4900,16 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
     print(f"Continuando run #{run_id}: plan={planned_generations}, ultima_gen={max_generation}")
+    run_source_dir = Path(run["source_dir"])
+    run_source_seeds = memory.apply_seed_overrides(load_seeds(run_source_dir, base_dir=BASE_DIR))
+    run_source_seeds, source_blocked_count = generation_source_seeds(
+        run_source_seeds,
+        symbol_map,
+        disabled_symbols,
+        seed_enabled_when_disabled,
+    )
+    if source_blocked_count:
+        print(f"Seeds fuente bloqueadas para reserva discovery: {source_blocked_count}")
 
     if pending_generation:
         variants = memory.variants_for_generation(run_id, pending_generation, status="generated")
@@ -4900,13 +4927,23 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             print(f"ERROR: gen {pending_generation} no produjo reportes puntuables; no se genera la siguiente generacion")
             return 1
         if scored:
-            current_seeds = seeds_from_survivors(
+            next_seeds = seeds_from_survivors(
                 select_next_generation_survivors(
                     memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
                 )
             )
+            current_seeds = (
+                discovery_seed_pool(next_seeds, run_source_seeds)
+                if args.force_unseeded_universe
+                else next_seeds
+            )
         else:
-            current_seeds = seeds_from_variants(variants)
+            next_seeds = seeds_from_variants(variants)
+            current_seeds = (
+                discovery_seed_pool(next_seeds, run_source_seeds)
+                if args.force_unseeded_universe
+                else next_seeds
+            )
         if args.backtest_pending_only:
             print(f"Backtests pendientes completados en gen {pending_generation}; no se generan nuevas generaciones.")
             print(f"Run dir: {run_dir}")
@@ -4922,6 +4959,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             return 0
         seed_limit = args.max_seeds if args.max_seeds > 0 else 0
         _, latest_generation, current_seeds = memory.continuation_seeds(seed_limit)
+        if args.force_unseeded_universe:
+            current_seeds = discovery_seed_pool(current_seeds, run_source_seeds)
         next_generation = latest_generation + 1
 
     current_seeds, blocked_source_count = generation_source_seeds(
@@ -5407,13 +5446,23 @@ def run_agent(args: argparse.Namespace) -> int:
                         return code
 
             if scored:
-                current_seeds = seeds_from_survivors(
+                next_seeds = seeds_from_survivors(
                     select_next_generation_survivors(
                         memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
                     )
                 )
+                current_seeds = (
+                    discovery_seed_pool(next_seeds, source_seeds)
+                    if args.force_unseeded_universe
+                    else next_seeds
+                )
             else:
-                current_seeds = [variant_as_next_seed(variant) for variant in variants]
+                next_seeds = [variant_as_next_seed(variant) for variant in variants]
+                current_seeds = (
+                    discovery_seed_pool(next_seeds, source_seeds)
+                    if args.force_unseeded_universe
+                    else next_seeds
+                )
 
         print(f"Run dir: {run_dir}")
         print(f"Memoria: {memory.path}")
