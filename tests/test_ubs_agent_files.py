@@ -18,6 +18,7 @@ from ubs_agent import (
     choose_diverse_target,
     choose_target_period,
     choose_target_symbol,
+    copy_seed_for_backtest,
     copy_accepted,
     create_history_probe_variant,
     create_variant,
@@ -115,6 +116,65 @@ class UBSSetsFileTests(unittest.TestCase):
         )
 
         self.assertTrue(matches, reason)
+
+    def test_report_match_accepts_configured_symbol_suffix(self) -> None:
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1"),
+            target_symbol="XAUUSD",
+            target_period="H1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="test",
+        )
+
+        matches, reason = report_matches_variant(
+            variant,
+            score(0.0, symbol="XAUUSD.sa", timeframe="H1", trades=0),
+            {},
+            ".sa",
+        )
+
+        self.assertTrue(matches, reason)
+
+    def test_report_match_keeps_explicit_axi_future_symbol(self) -> None:
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "USTECH", "H1", "family", "1"),
+            target_symbol="NAS100.fs",
+            target_period="H1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="asset_unseeded_force",
+        )
+        symbol_map = parse_symbol_map("NAS100=USTECH")
+
+        matches, reason = report_matches_variant(
+            variant,
+            score(0.0, symbol="NAS100.fs", timeframe="H1", trades=0),
+            symbol_map,
+            ".sa",
+        )
+
+        self.assertTrue(matches, reason)
+
+    def test_seed_backtest_copy_writes_force_symbol_with_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "seed.set"
+            destination = root / "eval.set"
+            source.write_text(
+                "\n".join([
+                    "Run_Strategy=1||1||0||2||N",
+                    "ST1_Timeframe=16385||0||0||49153||N",
+                ]),
+                encoding="utf-8",
+            )
+            seed = Seed(source, "XAUUSD", "H1", "family", "1")
+
+            copy_seed_for_backtest(seed, destination, {}, ".sa")
+
+            self.assertIn("ForceSymbol=XAUUSD.sa", destination.read_text(encoding="utf-8"))
 
     def test_empty_tester_report_is_report_mismatch_not_no_trades(self) -> None:
         class Memory:
@@ -344,6 +404,10 @@ class UBSSetsFileTests(unittest.TestCase):
             max_workers=1,
             terminals_config="",
             symbol_map="",
+            symbol_suffix=".sa",
+            symbol_futures_suffix=".fs",
+            symbol_shares_suffix="+",
+            assets=str(Path("assets") / "axi_assets.ini"),
             dry_run=True,
             from_date="",
             to_date="",
@@ -359,6 +423,14 @@ class UBSSetsFileTests(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertIn("--model", command)
         self.assertEqual(command[command.index("--model") + 1], "1")
+        self.assertIn("--symbol-suffix", command)
+        self.assertEqual(command[command.index("--symbol-suffix") + 1], ".sa")
+        self.assertIn("--symbol-futures-suffix", command)
+        self.assertEqual(command[command.index("--symbol-futures-suffix") + 1], ".fs")
+        self.assertIn("--symbol-shares-suffix", command)
+        self.assertEqual(command[command.index("--symbol-shares-suffix") + 1], "+")
+        self.assertIn("--symbol-universe", command)
+        self.assertEqual(command[command.index("--symbol-universe") + 1], str(Path("assets") / "axi_assets.ini"))
 
     def test_final_tick_6m_requires_at_least_180_days(self) -> None:
         message = validate_final_tick_stage_dates("six_month", "2026.01.01", "2026.06.01")

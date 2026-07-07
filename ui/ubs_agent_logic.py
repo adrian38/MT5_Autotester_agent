@@ -12,6 +12,7 @@ from ubs.account import (
     account_output_dir,
     account_seed_dir,
     account_types_for_broker,
+    broker_asset_universe_path_with_fallback,
     default_symbol_map_for_broker,
     normalize_account_type,
     normalize_broker,
@@ -108,6 +109,31 @@ class UBSAgentLogicMixin:
         if self.symbol_map_enabled.get() and self.symbol_map.get().strip():
             return self.symbol_map.get().strip()
         return default_symbol_map_for_broker(self._ubs_broker())
+
+    def _effective_symbol_suffix_text(self) -> str:
+        if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
+            return self.symbol_suffix.get().strip()
+        return ""
+
+    def _effective_symbol_suffix_args(self, *, include_universe: bool = False) -> list[str]:
+        suffix = self._effective_symbol_suffix_text()
+        if not suffix:
+            return []
+        args = ["--symbol-suffix", suffix]
+        futures_suffix = self.symbol_futures_suffix.get().strip()
+        shares_suffix = self.symbol_shares_suffix.get().strip()
+        if futures_suffix:
+            args.extend(["--symbol-futures-suffix", futures_suffix])
+        if shares_suffix:
+            args.extend(["--symbol-shares-suffix", shares_suffix])
+        if include_universe:
+            try:
+                assets_path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
+            except Exception:
+                assets_path = None
+            if assets_path:
+                args.extend(["--symbol-universe", str(assets_path)])
+        return args
 
     def _ubs_generation_output_dir(self) -> Path:
         return self._account_scoped_path(
@@ -251,6 +277,7 @@ class UBSAgentLogicMixin:
             symbol_map = self._effective_ubs_symbol_map_text()
             if symbol_map:
                 args.extend(["--symbol-map", symbol_map])
+            args.extend(self._effective_symbol_suffix_args())
         return args
     def _run_ubs_generator(self) -> None:
         self._run_ubs_agent(continue_last=False)
@@ -472,8 +499,7 @@ class UBSAgentLogicMixin:
         else:
             set_file = self._required_ubs_set_file()
             args.extend(["--set-file", set_file])
-        if self.symbol_suffix_enabled.get() and self.symbol_suffix.get().strip():
-            args.extend(["--symbol-suffix", self.symbol_suffix.get().strip()])
+        args.extend(self._effective_symbol_suffix_args())
         symbol_map = self._effective_ubs_symbol_map_text()
         if symbol_map:
             args.extend(["--symbol-map", symbol_map])

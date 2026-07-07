@@ -177,7 +177,15 @@ class UBSAccountTests(unittest.TestCase):
         self.assertIn("US100=USTEC", default_symbol_map_for_broker("ICTRADING"))
         self.assertIn("DAX=DE40", default_symbol_map_for_broker("ICTRADING"))
         self.assertIn("WTI=XTIUSD", default_symbol_map_for_broker("ICTRADING"))
-        self.assertEqual(default_symbol_map_for_broker("AXI"), "")
+        axi_map = default_symbol_map_for_broker("AXI")
+        self.assertIn("US100=USTECH", axi_map)
+        self.assertIn("NAS100=NAS100.fs", axi_map)
+        self.assertIn("USOIL=USOIL", axi_map)
+        self.assertIn("WTI=WTI.fs", axi_map)
+        self.assertIn("UKOIL=UKOIL", axi_map)
+        self.assertIn("BRENT=BRENT.fs", axi_map)
+        self.assertIn("GOLD=XAUUSD", axi_map)
+        self.assertNotIn(".sa", axi_map)
 
     def test_symbol_map_switch_keeps_values_per_broker(self) -> None:
         agent = _FakeAgent("ECN", "", "", broker="ROBOFOREX")

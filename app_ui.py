@@ -778,6 +778,8 @@ class MT5AutotesterUI(
         )
         self.symbol_suffix_enabled = tk.BooleanVar(value=saved_general.get("symbol_suffix_enabled", "0") in {"1", "true", "yes", "on"})
         self.symbol_suffix = tk.StringVar(value=saved_general.get("symbol_suffix", ""))
+        self.symbol_futures_suffix = tk.StringVar(value=saved_general.get("symbol_futures_suffix", ".fs"))
+        self.symbol_shares_suffix = tk.StringVar(value=saved_general.get("symbol_shares_suffix", "+"))
         self.symbol_map_enabled = tk.BooleanVar(value=saved_general.get("symbol_map_enabled", "0") in {"1", "true", "yes", "on"})
         self._ubs_symbol_maps_by_broker = {
             broker: saved_general.get(symbol_map_setting_key(broker), default_symbol_map_for_broker(broker))

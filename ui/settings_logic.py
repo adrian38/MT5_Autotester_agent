@@ -423,6 +423,8 @@ class SettingsLogicMixin:
             "ubs_final_tick_max_trades_delta_pct": self.ubs_final_tick_max_trades_delta_pct.get().strip(),
             "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
             "symbol_suffix": self.symbol_suffix.get().strip(),
+            "symbol_futures_suffix": self.symbol_futures_suffix.get().strip(),
+            "symbol_shares_suffix": self.symbol_shares_suffix.get().strip(),
             "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
             "symbol_map": symbol_maps.get(DEFAULT_BROKER, default_symbol_map_for_broker(DEFAULT_BROKER)),
             "telegram_enabled": "1" if self.telegram_enabled.get() else "0",

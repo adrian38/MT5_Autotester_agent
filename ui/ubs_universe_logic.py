@@ -522,6 +522,7 @@ class UBSUniverseLogicMixin:
         symbol_map = self._effective_ubs_symbol_map_text()
         if symbol_map:
             args.extend(["--symbol-map", symbol_map])
+        args.extend(self._effective_symbol_suffix_args())
         return args
 
     def _run_ubs_universe_history_probe(self) -> None:
