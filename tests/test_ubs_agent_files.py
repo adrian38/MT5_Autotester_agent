@@ -567,6 +567,23 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target, "XTIUSD")
         self.assertEqual(policy, "exploit")
 
+    def test_axi_cash_seed_can_exploit_enabled_future_equivalent(self) -> None:
+        seed = Seed(Path("DAX_M15_a.set"), "DAX", "M15", "family", "1")
+        symbol_map = parse_symbol_map("DAX=GER40,DE40=GER40")
+
+        target, policy = choose_target_symbol(
+            seed,
+            {},
+            random.Random(1),
+            ("GER40.sa", "DAX40.fs"),
+            {},
+            symbol_map=symbol_map,
+            disabled_symbols={"GER40.SA"},
+        )
+
+        self.assertEqual(target, "DAX40.fs")
+        self.assertEqual(policy, "exploit")
+
     def test_target_disabled_without_policy_does_not_read_default_account_file(self) -> None:
         self.assertFalse(target_symbol_disabled("WTI", ("WTI",), {}, disabled_symbols=None))
 

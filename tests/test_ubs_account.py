@@ -9,6 +9,7 @@ from ubs.account import (
     account_output_dir,
     account_seed_dir,
     account_timeframe_universe_path,
+    axi_cash_future_family_targets,
     broker_asset_universe_path,
     broker_asset_universe_path_with_fallback,
     default_symbol_map_for_broker,
@@ -197,6 +198,14 @@ class UBSAccountTests(unittest.TestCase):
         self.assertIn("BRENT=BRENT.fs", axi_map)
         self.assertIn("GOLD=XAUUSD", axi_map)
         self.assertNotIn(".sa", axi_map)
+
+    def test_axi_cash_future_family_targets_are_filtered_to_loaded_universe(self) -> None:
+        universe = ("GER40.sa", "DAX40.fs", "USOIL.sa", "WTI.fs", "BTCUSD.sa")
+
+        self.assertEqual(axi_cash_future_family_targets("DE40", universe), ("GER40.sa", "DAX40.fs"))
+        self.assertEqual(axi_cash_future_family_targets("GER40.sa", universe), ("GER40.sa", "DAX40.fs"))
+        self.assertEqual(axi_cash_future_family_targets("CRUDEOIL", universe), ("USOIL.sa", "WTI.fs"))
+        self.assertEqual(axi_cash_future_family_targets("BTCUSD", universe), ())
 
     def test_symbol_map_switch_keeps_values_per_broker(self) -> None:
         agent = _FakeAgent("ECN", "", "", broker="ROBOFOREX")
@@ -458,6 +467,44 @@ class UBSAccountTests(unittest.TestCase):
         self.assertEqual(aliases["US100"], "USTECH.SA")
         self.assertEqual(aliases["XTIUSD"], "USOIL.SA")
         self.assertEqual(aliases["NAS100"], "NAS100.FS")
+
+    def test_axi_seed_row_can_feed_cash_and_future_symbols(self) -> None:
+        universe = _FakeUniverse("AXI")
+        universe.symbol_suffix_enabled = _FakeVar(True)
+        universe.symbol_suffix = _FakeVar(".sa")
+        universe.symbol_futures_suffix = _FakeVar(".fs")
+        universe.symbol_shares_suffix = _FakeVar("+")
+        symbol_map = universe._ubs_universe_symbol_map()
+        suffix_universe = {
+            "GER40": ".sa",
+            "DAX40": ".fs",
+            "USOIL": ".sa",
+            "WTI": ".fs",
+        }
+
+        dax_symbols = universe._ubs_seed_row_canonical_symbols(
+            {"symbol": "DE40", "metrics_json": '{"symbol": "GER40.sa"}'},
+            ("GER40.sa", "DAX40.fs", "USOIL.sa", "WTI.fs"),
+            {},
+            symbol_map,
+            suffix_universe,
+            ".sa",
+            ".fs",
+            "+",
+        )
+        oil_symbols = universe._ubs_seed_row_canonical_symbols(
+            {"symbol": "XTIUSD", "metrics_json": '{"symbol": "USOIL.sa"}'},
+            ("GER40.sa", "DAX40.fs", "USOIL.sa", "WTI.fs"),
+            {},
+            symbol_map,
+            suffix_universe,
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        self.assertEqual(dax_symbols, ("GER40.SA", "DAX40.FS"))
+        self.assertEqual(oil_symbols, ("USOIL.SA", "WTI.FS"))
 
     def test_sync_switches_previous_account_defaults_to_active_account(self) -> None:
         from ui.ubs_agent_logic import BASE_DIR

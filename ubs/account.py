@@ -39,6 +39,21 @@ AXI_DEFAULT_SYMBOL_MAP = (
     "GOLD=XAUUSD,SILVER=XAGUSD,DXY=USDINDEX.fs,USDINDEX=USDINDEX.fs,"
     "VIX=VIX.fs,STOXX50=EU50,EURO50=EU50"
 )
+AXI_CASH_FUTURE_SYMBOL_FAMILIES = (
+    (("DAX", "DE40", "GER40", "DAX40"), ("GER40.sa", "DAX40.fs")),
+    (("US100", "USTEC", "USTECH", "NAS100", "NASDAQ"), ("USTECH.sa", "NAS100.fs")),
+    (("US30", "DJ30", "DJI"), ("US30.sa", "DJ30.fs")),
+    (("US500", "SP500", "SPX500", "S&P"), ("US500.sa", "S&P.fs")),
+    (("UK100", "FTSE", "FT100"), ("UK100.sa", "FT100.fs")),
+    (("JP225", "JPN225", "NK225"), ("JPN225.sa", "NK225.fs")),
+    (("FRA40", "CAC40"), ("FRA40.sa", "CAC40.fs")),
+    (("CN50", "CHINA50"), ("CN50.sa", "CHINA50.fs")),
+    (("EU50", "EUSTX50", "STOXX50", "EURO50"), ("EU50.sa", "EUSTX50.fs")),
+    (("HK50", "HSI"), ("HK50.sa", "HSI.fs")),
+    (("AUS200", "SPI200"), ("AUS200.sa", "SPI200.fs")),
+    (("USOIL", "XTIUSD", "WTI", "CRUDEOIL"), ("USOIL.sa", "WTI.fs")),
+    (("UKOIL", "XBRUSD", "BRENT"), ("UKOIL.sa", "BRENT.fs")),
+)
 DEFAULT_SYMBOL_MAPS_BY_BROKER = {
     "ROBOFOREX": ROBOFOREX_DEFAULT_SYMBOL_MAP,
     "ICTRADING": ICTRADING_DEFAULT_SYMBOL_MAP,
@@ -81,6 +96,29 @@ def symbol_map_setting_key(broker: object) -> str:
 
 def default_symbol_map_for_broker(broker: object = DEFAULT_BROKER) -> str:
     return DEFAULT_SYMBOL_MAPS_BY_BROKER.get(normalize_broker(broker), "")
+
+
+def _axi_family_key(symbol: object) -> str:
+    key = str(symbol or "").strip().upper()
+    for suffix in (".SA", ".FS"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+            break
+    return key.rstrip("+").lstrip(".")
+
+
+def axi_cash_future_family_targets(symbol: object, universe_symbols: tuple[str, ...] = ()) -> tuple[str, ...]:
+    key = _axi_family_key(symbol)
+    if not key:
+        return ()
+    available = {str(item).upper(): str(item) for item in universe_symbols if str(item or "").strip()}
+    for aliases, targets in AXI_CASH_FUTURE_SYMBOL_FAMILIES:
+        if key not in aliases:
+            continue
+        if not available:
+            return targets
+        return tuple(available[target.upper()] for target in targets if target.upper() in available)
+    return ()
 
 
 def account_memory_path(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> Path:

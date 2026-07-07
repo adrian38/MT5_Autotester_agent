@@ -37,6 +37,7 @@ from ubs.account import (
     account_memory_path,
     account_output_dir,
     account_seed_dir,
+    axi_cash_future_family_targets,
     broker_asset_universe_path_with_fallback,
     default_symbol_map_for_broker,
     load_account_timeframe_universe,
@@ -945,10 +946,32 @@ def choose_target_symbol(
             disabled_symbols=disabled_symbols,
         )
 
-    current_disabled = target_disabled(current)
+    current_family_targets = tuple(
+        target
+        for target in dict.fromkeys(
+            (
+                *axi_cash_future_family_targets(current, universe_symbols),
+                *axi_cash_future_family_targets(mapped_current, universe_symbols),
+            )
+        )
+        if target and not target_disabled(target)
+    )
+    current_targets = current_family_targets or tuple(
+        target
+        for target in (resolved_current,)
+        if target and not target_disabled(target)
+    )
 
     related = tuple(
-        symbol for symbol in dict.fromkeys(exact_by_key.get(symbol.upper(), symbol) for symbol in related_assets(current))
+        symbol
+        for symbol in dict.fromkeys(
+            candidate
+            for source in related_assets(current)
+            for candidate in (
+                *axi_cash_future_family_targets(source, universe_symbols),
+                exact_by_key.get(source.upper(), source),
+            )
+        )
         if not target_disabled(symbol)
     )
     universe_choices = tuple(
@@ -963,8 +986,11 @@ def choose_target_symbol(
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
         return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
 
-    if not current_disabled and rng.random() < 0.70:
-        return resolved_current, "exploit"
+    if current_targets and rng.random() < 0.70:
+        ranked = sorted(current_targets, key=lambda item: asset_feedback.get(item.upper(), 0.0), reverse=True)
+        if ranked and rng.random() < 0.55:
+            return ranked[0], "exploit"
+        return rng.choice(current_targets), "exploit"
     if universe_choices and rng.random() < 0.65:
         ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
         ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
@@ -1061,7 +1087,12 @@ def diverse_target_fallback(
     disabled_symbols: set[str] | None = None,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
-    symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_assets(seed.symbol), *universe_symbols)))
+    family_candidates = tuple(
+        target
+        for source in (seed.symbol, *related_assets(seed.symbol))
+        for target in axi_cash_future_family_targets(source, universe_symbols)
+    )
+    symbol_candidates = tuple(dict.fromkeys((seed.symbol, *family_candidates, *related_assets(seed.symbol), *universe_symbols)))
     period_candidates = tuple(dict.fromkeys((*related_timeframes(seed.period, timeframe_universe), *timeframe_universe)))
     scored: list[tuple[float, str, str]] = []
     for symbol in symbol_candidates:
