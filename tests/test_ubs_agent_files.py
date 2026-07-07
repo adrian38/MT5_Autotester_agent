@@ -21,6 +21,7 @@ from ubs_agent import (
     copy_accepted,
     create_history_probe_variant,
     create_variant,
+    discovery_seed_pool,
     evaluate_history_probe,
     evaluate_variant_report,
     final_tick_row_pending_for_dates,
@@ -477,6 +478,23 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target, "EURUSD")
         self.assertNotEqual(policy, "exploit")
 
+    def test_alias_seed_exploit_returns_canonical_universe_symbol(self) -> None:
+        seed = Seed(Path("Crude_D__CrudeOil_Optimization.set"), "CRUDEOIL", "D1", "family", "1")
+        symbol_map = parse_symbol_map("CRUDEOIL=XTIUSD")
+
+        target, policy = choose_target_symbol(
+            seed,
+            {},
+            random.Random(1),
+            ("XTIUSD", "XBRUSD"),
+            {"CRUDEOIL": "XTIUSD"},
+            symbol_map=symbol_map,
+            disabled_symbols=set(),
+        )
+
+        self.assertEqual(target, "XTIUSD")
+        self.assertEqual(policy, "exploit")
+
     def test_target_disabled_without_policy_does_not_read_default_account_file(self) -> None:
         self.assertFalse(target_symbol_disabled("WTI", ("WTI",), {}, disabled_symbols=None))
 
@@ -900,7 +918,7 @@ class UBSSetsFileTests(unittest.TestCase):
 
     def test_discovery_target_symbol_cap_is_stricter_than_default(self) -> None:
         limiter = TargetDiversityLimiter(
-            10,
+            20,
             symbol_cap_ratio=DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
         )
 
@@ -909,6 +927,16 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertTrue(limiter.allows("XAUUSD", "H4"))
         limiter.record("XAUUSD", "H4")
         self.assertFalse(limiter.allows("XAUUSD", "D1"))
+
+    def test_discovery_seed_pool_reinjects_source_seeds_without_duplicates(self) -> None:
+        survivor = Seed(Path("survivor.set"), "EURUSD", "H1", "family", "1")
+        source_a = Seed(Path("source_a.set"), "XTIUSD", "D1", "family", "1")
+        source_b = Seed(Path("survivor.set"), "EURUSD", "H1", "family", "1")
+
+        pool = discovery_seed_pool([survivor], [source_a, source_b])
+
+        self.assertEqual([seed.path.name for seed in pool], ["survivor.set", "source_a.set"])
+        self.assertIn("XTIUSD", {seed.symbol for seed in pool})
 
     def test_next_seed_survivors_apply_final_fitness_softly(self) -> None:
         higher_score = Variant(
