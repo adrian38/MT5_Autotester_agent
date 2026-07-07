@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 import tkinter as tk
@@ -7,9 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox
 
+from run_tests import apply_symbol_map, apply_symbol_suffix, load_symbol_suffix_universe, parse_symbol_map
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
-from ubs.account import broker_asset_universe_path_with_fallback, load_account_timeframe_universe
+from ubs.account import (
+    broker_asset_universe_path_with_fallback,
+    default_symbol_map_for_broker,
+    load_account_timeframe_universe,
+)
 from ubs.mt5_symbol_extract import (
     MT5SymbolExtractionError,
     extract_symbols_from_mt5,
@@ -45,8 +51,89 @@ class UBSUniverseLogicMixin:
         groups, aliases = load_asset_universe(path, include_disabled=True)
         return asset_rows_from_groups(groups, aliases), aliases
 
-    def _canonical_ubs_symbol(self, symbol: str, aliases: dict[str, str]) -> str:
-        return canonical_symbol(symbol, aliases)
+    def _canonical_ubs_symbol(
+        self,
+        symbol: str,
+        aliases: dict[str, str],
+        *,
+        symbol_map: dict[str, str] | None = None,
+        suffix_universe: dict[str, str] | None = None,
+        symbol_suffix: str = "",
+        futures_suffix: str = "",
+        shares_suffix: str = "",
+    ) -> str:
+        mapped = apply_symbol_map(str(symbol or ""), symbol_map or {})
+        suffixed = apply_symbol_suffix(
+            mapped,
+            symbol_suffix,
+            futures_suffix,
+            shares_suffix,
+            suffix_universe,
+        )
+        return canonical_symbol(suffixed, aliases)
+
+    def _ubs_universe_suffix_config(self) -> tuple[str, str, str]:
+        enabled = getattr(self, "symbol_suffix_enabled", None)
+        if enabled is not None and not bool(enabled.get()):
+            return "", "", ""
+        suffix_var = getattr(self, "symbol_suffix", None)
+        futures_var = getattr(self, "symbol_futures_suffix", None)
+        shares_var = getattr(self, "symbol_shares_suffix", None)
+        suffix = suffix_var.get().strip() if suffix_var is not None else ""
+        futures_suffix = futures_var.get().strip() if futures_var is not None else ""
+        shares_suffix = shares_var.get().strip() if shares_var is not None else ""
+        return suffix, futures_suffix, shares_suffix
+
+    def _ubs_universe_symbol_map(self) -> dict[str, str]:
+        parts = [default_symbol_map_for_broker(self._ubs_broker())]
+        enabled = getattr(self, "symbol_map_enabled", None)
+        custom = getattr(self, "symbol_map", None)
+        if enabled is not None and bool(enabled.get()) and custom is not None and custom.get().strip():
+            parts.append(custom.get().strip())
+        try:
+            return parse_symbol_map(",".join(part for part in parts if part.strip()))
+        except ValueError:
+            return parse_symbol_map(parts[0])
+
+    def _ubs_universe_signal_aliases(
+        self,
+        aliases: dict[str, str],
+        symbol_map: dict[str, str],
+        suffix_universe: dict[str, str],
+        symbol_suffix: str,
+        futures_suffix: str,
+        shares_suffix: str,
+    ) -> dict[str, str]:
+        signal_aliases = {str(key).upper(): str(value).upper() for key, value in aliases.items()}
+        sources = set(symbol_map) | set(suffix_universe)
+        for source in sources:
+            canonical = self._canonical_ubs_symbol(
+                source,
+                aliases,
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=symbol_suffix,
+                futures_suffix=futures_suffix,
+                shares_suffix=shares_suffix,
+            )
+            if canonical:
+                signal_aliases[str(source).upper()] = canonical.upper()
+        return signal_aliases
+
+    def _ubs_row_metric_symbol(self, row: object) -> str:
+        try:
+            raw = row["metrics_json"]  # type: ignore[index]
+        except (KeyError, IndexError, TypeError):
+            return ""
+        if not raw:
+            return ""
+        try:
+            metrics = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(metrics, dict):
+            return ""
+        return str(metrics.get("symbol") or "").strip()
 
     def _canonical_ubs_symbol_set(self, symbols: set[str], aliases: dict[str, str]) -> set[str]:
         return {
@@ -272,7 +359,11 @@ class UBSUniverseLogicMixin:
                 server=str(credentials.get("server") or ""),
             )
             universe_path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
-            sync_result = write_asset_universe_from_symbols(universe_path, extraction.symbols)
+            sync_result = write_asset_universe_from_symbols(
+                universe_path,
+                extraction.symbols,
+                preserve_existing_groups=False,
+            )
         except MT5SymbolExtractionError as exc:
             messagebox.showerror("Extraer simbolos MT5", str(exc))
             self.status_text.set("Extraccion MT5 fallida")
@@ -565,6 +656,23 @@ class UBSUniverseLogicMixin:
             if hasattr(self, "ubs_timeframe_summary"):
                 self.ubs_timeframe_summary.set("Sin pesos hasta que completes la evaluación")
         assets, aliases = self._load_ubs_asset_universe()
+        asset_universe_path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
+        symbol_suffix, futures_suffix, shares_suffix = self._ubs_universe_suffix_config()
+        suffix_universe = load_symbol_suffix_universe(
+            asset_universe_path,
+            symbol_suffix,
+            futures_suffix,
+            shares_suffix,
+        )
+        symbol_map = self._ubs_universe_symbol_map()
+        signal_aliases = self._ubs_universe_signal_aliases(
+            aliases,
+            symbol_map,
+            suffix_universe,
+            symbol_suffix,
+            futures_suffix,
+            shares_suffix,
+        )
         disabled_symbols, seed_enabled_when_disabled = self._active_ubs_symbol_policy(aliases)
         checked_symbols = set(self.ubs_universe_checked)
         memory_path = self._ubs_memory_path()
@@ -621,7 +729,7 @@ class UBSUniverseLogicMixin:
                 conn.close()
                 memory = AgentMemory(memory_path)
                 try:
-                    asset_signals = memory.asset_feedback_signals(aliases)
+                    asset_signals = memory.asset_feedback_signals(signal_aliases)
                     timeframe_signals = memory.timeframe_feedback_signals()
                 finally:
                     memory.close()
@@ -637,7 +745,15 @@ class UBSUniverseLogicMixin:
                 if status == "report_mismatch":
                     total_mismatch += 1
                     continue
-                canonical = self._canonical_ubs_symbol(row["target_symbol"] or row["symbol"], aliases)
+                canonical = self._canonical_ubs_symbol(
+                    self._ubs_row_metric_symbol(row) or row["target_symbol"] or row["symbol"],
+                    aliases,
+                    symbol_map=symbol_map,
+                    suffix_universe=suffix_universe,
+                    symbol_suffix=symbol_suffix,
+                    futures_suffix=futures_suffix,
+                    shares_suffix=shares_suffix,
+                )
                 if canonical.upper() in disabled_symbols:
                     continue
                 period = str(row["period"] or "UNKNOWN").upper()
@@ -679,7 +795,16 @@ class UBSUniverseLogicMixin:
                 status = str(row["status"] or "")
                 if status == "report_mismatch":
                     total_seed_mismatch += 1
-                canonical = self._canonical_ubs_symbol(row["symbol"], aliases)
+                    continue
+                canonical = self._canonical_ubs_symbol(
+                    self._ubs_row_metric_symbol(row) or row["symbol"],
+                    aliases,
+                    symbol_map=symbol_map,
+                    suffix_universe=suffix_universe,
+                    symbol_suffix=symbol_suffix,
+                    futures_suffix=futures_suffix,
+                    shares_suffix=shares_suffix,
+                )
                 is_disabled = canonical.upper() in disabled_symbols
                 if is_disabled and canonical.upper() not in seed_enabled_when_disabled:
                     continue

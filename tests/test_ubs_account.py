@@ -92,12 +92,22 @@ class _FakeMonthlyPortfolio(UBSMonthlyPortfolioLogicMixin):
 
 
 class _FakeUniverse(UBSUniverseLogicMixin):
-    def __init__(self) -> None:
+    def __init__(self, broker: str = "ROBOFOREX") -> None:
+        self.ubs_broker = _FakeVar(broker)
         self.ubs_universe_checked = {"US100"}
         self.disabled_symbols = set()
         self.seed_enabled = {"US100"}
         self.saved: tuple[set[str], set[str]] | None = None
         self.status_text = _FakeVar("")
+        self.symbol_suffix_enabled = _FakeVar(False)
+        self.symbol_suffix = _FakeVar("")
+        self.symbol_futures_suffix = _FakeVar("")
+        self.symbol_shares_suffix = _FakeVar("")
+        self.symbol_map_enabled = _FakeVar(False)
+        self.symbol_map = _FakeVar("")
+
+    def _ubs_broker(self) -> str:
+        return normalize_broker(self.ubs_broker.get())
 
     def _load_ubs_asset_universe(self):
         return [], {"US100": ".USTECHCASH"}
@@ -357,6 +367,97 @@ class UBSAccountTests(unittest.TestCase):
         universe._set_checked_universe_symbols_enabled(False)
 
         self.assertEqual(universe.saved, ({".USTECHCASH"}, set()))
+
+    def test_axi_universe_resolves_memory_symbols_to_broker_symbols(self) -> None:
+        universe = _FakeUniverse("AXI")
+        universe.symbol_suffix_enabled = _FakeVar(True)
+        universe.symbol_suffix = _FakeVar(".sa")
+        universe.symbol_futures_suffix = _FakeVar(".fs")
+        universe.symbol_shares_suffix = _FakeVar("+")
+        symbol_map = universe._ubs_universe_symbol_map()
+        suffix_universe = {
+            "XAUUSD": ".sa",
+            "US30": ".sa",
+            "USOIL": ".sa",
+            "USTECH": ".sa",
+            "NAS100": ".fs",
+        }
+
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "XAUUSD",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "XAUUSD.SA",
+        )
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "USTEC",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "USTECH.SA",
+        )
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "XTIUSD",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "USOIL.SA",
+        )
+        self.assertEqual(
+            universe._canonical_ubs_symbol(
+                "NAS100",
+                {},
+                symbol_map=symbol_map,
+                suffix_universe=suffix_universe,
+                symbol_suffix=".sa",
+                futures_suffix=".fs",
+                shares_suffix="+",
+            ),
+            "NAS100.FS",
+        )
+
+    def test_axi_universe_signal_aliases_match_broker_symbols(self) -> None:
+        universe = _FakeUniverse("AXI")
+        symbol_map = universe._ubs_universe_symbol_map()
+        suffix_universe = {
+            "XAUUSD": ".sa",
+            "US30": ".sa",
+            "USOIL": ".sa",
+            "USTECH": ".sa",
+            "NAS100": ".fs",
+        }
+
+        aliases = universe._ubs_universe_signal_aliases(
+            {},
+            symbol_map,
+            suffix_universe,
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        self.assertEqual(aliases["XAUUSD"], "XAUUSD.SA")
+        self.assertEqual(aliases["US30"], "US30.SA")
+        self.assertEqual(aliases["USTEC"], "USTECH.SA")
+        self.assertEqual(aliases["US100"], "USTECH.SA")
+        self.assertEqual(aliases["XTIUSD"], "USOIL.SA")
+        self.assertEqual(aliases["NAS100"], "NAS100.FS")
 
     def test_sync_switches_previous_account_defaults_to_active_account(self) -> None:
         from ui.ubs_agent_logic import BASE_DIR
