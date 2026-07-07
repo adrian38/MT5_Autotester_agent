@@ -116,6 +116,51 @@ class UBSScoreTests(unittest.TestCase):
                 (0.01, "Stocks", "ictrading_lot_0.01_equivalent_net_profit"),
             )
 
+    def test_axi_normalization_keeps_cash_suffix_rules_off_futures_and_shares(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            assets = base / "assets"
+            assets.mkdir()
+            (assets / "axi_assets.ini").write_text(
+                "[Indices]\nsymbols=US30.sa,NAS100.fs,NasdaqInc+\n\n"
+                "[Energies]\nsymbols=USOIL.sa,WTI.fs,EnergySPDR+\n",
+                encoding="utf-8",
+            )
+            (assets / "axi_normalization.json").write_text(
+                json.dumps(
+                    {
+                        "basis": "axi_seed_report_lot_audit",
+                        "default_net_profit_factor": 1.0,
+                        "group_net_profit_factors": {
+                            "Indices": 1.0,
+                            "Energies": 1.0,
+                        },
+                        "symbol_net_profit_factors": {
+                            "US30.SA": 0.01,
+                            "USOIL.SA": 0.1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                net_profit_normalization("US30.sa", broker="AXI", base_dir=base),
+                (0.01, "Indices", "axi_seed_report_lot_audit"),
+            )
+            self.assertEqual(
+                net_profit_normalization("USOIL.sa", broker="AXI", base_dir=base),
+                (0.1, "Energies", "axi_seed_report_lot_audit"),
+            )
+            self.assertEqual(
+                net_profit_normalization("NAS100.fs", broker="AXI", base_dir=base),
+                (1.0, "Indices", "axi_seed_report_lot_audit"),
+            )
+            self.assertEqual(
+                net_profit_normalization("EnergySPDR+", broker="AXI", base_dir=base),
+                (1.0, "Energies", "axi_seed_report_lot_audit"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

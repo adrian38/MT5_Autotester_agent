@@ -1,0 +1,36 @@
+{
+  "broker": "AXI",
+  "basis": "axi_lot_0.01_equivalent_net_profit_from_seed_reports_20260707",
+  "default_net_profit_factor": 1.0,
+  "group_net_profit_factors": {
+    "Forex": 1.0,
+    "Metals": 1.0,
+    "Crypto": 1.0,
+    "Bonds": 1.0,
+    "Other": 1.0,
+    "Stocks": 1.0,
+    "Commodities": 1.0
+  },
+  "symbol_suffix_net_profit_factors": {},
+  "symbol_net_profit_factors": {
+    "AUS200.SA": 0.01,
+    "CN50.SA": 0.01,
+    "EU50.SA": 0.01,
+    "FRA40.SA": 0.01,
+    "GER40.SA": 0.01,
+    "HK50.SA": 0.01,
+    "IT40.SA": 0.01,
+    "JPN225.SA": 0.01,
+    "NETH25.SA": 0.01,
+    "SGFREE.SA": 0.01,
+    "SPA35.SA": 0.01,
+    "SWI20.SA": 0.01,
+    "UK100.SA": 0.01,
+    "US2000.SA": 0.01,
+    "US30.SA": 0.01,
+    "US500.SA": 0.01,
+    "USTECH.SA": 0.01,
+    "UKOIL.SA": 0.1,
+    "USOIL.SA": 0.1
+  }
+}
