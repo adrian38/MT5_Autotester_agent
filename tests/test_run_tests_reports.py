@@ -207,6 +207,23 @@ class CopyReportsToProjectTests(unittest.TestCase):
         self.assertEqual(run_tests.apply_symbol_map("WTI.fs", symbol_map), "WTI.fs")
         self.assertEqual(run_tests.apply_symbol_map("Apple+", symbol_map), "Apple+")
 
+    def test_axi_ustec_alias_resolves_to_cash_symbol(self) -> None:
+        from ubs.account import default_symbol_map_for_broker
+
+        symbol_map = run_tests.parse_symbol_map(default_symbol_map_for_broker("AXI"))
+        suffix_universe = run_tests.load_symbol_suffix_universe(
+            run_tests.Path("assets/axi_assets.ini"),
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        mapped = run_tests.apply_symbol_map("USTEC", symbol_map)
+        resolved = run_tests.apply_symbol_suffix(mapped, ".sa", ".fs", "+", suffix_universe)
+
+        self.assertEqual(mapped, "USTECH")
+        self.assertEqual(resolved, "USTECH.sa")
+
     def test_create_ini_fills_required_tester_defaults_when_template_has_blanks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)

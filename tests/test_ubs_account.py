@@ -179,6 +179,7 @@ class UBSAccountTests(unittest.TestCase):
         self.assertIn("WTI=XTIUSD", default_symbol_map_for_broker("ICTRADING"))
         axi_map = default_symbol_map_for_broker("AXI")
         self.assertIn("US100=USTECH", axi_map)
+        self.assertIn("USTEC=USTECH", axi_map)
         self.assertIn("NAS100=NAS100.fs", axi_map)
         self.assertIn("USOIL=USOIL", axi_map)
         self.assertIn("WTI=WTI.fs", axi_map)
