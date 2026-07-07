@@ -120,8 +120,10 @@ TARGET_PAIR_CAP_RATIO = 0.30
 TARGET_SYMBOL_CAP_RATIO = 0.45
 TARGET_TIMEFRAME_CAP_RATIO = 0.60
 PRODUCTION_TARGET_SYMBOL_CAP_RATIO = 0.30
+PRODUCTION_SEED_SYMBOL_CAP_RATIO = 0.25
 PRODUCTION_CURRENT_SYMBOL_PROBABILITY = 0.85
 PRODUCTION_NEXT_SEED_BACKFILL_MIN_RATIO = 0.60
+PRODUCTION_DIVERSITY_REROLL_ATTEMPTS = 4
 DISCOVERY_SEED_SYMBOL_RESERVE_RATIO = 0.40
 DISCOVERY_TARGET_SYMBOL_CAP_RATIO = 0.10
 DEFAULT_TARGET_GROUP_CAP_RATIO = 0.40
@@ -498,6 +500,10 @@ def target_symbol_cap_ratio(force_unseeded_universe: bool) -> float:
     return DISCOVERY_TARGET_SYMBOL_CAP_RATIO if force_unseeded_universe else PRODUCTION_TARGET_SYMBOL_CAP_RATIO
 
 
+def seed_symbol_cap_ratio(force_unseeded_universe: bool) -> float:
+    return TARGET_SYMBOL_CAP_RATIO if force_unseeded_universe else PRODUCTION_SEED_SYMBOL_CAP_RATIO
+
+
 def next_generation_seed_pool(
     next_seeds: list[Seed],
     source_seeds: list[Seed],
@@ -530,6 +536,8 @@ def ranked_seed_selection(
     group_by_symbol: dict[str, str] | None = None,
     fitness_feedback: dict[str, float] | None = None,
     symbol_reserve_ratio: float = 0.0,
+    symbol_cap_ratio: float = TARGET_SYMBOL_CAP_RATIO,
+    allow_overflow: bool = True,
 ) -> list[tuple[float, Seed, float, float, float]]:
     aliases = aliases or {}
     fitness_feedback = fitness_feedback or {}
@@ -551,7 +559,12 @@ def ranked_seed_selection(
     limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
     if limit <= 0:
         return []
-    limiter = TargetDiversityLimiter(limit, aliases, group_by_symbol=group_by_symbol)
+    limiter = TargetDiversityLimiter(
+        limit,
+        aliases,
+        group_by_symbol=group_by_symbol,
+        symbol_cap_ratio=symbol_cap_ratio,
+    )
     selected: list[tuple[float, Seed, float, float, float]] = []
     selected_ids: set[int] = set()
     overflow: list[tuple[float, Seed, float, float, float]] = []
@@ -585,10 +598,11 @@ def ranked_seed_selection(
                 return selected
         else:
             overflow.append(item)
-    for item in overflow:
-        if len(selected) >= limit:
-            break
-        selected.append(item)
+    if allow_overflow:
+        for item in overflow:
+            if len(selected) >= limit:
+                break
+            selected.append(item)
     return selected
 
 
@@ -1179,11 +1193,12 @@ def choose_diverse_target(
     asset_unseeded_probability: float = 0.0,
     timeframe_unseeded_probability: float = 0.0,
     production_mode: bool = False,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str] | None:
     last_symbol = seed.symbol
     last_period = seed.period
     last_policy = "exploit+tf_exploit"
-    for attempt in range(DIVERSITY_REROLL_ATTEMPTS + 1):
+    reroll_attempts = PRODUCTION_DIVERSITY_REROLL_ATTEMPTS if production_mode else DIVERSITY_REROLL_ATTEMPTS
+    for attempt in range(reroll_attempts + 1):
         target_symbol, policy = choose_target_symbol(
             seed,
             asset_feedback,
@@ -1232,6 +1247,8 @@ def choose_diverse_target(
     if fallback is not None:
         target_symbol, target_period = fallback
         return target_symbol, target_period, "diversity_fallback"
+    if production_mode:
+        return None
     return last_symbol, last_period, f"{last_policy}+diversity_overflow"
 
 
@@ -2590,12 +2607,17 @@ def evaluate_variant_report(
     return status, result
 
 
-def select_survivors(scored: list[tuple[Variant, ScoreResult]], top_percent: float) -> list[tuple[Variant, ScoreResult]]:
+def select_survivors(
+    scored: list[tuple[Variant, ScoreResult]],
+    top_percent: float,
+    *,
+    allow_rejected_fallback: bool = True,
+) -> list[tuple[Variant, ScoreResult]]:
     if not scored:
         return []
     scored = sorted(scored, key=lambda item: item[1].score, reverse=True)
     accepted = [item for item in scored if item[1].accepted]
-    if not accepted:
+    if not accepted and allow_rejected_fallback:
         limit = max(1, int(len(scored) * max(top_percent, 1.0) / 100.0))
         accepted = scored[:limit]
     return accepted
@@ -2608,8 +2630,9 @@ def select_next_seed_survivors(
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
     fitness_feedback: dict[str, float] | None = None,
+    allow_rejected_fallback: bool = True,
 ) -> list[tuple[Variant, ScoreResult]]:
-    survivors = select_survivors(scored, top_percent)
+    survivors = select_survivors(scored, top_percent, allow_rejected_fallback=allow_rejected_fallback)
     if not survivors:
         return []
     if fitness_feedback and SELECTION_FITNESS_APPLIED_SCALE:
@@ -2653,8 +2676,9 @@ def select_next_generation_survivors(
     max_seeds: int,
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
+    allow_rejected_fallback: bool = True,
 ) -> list[tuple[Variant, ScoreResult]]:
-    accepted = select_survivors(scored, top_percent)
+    accepted = select_survivors(scored, top_percent, allow_rejected_fallback=allow_rejected_fallback)
     predictions = memory.seed_selection_predictions(
         seeds_from_survivors(accepted),
         exclude_run_id=run_id,
@@ -2667,6 +2691,7 @@ def select_next_generation_survivors(
         aliases,
         group_by_symbol,
         fitness_feedback,
+        allow_rejected_fallback,
     )
 
 
@@ -4814,7 +4839,11 @@ def evaluate_generation(
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
     )
-    survivors = select_survivors(scored, args.top_percent)
+    survivors = select_survivors(
+        scored,
+        args.top_percent,
+        allow_rejected_fallback=bool(args.force_unseeded_universe),
+    )
     copied = copy_accepted(survivors, run_dir / f"accepted_gen_{generation:03d}")
     print(f"Reportes puntuados gen {generation}: {len(scored)}; accepted/copied: {len(copied)}")
     if partial_failure and not scored:
@@ -4899,6 +4928,7 @@ def build_run_config(
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
                 "reroll_attempts": DIVERSITY_REROLL_ATTEMPTS,
+                "production_reroll_attempts": PRODUCTION_DIVERSITY_REROLL_ATTEMPTS,
             },
             "seed_selection_diversity_caps": {
                 "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
@@ -4910,10 +4940,14 @@ def build_run_config(
                 "discovery_reinject_source_seeds": bool(args.force_unseeded_universe),
                 "production_backfill_min_ratio": PRODUCTION_NEXT_SEED_BACKFILL_MIN_RATIO,
                 "production_backfill_source_seeds": not bool(args.force_unseeded_universe),
+                "production_symbol_ratio": PRODUCTION_SEED_SYMBOL_CAP_RATIO,
+                "production_overflow_fill": False,
             },
             "target_policy": {
                 "production_current_symbol_probability": PRODUCTION_CURRENT_SYMBOL_PROBABILITY,
                 "production_random_universe_explore": False,
+                "production_diversity_overflow": False,
+                "production_rejected_survivor_fallback": False,
                 "discovery_forced_unseeded": bool(args.force_unseeded_universe),
             },
             "next_seed_diversity_caps": {
@@ -5037,11 +5071,23 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             print(f"ERROR: gen {pending_generation} no produjo reportes puntuables; no se genera la siguiente generacion")
             return 1
         if scored:
-            next_seeds = seeds_from_survivors(
-                select_next_generation_survivors(
-                    memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
-                )
+            next_survivors = select_next_generation_survivors(
+                memory,
+                run_id,
+                scored,
+                args.top_percent,
+                args.max_seeds,
+                aliases,
+                group_by_symbol,
+                allow_rejected_fallback=bool(args.force_unseeded_universe),
             )
+            if not args.force_unseeded_universe and not next_survivors:
+                print(
+                    f"Production: gen {pending_generation} sin accepted; "
+                    "no se usan rechazados como seeds, se reponen source seeds"
+                )
+                diag_log(f"PRODUCTION_NO_ACCEPTED_SOURCE_BACKFILL run_id={run_id} generation={pending_generation}")
+            next_seeds = seeds_from_survivors(next_survivors)
             current_seeds = next_generation_seed_pool(
                 next_seeds,
                 run_source_seeds,
@@ -5118,6 +5164,8 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             group_by_symbol,
             fitness_feedback,
             DISCOVERY_SEED_SYMBOL_RESERVE_RATIO if args.force_unseeded_universe else 0.0,
+            symbol_cap_ratio=seed_symbol_cap_ratio(args.force_unseeded_universe),
+            allow_overflow=bool(args.force_unseeded_universe),
         )
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
         memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
@@ -5158,7 +5206,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 print(f"Cuota/reserva TF exploratoria: {timeframe_plan_summary(reserved_timeframes)}")
         for seed_index, seed in enumerate(selected_seeds, start=1):
             for variant_index in range(1, args.variants_per_seed + 1):
-                target_symbol, target_period, policy = choose_diverse_target(
+                target_choice = choose_diverse_target(
                     seed,
                     asset_feedback,
                     timeframe_feedback,
@@ -5176,6 +5224,13 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     timeframe_unseeded_probability=tf_unseeded_probability,
                     production_mode=not args.force_unseeded_universe,
                 )
+                if target_choice is None:
+                    diag_log(
+                        f"TARGET_CAPS_EXHAUSTED run_id={run_id} generation={generation} "
+                        f"seed_index={seed_index} variant_index={variant_index} seed={seed.symbol}/{seed.period}"
+                    )
+                    break
+                target_symbol, target_period, policy = target_choice
                 target_symbol, target_period, policy = apply_reserved_timeframe(
                     reserved_timeframes=reserved_timeframes,
                     target_symbol=target_symbol,
@@ -5205,6 +5260,10 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 memory.record_variant(run_id, generation, variant)
                 target_limiter.record(target_symbol, target_period)
                 variants.append(variant)
+        if not variants:
+            print(f"Generacion {generation}: sin targets permitidos bajo caps production; se detiene")
+            diag_log(f"GENERATION_STOP_NO_TARGETS run_id={run_id} generation={generation}")
+            break
         all_generated += len(variants)
         did_work = True
         print(f"Generados: {len(variants)} en {generation_dir}")
@@ -5217,13 +5276,35 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             print(f"ERROR: gen {generation} no produjo reportes puntuables; se detiene la continuacion")
             return 1
         if scored:
-            current_seeds = seeds_from_survivors(
-                select_next_generation_survivors(
-                    memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
+            next_survivors = select_next_generation_survivors(
+                memory,
+                run_id,
+                scored,
+                args.top_percent,
+                args.max_seeds,
+                aliases,
+                group_by_symbol,
+                allow_rejected_fallback=bool(args.force_unseeded_universe),
+            )
+            if not args.force_unseeded_universe and not next_survivors:
+                print(
+                    f"Production: gen {generation} sin accepted; "
+                    "no se usan rechazados como seeds, se reponen source seeds"
                 )
+                diag_log(f"PRODUCTION_NO_ACCEPTED_SOURCE_BACKFILL run_id={run_id} generation={generation}")
+            current_seeds = next_generation_seed_pool(
+                seeds_from_survivors(next_survivors),
+                run_source_seeds,
+                args.max_seeds,
+                force_unseeded_universe=args.force_unseeded_universe,
             )
         else:
-            current_seeds = seeds_from_variants(variants)
+            current_seeds = next_generation_seed_pool(
+                seeds_from_variants(variants),
+                run_source_seeds,
+                args.max_seeds,
+                force_unseeded_universe=args.force_unseeded_universe,
+            )
 
     print(f"Run dir: {run_dir}")
     print(f"Memoria: {memory.path}")
@@ -5415,6 +5496,8 @@ def run_agent(args: argparse.Namespace) -> int:
                 group_by_symbol,
                 fitness_feedback,
                 DISCOVERY_SEED_SYMBOL_RESERVE_RATIO if args.force_unseeded_universe else 0.0,
+                symbol_cap_ratio=seed_symbol_cap_ratio(args.force_unseeded_universe),
+                allow_overflow=bool(args.force_unseeded_universe),
             )
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
             memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
@@ -5460,7 +5543,7 @@ def run_agent(args: argparse.Namespace) -> int:
             )
             for seed_index, seed in enumerate(selected_seeds, start=1):
                 for variant_index in range(1, args.variants_per_seed + 1):
-                    target_symbol, target_period, policy = choose_diverse_target(
+                    target_choice = choose_diverse_target(
                         seed,
                         asset_feedback,
                         timeframe_feedback,
@@ -5478,6 +5561,13 @@ def run_agent(args: argparse.Namespace) -> int:
                         timeframe_unseeded_probability=tf_unseeded_probability,
                         production_mode=not args.force_unseeded_universe,
                     )
+                    if target_choice is None:
+                        diag_log(
+                            f"TARGET_CAPS_EXHAUSTED run_id={run_id} generation={generation} "
+                            f"seed_index={seed_index} variant_index={variant_index} seed={seed.symbol}/{seed.period}"
+                        )
+                        break
+                    target_symbol, target_period, policy = target_choice
                     target_symbol, target_period, policy = apply_reserved_timeframe(
                         reserved_timeframes=reserved_timeframes,
                         target_symbol=target_symbol,
@@ -5514,6 +5604,10 @@ def run_agent(args: argparse.Namespace) -> int:
                             f"variant_index={variant_index} target={target_symbol}/{target_period} "
                             f"set={variant.path}"
                         )
+            if not variants:
+                print(f"Generacion {generation}: sin targets permitidos bajo caps production; se detiene")
+                diag_log(f"GENERATION_STOP_NO_TARGETS run_id={run_id} generation={generation}")
+                break
             all_generated += len(variants)
             print(f"Generados: {len(variants)} en {generation_dir}")
             diag_log(f"GENERATION_DONE run_id={run_id} generation={generation} variants={len(variants)}")
@@ -5544,7 +5638,11 @@ def run_agent(args: argparse.Namespace) -> int:
                         min_trades_w1=args.min_trades_w1,
                         min_trades_mn=args.min_trades_mn,
                     )
-                    survivors = select_survivors(scored, args.top_percent)
+                    survivors = select_survivors(
+                        scored,
+                        args.top_percent,
+                        allow_rejected_fallback=bool(args.force_unseeded_universe),
+                    )
                     copied = copy_accepted(survivors, accepted_dir)
                     print(f"Reportes puntuados: {len(scored)}; accepted/copied: {len(copied)}")
                     diag_log(
@@ -5556,11 +5654,23 @@ def run_agent(args: argparse.Namespace) -> int:
                         return code
 
             if scored:
-                next_seeds = seeds_from_survivors(
-                    select_next_generation_survivors(
-                        memory, run_id, scored, args.top_percent, args.max_seeds, aliases, group_by_symbol
-                    )
+                next_survivors = select_next_generation_survivors(
+                    memory,
+                    run_id,
+                    scored,
+                    args.top_percent,
+                    args.max_seeds,
+                    aliases,
+                    group_by_symbol,
+                    allow_rejected_fallback=bool(args.force_unseeded_universe),
                 )
+                if not args.force_unseeded_universe and not next_survivors:
+                    print(
+                        f"Production: gen {generation} sin accepted; "
+                        "no se usan rechazados como seeds, se reponen source seeds"
+                    )
+                    diag_log(f"PRODUCTION_NO_ACCEPTED_SOURCE_BACKFILL run_id={run_id} generation={generation}")
+                next_seeds = seeds_from_survivors(next_survivors)
                 current_seeds = next_generation_seed_pool(
                     next_seeds,
                     source_seeds,

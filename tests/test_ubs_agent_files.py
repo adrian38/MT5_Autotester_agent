@@ -13,6 +13,7 @@ from ubs.memory import AgentMemory
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
 from ubs_agent import (
     DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
+    PRODUCTION_SEED_SYMBOL_CAP_RATIO,
     PRODUCTION_TARGET_SYMBOL_CAP_RATIO,
     TargetDiversityLimiter,
     apply_reserved_timeframe,
@@ -46,6 +47,7 @@ from ubs_agent import (
     unseeded_timeframe_force_probability,
     run_backtests,
     select_next_seed_survivors,
+    select_survivors,
     validate_final_tick_stage_dates,
     validate_seed_backtest_set,
     variant_as_next_seed,
@@ -64,6 +66,7 @@ def score(
     drawdown_pct: float = 1.0,
     trades: int = 100,
     history_quality: float | None = 100.0,
+    accepted: bool = True,
 ) -> ScoreResult:
     return ScoreResult(
         report_path="report.htm",
@@ -71,7 +74,7 @@ def score(
         symbol=symbol,
         timeframe=timeframe,
         score=value,
-        accepted=True,
+        accepted=accepted,
         net_profit=net_profit,
         raw_net_profit=net_profit,
         normalized_net_profit=net_profit,
@@ -829,6 +832,25 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target_period, "H1")
         self.assertNotIn("asset_universe_explore", policy)
 
+    def test_production_diverse_target_returns_none_instead_of_overflow(self) -> None:
+        seed = Seed(Path("seed.set"), "ONLY", "H1", "family", "1")
+        limiter = TargetDiversityLimiter(1)
+        limiter.record("ONLY", "H1")
+
+        target = choose_diverse_target(
+            seed,
+            {},
+            {},
+            random.Random(2),
+            limiter,
+            ("ONLY",),
+            {},
+            timeframe_universe=("H1",),
+            production_mode=True,
+        )
+
+        self.assertIsNone(target)
+
     def test_target_diversity_limiter_caps_pair_and_symbol(self) -> None:
         limiter = TargetDiversityLimiter(10)
 
@@ -990,6 +1012,29 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(len(selected), 8)
         self.assertTrue(any(variant.target_symbol != "XAUUSD" for variant, _result in selected))
 
+    def test_production_survivors_do_not_backfill_rejected_scores(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")
+        rejected = [
+            (
+                Variant(Path("high.set"), seed, "XAUUSD", "H4", (), (), "", (), ()),
+                score(100.0, accepted=False),
+            ),
+            (
+                Variant(Path("low.set"), seed, "XAUUSD", "H1", (), (), "", (), ()),
+                score(50.0, accepted=False),
+            ),
+        ]
+
+        self.assertEqual(
+            select_survivors(rejected, 50.0, allow_rejected_fallback=False),
+            [],
+        )
+        self.assertEqual(
+            select_next_seed_survivors(rejected, 50.0, 10, allow_rejected_fallback=False),
+            [],
+        )
+        self.assertEqual(len(select_survivors(rejected, 50.0)), 1)
+
     def test_discovery_target_symbol_cap_is_stricter_than_default(self) -> None:
         limiter = TargetDiversityLimiter(
             20,
@@ -1013,6 +1058,35 @@ class UBSSetsFileTests(unittest.TestCase):
             limiter.record("XAUUSD", period)
 
         self.assertFalse(limiter.allows("XAUUSD", "D1"))
+
+    def test_production_seed_selection_uses_strict_symbol_cap_without_overflow(self) -> None:
+        symbols = (("XAUUSD", "M1"), ("BTCUSD", "M5"), ("EURUSD", "M15"), ("US30", "M30"))
+        seeds = [
+            Seed(Path(f"{symbol}_{idx}.set"), symbol, period, "family", "1")
+            for symbol, period in symbols
+            for idx in range(10)
+        ]
+
+        selected = ranked_seed_selection(
+            seeds,
+            12,
+            {"XAUUSD": 100.0, "BTCUSD": 90.0, "EURUSD": 80.0, "US30": 70.0},
+            {},
+            random.Random(5),
+            {},
+            {},
+            {},
+            0.0,
+            symbol_cap_ratio=PRODUCTION_SEED_SYMBOL_CAP_RATIO,
+            allow_overflow=False,
+        )
+
+        counts: dict[str, int] = {}
+        for _score, seed, _asset, _tf, _div in selected:
+            counts[seed.symbol] = counts.get(seed.symbol, 0) + 1
+
+        self.assertEqual(len(selected), 12)
+        self.assertLessEqual(max(counts.values()), 3)
 
     def test_discovery_seed_pool_reinjects_source_seeds_without_duplicates(self) -> None:
         survivor = Seed(Path("survivor.set"), "EURUSD", "H1", "family", "1")
