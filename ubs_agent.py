@@ -965,6 +965,106 @@ def target_symbol_disabled(
     return normalized in disabled or resolved.upper() in disabled or mapped in disabled
 
 
+def target_symbol_options_for_seed(
+    seed: Seed,
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+    *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    aliases = aliases or {}
+    symbol_map = symbol_map or {}
+    group_by_symbol = {str(k).upper(): str(v) for k, v in (group_by_symbol or {}).items()}
+    current = seed.symbol or "UNKNOWN"
+    exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
+    for alias, target in aliases.items():
+        exact_by_key[str(alias).upper()] = target
+
+    normalized_current = normalize_set_symbol(current)
+    mapped_current = normalize_set_symbol(apply_symbol_map(current, symbol_map))
+    resolved_current = exact_by_key.get(mapped_current, exact_by_key.get(normalized_current, current))
+
+    def target_disabled(symbol: str) -> bool:
+        return target_symbol_disabled(
+            symbol,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+        )
+
+    def group_for(symbol: str) -> str:
+        return group_by_symbol.get(canonical_symbol(symbol, aliases).upper(), "")
+
+    source_group = group_for(current) or group_for(mapped_current) or group_for(resolved_current)
+    universe_keys = {symbol.upper() for symbol in universe_symbols}
+    current_family_targets = tuple(
+        target
+        for target in dict.fromkeys(
+            (
+                *axi_cash_future_family_targets(current, universe_symbols),
+                *axi_cash_future_family_targets(mapped_current, universe_symbols),
+            )
+        )
+        if target and not target_disabled(target)
+    )
+    current_targets = current_family_targets or tuple(
+        target
+        for target in (resolved_current,)
+        if target and not target_disabled(target)
+    )
+    current_choice_keys = {symbol.upper() for symbol in current_targets}
+    related_targets = tuple(
+        symbol
+        for symbol in dict.fromkeys(
+            candidate
+            for source in related_assets(current)
+            for candidate in (
+                *axi_cash_future_family_targets(source, universe_symbols),
+                exact_by_key.get(source.upper(), source),
+            )
+        )
+        if symbol.upper() in universe_keys
+        and symbol.upper() not in current_choice_keys
+        and not target_disabled(symbol)
+    )
+    same_group_targets = tuple(
+        symbol
+        for symbol in dict.fromkeys(universe_symbols)
+        if source_group
+        and symbol.upper() not in current_choice_keys
+        and group_for(symbol) == source_group
+        and not target_disabled(symbol)
+    )
+    return tuple(dict.fromkeys(current_targets)), related_targets, same_group_targets
+
+
+def production_viable_source_seeds(
+    seeds: list[Seed],
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+    *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
+) -> list[Seed]:
+    viable: list[Seed] = []
+    for seed in seeds:
+        current_targets, related_targets, same_group_targets = target_symbol_options_for_seed(
+            seed,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+            group_by_symbol=group_by_symbol,
+        )
+        if current_targets or related_targets or same_group_targets:
+            viable.append(seed)
+    return viable
+
+
 def choose_target_symbol(
     seed: Seed,
     asset_feedback: dict[str, float],
@@ -978,7 +1078,8 @@ def choose_target_symbol(
     unseeded_universe_symbols: tuple[str, ...] = (),
     force_unseeded_probability: float = 0.65,
     production_mode: bool = False,
-) -> tuple[str, str]:
+    group_by_symbol: dict[str, str] | None = None,
+) -> tuple[str, str] | None:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
     current = seed.symbol or "UNKNOWN"
@@ -1044,12 +1145,21 @@ def choose_target_symbol(
         return asset_feedback.get(canonical, asset_feedback.get(symbol.upper(), 0.0))
 
     if production_mode:
-        current_choices = tuple(dict.fromkeys(current_targets))
-        current_choice_keys = {symbol.upper() for symbol in current_choices}
-        related_choices = tuple(symbol for symbol in related if symbol.upper() not in current_choice_keys)
+        current_choices, related_choices, same_group_choices = target_symbol_options_for_seed(
+            seed,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+            group_by_symbol=group_by_symbol,
+        )
+        if group_by_symbol:
+            feedback_scope = tuple(dict.fromkeys((*related_choices, *same_group_choices)))
+        else:
+            feedback_scope = universe_choices
         evidence_choices = tuple(
             symbol
-            for symbol in universe_choices
+            for symbol in feedback_scope
             if asset_weight(symbol) > 0.0
         )
         if current_choices and rng.random() < PRODUCTION_CURRENT_SYMBOL_PROBABILITY:
@@ -1069,12 +1179,19 @@ def choose_target_symbol(
                 reverse=True,
             )
             return ranked[0], "production_asset_related"
+        if same_group_choices:
+            ranked = sorted(
+                same_group_choices,
+                key=asset_weight,
+                reverse=True,
+            )
+            return ranked[0], "production_asset_group"
         if current_choices:
             ranked = sorted(current_choices, key=asset_weight, reverse=True)
             return ranked[0], "production_exploit"
-        if universe_choices:
+        if universe_choices and not group_by_symbol:
             return rng.choice(universe_choices), "production_asset_fallback"
-        return resolved_current, "production_exploit"
+        return None
 
     if current_targets and rng.random() < 0.70:
         ranked = sorted(current_targets, key=asset_weight, reverse=True)
@@ -1187,6 +1304,7 @@ def diverse_target_fallback(
     symbol_map: dict[str, str] | None = None,
     disabled_symbols: set[str] | None = None,
     production_mode: bool = False,
+    group_by_symbol: dict[str, str] | None = None,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
     family_candidates = tuple(
@@ -1196,12 +1314,23 @@ def diverse_target_fallback(
     )
     related_candidates = tuple(dict.fromkeys((*family_candidates, *related_assets(seed.symbol))))
     if production_mode:
-        evidence_symbols = tuple(
-            symbol
-            for symbol in universe_symbols
-            if asset_feedback.get(canonical_symbol(symbol, aliases).upper(), 0.0) > 0.0
+        _current_targets, related_targets, same_group_targets = target_symbol_options_for_seed(
+            seed,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+            group_by_symbol=group_by_symbol,
         )
-        symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *evidence_symbols)))
+        if group_by_symbol:
+            symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_targets, *same_group_targets)))
+        else:
+            evidence_symbols = tuple(
+                symbol
+                for symbol in universe_symbols
+                if asset_feedback.get(canonical_symbol(symbol, aliases).upper(), 0.0) > 0.0
+            )
+            symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *evidence_symbols)))
     else:
         symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *universe_symbols)))
     if production_mode:
@@ -1264,13 +1393,14 @@ def choose_diverse_target(
     asset_unseeded_probability: float = 0.0,
     timeframe_unseeded_probability: float = 0.0,
     production_mode: bool = False,
+    group_by_symbol: dict[str, str] | None = None,
 ) -> tuple[str, str, str] | None:
     last_symbol = seed.symbol
     last_period = seed.period
     last_policy = "exploit+tf_exploit"
     reroll_attempts = PRODUCTION_DIVERSITY_REROLL_ATTEMPTS if production_mode else DIVERSITY_REROLL_ATTEMPTS
     for attempt in range(reroll_attempts + 1):
-        target_symbol, policy = choose_target_symbol(
+        symbol_choice = choose_target_symbol(
             seed,
             asset_feedback,
             rng,
@@ -1282,7 +1412,11 @@ def choose_diverse_target(
             unseeded_universe_symbols=unseeded_universe_symbols,
             force_unseeded_probability=asset_unseeded_probability,
             production_mode=production_mode,
+            group_by_symbol=group_by_symbol,
         )
+        if symbol_choice is None:
+            continue
+        target_symbol, policy = symbol_choice
         target_period, period_policy = choose_target_period(
             seed,
             timeframe_feedback,
@@ -1314,6 +1448,7 @@ def choose_diverse_target(
         symbol_map=symbol_map,
         disabled_symbols=disabled_symbols,
         production_mode=production_mode,
+        group_by_symbol=group_by_symbol,
     )
     if fallback is not None:
         target_symbol, target_period = fallback
@@ -5107,6 +5242,7 @@ def build_run_config(
                 "production_random_universe_explore": False,
                 "production_diversity_overflow": False,
                 "production_rejected_survivor_fallback": False,
+                "production_cross_group_feedback_fallback": False,
                 "discovery_forced_unseeded": bool(args.force_unseeded_universe),
             },
             "next_seed_diversity_caps": {
@@ -5313,8 +5449,26 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         timeframe_feedback = memory.timeframe_feedback()
         fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
         fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
+        selection_pool = current_seeds
+        if not args.force_unseeded_universe:
+            selection_pool = production_viable_source_seeds(
+                current_seeds,
+                universe_symbols,
+                aliases,
+                symbol_map=symbol_map,
+                disabled_symbols=disabled_symbols,
+                group_by_symbol=group_by_symbol,
+            )
+            skipped = len(current_seeds) - len(selection_pool)
+            if skipped:
+                print(f"Production: seeds sin target viable por grupo/relacion descartadas: {skipped}")
+                diag_log(f"PRODUCTION_SKIPPED_UNVIABLE_SOURCE_SEEDS run_id={run_id} generation={generation} skipped={skipped}")
+            if not selection_pool:
+                print(f"Production: gen {generation} sin seeds con target viable; se detiene")
+                diag_log(f"GENERATION_STOP_NO_VIABLE_SOURCE_SEEDS run_id={run_id} generation={generation}")
+                break
         selected_seed_rankings = ranked_seed_selection(
-            current_seeds,
+            selection_pool,
             args.max_seeds,
             asset_feedback,
             timeframe_feedback,
@@ -5382,6 +5536,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     asset_unseeded_probability=asset_unseeded_probability,
                     timeframe_unseeded_probability=tf_unseeded_probability,
                     production_mode=not args.force_unseeded_universe,
+                    group_by_symbol=group_by_symbol,
                 )
                 if target_choice is None:
                     diag_log(
@@ -5645,8 +5800,26 @@ def run_agent(args: argparse.Namespace) -> int:
             timeframe_feedback = memory.timeframe_feedback()
             fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
             fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
+            selection_pool = current_seeds
+            if not args.force_unseeded_universe:
+                selection_pool = production_viable_source_seeds(
+                    current_seeds,
+                    universe_symbols,
+                    aliases,
+                    symbol_map=symbol_map,
+                    disabled_symbols=disabled_symbols,
+                    group_by_symbol=group_by_symbol,
+                )
+                skipped = len(current_seeds) - len(selection_pool)
+                if skipped:
+                    print(f"Production: seeds sin target viable por grupo/relacion descartadas: {skipped}")
+                    diag_log(f"PRODUCTION_SKIPPED_UNVIABLE_SOURCE_SEEDS run_id={run_id} generation={generation} skipped={skipped}")
+                if not selection_pool:
+                    print(f"Production: gen {generation} sin seeds con target viable; se detiene")
+                    diag_log(f"GENERATION_STOP_NO_VIABLE_SOURCE_SEEDS run_id={run_id} generation={generation}")
+                    break
             selected_seed_rankings = ranked_seed_selection(
-                current_seeds,
+                selection_pool,
                 args.max_seeds,
                 asset_feedback,
                 timeframe_feedback,
@@ -5719,6 +5892,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         asset_unseeded_probability=asset_unseeded_probability,
                         timeframe_unseeded_probability=tf_unseeded_probability,
                         production_mode=not args.force_unseeded_universe,
+                        group_by_symbol=group_by_symbol,
                     )
                     if target_choice is None:
                         diag_log(

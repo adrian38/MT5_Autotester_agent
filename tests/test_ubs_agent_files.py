@@ -39,6 +39,7 @@ from ubs_agent import (
     target_symbol_disabled,
     target_timeframe_universe,
     min_trades_for_period,
+    production_viable_source_seeds,
     production_seed_pool,
     ranked_seed_selection,
     reserved_timeframe_plan,
@@ -884,6 +885,40 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(target, "EURUSD")
         self.assertEqual(policy, "production_asset_feedback")
 
+    def test_production_symbol_selection_blocks_cross_group_feedback_when_group_known(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        target = choose_target_symbol(
+            seed,
+            {"EURUSD": 50.0},
+            random.Random(1),
+            ("EURUSD",),
+            {},
+            disabled_symbols={"XAUUSD"},
+            production_mode=True,
+            group_by_symbol={"XAUUSD": "Metals", "EURUSD": "Forex"},
+        )
+
+        self.assertIsNone(target)
+
+    def test_production_symbol_selection_uses_same_group_when_current_disabled(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        target = choose_target_symbol(
+            seed,
+            {"EURUSD": 50.0},
+            random.Random(1),
+            ("XAGUSD", "EURUSD"),
+            {},
+            disabled_symbols={"XAUUSD"},
+            production_mode=True,
+            group_by_symbol={"XAUUSD": "Metals", "XAGUSD": "Metals", "EURUSD": "Forex"},
+        )
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target[0], "XAGUSD")
+        self.assertNotEqual(target[0], "EURUSD")
+
     def test_production_timeframe_selection_avoids_unexplored_timeframes(self) -> None:
         seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
 
@@ -1176,6 +1211,20 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 12)
         self.assertLessEqual(max(counts.values()), 3)
+
+    def test_production_viable_source_seeds_filters_dead_cross_group_sources(self) -> None:
+        dead = Seed(Path("xau.set"), "XAUUSD", "H1", "family", "1")
+        viable = Seed(Path("eur.set"), "EURUSD", "H1", "family", "1")
+
+        selected = production_viable_source_seeds(
+            [dead, viable],
+            ("EURUSD",),
+            {},
+            disabled_symbols={"XAUUSD"},
+            group_by_symbol={"XAUUSD": "Metals", "EURUSD": "Forex"},
+        )
+
+        self.assertEqual(selected, [viable])
 
     def test_discovery_seed_pool_reinjects_source_seeds_without_duplicates(self) -> None:
         survivor = Seed(Path("survivor.set"), "EURUSD", "H1", "family", "1")
