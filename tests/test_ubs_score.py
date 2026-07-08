@@ -122,7 +122,7 @@ class UBSScoreTests(unittest.TestCase):
             assets = base / "assets"
             assets.mkdir()
             (assets / "axi_assets.ini").write_text(
-                "[Indices]\nsymbols=US30.sa,NAS100.fs\n\n"
+                "[Indices]\nsymbols=US30.sa,IT40.sa,NAS100.fs\n\n"
                 "[Energies]\nsymbols=USOIL.sa,WTI.fs,EnergySPDR+\n\n"
                 "[Stocks]\nsymbols=NasdaqInc+\n\n"
                 "[Crypto]\nsymbols=BTCUSD.sa,BCHUSD.sa\n",
@@ -154,6 +154,7 @@ class UBSScoreTests(unittest.TestCase):
                         },
                         "symbol_net_profit_factors": {
                             "BCHUSD.SA": 0.02,
+                            "IT40.SA": 0.1,
                         },
                     }
                 ),
@@ -163,6 +164,10 @@ class UBSScoreTests(unittest.TestCase):
             self.assertEqual(
                 net_profit_normalization("US30.sa", broker="AXI", base_dir=base),
                 (0.01, "Indices", "axi_seed_report_lot_audit"),
+            )
+            self.assertEqual(
+                net_profit_normalization("IT40.sa", broker="AXI", base_dir=base),
+                (0.1, "Indices", "axi_seed_report_lot_audit"),
             )
             self.assertEqual(
                 net_profit_normalization("USOIL.sa", broker="AXI", base_dir=base),
