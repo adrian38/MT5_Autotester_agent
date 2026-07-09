@@ -341,7 +341,7 @@ class UBSPortfolioViewMixin:
         else:
             type_label_col = 4
             type_input_col = 5
-        label(0, type_label_col, "Tipo")
+        label(0, type_label_col, "Base")
         self.ubs_portfolio_type_combo = ttk.Combobox(
             form,
             textvariable=self.ubs_portfolio_type,
@@ -350,6 +350,10 @@ class UBSPortfolioViewMixin:
             values=("Conservador", "Moderado", "Agresivo"),
         )
         self.ubs_portfolio_type_combo.grid(row=0, column=type_input_col, sticky="w", pady=5)
+        self._tooltip_cls(
+            self.ubs_portfolio_type_combo,
+            "Perfil usado para elegir la composicion comun. El guardado crea un solo portafolio A/M/C con esos mismos sets.",
+        )
         label(0, 8, "Top K")
         ttk.Spinbox(form, from_=1, to=50, width=8, textvariable=self.ubs_portfolio_top_k).grid(
             row=0, column=9, sticky="w", pady=5
@@ -616,6 +620,18 @@ class UBSPortfolioViewMixin:
                 self._tooltip_cls(
                     grid_off_check,
                     "Si esta activo, descarta candidatos cuyo .set tenga EnableGrid=true.",
+                )
+            deep_var = getattr(self, "ubs_portfolio_deep_optimization", None)
+            if deep_var is not None:
+                deep_check = ttk.Checkbutton(
+                    form,
+                    text="Optimizacion profunda",
+                    variable=deep_var,
+                )
+                deep_check.grid(row=3, column=10, columnspan=2, sticky="w", padx=(8, 10), pady=5)
+                self._tooltip_cls(
+                    deep_check,
+                    "Refina la cartera ampliando candidatos y probando adiciones/swaps sin romper DD valle, margen, correlacion ni grupos.",
                 )
             margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
             margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
@@ -943,19 +959,19 @@ class UBSPortfolioViewMixin:
         members_frame.columnconfigure(0, weight=1)
         members_frame.rowconfigure(0, weight=1)
         member_columns = (
-            "set", "account", "candidate", "symbol", "tf", "units", "lot", "net",
+            "variant", "set", "account", "candidate", "symbol", "tf", "units", "lot", "net",
             "valley", "point", "step", "margin", "margin_pct", "lev",
         )
         self.ubs_portfolio_members_tree = ttk.Treeview(
             members_frame, columns=member_columns, show="headings", height=8, selectmode="browse"
         )
         member_headings = {
-            "set": "SET ID", "account": "CUENTA", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
+            "variant": "PERFIL", "set": "SET ID", "account": "CUENTA", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
             "units": "UNID.", "lot": "LOTE", "net": "NET", "valley": "DD VALLE",
             "point": "DD PUNT.", "step": "$/0.01", "margin": "MARGEN", "margin_pct": "% BAL.", "lev": "LEV.",
         }
         member_widths = {
-            "set": 230, "account": 70, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
+            "variant": 86, "set": 230, "account": 70, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
             "lot": 62, "net": 90, "valley": 82, "point": 82, "step": 88,
             "margin": 88, "margin_pct": 70, "lev": 58,
         }
@@ -1083,13 +1099,13 @@ class UBSPortfolioViewMixin:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
         columns = (
-            "set", "account", "candidate", "symbol", "tf", "month", "years", "positive_years",
+            "variant", "set", "account", "candidate", "symbol", "tf", "month", "years", "positive_years",
             "units", "lot", "net", "valley", "point",
         )
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=14, selectmode="browse")
         self.ubs_portfolio_detail_tree = tree
         specs = (
-            ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
+            ("variant", "PERFIL", 86), ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
             ("symbol", "SIMBOLO", 90), ("tf", "TF", 52), ("month", "MES", 58),
             ("years", "AÑOS", 90), ("positive_years", "POS.", 58), ("units", "UNID.", 58),
             ("lot", "LOTE", 62), ("net", "NET", 90), ("valley", "DD VALLE", 82),

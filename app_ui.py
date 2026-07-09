@@ -904,6 +904,9 @@ class MT5AutotesterUI(
         self.ubs_portfolio_run_local_search = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_run_local_search"), True)
         )
+        self.ubs_portfolio_deep_optimization = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_deep_optimization"), True)
+        )
         self.ubs_portfolio_use_correlation = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_use_correlation"), True)
         )

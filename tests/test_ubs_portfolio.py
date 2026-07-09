@@ -1082,6 +1082,45 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertEqual(summary["profile_label"], "AXI")
         self.assertEqual(summary["by_set"]["meta"]["leverage"], 20.0)
 
+    def test_normal_deep_refinement_expands_pool_and_adds_valid_candidate(self) -> None:
+        anchor = make_strategy("anchor", "EURUSD", [0, 100, 99, 120], trades=1)
+        improver = make_strategy("improver", "GBPUSD", [0, 80, 79, 90], trades=1)
+        base = optimize_portfolio(
+            [anchor, improver],
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=1,
+            max_total_candidates=1,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+            use_deep_refinement=False,
+        )
+        refined = optimize_portfolio(
+            [anchor, improver],
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=1,
+            max_total_candidates=1,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+            use_deep_refinement=True,
+        )
+
+        self.assertEqual({item.set_id for item in base.allocations}, {"anchor"})
+        self.assertEqual({item.set_id for item in refined.allocations}, {"anchor", "improver"})
+        self.assertGreater(refined.total_net_profit, base.total_net_profit)
+        self.assertTrue(any("Optimizacion profunda aplicada" in warning for warning in refined.warnings))
+
     def test_portfolio_repair_retains_required_sets(self) -> None:
         result = optimize_portfolio(
             [

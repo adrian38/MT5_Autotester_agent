@@ -442,6 +442,7 @@ class SettingsLogicMixin:
             "ubs_portfolio_max_units_per_symbol": self.ubs_portfolio_max_units_per_symbol.get().strip(),
             "ubs_portfolio_max_sets_per_symbol": str(self.ubs_portfolio_max_sets_per_symbol.get()),
             "ubs_portfolio_run_local_search": "1" if self.ubs_portfolio_run_local_search.get() else "0",
+            "ubs_portfolio_deep_optimization": "1" if self.ubs_portfolio_deep_optimization.get() else "0",
             "ubs_portfolio_use_correlation": "1" if self.ubs_portfolio_use_correlation.get() else "0",
             "ubs_portfolio_require_3_positive_months_6m": (
                 "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"

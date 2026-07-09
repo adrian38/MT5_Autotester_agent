@@ -46,6 +46,7 @@ class _DummyConn:
 class _BatchSaveLogic(UBSPortfolioLogicMixin):
     def __init__(self):
         self.inserted = []
+        self.bundle_inserted = []
         self.selected_id = None
         self.save_enabled = True
         self.notifications = []
@@ -57,6 +58,11 @@ class _BatchSaveLogic(UBSPortfolioLogicMixin):
     def _insert_portfolio(self, conn, inputs, result, *, commit=True):
         portfolio_id = len(self.inserted) + 1
         self.inserted.append((portfolio_id, inputs, result, commit))
+        return portfolio_id
+
+    def _insert_portfolio_bundle(self, conn, proposals, selected_result, *, commit=True):
+        portfolio_id = len(self.bundle_inserted) + 1
+        self.bundle_inserted.append((portfolio_id, proposals, selected_result, commit))
         return portfolio_id
 
     def _set_ubs_portfolio_save_enabled(self, enabled):
@@ -379,6 +385,100 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         self.assertEqual([item["reserve_pct"] for item in proposals], [10.0, 15.0, 25.0])
         self.assertTrue(all(not item["result"].enforce_point_dd for item in proposals))
 
+    def test_locked_normal_variants_share_sets_and_persist_as_one_bundle(self) -> None:
+        inputs = {
+            "capital": 1000.0,
+            "valley_dd_pct": 60.0,
+            "point_dd_pct": 60.0,
+            "portfolio_type": "balanced",
+            "top_k_per_symbol": 3,
+            "max_total_candidates": 10,
+            "min_trades_2020_2026": 0,
+            "max_units_per_set": None,
+            "max_total_units": 6,
+            "max_units_per_symbol": None,
+            "max_sets_per_symbol": 1,
+            "run_local_search": True,
+            "deep_optimization": True,
+            "use_correlation": False,
+            "require_3_positive_months_6m": False,
+            "dd_reserve_pct": 10.0,
+            "search_restarts": 0,
+            "max_pair_corr": None,
+            "max_downside_corr": None,
+            "max_dd_overlap": None,
+            "max_portfolio_corr": None,
+            "enforce_point_dd": False,
+            "daily_dd_full_history": False,
+            "validate_margin": False,
+            "validate_roboforex_margin": False,
+            "validate_ttp_margin": False,
+            "max_margin_pct": None,
+            "margin_profile": "ictrading",
+        }
+        proposals = self.logic._optimize_locked_ubs_portfolio_variants(
+            [
+                make_strategy("a.set", "EURUSD", [0, 60, 50, 100]),
+                make_strategy("b.set", "GBPUSD", [0, 45, 43, 130]),
+                make_strategy("c.set", "XAUUSD", [0, 20, 19, 60]),
+            ],
+            inputs,
+            PortfolioType.BALANCED,
+            {
+                PortfolioType.AGGRESSIVE: [],
+                PortfolioType.BALANCED: [],
+                PortfolioType.CONSERVATIVE: [],
+            },
+        )
+
+        self.assertEqual([item["key"] for item in proposals], ["aggressive", "balanced", "conservative"])
+        set_ids_by_variant = [
+            {allocation.set_id for allocation in item["result"].allocations}
+            for item in proposals
+        ]
+        self.assertTrue(set_ids_by_variant[0])
+        self.assertEqual(set_ids_by_variant[0], set_ids_by_variant[1])
+        self.assertEqual(set_ids_by_variant[0], set_ids_by_variant[2])
+
+        portfolio_id = self.logic._insert_portfolio_bundle(
+            self.conn,
+            proposals,
+            proposals[1]["result"],
+        )
+        portfolio_count = self.conn.execute("select count(*) from portfolios").fetchone()[0]
+        self.assertEqual(portfolio_count, 1)
+        row = self.conn.execute(
+            "select portfolio_type, metrics_json from portfolios where id=?",
+            (portfolio_id,),
+        ).fetchone()
+        self.assertEqual(row["portfolio_type"], "bundle")
+        metrics = json.loads(row["metrics_json"])
+        self.assertTrue(metrics["portfolio_bundle"])
+        self.assertEqual(metrics["variant_order"], ["aggressive", "balanced", "conservative"])
+        variant_rows = self.conn.execute(
+            """
+            select variant_key, count(*) as rows_count
+            from portfolio_allocations
+            where portfolio_id=?
+            group by variant_key
+            order by variant_key
+            """,
+            (portfolio_id,),
+        ).fetchall()
+        self.assertEqual({row["variant_key"] for row in variant_rows}, {"aggressive", "balanced", "conservative"})
+        saved_sets = {
+            row["variant_key"]: {
+                item["set_id"]
+                for item in self.conn.execute(
+                    "select set_id from portfolio_allocations where portfolio_id=? and variant_key=?",
+                    (portfolio_id, row["variant_key"]),
+                )
+            }
+            for row in variant_rows
+        }
+        self.assertEqual(saved_sets["aggressive"], saved_sets["balanced"])
+        self.assertEqual(saved_sets["aggressive"], saved_sets["conservative"])
+
     def test_normal_portfolio_inputs_ignore_point_dd_limit(self) -> None:
         logic = _PortfolioLogic()
         logic.ubs_portfolio_capital = _Var("1000")
@@ -393,6 +493,7 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         logic.ubs_portfolio_max_units_per_symbol = _Var("")
         logic.ubs_portfolio_max_sets_per_symbol = _Var("1")
         logic.ubs_portfolio_run_local_search = _Var(True)
+        logic.ubs_portfolio_deep_optimization = _Var(True)
         logic.ubs_portfolio_use_correlation = _Var(False)
         logic.ubs_portfolio_require_3_positive_months_6m = _Var(False)
         logic.ubs_portfolio_dd_reserve_pct = _Var("0")
@@ -423,6 +524,7 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         logic.ubs_portfolio_max_units_per_symbol = _Var("")
         logic.ubs_portfolio_max_sets_per_symbol = _Var("1")
         logic.ubs_portfolio_run_local_search = _Var(True)
+        logic.ubs_portfolio_deep_optimization = _Var(True)
         logic.ubs_portfolio_use_correlation = _Var(False)
         logic.ubs_portfolio_require_3_positive_months_6m = _Var(False)
         logic.ubs_portfolio_dd_reserve_pct = _Var("0")
@@ -441,6 +543,7 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         values = logic._read_ubs_portfolio_inputs()
 
         self.assertEqual(values["portfolio_type"], "balanced")
+        self.assertTrue(values["deep_optimization"])
         self.assertEqual(values["margin_profile"], "ictrading")
         self.assertTrue(values["validate_margin"])
         self.assertTrue(values["validate_roboforex_margin"])
@@ -448,7 +551,7 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         self.assertEqual(values["max_margin_pct"], 80.0)
         self.assertEqual(values["allowed_asset_groups"], ["Forex", "Metals"])
 
-    def test_saving_generated_portfolio_persists_all_pending_proposals(self) -> None:
+    def test_saving_generated_portfolio_persists_one_bundle_with_all_pending_proposals(self) -> None:
         logic = _BatchSaveLogic()
         proposals = [
             {
@@ -473,15 +576,17 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
 
         logic._save_pending_ubs_portfolio()
 
-        self.assertEqual(
-            [inputs["portfolio_type"] for _portfolio_id, inputs, _result, _commit in logic.inserted],
-            ["aggressive", "balanced", "conservative"],
-        )
-        self.assertEqual([commit for *_rest, commit in logic.inserted], [False, False, False])
-        self.assertEqual(logic.selected_id, 2)
+        self.assertEqual(logic.inserted, [])
+        self.assertEqual(len(logic.bundle_inserted), 1)
+        portfolio_id, saved_proposals, selected_result, commit = logic.bundle_inserted[0]
+        self.assertEqual(portfolio_id, 1)
+        self.assertEqual([item["inputs"]["portfolio_type"] for item in saved_proposals], ["aggressive", "balanced", "conservative"])
+        self.assertIs(selected_result, proposals[1]["result"])
+        self.assertFalse(commit)
+        self.assertEqual(logic.selected_id, 1)
         self.assertFalse(logic.save_enabled)
         self.assertEqual(logic.ubs_portfolio_pending_proposals, [])
-        self.assertIn("Guardados 3 portafolios", logic.ubs_portfolio_status.get())
+        self.assertIn("A/M/C", logic.ubs_portfolio_status.get())
 
     def test_saved_portfolio_persists_bootstrap_analysis_for_audit(self) -> None:
         inputs = {
