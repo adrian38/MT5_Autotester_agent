@@ -2985,6 +2985,31 @@ def recreate_work_dir(path: Path) -> Path:
     return path
 
 
+RELOCATABLE_WORKSPACE_DIRS = ("outputs", "sets", "reports", "configs", "assets")
+
+
+def resolve_workspace_path(value: str | Path) -> Path:
+    path = Path(value)
+    if path.exists():
+        return path
+    if not path.is_absolute():
+        candidate = BASE_DIR / path
+        return candidate if candidate.exists() else path
+
+    parts = path.parts
+    lower_parts = [part.lower() for part in parts]
+    for root_name in RELOCATABLE_WORKSPACE_DIRS:
+        try:
+            root_index = lower_parts.index(root_name)
+        except ValueError:
+            continue
+        candidate = BASE_DIR.joinpath(*parts[root_index:])
+        if candidate.exists():
+            diag_log(f"resolved relocated workspace path: {path} -> {candidate}")
+            return candidate
+    return path
+
+
 def remove_candidate_copies(run_dir: Path, generation: int, set_name: str) -> None:
     for prefix in ("accepted", "mismatch"):
         folder = run_dir / f"{prefix}_gen_{generation:03d}"
@@ -3061,21 +3086,24 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
         return 1
 
     run_id = int(run["id"])
-    run_dir = Path(run["output_dir"])
-    rows = [
-        row
+    run_dir = resolve_workspace_path(run["output_dir"])
+    rows_with_paths = [
+        (row, resolve_workspace_path(row["set_path"]))
         for row in memory.accepted_candidates_for_robustness(run_id)
-        if Path(row["set_path"]).exists()
     ]
+    rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
     robust_candidate_ids = {int(value) for value in (args.robust_candidate_id or [])}
     if robust_candidate_ids:
-        rows = [row for row in rows if int(row["id"]) in robust_candidate_ids]
+        rows_with_paths = [
+            (row, set_path) for row, set_path in rows_with_paths
+            if int(row["id"]) in robust_candidate_ids
+        ]
     if args.robust_pending_only:
-        rows = [
-            row for row in rows
+        rows_with_paths = [
+            (row, set_path) for row, set_path in rows_with_paths
             if robust_status_pending_for_retry(row["robust_status"])
         ]
-    if not rows:
+    if not rows_with_paths:
         if args.robust_pending_only:
             print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes ni retryables de OOS.")
         else:
@@ -3086,8 +3114,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
     robust_dir = recreate_work_dir(run_dir / "robustness" / f"run_{run_id}_{robust_mode}")
     copied: list[tuple[sqlite3.Row, Variant]] = []
     used_names: set[str] = set()
-    for row in rows:
-        source_set = Path(row["set_path"])
+    for row, source_set in rows_with_paths:
         name = f"robust_{int(row['id']):06d}_{source_set.name}"
         if name in used_names:
             print(f"ERROR: nombre duplicado en robustez: {name}")
@@ -3540,11 +3567,11 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         return 1
 
     run_id = int(run["id"])
-    run_dir = Path(run["output_dir"])
+    run_dir = resolve_workspace_path(run["output_dir"])
     rows = [
         row
         for row in memory.accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
-        if Path(row["set_path"]).exists()
+        if resolve_workspace_path(row["set_path"]).exists()
     ]
     main_from_date = str(args.from_date or "").strip()
     main_to_date = str(args.to_date or "").strip()
@@ -3672,7 +3699,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     ohlc_prefix, tick_prefix = final_tick_stage_prefixes(final_tick_stage, ohlc_retry=using_ohlc_retry_dates)
     for row in rows:
         candidate_id = int(row["id"])
-        source_set = Path(row["set_path"])
+        source_set = resolve_workspace_path(row["set_path"])
         ohlc_name = f"{ohlc_prefix}_{candidate_id:06d}_{source_set.name}"
         real_tick_name = f"{tick_prefix}_{candidate_id:06d}_{source_set.name}"
         if ohlc_name in used_names or real_tick_name in used_names:
@@ -4211,7 +4238,7 @@ def reconcile_final_tick_reports(
     rows = [
         row
         for row in memory.accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
-        if Path(row["set_path"]).exists()
+        if resolve_workspace_path(row["set_path"]).exists()
     ]
     memory.active_final_tick_stage = normalize_final_tick_stage(final_tick_stage)
     ohlc_prefix, tick_prefix = final_tick_stage_prefixes(memory.active_final_tick_stage)
@@ -4221,7 +4248,7 @@ def reconcile_final_tick_reports(
         if str(row["final_tick_status"] or "").strip() in {"accepted", "rejected"}:
             continue
         candidate_id = int(row["id"])
-        source_set = Path(row["set_path"])
+        source_set = resolve_workspace_path(row["set_path"])
         ohlc_set_name = f"{ohlc_prefix}_{candidate_id:06d}_{source_set.name}"
         tick_set_name = f"{tick_prefix}_{candidate_id:06d}_{source_set.name}"
         ohlc_report = find_report_for_set(Path(ohlc_set_name))
@@ -4505,13 +4532,13 @@ def _retry_single_candidate(
         print(f"ERROR: no existe candidate id {candidate_id}")
         return 1
 
-    set_path = Path(row["set_path"])
+    set_path = resolve_workspace_path(row["set_path"])
     if not set_path.exists():
         print(f"ERROR: no existe el set del candidato: {set_path}")
         return 1
 
     run = memory.run_by_id(int(row["run_id"]))
-    run_dir = Path(run["output_dir"]) if run else DEFAULT_OUTPUT
+    run_dir = resolve_workspace_path(run["output_dir"]) if run else DEFAULT_OUTPUT
     generation = int(row["generation"] or 0)
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{candidate_id}")
     retry_set = retry_dir / set_path.name
@@ -4729,20 +4756,23 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
 
     run_id = int(run["id"])
     generation = int(args.retry_mismatch_generation)
-    rows = memory.mismatch_candidates_for_generation(run_id, generation)
-    rows = [row for row in rows if Path(row["set_path"]).exists()]
-    if not rows:
+    rows_with_paths = [
+        (row, resolve_workspace_path(row["set_path"]))
+        for row in memory.mismatch_candidates_for_generation(run_id, generation)
+    ]
+    rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
+    if not rows_with_paths:
         print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch/no_report con .set existente")
         return 1
 
-    run_dir = Path(run["output_dir"])
+    run_dir = resolve_workspace_path(run["output_dir"])
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_gen_{generation:03d}")
+    rows = [row for row, _set_path in rows_with_paths]
     variants = [variant_from_candidate_row(row) for row in rows]
 
     print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
-    for row in rows:
-        set_path = Path(row["set_path"])
+    for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
             return 1
@@ -4803,20 +4833,23 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         return 1
 
     run_id = int(run["id"])
-    rows = memory.mismatch_candidates_for_run(run_id)
-    rows = [row for row in rows if Path(row["set_path"]).exists()]
-    if not rows:
+    rows_with_paths = [
+        (row, resolve_workspace_path(row["set_path"]))
+        for row in memory.mismatch_candidates_for_run(run_id)
+    ]
+    rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
+    if not rows_with_paths:
         print(f"ERROR: run #{run_id} no tiene report_mismatch/no_report con .set existente")
         return 1
 
-    run_dir = Path(run["output_dir"])
+    run_dir = resolve_workspace_path(run["output_dir"])
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_all")
+    rows = [row for row, _set_path in rows_with_paths]
     variants = [variant_from_candidate_row(row) for row in rows]
 
     print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
-    for row in rows:
-        set_path = Path(row["set_path"])
+    for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
             return 1
@@ -4881,10 +4914,18 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
         return 1
 
     run_id = int(run["id"])
-    rows = [row for row in memory.candidates_for_run(run_id) if Path(row["set_path"]).exists()]
+    rows_with_paths = [
+        (row, resolve_workspace_path(row["set_path"]))
+        for row in memory.candidates_for_run(run_id)
+    ]
+    rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
     requested_ids = {int(value) for value in (args.retry_candidate_id or [])}
     if requested_ids:
-        rows = [row for row in rows if int(row["id"]) in requested_ids]
+        rows_with_paths = [
+            (row, set_path) for row, set_path in rows_with_paths
+            if int(row["id"]) in requested_ids
+        ]
+        rows = [row for row, _set_path in rows_with_paths]
         found_ids = {int(row["id"]) for row in rows}
         missing_ids = sorted(requested_ids - found_ids)
         if missing_ids:
@@ -4893,21 +4934,21 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
                 + ", ".join(str(candidate_id) for candidate_id in missing_ids)
             )
             return 1
-    if not rows:
+    if not rows_with_paths:
         print(f"ERROR: run #{run_id} no tiene candidatos con .set existente")
         return 1
 
-    run_dir = Path(run["output_dir"])
+    run_dir = resolve_workspace_path(run["output_dir"])
     suffix = "selected" if requested_ids else "all"
     retry_dir = recreate_work_dir(run_dir / "retry_full" / f"run_{run_id}_{suffix}")
+    rows = [row for row, _set_path in rows_with_paths]
     variants = [variant_from_candidate_row(row) for row in rows]
 
     print(f"Reprobar run completo #{run_id}: {len(rows)} candidato(s)")
     if requested_ids:
         print("Modo seleccionado: " + ", ".join(str(row["id"]) for row in rows))
     seen_names: set[str] = set()
-    for row in rows:
-        set_path = Path(row["set_path"])
+    for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en reprobar run: {set_path.name}")
             return 1
@@ -5308,7 +5349,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         print("ERROR: no hay runs guardados para continuar")
         return 1
     run_id = int(run["id"])
-    run_dir = Path(run["output_dir"])
+    run_dir = resolve_workspace_path(run["output_dir"])
     planned_generations = int(run["generations"])
     args.variants_per_seed = int(run["variants_per_seed"])
     args.max_seeds = int(run["max_seeds"])
