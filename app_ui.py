@@ -83,6 +83,35 @@ COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 TRUE_VALUES = {"1", "true", "yes", "on", "si"}
+LOCAL_FILE_FALLBACK_ROOTS = ("reports", "outputs", "sets", "configs", "logs")
+
+
+def resolve_existing_local_file(path: Path, base_dir: Path = BASE_DIR) -> Path:
+    if path.exists():
+        return path
+    candidates: list[Path] = []
+    parts = path.parts
+    lower_parts = [part.lower() for part in parts]
+    for marker in LOCAL_FILE_FALLBACK_ROOTS:
+        if marker in lower_parts:
+            index = lower_parts.index(marker)
+            if index < len(parts) - 1:
+                candidates.append(base_dir.joinpath(*parts[index:]))
+            break
+    if path.name:
+        candidates.extend(base_dir / folder / path.name for folder in LOCAL_FILE_FALLBACK_ROOTS)
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate_key = str(candidate).lower()
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return path
 
 
 LIGHT_COLORS = {
@@ -1934,6 +1963,7 @@ class MT5AutotesterUI(
             self._safe_refresh(label, callback)
 
     def _open_local_file(self, path: Path) -> None:
+        path = resolve_existing_local_file(path, BASE_DIR)
         if not path.exists():
             messagebox.showinfo("Agente UBS", f"No existe el archivo:\n{path}")
             return
