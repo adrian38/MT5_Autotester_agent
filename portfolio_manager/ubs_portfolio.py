@@ -20,6 +20,7 @@ import unicodedata
 from typing import Callable, Iterable, Sequence
 
 from .mt5_report import StrategyReport, parse_report
+from ubs.path_utils import resolve_workspace_path
 
 
 ProgressCallback = Callable[[str], None]
@@ -889,7 +890,7 @@ def slice_strategy_sets_to_month(
 
 def set_file_has_enabled_grid(set_path: str | Path) -> bool:
     """Return True only when a .set file explicitly has EnableGrid=true."""
-    path = Path(set_path)
+    path = resolve_workspace_path(set_path)
     if not path.is_file():
         return False
     raw = path.read_bytes()
@@ -1184,8 +1185,8 @@ def load_robust_sets_from_rows(
             continue
         if progress:
             progress(f"Analizando set Final Tick OK {index}/{len(candidates)}")
-        is_path = Path(str(_row_value(row, "is_report_path", "report_path", default="")))
-        oos_path = Path(str(_row_value(row, "oos_report_path", "robust_report_path", default="")))
+        is_path = resolve_workspace_path(str(_row_value(row, "is_report_path", "report_path", default="")))
+        oos_path = resolve_workspace_path(str(_row_value(row, "oos_report_path", "robust_report_path", default="")))
         if not is_path.is_file() or not oos_path.is_file():
             skipped_missing += 1
             continue

@@ -17,6 +17,7 @@ from ubs.account import (
     normalize_account_type,
     normalize_broker,
 )
+from ubs.path_utils import resolve_workspace_path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -52,7 +53,7 @@ class UBSAgentLogicMixin:
         text = str(raw or "").strip()
         if not text:
             return scoped
-        path = Path(text).expanduser()
+        path = resolve_workspace_path(text, base_dir=BASE_DIR)
         try:
             if path.resolve() == legacy.resolve():
                 return scoped
@@ -60,13 +61,14 @@ class UBSAgentLogicMixin:
             pass
         if self._is_account_default_path(path, legacy):
             return scoped
-        return path
+        relocated = resolve_workspace_path(path, base_dir=BASE_DIR)
+        return relocated
 
     def _account_scoped_set_file_path(self, raw: str) -> Path | None:
         text = str(raw or "").strip()
         if not text:
             return None
-        path = Path(text).expanduser()
+        path = resolve_workspace_path(text, base_dir=BASE_DIR)
         root = BASE_DIR / "sets" / "ubs_ready"
         rel = self._relative_to_or_none(path, root)
         if rel is None:

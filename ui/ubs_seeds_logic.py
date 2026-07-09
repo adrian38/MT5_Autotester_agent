@@ -18,6 +18,7 @@ from tkinter import ttk as _ttk
 from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
 from ubs.db import connect_memory
 from ubs.manual_status import mark_seed_scores
+from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -510,7 +511,7 @@ class UBSSeedsLogicMixin:
             for seed_path in seed_paths:
                 if conn.execute("select 1 from seed_scores where seed_path=?", (seed_path,)).fetchone():
                     continue
-                path = Path(seed_path).expanduser()
+                path = resolve_workspace_path(seed_path)
                 try:
                     stat = path.stat()
                 except OSError:
@@ -590,7 +591,7 @@ class UBSSeedsLogicMixin:
         for info in infos:
             seed_path = info.get("seed_path", "")
             if seed_path:
-                self._open_local_file(Path(seed_path))
+                self._open_local_file(resolve_workspace_path(seed_path))
 
     def _open_selected_ubs_seed_report(self) -> None:
         infos = self._checked_ubs_seed_infos()
@@ -618,18 +619,18 @@ class UBSSeedsLogicMixin:
             messagebox.showinfo("Semillas UBS", "Esta semilla no tiene reporte asociado.\nEjecuta 'Evaluar semillas' primero.")
             return
         for row in rows:
-            self._open_local_file(Path(str(row["report_path"])))
+            self._open_local_file(resolve_workspace_path(str(row["report_path"])))
 
     def _retry_selected_ubs_seed(self) -> None:
         infos = self._checked_ubs_seed_infos()
         if not infos:
             messagebox.showinfo("Semillas UBS", "Selecciona una semilla primero.")
             return
-        active_infos = [info for info in infos if info.get("active") != "0" and Path(info.get("seed_path", "")).expanduser().exists()]
+        active_infos = [info for info in infos if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))]
         if not active_infos:
             messagebox.showinfo("Semillas UBS", "No hay seeds activas/existentes entre las marcadas.")
             return
-        paths = [Path(info["seed_path"]).expanduser() for info in active_infos]
+        paths = [resolve_workspace_path(info["seed_path"]) for info in active_infos]
         try:
             output_dir = self._ubs_generation_output_dir()
             args = [
@@ -832,7 +833,7 @@ class UBSSeedsLogicMixin:
         for raw_path in seed_paths:
             if not raw_path:
                 continue
-            path = Path(raw_path).expanduser()
+            path = resolve_workspace_path(raw_path)
             _add_key(path)
             if not path.is_absolute():
                 _add_key((BASE_DIR / path).resolve())
@@ -878,7 +879,7 @@ class UBSSeedsLogicMixin:
             self._show_error("Sin seleccion", "Selecciona una semilla para eliminar.")
             return
         selected_paths = [info.get("seed_path", "") for info in infos if info.get("seed_path")]
-        existing = [Path(path).expanduser() for path in selected_paths if Path(path).expanduser().exists()]
+        existing = [resolve_workspace_path(path) for path in selected_paths if workspace_path_exists(path)]
         missing = len(selected_paths) - len(existing)
         if not selected_paths:
             messagebox.showinfo("Eliminar semilla", "No hay rutas asociadas a las seeds marcadas.")
@@ -934,9 +935,9 @@ class UBSSeedsLogicMixin:
                 if info:
                     rejected_infos.append(info)
         existing = [
-            Path(info.get("seed_path", "")).expanduser()
+            resolve_workspace_path(info.get("seed_path", ""))
             for info in rejected_infos
-            if Path(info.get("seed_path", "")).expanduser().exists()
+            if workspace_path_exists(info.get("seed_path", ""))
         ]
         if not existing:
             messagebox.showinfo("Eliminar rechazadas", "No hay seeds rechazadas existentes para eliminar.")
@@ -1047,7 +1048,7 @@ class UBSSeedsLogicMixin:
             rp = row["report_path"]
             if rp:
                 try:
-                    p = Path(str(rp))
+                    p = resolve_workspace_path(str(rp))
                     if p.exists():
                         p.unlink()
                         deleted_reports += 1
@@ -1166,12 +1167,13 @@ class UBSSeedsLogicMixin:
                     and str(row["period"] or "").strip().upper() == period
                 )
                 try:
-                    params = load_set_params(Path(seed_path))
+                    physical_seed_path = resolve_workspace_path(seed_path)
+                    params = load_set_params(physical_seed_path)
                 except OSError:
                     params = {}
                 force_ok = str(params.get("ForceSymbol", "")).strip().upper() == symbol
                 if not force_ok:
-                    write_set_force_symbol(Path(seed_path), Path(seed_path), symbol)
+                    write_set_force_symbol(physical_seed_path, physical_seed_path, symbol)
                 if not (same_target and force_ok):
                     changed_paths.append(seed_path)
                 conn.execute(
@@ -1212,7 +1214,7 @@ class UBSSeedsLogicMixin:
                         (seed_path,),
                     ).fetchone()
                     seed = Seed(
-                        Path(seed_path),
+                        resolve_workspace_path(seed_path),
                         symbol,
                         period,
                         str(row["family"] or "") if row else "",
@@ -1299,7 +1301,7 @@ class UBSSeedsLogicMixin:
     ) -> None:
         active_infos = [
             info for info in infos
-            if info.get("active") != "0" and Path(info.get("seed_path", "")).expanduser().exists()
+            if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))
         ]
         if not active_infos:
             messagebox.showinfo(title, empty_message)
@@ -1327,7 +1329,7 @@ class UBSSeedsLogicMixin:
 
             for info in active_infos:
                 seed_path_text = info.get("seed_path", "")
-                seed_path = Path(seed_path_text).expanduser()
+                seed_path = resolve_workspace_path(seed_path_text)
                 symbol, period = self._inferred_ubs_seed_fields(seed_path)
                 if symbol in {"", "UNKNOWN"} or period in {"", "UNKNOWN"}:
                     failed.append(f"{seed_path.name}: no pude inferir Symbol/TF")
