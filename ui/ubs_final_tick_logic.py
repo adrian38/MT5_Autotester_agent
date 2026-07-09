@@ -26,6 +26,30 @@ FINAL_TICK_DATE_RETRYABLE_STATUSES = {
 }
 
 
+RELOCATABLE_WORKSPACE_DIRS = ("outputs", "sets", "reports", "configs", "assets")
+
+
+def resolve_workspace_path(value: str | Path) -> Path:
+    path = Path(value)
+    if path.exists():
+        return path
+    if not path.is_absolute():
+        candidate = BASE_DIR / path
+        return candidate if candidate.exists() else path
+
+    parts = path.parts
+    lower_parts = [part.lower() for part in parts]
+    for root_name in RELOCATABLE_WORKSPACE_DIRS:
+        try:
+            root_index = lower_parts.index(root_name)
+        except ValueError:
+            continue
+        candidate = BASE_DIR.joinpath(*parts[root_index:])
+        if candidate.exists():
+            return candidate
+    return path
+
+
 class UBSFinalTickLogicMixin:
     def _on_ubs_final_tick_tree_click(self, event) -> str | None:
         if not hasattr(self, "ubs_final_tick_tree"):
@@ -457,7 +481,7 @@ class UBSFinalTickLogicMixin:
                 return False
             run_id = int(run["id"])
             rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
-            rows = [row for row in rows if Path(row["set_path"]).exists()]
+            rows = [row for row in rows if resolve_workspace_path(row["set_path"]).exists()]
             if pending_only:
                 rows = [
                     row for row in rows
@@ -592,7 +616,7 @@ class UBSFinalTickLogicMixin:
             rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [
                 row for row in rows
-                if Path(row["set_path"]).exists()
+                if resolve_workspace_path(row["set_path"]).exists()
                 and str(row["final_tick_status"] or "").strip() == "pending_history_quality"
             ]
             if not rows:
