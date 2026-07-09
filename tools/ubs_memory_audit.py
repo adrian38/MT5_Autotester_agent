@@ -23,6 +23,7 @@ from ubs.account import (
     normalize_broker,
 )
 from ubs.db import connect_memory
+from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 from ubs.memory import AgentMemory
 from ubs.universe import load_asset_universe, load_disabled_symbols
 from ubs.weights import (
@@ -246,7 +247,7 @@ def audit_candidates(conn, audit: Audit) -> None:
           and coalesce(report_path, '') != ''
         """
     ):
-        path = Path(str(row["report_path"]))
+        path = resolve_workspace_path(str(row["report_path"]))
         if not path.exists():
             missing_reports.append(row)
     print(f"reportes de candidatos faltantes en disco: {len(missing_reports)}")
@@ -309,7 +310,7 @@ def audit_seeds(conn, audit: Audit) -> None:
     missing_seed_files = []
     missing_reports = []
     for row in conn.execute("select * from seed_scores where active=1"):
-        seed_path = Path(str(row["seed_path"]))
+        seed_path = resolve_workspace_path(str(row["seed_path"]))
         if not seed_path.exists():
             missing_seed_files.append(row)
         else:
@@ -320,7 +321,7 @@ def audit_seeds(conn, audit: Audit) -> None:
             except OSError:
                 missing_seed_files.append(row)
         report_path = str(row["report_path"] or "").strip()
-        if report_path and str(row["status"] or "") in {"accepted", "rejected", "no_trades"} and not Path(report_path).exists():
+        if report_path and str(row["status"] or "") in {"accepted", "rejected", "no_trades"} and not workspace_path_exists(report_path):
             missing_reports.append(row)
     print(f"seed files faltantes={len(missing_seed_files)} | cambiadas desde evaluacion={len(changed)} | reportes faltantes={len(missing_reports)}")
     if missing_seed_files:
