@@ -174,6 +174,9 @@ class UBSAgentLogicMixin:
 
     def _refresh_ubs_account_context(self, *, force: bool = False) -> None:
         self._normalize_ubs_account_selection()
+        margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
+        if margin_profile_var is not None and str(margin_profile_var.get()).strip().upper() != "TTP":
+            margin_profile_var.set(self._ubs_broker())
         self._sync_ubs_account_paths(force=force)
         self._write_ui_settings()
         self.status_text.set(f"Cuenta UBS activa: {self._ubs_broker()} / {self._ubs_account_type()}")

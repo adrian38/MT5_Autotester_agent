@@ -31,6 +31,7 @@ from portfolio_manager.ubs_portfolio import (
     filter_rows_grid_off,
     evaluate_portfolio,
     load_robust_sets_from_rows,
+    normalize_margin_profile,
     optimize_portfolio,
     optimize_strict_monthly_portfolio,
     portfolio_group_key,
@@ -55,19 +56,37 @@ PORTFOLIO_TYPE_LABELS = {
     # Backward-compatible labels from the previous Spanish UI.
     "Conservador": PortfolioType.CONSERVATIVE,
     "Equilibrado": PortfolioType.BALANCED,
+    "Moderado": PortfolioType.BALANCED,
     "Agresivo": PortfolioType.AGGRESSIVE,
 }
 PORTFOLIO_TYPE_DISPLAY = {
-    PortfolioType.CONSERVATIVE.value: "Conservative",
-    PortfolioType.BALANCED.value: "Balanced",
-    PortfolioType.AGGRESSIVE.value: "Aggressive",
+    PortfolioType.CONSERVATIVE.value: "Conservador",
+    PortfolioType.BALANCED.value: "Moderado",
+    PortfolioType.AGGRESSIVE.value: "Agresivo",
+}
+PORTFOLIO_TYPE_BATCH_SPECS = (
+    ("aggressive", "Agresivo", PortfolioType.AGGRESSIVE),
+    ("balanced", "Moderado", PortfolioType.BALANCED),
+    ("conservative", "Conservador", PortfolioType.CONSERVATIVE),
+)
+PORTFOLIO_ASSET_GROUP_FLAGS = (
+    ("Forex", "allow_forex"),
+    ("IndicesEnergies", "allow_indices_energies"),
+    ("Metals", "allow_metals"),
+    ("Stocks", "allow_stocks"),
+)
+PORTFOLIO_MARGIN_PROFILE_DISPLAY = {
+    "roboforex": "ROBOFOREX",
+    "axi": "AXI",
+    "ictrading": "ICTRADING",
+    "ttp": "TTP",
 }
 
 DEFAULT_PORTFOLIO_FORM = {
     "capital": "10000",
     "valley_dd_pct": "10",
     "point_dd_pct": "4",
-    "portfolio_type": "Balanced",
+    "portfolio_type": "Moderado",
     "top_k_per_symbol": 3,
     "max_total_candidates": 30,
     "min_trades_2020_2026": 100,
@@ -408,6 +427,88 @@ class UBSPortfolioLogicMixin:
         except ValueError:
             return PortfolioType.BALANCED
 
+    def _active_broker_margin_profile(self) -> str:
+        broker_func = getattr(self, "_ubs_broker", None)
+        if callable(broker_func):
+            try:
+                return normalize_broker(broker_func()).lower()
+            except Exception:
+                pass
+        broker_var = getattr(self, "ubs_broker", None)
+        try:
+            broker_value = broker_var.get() if broker_var is not None else ""
+        except Exception:
+            broker_value = ""
+        return normalize_broker(broker_value or "ROBOFOREX").lower()
+
+    def _portfolio_margin_profile(self) -> str:
+        profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
+        try:
+            profile_value = profile_var.get() if profile_var is not None else ""
+        except Exception:
+            profile_value = ""
+        return normalize_margin_profile(profile_value or self._active_broker_margin_profile())
+
+    def _portfolio_margin_profile_display(self, profile: str | None = None) -> str:
+        return PORTFOLIO_MARGIN_PROFILE_DISPLAY.get(
+            normalize_margin_profile(profile or self._active_broker_margin_profile()),
+            "ROBOFOREX",
+        )
+
+    def _ubs_portfolio_allowed_asset_groups(self) -> set[str]:
+        groups: set[str] = set()
+        for group, suffix in PORTFOLIO_ASSET_GROUP_FLAGS:
+            var = getattr(self, f"ubs_portfolio_{suffix}", None)
+            if var is None or bool(var.get()):
+                groups.add(group)
+        return groups
+
+    def _portfolio_row_group(self, row: object) -> str:
+        if isinstance(row, dict):
+            symbol = str(row.get("target_symbol") or row.get("symbol") or "")
+        else:
+            getter = getattr(row, "get", None)
+            if callable(getter):
+                symbol = str(getter("target_symbol") or getter("symbol") or "")
+            else:
+                symbol = str(getattr(row, "target_symbol", "") or getattr(row, "symbol", ""))
+        return portfolio_group_key(symbol)
+
+    def _filter_portfolio_rows_by_allowed_groups(
+        self,
+        rows: list[dict[str, object]],
+        allowed_groups: set[str],
+    ) -> tuple[list[dict[str, object]], dict[str, int]]:
+        counts: dict[str, int] = {}
+        filtered: list[dict[str, object]] = []
+        for row in rows:
+            group = self._portfolio_row_group(row)
+            counts[group] = counts.get(group, 0) + 1
+            if group in allowed_groups:
+                filtered.append(row)
+        return filtered, counts
+
+    def _filter_portfolio_sets_by_allowed_groups(
+        self,
+        sets: list,
+        allowed_groups: set[str],
+    ) -> tuple[list, dict[str, int]]:
+        counts: dict[str, int] = {}
+        filtered: list = []
+        for strategy in sets:
+            group = portfolio_group_key(str(getattr(strategy, "symbol", "")))
+            counts[group] = counts.get(group, 0) + 1
+            if group in allowed_groups:
+                filtered.append(strategy)
+        return filtered, counts
+
+    def _portfolio_type_reserve_pct(self, configured_reserve: float, portfolio_type: PortfolioType) -> float:
+        if portfolio_type == PortfolioType.CONSERVATIVE:
+            return max(configured_reserve, 25.0)
+        if portfolio_type == PortfolioType.BALANCED:
+            return max(configured_reserve, 15.0)
+        return configured_reserve
+
     def _used_set_paths(
         self,
         conn: sqlite3.Connection,
@@ -533,6 +634,9 @@ class UBSPortfolioLogicMixin:
         grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
         if grid_off_var is not None and bool(grid_off_var.get()):
             rows, _warnings = filter_rows_grid_off(rows)
+        allowed_groups = self._ubs_portfolio_allowed_asset_groups()
+        if allowed_groups:
+            rows, _group_counts = self._filter_portfolio_rows_by_allowed_groups(rows, allowed_groups)
         used = self._used_set_paths_all_accounts(target_portfolio_type)
         return summarize_robust_rows(rows, used)
 
@@ -541,6 +645,8 @@ class UBSPortfolioLogicMixin:
         conn: sqlite3.Connection,
         inputs: dict[str, object],
         result: PortfolioResult,
+        *,
+        commit: bool = True,
     ) -> int:
         created_at = datetime.now().isoformat(timespec="seconds")
         portfolio_type = str(inputs["portfolio_type"])
@@ -693,7 +799,8 @@ class UBSPortfolioLogicMixin:
                     decision.reason,
                 ),
             )
-        conn.commit()
+        if commit:
+            conn.commit()
         return portfolio_id
 
     def _list_portfolios(
@@ -1096,11 +1203,9 @@ class UBSPortfolioLogicMixin:
     def _read_ubs_portfolio_inputs(self) -> dict[str, object]:
         capital = self._parse_float_setting(self.ubs_portfolio_capital.get(), "Capital")
         valley_pct = self._parse_float_setting(self.ubs_portfolio_valley_pct.get(), "DD valle")
-        point_pct = self._parse_float_setting(self.ubs_portfolio_point_pct.get(), "DD puntual")
-        if capital <= 0 or valley_pct <= 0 or point_pct <= 0:
-            raise ValueError("Capital y porcentajes de DD deben ser mayores que 0.")
-        if point_pct > valley_pct:
-            raise ValueError("El DD puntual no deberia ser mayor que el DD valle.")
+        point_pct = valley_pct
+        if capital <= 0 or valley_pct <= 0:
+            raise ValueError("Capital y DD valle deben ser mayores que 0.")
 
         top_k = self._parse_int_setting(self.ubs_portfolio_top_k.get(), "Top K sets por simbolo", minimum=1)
         max_candidates = self._parse_int_setting(
@@ -1126,7 +1231,7 @@ class UBSPortfolioLogicMixin:
             "point_dd_pct": point_pct,
             "portfolio_type": portfolio_type.value,
             "portfolio_type_label": PORTFOLIO_TYPE_DISPLAY[portfolio_type.value],
-            "enforce_point_dd": True,
+            "enforce_point_dd": False,
             "top_k_per_symbol": top_k,
             "max_total_candidates": max_candidates,
             "min_trades_2020_2026": min_trades,
@@ -1175,6 +1280,29 @@ class UBSPortfolioLogicMixin:
                 "Max corr portafolios",
             ),
         }
+        allowed_groups = self._ubs_portfolio_allowed_asset_groups()
+        if not allowed_groups:
+            raise ValueError("Selecciona al menos un grupo permitido: Forex, Indices/Energias, Metales o Stocks.")
+        values["allowed_asset_groups"] = sorted(allowed_groups)
+        margin_profile = self._portfolio_margin_profile()
+        values["margin_profile"] = margin_profile
+        margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
+        margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
+        if margin_profile_var is not None or margin_pct_var is not None:
+            if margin_pct_var is None:
+                raise ValueError("Max margen no esta configurado.")
+            max_margin_pct = self._parse_float_setting(margin_pct_var.get(), "Max margen")
+            if max_margin_pct <= 0:
+                raise ValueError("Max margen debe ser mayor que 0.")
+            values["validate_margin"] = True
+            values["validate_roboforex_margin"] = margin_profile != "ttp"
+            values["validate_ttp_margin"] = margin_profile == "ttp"
+            values["max_margin_pct"] = max_margin_pct
+        else:
+            values["validate_margin"] = False
+            values["validate_roboforex_margin"] = False
+            values["validate_ttp_margin"] = False
+            values["max_margin_pct"] = None
         if not values["use_correlation"]:
             values["max_pair_corr"] = None
             values["max_downside_corr"] = None
@@ -1243,6 +1371,16 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_require_3_positive_months_6m.set(DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"])
         if hasattr(self, "ubs_portfolio_grid_off"):
             self.ubs_portfolio_grid_off.set(False)
+        margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
+        if margin_profile_var is not None:
+            margin_profile_var.set(self._portfolio_margin_profile_display())
+        margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
+        if margin_pct_var is not None:
+            margin_pct_var.set("100")
+        for _group, suffix in PORTFOLIO_ASSET_GROUP_FLAGS:
+            var = getattr(self, f"ubs_portfolio_{suffix}", None)
+            if var is not None:
+                var.set(True)
         self.ubs_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
         self.ubs_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])
@@ -1251,6 +1389,7 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_max_portfolio_corr.set(DEFAULT_PORTFOLIO_FORM["max_portfolio_corr"])
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        self.ubs_portfolio_pending_proposals = []
         self._set_ubs_portfolio_save_enabled(False)
         self._clear_ubs_portfolio_result_tables()
         self.ubs_portfolio_status.set("Formulario restaurado.")
@@ -1277,6 +1416,7 @@ class UBSPortfolioLogicMixin:
 
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        self.ubs_portfolio_pending_proposals = []
         self._set_ubs_portfolio_save_enabled(False)
         self._clear_ubs_portfolio_result_tables()
         self._set_ubs_portfolio_running(True)
@@ -1285,10 +1425,7 @@ class UBSPortfolioLogicMixin:
 
     def _ubs_portfolio_worker(self, inputs: dict[str, object]) -> None:
         try:
-            target_portfolio_type = PortfolioType(str(inputs["portfolio_type"]))
             rows = self._final_tick_passed_candidates_all_accounts()
-            used = self._used_set_paths_all_accounts(target_portfolio_type)
-            existing_curves = self._saved_portfolio_curves_all_accounts(target_portfolio_type)
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"No pude abrir la memoria UBS: {exc}"})
             return
@@ -1321,25 +1458,78 @@ class UBSPortfolioLogicMixin:
                         {"ok": False, "error": "No quedan candidatos tras aplicar Grid OFF."},
                     )
                     return
-            availability = summarize_robust_rows(rows, used)
-            raw_sets, load_warnings = load_robust_sets_from_rows(
-                rows,
-                used,
-                progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
-            )
-            proposals = self._optimize_ubs_portfolio_proposals(
-                raw_sets,
-                inputs,
-                target_portfolio_type,
-                existing_curves,
-                progress=lambda label, index: self.after(
-                    0,
-                    self.ubs_portfolio_status.set,
-                    f"Calculando propuesta {index}/3 ({label})...",
-                ),
-            )
-            for proposal in proposals:
-                proposal["result"].warnings[:0] = month_warnings + grid_warnings + load_warnings
+            group_warnings: list[str] = []
+            allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
+            if allowed_groups:
+                rows, row_group_counts = self._filter_portfolio_rows_by_allowed_groups(rows, allowed_groups)
+                blocked_groups = {
+                    group: count
+                    for group, count in row_group_counts.items()
+                    if group not in allowed_groups and count
+                }
+                if blocked_groups:
+                    group_warnings.append(
+                        "Filtro grupos activo: "
+                        + ", ".join(sorted(allowed_groups))
+                        + ". Excluidos: "
+                        + ", ".join(f"{group}={count}" for group, count in sorted(blocked_groups.items()))
+                        + "."
+                    )
+                if not rows:
+                    self.after(
+                        0,
+                        self._ubs_portfolio_finished,
+                        {"ok": False, "error": "No quedan candidatos tras aplicar grupos permitidos."},
+                    )
+                    return
+            display_type = PortfolioType(str(inputs.get("portfolio_type") or PortfolioType.BALANCED.value))
+            availability = summarize_robust_rows(rows, self._used_set_paths_all_accounts(display_type))
+            configured_reserve = float(inputs.get("dd_reserve_pct") or 0.0)
+            proposals: list[dict[str, object]] = []
+            errors: list[str] = []
+            for batch_index, (key, label, portfolio_type) in enumerate(PORTFOLIO_TYPE_BATCH_SPECS, start=1):
+                type_inputs = dict(inputs)
+                type_inputs["portfolio_type"] = portfolio_type.value
+                type_inputs["portfolio_type_label"] = PORTFOLIO_TYPE_DISPLAY[portfolio_type.value]
+                reserve = self._portfolio_type_reserve_pct(configured_reserve, portfolio_type)
+                try:
+                    used = self._used_set_paths_all_accounts(portfolio_type)
+                    raw_sets, load_warnings = load_robust_sets_from_rows(
+                        rows,
+                        used,
+                        progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
+                    )
+                    if allowed_groups:
+                        raw_sets, _set_group_counts = self._filter_portfolio_sets_by_allowed_groups(
+                            raw_sets,
+                            allowed_groups,
+                        )
+                    if not raw_sets:
+                        raise ValueError("no quedan sets cargados tras filtros y usados.")
+                    existing_curves = self._saved_portfolio_curves_all_accounts(portfolio_type)
+                    proposal = self._optimize_ubs_portfolio_proposals(
+                        raw_sets,
+                        type_inputs,
+                        portfolio_type,
+                        existing_curves,
+                        specs=((key, label, portfolio_type, reserve),),
+                        progress=lambda proposal_label, _index, outer_index=batch_index: self.after(
+                            0,
+                            self.ubs_portfolio_status.set,
+                            f"Calculando cartera {outer_index}/3 ({proposal_label})...",
+                        ),
+                    )[0]
+                    proposal["result"].warnings[:0] = (
+                        month_warnings + grid_warnings + group_warnings + load_warnings
+                    )
+                    proposals.append(proposal)
+                except Exception as exc:
+                    errors.append(f"{label}: {exc}")
+            if len(proposals) < len(PORTFOLIO_TYPE_BATCH_SPECS):
+                raise ValueError(
+                    "No se pudieron generar los 3 tipos de cartera. "
+                    + " | ".join(errors)
+                )
         except Exception as exc:
             self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
             return
@@ -1477,7 +1667,7 @@ class UBSPortfolioLogicMixin:
             [],
             mode="generate",
         )
-        self.ubs_portfolio_status.set("Selecciona una de las tres propuestas para continuar.")
+        self.ubs_portfolio_status.set("Revisa las tres carteras. Al guardar se persistiran las tres.")
 
     def _accept_generated_ubs_portfolio_proposal(
         self,
@@ -1487,15 +1677,30 @@ class UBSPortfolioLogicMixin:
         inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
         self.ubs_portfolio_pending_result = result
         self.ubs_portfolio_pending_inputs = inputs
+        all_proposals = list(getattr(self, "ubs_portfolio_proposals", {}).values())
+        self.ubs_portfolio_pending_proposals = all_proposals or [proposal]
         self._populate_ubs_portfolio_result(result)
         self._populate_ubs_portfolio_availability(
             getattr(self, "ubs_portfolio_proposals_availability", None)
         )
         self._set_ubs_portfolio_save_enabled(True)
         group_text = self._ubs_portfolio_group_summary_text(result.group_summary)
+        point_status = (
+            f"DD puntual {result.point_usage_pct:.1f}% info"
+            if not result.enforce_point_dd
+            else f"DD puntual {result.point_usage_pct:.1f}%"
+        )
+        point_event = (
+            f"DD puntual {result.actual_point_dd:,.2f} info"
+            if not result.enforce_point_dd
+            else (
+                f"DD puntual {result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f} "
+                f"({result.point_usage_pct:.1f}%)"
+            )
+        )
         status = (
             f"Portafolio generado: {result.total_units} unidades, "
-            f"DD valle {result.valley_usage_pct:.1f}%, DD puntual {result.point_usage_pct:.1f}%."
+            f"DD valle {result.valley_usage_pct:.1f}%, {point_status}."
         )
         if group_text:
             status += f" Grupos: {group_text}."
@@ -1511,8 +1716,7 @@ class UBSPortfolioLogicMixin:
             f"{result.active_strategies} estrategias, "
             f"DD valle {result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f} "
             f"({result.valley_usage_pct:.1f}%), "
-            f"DD puntual {result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f} "
-            f"({result.point_usage_pct:.1f}%)."
+            f"{point_event}."
             + (f" Grupos: {group_text}." if group_text else "")
             + (f" Aviso: {group_warning}" if group_warning else "")
         )
@@ -1523,22 +1727,70 @@ class UBSPortfolioLogicMixin:
         if result is None or inputs is None:
             messagebox.showinfo("Guardar portafolio", "Genera un portafolio valido antes de guardarlo.")
             return
-        if not result.allocations:
-            messagebox.showwarning("Guardar portafolio", "El portafolio no tiene asignaciones.")
+        pending_proposals = list(getattr(self, "ubs_portfolio_pending_proposals", []) or [])
+        if not pending_proposals:
+            pending_proposals = [{"label": inputs.get("optimization_profile_label", "Portafolio"), "inputs": inputs, "result": result}]
+        save_items: list[tuple[str, dict[str, object], PortfolioResult]] = []
+        for proposal in pending_proposals:
+            proposal_result = proposal.get("result")
+            proposal_inputs = proposal.get("inputs")
+            if proposal_result is None or proposal_inputs is None:
+                continue
+            save_items.append((
+                str(proposal.get("label") or "Portafolio"),
+                proposal_inputs,  # type: ignore[arg-type]
+                proposal_result,  # type: ignore[arg-type]
+            ))
+        if not save_items:
+            messagebox.showinfo("Guardar portafolio", "No hay propuestas validas para guardar.")
+            return
+        empty_labels = [label for label, _proposal_inputs, proposal_result in save_items if not proposal_result.allocations]
+        if empty_labels:
+            messagebox.showwarning(
+                "Guardar portafolio",
+                "Estas propuestas no tienen asignaciones: " + ", ".join(empty_labels),
+            )
             return
         conn = self._ubs_portfolio_conn()
+        saved_ids: list[int] = []
+        selected_id: int | None = None
         try:
-            portfolio_id = self._insert_portfolio(conn, inputs, result)
+            for _label, proposal_inputs, proposal_result in save_items:
+                portfolio_id = self._insert_portfolio(
+                    conn,
+                    proposal_inputs,
+                    proposal_result,
+                    commit=False,
+                )
+                saved_ids.append(portfolio_id)
+                if proposal_result is result:
+                    selected_id = portfolio_id
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            messagebox.showerror("Guardar portafolio", f"No se pudo guardar el portafolio:\n{exc}")
+            return
         finally:
             conn.close()
+        if selected_id is None and saved_ids:
+            selected_id = saved_ids[-1]
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        self.ubs_portfolio_pending_proposals = []
         self._set_ubs_portfolio_save_enabled(False)
-        self._refresh_ubs_portfolios(select_id=portfolio_id)
-        self.ubs_portfolio_status.set(f"Portafolio #{portfolio_id} guardado.")
+        self._refresh_ubs_portfolios(select_id=selected_id)
+        if len(saved_ids) == 1:
+            self.ubs_portfolio_status.set(f"Portafolio #{saved_ids[0]} guardado.")
+        else:
+            self.ubs_portfolio_status.set(
+                f"Guardados {len(saved_ids)} portafolios: "
+                + ", ".join(f"#{portfolio_id}" for portfolio_id in saved_ids)
+                + "."
+            )
         self._notify_ubs_portfolio_event(
-            f"Portfolio Builder guardado: #{portfolio_id}, "
-            f"net {result.total_net_profit:,.2f}, lote {result.total_lot:.2f}, "
+            f"Portfolio Builder guardado: {len(saved_ids)} portafolio(s), "
+            f"ids {', '.join(str(portfolio_id) for portfolio_id in saved_ids)}, "
+            f"seleccion net {result.total_net_profit:,.2f}, lote {result.total_lot:.2f}, "
             f"{result.active_strategies} estrategias."
         )
 
@@ -1550,6 +1802,7 @@ class UBSPortfolioLogicMixin:
     def _clear_failed_ubs_portfolio_generation(self) -> None:
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        self.ubs_portfolio_pending_proposals = []
         self._set_ubs_portfolio_save_enabled(False)
         self._clear_ubs_portfolio_result_tables()
 
@@ -2135,7 +2388,7 @@ class UBSPortfolioLogicMixin:
             if bool(inputs.get("grid_off")):
                 rows, grid_warnings = filter_rows_grid_off(rows)
             allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
-            if is_monthly and allowed_groups:
+            if allowed_groups:
                 rows = [
                     row for row in rows
                     if portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
@@ -2154,7 +2407,7 @@ class UBSPortfolioLogicMixin:
                     exclude_portfolio_id=portfolio_id,
                 )
             raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
-            if is_monthly and allowed_groups:
+            if allowed_groups:
                 raw_sets = [
                     strategy for strategy in raw_sets
                     if portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
@@ -2246,24 +2499,27 @@ class UBSPortfolioLogicMixin:
         existing_curves: list[list[float]],
         *,
         strict_full_sets: list | None = None,
+        specs: tuple[tuple[str, str, PortfolioType, float], ...] | None = None,
         progress=None,
     ) -> list[dict[str, object]]:
         configured_reserve = float(inputs.get("dd_reserve_pct") or 0)
         is_monthly_scope = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
         enforce_point_dd = bool(inputs.get("enforce_point_dd", not is_monthly_scope))
-        specs = (
+        proposal_specs = specs or (
             ("profit", "Maximo beneficio", base_type, configured_reserve),
             ("balanced", "Equilibrada", PortfolioType.BALANCED, max(configured_reserve, 15.0)),
             ("margin", "Maximo margen DD", PortfolioType.CONSERVATIVE, max(configured_reserve, 25.0)),
         )
         proposals: list[dict[str, object]] = []
         errors: list[str] = []
-        for index, (key, label, objective_type, reserve) in enumerate(specs, start=1):
+        for index, (key, label, objective_type, reserve) in enumerate(proposal_specs, start=1):
             if callable(progress):
                 progress(label, index)
             proposal_inputs = dict(inputs)
             proposal_inputs["optimization_profile"] = key
             proposal_inputs["optimization_profile_label"] = label
+            proposal_inputs["portfolio_type"] = objective_type.value
+            proposal_inputs["portfolio_type_label"] = PORTFOLIO_TYPE_DISPLAY[objective_type.value]
             proposal_inputs["dd_reserve_pct"] = reserve
             try:
                 strict_monthly = (
@@ -2646,7 +2902,18 @@ class UBSPortfolioLogicMixin:
             grid_warnings: list[str] = []
             if bool(inputs.get("grid_off")):
                 rows, grid_warnings = filter_rows_grid_off(rows)
+            allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
+            if allowed_groups:
+                rows = [
+                    row for row in rows
+                    if portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
+                ]
             candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+            if allowed_groups:
+                candidate_sets = [
+                    strategy for strategy in candidate_sets
+                    if portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
+                ]
             full_sets_for_strict_validation = list(required_sets) + list(candidate_sets)
             required_sets, required_scope_warnings = self._scope_portfolio_sets(required_sets, inputs)
             candidate_sets, candidate_scope_warnings = self._scope_portfolio_sets(candidate_sets, inputs)

@@ -22,6 +22,8 @@ from portfolio_manager.ubs_portfolio import (
     filter_rows_grid_off,
     improve_with_local_search,
     merge_accumulated_curves,
+    margin_profile_label,
+    normalize_margin_profile,
     optimize_portfolio,
     optimize_strict_monthly_portfolio,
     portfolio_margin_summary,
@@ -1056,6 +1058,29 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertEqual(by_set["wti"]["leverage"], 10.0)
         self.assertEqual(by_set["meta"]["leverage"], 2.0)
         self.assertEqual(by_set["meta"]["contract_size"], 100.0)
+
+    def test_standard_broker_margin_profiles_keep_broker_identity(self) -> None:
+        self.assertEqual(normalize_margin_profile("ROBOFOREX"), "roboforex")
+        self.assertEqual(normalize_margin_profile("AXI"), "axi")
+        self.assertEqual(normalize_margin_profile("ICTrading"), "ictrading")
+        self.assertEqual(margin_profile_label("AXI"), "AXI")
+        self.assertEqual(margin_profile_label("ICTRADING"), "ICTrading")
+
+        summary = portfolio_margin_summary(
+            [make_strategy("meta", "META", [0, 10], price=700.0)],
+            {"meta": 1},
+            balance=5000,
+            max_margin_pct=100,
+            margin_profile="AXI",
+            stock_leverage=20,
+            default_leverage=500,
+            stock_contract_size=100,
+            default_contract_size=1,
+        )
+
+        self.assertEqual(summary["profile"], "axi")
+        self.assertEqual(summary["profile_label"], "AXI")
+        self.assertEqual(summary["by_set"]["meta"]["leverage"], 20.0)
 
     def test_portfolio_repair_retains_required_sets(self) -> None:
         result = optimize_portfolio(

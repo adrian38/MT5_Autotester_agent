@@ -360,7 +360,16 @@ class UBSAccountTests(unittest.TestCase):
                 ("ICTRADING", "STANDARD"),
             )
 
-    def test_monthly_margin_profile_defaults_to_roboforex_unless_ttp_is_selected(self) -> None:
+    def test_monthly_margin_profile_defaults_to_active_broker_unless_ttp_is_selected(self) -> None:
+        self.assertEqual(_FakeMonthlyPortfolio("ROBOFOREX")._monthly_margin_profile(), "roboforex")
+        self.assertEqual(_FakeMonthlyPortfolio("AXI")._monthly_margin_profile(), "axi")
+        self.assertEqual(_FakeMonthlyPortfolio("ICTRADING")._monthly_margin_profile(), "ictrading")
+        self.assertEqual(_FakeMonthlyPortfolio("ROBOFOREX", margin_enabled=False)._monthly_margin_profile(), "roboforex")
+        self.assertEqual(
+            _FakeMonthlyPortfolio("ROBOFOREX", margin_enabled=False, ttp_enabled=True)
+            ._monthly_margin_profile(),
+            "ttp",
+        )
         self.assertTrue(_FakeMonthlyPortfolio("ROBOFOREX")._monthly_roboforex_margin_enabled())
         self.assertTrue(_FakeMonthlyPortfolio("AXI")._monthly_roboforex_margin_enabled())
         self.assertTrue(_FakeMonthlyPortfolio("ICTRADING")._monthly_roboforex_margin_enabled())

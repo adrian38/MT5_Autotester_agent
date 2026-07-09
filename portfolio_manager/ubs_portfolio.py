@@ -1536,11 +1536,20 @@ def normalize_margin_profile(profile: str | None) -> str:
     value = str(profile or "roboforex").strip().lower()
     if value in {"ttp", "thetradingpit", "tradingpit", "the_trading_pit"}:
         return "ttp"
+    if value in {"axi", "axi trading", "axitrading", "axi_select", "axiselect"}:
+        return "axi"
+    if value in {"ictrading", "ic trading", "ic", "icmarkets", "ic markets"}:
+        return "ictrading"
     return "roboforex"
 
 
 def margin_profile_label(profile: str | None) -> str:
-    return "TTP" if normalize_margin_profile(profile) == "ttp" else "RoboForex"
+    return {
+        "ttp": "TTP",
+        "axi": "AXI",
+        "ictrading": "ICTrading",
+        "roboforex": "RoboForex",
+    }.get(normalize_margin_profile(profile), "RoboForex")
 
 
 def margin_leverage_for_profile(
