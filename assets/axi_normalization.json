@@ -39,6 +39,7 @@
   "symbol_net_profit_factors": {
     "BCHUSD.SA": 0.02,
     "ETHUSD.SA": 0.1,
+    "IT40.SA": 0.1,
     "LNKUSD.SA": 0.01,
     "LTCUSD.SA": 0.1,
     "XLMUSD.SA": 0.02,

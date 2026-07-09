@@ -34,6 +34,7 @@ from ubs_agent import (
     final_tick_similarity,
     recreate_work_dir,
     related_timeframes,
+    resolve_workspace_path,
     robust_status_pending_for_retry,
     score_config_for_period,
     target_symbol_disabled,
@@ -1389,6 +1390,18 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertEqual(recreated, path)
             self.assertTrue(path.exists())
             self.assertEqual(list(path.iterdir()), [])
+
+    def test_resolve_workspace_path_finds_relocated_outputs_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            current_root = root / "MT5_Autotester_agent_AXI"
+            old_path = root / "MT5_Autotester_agent" / "outputs" / "ubs_agent" / "AXI" / "STANDARD" / "run_1" / "candidate.set"
+            current_path = current_root / "outputs" / "ubs_agent" / "AXI" / "STANDARD" / "run_1" / "candidate.set"
+            current_path.parent.mkdir(parents=True)
+            current_path.write_text("set", encoding="utf-8")
+
+            with patch("ubs_agent.BASE_DIR", current_root):
+                self.assertEqual(resolve_workspace_path(old_path), current_path)
 
     def test_final_tick_similarity_requires_history_quality(self) -> None:
         result = final_tick_similarity(
