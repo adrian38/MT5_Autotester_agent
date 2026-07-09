@@ -4440,7 +4440,10 @@ def _retry_single_candidate(
         symbol_suffix=args.symbol_suffix,
     )
     if status == "accepted" and result is not None:
-        copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
+        copied = copy_accepted(
+            [(replace(variant, path=retry_set), result)],
+            run_dir / f"accepted_gen_{generation:03d}",
+        )
         print(f"Retry aceptado; copias accepted: {len(copied)}")
     else:
         print(f"Retry terminado con estado: {status}")
@@ -4637,12 +4640,15 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
 
     print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
             return 1
         seen_names.add(set_path.name)
-        shutil.copy2(set_path, retry_dir / set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        shutil.copy2(set_path, retry_set)
         if not args.dry_run:
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
@@ -4676,7 +4682,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
-            accepted.append((variant, result))
+            accepted.append((replace(variant, path=retry_sets_by_id[int(row["id"])]), result))
 
     copied = copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}")
     print(
@@ -4714,12 +4720,15 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
 
     print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
             return 1
         seen_names.add(set_path.name)
-        shutil.copy2(set_path, retry_dir / set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        shutil.copy2(set_path, retry_set)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -4755,7 +4764,9 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
             generation = int(row["generation"] or 0)
-            accepted_by_generation.setdefault(generation, []).append((variant, result))
+            accepted_by_generation.setdefault(generation, []).append(
+                (replace(variant, path=retry_sets_by_id[int(row["id"])]), result)
+            )
 
     copied = 0
     for generation, accepted in accepted_by_generation.items():
@@ -4813,12 +4824,15 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
     if requested_ids:
         print("Modo seleccionado: " + ", ".join(str(row["id"]) for row in rows))
     seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en reprobar run: {set_path.name}")
             return 1
         seen_names.add(set_path.name)
-        shutil.copy2(set_path, retry_dir / set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        shutil.copy2(set_path, retry_set)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -4854,7 +4868,9 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
             generation = int(row["generation"] or 0)
-            accepted_by_generation.setdefault(generation, []).append((variant, result))
+            accepted_by_generation.setdefault(generation, []).append(
+                (replace(variant, path=retry_sets_by_id[int(row["id"])]), result)
+            )
 
     copied = 0
     for generation, accepted in accepted_by_generation.items():
