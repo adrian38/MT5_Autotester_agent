@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from ubs.path_utils import resolve_workspace_path
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
@@ -117,13 +118,13 @@ def sync_manual_accepted_candidate_copies(
     ).fetchall()
     copied = 0
     for row in rows:
-        source = Path(str(row["set_path"] or ""))
+        source = resolve_workspace_path(str(row["set_path"] or ""))
         if not source.exists() or not source.is_file():
             continue
         run_dir_raw = str(row["output_dir"] or "").strip()
         if not run_dir_raw:
             continue
-        run_dir = Path(run_dir_raw)
+        run_dir = resolve_workspace_path(run_dir_raw)
         try:
             generation = int(row["generation"] or 0)
         except (TypeError, ValueError):

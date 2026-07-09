@@ -9,6 +9,7 @@ from tkinter import messagebox
 
 from ubs.db import connect_memory
 from ubs.manual_status import mark_candidate_final_tick
+from ubs.path_utils import resolve_workspace_path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -457,7 +458,7 @@ class UBSFinalTickLogicMixin:
                 return False
             run_id = int(run["id"])
             rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
-            rows = [row for row in rows if Path(row["set_path"]).exists()]
+            rows = [row for row in rows if resolve_workspace_path(row["set_path"]).exists()]
             if pending_only:
                 rows = [
                     row for row in rows
@@ -592,7 +593,7 @@ class UBSFinalTickLogicMixin:
             rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [
                 row for row in rows
-                if Path(row["set_path"]).exists()
+                if resolve_workspace_path(row["set_path"]).exists()
                 and str(row["final_tick_status"] or "").strip() == "pending_history_quality"
             ]
             if not rows:

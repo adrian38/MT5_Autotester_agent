@@ -8,6 +8,7 @@ from tkinter import messagebox
 
 from ubs.db import connect_memory
 from ubs.manual_status import mark_candidate_robustness
+from ubs.path_utils import resolve_workspace_path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -361,7 +362,7 @@ class UBSRobustnessLogicMixin:
                 return False
             run_id = int(run["id"])
             rows = self._accepted_candidates_for_robustness(run_id)
-            rows = [row for row in rows if Path(row["set_path"]).exists()]
+            rows = [row for row in rows if resolve_workspace_path(row["set_path"]).exists()]
             selected_ids = {int(value) for value in (candidate_ids or [])}
             if selected_ids:
                 rows = [row for row in rows if int(row["id"]) in selected_ids]
@@ -605,7 +606,7 @@ class UBSRobustnessLogicMixin:
     def _selected_ubs_robust_path(self, kind: str) -> Path | None:
         info = self._selected_ubs_robust_info()
         raw_path = info.get(kind, "")
-        return Path(raw_path).expanduser() if raw_path else None
+        return resolve_workspace_path(raw_path) if raw_path else None
 
     def _open_selected_ubs_robust_set(self) -> None:
         path = self._selected_ubs_robust_path("set")

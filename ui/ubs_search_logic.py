@@ -21,6 +21,7 @@ from ubs.account import (
     normalize_broker,
 )
 from ubs.db import connect_memory
+from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
     DEFAULT_FINAL_TICK_ACCEPTED_BONUS,
@@ -754,7 +755,7 @@ class UBSSearchLogicMixin:
         run: sqlite3.Row,
     ) -> tuple[list[str], list[tuple[str, str, str]]]:
         run_id = int(run["id"])
-        run_dir = Path(str(run["output_dir"] or ""))
+        run_dir = resolve_workspace_path(str(run["output_dir"] or ""))
 
         def rows(sql: str, params: tuple[object, ...] = (run_id,)) -> list[sqlite3.Row]:
             return conn.execute(sql, params).fetchall()
@@ -865,14 +866,14 @@ class UBSSearchLogicMixin:
             problems: list[str] = []
             if not set_path:
                 problems.append("set_path vacio")
-            if set_path and not Path(set_path).exists():
+            if set_path and not workspace_path_exists(set_path):
                 missing_set_files.append(int(row["id"]))
                 problems.append("set file no existe")
             if str(row["status"]) in {"accepted", "rejected", "no_trades", "report_mismatch", "parse_error"}:
                 if not report_path:
                     missing_report_path.append(int(row["id"]))
                     problems.append("report_path vacio")
-                elif not Path(report_path).exists():
+                elif not workspace_path_exists(report_path):
                     missing_report_files.append(int(row["id"]))
                     problems.append("report file no existe")
             if row["metrics_json"] and not parse_json(row["metrics_json"]):
@@ -956,7 +957,7 @@ class UBSSearchLogicMixin:
                 raw_path = str(row[column] or "").strip()
                 if not raw_path:
                     continue
-                report_path = Path(raw_path)
+                report_path = resolve_workspace_path(raw_path)
                 if not report_path.exists():
                     continue
                 cache_key = str(report_path.resolve()).casefold()
@@ -1666,7 +1667,7 @@ class UBSSearchLogicMixin:
         if not set_path:
             messagebox.showinfo("Buscador UBS", "La fila seleccionada no tiene set asociado.")
             return
-        self._open_local_file(Path(set_path))
+        self._open_local_file(resolve_workspace_path(set_path))
 
     def _open_selected_ubs_search_report(self) -> None:
         paths = self._selected_ubs_search_paths()
@@ -1674,8 +1675,8 @@ class UBSSearchLogicMixin:
             return
         for key in ("tick_6m_report", "ohlc_6m_report", "tick_report", "ohlc_report", "robust_report", "base_report"):
             value = paths.get(key)
-            if value and Path(value).exists():
-                self._open_local_file(Path(value))
+            if value and workspace_path_exists(value):
+                self._open_local_file(resolve_workspace_path(value))
                 return
         messagebox.showinfo("Buscador UBS", "La fila seleccionada no tiene reporte disponible.")
 
@@ -1698,7 +1699,7 @@ class UBSSearchLogicMixin:
         missing: list[str] = []
         paths_by_item = getattr(self, "ubs_search_paths", {})
         for item in items:
-            set_path = Path(str(paths_by_item.get(item, {}).get("set") or ""))
+            set_path = resolve_workspace_path(str(paths_by_item.get(item, {}).get("set") or ""))
             if not set_path.is_file():
                 missing.append(set_path.name or item)
                 continue

@@ -1400,7 +1400,7 @@ class UBSSetsFileTests(unittest.TestCase):
             current_path.parent.mkdir(parents=True)
             current_path.write_text("set", encoding="utf-8")
 
-            with patch("ubs_agent.BASE_DIR", current_root):
+            with patch("ubs.path_utils.BASE_DIR", current_root):
                 self.assertEqual(resolve_workspace_path(old_path), current_path)
 
     def test_final_tick_similarity_requires_history_quality(self) -> None:

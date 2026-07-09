@@ -20,6 +20,7 @@ from ubs.account import (
     normalize_broker,
 )
 from ubs.db import connect_memory
+from ubs.path_utils import resolve_workspace_path
 from ubs.set_utils import write_set_text
 from portfolio_manager.ubs_portfolio import (
     PortfolioAvailability,
@@ -3350,7 +3351,7 @@ class UBSPortfolioLogicMixin:
         exported: list[tuple[str, str, str, int, float, str]] = []
         missing: list[str] = []
         for member in members:
-            set_path = Path(str(member.get("set_path") or member.get("set_id") or ""))
+            set_path = resolve_workspace_path(str(member.get("set_path") or member.get("set_id") or ""))
             if not set_path.is_file():
                 missing.append(set_path.name)
                 continue

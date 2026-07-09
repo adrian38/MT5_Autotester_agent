@@ -18,6 +18,7 @@ from tkinter import ttk
 from ubs.account import DEFAULT_BROKER, account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory
 from ubs.manual_status import mark_candidates, sync_manual_accepted_candidate_copies
+from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -403,7 +404,7 @@ class UBSResultsLogicMixin:
         variants_per_seed = int(run["variants_per_seed"] or 0)
         max_seeds = int(run["max_seeds"] or 0)
         execute_backtests = bool(run["execute_backtests"])
-        seed_count = len({str(Path(row["set_path"])) for row in rows if Path(row["set_path"]).exists()})
+        seed_count = len({str(resolve_workspace_path(row["set_path"])) for row in rows if workspace_path_exists(row["set_path"])})
         if latest_generation <= 0 or seed_count <= 0:
             return {"available": False, "message": f"Continuar: run #{run['id']} sin seeds disponibles"}
 
@@ -1167,8 +1168,8 @@ class UBSResultsLogicMixin:
         if not paths:
             self.ubs_compare_detail.set("Selecciona un resultado para comparar contra su seed.")
             return
-        seed_path = Path(paths.get("seed", "")).expanduser()
-        set_path = Path(paths.get("set", "")).expanduser()
+        seed_path = resolve_workspace_path(paths.get("seed", ""))
+        set_path = resolve_workspace_path(paths.get("set", ""))
         if not seed_path.exists() or not set_path.exists():
             self.ubs_compare_detail.set("No existe el seed o el set aceptado en disco.")
             return
@@ -1248,8 +1249,8 @@ class UBSResultsLogicMixin:
         total_changes = 0
         for index, row in enumerate(rows, start=1):
             metrics = self._parse_ubs_metrics(row["metrics_json"])
-            seed_path = Path(row["seed_path"])
-            set_path = Path(row["set_path"])
+            seed_path = resolve_workspace_path(row["seed_path"])
+            set_path = resolve_workspace_path(row["set_path"])
             if seed_path.exists() and set_path.exists():
                 changes = self._set_diff_rows(seed_path, set_path)
                 missing_note = ""
@@ -1367,7 +1368,7 @@ class UBSResultsLogicMixin:
         if not paths:
             return None
         raw_path = paths.get(kind, "")
-        return Path(raw_path).expanduser() if raw_path else None
+        return resolve_workspace_path(raw_path) if raw_path else None
 
     def _open_selected_ubs_compare_seed(self) -> None:
         path = self._selected_ubs_compare_path("seed")
@@ -1494,7 +1495,7 @@ class UBSResultsLogicMixin:
         if not info:
             return None
         raw_path = info.get(kind, "")
-        return Path(raw_path).expanduser() if raw_path else None
+        return resolve_workspace_path(raw_path) if raw_path else None
 
     def _selected_ubs_result_info(self) -> dict:
         if not hasattr(self, "ubs_results_tree"):
@@ -1544,7 +1545,7 @@ class UBSResultsLogicMixin:
             return
         for info in rows:
             candidate_id = str(info.get("id", "")).strip()
-            set_path = Path(str(info.get("set", ""))).expanduser()
+            set_path = resolve_workspace_path(str(info.get("set", "")))
             if not candidate_id:
                 messagebox.showinfo(dialog_title, "Una fila marcada no tiene candidate id.")
                 return
@@ -1679,7 +1680,7 @@ class UBSResultsLogicMixin:
                 missing_sets = []
                 for info in checked_infos:
                     candidate_id = str(info.get("id") or "").strip()
-                    set_path = Path(str(info.get("set") or "")).expanduser()
+                    set_path = resolve_workspace_path(str(info.get("set") or ""))
                     if not candidate_id:
                         messagebox.showinfo("Agente UBS", "Una fila marcada no tiene candidate id.")
                         return
@@ -1796,7 +1797,7 @@ class UBSResultsLogicMixin:
                 "select set_path from candidates where run_id=? order by generation, id",
                 (run_id,),
             ).fetchall()
-            return sum(1 for row in rows if Path(str(row["set_path"] or "")).exists())
+            return sum(1 for row in rows if workspace_path_exists(str(row["set_path"] or "")))
         finally:
             conn.close()
 
@@ -1818,7 +1819,7 @@ class UBSResultsLogicMixin:
         """Return the .htm/.html report + all associated image files."""
         if not rep_str:
             return []
-        rep = Path(rep_str)
+        rep = resolve_workspace_path(rep_str)
         parent = rep.parent if rep.parent.exists() else BASE_DIR / "reports"
         stem = rep.stem
         found = [f for f in parent.glob(f"{stem}*") if f.is_file() and f.suffix.lower() != ".set"]
@@ -1889,7 +1890,7 @@ class UBSResultsLogicMixin:
             folder.mkdir(parents=True, exist_ok=True)
             copied = False
             if set_str:
-                src = Path(set_str)
+                src = resolve_workspace_path(set_str)
                 if src.exists():
                     shutil.copy2(src, folder / src.name)
                     copied = True
@@ -2067,7 +2068,7 @@ class UBSResultsLogicMixin:
                     deleted_files += 1
                 except OSError:
                     pass
-            sp = Path(str(row["set_path"] or ""))
+            sp = resolve_workspace_path(str(row["set_path"] or ""))
             if sp.suffix.lower() == ".set" and sp.exists():
                 try:
                     sp.unlink()
@@ -2126,7 +2127,7 @@ class UBSResultsLogicMixin:
         cids: list[str] = []
 
         for info in checked:
-            sp = Path(str(info.get("set", "") or ""))
+            sp = resolve_workspace_path(str(info.get("set", "") or ""))
             if sp.exists():
                 try:
                     sp.unlink()

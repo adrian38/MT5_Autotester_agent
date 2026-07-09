@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ubs.db import connect_memory
 from ubs.models import Seed, Variant
+from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 from ubs.score import ScoreResult
 from ubs.selection import SelectionFitnessModel, SelectionPrediction
 from ubs.weights import (
@@ -1131,7 +1132,7 @@ class AgentMemory:
         seeds: list[Seed] = []
         seen: set[str] = set()
         for row in rows:
-            path = Path(row["set_path"])
+            path = resolve_workspace_path(row["set_path"])
             key = str(path.resolve()) if path.exists() else str(path)
             if key in seen or not path.exists():
                 continue
@@ -1181,7 +1182,7 @@ class AgentMemory:
                 "select * from candidates where run_id=? and generation=? order by id",
                 (run_id, generation),
             ).fetchall()
-        return [variant_from_candidate_row(row) for row in rows if Path(row["set_path"]).exists()]
+        return [variant_from_candidate_row(row) for row in rows if workspace_path_exists(row["set_path"])]
 
     def candidate_by_id(self, candidate_id: int) -> sqlite3.Row | None:
         return self.conn.execute("select * from candidates where id=?", (candidate_id,)).fetchone()

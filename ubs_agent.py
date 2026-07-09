@@ -47,6 +47,7 @@ from ubs.account import (
 )
 from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
+from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
@@ -454,13 +455,21 @@ def parse_args() -> argparse.Namespace:
     migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
         args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type, args.broker))
+    else:
+        args.source_dir = str(resolve_workspace_path(args.source_dir))
     if Path(args.output_dir).expanduser() == DEFAULT_OUTPUT:
         args.output_dir = str(account_output_dir(BASE_DIR, args.account_type, args.broker))
+    else:
+        args.output_dir = str(resolve_workspace_path(args.output_dir))
     legacy_memory = BASE_DIR / "outputs" / "ubs_memory.sqlite"
     if Path(args.memory).expanduser() in {DEFAULT_MEMORY, legacy_memory}:
         args.memory = str(account_memory_path(BASE_DIR, args.account_type, args.broker))
+    else:
+        args.memory = str(resolve_workspace_path(args.memory))
     if Path(args.assets).expanduser() == DEFAULT_ASSETS:
         args.assets = str(broker_asset_universe_path_with_fallback(BASE_DIR, args.broker))
+    else:
+        args.assets = str(resolve_workspace_path(args.assets))
     args.symbol_map = augment_symbol_map_with_suffix_targets(args.symbol_map, args)
     return args
 
@@ -2060,8 +2069,8 @@ def format_disabled_seed_counts(seeds: list[Seed], symbol_map: dict[str, str]) -
 
 
 def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
-    source_dir = Path(args.source_dir).expanduser()
-    output_root = Path(args.output_dir).expanduser()
+    source_dir = resolve_workspace_path(args.source_dir)
+    output_root = resolve_workspace_path(args.output_dir)
     seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
@@ -2259,7 +2268,7 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
 
 
 def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
-    source_dir = Path(args.source_dir).expanduser()
+    source_dir = resolve_workspace_path(args.source_dir)
     seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
     if not seeds:
         print(f"ERROR: no hay seeds .set en {source_dir}")
@@ -2289,10 +2298,10 @@ def rescore_seed_scores_only(args: argparse.Namespace, memory: AgentMemory, scor
 def _stored_or_discovered_report(row: sqlite3.Row) -> Path | None:
     report_raw = str(row["report_path"] or "").strip()
     if report_raw:
-        report = Path(report_raw)
+        report = resolve_workspace_path(report_raw)
         if report.exists():
             return report
-    set_path = Path(str(row["set_path"] or ""))
+    set_path = resolve_workspace_path(str(row["set_path"] or ""))
     if set_path.exists():
         return find_report_for_set(set_path)
     return None
@@ -2967,11 +2976,12 @@ def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Pa
     accepted_dir.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
     for variant, result in survivors:
-        for previous in accepted_dir.glob(f"*__{variant.path.name}"):
+        source_path = resolve_workspace_path(variant.path)
+        for previous in accepted_dir.glob(f"*__{source_path.name}"):
             if previous.is_file():
                 previous.unlink()
-        destination = accepted_dir / f"score_{result.score:07.2f}__{variant.path.name}"
-        shutil.copy2(variant.path, destination)
+        destination = accepted_dir / f"score_{result.score:07.2f}__{source_path.name}"
+        shutil.copy2(source_path, destination)
         copied.append(destination)
     return copied
 
@@ -2982,31 +2992,6 @@ def recreate_work_dir(path: Path) -> Path:
             raise NotADirectoryError(path)
         shutil.rmtree(path)
     path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-RELOCATABLE_WORKSPACE_DIRS = ("outputs", "sets", "reports", "configs", "assets")
-
-
-def resolve_workspace_path(value: str | Path) -> Path:
-    path = Path(value)
-    if path.exists():
-        return path
-    if not path.is_absolute():
-        candidate = BASE_DIR / path
-        return candidate if candidate.exists() else path
-
-    parts = path.parts
-    lower_parts = [part.lower() for part in parts]
-    for root_name in RELOCATABLE_WORKSPACE_DIRS:
-        try:
-            root_index = lower_parts.index(root_name)
-        except ValueError:
-            continue
-        candidate = BASE_DIR.joinpath(*parts[root_index:])
-        if candidate.exists():
-            diag_log(f"resolved relocated workspace path: {path} -> {candidate}")
-            return candidate
     return path
 
 
@@ -4575,7 +4560,10 @@ def _retry_single_candidate(
         symbol_suffix=args.symbol_suffix,
     )
     if status == "accepted" and result is not None:
-        copied = copy_accepted([(variant, result)], run_dir / f"accepted_gen_{generation:03d}")
+        copied = copy_accepted(
+            [(replace(variant, path=retry_set), result)],
+            run_dir / f"accepted_gen_{generation:03d}",
+        )
         print(f"Retry aceptado; copias accepted: {len(copied)}")
     else:
         print(f"Retry terminado con estado: {status}")
@@ -4625,7 +4613,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         if not seeds:
             return 1
 
-        retry_dir = Path(args.output_dir).expanduser() / "seed_retry" / datetime.now().strftime("retry_%Y%m%d_%H%M%S")
+        retry_dir = resolve_workspace_path(args.output_dir) / "seed_retry" / datetime.now().strftime("retry_%Y%m%d_%H%M%S")
         retry_dir.mkdir(parents=True, exist_ok=True)
         copied: list[tuple[Seed, Path]] = []
         used_names: set[str] = set()
@@ -4696,7 +4684,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
             record_invalid_seed(memory, seed, invalid_reasons)
         return 1
 
-    output_root = Path(args.output_dir).expanduser()
+    output_root = resolve_workspace_path(args.output_dir)
     retry_dir = output_root / "seed_retry" / datetime.now().strftime("retry_%Y%m%d_%H%M%S")
     retry_dir.mkdir(parents=True, exist_ok=True)
     used_names: set[str] = set()
@@ -4772,12 +4760,15 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
 
     print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
             return 1
         seen_names.add(set_path.name)
-        shutil.copy2(set_path, retry_dir / set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        shutil.copy2(set_path, retry_set)
         if not args.dry_run:
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
@@ -4811,7 +4802,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
-            accepted.append((variant, result))
+            accepted.append((replace(variant, path=retry_sets_by_id[int(row["id"])]), result))
 
     copied = copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}")
     print(
@@ -4849,12 +4840,15 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
 
     print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
             return 1
         seen_names.add(set_path.name)
-        shutil.copy2(set_path, retry_dir / set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        shutil.copy2(set_path, retry_set)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -4890,7 +4884,9 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
             generation = int(row["generation"] or 0)
-            accepted_by_generation.setdefault(generation, []).append((variant, result))
+            accepted_by_generation.setdefault(generation, []).append(
+                (replace(variant, path=retry_sets_by_id[int(row["id"])]), result)
+            )
 
     copied = 0
     for generation, accepted in accepted_by_generation.items():
@@ -4948,12 +4944,15 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
     if requested_ids:
         print("Modo seleccionado: " + ", ".join(str(row["id"]) for row in rows))
     seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en reprobar run: {set_path.name}")
             return 1
         seen_names.add(set_path.name)
-        shutil.copy2(set_path, retry_dir / set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        shutil.copy2(set_path, retry_set)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -4989,7 +4988,9 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
             generation = int(row["generation"] or 0)
-            accepted_by_generation.setdefault(generation, []).append((variant, result))
+            accepted_by_generation.setdefault(generation, []).append(
+                (replace(variant, path=retry_sets_by_id[int(row["id"])]), result)
+            )
 
     copied = 0
     for generation, accepted in accepted_by_generation.items():
@@ -5045,8 +5046,8 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
         print(f"ERROR: timeframe probe invalido: {target_period}")
         return 1
 
-    source_dir = Path(args.source_dir).expanduser()
-    output_root = Path(args.output_dir).expanduser()
+    source_dir = resolve_workspace_path(args.source_dir)
+    output_root = resolve_workspace_path(args.output_dir)
     disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
@@ -5380,7 +5381,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
 
     print(f"Continuando run #{run_id}: plan={planned_generations}, ultima_gen={max_generation}")
-    run_source_dir = Path(run["source_dir"])
+    run_source_dir = resolve_workspace_path(run["source_dir"])
     run_source_seeds = memory.apply_seed_overrides(load_seeds(run_source_dir, base_dir=BASE_DIR))
     run_source_seeds, source_blocked_count = generation_source_seeds(
         run_source_seeds,
@@ -5668,10 +5669,10 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
 
 
 def run_agent(args: argparse.Namespace) -> int:
-    source_dir = Path(args.source_dir).expanduser()
-    output_root = Path(args.output_dir).expanduser()
+    source_dir = resolve_workspace_path(args.source_dir)
+    output_root = resolve_workspace_path(args.output_dir)
     run_dir = output_root / datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    memory = AgentMemory(Path(args.memory).expanduser())
+    memory = AgentMemory(resolve_workspace_path(args.memory))
     rng = random.Random(args.random_seed)
     score_config = ScoreConfig(
         min_net_profit=args.min_net_profit,
