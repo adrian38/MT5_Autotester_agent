@@ -714,6 +714,13 @@ requirement changes or a debt item is opened/closed.
   classification MUST use the maintained broker universe files, including
   exchange-suffixed stocks and aliases, instead of relying only on a small
   hard-coded symbol list. The controls MUST be arranged as a compact grid.
+- **FR-1.12.45** Full-history `UBS Portafolio` MUST expose a persisted
+  **Excluir usados** checkbox, enabled by default for backward compatibility.
+  When enabled, sets allocated to other saved full-history portfolios remain
+  ineligible. When disabled, those sets MAY be reused if they pass every
+  current DD, correlation, margin, group, and pipeline gate. The setting MUST
+  apply consistently to generation, availability counts, reoptimization, and
+  completion; quarantine remains a hard exclusion regardless of this option.
 
 ### 1.13 Packaging & runtime
 

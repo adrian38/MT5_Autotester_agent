@@ -916,6 +916,9 @@ class MT5AutotesterUI(
         self.ubs_portfolio_grid_off = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_grid_off"), False)
         )
+        self.ubs_portfolio_exclude_used_sets = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_exclude_used_sets"), True)
+        )
         self.ubs_portfolio_margin_profile = tk.StringVar(
             value=_display_margin_profile(
                 saved_general.get("ubs_portfolio_margin_profile"),

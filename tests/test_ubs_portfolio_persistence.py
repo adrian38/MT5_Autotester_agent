@@ -537,6 +537,7 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
 
         self.assertEqual(values["point_dd_pct"], 12.0)
         self.assertFalse(values["enforce_point_dd"])
+        self.assertTrue(values["exclude_used_sets"])
         self.assertEqual(
             values["allowed_asset_groups"],
             ["Bonds", "Crypto", "Energies", "Forex", "Indices", "Metals", "Softs", "Stocks"],
@@ -568,6 +569,7 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         logic.ubs_portfolio_max_portfolio_corr = _Var("")
         logic.ubs_portfolio_margin_profile = _Var("ICTRADING")
         logic.ubs_portfolio_max_margin_pct = _Var("80")
+        logic.ubs_portfolio_exclude_used_sets = _Var(False)
         logic.ubs_portfolio_allow_forex = _Var(True)
         logic.ubs_portfolio_allow_metals = _Var(True)
         logic.ubs_portfolio_allow_indices = _Var(False)
@@ -586,7 +588,29 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         self.assertTrue(values["validate_roboforex_margin"])
         self.assertFalse(values["validate_ttp_margin"])
         self.assertEqual(values["max_margin_pct"], 80.0)
+        self.assertFalse(values["exclude_used_sets"])
         self.assertEqual(values["allowed_asset_groups"], ["Forex", "Metals"])
+
+    def test_availability_does_not_load_used_locks_when_reuse_is_enabled(self) -> None:
+        logic = _PortfolioLogic()
+        logic.ubs_portfolio_exclude_used_sets = _Var(False)
+        rows = [
+            {
+                "candidate_id": "STANDARD:1",
+                "set_path": "C:/sets/reusable.set",
+                "symbol": "EURUSD",
+                "target_symbol": "EURUSD",
+            }
+        ]
+        with (
+            patch.object(logic, "_final_tick_passed_candidates_all_accounts", return_value=rows),
+            patch.object(logic, "_used_set_paths_all_risk_profiles") as used_mock,
+        ):
+            availability = logic._portfolio_availability()
+
+        used_mock.assert_not_called()
+        self.assertEqual(availability.already_used, 0)
+        self.assertEqual(availability.available, 1)
 
     def test_saving_generated_portfolio_persists_one_bundle_with_all_pending_proposals(self) -> None:
         logic = _BatchSaveLogic()

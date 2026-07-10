@@ -356,6 +356,7 @@ class UBSPortfolioViewMixin:
 
         target_month_var = getattr(self, "ubs_portfolio_target_month", None)
         grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
+        exclude_used_var = getattr(self, "ubs_portfolio_exclude_used_sets", None)
 
         label(0, 0, "Capital")
         ttk.Entry(form, textvariable=self.ubs_portfolio_capital, width=10).grid(row=0, column=1, sticky="w", pady=5)
@@ -629,13 +630,38 @@ class UBSPortfolioViewMixin:
                     monthly=True,
                 )
         else:
+            if exclude_used_var is not None:
+                exclude_used_check = ttk.Checkbutton(
+                    form,
+                    text="Excluir usados",
+                    variable=exclude_used_var,
+                    command=getattr(self, "_refresh_ubs_portfolio_availability", None),
+                )
+                exclude_used_check.grid(
+                    row=3,
+                    column=4,
+                    sticky="w",
+                    padx=(8, 4),
+                    pady=5,
+                )
+                self._tooltip_cls(
+                    exclude_used_check,
+                    "Activado: no reutiliza sets guardados en otros portafolios. "
+                    "Desactivado: permite reutilizarlos si pasan DD, correlacion y los demas filtros.",
+                )
             if grid_off_var is not None:
                 grid_off_check = ttk.Checkbutton(
                     form,
                     text="Grid OFF",
                     variable=grid_off_var,
                 )
-                grid_off_check.grid(row=3, column=4, columnspan=2, sticky="w", padx=(8, 4), pady=5)
+                grid_off_check.grid(
+                    row=3,
+                    column=5 if exclude_used_var is not None else 4,
+                    sticky="w",
+                    padx=(8, 4),
+                    pady=5,
+                )
                 self._tooltip_cls(
                     grid_off_check,
                     "Si esta activo, descarta candidatos cuyo .set tenga EnableGrid=true.",

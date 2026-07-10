@@ -448,6 +448,9 @@ class SettingsLogicMixin:
                 "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"
             ),
             "ubs_portfolio_grid_off": "1" if self.ubs_portfolio_grid_off.get() else "0",
+            "ubs_portfolio_exclude_used_sets": (
+                "1" if self.ubs_portfolio_exclude_used_sets.get() else "0"
+            ),
             "ubs_portfolio_margin_profile": self.ubs_portfolio_margin_profile.get().strip().upper(),
             "ubs_portfolio_max_margin_pct": self.ubs_portfolio_max_margin_pct.get().strip(),
             "ubs_portfolio_allow_forex": "1" if self.ubs_portfolio_allow_forex.get() else "0",

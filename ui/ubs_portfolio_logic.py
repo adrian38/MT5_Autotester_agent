@@ -104,6 +104,7 @@ DEFAULT_PORTFOLIO_FORM = {
     "deep_optimization": True,
     "use_correlation": True,
     "require_3_positive_months_6m": False,
+    "exclude_used_sets": True,
     "dd_reserve_pct": "10",
     "search_restarts": 4,
     "max_pair_corr": "0.35",
@@ -673,7 +674,9 @@ class UBSPortfolioLogicMixin:
         allowed_groups = self._ubs_portfolio_allowed_asset_groups()
         if allowed_groups:
             rows, _group_counts = self._filter_portfolio_rows_by_allowed_groups(rows, allowed_groups)
-        used = self._used_set_paths_all_risk_profiles()
+        exclude_used_var = getattr(self, "ubs_portfolio_exclude_used_sets", None)
+        exclude_used = exclude_used_var is None or bool(exclude_used_var.get())
+        used = self._used_set_paths_all_risk_profiles() if exclude_used else []
         return summarize_robust_rows(rows, used)
 
     def _portfolio_result_metrics(
@@ -1512,6 +1515,9 @@ class UBSPortfolioLogicMixin:
             "grid_off": bool(getattr(self, "ubs_portfolio_grid_off").get())
             if hasattr(self, "ubs_portfolio_grid_off")
             else False,
+            "exclude_used_sets": bool(getattr(self, "ubs_portfolio_exclude_used_sets").get())
+            if hasattr(self, "ubs_portfolio_exclude_used_sets")
+            else True,
             "dd_reserve_pct": self._parse_float_setting(
                 self.ubs_portfolio_dd_reserve_pct.get(),
                 "Reserva DD",
@@ -1634,6 +1640,8 @@ class UBSPortfolioLogicMixin:
         self.ubs_portfolio_require_3_positive_months_6m.set(DEFAULT_PORTFOLIO_FORM["require_3_positive_months_6m"])
         if hasattr(self, "ubs_portfolio_grid_off"):
             self.ubs_portfolio_grid_off.set(False)
+        if hasattr(self, "ubs_portfolio_exclude_used_sets"):
+            self.ubs_portfolio_exclude_used_sets.set(True)
         margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
         if margin_profile_var is not None:
             margin_profile_var.set(self._portfolio_margin_profile_display())
@@ -1746,7 +1754,11 @@ class UBSPortfolioLogicMixin:
                     )
                     return
             base_type = PortfolioType(str(inputs.get("portfolio_type") or PortfolioType.BALANCED.value))
-            used = self._used_set_paths_all_risk_profiles()
+            used = (
+                self._used_set_paths_all_risk_profiles()
+                if bool(inputs.get("exclude_used_sets", True))
+                else []
+            )
             availability = summarize_robust_rows(rows, used)
             raw_sets, load_warnings = load_robust_sets_from_rows(
                 rows,
@@ -2157,6 +2169,9 @@ class UBSPortfolioLogicMixin:
         grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
         if grid_off_var is not None and bool(grid_off_var.get()):
             filter_suffix += " | Grid OFF activo"
+        exclude_used_var = getattr(self, "ubs_portfolio_exclude_used_sets", None)
+        if exclude_used_var is not None and not bool(exclude_used_var.get()):
+            filter_suffix += " | Reutilizacion de sets activa"
         self.ubs_portfolio_availability.set(
             f"Sets Final Tick 6M OK broker/cuenta: {availability.robust_accepted} | "
             f"Sets bloqueados: {availability.already_used} | "
@@ -2565,6 +2580,7 @@ class UBSPortfolioLogicMixin:
             "target_month": int(portfolio["target_month"] or 0) or None,
             "strict_yearly_month_validation": False,
             "deep_optimization": False,
+            "exclude_used_sets": True,
             "exclude_monthly_used": False,
             "corr_with_monthly_portfolios": False,
             "enforce_point_dd": str(portfolio["portfolio_scope"] or "full_history") != "monthly",
@@ -2909,9 +2925,13 @@ class UBSPortfolioLogicMixin:
                     else []
                 )
             else:
-                used = self._used_set_paths_all_accounts(
-                    portfolio_type,
-                    exclude_portfolio_id=portfolio_id,
+                used = (
+                    self._used_set_paths_all_accounts(
+                        portfolio_type,
+                        exclude_portfolio_id=portfolio_id,
+                    )
+                    if bool(inputs.get("exclude_used_sets", True))
+                    else []
                 )
             raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
             if allowed_groups:
@@ -3385,9 +3405,13 @@ class UBSPortfolioLogicMixin:
             rows = self._final_tick_passed_candidates_all_accounts(
                 include_quarantined=is_monthly,
             )
-            used = [] if is_monthly else self._used_set_paths_all_accounts(
-                portfolio_type,
-                exclude_portfolio_id=portfolio_id,
+            used = (
+                []
+                if is_monthly or not bool(inputs.get("exclude_used_sets", True))
+                else self._used_set_paths_all_accounts(
+                    portfolio_type,
+                    exclude_portfolio_id=portfolio_id,
+                )
             )
             required_rows = [
                 {
