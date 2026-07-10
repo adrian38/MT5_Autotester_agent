@@ -1178,6 +1178,8 @@ def load_robust_sets_from_rows(
     loaded: list[RobustStrategySet] = []
     skipped_missing = 0
     skipped_parse = 0
+    missing_examples: list[str] = []
+    parse_examples: list[str] = []
     candidates = list(latest_by_stem.values())
     for index, row in enumerate(candidates, start=1):
         set_path = str(_row_value(row, "set_path", default=""))
@@ -1189,6 +1191,15 @@ def load_robust_sets_from_rows(
         oos_path = resolve_workspace_path(str(_row_value(row, "oos_report_path", "robust_report_path", default="")))
         if not is_path.is_file() or not oos_path.is_file():
             skipped_missing += 1
+            if len(missing_examples) < 5:
+                missing_parts = []
+                if not is_path.is_file():
+                    missing_parts.append(f"base={is_path.name or '-'}")
+                if not oos_path.is_file():
+                    missing_parts.append(f"robustez={oos_path.name or '-'}")
+                missing_examples.append(
+                    f"{Path(set_path).name}: " + ", ".join(missing_parts)
+                )
             continue
         try:
             is_period = period_report_from_strategy_report(parse(is_path), "2020_2024")
@@ -1210,14 +1221,21 @@ def load_robust_sets_from_rows(
                     oos_report_path=str(oos_path),
                 )
             )
-        except Exception:
+        except Exception as exc:
             skipped_parse += 1
+            if len(parse_examples) < 5:
+                message = str(exc).strip() or "sin detalle"
+                parse_examples.append(
+                    f"{Path(set_path).name}: {type(exc).__name__}: {message}"
+                )
             continue
 
     if skipped_missing:
         warnings.append(f"{skipped_missing} candidato(s) omitido(s): faltan reportes base o robustez.")
+        warnings.append("Ejemplos de reportes ausentes: " + " | ".join(missing_examples))
     if skipped_parse:
         warnings.append(f"{skipped_parse} candidato(s) omitido(s): reporte ilegible o curva invalida.")
+        warnings.append("Ejemplos de errores de carga: " + " | ".join(parse_examples))
     return loaded, warnings
 
 
@@ -4115,6 +4133,18 @@ def optimize_portfolio(
         )
     selected_ids = {strategy.set_id for strategy in selected}
     selected.extend(eligible_by_id[set_id] for set_id in required_ids - selected_ids)
+    configured_group_units_pct = max_units_per_group_pct
+    candidate_group_count = _candidate_group_count(selected)
+    group_units_pct_feasibility_floor: float | None = None
+    if max_units_per_group_pct is not None and candidate_group_count > 1:
+        # A cap below 1/N is impossible when only N asset groups are in the
+        # candidate pool (for example, 40% with Forex + Metals only). Use the
+        # smallest feasible cap instead of leaving the greedy allocator stuck.
+        group_units_pct_feasibility_floor = 1.0 / candidate_group_count
+        max_units_per_group_pct = max(
+            float(max_units_per_group_pct),
+            group_units_pct_feasibility_floor,
+        )
     initial_allocations = {
         set_id: max(int((required_initial_allocations or {}).get(set_id, 1)), 1)
         for set_id in required_ids
@@ -4470,6 +4500,17 @@ def optimize_portfolio(
         ]
 
     warnings: list[str] = []
+    if (
+        configured_group_units_pct is not None
+        and group_units_pct_feasibility_floor is not None
+        and float(max_units_per_group_pct) > float(configured_group_units_pct) + 1e-9
+    ):
+        warnings.append(
+            "Group unit cap adjusted to the feasible diversification floor: "
+            f"{float(configured_group_units_pct) * 100.0:.1f}% -> "
+            f"{float(max_units_per_group_pct) * 100.0:.1f}% for "
+            f"{candidate_group_count} available asset groups."
+        )
     if dd_reserve_pct > 0:
         warnings.append(
             f"DD reserve {float(dd_reserve_pct):.1f}% applied; optimizer used reduced effective DD targets."

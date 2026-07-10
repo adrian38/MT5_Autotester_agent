@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import unittest
+from unittest.mock import patch
 
 from portfolio_manager.ubs_portfolio import PortfolioType, optimize_portfolio
 from ui.ubs_portfolio_logic import PORTFOLIO_TYPE_BATCH_SPECS, UBSPortfolioLogicMixin
@@ -416,20 +417,21 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
             "max_margin_pct": None,
             "margin_profile": "ictrading",
         }
-        proposals = self.logic._optimize_locked_ubs_portfolio_variants(
-            [
-                make_strategy("a.set", "EURUSD", [0, 60, 50, 100]),
-                make_strategy("b.set", "GBPUSD", [0, 45, 43, 130]),
-                make_strategy("c.set", "XAUUSD", [0, 20, 19, 60]),
-            ],
-            inputs,
-            PortfolioType.BALANCED,
-            {
-                PortfolioType.AGGRESSIVE: [],
-                PortfolioType.BALANCED: [],
-                PortfolioType.CONSERVATIVE: [],
-            },
-        )
+        with patch("ui.ubs_portfolio_logic.optimize_portfolio", wraps=optimize_portfolio) as optimize_mock:
+            proposals = self.logic._optimize_locked_ubs_portfolio_variants(
+                [
+                    make_strategy("a.set", "EURUSD", [0, 60, 50, 100]),
+                    make_strategy("b.set", "GBPUSD", [0, 45, 43, 130]),
+                    make_strategy("c.set", "XAUUSD", [0, 20, 19, 60]),
+                ],
+                inputs,
+                PortfolioType.BALANCED,
+                {
+                    PortfolioType.AGGRESSIVE: [],
+                    PortfolioType.BALANCED: [],
+                    PortfolioType.CONSERVATIVE: [],
+                },
+            )
 
         self.assertEqual([item["key"] for item in proposals], ["aggressive", "balanced", "conservative"])
         set_ids_by_variant = [
@@ -439,6 +441,34 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         self.assertTrue(set_ids_by_variant[0])
         self.assertEqual(set_ids_by_variant[0], set_ids_by_variant[1])
         self.assertEqual(set_ids_by_variant[0], set_ids_by_variant[2])
+        conservative_result = proposals[2]["result"]
+        self.assertGreater(
+            conservative_result.total_units,
+            conservative_result.active_strategies,
+        )
+        variant_calls = [
+            call
+            for call in optimize_mock.call_args_list
+            if call.kwargs.get("max_total_candidates") is None
+        ]
+        self.assertEqual(len(variant_calls), len(PORTFOLIO_TYPE_BATCH_SPECS))
+        for call in variant_calls:
+            self.assertNotIn("required_set_ids", call.kwargs)
+            self.assertEqual(
+                call.kwargs["minimum_active_strategies"],
+                len(set_ids_by_variant[0]),
+            )
+            self.assertEqual(
+                call.kwargs["maximum_active_strategies"],
+                len(set_ids_by_variant[0]),
+            )
+        base_calls = [
+            call
+            for call in optimize_mock.call_args_list
+            if call.kwargs.get("max_total_candidates") is not None
+        ]
+        self.assertEqual(len(base_calls), 1)
+        self.assertEqual(base_calls[0].kwargs["dd_reserve_pct"], 25.0)
 
         portfolio_id = self.logic._insert_portfolio_bundle(
             self.conn,

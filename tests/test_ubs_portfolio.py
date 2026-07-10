@@ -21,6 +21,7 @@ from portfolio_manager.ubs_portfolio import (
     filter_eligible_sets,
     filter_rows_grid_off,
     improve_with_local_search,
+    load_robust_sets_from_rows,
     merge_accumulated_curves,
     margin_profile_label,
     normalize_margin_profile,
@@ -155,6 +156,59 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
 
             self.assertEqual([row["candidate_id"] for row in filtered], [2, 3, 4])
             self.assertTrue(any("EnableGrid=true" in warning for warning in warnings))
+
+    def test_robust_set_loader_reports_missing_report_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            robust_report = root / "robust.htm"
+            robust_report.write_text("report", encoding="utf-8")
+            missing_report = root / "missing_base.htm"
+
+            loaded, warnings = load_robust_sets_from_rows(
+                [
+                    {
+                        "set_path": str(root / "candidate.set"),
+                        "candidate_id": 1,
+                        "is_report_path": str(missing_report),
+                        "oos_report_path": str(robust_report),
+                    }
+                ],
+                [],
+            )
+
+            self.assertEqual(loaded, [])
+            detail = " ".join(warnings)
+            self.assertIn("candidate.set", detail)
+            self.assertIn("base=missing_base.htm", detail)
+
+    def test_robust_set_loader_reports_parse_error_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            base_report = root / "base.htm"
+            robust_report = root / "robust.htm"
+            base_report.write_text("report", encoding="utf-8")
+            robust_report.write_text("report", encoding="utf-8")
+
+            def fail_parse(_path: Path):
+                raise ValueError("periodos solapados")
+
+            loaded, warnings = load_robust_sets_from_rows(
+                [
+                    {
+                        "set_path": str(root / "candidate.set"),
+                        "candidate_id": 1,
+                        "is_report_path": str(base_report),
+                        "oos_report_path": str(robust_report),
+                    }
+                ],
+                [],
+                parse=fail_parse,
+            )
+
+            self.assertEqual(loaded, [])
+            detail = " ".join(warnings)
+            self.assertIn("candidate.set", detail)
+            self.assertIn("ValueError: periodos solapados", detail)
 
     def test_strict_monthly_validation_requires_target_month_best_in_last_five_years(self) -> None:
         strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
@@ -497,6 +551,37 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             run_local_search=True,
         )
         self.assertLessEqual(result.group_summary["IndicesEnergies"]["unit_pct"], 55.1)
+
+    def test_conservative_two_group_cap_uses_feasible_diversification_floor(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("eur", "EURUSD", [0, 90, 85, 180]),
+                make_strategy("gbp", "GBPUSD", [0, 85, 80, 170]),
+                make_strategy("gold", "XAUUSD", [0, 80, 75, 160]),
+                make_strategy("silver", "XAGUSD", [0, 75, 70, 150]),
+            ],
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.CONSERVATIVE,
+            top_k_per_symbol=10,
+            max_total_candidates=None,
+            max_total_units=40,
+            max_sets_per_symbol=1,
+            minimum_active_strategies=4,
+            maximum_active_strategies=4,
+            run_local_search=True,
+        )
+
+        self.assertEqual(result.active_strategies, 4)
+        self.assertGreater(result.total_units, result.active_strategies)
+        self.assertLessEqual(
+            max(float(row["unit_pct"]) for row in result.group_summary.values()),
+            50.1,
+        )
+        self.assertTrue(
+            any("40.0% -> 50.0%" in warning for warning in result.warnings)
+        )
 
     def test_candidate_cap_reserves_available_asset_groups(self) -> None:
         sets = [

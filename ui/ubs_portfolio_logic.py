@@ -1752,7 +1752,11 @@ class UBSPortfolioLogicMixin:
                     allowed_groups,
                 )
             if not raw_sets:
-                raise ValueError("No quedan sets cargados tras filtros, grupos y usados.")
+                detail = " ".join(load_warnings)
+                raise ValueError(
+                    "No quedan sets cargados tras filtros, grupos y usados."
+                    + (f" {detail}" if detail else "")
+                )
             existing_curves_by_type = {
                 portfolio_type: self._saved_portfolio_curves_all_accounts(portfolio_type)
                 for _key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS
@@ -2641,7 +2645,13 @@ class UBSPortfolioLogicMixin:
             base_type.value,
         )
         base_label = PORTFOLIO_TYPE_DISPLAY.get(base_type.value, base_type.value)
-        base_reserve = self._portfolio_type_reserve_pct(configured_reserve, base_type)
+        # The composition is shared by every A/M/C variant. Select it against
+        # the strictest reserve up front so the locked one-unit allocation is
+        # feasible for the conservative variant as well as the looser ones.
+        base_reserve = max(
+            self._portfolio_type_reserve_pct(configured_reserve, portfolio_type)
+            for _key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS
+        )
         if callable(progress):
             progress(f"Composicion base {base_label}", 0)
         base_proposal = self._optimize_ubs_portfolio_proposals(
@@ -2751,7 +2761,8 @@ class UBSPortfolioLogicMixin:
             }
             result.warnings.insert(
                 0,
-                f"Composicion comun A/M/C bloqueada desde base {base_label}: {locked_count} sets.",
+                f"Composicion comun A/M/C bloqueada desde base {base_label}: {locked_count} sets; "
+                f"seleccionada con reserva DD comun {base_reserve:.1f}%.",
             )
             if int(inputs.get("search_restarts") or 0) > 0:
                 result.warnings.append(
