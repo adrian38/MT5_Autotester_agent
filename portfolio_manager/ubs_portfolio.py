@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from functools import lru_cache
 import math
 from pathlib import Path
 import random
@@ -21,6 +22,7 @@ from typing import Callable, Iterable, Sequence
 
 from .mt5_report import StrategyReport, parse_report
 from ubs.path_utils import resolve_workspace_path
+from ubs.universe import load_asset_universe
 
 
 ProgressCallback = Callable[[str], None]
@@ -62,9 +64,10 @@ PORTFOLIO_GROUP_BY_SYMBOL = {
     },
     **{symbol: "Metals" for symbol in ("XAGUSD", "XAUUSD", "XAUEUR")},
     **{
-        symbol: "IndicesEnergies"
-        for symbol in (".DE40CASH", ".JP225CASH", ".US500CASH", ".USTECHCASH", ".US30CASH", "BRENT", "WTI")
+        symbol: "Indices"
+        for symbol in (".DE40CASH", ".JP225CASH", ".US500CASH", ".USTECHCASH", ".US30CASH")
     },
+    **{symbol: "Energies" for symbol in ("BRENT", "WTI")},
     **{symbol: "Crypto" for symbol in ("BTCUSD", "ETHUSD")},
     **{
         symbol: "Stocks"
@@ -77,6 +80,53 @@ PORTFOLIO_GROUP_BY_SYMBOL = {
         )
     },
 }
+
+PORTFOLIO_UNIVERSE_FILES = (
+    "assets/roboforex_assets.ini",
+    "assets/axi_assets.ini",
+    "assets/ictrading_assets.ini",
+)
+
+
+def _normalized_universe_group(group: str, symbol_key: str) -> str:
+    if group != "IndicesEnergies":
+        return group
+    energy_tokens = ("BRENT", "WTI", "OIL", "XTI", "XBR", "XNG", "GAS")
+    return "Energies" if any(token in symbol_key for token in energy_tokens) else "Indices"
+
+
+@lru_cache(maxsize=1)
+def _portfolio_universe_group_maps() -> tuple[dict[str, str], dict[str, str]]:
+    """Build the portfolio classifier from the broker universe files."""
+    canonical: dict[str, str] = {}
+    exact: dict[str, str] = {}
+    alias_rows: list[tuple[str, str]] = []
+    for relative_path in PORTFOLIO_UNIVERSE_FILES:
+        groups, aliases = load_asset_universe(
+            resolve_workspace_path(relative_path),
+            include_disabled=True,
+        )
+        for group, symbols in groups.items():
+            for symbol in symbols:
+                raw_key = str(symbol).strip().upper()
+                symbol_key = portfolio_symbol_key(symbol)
+                normalized_group = _normalized_universe_group(group, symbol_key)
+                exact[raw_key] = normalized_group
+                if group == "Stocks" and "." in raw_key:
+                    canonical.setdefault(symbol_key, normalized_group)
+                else:
+                    canonical[symbol_key] = normalized_group
+        alias_rows.extend(aliases.items())
+    for alias, target in alias_rows:
+        target_group = exact.get(str(target).strip().upper()) or canonical.get(portfolio_symbol_key(target))
+        if target_group:
+            exact[str(alias).strip().upper()] = target_group
+            canonical[portfolio_symbol_key(alias)] = target_group
+    return canonical, exact
+
+
+def _portfolio_universe_group_by_symbol() -> dict[str, str]:
+    return _portfolio_universe_group_maps()[0]
 
 
 class PortfolioType(str, Enum):
@@ -1585,8 +1635,8 @@ def margin_leverage_for_profile(
             return 2.0
         if group == "Metals":
             return 10.0
-        if group == "IndicesEnergies":
-            return 10.0 if symbol_key in {"BRENT", "WTI"} else 15.0
+        if group in {"Indices", "Energies", "IndicesEnergies"}:
+            return 10.0 if group == "Energies" or symbol_key in {"BRENT", "WTI"} else 15.0
         if group == "Forex":
             return 50.0
         return 50.0
@@ -4852,7 +4902,14 @@ def portfolio_symbol_key(symbol: str) -> str:
 
 
 def portfolio_group_key(symbol: str) -> str:
+    raw_symbol = str(symbol or "").strip().upper()
+    exact_group = _portfolio_universe_group_maps()[1].get(raw_symbol)
+    if exact_group:
+        return exact_group
     symbol_key = portfolio_symbol_key(symbol)
+    universe_group = _portfolio_universe_group_by_symbol().get(symbol_key)
+    if universe_group:
+        return universe_group
     if symbol_key in PORTFOLIO_GROUP_BY_SYMBOL:
         return PORTFOLIO_GROUP_BY_SYMBOL[symbol_key]
     if _looks_like_forex_pair(symbol_key):

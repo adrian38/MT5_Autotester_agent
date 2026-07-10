@@ -35,9 +35,13 @@ MONTH_LABELS = (
 
 MONTHLY_ASSET_GROUP_FLAGS = (
     ("Forex", "allow_forex"),
-    ("IndicesEnergies", "allow_indices_energies"),
     ("Metals", "allow_metals"),
+    ("Indices", "allow_indices"),
+    ("Energies", "allow_energies"),
+    ("Crypto", "allow_crypto"),
     ("Stocks", "allow_stocks"),
+    ("Bonds", "allow_bonds"),
+    ("Softs", "allow_softs"),
 )
 
 
@@ -326,9 +330,13 @@ class UBSMonthlyPortfolioLogicMixin:
         )
         self.ubs_monthly_portfolio_grid_off.set(False)
         self.ubs_monthly_portfolio_allow_forex.set(True)
-        self.ubs_monthly_portfolio_allow_indices_energies.set(True)
         self.ubs_monthly_portfolio_allow_metals.set(True)
+        self.ubs_monthly_portfolio_allow_indices.set(True)
+        self.ubs_monthly_portfolio_allow_energies.set(True)
+        self.ubs_monthly_portfolio_allow_crypto.set(True)
         self.ubs_monthly_portfolio_allow_stocks.set(True)
+        self.ubs_monthly_portfolio_allow_bonds.set(True)
+        self.ubs_monthly_portfolio_allow_softs.set(True)
         self.ubs_monthly_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
         self.ubs_monthly_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_monthly_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])

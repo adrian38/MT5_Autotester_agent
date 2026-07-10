@@ -537,7 +537,10 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
 
         self.assertEqual(values["point_dd_pct"], 12.0)
         self.assertFalse(values["enforce_point_dd"])
-        self.assertEqual(values["allowed_asset_groups"], ["Forex", "IndicesEnergies", "Metals", "Stocks"])
+        self.assertEqual(
+            values["allowed_asset_groups"],
+            ["Bonds", "Crypto", "Energies", "Forex", "Indices", "Metals", "Softs", "Stocks"],
+        )
 
     def test_normal_portfolio_inputs_read_margin_profile_and_group_filters(self) -> None:
         logic = _PortfolioLogic()
@@ -566,9 +569,13 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         logic.ubs_portfolio_margin_profile = _Var("ICTRADING")
         logic.ubs_portfolio_max_margin_pct = _Var("80")
         logic.ubs_portfolio_allow_forex = _Var(True)
-        logic.ubs_portfolio_allow_indices_energies = _Var(False)
         logic.ubs_portfolio_allow_metals = _Var(True)
+        logic.ubs_portfolio_allow_indices = _Var(False)
+        logic.ubs_portfolio_allow_energies = _Var(False)
+        logic.ubs_portfolio_allow_crypto = _Var(False)
         logic.ubs_portfolio_allow_stocks = _Var(False)
+        logic.ubs_portfolio_allow_bonds = _Var(False)
+        logic.ubs_portfolio_allow_softs = _Var(False)
 
         values = logic._read_ubs_portfolio_inputs()
 

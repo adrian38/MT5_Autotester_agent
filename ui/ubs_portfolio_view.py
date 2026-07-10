@@ -4,12 +4,58 @@ import tkinter as tk
 from tkinter import ttk
 
 
+PORTFOLIO_GROUP_CHECKS = (
+    ("Forex", "allow_forex"),
+    ("Metales", "allow_metals"),
+    ("Indices", "allow_indices"),
+    ("Energias", "allow_energies"),
+    ("Cripto", "allow_crypto"),
+    ("Acciones", "allow_stocks"),
+    ("Bonos", "allow_bonds"),
+    ("Softs", "allow_softs"),
+)
+
+
 class UBSPortfolioViewMixin:
     def _portfolio_window_master(self):
         try:
             return object.__getattribute__(self, "_app")
         except Exception:
             return self
+
+    def _ubs_portfolio_group_controls(self):
+        return [
+            (label, getattr(self, f"ubs_portfolio_{suffix}", None))
+            for label, suffix in PORTFOLIO_GROUP_CHECKS
+        ]
+
+    def _grid_ubs_portfolio_group_controls(
+        self,
+        parent: tk.Misc,
+        *,
+        columns: int,
+        monthly: bool,
+        start_row: int = 0,
+    ) -> None:
+        controls = self._ubs_portfolio_group_controls()
+        for column in range(columns):
+            parent.columnconfigure(column, weight=1, uniform="portfolio_groups")
+        for index, (label_text, variable) in enumerate(controls):
+            if variable is None:
+                continue
+            group_check = ttk.Checkbutton(parent, text=label_text, variable=variable)
+            group_check.grid(
+                row=start_row + index // columns,
+                column=index % columns,
+                sticky="w",
+                padx=(10, 8),
+                pady=4,
+            )
+            self._tooltip_cls(
+                group_check,
+                "Si esta activo, permite este grupo de activos para formar el portafolio "
+                + ("mensual." if monthly else "normal."),
+            )
 
     def _build_ubs_monthly_portfolio_input_groups(self, form: tk.Frame) -> None:
         colors = self.colors
@@ -264,28 +310,12 @@ class UBSPortfolioViewMixin:
             ).grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=(2, 8))
 
         groups = section(1, 2, "Grupos permitidos")
-        allow_group_vars = (
-            ("Forex", getattr(self, "ubs_portfolio_allow_forex", None)),
-            ("Indices/Energias", getattr(self, "ubs_portfolio_allow_indices_energies", None)),
-            ("Metales", getattr(self, "ubs_portfolio_allow_metals", None)),
-            ("Stocks", getattr(self, "ubs_portfolio_allow_stocks", None)),
+        self._grid_ubs_portfolio_group_controls(
+            groups,
+            columns=2,
+            monthly=True,
+            start_row=1,
         )
-        for index, (label_text, variable) in enumerate(allow_group_vars):
-            if variable is None:
-                continue
-            group_check = ttk.Checkbutton(groups, text=label_text, variable=variable)
-            group_check.grid(
-                row=1 + index // 2,
-                column=(index % 2) * 2,
-                columnspan=2,
-                sticky="w",
-                padx=(10 if index % 2 == 0 else 8, 10),
-                pady=4,
-            )
-            self._tooltip_cls(
-                group_check,
-                "Si esta activo, permite este grupo de activos para formar el portafolio mensual.",
-            )
 
     def _build_ubs_portfolio(self, parent: ttk.Frame) -> None:
         colors = self.colors
@@ -581,34 +611,23 @@ class UBSPortfolioViewMixin:
                 ttk.Entry(form, textvariable=margin_pct_var, width=8).grid(
                     row=4, column=margin_entry_col, sticky="w", pady=5
                 )
-            allow_group_vars = (
-                ("Forex", getattr(self, "ubs_portfolio_allow_forex", None)),
-                ("Indices/Energias", getattr(self, "ubs_portfolio_allow_indices_energies", None)),
-                ("Metales", getattr(self, "ubs_portfolio_allow_metals", None)),
-                ("Stocks", getattr(self, "ubs_portfolio_allow_stocks", None)),
-            )
+            allow_group_vars = self._ubs_portfolio_group_controls()
             if any(var is not None for _label_text, var in allow_group_vars):
                 label(5, 0, "Grupos permitidos")
-                for offset, (label_text, variable) in enumerate(allow_group_vars):
-                    if variable is None:
-                        continue
-                    group_check = ttk.Checkbutton(
-                        form,
-                        text=label_text,
-                        variable=variable,
-                    )
-                    group_check.grid(
-                        row=5,
-                        column=1 + offset * 2,
-                        columnspan=2,
-                        sticky="w",
-                        padx=(4, 8),
-                        pady=5,
-                    )
-                    self._tooltip_cls(
-                        group_check,
-                        "Si esta activo, permite este grupo de activos para formar el portafolio mensual.",
-                    )
+                group_grid = tk.Frame(form, bg=colors["panel"])
+                group_grid.grid(
+                    row=5,
+                    column=1,
+                    columnspan=11,
+                    sticky="ew",
+                    padx=(4, 10),
+                    pady=5,
+                )
+                self._grid_ubs_portfolio_group_controls(
+                    group_grid,
+                    columns=4,
+                    monthly=True,
+                )
         else:
             if grid_off_var is not None:
                 grid_off_check = ttk.Checkbutton(
@@ -654,30 +673,23 @@ class UBSPortfolioViewMixin:
                 ttk.Entry(form, textvariable=margin_pct_var, width=8).grid(
                     row=3, column=9, sticky="w", pady=5
                 )
-            allow_group_vars = (
-                ("Forex", getattr(self, "ubs_portfolio_allow_forex", None)),
-                ("Indices/Energias", getattr(self, "ubs_portfolio_allow_indices_energies", None)),
-                ("Metales", getattr(self, "ubs_portfolio_allow_metals", None)),
-                ("Stocks", getattr(self, "ubs_portfolio_allow_stocks", None)),
-            )
+            allow_group_vars = self._ubs_portfolio_group_controls()
             if any(var is not None for _label_text, var in allow_group_vars):
                 label(4, 0, "Grupos permitidos")
-                for offset, (label_text, variable) in enumerate(allow_group_vars):
-                    if variable is None:
-                        continue
-                    group_check = ttk.Checkbutton(form, text=label_text, variable=variable)
-                    group_check.grid(
-                        row=4,
-                        column=1 + offset * 2,
-                        columnspan=2,
-                        sticky="w",
-                        padx=(4, 8),
-                        pady=5,
-                    )
-                    self._tooltip_cls(
-                        group_check,
-                        "Si esta activo, permite este grupo de activos para formar el portafolio normal.",
-                    )
+                group_grid = tk.Frame(form, bg=colors["panel"])
+                group_grid.grid(
+                    row=4,
+                    column=1,
+                    columnspan=11,
+                    sticky="ew",
+                    padx=(4, 10),
+                    pady=5,
+                )
+                self._grid_ubs_portfolio_group_controls(
+                    group_grid,
+                    columns=4,
+                    monthly=False,
+                )
 
         if target_month_var is not None:
             for child in form.winfo_children():

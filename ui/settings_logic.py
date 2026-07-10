@@ -451,11 +451,13 @@ class SettingsLogicMixin:
             "ubs_portfolio_margin_profile": self.ubs_portfolio_margin_profile.get().strip().upper(),
             "ubs_portfolio_max_margin_pct": self.ubs_portfolio_max_margin_pct.get().strip(),
             "ubs_portfolio_allow_forex": "1" if self.ubs_portfolio_allow_forex.get() else "0",
-            "ubs_portfolio_allow_indices_energies": (
-                "1" if self.ubs_portfolio_allow_indices_energies.get() else "0"
-            ),
             "ubs_portfolio_allow_metals": "1" if self.ubs_portfolio_allow_metals.get() else "0",
+            "ubs_portfolio_allow_indices": "1" if self.ubs_portfolio_allow_indices.get() else "0",
+            "ubs_portfolio_allow_energies": "1" if self.ubs_portfolio_allow_energies.get() else "0",
+            "ubs_portfolio_allow_crypto": "1" if self.ubs_portfolio_allow_crypto.get() else "0",
             "ubs_portfolio_allow_stocks": "1" if self.ubs_portfolio_allow_stocks.get() else "0",
+            "ubs_portfolio_allow_bonds": "1" if self.ubs_portfolio_allow_bonds.get() else "0",
+            "ubs_portfolio_allow_softs": "1" if self.ubs_portfolio_allow_softs.get() else "0",
             "ubs_portfolio_dd_reserve_pct": self.ubs_portfolio_dd_reserve_pct.get().strip(),
             "ubs_portfolio_search_restarts": str(self.ubs_portfolio_search_restarts.get()),
             "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
@@ -487,14 +489,26 @@ class SettingsLogicMixin:
             "ubs_monthly_portfolio_allow_forex": (
                 "1" if self.ubs_monthly_portfolio_allow_forex.get() else "0"
             ),
-            "ubs_monthly_portfolio_allow_indices_energies": (
-                "1" if self.ubs_monthly_portfolio_allow_indices_energies.get() else "0"
-            ),
             "ubs_monthly_portfolio_allow_metals": (
                 "1" if self.ubs_monthly_portfolio_allow_metals.get() else "0"
             ),
+            "ubs_monthly_portfolio_allow_indices": (
+                "1" if self.ubs_monthly_portfolio_allow_indices.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_energies": (
+                "1" if self.ubs_monthly_portfolio_allow_energies.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_crypto": (
+                "1" if self.ubs_monthly_portfolio_allow_crypto.get() else "0"
+            ),
             "ubs_monthly_portfolio_allow_stocks": (
                 "1" if self.ubs_monthly_portfolio_allow_stocks.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_bonds": (
+                "1" if self.ubs_monthly_portfolio_allow_bonds.get() else "0"
+            ),
+            "ubs_monthly_portfolio_allow_softs": (
+                "1" if self.ubs_monthly_portfolio_allow_softs.get() else "0"
             ),
             "ubs_monthly_portfolio_exclude_monthly_used": (
                 "1" if self.ubs_monthly_portfolio_exclude_monthly_used.get() else "0"

@@ -73,9 +73,13 @@ PORTFOLIO_TYPE_BATCH_SPECS = (
 )
 PORTFOLIO_ASSET_GROUP_FLAGS = (
     ("Forex", "allow_forex"),
-    ("IndicesEnergies", "allow_indices_energies"),
     ("Metals", "allow_metals"),
+    ("Indices", "allow_indices"),
+    ("Energies", "allow_energies"),
+    ("Crypto", "allow_crypto"),
     ("Stocks", "allow_stocks"),
+    ("Bonds", "allow_bonds"),
+    ("Softs", "allow_softs"),
 )
 PORTFOLIO_MARGIN_PROFILE_DISPLAY = {
     "roboforex": "ROBOFOREX",
@@ -1536,7 +1540,10 @@ class UBSPortfolioLogicMixin:
         }
         allowed_groups = self._ubs_portfolio_allowed_asset_groups()
         if not allowed_groups:
-            raise ValueError("Selecciona al menos un grupo permitido: Forex, Indices/Energias, Metales o Stocks.")
+            raise ValueError(
+                "Selecciona al menos un grupo permitido: Forex, Metales, Indices, "
+                "Energias, Crypto, Stocks, Bonds o Softs."
+            )
         values["allowed_asset_groups"] = sorted(allowed_groups)
         margin_profile = self._portfolio_margin_profile()
         values["margin_profile"] = margin_profile
@@ -2562,9 +2569,23 @@ class UBSPortfolioLogicMixin:
             "corr_with_monthly_portfolios": False,
             "enforce_point_dd": str(portfolio["portfolio_scope"] or "full_history") != "monthly",
             "daily_dd_full_history": False,
-            "allowed_asset_groups": ["Forex", "IndicesEnergies", "Metals", "Stocks"],
+            "allowed_asset_groups": [
+                "Forex", "Metals", "Indices", "Energies",
+                "Crypto", "Stocks", "Bonds", "Softs",
+            ],
         }
         defaults.update(stored)
+        stored_groups = set(defaults.get("allowed_asset_groups") or [])
+        legacy_group_filter = not stored_groups.intersection(
+            {"Indices", "Energies", "Crypto", "Bonds", "Softs"}
+        )
+        if "IndicesEnergies" in stored_groups:
+            stored_groups.remove("IndicesEnergies")
+            stored_groups.update(("Indices", "Energies"))
+        if legacy_group_filter:
+            stored_groups.update(("Crypto", "Bonds", "Softs"))
+        if stored_groups:
+            defaults["allowed_asset_groups"] = sorted(stored_groups)
         if str(defaults.get("portfolio_scope") or "full_history") == "monthly":
             defaults["enforce_point_dd"] = False
         return defaults

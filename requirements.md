@@ -707,6 +707,13 @@ requirement changes or a debt item is opened/closed.
   contains `EnableGrid=true` as the current value. Missing/unreadable
   `EnableGrid` keys MUST NOT be treated as grid-enabled. The selected setting
   MUST be persisted in portfolio inputs and UI settings.
+- **FR-1.12.44** `UBS Portafolio` and `UBS Portafolio Mensual` MUST expose the
+  complete broker-universe asset groups as individually persisted filters.
+  For IC Trading these are Forex, Metals, Indices, Energies, Crypto, Stocks,
+  Bonds, and Softs. Indices and Energies MUST remain separate. Portfolio symbol
+  classification MUST use the maintained broker universe files, including
+  exchange-suffixed stocks and aliases, instead of relying only on a small
+  hard-coded symbol list. The controls MUST be arranged as a compact grid.
 
 ### 1.13 Packaging & runtime
 

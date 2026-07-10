@@ -928,14 +928,32 @@ class MT5AutotesterUI(
         self.ubs_portfolio_allow_forex = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_allow_forex"), True)
         )
-        self.ubs_portfolio_allow_indices_energies = tk.BooleanVar(
-            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_indices_energies"), True)
-        )
         self.ubs_portfolio_allow_metals = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_allow_metals"), True)
         )
+        self.ubs_portfolio_allow_indices = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get("ubs_portfolio_allow_indices"),
+                self._bool_setting(saved_general.get("ubs_portfolio_allow_indices_energies"), True),
+            )
+        )
+        self.ubs_portfolio_allow_energies = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get("ubs_portfolio_allow_energies"),
+                self._bool_setting(saved_general.get("ubs_portfolio_allow_indices_energies"), True),
+            )
+        )
+        self.ubs_portfolio_allow_crypto = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_crypto"), True)
+        )
         self.ubs_portfolio_allow_stocks = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_allow_stocks"), True)
+        )
+        self.ubs_portfolio_allow_bonds = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_bonds"), True)
+        )
+        self.ubs_portfolio_allow_softs = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_softs"), True)
         )
         self.ubs_portfolio_dd_reserve_pct = tk.StringVar(
             value=saved_general.get("ubs_portfolio_dd_reserve_pct", "10")
@@ -1027,14 +1045,32 @@ class MT5AutotesterUI(
         self.ubs_monthly_portfolio_allow_forex = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_forex"), True)
         )
-        self.ubs_monthly_portfolio_allow_indices_energies = tk.BooleanVar(
-            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_indices_energies"), True)
-        )
         self.ubs_monthly_portfolio_allow_metals = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_metals"), True)
         )
+        self.ubs_monthly_portfolio_allow_indices = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}allow_indices"),
+                self._bool_setting(saved_general.get(f"{monthly_prefix}allow_indices_energies"), True),
+            )
+        )
+        self.ubs_monthly_portfolio_allow_energies = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}allow_energies"),
+                self._bool_setting(saved_general.get(f"{monthly_prefix}allow_indices_energies"), True),
+            )
+        )
+        self.ubs_monthly_portfolio_allow_crypto = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_crypto"), True)
+        )
         self.ubs_monthly_portfolio_allow_stocks = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_stocks"), True)
+        )
+        self.ubs_monthly_portfolio_allow_bonds = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_bonds"), True)
+        )
+        self.ubs_monthly_portfolio_allow_softs = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_softs"), True)
         )
         self.ubs_monthly_portfolio_exclude_monthly_used = tk.BooleanVar(
             value=self._bool_setting(

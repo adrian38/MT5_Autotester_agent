@@ -37,6 +37,7 @@ from portfolio_manager.ubs_portfolio import (
     slice_strategy_sets_to_month,
     validate_strict_monthly_portfolio,
 )
+from ubs.universe import load_asset_universe
 
 
 def make_strategy(
@@ -550,7 +551,7 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             max_sets_per_symbol=1,
             run_local_search=True,
         )
-        self.assertLessEqual(result.group_summary["IndicesEnergies"]["unit_pct"], 55.1)
+        self.assertLessEqual(result.group_summary["Indices"]["unit_pct"], 55.1)
 
     def test_conservative_two_group_cap_uses_feasible_diversification_floor(self) -> None:
         result = optimize_portfolio(
@@ -601,7 +602,7 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             max_total_candidates=5,
         )
         selected_groups = {portfolio_group_key(item.symbol) for item in selected}
-        self.assertIn("IndicesEnergies", selected_groups)
+        self.assertIn("Indices", selected_groups)
         self.assertIn("Metals", selected_groups)
         self.assertIn("Stocks", selected_groups)
         self.assertIn("Forex", selected_groups)
@@ -808,9 +809,27 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         index_sets = [
             allocation
             for allocation in result.allocations
-            if portfolio_group_key(allocation.symbol) == "IndicesEnergies"
+            if portfolio_group_key(allocation.symbol) == "Indices"
         ]
         self.assertLessEqual(len(index_sets), 3)
+
+    def test_ictrading_universe_groups_are_available_to_portfolio(self) -> None:
+        groups, _aliases = load_asset_universe(
+            Path("assets/ictrading_assets.ini"),
+            include_disabled=True,
+        )
+        expected_groups = {
+            "Forex", "Metals", "Indices", "Energies",
+            "Crypto", "Stocks", "Bonds", "Softs",
+        }
+
+        self.assertEqual(set(groups), expected_groups)
+        for expected_group, symbols in groups.items():
+            with self.subTest(group=expected_group):
+                self.assertTrue(symbols)
+                self.assertTrue(
+                    all(portfolio_group_key(symbol) == expected_group for symbol in symbols)
+                )
 
     def test_monthly_daily_dd_limit_blocks_closed_plus_floating_risk(self) -> None:
         risky = make_strategy("risky", "EURUSD", [0, 100, 250], trades=120)
