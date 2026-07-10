@@ -593,7 +593,9 @@ class UBSResultsLogicMixin:
                 sum(case when c.status = 'rejected' then 1 else 0 end) as rejected
             from runs r
             left join candidates c on c.run_id = r.id
+            where r.hidden = 0
             group by r.id
+            having count(c.id) > 0
             order by r.id desc
             """
         ).fetchall()

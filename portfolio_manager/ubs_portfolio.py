@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from functools import lru_cache
 import math
 from pathlib import Path
 import random
@@ -21,6 +22,7 @@ from typing import Callable, Iterable, Sequence
 
 from .mt5_report import StrategyReport, parse_report
 from ubs.path_utils import resolve_workspace_path
+from ubs.universe import load_asset_universe
 
 
 ProgressCallback = Callable[[str], None]
@@ -62,9 +64,10 @@ PORTFOLIO_GROUP_BY_SYMBOL = {
     },
     **{symbol: "Metals" for symbol in ("XAGUSD", "XAUUSD", "XAUEUR")},
     **{
-        symbol: "IndicesEnergies"
-        for symbol in (".DE40CASH", ".JP225CASH", ".US500CASH", ".USTECHCASH", ".US30CASH", "BRENT", "WTI")
+        symbol: "Indices"
+        for symbol in (".DE40CASH", ".JP225CASH", ".US500CASH", ".USTECHCASH", ".US30CASH")
     },
+    **{symbol: "Energies" for symbol in ("BRENT", "WTI")},
     **{symbol: "Crypto" for symbol in ("BTCUSD", "ETHUSD")},
     **{
         symbol: "Stocks"
@@ -77,6 +80,53 @@ PORTFOLIO_GROUP_BY_SYMBOL = {
         )
     },
 }
+
+PORTFOLIO_UNIVERSE_FILES = (
+    "assets/roboforex_assets.ini",
+    "assets/axi_assets.ini",
+    "assets/ictrading_assets.ini",
+)
+
+
+def _normalized_universe_group(group: str, symbol_key: str) -> str:
+    if group != "IndicesEnergies":
+        return group
+    energy_tokens = ("BRENT", "WTI", "OIL", "XTI", "XBR", "XNG", "GAS")
+    return "Energies" if any(token in symbol_key for token in energy_tokens) else "Indices"
+
+
+@lru_cache(maxsize=1)
+def _portfolio_universe_group_maps() -> tuple[dict[str, str], dict[str, str]]:
+    """Build the portfolio classifier from the broker universe files."""
+    canonical: dict[str, str] = {}
+    exact: dict[str, str] = {}
+    alias_rows: list[tuple[str, str]] = []
+    for relative_path in PORTFOLIO_UNIVERSE_FILES:
+        groups, aliases = load_asset_universe(
+            resolve_workspace_path(relative_path),
+            include_disabled=True,
+        )
+        for group, symbols in groups.items():
+            for symbol in symbols:
+                raw_key = str(symbol).strip().upper()
+                symbol_key = portfolio_symbol_key(symbol)
+                normalized_group = _normalized_universe_group(group, symbol_key)
+                exact[raw_key] = normalized_group
+                if group == "Stocks" and "." in raw_key:
+                    canonical.setdefault(symbol_key, normalized_group)
+                else:
+                    canonical[symbol_key] = normalized_group
+        alias_rows.extend(aliases.items())
+    for alias, target in alias_rows:
+        target_group = exact.get(str(target).strip().upper()) or canonical.get(portfolio_symbol_key(target))
+        if target_group:
+            exact[str(alias).strip().upper()] = target_group
+            canonical[portfolio_symbol_key(alias)] = target_group
+    return canonical, exact
+
+
+def _portfolio_universe_group_by_symbol() -> dict[str, str]:
+    return _portfolio_universe_group_maps()[0]
 
 
 class PortfolioType(str, Enum):
@@ -1178,6 +1228,8 @@ def load_robust_sets_from_rows(
     loaded: list[RobustStrategySet] = []
     skipped_missing = 0
     skipped_parse = 0
+    missing_examples: list[str] = []
+    parse_examples: list[str] = []
     candidates = list(latest_by_stem.values())
     for index, row in enumerate(candidates, start=1):
         set_path = str(_row_value(row, "set_path", default=""))
@@ -1189,6 +1241,15 @@ def load_robust_sets_from_rows(
         oos_path = resolve_workspace_path(str(_row_value(row, "oos_report_path", "robust_report_path", default="")))
         if not is_path.is_file() or not oos_path.is_file():
             skipped_missing += 1
+            if len(missing_examples) < 5:
+                missing_parts = []
+                if not is_path.is_file():
+                    missing_parts.append(f"base={is_path.name or '-'}")
+                if not oos_path.is_file():
+                    missing_parts.append(f"robustez={oos_path.name or '-'}")
+                missing_examples.append(
+                    f"{Path(set_path).name}: " + ", ".join(missing_parts)
+                )
             continue
         try:
             is_period = period_report_from_strategy_report(parse(is_path), "2020_2024")
@@ -1210,14 +1271,21 @@ def load_robust_sets_from_rows(
                     oos_report_path=str(oos_path),
                 )
             )
-        except Exception:
+        except Exception as exc:
             skipped_parse += 1
+            if len(parse_examples) < 5:
+                message = str(exc).strip() or "sin detalle"
+                parse_examples.append(
+                    f"{Path(set_path).name}: {type(exc).__name__}: {message}"
+                )
             continue
 
     if skipped_missing:
         warnings.append(f"{skipped_missing} candidato(s) omitido(s): faltan reportes base o robustez.")
+        warnings.append("Ejemplos de reportes ausentes: " + " | ".join(missing_examples))
     if skipped_parse:
         warnings.append(f"{skipped_parse} candidato(s) omitido(s): reporte ilegible o curva invalida.")
+        warnings.append("Ejemplos de errores de carga: " + " | ".join(parse_examples))
     return loaded, warnings
 
 
@@ -1536,11 +1604,20 @@ def normalize_margin_profile(profile: str | None) -> str:
     value = str(profile or "roboforex").strip().lower()
     if value in {"ttp", "thetradingpit", "tradingpit", "the_trading_pit"}:
         return "ttp"
+    if value in {"axi", "axi trading", "axitrading", "axi_select", "axiselect"}:
+        return "axi"
+    if value in {"ictrading", "ic trading", "ic", "icmarkets", "ic markets"}:
+        return "ictrading"
     return "roboforex"
 
 
 def margin_profile_label(profile: str | None) -> str:
-    return "TTP" if normalize_margin_profile(profile) == "ttp" else "RoboForex"
+    return {
+        "ttp": "TTP",
+        "axi": "AXI",
+        "ictrading": "ICTrading",
+        "roboforex": "RoboForex",
+    }.get(normalize_margin_profile(profile), "RoboForex")
 
 
 def margin_leverage_for_profile(
@@ -1558,8 +1635,8 @@ def margin_leverage_for_profile(
             return 2.0
         if group == "Metals":
             return 10.0
-        if group == "IndicesEnergies":
-            return 10.0 if symbol_key in {"BRENT", "WTI"} else 15.0
+        if group in {"Indices", "Energies", "IndicesEnergies"}:
+            return 10.0 if group == "Energies" or symbol_key in {"BRENT", "WTI"} else 15.0
         if group == "Forex":
             return 50.0
         return 50.0
@@ -2606,6 +2683,219 @@ def improve_with_multi_start_search(
             best_log = perturb_log + local_log
 
     return best_allocations, best, best_log, valid_restarts
+
+
+def _deep_refine_allocations(
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    current: PortfolioEvaluation,
+    *,
+    minimum_active_strategies: int | None,
+    max_units_per_set: int | None,
+    max_total_units: int | None,
+    max_units_per_symbol: int | None,
+    max_sets_per_symbol: int | None,
+    max_sets_per_group: int | None,
+    max_units_per_group_pct: float | None,
+    group_unit_cap_bootstrap: int,
+    max_pair_corr: float | None,
+    max_downside_corr: float | None,
+    max_dd_overlap: float | None,
+    existing_portfolio_curves: Sequence[Sequence[float]] | None,
+    max_portfolio_corr: float | None,
+    margin_balance: float | None,
+    max_margin_pct: float | None,
+    margin_profile: str | None,
+    stock_leverage: float,
+    default_leverage: float,
+    stock_contract_size: float,
+    default_contract_size: float,
+    max_daily_dd: float | None,
+    enforce_point_dd: bool,
+    daily_dd_full_history: bool,
+    max_iterations: int = 160,
+) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
+    working_sets = list({strategy.set_id: strategy for strategy in sets}.values())
+    allocations = {
+        strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
+        for strategy in working_sets
+    }
+    decision_log: list[OptimizationDecision] = []
+    attempts = 0
+
+    for iteration in range(1, max_iterations + 1):
+        best_move: dict[str, object] | None = None
+        ordered_targets = sorted(
+            working_sets,
+            key=lambda item: score_set_for_portfolio(item, max(int(allocations.get(item.set_id, 0)), 1)),
+            reverse=True,
+        )
+
+        for target in ordered_targets:
+            attempts += 1
+            if can_add_unit(
+                target_set=target,
+                sets=working_sets,
+                allocations=allocations,
+                max_units_per_set=max_units_per_set,
+                max_total_units=max_total_units,
+                max_units_per_symbol=max_units_per_symbol,
+                max_sets_per_symbol=max_sets_per_symbol,
+                max_units_per_group_pct=max_units_per_group_pct,
+                max_sets_per_group=max_sets_per_group,
+                group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+                margin_balance=margin_balance,
+                max_margin_pct=max_margin_pct,
+                margin_profile=margin_profile,
+                stock_leverage=stock_leverage,
+                default_leverage=default_leverage,
+                stock_contract_size=stock_contract_size,
+                default_contract_size=default_contract_size,
+            ):
+                if allocations.get(target.set_id, 0) <= 0:
+                    rejected_by_corr, _reason = violates_correlation_limits(
+                        target,
+                        working_sets,
+                        allocations,
+                        max_pair_corr,
+                        max_downside_corr,
+                        max_dd_overlap,
+                    )
+                    if rejected_by_corr:
+                        continue
+                temp_allocations = allocations.copy()
+                temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
+                temp = evaluate_portfolio(
+                    working_sets,
+                    temp_allocations,
+                    current.target_valley_dd,
+                    current.target_point_dd,
+                    max_daily_dd,
+                    enforce_point_dd,
+                    daily_dd_full_history,
+                )
+                gain = temp.total_net_profit - current.total_net_profit
+                if (
+                    gain > 1e-9
+                    and not _evaluation_violates_dd_limits(temp)
+                    and _portfolio_corr_allowed(temp, existing_portfolio_curves, max_portfolio_corr)
+                    and (best_move is None or gain > float(best_move["gain"]))
+                ):
+                    best_move = {
+                        "action": "deep_add_unit",
+                        "from_set": None,
+                        "to_set": target,
+                        "allocations": temp_allocations,
+                        "evaluation": temp,
+                        "gain": gain,
+                    }
+
+            active_sources = [
+                source for source in working_sets if allocations.get(source.set_id, 0) > 0
+            ]
+            for source in active_sources:
+                if source.set_id == target.set_id:
+                    continue
+                attempts += 1
+                temp_allocations = allocations.copy()
+                temp_allocations[source.set_id] -= 1
+                temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
+                if (
+                    minimum_active_strategies is not None
+                    and _portfolio_active_count(temp_allocations) < minimum_active_strategies
+                ):
+                    continue
+                if not _allocations_respect_constraints(
+                    working_sets,
+                    temp_allocations,
+                    max_units_per_set,
+                    max_total_units,
+                    max_units_per_symbol,
+                    max_sets_per_symbol,
+                    max_sets_per_group,
+                    margin_balance,
+                    max_margin_pct,
+                    margin_profile,
+                    stock_leverage,
+                    default_leverage,
+                    stock_contract_size,
+                    default_contract_size,
+                ):
+                    continue
+                if not _target_group_units_pct_allowed(
+                    target,
+                    working_sets,
+                    temp_allocations,
+                    max_units_per_group_pct,
+                    group_unit_cap_bootstrap,
+                ):
+                    continue
+                if allocations.get(target.set_id, 0) <= 0:
+                    corr_allocations = temp_allocations.copy()
+                    corr_allocations[target.set_id] = 0
+                    rejected_by_corr, _reason = violates_correlation_limits(
+                        target,
+                        working_sets,
+                        corr_allocations,
+                        max_pair_corr,
+                        max_downside_corr,
+                        max_dd_overlap,
+                    )
+                    if rejected_by_corr:
+                        continue
+                temp = evaluate_portfolio(
+                    working_sets,
+                    temp_allocations,
+                    current.target_valley_dd,
+                    current.target_point_dd,
+                    max_daily_dd,
+                    enforce_point_dd,
+                    daily_dd_full_history,
+                )
+                gain = temp.total_net_profit - current.total_net_profit
+                if (
+                    gain > 1e-9
+                    and not _evaluation_violates_dd_limits(temp)
+                    and _portfolio_corr_allowed(temp, existing_portfolio_curves, max_portfolio_corr)
+                    and (best_move is None or gain > float(best_move["gain"]))
+                ):
+                    best_move = {
+                        "action": "deep_swap_unit",
+                        "from_set": source,
+                        "to_set": target,
+                        "allocations": temp_allocations,
+                        "evaluation": temp,
+                        "gain": gain,
+                    }
+
+        if best_move is None:
+            break
+
+        previous = current
+        from_set = best_move["from_set"]
+        to_set = best_move["to_set"]
+        assert to_set is not None and isinstance(to_set, RobustStrategySet)
+        allocations = best_move["allocations"]  # type: ignore[assignment]
+        current = best_move["evaluation"]  # type: ignore[assignment]
+        decision_log.append(
+            OptimizationDecision(
+                step=iteration,
+                action=str(best_move["action"]),
+                set_id=to_set.set_id,
+                from_set_id=from_set.set_id if isinstance(from_set, RobustStrategySet) else None,
+                to_set_id=to_set.set_id,
+                gain=current.total_net_profit - previous.total_net_profit,
+                valley_cost=current.valley_dd - previous.valley_dd,
+                point_cost=current.point_dd - previous.point_dd,
+                score=float(best_move["gain"]),
+                portfolio_net_profit_after=current.total_net_profit,
+                portfolio_valley_dd_after=current.valley_dd,
+                portfolio_point_dd_after=current.point_dd,
+                reason="Optimizacion profunda: movimiento validado contra DD, margen y correlacion",
+            )
+        )
+
+    return allocations, current, decision_log, attempts
 
 
 def _active_unit_allocations(allocations: dict[str, int]) -> dict[str, int]:
@@ -3857,6 +4147,7 @@ def optimize_portfolio(
     max_daily_dd: float | None = None,
     enforce_point_dd: bool = True,
     daily_dd_full_history: bool = False,
+    use_deep_refinement: bool = False,
 ) -> PortfolioResult:
     reserve_factor = 1.0 - min(max(float(dd_reserve_pct), 0.0), 99.0) / 100.0
     effective_valley_dd_pct = valley_dd_pct * reserve_factor
@@ -3880,6 +4171,7 @@ def optimize_portfolio(
         max_total_candidates=max_total_candidates,
         min_trades_2020_2026=min_trades_2020_2026,
     )
+    base_selected_count = len(selected)
     required_ids = {str(set_id) for set_id in (required_set_ids or ())}
     required_ids.update(str(set_id) for set_id in (required_initial_allocations or {}))
     eligible_by_id = {strategy.set_id: strategy for strategy in eligible}
@@ -3891,6 +4183,18 @@ def optimize_portfolio(
         )
     selected_ids = {strategy.set_id for strategy in selected}
     selected.extend(eligible_by_id[set_id] for set_id in required_ids - selected_ids)
+    configured_group_units_pct = max_units_per_group_pct
+    candidate_group_count = _candidate_group_count(selected)
+    group_units_pct_feasibility_floor: float | None = None
+    if max_units_per_group_pct is not None and candidate_group_count > 1:
+        # A cap below 1/N is impossible when only N asset groups are in the
+        # candidate pool (for example, 40% with Forex + Metals only). Use the
+        # smallest feasible cap instead of leaving the greedy allocator stuck.
+        group_units_pct_feasibility_floor = 1.0 / candidate_group_count
+        max_units_per_group_pct = max(
+            float(max_units_per_group_pct),
+            group_units_pct_feasibility_floor,
+        )
     initial_allocations = {
         set_id: max(int((required_initial_allocations or {}).get(set_id, 1)), 1)
         for set_id in required_ids
@@ -4087,8 +4391,67 @@ def optimize_portfolio(
             enforce_point_dd=enforce_point_dd,
             daily_dd_full_history=daily_dd_full_history,
         )
-        if multi_start_log:
-            stop_reason += "; multi-start search improved the local solution"
+    if multi_start_log:
+        stop_reason += "; multi-start search improved the local solution"
+
+    deep_log: list[OptimizationDecision] = []
+    deep_attempts = 0
+    deep_pool_expanded = False
+    deep_pool_count = len(selected)
+    if use_deep_refinement and not preserve_required_allocations:
+        deep_top_k = max(int(top_k_per_symbol), min(20, int(top_k_per_symbol) * 2))
+        if max_total_candidates is None:
+            deep_max_candidates = None
+        else:
+            deep_max_candidates = min(len(eligible), max(int(max_total_candidates), int(max_total_candidates) * 2))
+        deep_selected = select_top_k_per_symbol(
+            eligible,
+            top_k_per_symbol=deep_top_k,
+            max_total_candidates=deep_max_candidates,
+            min_trades_2020_2026=min_trades_2020_2026,
+        )
+        deep_selected_by_id = {strategy.set_id: strategy for strategy in deep_selected}
+        for set_id in required_ids:
+            if set_id in eligible_by_id:
+                deep_selected_by_id.setdefault(set_id, eligible_by_id[set_id])
+        for strategy in selected:
+            deep_selected_by_id.setdefault(strategy.set_id, strategy)
+        deep_selected = list(deep_selected_by_id.values())
+        deep_pool_count = len(deep_selected)
+        deep_pool_expanded = len(deep_selected) > len(selected)
+        refined_allocations, refined_current, deep_log, deep_attempts = _deep_refine_allocations(
+            deep_selected,
+            allocations,
+            current,
+            minimum_active_strategies=minimum_active_strategies,
+            max_units_per_set=max_units_per_set,
+            max_total_units=max_total_units,
+            max_units_per_symbol=max_units_per_symbol,
+            max_sets_per_symbol=max_sets_per_symbol,
+            max_sets_per_group=max_sets_per_group,
+            max_units_per_group_pct=None if group_cap_relaxed else max_units_per_group_pct,
+            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
+            max_pair_corr=max_pair_corr,
+            max_downside_corr=max_downside_corr,
+            max_dd_overlap=max_dd_overlap,
+            existing_portfolio_curves=existing_portfolio_curves,
+            max_portfolio_corr=max_portfolio_corr,
+            margin_balance=margin_balance,
+            max_margin_pct=max_margin_pct,
+            margin_profile=margin_profile,
+            stock_leverage=stock_leverage,
+            default_leverage=default_leverage,
+            stock_contract_size=stock_contract_size,
+            default_contract_size=default_contract_size,
+            max_daily_dd=max_daily_dd,
+            enforce_point_dd=enforce_point_dd,
+            daily_dd_full_history=daily_dd_full_history,
+        )
+        if refined_current.total_net_profit > current.total_net_profit + 1e-9:
+            selected = deep_selected
+            allocations = refined_allocations
+            current = refined_current
+            stop_reason += "; deep optimization refined the solution"
 
     executable_allocations, executable_steps = _execution_plan_allocations(selected, allocations, capital)
     execution_adjustments = {
@@ -4187,6 +4550,17 @@ def optimize_portfolio(
         ]
 
     warnings: list[str] = []
+    if (
+        configured_group_units_pct is not None
+        and group_units_pct_feasibility_floor is not None
+        and float(max_units_per_group_pct) > float(configured_group_units_pct) + 1e-9
+    ):
+        warnings.append(
+            "Group unit cap adjusted to the feasible diversification floor: "
+            f"{float(configured_group_units_pct) * 100.0:.1f}% -> "
+            f"{float(max_units_per_group_pct) * 100.0:.1f}% for "
+            f"{candidate_group_count} available asset groups."
+        )
     if dd_reserve_pct > 0:
         warnings.append(
             f"DD reserve {float(dd_reserve_pct):.1f}% applied; optimizer used reduced effective DD targets."
@@ -4195,6 +4569,23 @@ def optimize_portfolio(
         warnings.append(
             f"Multi-start search evaluated {valid_restarts}/{int(search_restarts)} valid restart(s)."
         )
+    if use_deep_refinement:
+        if deep_log:
+            warnings.append(
+                "Optimizacion profunda aplicada: "
+                f"{len(deep_log)} movimiento(s), {deep_attempts} intento(s), "
+                f"pool {base_selected_count}->{len(selected)} candidato(s)."
+            )
+        else:
+            pool_text = (
+                f" pool {base_selected_count}->{deep_pool_count} candidato(s)"
+                if deep_pool_expanded
+                else f" pool {len(selected)} candidato(s)"
+            )
+            warnings.append(
+                "Optimizacion profunda: no encontro mejora valida "
+                f"tras {deep_attempts} intento(s),{pool_text}."
+            )
     if preserve_required_allocations and required_ids:
         repair_reductions = sum(
             1 for decision in greedy_log if decision.action == "reduce_unit_for_repair"
@@ -4290,7 +4681,7 @@ def optimize_portfolio(
         active_strategies=current.active_strategies,
         stop_reason=stop_reason,
         warnings=warnings,
-        decision_log=greedy_log + local_log + multi_start_log,
+        decision_log=greedy_log + local_log + multi_start_log + deep_log,
         unused_sets=unused_sets,
         correlation_rejections=correlation_rejections,
         group_summary=group_summary,
@@ -4511,7 +4902,14 @@ def portfolio_symbol_key(symbol: str) -> str:
 
 
 def portfolio_group_key(symbol: str) -> str:
+    raw_symbol = str(symbol or "").strip().upper()
+    exact_group = _portfolio_universe_group_maps()[1].get(raw_symbol)
+    if exact_group:
+        return exact_group
     symbol_key = portfolio_symbol_key(symbol)
+    universe_group = _portfolio_universe_group_by_symbol().get(symbol_key)
+    if universe_group:
+        return universe_group
     if symbol_key in PORTFOLIO_GROUP_BY_SYMBOL:
         return PORTFOLIO_GROUP_BY_SYMBOL[symbol_key]
     if _looks_like_forex_pair(symbol_key):

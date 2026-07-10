@@ -86,6 +86,33 @@ TRUE_VALUES = {"1", "true", "yes", "on", "si"}
 LOCAL_FILE_FALLBACK_ROOTS = ("reports", "outputs", "sets", "configs", "logs")
 
 
+def _display_margin_profile(raw_profile: str | None, broker: str) -> str:
+    value = str(raw_profile or broker or "ROBOFOREX").strip().lower()
+    if value in {"ttp", "thetradingpit", "tradingpit", "the_trading_pit"}:
+        return "TTP"
+    if value in {"axi", "axi trading", "axitrading", "axi_select", "axiselect"}:
+        return "AXI"
+    if value in {"ictrading", "ic trading", "ic", "icmarkets", "ic markets"}:
+        return "ICTRADING"
+    broker_value = normalize_broker(broker or value or "ROBOFOREX")
+    if broker_value in {"AXI", "ICTRADING"}:
+        return broker_value
+    return "ROBOFOREX"
+
+
+def _display_portfolio_type(raw_value: str | None) -> str:
+    value = str(raw_value or "Moderado").strip()
+    return {
+        "Conservative": "Conservador",
+        "Balanced": "Moderado",
+        "Aggressive": "Agresivo",
+        "Conservador": "Conservador",
+        "Equilibrado": "Moderado",
+        "Moderado": "Moderado",
+        "Agresivo": "Agresivo",
+    }.get(value, value)
+
+
 def resolve_existing_local_file(path: Path, base_dir: Path = BASE_DIR) -> Path:
     if path.exists():
         return path
@@ -849,12 +876,7 @@ class MT5AutotesterUI(
         self.reports_count = tk.StringVar(value="0")
         self.portfolio_count = tk.StringVar(value="Reports encontrados: 0")
         self.portfolio_status = tk.StringVar(value="Selecciona una carpeta de reportes y genera el Excel.")
-        saved_portfolio_type = saved_general.get("ubs_portfolio_type", "Balanced")
-        saved_portfolio_type = {
-            "Conservador": "Conservative",
-            "Equilibrado": "Balanced",
-            "Agresivo": "Aggressive",
-        }.get(saved_portfolio_type, saved_portfolio_type)
+        saved_portfolio_type = _display_portfolio_type(saved_general.get("ubs_portfolio_type", "Moderado"))
         self.ubs_portfolio_num_symbols = tk.IntVar(value=self._saved_int(saved_general.get("ubs_portfolio_num_symbols"), 5))
         self.ubs_portfolio_type = tk.StringVar(value=saved_portfolio_type)
         self.ubs_portfolio_valley_pct = tk.StringVar(value=saved_general.get("ubs_portfolio_valley_pct", "10"))
@@ -882,6 +904,9 @@ class MT5AutotesterUI(
         self.ubs_portfolio_run_local_search = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_run_local_search"), True)
         )
+        self.ubs_portfolio_deep_optimization = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_deep_optimization"), True)
+        )
         self.ubs_portfolio_use_correlation = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_use_correlation"), True)
         )
@@ -890,6 +915,48 @@ class MT5AutotesterUI(
         )
         self.ubs_portfolio_grid_off = tk.BooleanVar(
             value=self._bool_setting(saved_general.get("ubs_portfolio_grid_off"), False)
+        )
+        self.ubs_portfolio_exclude_used_sets = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_exclude_used_sets"), True)
+        )
+        self.ubs_portfolio_margin_profile = tk.StringVar(
+            value=_display_margin_profile(
+                saved_general.get("ubs_portfolio_margin_profile"),
+                self.ubs_broker.get(),
+            )
+        )
+        self.ubs_portfolio_max_margin_pct = tk.StringVar(
+            value=saved_general.get("ubs_portfolio_max_margin_pct", "100")
+        )
+        self.ubs_portfolio_allow_forex = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_forex"), True)
+        )
+        self.ubs_portfolio_allow_metals = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_metals"), True)
+        )
+        self.ubs_portfolio_allow_indices = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get("ubs_portfolio_allow_indices"),
+                self._bool_setting(saved_general.get("ubs_portfolio_allow_indices_energies"), True),
+            )
+        )
+        self.ubs_portfolio_allow_energies = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get("ubs_portfolio_allow_energies"),
+                self._bool_setting(saved_general.get("ubs_portfolio_allow_indices_energies"), True),
+            )
+        )
+        self.ubs_portfolio_allow_crypto = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_crypto"), True)
+        )
+        self.ubs_portfolio_allow_stocks = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_stocks"), True)
+        )
+        self.ubs_portfolio_allow_bonds = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_bonds"), True)
+        )
+        self.ubs_portfolio_allow_softs = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_portfolio_allow_softs"), True)
         )
         self.ubs_portfolio_dd_reserve_pct = tk.StringVar(
             value=saved_general.get("ubs_portfolio_dd_reserve_pct", "10")
@@ -922,12 +989,13 @@ class MT5AutotesterUI(
         self.ubs_portfolio_member_paths: dict[str, dict[str, str]] = {}
         self.ubs_portfolio_pending_result = None
         self.ubs_portfolio_pending_inputs = None
+        self.ubs_portfolio_pending_proposals = []
         monthly_prefix = "ubs_monthly_portfolio_"
         self.ubs_monthly_portfolio_target_month = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}target_month", MONTH_LABELS[0])
         )
         self.ubs_monthly_portfolio_type = tk.StringVar(
-            value=saved_general.get(f"{monthly_prefix}type", saved_portfolio_type)
+            value=_display_portfolio_type(saved_general.get(f"{monthly_prefix}type", saved_portfolio_type))
         )
         self.ubs_monthly_portfolio_valley_pct = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}valley_pct", "10")
@@ -980,14 +1048,32 @@ class MT5AutotesterUI(
         self.ubs_monthly_portfolio_allow_forex = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_forex"), True)
         )
-        self.ubs_monthly_portfolio_allow_indices_energies = tk.BooleanVar(
-            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_indices_energies"), True)
-        )
         self.ubs_monthly_portfolio_allow_metals = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_metals"), True)
         )
+        self.ubs_monthly_portfolio_allow_indices = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}allow_indices"),
+                self._bool_setting(saved_general.get(f"{monthly_prefix}allow_indices_energies"), True),
+            )
+        )
+        self.ubs_monthly_portfolio_allow_energies = tk.BooleanVar(
+            value=self._bool_setting(
+                saved_general.get(f"{monthly_prefix}allow_energies"),
+                self._bool_setting(saved_general.get(f"{monthly_prefix}allow_indices_energies"), True),
+            )
+        )
+        self.ubs_monthly_portfolio_allow_crypto = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_crypto"), True)
+        )
         self.ubs_monthly_portfolio_allow_stocks = tk.BooleanVar(
             value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_stocks"), True)
+        )
+        self.ubs_monthly_portfolio_allow_bonds = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_bonds"), True)
+        )
+        self.ubs_monthly_portfolio_allow_softs = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get(f"{monthly_prefix}allow_softs"), True)
         )
         self.ubs_monthly_portfolio_exclude_monthly_used = tk.BooleanVar(
             value=self._bool_setting(

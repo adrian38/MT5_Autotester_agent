@@ -21,7 +21,10 @@ from portfolio_manager.ubs_portfolio import (
     filter_eligible_sets,
     filter_rows_grid_off,
     improve_with_local_search,
+    load_robust_sets_from_rows,
     merge_accumulated_curves,
+    margin_profile_label,
+    normalize_margin_profile,
     optimize_portfolio,
     optimize_strict_monthly_portfolio,
     portfolio_margin_summary,
@@ -34,6 +37,7 @@ from portfolio_manager.ubs_portfolio import (
     slice_strategy_sets_to_month,
     validate_strict_monthly_portfolio,
 )
+from ubs.universe import load_asset_universe
 
 
 def make_strategy(
@@ -153,6 +157,59 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
 
             self.assertEqual([row["candidate_id"] for row in filtered], [2, 3, 4])
             self.assertTrue(any("EnableGrid=true" in warning for warning in warnings))
+
+    def test_robust_set_loader_reports_missing_report_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            robust_report = root / "robust.htm"
+            robust_report.write_text("report", encoding="utf-8")
+            missing_report = root / "missing_base.htm"
+
+            loaded, warnings = load_robust_sets_from_rows(
+                [
+                    {
+                        "set_path": str(root / "candidate.set"),
+                        "candidate_id": 1,
+                        "is_report_path": str(missing_report),
+                        "oos_report_path": str(robust_report),
+                    }
+                ],
+                [],
+            )
+
+            self.assertEqual(loaded, [])
+            detail = " ".join(warnings)
+            self.assertIn("candidate.set", detail)
+            self.assertIn("base=missing_base.htm", detail)
+
+    def test_robust_set_loader_reports_parse_error_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            base_report = root / "base.htm"
+            robust_report = root / "robust.htm"
+            base_report.write_text("report", encoding="utf-8")
+            robust_report.write_text("report", encoding="utf-8")
+
+            def fail_parse(_path: Path):
+                raise ValueError("periodos solapados")
+
+            loaded, warnings = load_robust_sets_from_rows(
+                [
+                    {
+                        "set_path": str(root / "candidate.set"),
+                        "candidate_id": 1,
+                        "is_report_path": str(base_report),
+                        "oos_report_path": str(robust_report),
+                    }
+                ],
+                [],
+                parse=fail_parse,
+            )
+
+            self.assertEqual(loaded, [])
+            detail = " ".join(warnings)
+            self.assertIn("candidate.set", detail)
+            self.assertIn("ValueError: periodos solapados", detail)
 
     def test_strict_monthly_validation_requires_target_month_best_in_last_five_years(self) -> None:
         strategy = make_strategy("seasonal", "EURUSD", [0, 10], trades=10)
@@ -494,7 +551,38 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             max_sets_per_symbol=1,
             run_local_search=True,
         )
-        self.assertLessEqual(result.group_summary["IndicesEnergies"]["unit_pct"], 55.1)
+        self.assertLessEqual(result.group_summary["Indices"]["unit_pct"], 55.1)
+
+    def test_conservative_two_group_cap_uses_feasible_diversification_floor(self) -> None:
+        result = optimize_portfolio(
+            [
+                make_strategy("eur", "EURUSD", [0, 90, 85, 180]),
+                make_strategy("gbp", "GBPUSD", [0, 85, 80, 170]),
+                make_strategy("gold", "XAUUSD", [0, 80, 75, 160]),
+                make_strategy("silver", "XAGUSD", [0, 75, 70, 150]),
+            ],
+            capital=10_000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.CONSERVATIVE,
+            top_k_per_symbol=10,
+            max_total_candidates=None,
+            max_total_units=40,
+            max_sets_per_symbol=1,
+            minimum_active_strategies=4,
+            maximum_active_strategies=4,
+            run_local_search=True,
+        )
+
+        self.assertEqual(result.active_strategies, 4)
+        self.assertGreater(result.total_units, result.active_strategies)
+        self.assertLessEqual(
+            max(float(row["unit_pct"]) for row in result.group_summary.values()),
+            50.1,
+        )
+        self.assertTrue(
+            any("40.0% -> 50.0%" in warning for warning in result.warnings)
+        )
 
     def test_candidate_cap_reserves_available_asset_groups(self) -> None:
         sets = [
@@ -514,7 +602,7 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
             max_total_candidates=5,
         )
         selected_groups = {portfolio_group_key(item.symbol) for item in selected}
-        self.assertIn("IndicesEnergies", selected_groups)
+        self.assertIn("Indices", selected_groups)
         self.assertIn("Metals", selected_groups)
         self.assertIn("Stocks", selected_groups)
         self.assertIn("Forex", selected_groups)
@@ -721,9 +809,27 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         index_sets = [
             allocation
             for allocation in result.allocations
-            if portfolio_group_key(allocation.symbol) == "IndicesEnergies"
+            if portfolio_group_key(allocation.symbol) == "Indices"
         ]
         self.assertLessEqual(len(index_sets), 3)
+
+    def test_ictrading_universe_groups_are_available_to_portfolio(self) -> None:
+        groups, _aliases = load_asset_universe(
+            Path("assets/ictrading_assets.ini"),
+            include_disabled=True,
+        )
+        expected_groups = {
+            "Forex", "Metals", "Indices", "Energies",
+            "Crypto", "Stocks", "Bonds", "Softs",
+        }
+
+        self.assertEqual(set(groups), expected_groups)
+        for expected_group, symbols in groups.items():
+            with self.subTest(group=expected_group):
+                self.assertTrue(symbols)
+                self.assertTrue(
+                    all(portfolio_group_key(symbol) == expected_group for symbol in symbols)
+                )
 
     def test_monthly_daily_dd_limit_blocks_closed_plus_floating_risk(self) -> None:
         risky = make_strategy("risky", "EURUSD", [0, 100, 250], trades=120)
@@ -1056,6 +1162,68 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertEqual(by_set["wti"]["leverage"], 10.0)
         self.assertEqual(by_set["meta"]["leverage"], 2.0)
         self.assertEqual(by_set["meta"]["contract_size"], 100.0)
+
+    def test_standard_broker_margin_profiles_keep_broker_identity(self) -> None:
+        self.assertEqual(normalize_margin_profile("ROBOFOREX"), "roboforex")
+        self.assertEqual(normalize_margin_profile("AXI"), "axi")
+        self.assertEqual(normalize_margin_profile("ICTrading"), "ictrading")
+        self.assertEqual(margin_profile_label("AXI"), "AXI")
+        self.assertEqual(margin_profile_label("ICTRADING"), "ICTrading")
+
+        summary = portfolio_margin_summary(
+            [make_strategy("meta", "META", [0, 10], price=700.0)],
+            {"meta": 1},
+            balance=5000,
+            max_margin_pct=100,
+            margin_profile="AXI",
+            stock_leverage=20,
+            default_leverage=500,
+            stock_contract_size=100,
+            default_contract_size=1,
+        )
+
+        self.assertEqual(summary["profile"], "axi")
+        self.assertEqual(summary["profile_label"], "AXI")
+        self.assertEqual(summary["by_set"]["meta"]["leverage"], 20.0)
+
+    def test_normal_deep_refinement_expands_pool_and_adds_valid_candidate(self) -> None:
+        anchor = make_strategy("anchor", "EURUSD", [0, 100, 99, 120], trades=1)
+        improver = make_strategy("improver", "GBPUSD", [0, 80, 79, 90], trades=1)
+        base = optimize_portfolio(
+            [anchor, improver],
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=1,
+            max_total_candidates=1,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+            use_deep_refinement=False,
+        )
+        refined = optimize_portfolio(
+            [anchor, improver],
+            capital=10000,
+            valley_dd_pct=50,
+            point_dd_pct=50,
+            portfolio_type=PortfolioType.AGGRESSIVE,
+            min_trades_2020_2026=1,
+            top_k_per_symbol=1,
+            max_total_candidates=1,
+            max_units_per_set=1,
+            max_total_units=2,
+            max_sets_per_symbol=1,
+            run_local_search=False,
+            use_deep_refinement=True,
+        )
+
+        self.assertEqual({item.set_id for item in base.allocations}, {"anchor"})
+        self.assertEqual({item.set_id for item in refined.allocations}, {"anchor", "improver"})
+        self.assertGreater(refined.total_net_profit, base.total_net_profit)
+        self.assertTrue(any("Optimizacion profunda aplicada" in warning for warning in refined.warnings))
 
     def test_portfolio_repair_retains_required_sets(self) -> None:
         result = optimize_portfolio(

@@ -35,9 +35,13 @@ MONTH_LABELS = (
 
 MONTHLY_ASSET_GROUP_FLAGS = (
     ("Forex", "allow_forex"),
-    ("IndicesEnergies", "allow_indices_energies"),
     ("Metals", "allow_metals"),
+    ("Indices", "allow_indices"),
+    ("Energies", "allow_energies"),
+    ("Crypto", "allow_crypto"),
     ("Stocks", "allow_stocks"),
+    ("Bonds", "allow_bonds"),
+    ("Softs", "allow_softs"),
 )
 
 
@@ -142,34 +146,34 @@ class UBSMonthlyPortfolioLogicMixin:
         )
 
     def _select_ubs_monthly_margin_profile(self, profile: str) -> None:
-        """Keep RoboForex/TTP margin checks mutually exclusive in the monthly UI."""
+        """Keep broker/TTP margin checks mutually exclusive in the monthly UI."""
         profile_key = str(profile or "").strip().lower()
         if profile_key == "ttp" and bool(self.ubs_monthly_portfolio_validate_ttp_margin.get()):
             self.ubs_monthly_portfolio_validate_roboforex_margin.set(False)
-        elif profile_key == "roboforex" and bool(self.ubs_monthly_portfolio_validate_roboforex_margin.get()):
+        elif profile_key != "ttp" and bool(self.ubs_monthly_portfolio_validate_roboforex_margin.get()):
             self.ubs_monthly_portfolio_validate_ttp_margin.set(False)
 
     def _monthly_margin_profile(self) -> str:
         ttp_enabled = bool(self.ubs_monthly_portfolio_validate_ttp_margin.get())
-        roboforex_enabled = bool(self.ubs_monthly_portfolio_validate_roboforex_margin.get())
+        broker_enabled = bool(self.ubs_monthly_portfolio_validate_roboforex_margin.get())
+        broker_profile = UBSPortfolioLogicMixin._active_broker_margin_profile(self)
         if ttp_enabled:
-            if roboforex_enabled:
+            if broker_enabled:
                 self.ubs_monthly_portfolio_validate_roboforex_margin.set(False)
             return "ttp"
-        if roboforex_enabled:
-            return "roboforex"
+        if broker_enabled:
+            return broker_profile
         self.ubs_monthly_portfolio_validate_roboforex_margin.set(True)
-        return "roboforex"
+        return broker_profile
 
     def _monthly_roboforex_margin_enabled(self) -> bool:
-        return self._monthly_margin_profile() == "roboforex"
+        return self._monthly_margin_profile() != "ttp"
 
     def _read_ubs_monthly_portfolio_inputs(self) -> dict[str, object]:
         adapter = self._monthly_portfolio_adapter()
-        # En mensual el DD puntual ya no es una restriccion de construccion.
-        # El lector compartido todavia exige un valor valido, asi que lo
-        # normalizamos al DD valle antes de leer para que un campo oculto no
-        # bloquee la generacion.
+        # En mensual el DD puntual no es una restriccion de construccion.
+        # Lo igualamos al DD valle para mantener una referencia coherente en
+        # los datos persistidos.
         self.ubs_monthly_portfolio_point_pct.set(self.ubs_monthly_portfolio_valley_pct.get())
         inputs = UBSPortfolioLogicMixin._read_ubs_portfolio_inputs(adapter)
         month_text = str(self.ubs_monthly_portfolio_target_month.get()).strip()
@@ -216,7 +220,7 @@ class UBSMonthlyPortfolioLogicMixin:
         margin_profile = self._monthly_margin_profile()
         inputs["margin_profile"] = margin_profile
         inputs["validate_margin"] = True
-        inputs["validate_roboforex_margin"] = margin_profile == "roboforex"
+        inputs["validate_roboforex_margin"] = margin_profile != "ttp"
         inputs["validate_ttp_margin"] = margin_profile == "ttp"
         inputs["max_margin_pct"] = UBSPortfolioLogicMixin._parse_float_setting(
             adapter,
@@ -326,9 +330,13 @@ class UBSMonthlyPortfolioLogicMixin:
         )
         self.ubs_monthly_portfolio_grid_off.set(False)
         self.ubs_monthly_portfolio_allow_forex.set(True)
-        self.ubs_monthly_portfolio_allow_indices_energies.set(True)
         self.ubs_monthly_portfolio_allow_metals.set(True)
+        self.ubs_monthly_portfolio_allow_indices.set(True)
+        self.ubs_monthly_portfolio_allow_energies.set(True)
+        self.ubs_monthly_portfolio_allow_crypto.set(True)
         self.ubs_monthly_portfolio_allow_stocks.set(True)
+        self.ubs_monthly_portfolio_allow_bonds.set(True)
+        self.ubs_monthly_portfolio_allow_softs.set(True)
         self.ubs_monthly_portfolio_dd_reserve_pct.set(DEFAULT_PORTFOLIO_FORM["dd_reserve_pct"])
         self.ubs_monthly_portfolio_search_restarts.set(DEFAULT_PORTFOLIO_FORM["search_restarts"])
         self.ubs_monthly_portfolio_max_pair_corr.set(DEFAULT_PORTFOLIO_FORM["max_pair_corr"])

@@ -183,9 +183,11 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 - `portfolio_decision_log`: optimizer audit trail for accepted/rejected unit
   increments and optional local-search swaps.
 - `portfolio_members`: legacy-compatible per-strategy table. `set_path` remains
-  part of the global exclusion key and is freed automatically when the portfolio
-  is deleted. Aggressive portfolios use their own lock pool and do not conflict
-  with Conservative/Balanced. Conservative and Balanced share a lock pool.
+  part of the full-history exclusion key when **Excluir usados** is enabled and
+  is freed automatically when the portfolio is deleted. The filter is enabled
+  by default but can be disabled to reuse a set subject to every other gate.
+  Aggressive portfolios use their own lock pool and do not conflict with
+  Conservative/Balanced. Conservative and Balanced share a lock pool.
 - `portfolio_quarantine`: account-scoped hard exclusion keyed by `set_path`,
   including source candidate, symbol/TF, source portfolio, reason, and date.
 - `portfolio_versions`: compressed before-change snapshots of the portfolio row,

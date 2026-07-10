@@ -4,12 +4,58 @@ import tkinter as tk
 from tkinter import ttk
 
 
+PORTFOLIO_GROUP_CHECKS = (
+    ("Forex", "allow_forex"),
+    ("Metales", "allow_metals"),
+    ("Indices", "allow_indices"),
+    ("Energias", "allow_energies"),
+    ("Cripto", "allow_crypto"),
+    ("Acciones", "allow_stocks"),
+    ("Bonos", "allow_bonds"),
+    ("Softs", "allow_softs"),
+)
+
+
 class UBSPortfolioViewMixin:
     def _portfolio_window_master(self):
         try:
             return object.__getattribute__(self, "_app")
         except Exception:
             return self
+
+    def _ubs_portfolio_group_controls(self):
+        return [
+            (label, getattr(self, f"ubs_portfolio_{suffix}", None))
+            for label, suffix in PORTFOLIO_GROUP_CHECKS
+        ]
+
+    def _grid_ubs_portfolio_group_controls(
+        self,
+        parent: tk.Misc,
+        *,
+        columns: int,
+        monthly: bool,
+        start_row: int = 0,
+    ) -> None:
+        controls = self._ubs_portfolio_group_controls()
+        for column in range(columns):
+            parent.columnconfigure(column, weight=1, uniform="portfolio_groups")
+        for index, (label_text, variable) in enumerate(controls):
+            if variable is None:
+                continue
+            group_check = ttk.Checkbutton(parent, text=label_text, variable=variable)
+            group_check.grid(
+                row=start_row + index // columns,
+                column=index % columns,
+                sticky="w",
+                padx=(10, 8),
+                pady=4,
+            )
+            self._tooltip_cls(
+                group_check,
+                "Si esta activo, permite este grupo de activos para formar el portafolio "
+                + ("mensual." if monthly else "normal."),
+            )
 
     def _build_ubs_monthly_portfolio_input_groups(self, form: tk.Frame) -> None:
         colors = self.colors
@@ -60,7 +106,7 @@ class UBSPortfolioViewMixin:
             textvariable=self.ubs_portfolio_type,
             state="readonly",
             width=12,
-            values=("Conservative", "Balanced", "Aggressive"),
+            values=("Conservador", "Moderado", "Agresivo"),
         )
         self.ubs_portfolio_type_combo.grid(row=1, column=3, sticky="w", padx=(0, 10), pady=4)
         label(risk, 2, 0, "DD valle %")
@@ -224,17 +270,22 @@ class UBSPortfolioViewMixin:
         ttp_margin_var = getattr(self, "ubs_portfolio_validate_ttp_margin", None)
         margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
         if margin_var is not None and margin_pct_var is not None:
+            broker_var = getattr(self, "ubs_broker", None)
+            try:
+                broker_label = str(broker_var.get()).strip().upper() or "Broker"
+            except Exception:
+                broker_label = "Broker"
             select_margin_profile = getattr(self, "_select_ubs_monthly_margin_profile", None)
             margin_check = ttk.Checkbutton(
                 margin,
-                text="RoboForex",
+                text=broker_label if broker_label in {"ROBOFOREX", "AXI", "ICTRADING"} else "Broker",
                 variable=margin_var,
-                command=((lambda: select_margin_profile("roboforex")) if callable(select_margin_profile) else None),
+                command=((lambda: select_margin_profile("broker")) if callable(select_margin_profile) else None),
             )
             margin_check.grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=4)
             self._tooltip_cls(
                 margin_check,
-                "Valida margen estimado con Stocks 1:20 contract_size 100; resto 1:500 contract_size 1.",
+                "Valida margen estimado con el broker activo: Stocks 1:20 contract_size 100; resto 1:500 contract_size 1.",
             )
             if ttp_margin_var is not None:
                 ttp_margin_check = ttk.Checkbutton(
@@ -252,35 +303,19 @@ class UBSPortfolioViewMixin:
             entry(margin, 2, 1, margin_pct_var)
             tk.Label(
                 margin,
-                text="Si ambos estan apagados, genera con RoboForex por defecto.",
+                text="Si ambos estan apagados, genera con el broker activo por defecto.",
                 bg=colors["panel"],
                 fg=colors["muted"],
                 font=("Segoe UI", 8),
             ).grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=(2, 8))
 
         groups = section(1, 2, "Grupos permitidos")
-        allow_group_vars = (
-            ("Forex", getattr(self, "ubs_portfolio_allow_forex", None)),
-            ("Indices/Energias", getattr(self, "ubs_portfolio_allow_indices_energies", None)),
-            ("Metales", getattr(self, "ubs_portfolio_allow_metals", None)),
-            ("Stocks", getattr(self, "ubs_portfolio_allow_stocks", None)),
+        self._grid_ubs_portfolio_group_controls(
+            groups,
+            columns=2,
+            monthly=True,
+            start_row=1,
         )
-        for index, (label_text, variable) in enumerate(allow_group_vars):
-            if variable is None:
-                continue
-            group_check = ttk.Checkbutton(groups, text=label_text, variable=variable)
-            group_check.grid(
-                row=1 + index // 2,
-                column=(index % 2) * 2,
-                columnspan=2,
-                sticky="w",
-                padx=(10 if index % 2 == 0 else 8, 10),
-                pady=4,
-            )
-            self._tooltip_cls(
-                group_check,
-                "Si esta activo, permite este grupo de activos para formar el portafolio mensual.",
-            )
 
     def _build_ubs_portfolio(self, parent: ttk.Frame) -> None:
         colors = self.colors
@@ -319,21 +354,37 @@ class UBSPortfolioViewMixin:
                 font=("Segoe UI", 9),
             ).grid(row=row, column=col, sticky="w", padx=(10 if col == 0 else 8, 4), pady=5)
 
+        target_month_var = getattr(self, "ubs_portfolio_target_month", None)
+        grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
+        exclude_used_var = getattr(self, "ubs_portfolio_exclude_used_sets", None)
+
         label(0, 0, "Capital")
         ttk.Entry(form, textvariable=self.ubs_portfolio_capital, width=10).grid(row=0, column=1, sticky="w", pady=5)
         label(0, 2, "DD valle %")
         ttk.Entry(form, textvariable=self.ubs_portfolio_valley_pct, width=8).grid(row=0, column=3, sticky="w", pady=5)
-        label(0, 4, "DD puntual %")
-        ttk.Entry(form, textvariable=self.ubs_portfolio_point_pct, width=8).grid(row=0, column=5, sticky="w", pady=5)
-        label(0, 6, "Tipo")
+        if target_month_var is not None:
+            label(0, 4, "DD puntual %")
+            ttk.Entry(form, textvariable=self.ubs_portfolio_point_pct, width=8).grid(
+                row=0, column=5, sticky="w", pady=5
+            )
+            type_label_col = 6
+            type_input_col = 7
+        else:
+            type_label_col = 4
+            type_input_col = 5
+        label(0, type_label_col, "Base")
         self.ubs_portfolio_type_combo = ttk.Combobox(
             form,
             textvariable=self.ubs_portfolio_type,
             state="readonly",
             width=12,
-            values=("Conservative", "Balanced", "Aggressive"),
+            values=("Conservador", "Moderado", "Agresivo"),
         )
-        self.ubs_portfolio_type_combo.grid(row=0, column=7, sticky="w", pady=5)
+        self.ubs_portfolio_type_combo.grid(row=0, column=type_input_col, sticky="w", pady=5)
+        self._tooltip_cls(
+            self.ubs_portfolio_type_combo,
+            "Perfil usado para elegir la composicion comun. El guardado crea un solo portafolio A/M/C con esos mismos sets.",
+        )
         label(0, 8, "Top K")
         ttk.Spinbox(form, from_=1, to=50, width=8, textvariable=self.ubs_portfolio_top_k).grid(
             row=0, column=9, sticky="w", pady=5
@@ -421,8 +472,6 @@ class UBSPortfolioViewMixin:
             restart_spin,
             "Perturbaciones validas para escapar del optimo local. 0 desactiva; 4 es el valor recomendado.",
         )
-        target_month_var = getattr(self, "ubs_portfolio_target_month", None)
-        grid_off_var = getattr(self, "ubs_portfolio_grid_off", None)
         if target_month_var is not None:
             label(3, 4, "Mes objetivo")
             self.ubs_portfolio_target_month_combo = ttk.Combobox(
@@ -525,7 +574,7 @@ class UBSPortfolioViewMixin:
                 select_margin_profile = getattr(self, "_select_ubs_monthly_margin_profile", None)
                 margin_check = ttk.Checkbutton(
                     form,
-                    text="Margen RoboForex",
+                    text="Margen broker",
                     variable=margin_var,
                     command=(
                         (lambda: select_margin_profile("roboforex"))
@@ -563,45 +612,110 @@ class UBSPortfolioViewMixin:
                 ttk.Entry(form, textvariable=margin_pct_var, width=8).grid(
                     row=4, column=margin_entry_col, sticky="w", pady=5
                 )
-            allow_group_vars = (
-                ("Forex", getattr(self, "ubs_portfolio_allow_forex", None)),
-                ("Indices/Energias", getattr(self, "ubs_portfolio_allow_indices_energies", None)),
-                ("Metales", getattr(self, "ubs_portfolio_allow_metals", None)),
-                ("Stocks", getattr(self, "ubs_portfolio_allow_stocks", None)),
-            )
+            allow_group_vars = self._ubs_portfolio_group_controls()
             if any(var is not None for _label_text, var in allow_group_vars):
                 label(5, 0, "Grupos permitidos")
-                for offset, (label_text, variable) in enumerate(allow_group_vars):
-                    if variable is None:
-                        continue
-                    group_check = ttk.Checkbutton(
-                        form,
-                        text=label_text,
-                        variable=variable,
-                    )
-                    group_check.grid(
-                        row=5,
-                        column=1 + offset * 2,
-                        columnspan=2,
-                        sticky="w",
-                        padx=(4, 8),
-                        pady=5,
-                    )
-                    self._tooltip_cls(
-                        group_check,
-                        "Si esta activo, permite este grupo de activos para formar el portafolio mensual.",
-                    )
-        elif grid_off_var is not None:
-            grid_off_check = ttk.Checkbutton(
-                form,
-                text="Grid OFF",
-                variable=grid_off_var,
-            )
-            grid_off_check.grid(row=3, column=4, columnspan=2, sticky="w", padx=(8, 4), pady=5)
-            self._tooltip_cls(
-                grid_off_check,
-                "Si esta activo, descarta candidatos cuyo .set tenga EnableGrid=true.",
-            )
+                group_grid = tk.Frame(form, bg=colors["panel"])
+                group_grid.grid(
+                    row=5,
+                    column=1,
+                    columnspan=11,
+                    sticky="ew",
+                    padx=(4, 10),
+                    pady=5,
+                )
+                self._grid_ubs_portfolio_group_controls(
+                    group_grid,
+                    columns=4,
+                    monthly=True,
+                )
+        else:
+            if exclude_used_var is not None:
+                exclude_used_check = ttk.Checkbutton(
+                    form,
+                    text="Excluir usados",
+                    variable=exclude_used_var,
+                    command=getattr(self, "_refresh_ubs_portfolio_availability", None),
+                )
+                exclude_used_check.grid(
+                    row=3,
+                    column=4,
+                    sticky="w",
+                    padx=(8, 4),
+                    pady=5,
+                )
+                self._tooltip_cls(
+                    exclude_used_check,
+                    "Activado: no reutiliza sets guardados en otros portafolios. "
+                    "Desactivado: permite reutilizarlos si pasan DD, correlacion y los demas filtros.",
+                )
+            if grid_off_var is not None:
+                grid_off_check = ttk.Checkbutton(
+                    form,
+                    text="Grid OFF",
+                    variable=grid_off_var,
+                )
+                grid_off_check.grid(
+                    row=3,
+                    column=5 if exclude_used_var is not None else 4,
+                    sticky="w",
+                    padx=(8, 4),
+                    pady=5,
+                )
+                self._tooltip_cls(
+                    grid_off_check,
+                    "Si esta activo, descarta candidatos cuyo .set tenga EnableGrid=true.",
+                )
+            deep_var = getattr(self, "ubs_portfolio_deep_optimization", None)
+            if deep_var is not None:
+                deep_check = ttk.Checkbutton(
+                    form,
+                    text="Optimizacion profunda",
+                    variable=deep_var,
+                )
+                deep_check.grid(row=3, column=10, columnspan=2, sticky="w", padx=(8, 10), pady=5)
+                self._tooltip_cls(
+                    deep_check,
+                    "Refina la cartera ampliando candidatos y probando adiciones/swaps sin romper DD valle, margen, correlacion ni grupos.",
+                )
+            margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
+            margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
+            if margin_profile_var is not None:
+                label(3, 6, "Perfil margen")
+                margin_combo = ttk.Combobox(
+                    form,
+                    textvariable=margin_profile_var,
+                    state="readonly",
+                    width=12,
+                    values=("ROBOFOREX", "AXI", "ICTRADING", "TTP"),
+                )
+                margin_combo.grid(row=3, column=7, sticky="w", pady=5)
+                self._tooltip_cls(
+                    margin_combo,
+                    "Perfil para validar margen. ROBOFOREX/AXI/ICTRADING usan Stocks 1:20 y resto 1:500; TTP usa reglas prop.",
+                )
+            if margin_pct_var is not None:
+                label(3, 8, "Max margen %")
+                ttk.Entry(form, textvariable=margin_pct_var, width=8).grid(
+                    row=3, column=9, sticky="w", pady=5
+                )
+            allow_group_vars = self._ubs_portfolio_group_controls()
+            if any(var is not None for _label_text, var in allow_group_vars):
+                label(4, 0, "Grupos permitidos")
+                group_grid = tk.Frame(form, bg=colors["panel"])
+                group_grid.grid(
+                    row=4,
+                    column=1,
+                    columnspan=11,
+                    sticky="ew",
+                    padx=(4, 10),
+                    pady=5,
+                )
+                self._grid_ubs_portfolio_group_controls(
+                    group_grid,
+                    columns=4,
+                    monthly=False,
+                )
 
         if target_month_var is not None:
             for child in form.winfo_children():
@@ -883,19 +997,19 @@ class UBSPortfolioViewMixin:
         members_frame.columnconfigure(0, weight=1)
         members_frame.rowconfigure(0, weight=1)
         member_columns = (
-            "set", "account", "candidate", "symbol", "tf", "units", "lot", "net",
+            "variant", "set", "account", "candidate", "symbol", "tf", "units", "lot", "net",
             "valley", "point", "step", "margin", "margin_pct", "lev",
         )
         self.ubs_portfolio_members_tree = ttk.Treeview(
             members_frame, columns=member_columns, show="headings", height=8, selectmode="browse"
         )
         member_headings = {
-            "set": "SET ID", "account": "CUENTA", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
+            "variant": "PERFIL", "set": "SET ID", "account": "CUENTA", "candidate": "CANDIDATE", "symbol": "SIMBOLO", "tf": "TF",
             "units": "UNID.", "lot": "LOTE", "net": "NET", "valley": "DD VALLE",
             "point": "DD PUNT.", "step": "$/0.01", "margin": "MARGEN", "margin_pct": "% BAL.", "lev": "LEV.",
         }
         member_widths = {
-            "set": 230, "account": 70, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
+            "variant": 86, "set": 230, "account": 70, "candidate": 84, "symbol": 90, "tf": 52, "units": 58,
             "lot": 62, "net": 90, "valley": 82, "point": 82, "step": 88,
             "margin": 88, "margin_pct": 70, "lev": 58,
         }
@@ -1023,13 +1137,13 @@ class UBSPortfolioViewMixin:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
         columns = (
-            "set", "account", "candidate", "symbol", "tf", "month", "years", "positive_years",
+            "variant", "set", "account", "candidate", "symbol", "tf", "month", "years", "positive_years",
             "units", "lot", "net", "valley", "point",
         )
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=14, selectmode="browse")
         self.ubs_portfolio_detail_tree = tree
         specs = (
-            ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
+            ("variant", "PERFIL", 86), ("set", "SET", 260), ("account", "CUENTA", 70), ("candidate", "CANDIDATE", 84),
             ("symbol", "SIMBOLO", 90), ("tf", "TF", 52), ("month", "MES", 58),
             ("years", "AÑOS", 90), ("positive_years", "POS.", 58), ("units", "UNID.", 58),
             ("lot", "LOTE", 62), ("net", "NET", 90), ("valley", "DD VALLE", 82),
