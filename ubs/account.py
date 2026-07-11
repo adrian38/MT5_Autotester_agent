@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from ubs.path_utils import resolve_workspace_path
+
 
 BROKER_ACCOUNTS = {
     "ROBOFOREX": ("ECN", "PRO"),
@@ -360,6 +362,18 @@ def _legacy_seed_path_to_broker_path(base_dir: Path, value: object, account_type
     old_root = legacy_account_seed_dir(base_dir, account_type)
     new_root = account_seed_dir(base_dir, account_type, broker)
     path = Path(text).expanduser()
+
+    # The complete workspace may have moved to another drive or parent folder.
+    # Only accept the relocated path when it still belongs to this broker/account,
+    # so a similarly named seed from another account cannot be linked by mistake.
+    relocated = resolve_workspace_path(path, base_dir=base_dir)
+    if relocated != path and relocated.exists():
+        try:
+            relative = relocated.resolve().relative_to(new_root.resolve())
+            return str(new_root / relative)
+        except (OSError, ValueError):
+            pass
+
     try:
         relative = path.resolve().relative_to(old_root.resolve())
         return str(new_root / relative)

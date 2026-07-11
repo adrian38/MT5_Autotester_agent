@@ -135,6 +135,8 @@ requirement changes or a debt item is opened/closed.
   `ROBOFOREX/{ECN|PRO}` and account-policy layout only when the destination
   does not already exist or can be migrated safely. Migration MUST be
   non-destructive and MUST NOT overwrite new data.
+  Stored seed paths MUST also be reconciled when the complete workspace moves
+  to another drive or parent directory, without linking seeds across accounts.
 - **FR-1.6.1** Each generation round MUST load `.set` seeds from the configured
   source directory (default `sets/ubs_ready/{BROKER}/{ACCOUNT}/`), apply any
   stored `seed_overrides`, then mutate them into variant `.set` files.
@@ -348,7 +350,9 @@ requirement changes or a debt item is opened/closed.
   below threshold (retryable when data improves); `pending_ohlc_trades` — the
   OHLC batch produced fewer trades than `--final-tick-min-ohlc-trades` (retryable
   via OHLC-retry date range). Rows in pending states MUST NOT be treated as
-  final `accepted` or `rejected`.
+  final `accepted` or `rejected`. An empty Model=4 report whose tester journal
+  explicitly ends with `no history data, stop testing` is not low quality: it
+  MUST be finalized as `rejected` because the broker has no usable tick history.
 - **FR-1.8.12** `--final-tick-pending-only` MUST limit the Final Tick pass to
   rows that have no stored result or are in a pending state. Without that flag,
   Final Tick MUST rerun all robust-accepted candidates and replace existing rows.

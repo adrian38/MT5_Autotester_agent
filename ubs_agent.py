@@ -2536,20 +2536,41 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
     )
     found_matches = list(found_pattern.finditer(text))
     missing_matches = list(missing_pattern.finditer(text))
-    failure_matches = [
-        *missing_matches,
-        *cannot_get_pattern.finditer(text),
-        *no_sync_pattern.finditer(text),
+    failure_positions = [
+        *(match.start() for match in missing_matches),
+        *(match.start() for match in cannot_get_pattern.finditer(text)),
+        *(match.start() for match in no_sync_pattern.finditer(text)),
     ]
-    if not failure_matches:
+    tick_download_failed = False
+    download_matches = list(
+        re.finditer(
+            rf"{escaped}:\s+preliminary downloading of history ticks started",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if download_matches:
+        # Model=4 can fail before MT5 prints the requested date range. Associate
+        # the generic stop message with the latest symbol-specific tick download.
+        latest_download = download_matches[-1]
+        download_tail = text[latest_download.start(): latest_download.start() + 2000]
+        generic_failure = re.search(
+            r"no history data,\s*stop testing",
+            download_tail,
+            re.IGNORECASE,
+        )
+        if generic_failure:
+            failure_positions.append(latest_download.start() + generic_failure.start())
+            tick_download_failed = True
+    if not failure_positions:
         return None
-    last_failure = max(failure_matches, key=lambda match: match.start())
+    last_failure_position = max(failure_positions)
     success_matches = list(success_pattern.finditer(text))
-    if success_matches and success_matches[-1].start() > last_failure.start():
+    if success_matches and success_matches[-1].start() > last_failure_position:
         return None
     found = found_matches[-1] if found_matches else None
     missing = missing_matches[-1] if missing_matches else None
-    return {
+    metadata = {
         "reasons": ["no_history_data"],
         "no_score": True,
         "recommendation": "desactivar simbolo y revisar historico del broker",
@@ -2559,6 +2580,9 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
         "history_requested_from": missing.group(1).strip() if missing else "",
         "history_requested_to": missing.group(2).strip().rstrip(".") if missing else "",
     }
+    if tick_download_failed:
+        metadata["tick_download_failed"] = True
+    return metadata
 
 
 def record_score_with_metadata(
@@ -4127,6 +4151,31 @@ def _evaluate_final_tick_tick_report(
         status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
         return True
 
+    no_tick_history = None
+    if report_has_empty_tester_context(real_tick_result):
+        no_tick_history = tester_log_no_history_metadata(real_tick_report, real_tick_variant)
+    if no_tick_history:
+        similarity = {
+            "accepted": False,
+            "reasons": ["real_tick_no_history"],
+            "checks": {},
+            "history": no_tick_history,
+        }
+        print(
+            f"AVISO: {real_tick_variant.target_symbol} sin historico Real Tick del broker "
+            f"para Final Tick candidate #{candidate_id}; marcado como rejected."
+        )
+        memory.record_candidate_final_tick(
+            candidate_id, run_id, "rejected", ohlc_result, real_tick_result,
+            ohlc_report, real_tick_report, json.dumps(similarity, sort_keys=True),
+            real_tick_result.history_quality,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        status_counts["rejected"] = status_counts.get("rejected", 0) + 1
+        return True
+
     real_matches, real_mismatch = report_matches_variant(
         real_tick_variant,
         real_tick_result,
@@ -4134,10 +4183,14 @@ def _evaluate_final_tick_tick_report(
         getattr(args, "symbol_suffix", ""),
     )
     if not real_matches:
-        if report_has_empty_tester_context(real_tick_result) and (
-            real_tick_result.history_quality is None
-            or float(real_tick_result.history_quality) < float(args.final_tick_min_history_quality)
-        ):
+        # MT5 can emit an empty Real Tick result (symbol="", timeframe="M0")
+        # while still copying a seemingly valid History Quality value into the
+        # report.  That percentage does not make the tester context usable: it
+        # is a transient history/tick-data failure, not a genuine symbol/TF
+        # mismatch.  Keep it pending so the dedicated history retry can recover
+        # it.  A zero-trade report with a valid symbol/TF still proceeds to the
+        # normal similarity checks and is rejected as expected.
+        if report_has_empty_tester_context(real_tick_result):
             if reconcile:
                 return False
             print(

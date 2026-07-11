@@ -127,10 +127,13 @@ class UBSSeedsLogicMixin:
                 conn = connect_memory(memory_path)
                 conn.row_factory = sqlite3.Row
                 if self._sqlite_table_exists(conn, "seed_scores"):
-                    rows = {str(r["seed_path"]): r for r in conn.execute("select * from seed_scores").fetchall()}
+                    rows = {
+                        str(resolve_workspace_path(r["seed_path"])): r
+                        for r in conn.execute("select * from seed_scores").fetchall()
+                    }
                 if self._sqlite_table_exists(conn, "seed_overrides"):
                     overrides = {
-                        str(r["seed_path"]): (
+                        str(resolve_workspace_path(r["seed_path"])): (
                             str(r["symbol"] or "").strip().upper(),
                             str(r["period"] or "").strip().upper(),
                         )
@@ -385,10 +388,17 @@ class UBSSeedsLogicMixin:
                 self._ensure_ubs_seed_override_schema(conn)
                 if self._sqlite_table_exists(conn, "seed_scores"):
                     rows = conn.execute("select * from seed_scores").fetchall()
-                    score_rows = {str(row["seed_path"]): row for row in rows}
+                    # SQLite may have been copied from another checkout.  Match
+                    # relocated workspace paths to the physical seed files so
+                    # evaluated seeds do not appear pending merely because the
+                    # repository root changed.
+                    score_rows = {
+                        str(resolve_workspace_path(row["seed_path"])): row
+                        for row in rows
+                    }
                     inactive_rows = [row for row in rows if not int(row["active"] or 0)]
                 for row in conn.execute("select seed_path, symbol, period from seed_overrides").fetchall():
-                    overrides[str(row["seed_path"])] = (
+                    overrides[str(resolve_workspace_path(row["seed_path"]))] = (
                         str(row["symbol"] or "").strip().upper(),
                         str(row["period"] or "").strip().upper(),
                     )
@@ -401,6 +411,7 @@ class UBSSeedsLogicMixin:
         for path in seed_files:
             path_text = str(path)
             row = score_rows.get(path_text)
+            stored_path_text = str(row["seed_path"]) if row else path_text
             inferred_symbol, inferred_period = self._inferred_ubs_seed_fields(path)
             override_symbol, override_period = overrides.get(path_text, ("", ""))
             symbol = override_symbol or (str(row["symbol"] or "").strip().upper() if row else inferred_symbol)
@@ -417,7 +428,7 @@ class UBSSeedsLogicMixin:
                 "",
                 "end",
                 values=(
-                    self._checkbox_text(path_text in current_checked),
+                    self._checkbox_text(stored_path_text in current_checked),
                     self._format_ubs_status(display_status),
                     symbol,
                     period,
@@ -429,13 +440,13 @@ class UBSSeedsLogicMixin:
                 ),
                 tags=(self._ubs_result_tag(display_status),),
             )
-            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "1", "status": display_status, "has_row": "1" if row else "0"}
+            self.ubs_seed_paths[item] = {"seed_path": stored_path_text, "active": "1", "status": display_status, "has_row": "1" if row else "0"}
             if not first_item:
                 first_item = item
 
         for row in inactive_rows:
             path_text = str(row["seed_path"] or "")
-            if not path_text or path_text in current_paths:
+            if not path_text or str(resolve_workspace_path(path_text)) in current_paths:
                 continue
             status = str(row["status"] or "obsoleta")
             override_symbol, override_period = overrides.get(path_text, ("", ""))
