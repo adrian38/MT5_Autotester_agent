@@ -32,6 +32,7 @@ from ubs_agent import (
     final_tick_ohlc_retry_exhausted_for_dates,
     final_tick_stage_prefixes,
     final_tick_similarity,
+    _evaluate_final_tick_tick_report,
     recreate_work_dir,
     related_timeframes,
     resolve_workspace_path,
@@ -1445,6 +1446,131 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertFalse(result["accepted"])
         self.assertIn("profit_factor", result["reasons"])
+
+    def test_empty_real_tick_report_is_pending_history_quality_not_mismatch(self) -> None:
+        class Memory:
+            active_final_tick_stage = "six_month"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def record_candidate_final_tick(self, *args) -> None:
+                self.calls.append(args)
+
+        args = SimpleNamespace(
+            broker="AXI",
+            symbol_suffix=".sa",
+            final_tick_min_history_quality=80.0,
+            from_date="2026.01.01",
+            to_date="2026.06.30",
+            final_tick_max_net_delta_pct=35.0,
+            final_tick_max_pf_delta_pct=35.0,
+            final_tick_max_dd_delta_pct=35.0,
+            final_tick_max_trades_delta_pct=35.0,
+            final_tick_min_trades_w1=2,
+            final_tick_min_trades_mn=1,
+        )
+        variant = Variant(
+            path=Path("tick.set"),
+            seed=Seed(Path("seed.set"), "BTCUSD", "H1", "family", "1"),
+            target_symbol="BTCUSD",
+            target_period="H1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="final_tick_real",
+        )
+        memory = Memory()
+        status_counts: dict[str, int] = {}
+
+        with patch(
+            "ubs_agent.score_report_file",
+            return_value=score(-55.0, symbol="", timeframe="M0", trades=0, history_quality=33.0),
+        ):
+            handled = _evaluate_final_tick_tick_report(
+                memory,
+                args,
+                ScoreConfig(),
+                {},
+                5,
+                3672,
+                variant,
+                Path("ohlc.htm"),
+                score(90.0, symbol="BTCUSD.sa", timeframe="H1", trades=44),
+                Path("tick.htm"),
+                status_counts,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(memory.calls[0][2], "pending_history_quality")
+        self.assertEqual(status_counts, {"pending_history_quality": 1})
+
+    def test_zero_trade_real_tick_with_valid_context_is_rejected(self) -> None:
+        class Memory:
+            active_final_tick_stage = "six_month"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def record_candidate_final_tick(self, *args) -> None:
+                self.calls.append(args)
+
+        args = SimpleNamespace(
+            broker="AXI",
+            symbol_suffix=".sa",
+            final_tick_min_history_quality=80.0,
+            from_date="2026.01.01",
+            to_date="2026.06.30",
+            final_tick_max_net_delta_pct=35.0,
+            final_tick_max_pf_delta_pct=35.0,
+            final_tick_max_dd_delta_pct=35.0,
+            final_tick_max_trades_delta_pct=35.0,
+            final_tick_min_trades_w1=2,
+            final_tick_min_trades_mn=1,
+        )
+        variant = Variant(
+            path=Path("tick.set"),
+            seed=Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1"),
+            target_symbol="XAUUSD",
+            target_period="H1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="final_tick_real",
+        )
+        memory = Memory()
+        status_counts: dict[str, int] = {}
+
+        with patch(
+            "ubs_agent.score_report_file",
+            return_value=score(
+                -55.0,
+                symbol="XAUUSD.sa",
+                timeframe="H1",
+                trades=0,
+                net_profit=0.0,
+                profit_factor=0.0,
+                history_quality=99.0,
+            ),
+        ):
+            handled = _evaluate_final_tick_tick_report(
+                memory,
+                args,
+                ScoreConfig(min_net_profit=20.0, min_profit_factor=1.2, min_trades=46),
+                {},
+                5,
+                3850,
+                variant,
+                Path("ohlc.htm"),
+                score(90.0, symbol="XAUUSD.sa", timeframe="H1", trades=44, profit_factor=2.0),
+                Path("tick.htm"),
+                status_counts,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(memory.calls[0][2], "rejected")
+        self.assertEqual(status_counts, {"rejected": 1})
+        similarity = json.loads(memory.calls[0][7])
+        self.assertFalse(similarity["accepted"])
+        self.assertIn("trades", similarity["reasons"])
 
     def test_robust_pending_retry_includes_diagnostic_statuses(self) -> None:
         for status in ("", None, "no_report", "parse_error", "report_mismatch", "no_trades"):

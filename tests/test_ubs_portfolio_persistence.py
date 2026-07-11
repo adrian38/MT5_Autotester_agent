@@ -612,6 +612,33 @@ class UBSPortfolioPersistenceTests(unittest.TestCase):
         self.assertEqual(availability.already_used, 0)
         self.assertEqual(availability.available, 1)
 
+    def test_availability_filters_groups_with_active_axi_universe(self) -> None:
+        logic = _PortfolioLogic()
+        logic.ubs_broker = _Var("AXI")
+        logic.ubs_portfolio_exclude_used_sets = _Var(False)
+        logic.ubs_portfolio_allow_forex = _Var(False)
+        logic.ubs_portfolio_allow_metals = _Var(False)
+        logic.ubs_portfolio_allow_indices = _Var(False)
+        logic.ubs_portfolio_allow_energies = _Var(False)
+        logic.ubs_portfolio_allow_crypto = _Var(False)
+        logic.ubs_portfolio_allow_stocks = _Var(False)
+        logic.ubs_portfolio_allow_bonds = _Var(False)
+        logic.ubs_portfolio_allow_softs = _Var(True)
+        rows = [
+            {
+                "candidate_id": "STANDARD:1",
+                "set_path": "C:/sets/cocoa.set",
+                "symbol": "COCOA",
+                "target_symbol": "COCOA.fs",
+            }
+        ]
+
+        with patch.object(logic, "_final_tick_passed_candidates_all_accounts", return_value=rows):
+            availability = logic._portfolio_availability()
+
+        self.assertEqual(availability.available, 1)
+        self.assertEqual(availability.by_symbol, {"COCOA.fs": 1})
+
     def test_saving_generated_portfolio_persists_one_bundle_with_all_pending_proposals(self) -> None:
         logic = _BatchSaveLogic()
         proposals = [

@@ -4142,6 +4142,25 @@ def _evaluate_final_tick_tick_report(
         getattr(args, "symbol_suffix", ""),
     )
     if not real_matches:
+        if report_has_empty_tester_context(real_tick_result) and (
+            real_tick_result.history_quality is None
+            or float(real_tick_result.history_quality) < float(args.final_tick_min_history_quality)
+        ):
+            if reconcile:
+                return False
+            print(
+                f"AVISO: reporte Real Tick Final Tick sin contexto usable para candidate #{candidate_id}: "
+                f"{real_mismatch}; se reintentara como calidad/historico pendiente."
+            )
+            memory.record_candidate_final_tick(
+                candidate_id, run_id, "pending_history_quality", ohlc_result, real_tick_result,
+                ohlc_report, real_tick_report, None, real_tick_result.history_quality,
+                args.final_tick_min_history_quality, args.from_date, args.to_date,
+                args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+                args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+            )
+            status_counts["pending_history_quality"] = status_counts.get("pending_history_quality", 0) + 1
+            return True
         if reconcile:
             return False
         print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{candidate_id}: {real_mismatch}")
@@ -4153,17 +4172,6 @@ def _evaluate_final_tick_tick_report(
             args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
         )
         status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-        return True
-
-    if real_tick_result.trades <= 0:
-        memory.record_candidate_final_tick(
-            candidate_id, run_id, "no_trades", ohlc_result, real_tick_result,
-            ohlc_report, real_tick_report, None, real_tick_result.history_quality,
-            args.final_tick_min_history_quality, args.from_date, args.to_date,
-            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
-            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
-        )
-        status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
         return True
 
     is_six_month = memory.active_final_tick_stage == "six_month"
