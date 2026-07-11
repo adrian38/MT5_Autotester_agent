@@ -1504,6 +1504,78 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(memory.calls[0][2], "pending_history_quality")
         self.assertEqual(status_counts, {"pending_history_quality": 1})
 
+    def test_empty_real_tick_report_with_no_history_log_is_rejected(self) -> None:
+        class Memory:
+            active_final_tick_stage = "six_month"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def record_candidate_final_tick(self, *args) -> None:
+                self.calls.append(args)
+
+        args = SimpleNamespace(
+            broker="ROBOFOREX",
+            symbol_suffix="",
+            final_tick_min_history_quality=80.0,
+            from_date="2026.01.01",
+            to_date="2026.06.30",
+            final_tick_max_net_delta_pct=35.0,
+            final_tick_max_pf_delta_pct=35.0,
+            final_tick_max_dd_delta_pct=35.0,
+            final_tick_max_trades_delta_pct=35.0,
+            final_tick_min_trades_w1=2,
+            final_tick_min_trades_mn=1,
+        )
+        variant = Variant(
+            path=Path("tick.set"),
+            seed=Seed(Path("seed.set"), "BTCUSD", "H1", "family", "1"),
+            target_symbol="MSFT",
+            target_period="H1",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="final_tick_real",
+        )
+        memory = Memory()
+        status_counts: dict[str, int] = {}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = Path(temp_dir) / "tick.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name("tick.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tMSFT: preliminary downloading of history ticks started, it may take quite a long time",
+                        "Tester\tMSFT: preliminary downloading of history ticks canceled",
+                        "Tester\tno history data, stop testing",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch(
+                "ubs_agent.score_report_file",
+                return_value=score(-55.0, symbol="", timeframe="M0", trades=0, history_quality=0.0),
+            ):
+                handled = _evaluate_final_tick_tick_report(
+                    memory,
+                    args,
+                    ScoreConfig(),
+                    {},
+                    31,
+                    21393,
+                    variant,
+                    Path("ohlc.htm"),
+                    score(175.0, symbol="MSFT", timeframe="H1", trades=24),
+                    report,
+                    status_counts,
+                )
+
+        self.assertTrue(handled)
+        self.assertEqual(memory.calls[0][2], "rejected")
+        self.assertEqual(status_counts, {"rejected": 1})
+        similarity = json.loads(memory.calls[0][7])
+        self.assertEqual(similarity["reasons"], ["real_tick_no_history"])
+
     def test_zero_trade_real_tick_with_valid_context_is_rejected(self) -> None:
         class Memory:
             active_final_tick_stage = "six_month"
