@@ -17,6 +17,7 @@ from ubs.account import (
     BROKER_ACCOUNT_TYPES,
     account_memory_path,
     account_types_for_broker,
+    broker_asset_universe_path,
     normalize_broker,
 )
 from ubs.db import connect_memory
@@ -482,6 +483,20 @@ class UBSPortfolioLogicMixin:
                 groups.add(group)
         return groups
 
+    def _ubs_portfolio_universe_files(self) -> list[Path]:
+        broker_var = getattr(self, "ubs_broker", None)
+        try:
+            broker_value = broker_var.get() if broker_var is not None else ""
+        except Exception:
+            broker_value = ""
+        broker = normalize_broker(broker_value or "ROBOFOREX")
+        path = broker_asset_universe_path(BASE_DIR, broker)
+        return [path] if path.exists() else []
+
+    def _portfolio_group_key(self, symbol: str) -> str:
+        universe_files = self._ubs_portfolio_universe_files()
+        return portfolio_group_key(symbol, universe_files=universe_files or None)
+
     def _portfolio_row_group(self, row: object) -> str:
         if isinstance(row, dict):
             symbol = str(row.get("target_symbol") or row.get("symbol") or "")
@@ -491,7 +506,7 @@ class UBSPortfolioLogicMixin:
                 symbol = str(getter("target_symbol") or getter("symbol") or "")
             else:
                 symbol = str(getattr(row, "target_symbol", "") or getattr(row, "symbol", ""))
-        return portfolio_group_key(symbol)
+        return self._portfolio_group_key(symbol)
 
     def _filter_portfolio_rows_by_allowed_groups(
         self,
@@ -515,7 +530,7 @@ class UBSPortfolioLogicMixin:
         counts: dict[str, int] = {}
         filtered: list = []
         for strategy in sets:
-            group = portfolio_group_key(str(getattr(strategy, "symbol", "")))
+            group = self._portfolio_group_key(str(getattr(strategy, "symbol", "")))
             counts[group] = counts.get(group, 0) + 1
             if group in allowed_groups:
                 filtered.append(strategy)
@@ -2914,7 +2929,7 @@ class UBSPortfolioLogicMixin:
             if allowed_groups:
                 rows = [
                     row for row in rows
-                    if portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
+                    if self._portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
                 ]
             if is_monthly:
                 used = (
@@ -2937,7 +2952,7 @@ class UBSPortfolioLogicMixin:
             if allowed_groups:
                 raw_sets = [
                     strategy for strategy in raw_sets
-                    if portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
+                    if self._portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
                 ]
             full_sets_for_strict_validation = list(raw_sets)
             raw_sets, scope_warnings = self._scope_portfolio_sets(raw_sets, inputs)
@@ -3444,13 +3459,13 @@ class UBSPortfolioLogicMixin:
             if allowed_groups:
                 rows = [
                     row for row in rows
-                    if portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
+                    if self._portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
                 ]
             candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
             if allowed_groups:
                 candidate_sets = [
                     strategy for strategy in candidate_sets
-                    if portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
+                    if self._portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
                 ]
             full_sets_for_strict_validation = list(required_sets) + list(candidate_sets)
             required_sets, required_scope_warnings = self._scope_portfolio_sets(required_sets, inputs)

@@ -89,19 +89,28 @@ PORTFOLIO_UNIVERSE_FILES = (
 
 
 def _normalized_universe_group(group: str, symbol_key: str) -> str:
+    if group == "Commodities":
+        return "Softs"
     if group != "IndicesEnergies":
         return group
     energy_tokens = ("BRENT", "WTI", "OIL", "XTI", "XBR", "XNG", "GAS")
     return "Energies" if any(token in symbol_key for token in energy_tokens) else "Indices"
 
 
-@lru_cache(maxsize=1)
-def _portfolio_universe_group_maps() -> tuple[dict[str, str], dict[str, str]]:
+def _portfolio_universe_files_key(universe_files: Iterable[str | Path] | None = None) -> tuple[str, ...]:
+    files = universe_files if universe_files is not None else PORTFOLIO_UNIVERSE_FILES
+    return tuple(str(path) for path in files)
+
+
+@lru_cache(maxsize=16)
+def _portfolio_universe_group_maps_for_files(
+    universe_files: tuple[str, ...],
+) -> tuple[dict[str, str], dict[str, str]]:
     """Build the portfolio classifier from the broker universe files."""
     canonical: dict[str, str] = {}
     exact: dict[str, str] = {}
     alias_rows: list[tuple[str, str]] = []
-    for relative_path in PORTFOLIO_UNIVERSE_FILES:
+    for relative_path in universe_files:
         groups, aliases = load_asset_universe(
             resolve_workspace_path(relative_path),
             include_disabled=True,
@@ -125,8 +134,16 @@ def _portfolio_universe_group_maps() -> tuple[dict[str, str], dict[str, str]]:
     return canonical, exact
 
 
-def _portfolio_universe_group_by_symbol() -> dict[str, str]:
-    return _portfolio_universe_group_maps()[0]
+def _portfolio_universe_group_maps(
+    universe_files: Iterable[str | Path] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    return _portfolio_universe_group_maps_for_files(_portfolio_universe_files_key(universe_files))
+
+
+def _portfolio_universe_group_by_symbol(
+    universe_files: Iterable[str | Path] | None = None,
+) -> dict[str, str]:
+    return _portfolio_universe_group_maps(universe_files)[0]
 
 
 class PortfolioType(str, Enum):
@@ -1185,7 +1202,7 @@ def summarize_robust_rows(rows: Iterable[object], used_set_paths: Iterable[str])
             continue
         seen.add(set_path)
         robust_accepted += 1
-        symbol = portfolio_symbol_key(str(_row_value(row, "target_symbol", "symbol", default="")))
+        symbol = portfolio_display_symbol(str(_row_value(row, "target_symbol", "symbol", default="")))
         if _norm_path(set_path) in used:
             already_used += 1
             continue
@@ -4901,13 +4918,21 @@ def portfolio_symbol_key(symbol: str) -> str:
     return PORTFOLIO_SYMBOL_ALIASES.get(normalized, normalized)
 
 
-def portfolio_group_key(symbol: str) -> str:
+def portfolio_display_symbol(symbol: str) -> str:
+    return str(symbol or "").strip() or portfolio_symbol_key(symbol)
+
+
+def portfolio_group_key(
+    symbol: str,
+    *,
+    universe_files: Iterable[str | Path] | None = None,
+) -> str:
     raw_symbol = str(symbol or "").strip().upper()
-    exact_group = _portfolio_universe_group_maps()[1].get(raw_symbol)
+    exact_group = _portfolio_universe_group_maps(universe_files)[1].get(raw_symbol)
     if exact_group:
         return exact_group
     symbol_key = portfolio_symbol_key(symbol)
-    universe_group = _portfolio_universe_group_by_symbol().get(symbol_key)
+    universe_group = _portfolio_universe_group_by_symbol(universe_files).get(symbol_key)
     if universe_group:
         return universe_group
     if symbol_key in PORTFOLIO_GROUP_BY_SYMBOL:
