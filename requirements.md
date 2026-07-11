@@ -135,6 +135,8 @@ requirement changes or a debt item is opened/closed.
   `ROBOFOREX/{ECN|PRO}` and account-policy layout only when the destination
   does not already exist or can be migrated safely. Migration MUST be
   non-destructive and MUST NOT overwrite new data.
+  Stored seed paths MUST also be reconciled when the complete workspace moves
+  to another drive or parent directory, without linking seeds across accounts.
 - **FR-1.6.1** Each generation round MUST load `.set` seeds from the configured
   source directory (default `sets/ubs_ready/{BROKER}/{ACCOUNT}/`), apply any
   stored `seed_overrides`, then mutate them into variant `.set` files.

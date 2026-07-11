@@ -748,6 +748,37 @@ class UBSAccountTests(unittest.TestCase):
             self.assertEqual(seed_score_path, str(new_seed))
             self.assertEqual(override_path, str(new_seed))
 
+    def test_migration_updates_seed_paths_after_workspace_relocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            new_seed = account_seed_dir(base, "ECN") / "BTCUSD" / "H1" / "seed.set"
+            new_seed.parent.mkdir(parents=True, exist_ok=True)
+            new_seed.write_text("seed", encoding="utf-8")
+            old_seed = Path("C:/previous/MT5_Autotester_agent") / new_seed.relative_to(base)
+            memory = account_memory_path(base, "ECN")
+            memory.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(memory)
+            try:
+                conn.execute("create table seed_scores (seed_path text not null unique, status text)")
+                conn.execute("create table seed_overrides (seed_path text primary key, symbol text, period text)")
+                conn.execute("insert into seed_scores (seed_path, status) values (?, 'accepted')", (str(old_seed),))
+                conn.execute("insert into seed_overrides (seed_path, symbol, period) values (?, 'BTCUSD', 'H1')", (str(old_seed),))
+                conn.commit()
+            finally:
+                conn.close()
+
+            changed = migrate_legacy_seed_paths_in_memory(base, "ECN")
+
+            self.assertEqual(changed, 2)
+            conn = sqlite3.connect(memory)
+            try:
+                seed_score_path = conn.execute("select seed_path from seed_scores").fetchone()[0]
+                override_path = conn.execute("select seed_path from seed_overrides").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(seed_score_path, str(new_seed))
+            self.assertEqual(override_path, str(new_seed))
+
 
 if __name__ == "__main__":
     unittest.main()
