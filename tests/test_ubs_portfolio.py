@@ -35,6 +35,7 @@ from portfolio_manager.ubs_portfolio import (
     set_file_has_enabled_grid,
     slice_strategy_set_to_month,
     slice_strategy_sets_to_month,
+    summarize_robust_rows,
     validate_strict_monthly_portfolio,
 )
 from ubs.universe import load_asset_universe
@@ -513,6 +514,21 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         self.assertEqual(len(selected), 2)
         self.assertNotIn("ustec", {item.set_id for item in selected})
 
+    def test_availability_displays_broker_target_symbol_not_alias(self) -> None:
+        availability = summarize_robust_rows(
+            [
+                {
+                    "set_path": "C:/sets/nas100.set",
+                    "symbol": "USTEC",
+                    "target_symbol": "NAS100.fs",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(availability.by_symbol, {"NAS100.fs": 1})
+        self.assertNotIn(".USTECHCASH", availability.by_symbol)
+
     def test_optimizer_treats_symbol_aliases_as_same_symbol_limit(self) -> None:
         result = optimize_portfolio(
             [
@@ -829,6 +845,31 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
                 self.assertTrue(symbols)
                 self.assertTrue(
                     all(portfolio_group_key(symbol) == expected_group for symbol in symbols)
+                )
+
+    def test_axi_universe_groups_are_available_to_portfolio(self) -> None:
+        groups, _aliases = load_asset_universe(
+            Path("assets/axi_assets.ini"),
+            include_disabled=True,
+        )
+        expected_groups = {
+            "Forex", "Metals", "Indices", "Energies",
+            "Crypto", "Stocks", "Commodities",
+        }
+
+        self.assertEqual(set(groups), expected_groups)
+        for source_group, symbols in groups.items():
+            expected_group = "Softs" if source_group == "Commodities" else source_group
+            with self.subTest(group=source_group):
+                self.assertTrue(symbols)
+                self.assertTrue(
+                    all(
+                        portfolio_group_key(
+                            symbol,
+                            universe_files=[Path("assets/axi_assets.ini")],
+                        ) == expected_group
+                        for symbol in symbols
+                    )
                 )
 
     def test_monthly_daily_dd_limit_blocks_closed_plus_floating_risk(self) -> None:

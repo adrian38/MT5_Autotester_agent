@@ -379,6 +379,24 @@ class UBSAccountTests(unittest.TestCase):
             ._monthly_roboforex_margin_enabled()
         )
 
+    def test_symbol_suffix_args_can_send_only_axi_share_suffix(self) -> None:
+        agent = _FakeAgent("STANDARD", "", "", broker="AXI")
+        agent.symbol_suffix_enabled = _FakeVar(True)
+        agent.symbol_suffix = _FakeVar("")
+        agent.symbol_futures_suffix = _FakeVar("")
+        agent.symbol_shares_suffix = _FakeVar("+")
+
+        self.assertEqual(agent._effective_symbol_suffix_args(), ["--symbol-shares-suffix", "+"])
+
+    def test_symbol_suffix_args_still_respect_disabled_toggle(self) -> None:
+        agent = _FakeAgent("STANDARD", "", "", broker="AXI")
+        agent.symbol_suffix_enabled = _FakeVar(False)
+        agent.symbol_suffix = _FakeVar("")
+        agent.symbol_futures_suffix = _FakeVar(".fs")
+        agent.symbol_shares_suffix = _FakeVar("+")
+
+        self.assertEqual(agent._effective_symbol_suffix_args(), [])
+
     def test_disabling_generation_clears_stale_seed_permission(self) -> None:
         universe = _FakeUniverse()
 

@@ -118,12 +118,16 @@ class UBSAgentLogicMixin:
         return ""
 
     def _effective_symbol_suffix_args(self, *, include_universe: bool = False) -> list[str]:
-        suffix = self._effective_symbol_suffix_text()
-        if not suffix:
+        if not self.symbol_suffix_enabled.get():
             return []
-        args = ["--symbol-suffix", suffix]
+        suffix = self.symbol_suffix.get().strip()
         futures_suffix = self.symbol_futures_suffix.get().strip()
         shares_suffix = self.symbol_shares_suffix.get().strip()
+        if not any((suffix, futures_suffix, shares_suffix)):
+            return []
+        args: list[str] = []
+        if suffix:
+            args.extend(["--symbol-suffix", suffix])
         if futures_suffix:
             args.extend(["--symbol-futures-suffix", futures_suffix])
         if shares_suffix:
