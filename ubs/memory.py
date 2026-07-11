@@ -553,7 +553,7 @@ class AgentMemory:
 
     def prepare_seed_evaluation(self, seeds: list[Seed], *, force: bool = False) -> list[Seed]:
         existing = {
-            str(row["seed_path"]): row
+            str(resolve_workspace_path(row["seed_path"])): row
             for row in self.conn.execute("select * from seed_scores").fetchall()
         }
         now = datetime.now().isoformat(timespec="seconds")
@@ -572,6 +572,7 @@ class AgentMemory:
                 continue
             path_text = str(seed.path)
             row = existing.get(path_text)
+            stored_path_text = str(row["seed_path"]) if row is not None else path_text
             changed = (
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
@@ -620,7 +621,7 @@ class AgentMemory:
                             seed.family,
                             seed.run_strategy,
                             now,
-                            path_text,
+                            stored_path_text,
                         ),
                     )
                 elif should_eval:
@@ -640,7 +641,7 @@ class AgentMemory:
                             seed.family,
                             seed.run_strategy,
                             now,
-                            path_text,
+                            stored_path_text,
                         ),
                     )
                 else:
@@ -659,7 +660,7 @@ class AgentMemory:
                             seed.family,
                             seed.run_strategy,
                             now,
-                            path_text,
+                            stored_path_text,
                         ),
                     )
         self.conn.commit()
