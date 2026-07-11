@@ -4142,10 +4142,14 @@ def _evaluate_final_tick_tick_report(
         getattr(args, "symbol_suffix", ""),
     )
     if not real_matches:
-        if report_has_empty_tester_context(real_tick_result) and (
-            real_tick_result.history_quality is None
-            or float(real_tick_result.history_quality) < float(args.final_tick_min_history_quality)
-        ):
+        # MT5 can emit an empty Real Tick result (symbol="", timeframe="M0")
+        # while still copying a seemingly valid History Quality value into the
+        # report.  That percentage does not make the tester context usable: it
+        # is a transient history/tick-data failure, not a genuine symbol/TF
+        # mismatch.  Keep it pending so the dedicated history retry can recover
+        # it.  A zero-trade report with a valid symbol/TF still proceeds to the
+        # normal similarity checks and is rejected as expected.
+        if report_has_empty_tester_context(real_tick_result):
             if reconcile:
                 return False
             print(

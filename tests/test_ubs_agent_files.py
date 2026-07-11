@@ -1447,7 +1447,7 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertIn("profit_factor", result["reasons"])
 
-    def test_empty_real_tick_report_is_pending_history_quality_not_mismatch(self) -> None:
+    def test_empty_real_tick_report_with_high_quality_is_pending_history_not_mismatch(self) -> None:
         class Memory:
             active_final_tick_stage = "six_month"
 
@@ -1484,7 +1484,9 @@ class UBSSetsFileTests(unittest.TestCase):
 
         with patch(
             "ubs_agent.score_report_file",
-            return_value=score(-55.0, symbol="", timeframe="M0", trades=0, history_quality=33.0),
+            # MT5 may retain 99% quality even though the actual tester context
+            # is empty.  The empty symbol/M0 pair must take precedence.
+            return_value=score(-55.0, symbol="", timeframe="M0", trades=0, history_quality=99.0),
         ):
             handled = _evaluate_final_tick_tick_report(
                 memory,
