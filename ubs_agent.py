@@ -2522,12 +2522,33 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
         rf"{escaped}:\s+no history data from\s+(.+?)\s+to\s+(.+?)(?:\r?\n|$)",
         re.IGNORECASE,
     )
+    cannot_get_pattern = re.compile(
+        rf"cannot get history\s+{escaped},[^\s]+",
+        re.IGNORECASE,
+    )
+    no_sync_pattern = re.compile(
+        rf"{escaped}:\s+no data synchronized",
+        re.IGNORECASE,
+    )
+    success_pattern = re.compile(
+        rf"{escaped},[^:]+:.*\btest passed\b",
+        re.IGNORECASE,
+    )
     found_matches = list(found_pattern.finditer(text))
     missing_matches = list(missing_pattern.finditer(text))
-    if not missing_matches:
+    failure_matches = [
+        *missing_matches,
+        *cannot_get_pattern.finditer(text),
+        *no_sync_pattern.finditer(text),
+    ]
+    if not failure_matches:
+        return None
+    last_failure = max(failure_matches, key=lambda match: match.start())
+    success_matches = list(success_pattern.finditer(text))
+    if success_matches and success_matches[-1].start() > last_failure.start():
         return None
     found = found_matches[-1] if found_matches else None
-    missing = missing_matches[-1]
+    missing = missing_matches[-1] if missing_matches else None
     return {
         "reasons": ["no_history_data"],
         "no_score": True,
@@ -2535,30 +2556,9 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
         "log_source": str(sidecar),
         "history_available_from": found.group(1).strip() if found else "",
         "history_available_to": found.group(2).strip() if found else "",
-        "history_requested_from": missing.group(1).strip(),
-        "history_requested_to": missing.group(2).strip().rstrip("."),
+        "history_requested_from": missing.group(1).strip() if missing else "",
+        "history_requested_to": missing.group(2).strip().rstrip(".") if missing else "",
     }
-
-
-def latest_history_probe_status_for_symbol(memory: AgentMemory, symbol: str) -> str:
-    normalized = str(symbol or "").strip().upper()
-    if not normalized:
-        return ""
-    try:
-        row = memory.conn.execute(
-            """
-            select status
-            from candidates
-            where policy='history_probe'
-              and upper(coalesce(target_symbol, symbol, ''))=?
-            order by id desc
-            limit 1
-            """,
-            (normalized,),
-        ).fetchone()
-    except Exception:
-        return ""
-    return str(row["status"] or "") if row is not None else ""
 
 
 def record_score_with_metadata(
@@ -2660,16 +2660,16 @@ def evaluate_history_probe(
             {"reasons": ["parse_error"], "error": str(exc), "history_probe": True},
         )
         return "parse_error", None
+    no_history = tester_log_no_history_metadata(report, variant)
+    if no_history:
+        print(
+            f"AVISO: {variant.target_symbol} sin historico completo para el rango pedido; "
+            "marcado como no_history."
+        )
+        no_history["history_probe"] = True
+        record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+        return "no_history", result
     if report_has_empty_tester_context(result):
-        no_history = tester_log_no_history_metadata(report, variant)
-        if no_history:
-            print(
-                f"AVISO: {variant.target_symbol} sin historico completo para el rango pedido; "
-                "marcado como no_history."
-            )
-            no_history["history_probe"] = True
-            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
-            return "no_history", result
         record_history_probe_status(
             memory,
             variant,
@@ -2849,23 +2849,15 @@ def evaluate_variant_report(
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
         return "parse_error", None
+    no_history = tester_log_no_history_metadata(report, variant)
+    if no_history:
+        print(
+            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
+            "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
+        )
+        record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+        return "no_history", result
     if report_has_empty_tester_context(result):
-        no_history = tester_log_no_history_metadata(report, variant)
-        if no_history:
-            probe_status = latest_history_probe_status_for_symbol(memory, variant.target_symbol)
-            if probe_status == "history_ok":
-                print(
-                    f"AVISO: {variant.target_symbol} tuvo contexto tester vacio y log no_history, "
-                    "pero el probe historico esta history_ok; marcado como report_mismatch."
-                )
-                memory.record_score(variant.path, result, "report_mismatch", report)
-                return "report_mismatch", result
-            print(
-                f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
-                "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
-            )
-            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
-            return "no_history", result
         print(f"AVISO: reporte sin contexto tester para {variant.path.name}; marcado como report_mismatch.")
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
