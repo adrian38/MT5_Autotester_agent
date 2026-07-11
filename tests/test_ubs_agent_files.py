@@ -261,7 +261,7 @@ class UBSSetsFileTests(unittest.TestCase):
             finally:
                 memory.close()
 
-    def test_generation_no_history_log_does_not_override_history_probe_ok(self) -> None:
+    def test_generation_current_no_history_overrides_history_probe_ok(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             report = root / "US30_H1_report.htm"
@@ -295,13 +295,63 @@ class UBSSetsFileTests(unittest.TestCase):
                     )
 
                 row = memory.conn.execute(
-                    "select status, score, accepted from candidates where set_path=?",
+                    "select status, score, accepted, metrics_json from candidates where set_path=?",
                     (str(variant.path),),
                 ).fetchone()
-                self.assertEqual(status, "report_mismatch")
-                self.assertEqual(row["status"], "report_mismatch")
-                self.assertEqual(row["score"], -55.0)
-                self.assertEqual(row["accepted"], 0)
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "no_history")
+                self.assertEqual(row["status"], "no_history")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertEqual(data["reasons"], ["no_history_data"])
+            finally:
+                memory.close()
+
+    def test_history_probe_cannot_get_history_is_no_history_with_report_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "NSLR.NAS_H1_history_probe.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Core 01\tNSLR.NAS: history downloading stopped due to timeout",
+                        "Core 01\tNSLR.NAS: no data synchronized, 40 bytes read",
+                        "Core 01\tcannot get history NSLR.NAS,H1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                seed = Seed(root / "seed.set", "XAUUSD", "H1", "family", "1")
+                probe = Variant(root / "probe.set", seed, "NSLR.NAS", "H1", (), (), "history_probe")
+                memory.record_variant(0, 0, probe)
+
+                with patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(-55.0, symbol="NSLR.NAS", timeframe="H1", trades=0),
+                ):
+                    status, _result = evaluate_history_probe(
+                        memory,
+                        probe,
+                        ScoreConfig(),
+                        {},
+                        "ICTRADING",
+                        report_path=report,
+                    )
+
+                row = memory.conn.execute(
+                    "select status, score, accepted, metrics_json from candidates where set_path=?",
+                    (str(probe.path),),
+                ).fetchone()
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "no_history")
+                self.assertEqual(row["status"], "no_history")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertEqual(data["reasons"], ["no_history_data"])
+                self.assertTrue(data["history_probe"])
             finally:
                 memory.close()
 

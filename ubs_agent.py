@@ -2522,69 +2522,67 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
         rf"{escaped}:\s+no history data from\s+(.+?)\s+to\s+(.+?)(?:\r?\n|$)",
         re.IGNORECASE,
     )
+    cannot_get_pattern = re.compile(
+        rf"cannot get history\s+{escaped},[^\s]+",
+        re.IGNORECASE,
+    )
+    no_sync_pattern = re.compile(
+        rf"{escaped}:\s+no data synchronized",
+        re.IGNORECASE,
+    )
+    success_pattern = re.compile(
+        rf"{escaped},[^:]+:.*\btest passed\b",
+        re.IGNORECASE,
+    )
     found_matches = list(found_pattern.finditer(text))
     missing_matches = list(missing_pattern.finditer(text))
-    if not missing_matches:
-        # Model=4 can fail before MT5 prints the requested date range. In that
-        # case the journal still records the symbol-specific tick download and
-        # immediately terminates with the generic no-history message.
-        download_matches = list(
-            re.finditer(
-                rf"{escaped}:\s+preliminary downloading of history ticks started",
-                text,
-                re.IGNORECASE,
-            )
+    failure_positions = [
+        *(match.start() for match in missing_matches),
+        *(match.start() for match in cannot_get_pattern.finditer(text)),
+        *(match.start() for match in no_sync_pattern.finditer(text)),
+    ]
+    tick_download_failed = False
+    download_matches = list(
+        re.finditer(
+            rf"{escaped}:\s+preliminary downloading of history ticks started",
+            text,
+            re.IGNORECASE,
         )
-        if not download_matches:
-            return None
+    )
+    if download_matches:
+        # Model=4 can fail before MT5 prints the requested date range. Associate
+        # the generic stop message with the latest symbol-specific tick download.
         latest_download = download_matches[-1]
         download_tail = text[latest_download.start(): latest_download.start() + 2000]
-        if not re.search(r"no history data,\s*stop testing", download_tail, re.IGNORECASE):
-            return None
-        return {
-            "reasons": ["no_history_data"],
-            "no_score": True,
-            "recommendation": "desactivar simbolo y revisar historico tick del broker",
-            "log_source": str(sidecar),
-            "tick_download_failed": True,
-            "history_available_from": "",
-            "history_available_to": "",
-            "history_requested_from": "",
-            "history_requested_to": "",
-        }
+        generic_failure = re.search(
+            r"no history data,\s*stop testing",
+            download_tail,
+            re.IGNORECASE,
+        )
+        if generic_failure:
+            failure_positions.append(latest_download.start() + generic_failure.start())
+            tick_download_failed = True
+    if not failure_positions:
+        return None
+    last_failure_position = max(failure_positions)
+    success_matches = list(success_pattern.finditer(text))
+    if success_matches and success_matches[-1].start() > last_failure_position:
+        return None
     found = found_matches[-1] if found_matches else None
-    missing = missing_matches[-1]
-    return {
+    missing = missing_matches[-1] if missing_matches else None
+    metadata = {
         "reasons": ["no_history_data"],
         "no_score": True,
         "recommendation": "desactivar simbolo y revisar historico del broker",
         "log_source": str(sidecar),
         "history_available_from": found.group(1).strip() if found else "",
         "history_available_to": found.group(2).strip() if found else "",
-        "history_requested_from": missing.group(1).strip(),
-        "history_requested_to": missing.group(2).strip().rstrip("."),
+        "history_requested_from": missing.group(1).strip() if missing else "",
+        "history_requested_to": missing.group(2).strip().rstrip(".") if missing else "",
     }
-
-
-def latest_history_probe_status_for_symbol(memory: AgentMemory, symbol: str) -> str:
-    normalized = str(symbol or "").strip().upper()
-    if not normalized:
-        return ""
-    try:
-        row = memory.conn.execute(
-            """
-            select status
-            from candidates
-            where policy='history_probe'
-              and upper(coalesce(target_symbol, symbol, ''))=?
-            order by id desc
-            limit 1
-            """,
-            (normalized,),
-        ).fetchone()
-    except Exception:
-        return ""
-    return str(row["status"] or "") if row is not None else ""
+    if tick_download_failed:
+        metadata["tick_download_failed"] = True
+    return metadata
 
 
 def record_score_with_metadata(
@@ -2686,16 +2684,16 @@ def evaluate_history_probe(
             {"reasons": ["parse_error"], "error": str(exc), "history_probe": True},
         )
         return "parse_error", None
+    no_history = tester_log_no_history_metadata(report, variant)
+    if no_history:
+        print(
+            f"AVISO: {variant.target_symbol} sin historico completo para el rango pedido; "
+            "marcado como no_history."
+        )
+        no_history["history_probe"] = True
+        record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+        return "no_history", result
     if report_has_empty_tester_context(result):
-        no_history = tester_log_no_history_metadata(report, variant)
-        if no_history:
-            print(
-                f"AVISO: {variant.target_symbol} sin historico completo para el rango pedido; "
-                "marcado como no_history."
-            )
-            no_history["history_probe"] = True
-            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
-            return "no_history", result
         record_history_probe_status(
             memory,
             variant,
@@ -2875,23 +2873,15 @@ def evaluate_variant_report(
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
         return "parse_error", None
+    no_history = tester_log_no_history_metadata(report, variant)
+    if no_history:
+        print(
+            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
+            "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
+        )
+        record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+        return "no_history", result
     if report_has_empty_tester_context(result):
-        no_history = tester_log_no_history_metadata(report, variant)
-        if no_history:
-            probe_status = latest_history_probe_status_for_symbol(memory, variant.target_symbol)
-            if probe_status == "history_ok":
-                print(
-                    f"AVISO: {variant.target_symbol} tuvo contexto tester vacio y log no_history, "
-                    "pero el probe historico esta history_ok; marcado como report_mismatch."
-                )
-                memory.record_score(variant.path, result, "report_mismatch", report)
-                return "report_mismatch", result
-            print(
-                f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
-                "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
-            )
-            record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
-            return "no_history", result
         print(f"AVISO: reporte sin contexto tester para {variant.path.name}; marcado como report_mismatch.")
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
