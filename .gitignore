@@ -13,6 +13,7 @@ ENV/
 .env
 .env.*
 !.env.example
+manager_node.json
 
 # Logs
 logs/
@@ -36,6 +37,7 @@ ui_settings.ini
 tester_template.ini
 configs/
 sets/
+runtime/
 
 # Test / coverage
 .pytest_cache/

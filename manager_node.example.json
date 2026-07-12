@@ -1,0 +1,19 @@
+{
+  "node_id": "broker-cuenta-usuario",
+  "display_name": "Broker Cuenta",
+  "broker": "ICTRADING",
+  "account_type": "STANDARD",
+  "project_dir": "C:\\ruta\\de\\esta\\copia\\MT5_Autotester_agent",
+  "settings_file": "ui_settings.ini",
+  "python_executable": "python",
+  "host": "0.0.0.0",
+  "port": 8761,
+  "token": "SECRETO-UNICO-DE-ESTE-NODO",
+  "defaults": {
+    "generations": 2,
+    "variants_per_seed": 10,
+    "max_seeds": 30,
+    "generation_mode": "production",
+    "execute_backtests": true
+  }
+}
