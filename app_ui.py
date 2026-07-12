@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from compile_mq5 import find_metaeditor_path, load_compile_root
 from mt5_env import ENV_FILE, env_value, metaeditor_path_from_env, terminal_path_from_env
+from manager_node_lifecycle import EmbeddedManagerNode
 import telegram_notify
 from run_tests import (
     EXPERTS_ROOT_FILE,
@@ -698,6 +699,7 @@ class MT5AutotesterUI(
         self.stop_requested = False
 
         ui_settings = self._read_ui_settings()
+        self._manager_node = EmbeddedManagerNode(BASE_DIR, ui_settings)
         saved_paths = ui_settings["Paths"] if ui_settings.has_section("Paths") else {}
         saved_general = ui_settings["General"] if ui_settings.has_section("General") else {}
         saved_multi = ui_settings["Multiterminal"] if ui_settings.has_section("Multiterminal") else {}
@@ -1232,8 +1234,23 @@ class MT5AutotesterUI(
         except Exception:
             self.status_text.set("Template tester no cargado")
         self._refresh_all()
+        self._manager_node.start()
+        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(60, self._animate_progress)
         self.after(120, self._drain_output_queue)
+
+    def _on_app_close(self) -> None:
+        if self._manager_node.job_running:
+            close_confirmed = messagebox.askyesno(
+                "Generacion remota activa",
+                "Hay una generacion iniciada desde MT5 Autotester Manager.\n\n"
+                "Si cierras la aplicacion, esa generacion se detendra. "
+                "¿Quieres cerrar de todos modos?",
+            )
+            if not close_confirmed:
+                return
+        self._manager_node.stop(stop_job=True)
+        self.destroy()
 
     def _apply_theme_palette(self) -> None:
         COLORS.clear()
@@ -2449,7 +2466,10 @@ class MT5AutotesterUI(
 
 def main() -> int:
     app = MT5AutotesterUI()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        app._manager_node.stop(stop_job=True)
     return 0
 
 
