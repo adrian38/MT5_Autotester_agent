@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import configparser
 import os
-import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -23,16 +22,14 @@ class EmbeddedManagerNode:
         self.app_base_dir = app_base_dir.resolve()
         section = settings["ManagerNode"] if settings.has_section("ManagerNode") else {}
         configured_enabled = str(section.get("enabled", "")).strip().lower()
-        self.manager_dir = self._manager_dir(section)
         config_value = str(section.get("config_file", "")).strip()
         env_config = os.environ.get("MT5_MANAGER_NODE_CONFIG", "").strip()
         if config_value or env_config:
             self.config_path = Path(config_value or env_config).expanduser()
         else:
-            app_config = self.app_base_dir / "manager_node.json"
-            self.config_path = app_config if app_config.is_file() else self.manager_dir / "node.json"
+            self.config_path = self.app_base_dir / "manager_node.json"
         if not self.config_path.is_absolute():
-            self.config_path = self.manager_dir / self.config_path
+            self.config_path = self.app_base_dir / self.config_path
         self.enabled = (
             configured_enabled in TRUE_VALUES
             if configured_enabled
@@ -42,15 +39,6 @@ class EmbeddedManagerNode:
         self.controller: Any = None
         self.thread: threading.Thread | None = None
         self.last_error = ""
-
-    def _manager_dir(self, section: Any) -> Path:
-        configured = str(section.get("manager_dir", "")).strip()
-        env_dir = os.environ.get("MT5_MANAGER_DIR", "").strip()
-        if configured or env_dir:
-            return Path(configured or env_dir).expanduser().resolve()
-        # Source layout used by the three broker workspaces:
-        # TRADING/<broker-workspace>/<repo> -> TRADING/MT5_Autotester_agent_manager
-        return self.app_base_dir.parent.parent / "MT5_Autotester_agent_manager"
 
     @property
     def running(self) -> bool:
@@ -65,15 +53,10 @@ class EmbeddedManagerNode:
         if not self.enabled:
             return False
         try:
-            if not self.manager_dir.is_dir():
-                raise ValueError(f"No existe el proyecto manager: {self.manager_dir}")
             if not self.config_path.is_file():
                 raise ValueError(f"No existe la configuracion del nodo: {self.config_path}")
-            manager_text = str(self.manager_dir)
-            if manager_text not in sys.path:
-                sys.path.insert(0, manager_text)
-            from mt5_manager.common import load_json, safe_int
-            from mt5_manager.node import JobController, NodeServer
+            from manager_node_runtime.common import load_json, safe_int
+            from manager_node_runtime.node import JobController, NodeServer
 
             config = load_json(self.config_path)
             project_dir = Path(str(config.get("project_dir") or "")).expanduser().resolve()
