@@ -20,9 +20,6 @@ def free_port() -> int:
 class EmbeddedManagerNodeTests(unittest.TestCase):
     def test_node_starts_and_stops_with_matching_app_project(self) -> None:
         app_base = Path(__file__).resolve().parent.parent
-        manager_dir = app_base.parent.parent / "MT5_Autotester_agent_manager"
-        if not (manager_dir / "mt5_manager" / "node.py").is_file():
-            self.skipTest("El proyecto manager no esta disponible junto al workspace")
         with tempfile.TemporaryDirectory() as temp:
             config_path = Path(temp) / "node.json"
             token = "test-embedded-token"
@@ -45,7 +42,6 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             settings = configparser.ConfigParser()
             settings["ManagerNode"] = {
                 "enabled": "1",
-                "manager_dir": str(manager_dir),
                 "config_file": str(config_path),
             }
             lifecycle = EmbeddedManagerNode(app_base, settings)
@@ -60,10 +56,6 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             self.assertFalse(lifecycle.running)
 
     def test_node_rejects_config_for_another_project(self) -> None:
-        app_base = Path(__file__).resolve().parent.parent
-        manager_dir = app_base.parent.parent / "MT5_Autotester_agent_manager"
-        if not (manager_dir / "mt5_manager" / "node.py").is_file():
-            self.skipTest("El proyecto manager no esta disponible junto al workspace")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config_path = root / "node.json"
@@ -82,7 +74,6 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             settings = configparser.ConfigParser()
             settings["ManagerNode"] = {
                 "enabled": "1",
-                "manager_dir": str(manager_dir),
                 "config_file": str(config_path),
             }
             lifecycle = EmbeddedManagerNode(root, settings)
