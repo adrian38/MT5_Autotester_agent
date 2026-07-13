@@ -23,6 +23,7 @@ from typing import Any
 import telegram_notify
 
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
+from .portfolio_save import save_portfolio_payload
 
 
 SCORE_OPTIONS = {
@@ -1162,6 +1163,21 @@ class JobController:
         selected["members"]=[{"variant_key":str(raw.get("variant_key") or ""),"variant_label":str(raw.get("variant_label") or ""),"set_id":str(raw.get("set_id") or ""),"set_name":Path(str(raw.get("set_path") or raw.get("set_id") or "")).name,"candidate_id":str(raw.get("candidate_id") or ""),"symbol":str(raw.get("symbol") or ""),"timeframe":str(raw.get("timeframe") or ""),"units":int(raw.get("units") or 0),"lot":float(raw.get("lot") or 0),"lot_size_step":float(raw.get("lot_size_step") or 0),"net_profit_contribution":float(raw.get("net_profit_contribution") or 0),"standalone_valley_dd":float(raw.get("standalone_valley_dd") or 0),"standalone_point_dd":float(raw.get("standalone_point_dd") or 0),"margin_required":float(raw.get("margin_required") or 0),"margin_pct":float(raw.get("margin_pct") or 0)} for raw in members]
         return {"node":listing["node"],"scope":listing["scope"],"portfolio":selected,"observed_at":utc_now()}
 
+    def save_portfolio(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _cfg, db_path = self._settings_and_memory()
+        result = save_portfolio_payload(db_path, payload)
+        if not result.get("deduplicated"):
+            portfolio_id = int(result["portfolio_id"])
+            self._send_telegram(
+                f"portfolio-save:{result['request_id']}",
+                f"Portfolio Builder guardado: #{portfolio_id}, "
+                f"net {float(result.get('total_net_profit') or 0):,.2f}, "
+                f"lote {float(result.get('total_lot') or 0):.2f}, "
+                f"{int(result.get('active_strategies') or 0)} estrategias",
+            )
+            self._persist()
+        return result
+
     def runs(self, limit: int = 100) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
@@ -1203,8 +1219,8 @@ class NodeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self) -> dict[str, Any]:
-        length = safe_int(self.headers.get("Content-Length"), 0, minimum=0, maximum=1_000_000)
+    def _body(self, maximum: int = 1_000_000) -> dict[str, Any]:
+        length = safe_int(self.headers.get("Content-Length"), 0, minimum=0, maximum=maximum)
         if length == 0:
             return {}
         value = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -1249,6 +1265,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.stop())
             elif self.path == "/api/v1/universe/symbols":
                 self._send(200, self.server.controller.update_universe(self._body()))
+            elif self.path == "/api/v1/portfolios/save":
+                self._send(201, self.server.controller.save_portfolio(self._body(50_000_000)))
             else:
                 self._send(404, {"error": "Ruta no encontrada"})
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
