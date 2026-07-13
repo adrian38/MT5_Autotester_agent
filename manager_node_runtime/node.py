@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import telegram_notify
+
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
 
 
@@ -47,6 +49,32 @@ VALUE_OPTIONS = {
     "--final-tick-max-dd-delta-pct", "--final-tick-max-trades-delta-pct",
     "--final-tick-ohlc-from-date", "--final-tick-ohlc-to-date",
 }
+
+STAGE_NOTIFICATION_LABELS = {
+    "generation": "Generacion",
+    "result": "Resultado",
+    "robustness": "Robustez OOS",
+    "final_tick": "Final Tick corto",
+    "final_tick_quality": "Calidad baja Final Tick corto",
+    "final_tick_6m": "Final Tick 6M",
+    "final_tick_6m_quality": "Calidad baja Final Tick 6M",
+}
+
+STAGE_TABLES = {
+    "generation": "candidates",
+    "result": "candidates",
+    "robustness": "candidate_robustness",
+    "final_tick": "candidate_final_tick",
+    "final_tick_quality": "candidate_final_tick",
+    "final_tick_6m": "candidate_final_tick_6m",
+    "final_tick_6m_quality": "candidate_final_tick_6m",
+}
+
+STATUS_NOTIFICATION_ORDER = (
+    "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history",
+    "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
+    "pending", "generated", "running",
+)
 
 
 def read_settings(path: Path) -> configparser.ConfigParser:
@@ -412,6 +440,61 @@ def database_snapshot(path: Path) -> dict[str, Any]:
         return {**empty, "error": str(exc)}
 
 
+def stage_run_counts(path: Path, run_id: int, stage: str) -> dict[str, int]:
+    table = STAGE_TABLES.get(stage)
+    if not table or run_id <= 0 or not path.is_file():
+        return {}
+    uri = path.resolve().as_uri() + "?mode=ro"
+    try:
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn:
+            return _counts(conn, table, run_id)
+    except (sqlite3.Error, OSError):
+        return {}
+
+
+def format_stage_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "sin datos guardados"
+    ordered = [status for status in STATUS_NOTIFICATION_ORDER if counts.get(status)]
+    ordered.extend(sorted(status for status, total in counts.items() if total and status not in ordered))
+    return " | ".join(f"{status}: {counts[status]}" for status in ordered)
+
+
+def stage_notification_message(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    step: dict[str, Any],
+    return_code: int,
+    run_id: int,
+    counts: dict[str, int],
+) -> str:
+    stage = str(step.get("action") or "")
+    stage_label = STAGE_NOTIFICATION_LABELS.get(stage, stage or "Proceso")
+    outcome = "OK" if return_code == 0 else f"ERROR codigo {return_code}"
+    display_name = str(config.get("display_name") or config.get("node_id") or "Nodo MT5")
+    broker = str(config.get("broker") or "").strip().upper()
+    account = str(config.get("account_type") or "").strip().upper()
+    request = state.get("request") if isinstance(state.get("request"), dict) else {}
+    details: list[str] = []
+    if run_id > 0:
+        details.append(f"run #{run_id}")
+    cycle = safe_int(step.get("cycle"), 0, minimum=0)
+    if cycle > 0:
+        cycles = safe_int(request.get("cycles"), cycle, minimum=cycle)
+        details.append(f"ciclo {cycle}/{cycles}")
+    attempt = safe_int(step.get("attempt"), 0, minimum=0)
+    if attempt > 0:
+        attempts = safe_int(request.get("repair_attempts"), attempt, minimum=attempt)
+        details.append(f"reparacion {attempt}/{attempts}")
+    context = " | ".join(details) if details else "sin run asociado"
+    return (
+        f"MT5 Autotester Manager: {stage_label} finalizada ({outcome}).\n"
+        f"Nodo: {display_name} | {broker}/{account}\n"
+        f"{context}\n"
+        f"Estados: {format_stage_counts(counts)}"
+    )
+
+
 def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -606,6 +689,95 @@ class JobController:
     def _persist(self) -> None:
         save_json(self.state_path, self.state)
 
+    def _settings_and_memory(self) -> tuple[configparser.ConfigParser, Path]:
+        project = Path(str(self.config["project_dir"])).expanduser().resolve()
+        settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute():
+            settings_path = project / settings_path
+        cfg = read_settings(settings_path)
+        return cfg, memory_path(self.config, cfg)
+
+    def _telegram_enabled(self) -> bool:
+        try:
+            cfg, _ = self._settings_and_memory()
+            return setting_bool(cfg, "General", "telegram_enabled", False)
+        except (OSError, ValueError, KeyError):
+            return False
+
+    def _append_telegram_log(self, message: str) -> None:
+        path_text = self.state.get("log_path")
+        if not path_text:
+            return
+        try:
+            with Path(str(path_text)).open("a", encoding="utf-8", errors="replace") as handle:
+                handle.write(f"[Telegram] {message}\n")
+        except OSError:
+            pass
+
+    def _send_telegram(self, key: str, message: str) -> None:
+        if not self._telegram_enabled():
+            return
+        sent = self.state.setdefault("telegram_notifications", [])
+        if key in sent:
+            return
+        sent.append(key)
+        self._append_telegram_log(f"Enviando aviso: {key}")
+
+        def on_result(error: str | None) -> None:
+            if error:
+                self._append_telegram_log(f"ERROR: {error}")
+            else:
+                self._append_telegram_log("Mensaje enviado correctamente.")
+
+        try:
+            telegram_notify.send_async(message, on_result=on_result)
+        except Exception as exc:
+            self._append_telegram_log(f"ERROR al preparar el envio: {exc}")
+
+    def _notify_stage_completion(
+        self,
+        step: dict[str, Any],
+        return_code: int,
+    ) -> None:
+        stage = str(step.get("action") or "")
+        run_id = safe_int(step.get("run_id"), 0, minimum=0)
+        counts: dict[str, int] = {}
+        try:
+            _, db_path = self._settings_and_memory()
+            if run_id <= 0 and stage == "generation":
+                snapshot = database_snapshot(db_path)
+                run_id = safe_int((snapshot.get("latest_run") or {}).get("id"), 0, minimum=0)
+            counts = stage_run_counts(db_path, run_id, stage)
+        except (OSError, ValueError, KeyError):
+            counts = {}
+        label = self._step_label(step)
+        message = stage_notification_message(
+            self.config,
+            self.state,
+            step,
+            return_code,
+            run_id,
+            counts,
+        )
+        self._send_telegram(label, message)
+
+    def _notify_no_work_completion(self, return_code: int) -> None:
+        if self.state.get("telegram_notifications"):
+            return
+        request = self.state.get("request") if isinstance(self.state.get("request"), dict) else {}
+        run_ids = request.get("run_ids") if isinstance(request.get("run_ids"), list) else []
+        run_text = ", ".join(f"#{safe_int(value, 0, minimum=0)}" for value in run_ids) or "-"
+        outcome = "OK" if return_code == 0 else f"ERROR codigo {return_code}"
+        job_label = "Reparacion" if self.state.get("job_type") == "repair" else "Ejecucion"
+        message = (
+            f"MT5 Autotester Manager: {job_label} finalizada ({outcome}).\n"
+            f"Nodo: {self.config.get('display_name') or self.config.get('node_id')} | "
+            f"{str(self.config.get('broker') or '').upper()}/{str(self.config.get('account_type') or '').upper()}\n"
+            f"Runs: {run_text}\n"
+            "No habia etapas pendientes para ejecutar."
+        )
+        self._send_telegram(f"job_{self.state.get('job_id')}_no_work", message)
+
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
@@ -665,6 +837,7 @@ class JobController:
                 "current_cycle": 1, "current_run_id": None, "completed_stages": [],
                 "stage_return_codes": {}, "commands": {"cycle_1_generation": command},
                 "cycle_run_ids": {}, "skipped_stages": [], "stage_pending_counts": {},
+                "telegram_notifications": [],
             }
             self._launch_step(0, command, cwd, log_path, first=True)
             return dict(self.state)
@@ -710,6 +883,7 @@ class JobController:
                 "current_run_id": None, "current_attempt": None,
                 "completed_stages": [], "skipped_stages": [],
                 "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
+                "telegram_notifications": [],
             }
             try:
                 launched = self._launch_next_runnable(0, log_path, first=True)
@@ -777,6 +951,7 @@ class JobController:
         self.state["status"] = "completed" if return_code == 0 else "failed"
         self.state["pid"] = None
         self.process = None
+        self._notify_no_work_completion(return_code)
         self._persist()
 
     def _launch_step(self, step_index: int, command: list[str], cwd: Path, log_path: Path, *, first: bool = False) -> None:
@@ -841,6 +1016,7 @@ class JobController:
                 except Exception as exc:
                     self.state["error"] = str(exc)
                     return_code = 1
+            self._notify_stage_completion(step, return_code)
             next_index = step_index + 1
             if return_code == 0 and next_index < len(pipeline):
                 try:
