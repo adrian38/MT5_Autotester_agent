@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 import configparser
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import run_tests
 
@@ -15,6 +15,36 @@ class ListLogger:
 
 
 class CopyReportsToProjectTests(unittest.TestCase):
+    def test_wait_closes_mt5_when_completed_report_stops_changing(self) -> None:
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        process.pid = 123
+        logger = ListLogger()
+        signature = (("report.htm", 1024, 1),)
+        clock = iter([0, 0, 0, 1, 1, 2, 2, 3, 3])
+
+        with (
+            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests.time, "sleep"),
+            patch.object(run_tests, "fresh_report_signature", return_value=signature),
+            patch.object(run_tests, "REPORT_SAVE_CHECK_INTERVAL", 0),
+            patch.object(run_tests, "terminate_process_tree") as terminate,
+        ):
+            exit_code, restarted, _elapsed = run_tests.wait_for_mt5_process(
+                process,
+                logger,
+                tester_log_dirs=[],
+                report_path=run_tests.Path("report"),
+                mt5_path=run_tests.Path("terminal64.exe"),
+                report_stable_seconds=2,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(restarted)
+        terminate.assert_called_once_with(process, logger)
+        self.assertTrue(any("se conserva el resultado" in message for message in logger.messages))
+
     def test_removes_copied_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)

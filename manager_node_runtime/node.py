@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import telegram_notify
+
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
 
 
@@ -48,6 +50,32 @@ VALUE_OPTIONS = {
     "--final-tick-ohlc-from-date", "--final-tick-ohlc-to-date",
 }
 
+STAGE_NOTIFICATION_LABELS = {
+    "generation": "Generacion",
+    "result": "Resultado",
+    "robustness": "Robustez OOS",
+    "final_tick": "Final Tick corto",
+    "final_tick_quality": "Calidad baja Final Tick corto",
+    "final_tick_6m": "Final Tick 6M",
+    "final_tick_6m_quality": "Calidad baja Final Tick 6M",
+}
+
+STAGE_TABLES = {
+    "generation": "candidates",
+    "result": "candidates",
+    "robustness": "candidate_robustness",
+    "final_tick": "candidate_final_tick",
+    "final_tick_quality": "candidate_final_tick",
+    "final_tick_6m": "candidate_final_tick_6m",
+    "final_tick_6m_quality": "candidate_final_tick_6m",
+}
+
+STATUS_NOTIFICATION_ORDER = (
+    "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history",
+    "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
+    "pending", "generated", "running",
+)
+
 
 def read_settings(path: Path) -> configparser.ConfigParser:
     parser = configparser.ConfigParser(interpolation=None)
@@ -64,6 +92,50 @@ def setting_bool(parser: configparser.ConfigParser, section: str, key: str, defa
         return parser.getboolean(section, key, fallback=default)
     except ValueError:
         return default
+
+
+def _universe_paths(config: dict[str, Any]) -> tuple[Path, Path]:
+    project = Path(str(config["project_dir"])).expanduser().resolve()
+    broker = str(config.get("broker") or "ROBOFOREX").strip().upper()
+    account = str(config.get("account_type") or "ECN").strip().upper()
+    return (project / "assets" / f"{broker.lower()}_assets.ini", project / "outputs" / f"ubs_disabled_symbols_{broker}_{account}.json")
+
+
+def _load_universe_rows(config: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
+    assets_path, policy_path = _universe_paths(config)
+    if not assets_path.is_file():
+        raise ValueError(f"No existe el universo de activos: {assets_path}")
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(assets_path, encoding="utf-8-sig")
+    aliases = {str(alias).strip().upper(): str(target).strip().upper() for alias, target in (parser["CommonAliases"].items() if parser.has_section("CommonAliases") else []) if str(alias).strip() and str(target).strip()}
+    reverse_aliases: dict[str, list[str]] = {}
+    for alias, target in aliases.items():
+        reverse_aliases.setdefault(target, []).append(alias)
+    policy: dict[str, Any] = {}
+    if policy_path.is_file():
+        try:
+            loaded = json.loads(policy_path.read_text(encoding="utf-8"))
+            policy = loaded if isinstance(loaded, dict) else {"disabled": loaded if isinstance(loaded, list) else []}
+        except (OSError, json.JSONDecodeError):
+            policy = {}
+    disabled = {str(value).strip().upper() for value in policy.get("disabled") or [] if str(value).strip()}
+    seed_enabled = {str(value).strip().upper() for value in policy.get("seed_enabled_when_disabled") or [] if str(value).strip()} & disabled
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for section in parser.sections():
+        if section == "CommonAliases":
+            continue
+        for raw in parser[section].get("symbols", "").split(","):
+            symbol = raw.strip().upper()
+            canonical = aliases.get(symbol, symbol)
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            generation_enabled = canonical not in disabled
+            rows.append({"symbol": canonical, "group": section, "aliases": sorted(reverse_aliases.get(canonical, [])), "generation_enabled": generation_enabled, "seeds_enabled": generation_enabled or canonical in seed_enabled})
+    rows.sort(key=lambda item: (str(item["group"]).casefold(), str(item["symbol"]).casefold()))
+    return rows, disabled, seed_enabled
 
 
 def memory_path(config: dict[str, Any], parser: configparser.ConfigParser) -> Path:
@@ -368,6 +440,61 @@ def database_snapshot(path: Path) -> dict[str, Any]:
         return {**empty, "error": str(exc)}
 
 
+def stage_run_counts(path: Path, run_id: int, stage: str) -> dict[str, int]:
+    table = STAGE_TABLES.get(stage)
+    if not table or run_id <= 0 or not path.is_file():
+        return {}
+    uri = path.resolve().as_uri() + "?mode=ro"
+    try:
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn:
+            return _counts(conn, table, run_id)
+    except (sqlite3.Error, OSError):
+        return {}
+
+
+def format_stage_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "sin datos guardados"
+    ordered = [status for status in STATUS_NOTIFICATION_ORDER if counts.get(status)]
+    ordered.extend(sorted(status for status, total in counts.items() if total and status not in ordered))
+    return " | ".join(f"{status}: {counts[status]}" for status in ordered)
+
+
+def stage_notification_message(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    step: dict[str, Any],
+    return_code: int,
+    run_id: int,
+    counts: dict[str, int],
+) -> str:
+    stage = str(step.get("action") or "")
+    stage_label = STAGE_NOTIFICATION_LABELS.get(stage, stage or "Proceso")
+    outcome = "OK" if return_code == 0 else f"ERROR codigo {return_code}"
+    display_name = str(config.get("display_name") or config.get("node_id") or "Nodo MT5")
+    broker = str(config.get("broker") or "").strip().upper()
+    account = str(config.get("account_type") or "").strip().upper()
+    request = state.get("request") if isinstance(state.get("request"), dict) else {}
+    details: list[str] = []
+    if run_id > 0:
+        details.append(f"run #{run_id}")
+    cycle = safe_int(step.get("cycle"), 0, minimum=0)
+    if cycle > 0:
+        cycles = safe_int(request.get("cycles"), cycle, minimum=cycle)
+        details.append(f"ciclo {cycle}/{cycles}")
+    attempt = safe_int(step.get("attempt"), 0, minimum=0)
+    if attempt > 0:
+        attempts = safe_int(request.get("repair_attempts"), attempt, minimum=attempt)
+        details.append(f"reparacion {attempt}/{attempts}")
+    context = " | ".join(details) if details else "sin run asociado"
+    return (
+        f"MT5 Autotester Manager: {stage_label} finalizada ({outcome}).\n"
+        f"Nodo: {display_name} | {broker}/{account}\n"
+        f"{context}\n"
+        f"Estados: {format_stage_counts(counts)}"
+    )
+
+
 def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -562,6 +689,95 @@ class JobController:
     def _persist(self) -> None:
         save_json(self.state_path, self.state)
 
+    def _settings_and_memory(self) -> tuple[configparser.ConfigParser, Path]:
+        project = Path(str(self.config["project_dir"])).expanduser().resolve()
+        settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute():
+            settings_path = project / settings_path
+        cfg = read_settings(settings_path)
+        return cfg, memory_path(self.config, cfg)
+
+    def _telegram_enabled(self) -> bool:
+        try:
+            cfg, _ = self._settings_and_memory()
+            return setting_bool(cfg, "General", "telegram_enabled", False)
+        except (OSError, ValueError, KeyError):
+            return False
+
+    def _append_telegram_log(self, message: str) -> None:
+        path_text = self.state.get("log_path")
+        if not path_text:
+            return
+        try:
+            with Path(str(path_text)).open("a", encoding="utf-8", errors="replace") as handle:
+                handle.write(f"[Telegram] {message}\n")
+        except OSError:
+            pass
+
+    def _send_telegram(self, key: str, message: str) -> None:
+        if not self._telegram_enabled():
+            return
+        sent = self.state.setdefault("telegram_notifications", [])
+        if key in sent:
+            return
+        sent.append(key)
+        self._append_telegram_log(f"Enviando aviso: {key}")
+
+        def on_result(error: str | None) -> None:
+            if error:
+                self._append_telegram_log(f"ERROR: {error}")
+            else:
+                self._append_telegram_log("Mensaje enviado correctamente.")
+
+        try:
+            telegram_notify.send_async(message, on_result=on_result)
+        except Exception as exc:
+            self._append_telegram_log(f"ERROR al preparar el envio: {exc}")
+
+    def _notify_stage_completion(
+        self,
+        step: dict[str, Any],
+        return_code: int,
+    ) -> None:
+        stage = str(step.get("action") or "")
+        run_id = safe_int(step.get("run_id"), 0, minimum=0)
+        counts: dict[str, int] = {}
+        try:
+            _, db_path = self._settings_and_memory()
+            if run_id <= 0 and stage == "generation":
+                snapshot = database_snapshot(db_path)
+                run_id = safe_int((snapshot.get("latest_run") or {}).get("id"), 0, minimum=0)
+            counts = stage_run_counts(db_path, run_id, stage)
+        except (OSError, ValueError, KeyError):
+            counts = {}
+        label = self._step_label(step)
+        message = stage_notification_message(
+            self.config,
+            self.state,
+            step,
+            return_code,
+            run_id,
+            counts,
+        )
+        self._send_telegram(label, message)
+
+    def _notify_no_work_completion(self, return_code: int) -> None:
+        if self.state.get("telegram_notifications"):
+            return
+        request = self.state.get("request") if isinstance(self.state.get("request"), dict) else {}
+        run_ids = request.get("run_ids") if isinstance(request.get("run_ids"), list) else []
+        run_text = ", ".join(f"#{safe_int(value, 0, minimum=0)}" for value in run_ids) or "-"
+        outcome = "OK" if return_code == 0 else f"ERROR codigo {return_code}"
+        job_label = "Reparacion" if self.state.get("job_type") == "repair" else "Ejecucion"
+        message = (
+            f"MT5 Autotester Manager: {job_label} finalizada ({outcome}).\n"
+            f"Nodo: {self.config.get('display_name') or self.config.get('node_id')} | "
+            f"{str(self.config.get('broker') or '').upper()}/{str(self.config.get('account_type') or '').upper()}\n"
+            f"Runs: {run_text}\n"
+            "No habia etapas pendientes para ejecutar."
+        )
+        self._send_telegram(f"job_{self.state.get('job_id')}_no_work", message)
+
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
@@ -621,6 +837,7 @@ class JobController:
                 "current_cycle": 1, "current_run_id": None, "completed_stages": [],
                 "stage_return_codes": {}, "commands": {"cycle_1_generation": command},
                 "cycle_run_ids": {}, "skipped_stages": [], "stage_pending_counts": {},
+                "telegram_notifications": [],
             }
             self._launch_step(0, command, cwd, log_path, first=True)
             return dict(self.state)
@@ -666,6 +883,7 @@ class JobController:
                 "current_run_id": None, "current_attempt": None,
                 "completed_stages": [], "skipped_stages": [],
                 "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
+                "telegram_notifications": [],
             }
             try:
                 launched = self._launch_next_runnable(0, log_path, first=True)
@@ -733,6 +951,7 @@ class JobController:
         self.state["status"] = "completed" if return_code == 0 else "failed"
         self.state["pid"] = None
         self.process = None
+        self._notify_no_work_completion(return_code)
         self._persist()
 
     def _launch_step(self, step_index: int, command: list[str], cwd: Path, log_path: Path, *, first: bool = False) -> None:
@@ -797,6 +1016,7 @@ class JobController:
                 except Exception as exc:
                     self.state["error"] = str(exc)
                     return_code = 1
+            self._notify_stage_completion(step, return_code)
             next_index = step_index + 1
             if return_code == 0 and next_index < len(pipeline):
                 try:
@@ -867,9 +1087,80 @@ class JobController:
                 "pipeline_controls": True,
                 "cycles": True,
                 "repair_runs": True,
+                "universe_management": True,
+                "portfolio_views": True,
             },
             "observed_at": utc_now(),
         }
+
+    def universe(self) -> dict[str, Any]:
+        with self.lock:
+            rows, disabled, seed_enabled = _load_universe_rows(self.config)
+        generation_enabled = sum(1 for row in rows if row["generation_enabled"])
+        seed_only = sum(1 for row in rows if not row["generation_enabled"] and row["seeds_enabled"])
+        return {"node": {"id": self.config.get("node_id"), "name": self.config.get("display_name") or self.config.get("node_id"), "broker": self.config.get("broker"), "account_type": self.config.get("account_type")}, "symbols": rows, "summary": {"total": len(rows), "generation_enabled": generation_enabled, "generation_disabled": len(rows) - generation_enabled, "seed_only": seed_only}, "observed_at": utc_now()}
+
+    def update_universe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        values = payload.get("symbols")
+        if not isinstance(values, list) or not values:
+            raise ValueError("symbols debe ser una lista no vacía")
+        requested = {str(value).strip().upper() for value in values if str(value).strip()}
+        generation, seeds = payload.get("generation_enabled"), payload.get("seeds_enabled")
+        if generation is None and seeds is None:
+            raise ValueError("Indica generation_enabled o seeds_enabled")
+        if generation is not None and not isinstance(generation, bool):
+            raise ValueError("generation_enabled debe ser booleano")
+        if seeds is not None and not isinstance(seeds, bool):
+            raise ValueError("seeds_enabled debe ser booleano")
+        with self.lock:
+            rows, disabled, seed_enabled = _load_universe_rows(self.config)
+            unknown = requested - {str(row["symbol"]).upper() for row in rows}
+            if unknown:
+                raise ValueError(f"Símbolos desconocidos: {', '.join(sorted(unknown))}")
+            if generation is True:
+                disabled.difference_update(requested); seed_enabled.difference_update(requested)
+            elif generation is False:
+                disabled.update(requested); seed_enabled.difference_update(requested)
+            if seeds is not None:
+                eligible = requested & disabled
+                if seeds: seed_enabled.update(eligible)
+                else: seed_enabled.difference_update(eligible)
+            _, policy_path = _universe_paths(self.config)
+            save_json(policy_path, {"disabled": sorted(disabled), "seed_enabled_when_disabled": sorted(seed_enabled & disabled)})
+        return self.universe()
+
+    def portfolios(self, scope: str = "full_history") -> dict[str, Any]:
+        portfolio_scope = "monthly" if str(scope).strip().lower() == "monthly" else "full_history"
+        project = Path(str(self.config["project_dir"])).expanduser().resolve()
+        settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute(): settings_path = project / settings_path
+        db_path = memory_path(self.config, read_settings(settings_path))
+        if not db_path.is_file(): raise ValueError(f"No existe la memoria UBS: {db_path}")
+        with contextlib.closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("select * from portfolios where coalesce(nullif(portfolio_scope,''),'full_history')=? order by id desc", (portfolio_scope,)).fetchall() if _table_exists(conn,"portfolios") else []
+        def value(row: sqlite3.Row, key: str, default: Any = None) -> Any: return row[key] if key in row.keys() else default
+        portfolios = [{"id":int(value(row,"id",0) or 0),"created_at":str(value(row,"created_at","") or ""),"name":str(value(row,"name","") or ""),"portfolio_type":str(value(row,"portfolio_type",value(row,"type","")) or ""),"portfolio_scope":portfolio_scope,"target_month":int(value(row,"target_month",0) or 0) or None,"capital":float(value(row,"capital",value(row,"account_capital",0)) or 0),"total_net_profit":float(value(row,"total_net_profit",0) or 0),"actual_valley_dd":float(value(row,"actual_valley_dd",0) or 0),"target_valley_dd":float(value(row,"target_valley_dd",0) or 0),"valley_usage_pct":float(value(row,"valley_usage_pct",0) or 0),"actual_point_dd":float(value(row,"actual_point_dd",0) or 0),"target_point_dd":float(value(row,"target_point_dd",0) or 0),"point_usage_pct":float(value(row,"point_usage_pct",0) or 0),"total_lot":float(value(row,"total_lot",0) or 0),"total_units":int(value(row,"total_units",0) or 0),"active_strategies":int(value(row,"active_strategies",0) or 0),"target_strategies":int(value(row,"target_strategies",0) or 0),"stop_reason":str(value(row,"stop_reason","") or ""),"binding_constraint":str(value(row,"binding_constraint","") or "")} for row in rows]
+        return {"node":{"id":self.config.get("node_id"),"name":self.config.get("display_name") or self.config.get("node_id"),"broker":self.config.get("broker"),"account_type":self.config.get("account_type")},"scope":portfolio_scope,"portfolios":portfolios,"summary":{"total":len(portfolios),"strategies":sum(item["active_strategies"] for item in portfolios),"latest_id":portfolios[0]["id"] if portfolios else None},"observed_at":utc_now()}
+
+    def portfolio_detail(self, portfolio_id: int, scope: str = "full_history") -> dict[str, Any]:
+        listing=self.portfolios(scope); selected=next((item for item in listing["portfolios"] if item["id"]==portfolio_id),None)
+        if selected is None: raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+        project=Path(str(self.config["project_dir"])).expanduser().resolve(); settings_path=Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute(): settings_path=project/settings_path
+        db_path=memory_path(self.config,read_settings(settings_path))
+        with contextlib.closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro",uri=True)) as conn:
+            conn.row_factory=sqlite3.Row; row=conn.execute("select metrics_json from portfolios where id=?",(portfolio_id,)).fetchone()
+            try:
+                parsed=json.loads(row["metrics_json"] or "{}") if row else {}; metrics=parsed if isinstance(parsed,dict) else {}
+            except json.JSONDecodeError: metrics={}
+            members=[dict(item) for item in conn.execute("select * from portfolio_allocations where portfolio_id=? order by variant_key,set_id,units desc",(portfolio_id,)).fetchall()] if _table_exists(conn,"portfolio_allocations") else []
+            if not members and _table_exists(conn,"portfolio_members"):
+                for item in conn.execute("select * from portfolio_members where portfolio_id=? order by lot desc",(portfolio_id,)).fetchall():
+                    raw=dict(item); members.append({"variant_key":raw.get("variant_key") or "","variant_label":raw.get("variant_label") or "","set_id":raw.get("set_path") or "","candidate_id":raw.get("candidate_id") or "","symbol":raw.get("symbol") or "","timeframe":raw.get("period") or "","units":int(round(float(raw.get("lot") or 0)/.01)),"lot":float(raw.get("lot") or 0),"lot_size_step":float(raw.get("lot_size_step") or .01),"net_profit_contribution":float(raw.get("combined_net_profit") or 0),"standalone_valley_dd":float(raw.get("standalone_dd") or 0),"standalone_point_dd":0.0,"set_path":raw.get("set_path") or "","margin_required":0.0,"margin_pct":0.0})
+        selected["metrics"]={"inputs":metrics.get("inputs") if isinstance(metrics.get("inputs"),dict) else {},"stress_bootstrap":metrics.get("stress_bootstrap") if isinstance(metrics.get("stress_bootstrap"),dict) else {},"common_set_ids":metrics.get("common_set_ids") if isinstance(metrics.get("common_set_ids"),list) else [],"variant_order":metrics.get("variant_order") if isinstance(metrics.get("variant_order"),list) else []}
+        selected["members"]=[{"variant_key":str(raw.get("variant_key") or ""),"variant_label":str(raw.get("variant_label") or ""),"set_id":str(raw.get("set_id") or ""),"set_name":Path(str(raw.get("set_path") or raw.get("set_id") or "")).name,"candidate_id":str(raw.get("candidate_id") or ""),"symbol":str(raw.get("symbol") or ""),"timeframe":str(raw.get("timeframe") or ""),"units":int(raw.get("units") or 0),"lot":float(raw.get("lot") or 0),"lot_size_step":float(raw.get("lot_size_step") or 0),"net_profit_contribution":float(raw.get("net_profit_contribution") or 0),"standalone_valley_dd":float(raw.get("standalone_valley_dd") or 0),"standalone_point_dd":float(raw.get("standalone_point_dd") or 0),"margin_required":float(raw.get("margin_required") or 0),"margin_pct":float(raw.get("margin_pct") or 0)} for raw in members]
+        return {"node":listing["node"],"scope":listing["scope"],"portfolio":selected,"observed_at":utc_now()}
 
     def runs(self, limit: int = 100) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
@@ -936,6 +1227,12 @@ class NodeHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/v1/runs":
             query = urllib.parse.parse_qs(parsed.query)
             self._send(200, self.server.controller.runs(safe_int(query.get("limit", [100])[0], 100)))
+        elif parsed.path == "/api/v1/universe":
+            self._send(200, self.server.controller.universe())
+        elif parsed.path == "/api/v1/portfolios":
+            query=urllib.parse.parse_qs(parsed.query); self._send(200,self.server.controller.portfolios(query.get("scope",["full_history"])[0]))
+        elif parsed.path.startswith("/api/v1/portfolios/"):
+            query=urllib.parse.parse_qs(parsed.query); portfolio_id=safe_int(parsed.path.rsplit("/",1)[-1],0,minimum=1); self._send(200,self.server.controller.portfolio_detail(portfolio_id,query.get("scope",["full_history"])[0]))
         else:
             self._send(404, {"error": "Ruta no encontrada"})
 
@@ -950,6 +1247,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.start_repair(self._body()))
             elif self.path == "/api/v1/jobs/stop":
                 self._send(202, self.server.controller.stop())
+            elif self.path == "/api/v1/universe/symbols":
+                self._send(200, self.server.controller.update_universe(self._body()))
             else:
                 self._send(404, {"error": "Ruta no encontrada"})
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:

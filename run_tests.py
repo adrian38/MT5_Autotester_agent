@@ -36,6 +36,8 @@ GENERATED_SET_ROOT_PREFIXES = ("accepted_gen_", "mismatch_gen_")
 TESTER_STUCK_MARKERS = (
     "preliminary downloading of history ticks started",
 )
+REPORT_SAVE_STALL_SECONDS = 30
+REPORT_SAVE_CHECK_INTERVAL = 2
 GENERATED_SET_ROOT_NAMES = {"retry_mismatch", "robustness", "final_tick"}
 
 DEFAULT_MT5_PATHS = (
@@ -1591,6 +1593,30 @@ def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None
         logger.write(f"No se pudo terminar MT5: {exc}")
 
 
+def fresh_report_signature(
+    report_path: Path,
+    terminal_data_dirs: list[Path],
+    mt5_path: Path,
+    min_mtime: float,
+) -> tuple[tuple[str, int, int], ...]:
+    """Describe fresh report artifacts once the main report exists."""
+    artifacts: list[tuple[str, int, int]] = []
+    has_main_report = False
+    for path in find_report_files(report_path, terminal_data_dirs, mt5_path):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime + 1.0 < min_mtime or stat.st_size <= 0:
+            continue
+        if path.suffix.lower() in {".htm", ".html", ".xml"}:
+            has_main_report = True
+        artifacts.append((str(path), stat.st_size, stat.st_mtime_ns))
+    if not has_main_report:
+        return ()
+    return tuple(sorted(artifacts))
+
+
 _LOG_CHECK_INTERVAL = 10  # seconds between tester journal polls
 def wait_for_mt5_process(
     process: subprocess.Popen,
@@ -1599,6 +1625,9 @@ def wait_for_mt5_process(
     kick_after_seconds: int = 0,
     tester_log_dirs: list[Path] | None = None,
     log_check_min_mtime: float = 0.0,
+    report_path: Path | None = None,
+    mt5_path: Path | None = None,
+    report_stable_seconds: int = REPORT_SAVE_STALL_SECONDS,
 ) -> tuple[int, bool, float]:
     """Wait for MT5 to exit.
 
@@ -1610,6 +1639,10 @@ def wait_for_mt5_process(
 
     If tester_log_dirs is empty/None, falls back to the original fixed-timeout
     behaviour (kill after kick_after_seconds of no exit).
+
+    A fresh report that remains unchanged while MT5 is still alive identifies
+    the terminal's occasional final "Save report" hang. The terminal is closed
+    after the grace period and the already completed report is preserved.
     """
     started = time.time()
     next_alive_log = 30.0
@@ -1620,12 +1653,48 @@ def wait_for_mt5_process(
     last_log_path: Path | None = None
     prev_was_stuck = False
     last_bases_signature: tuple[int, int, float] | None = None
+    next_report_check = 0.0
+    last_report_signature: tuple[tuple[str, int, int], ...] = ()
+    report_stable_since: float | None = None
 
     while True:
         exit_code = process.poll()
         elapsed = time.time() - started
         if exit_code is not None:
             return exit_code, False, elapsed
+
+        if (
+            report_path is not None
+            and mt5_path is not None
+            and report_stable_seconds > 0
+            and elapsed >= next_report_check
+        ):
+            report_signature = fresh_report_signature(
+                report_path,
+                tester_log_dirs or [],
+                mt5_path,
+                log_check_min_mtime,
+            )
+            now = time.time()
+            if report_signature and report_signature == last_report_signature:
+                if report_stable_since is None:
+                    report_stable_since = now
+                stable_for = now - report_stable_since
+                if stable_for >= report_stable_seconds:
+                    logger.write(
+                        f"MT5 no cerro, pero el informe lleva {stable_for:.0f}s completo y sin cambios; "
+                        "se cierra el terminal y se conserva el resultado."
+                    )
+                    terminate_process_tree(process, logger)
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        logger.write("MT5 no cerro tras taskkill/terminate; se intentara conservar el informe.")
+                    return 0, False, elapsed
+            else:
+                report_stable_since = now if report_signature else None
+                last_report_signature = report_signature
+            next_report_check = elapsed + REPORT_SAVE_CHECK_INTERVAL
 
         if use_log_check and elapsed >= next_log_check:
             # Progreso real de descarga de ticks: MT5 bufferea el journal del
@@ -1755,6 +1824,8 @@ def run_test(
             kick_after_seconds=attempt_kick_after,
             tester_log_dirs=terminal_data_dirs,
             log_check_min_mtime=before,
+            report_path=report_path,
+            mt5_path=settings.mt5_path,
         )
         last_exit_code = exit_code
         logger.write(f"MT5 termino con codigo: {exit_code}")
