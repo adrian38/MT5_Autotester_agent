@@ -66,6 +66,50 @@ def setting_bool(parser: configparser.ConfigParser, section: str, key: str, defa
         return default
 
 
+def _universe_paths(config: dict[str, Any]) -> tuple[Path, Path]:
+    project = Path(str(config["project_dir"])).expanduser().resolve()
+    broker = str(config.get("broker") or "ROBOFOREX").strip().upper()
+    account = str(config.get("account_type") or "ECN").strip().upper()
+    return (project / "assets" / f"{broker.lower()}_assets.ini", project / "outputs" / f"ubs_disabled_symbols_{broker}_{account}.json")
+
+
+def _load_universe_rows(config: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
+    assets_path, policy_path = _universe_paths(config)
+    if not assets_path.is_file():
+        raise ValueError(f"No existe el universo de activos: {assets_path}")
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(assets_path, encoding="utf-8-sig")
+    aliases = {str(alias).strip().upper(): str(target).strip().upper() for alias, target in (parser["CommonAliases"].items() if parser.has_section("CommonAliases") else []) if str(alias).strip() and str(target).strip()}
+    reverse_aliases: dict[str, list[str]] = {}
+    for alias, target in aliases.items():
+        reverse_aliases.setdefault(target, []).append(alias)
+    policy: dict[str, Any] = {}
+    if policy_path.is_file():
+        try:
+            loaded = json.loads(policy_path.read_text(encoding="utf-8"))
+            policy = loaded if isinstance(loaded, dict) else {"disabled": loaded if isinstance(loaded, list) else []}
+        except (OSError, json.JSONDecodeError):
+            policy = {}
+    disabled = {str(value).strip().upper() for value in policy.get("disabled") or [] if str(value).strip()}
+    seed_enabled = {str(value).strip().upper() for value in policy.get("seed_enabled_when_disabled") or [] if str(value).strip()} & disabled
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for section in parser.sections():
+        if section == "CommonAliases":
+            continue
+        for raw in parser[section].get("symbols", "").split(","):
+            symbol = raw.strip().upper()
+            canonical = aliases.get(symbol, symbol)
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            generation_enabled = canonical not in disabled
+            rows.append({"symbol": canonical, "group": section, "aliases": sorted(reverse_aliases.get(canonical, [])), "generation_enabled": generation_enabled, "seeds_enabled": generation_enabled or canonical in seed_enabled})
+    rows.sort(key=lambda item: (str(item["group"]).casefold(), str(item["symbol"]).casefold()))
+    return rows, disabled, seed_enabled
+
+
 def memory_path(config: dict[str, Any], parser: configparser.ConfigParser) -> Path:
     project = Path(str(config["project_dir"])).expanduser().resolve()
     explicit = str(config.get("memory_path") or "").strip()
@@ -867,9 +911,80 @@ class JobController:
                 "pipeline_controls": True,
                 "cycles": True,
                 "repair_runs": True,
+                "universe_management": True,
+                "portfolio_views": True,
             },
             "observed_at": utc_now(),
         }
+
+    def universe(self) -> dict[str, Any]:
+        with self.lock:
+            rows, disabled, seed_enabled = _load_universe_rows(self.config)
+        generation_enabled = sum(1 for row in rows if row["generation_enabled"])
+        seed_only = sum(1 for row in rows if not row["generation_enabled"] and row["seeds_enabled"])
+        return {"node": {"id": self.config.get("node_id"), "name": self.config.get("display_name") or self.config.get("node_id"), "broker": self.config.get("broker"), "account_type": self.config.get("account_type")}, "symbols": rows, "summary": {"total": len(rows), "generation_enabled": generation_enabled, "generation_disabled": len(rows) - generation_enabled, "seed_only": seed_only}, "observed_at": utc_now()}
+
+    def update_universe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        values = payload.get("symbols")
+        if not isinstance(values, list) or not values:
+            raise ValueError("symbols debe ser una lista no vacía")
+        requested = {str(value).strip().upper() for value in values if str(value).strip()}
+        generation, seeds = payload.get("generation_enabled"), payload.get("seeds_enabled")
+        if generation is None and seeds is None:
+            raise ValueError("Indica generation_enabled o seeds_enabled")
+        if generation is not None and not isinstance(generation, bool):
+            raise ValueError("generation_enabled debe ser booleano")
+        if seeds is not None and not isinstance(seeds, bool):
+            raise ValueError("seeds_enabled debe ser booleano")
+        with self.lock:
+            rows, disabled, seed_enabled = _load_universe_rows(self.config)
+            unknown = requested - {str(row["symbol"]).upper() for row in rows}
+            if unknown:
+                raise ValueError(f"Símbolos desconocidos: {', '.join(sorted(unknown))}")
+            if generation is True:
+                disabled.difference_update(requested); seed_enabled.difference_update(requested)
+            elif generation is False:
+                disabled.update(requested); seed_enabled.difference_update(requested)
+            if seeds is not None:
+                eligible = requested & disabled
+                if seeds: seed_enabled.update(eligible)
+                else: seed_enabled.difference_update(eligible)
+            _, policy_path = _universe_paths(self.config)
+            save_json(policy_path, {"disabled": sorted(disabled), "seed_enabled_when_disabled": sorted(seed_enabled & disabled)})
+        return self.universe()
+
+    def portfolios(self, scope: str = "full_history") -> dict[str, Any]:
+        portfolio_scope = "monthly" if str(scope).strip().lower() == "monthly" else "full_history"
+        project = Path(str(self.config["project_dir"])).expanduser().resolve()
+        settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute(): settings_path = project / settings_path
+        db_path = memory_path(self.config, read_settings(settings_path))
+        if not db_path.is_file(): raise ValueError(f"No existe la memoria UBS: {db_path}")
+        with contextlib.closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("select * from portfolios where coalesce(nullif(portfolio_scope,''),'full_history')=? order by id desc", (portfolio_scope,)).fetchall() if _table_exists(conn,"portfolios") else []
+        def value(row: sqlite3.Row, key: str, default: Any = None) -> Any: return row[key] if key in row.keys() else default
+        portfolios = [{"id":int(value(row,"id",0) or 0),"created_at":str(value(row,"created_at","") or ""),"name":str(value(row,"name","") or ""),"portfolio_type":str(value(row,"portfolio_type",value(row,"type","")) or ""),"portfolio_scope":portfolio_scope,"target_month":int(value(row,"target_month",0) or 0) or None,"capital":float(value(row,"capital",value(row,"account_capital",0)) or 0),"total_net_profit":float(value(row,"total_net_profit",0) or 0),"actual_valley_dd":float(value(row,"actual_valley_dd",0) or 0),"target_valley_dd":float(value(row,"target_valley_dd",0) or 0),"valley_usage_pct":float(value(row,"valley_usage_pct",0) or 0),"actual_point_dd":float(value(row,"actual_point_dd",0) or 0),"target_point_dd":float(value(row,"target_point_dd",0) or 0),"point_usage_pct":float(value(row,"point_usage_pct",0) or 0),"total_lot":float(value(row,"total_lot",0) or 0),"total_units":int(value(row,"total_units",0) or 0),"active_strategies":int(value(row,"active_strategies",0) or 0),"target_strategies":int(value(row,"target_strategies",0) or 0),"stop_reason":str(value(row,"stop_reason","") or ""),"binding_constraint":str(value(row,"binding_constraint","") or "")} for row in rows]
+        return {"node":{"id":self.config.get("node_id"),"name":self.config.get("display_name") or self.config.get("node_id"),"broker":self.config.get("broker"),"account_type":self.config.get("account_type")},"scope":portfolio_scope,"portfolios":portfolios,"summary":{"total":len(portfolios),"strategies":sum(item["active_strategies"] for item in portfolios),"latest_id":portfolios[0]["id"] if portfolios else None},"observed_at":utc_now()}
+
+    def portfolio_detail(self, portfolio_id: int, scope: str = "full_history") -> dict[str, Any]:
+        listing=self.portfolios(scope); selected=next((item for item in listing["portfolios"] if item["id"]==portfolio_id),None)
+        if selected is None: raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+        project=Path(str(self.config["project_dir"])).expanduser().resolve(); settings_path=Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute(): settings_path=project/settings_path
+        db_path=memory_path(self.config,read_settings(settings_path))
+        with contextlib.closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro",uri=True)) as conn:
+            conn.row_factory=sqlite3.Row; row=conn.execute("select metrics_json from portfolios where id=?",(portfolio_id,)).fetchone()
+            try:
+                parsed=json.loads(row["metrics_json"] or "{}") if row else {}; metrics=parsed if isinstance(parsed,dict) else {}
+            except json.JSONDecodeError: metrics={}
+            members=[dict(item) for item in conn.execute("select * from portfolio_allocations where portfolio_id=? order by variant_key,set_id,units desc",(portfolio_id,)).fetchall()] if _table_exists(conn,"portfolio_allocations") else []
+            if not members and _table_exists(conn,"portfolio_members"):
+                for item in conn.execute("select * from portfolio_members where portfolio_id=? order by lot desc",(portfolio_id,)).fetchall():
+                    raw=dict(item); members.append({"variant_key":raw.get("variant_key") or "","variant_label":raw.get("variant_label") or "","set_id":raw.get("set_path") or "","candidate_id":raw.get("candidate_id") or "","symbol":raw.get("symbol") or "","timeframe":raw.get("period") or "","units":int(round(float(raw.get("lot") or 0)/.01)),"lot":float(raw.get("lot") or 0),"lot_size_step":float(raw.get("lot_size_step") or .01),"net_profit_contribution":float(raw.get("combined_net_profit") or 0),"standalone_valley_dd":float(raw.get("standalone_dd") or 0),"standalone_point_dd":0.0,"set_path":raw.get("set_path") or "","margin_required":0.0,"margin_pct":0.0})
+        selected["metrics"]={"inputs":metrics.get("inputs") if isinstance(metrics.get("inputs"),dict) else {},"stress_bootstrap":metrics.get("stress_bootstrap") if isinstance(metrics.get("stress_bootstrap"),dict) else {},"common_set_ids":metrics.get("common_set_ids") if isinstance(metrics.get("common_set_ids"),list) else [],"variant_order":metrics.get("variant_order") if isinstance(metrics.get("variant_order"),list) else []}
+        selected["members"]=[{"variant_key":str(raw.get("variant_key") or ""),"variant_label":str(raw.get("variant_label") or ""),"set_id":str(raw.get("set_id") or ""),"set_name":Path(str(raw.get("set_path") or raw.get("set_id") or "")).name,"candidate_id":str(raw.get("candidate_id") or ""),"symbol":str(raw.get("symbol") or ""),"timeframe":str(raw.get("timeframe") or ""),"units":int(raw.get("units") or 0),"lot":float(raw.get("lot") or 0),"lot_size_step":float(raw.get("lot_size_step") or 0),"net_profit_contribution":float(raw.get("net_profit_contribution") or 0),"standalone_valley_dd":float(raw.get("standalone_valley_dd") or 0),"standalone_point_dd":float(raw.get("standalone_point_dd") or 0),"margin_required":float(raw.get("margin_required") or 0),"margin_pct":float(raw.get("margin_pct") or 0)} for raw in members]
+        return {"node":listing["node"],"scope":listing["scope"],"portfolio":selected,"observed_at":utc_now()}
 
     def runs(self, limit: int = 100) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
@@ -936,6 +1051,12 @@ class NodeHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/v1/runs":
             query = urllib.parse.parse_qs(parsed.query)
             self._send(200, self.server.controller.runs(safe_int(query.get("limit", [100])[0], 100)))
+        elif parsed.path == "/api/v1/universe":
+            self._send(200, self.server.controller.universe())
+        elif parsed.path == "/api/v1/portfolios":
+            query=urllib.parse.parse_qs(parsed.query); self._send(200,self.server.controller.portfolios(query.get("scope",["full_history"])[0]))
+        elif parsed.path.startswith("/api/v1/portfolios/"):
+            query=urllib.parse.parse_qs(parsed.query); portfolio_id=safe_int(parsed.path.rsplit("/",1)[-1],0,minimum=1); self._send(200,self.server.controller.portfolio_detail(portfolio_id,query.get("scope",["full_history"])[0]))
         else:
             self._send(404, {"error": "Ruta no encontrada"})
 
@@ -950,6 +1071,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.start_repair(self._body()))
             elif self.path == "/api/v1/jobs/stop":
                 self._send(202, self.server.controller.stop())
+            elif self.path == "/api/v1/universe/symbols":
+                self._send(200, self.server.controller.update_universe(self._body()))
             else:
                 self._send(404, {"error": "Ruta no encontrada"})
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
