@@ -963,15 +963,21 @@ def target_symbol_disabled(
 ) -> bool:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
-    policy_symbols = set() if disabled_symbols is None else disabled_symbols
-    disabled = {symbol.upper() for symbol in policy_symbols}
+    disabled = {str(item).strip().upper() for item in (disabled_symbols or set())}
     exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
     for alias, target in aliases.items():
         exact_by_key[str(alias).upper()] = target
     normalized = normalize_set_symbol(symbol)
     resolved = exact_by_key.get(normalized, symbol)
-    mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
-    return normalized in disabled or resolved.upper() in disabled or mapped in disabled
+    mapped_symbol = apply_symbol_map(symbol, symbol_map)
+    mapped = normalize_set_symbol(mapped_symbol)
+    return (
+        str(symbol).strip().upper() in disabled
+        or normalized in disabled
+        or resolved.upper() in disabled
+        or str(mapped_symbol).strip().upper() in disabled
+        or mapped in disabled
+    )
 
 
 def target_symbol_options_for_seed(
