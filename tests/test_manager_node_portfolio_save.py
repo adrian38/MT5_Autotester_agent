@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
+from manager_node_runtime.node import JobController
 from manager_node_runtime.portfolio_save import save_portfolio_payload
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
 
@@ -125,6 +127,32 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
             self.assertEqual({key for key, _units in variants}, {"aggressive", "balanced", "conservative"})
             self.assertEqual(version_count, 1)
             self.assertEqual(portfolio_count, 1)
+
+    def test_delete_runs_locally_and_removes_parent_and_children(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Path(temp_dir) / "ubs_memory_ICTRADING_STANDARD.sqlite"
+            memory.touch()
+            saved = save_portfolio_payload(memory, self._payload("request-delete"))
+            portfolio_id = int(saved["portfolio_id"])
+            controller = SimpleNamespace(
+                _settings_and_memory=lambda: (None, memory),
+                _persist=lambda: None,
+            )
+
+            result = JobController.delete_portfolio(controller, {
+                "scope": "full_history", "portfolio_id": portfolio_id,
+            })
+
+            self.assertEqual(result, {
+                "deleted": True, "portfolio_id": portfolio_id, "scope": "full_history",
+            })
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                self.assertEqual(conn.execute(
+                    "select count(*) from portfolios where id=?", (portfolio_id,)
+                ).fetchone()[0], 0)
+                self.assertEqual(conn.execute(
+                    "select count(*) from portfolio_allocations where portfolio_id=?", (portfolio_id,)
+                ).fetchone()[0], 0)
 
 
 if __name__ == "__main__":
