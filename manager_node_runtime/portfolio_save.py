@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from portfolio_manager.ubs_portfolio import (
     UnusedSetInfo,
 )
 from ubs.db import connect_memory
+from ubs.account import account_memory_path
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 
 
@@ -256,3 +258,147 @@ def save_portfolio_payload(memory_path: str | Path, payload: dict[str, Any]) -> 
         raise
     finally:
         conn.close()
+
+
+def exclude_portfolio_members_payload(
+    project_dir: str | Path,
+    broker: str,
+    memory_path: str | Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Quarantine selected bundle members locally, then delete the bundle."""
+    project = Path(project_dir).expanduser().resolve()
+    active_memory = Path(memory_path).expanduser().resolve()
+    portfolio_id = int(payload.get("portfolio_id") or 0)
+    scope = "monthly" if str(payload.get("scope") or "") == "monthly" else "full_history"
+    raw_paths = payload.get("set_paths")
+    if portfolio_id <= 0:
+        raise ValueError("Falta el portafolio que contiene las estrategias")
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise ValueError("Selecciona al menos una estrategia")
+
+    def path_key(value: object) -> str:
+        return str(Path(str(value or "")).expanduser()).replace("/", "\\").casefold()
+
+    conn = connect_memory(active_memory, timeout=10.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        portfolio = conn.execute(
+            "select portfolio_type,type,metrics_json from portfolios "
+            "where id=? and coalesce(nullif(portfolio_scope,''),'full_history')=?",
+            (portfolio_id, scope),
+        ).fetchone()
+        if portfolio is None:
+            raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+        try:
+            metrics = json.loads(portfolio["metrics_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metrics = {}
+        portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
+        if scope != "full_history" or not (
+            portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
+        ):
+            raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C")
+        rows = [dict(row) for row in conn.execute(
+            "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
+            "where portfolio_id=?",
+            (portfolio_id,),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    members_by_path = {
+        path_key(row.get("set_path") or row.get("set_id")): row for row in rows
+    }
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_path in raw_paths:
+        key = path_key(raw_path)
+        if key in seen:
+            continue
+        member = members_by_path.get(key)
+        if member is None:
+            raise ValueError("Una estrategia seleccionada ya no pertenece al portafolio")
+        seen.add(key)
+        selected.append(member)
+
+    grouped: dict[Path, list[tuple[str, int | None, dict[str, Any]]]] = {}
+    for member in selected:
+        candidate_text = str(member.get("candidate_id") or "")
+        account_label, separator, raw_candidate_id = candidate_text.rpartition(":")
+        account_type = account_label.rsplit("/", 1)[-1] if separator else ""
+        candidate_id = int(raw_candidate_id) if separator and raw_candidate_id.isdigit() else None
+        source_memory = account_memory_path(project, account_type, broker) if account_type else active_memory
+        if not source_memory.is_file():
+            source_memory = active_memory
+        grouped.setdefault(source_memory.resolve(), []).append((account_label, candidate_id, member))
+
+    quarantine_ids: list[int] = []
+    for source_memory, members in grouped.items():
+        source_conn = connect_memory(source_memory, timeout=10.0)
+        try:
+            source_conn.row_factory = sqlite3.Row
+            source_conn.execute("begin immediate")
+            source_conn.execute(
+                """create table if not exists portfolio_quarantine (
+                    id integer primary key autoincrement, account_type text not null,
+                    candidate_id, set_path text not null unique, symbol text, timeframe text,
+                    reason text not null default '', source_portfolio_id integer,
+                    quarantined_at text not null
+                )"""
+            )
+            for account_label, candidate_id, member in members:
+                set_path = str(member.get("set_path") or member.get("set_id") or "")
+                source_conn.execute(
+                    """insert into portfolio_quarantine(
+                        account_type,candidate_id,set_path,symbol,timeframe,reason,
+                        source_portfolio_id,quarantined_at
+                    ) values(?,?,?,?,?,?,?,?) on conflict(set_path) do update set
+                        account_type=excluded.account_type,candidate_id=excluded.candidate_id,
+                        symbol=excluded.symbol,timeframe=excluded.timeframe,
+                        reason=excluded.reason,source_portfolio_id=excluded.source_portfolio_id,
+                        quarantined_at=excluded.quarantined_at""",
+                    (
+                        account_label,
+                        candidate_id,
+                        set_path,
+                        str(member.get("symbol") or ""),
+                        str(member.get("timeframe") or ""),
+                        "Excluida manualmente de un portafolio A/M/C eliminado",
+                        portfolio_id,
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+                saved = source_conn.execute(
+                    "select id from portfolio_quarantine where set_path=?", (set_path,)
+                ).fetchone()
+                quarantine_ids.append(int(saved[0]))
+            source_conn.commit()
+        except Exception:
+            source_conn.rollback()
+            raise
+        finally:
+            source_conn.close()
+
+    conn = connect_memory(active_memory, timeout=10.0)
+    try:
+        conn.execute("begin immediate")
+        for table in (
+            "portfolio_decision_log", "portfolio_allocations", "portfolio_members", "portfolio_versions"
+        ):
+            conn.execute(f"delete from {table} where portfolio_id=?", (portfolio_id,))
+        deleted = conn.execute("delete from portfolios where id=?", (portfolio_id,))
+        if deleted.rowcount != 1:
+            raise RuntimeError(f"No se pudo borrar el portafolio #{portfolio_id}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {
+        "quarantine_ids": quarantine_ids,
+        "deleted": True,
+        "portfolio_id": portfolio_id,
+        "scope": scope,
+    }

@@ -23,7 +23,7 @@ from typing import Any
 import telegram_notify
 
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
-from .portfolio_save import save_portfolio_payload
+from .portfolio_save import exclude_portfolio_members_payload, save_portfolio_payload
 
 
 SCORE_OPTIONS = {
@@ -1334,6 +1334,17 @@ class JobController:
         self._persist()
         return {"deleted": True, "portfolio_id": portfolio_id, "scope": scope}
 
+    def exclude_portfolio_members(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _cfg, db_path = self._settings_and_memory()
+        result = exclude_portfolio_members_payload(
+            self.config["project_dir"],
+            str(self.config.get("broker") or ""),
+            db_path,
+            payload,
+        )
+        self._persist()
+        return result
+
     def runs(self, limit: int = 100) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
@@ -1427,6 +1438,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(201, self.server.controller.save_portfolio(self._body(50_000_000)))
             elif self.path == "/api/v1/portfolios/delete":
                 self._send(200, self.server.controller.delete_portfolio(self._body()))
+            elif self.path == "/api/v1/portfolios/exclude":
+                self._send(200, self.server.controller.exclude_portfolio_members(self._body()))
             else:
                 self._send(404, {"error": "Ruta no encontrada"})
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
