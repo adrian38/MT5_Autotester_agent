@@ -582,6 +582,15 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertFalse(seed_symbol_disabled(seed, {"WTI"}, symbol_map, {"WTI"}))
 
+    def test_axi_suffix_policy_blocks_normalized_seed_unless_seeds_enabled(self) -> None:
+        seed = Seed(Path("Gold.set"), "XAUUSD", "H1", "GOLD", "1")
+        symbol_map = parse_symbol_map("XAUUSD=XAUUSD.sa")
+
+        self.assertTrue(seed_symbol_disabled(seed, {"XAUUSD.SA"}, symbol_map))
+        self.assertFalse(
+            seed_symbol_disabled(seed, {"XAUUSD.SA"}, symbol_map, {"XAUUSD.SA"})
+        )
+
     def test_disabled_symbols_json_preserves_seed_permission(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "ubs_disabled_symbols.json"
@@ -644,6 +653,19 @@ class UBSSetsFileTests(unittest.TestCase):
 
     def test_target_disabled_without_policy_does_not_read_default_account_file(self) -> None:
         self.assertFalse(target_symbol_disabled("WTI", ("WTI",), {}, disabled_symbols=None))
+
+    def test_axi_suffix_policy_blocks_normalized_generation_target(self) -> None:
+        symbol_map = parse_symbol_map("XAUUSD=XAUUSD.sa")
+
+        self.assertTrue(
+            target_symbol_disabled(
+                "XAUUSD",
+                (),
+                {},
+                symbol_map=symbol_map,
+                disabled_symbols={"XAUUSD.SA"},
+            )
+        )
 
     def test_disabled_symbols_policy_is_account_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
