@@ -7,7 +7,10 @@ import unittest
 from dataclasses import asdict
 from pathlib import Path
 
-from manager_node_runtime.portfolio_save import save_portfolio_payload
+from manager_node_runtime.portfolio_save import (
+    exclude_portfolio_members_payload,
+    save_portfolio_payload,
+)
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
 
 
@@ -125,6 +128,39 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
             self.assertEqual({key for key, _units in variants}, {"aggressive", "balanced", "conservative"})
             self.assertEqual(version_count, 1)
             self.assertEqual(portfolio_count, 1)
+
+    def test_batch_exclusion_is_local_and_deletes_bundle_after_quarantine(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory = project / "outputs" / "ubs_memory_ICTRADING_STANDARD.sqlite"
+            memory.parent.mkdir()
+            memory.touch()
+            saved = save_portfolio_payload(memory, self._payload("request-batch-exclude"))
+            portfolio_id = int(saved["portfolio_id"])
+
+            result = exclude_portfolio_members_payload(
+                project,
+                "ICTRADING",
+                memory,
+                {
+                    "scope": "full_history",
+                    "portfolio_id": portfolio_id,
+                    "set_paths": ["same.set", "same.set"],
+                },
+            )
+
+            self.assertTrue(result["deleted"])
+            self.assertEqual(result["portfolio_id"], portfolio_id)
+            self.assertEqual(len(result["quarantine_ids"]), 1)
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                self.assertEqual(
+                    conn.execute("select count(*) from portfolios where id=?", (portfolio_id,)).fetchone()[0],
+                    0,
+                )
+                quarantine = conn.execute(
+                    "select set_path,source_portfolio_id from portfolio_quarantine"
+                ).fetchone()
+            self.assertEqual(quarantine, ("same.set", portfolio_id))
 
 
 if __name__ == "__main__":
