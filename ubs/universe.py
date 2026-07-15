@@ -117,9 +117,18 @@ def seed_symbol_disabled(
     symbol_map: dict[str, str],
     seed_enabled_when_disabled: set[str] | None = None,
 ) -> bool:
-    raw = normalize_set_symbol(seed.symbol)
-    mapped = normalize_set_symbol(apply_symbol_map(seed.symbol, symbol_map))
-    if raw not in disabled_symbols and mapped not in disabled_symbols:
+    mapped_symbol = apply_symbol_map(seed.symbol, symbol_map)
+    symbol_keys = {
+        str(seed.symbol).strip().upper(),
+        normalize_set_symbol(seed.symbol),
+        str(mapped_symbol).strip().upper(),
+        normalize_set_symbol(mapped_symbol),
+    }
+    disabled = {str(symbol).strip().upper() for symbol in disabled_symbols}
+    if symbol_keys.isdisjoint(disabled):
         return False
-    seed_enabled = {symbol.upper() for symbol in (seed_enabled_when_disabled or set())}
-    return raw not in seed_enabled and mapped not in seed_enabled
+    seed_enabled = {
+        str(symbol).strip().upper()
+        for symbol in (seed_enabled_when_disabled or set())
+    }
+    return symbol_keys.isdisjoint(seed_enabled)
