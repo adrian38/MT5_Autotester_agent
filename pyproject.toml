@@ -11,6 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 ui = ["Pillow"]
 packaging = ["pyinstaller"]
+postgres = ["psycopg[binary]>=3.2,<4"]
 
 [project.scripts]
 mt5-autotester  = "app_ui:main"

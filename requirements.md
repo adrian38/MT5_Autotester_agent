@@ -737,6 +737,23 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.13.3** Generated/runtime directories (`configs/`, `logs/`, `reports/`,
   `outputs/`, `build_installer/`, `dist_installer/`) MUST NOT be committed to
   version control.
+- **FR-1.13.4** A fresh application clone MUST be bootstrap-able from the central
+  PostgreSQL registry using a source `node_id`, database URL, and independent
+  configuration-decryption key. The registry MUST scope every document by
+  `node_id`, broker, and account type and MUST retain revisions and SHA-256.
+- **FR-1.13.5** Clone bootstrap MUST restore the broker universe, normalization,
+  terminal profiles/addresses, UI settings, tester template, node/environment
+  configuration, disabled-symbol policy, UBS parameter files, ready seeds, and
+  accepted/actionable `.set` files. It MUST NOT restore reports, logs, generated
+  tester INIs, runtime queues, SQLite files, spreadsheets, or rejected/no-trade
+  sets.
+- **FR-1.13.6** Secret documents MUST be encrypted at rest and MUST NOT coexist
+  with a plaintext payload in PostgreSQL. Restore MUST verify hashes, reject
+  absolute or traversal targets, and rewrite project-local paths and clone node
+  identity explicitly.
+- **FR-1.13.7** Terminal executable/data/Experts paths are configuration; MT5
+  installations and external EA binaries are machine prerequisites and MUST be
+  validated or remapped when a clone moves to another host.
 
 ### 1.14 Python dependencies
 

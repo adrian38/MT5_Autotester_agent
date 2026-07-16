@@ -20,7 +20,8 @@ MetaTrader 5. It automates three related workflows:
 4. Run a UBS-specific set-generation agent that mutates known-good `.set`
    files, backtests variants, scores reports, tests accepted candidates through
    an optional out-of-sample robustness window and a Final Tick dual-model
-   comparison, and stores all results in SQLite.
+   comparison, and currently stores results in SQLite while PostgreSQL cutover is
+   in progress.
 
 The main user-facing entry point is the Tkinter desktop app in
 [`app_ui.py`](../app_ui.py). The same functionality is also available through
@@ -78,6 +79,11 @@ batch wrappers.
   Asset universes are broker-scoped; disabled-symbol GEN/SEEDS policies are
   broker/account-scoped. Timeframe universe configuration is the only shared
   universe for now. All path resolution goes through `ubs/account.py` helpers.
+- **Central clone registry**: PostgreSQL migration 003 stores exact scoped config,
+  encrypted secrets, terminal/universe projections, ready seeds and actionable
+  `.set` files. Heavy reports remain node-local. See
+  `10-central-database-migration.md`; operational runtime is still transitional
+  until the manager repository/ingestion cutover is complete.
   Never hardcode `ubs_memory.sqlite`; always call `account_memory_path()`.
 - For every substantial UI screen/tab use a view/logic pair inside `ui/`:
   `ui/<screen>_view.py` for widgets/layout and `ui/<screen>_logic.py` for
@@ -100,6 +106,7 @@ batch wrappers.
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
+| [10-central-database-migration.md](10-central-database-migration.md) | PostgreSQL target architecture, process inventory, migration commands, and cutover gaps. |
 
 ## Common Entry Points
 

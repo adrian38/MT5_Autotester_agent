@@ -1,0 +1,52 @@
+name: mt5-agent-manager
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mt5-agent-manager-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${CENTRAL_DB_NAME:-agent_manager}
+      POSTGRES_USER: ${CENTRAL_DB_USER:-agent_manager}
+      POSTGRES_PASSWORD: ${CENTRAL_DB_PASSWORD:?CENTRAL_DB_PASSWORD is required}
+    ports:
+      - "127.0.0.1:${CENTRAL_DB_PORT:-55432}:5432"
+    volumes:
+      - central_postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CENTRAL_DB_USER:-agent_manager} -d ${CENTRAL_DB_NAME:-agent_manager}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrator:
+    build:
+      context: .
+      dockerfile: docker/central-db-migrator.Dockerfile
+    environment:
+      CENTRAL_DATABASE_URL: postgresql://${CENTRAL_DB_USER:-agent_manager}:${CENTRAL_DB_PASSWORD}@db:5432/${CENTRAL_DB_NAME:-agent_manager}
+    volumes:
+      - .:/app:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]
+
+  config-sync:
+    build:
+      context: .
+      dockerfile: docker/central-db-migrator.Dockerfile
+    entrypoint: ["python", "/app/tools/sync_node_configuration.py"]
+    environment:
+      CENTRAL_DATABASE_URL: postgresql://${CENTRAL_DB_USER:-agent_manager}:${CENTRAL_DB_PASSWORD}@db:5432/${CENTRAL_DB_NAME:-agent_manager}
+      CENTRAL_CONFIG_KEY: ${CENTRAL_CONFIG_KEY:?CENTRAL_CONFIG_KEY is required}
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]
+
+volumes:
+  central_postgres_data:

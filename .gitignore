@@ -13,6 +13,7 @@ ENV/
 .env
 .env.*
 !.env.example
+!.env.central-db.example
 manager_node.json
 
 # Logs
