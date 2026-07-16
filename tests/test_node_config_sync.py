@@ -121,7 +121,7 @@ class NodeConfigurationSyncTests(unittest.TestCase):
         self.assertIn(target, rewritten_settings)
         self.assertNotIn("F:\\old", rewritten_settings)
 
-    def test_strategy_sets_include_seeds_and_actionable_candidates_only(self) -> None:
+    def test_strategy_sets_include_complete_workspace_regardless_of_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             seed = root / "sets" / "ubs_ready" / "AXI" / "STANDARD" / "seed.set"
@@ -149,7 +149,7 @@ class NodeConfigurationSyncTests(unittest.TestCase):
             }
             specs = _strategy_set_specs(root, context, {"project_dir": str(root)})
             paths = {spec.source_path for spec in specs}
-            self.assertEqual(paths, {seed.resolve(), accepted.resolve()})
+            self.assertEqual(paths, {seed.resolve(), accepted.resolve(), rejected.resolve()})
 
     def test_restore_target_rejects_escape_and_absolute_paths(self) -> None:
         self.assertEqual(_safe_relative_path("assets\\axi_assets.ini"), "assets/axi_assets.ini")

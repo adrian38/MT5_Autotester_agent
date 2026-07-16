@@ -281,7 +281,7 @@ class UBSAccountTests(unittest.TestCase):
         self.assertEqual([profile["name"] for _index, profile in robo._broker_multiterminal_profile_items()], ["Robo 1", "Robo legacy"])
         self.assertEqual([profile["name"] for _index, profile in axi._broker_multiterminal_profile_items()], ["Axi 1"])
 
-    def test_multiterminal_summary_counts_enabled_profiles_only(self) -> None:
+    def test_multiterminal_summary_distinguishes_configured_and_enabled_profiles(self) -> None:
         robo = _FakeMultiterminal("ROBOFOREX")
         robo.multiterminal_profiles.append({"name": "Robo disabled", "broker": "ROBOFOREX", "enabled": False})
         robo.multiterminal_workers = _FakeVar("1")
@@ -290,7 +290,10 @@ class UBSAccountTests(unittest.TestCase):
 
         robo._update_multiterminal_summary()
 
-        self.assertEqual(robo.multiterminal_summary.get(), "ROBOFOREX: 2 perfiles / usando hasta 1 / on")
+        self.assertEqual(
+            robo.multiterminal_summary.get(),
+            "ROBOFOREX: 3 configurados / 2 habilitados / usando hasta 1 / on",
+        )
         self.assertIn("Terminales disponibles: 2", robo._multiterminal_execution_details())
 
     def test_multiterminal_workers_above_one_use_broker_profiles_regardless_enabled(self) -> None:
@@ -307,7 +310,10 @@ class UBSAccountTests(unittest.TestCase):
         ic._update_multiterminal_summary()
 
         self.assertEqual([profile["name"] for profile in ic._active_multiterminal_profiles()], ["IC 1", "IC 2", "IC 3"])
-        self.assertEqual(ic.multiterminal_summary.get(), "ICTRADING: 3 perfiles / usando hasta 3 / on")
+        self.assertEqual(
+            ic.multiterminal_summary.get(),
+            "ICTRADING: 3 configurados / 1 habilitado / usando hasta 3 / on",
+        )
 
     def test_multiterminal_select_ignores_filtered_tree_item(self) -> None:
         axi = _FakeMultiterminal("AXI")

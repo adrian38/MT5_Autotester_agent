@@ -209,13 +209,17 @@ def _sqlite_file_uri(path: Path, query: str) -> str:
 def _strategy_set_specs(
     root: Path, context: dict[str, str], manager: dict[str, Any]
 ) -> list[ConfigSpec]:
-    """Capture seeds and actionable .set files, never report/config output trees wholesale."""
+    """Capture every project-local .set needed to reproduce the node workspace."""
     paths: set[Path] = set()
     broker = context["broker"]
     account = context["account_type"]
-    seed_dir = root / "sets" / "ubs_ready" / broker / account
-    if seed_dir.is_dir():
-        paths.update(path.resolve() for path in seed_dir.rglob("*.set") if path.is_file())
+    # A clone must recover the complete broker workspace, not only currently
+    # accepted candidates. This includes legacy account layouts and every
+    # generated variant; reports themselves remain excluded because only .set
+    # files are selected here.
+    for set_root in (root / "sets", root / "outputs" / "ubs_agent"):
+        if set_root.is_dir():
+            paths.update(path.resolve() for path in set_root.rglob("*.set") if path.is_file())
 
     memory = root / "outputs" / f"ubs_memory_{broker}_{account}.sqlite"
     if memory.is_file():

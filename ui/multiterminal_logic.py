@@ -254,11 +254,16 @@ class MultiterminalLogicMixin:
         if not hasattr(self, "multiterminal_summary"):
             return
         worker_limit = self._multiterminal_worker_limit()
+        configured = len(self._broker_multiterminal_profiles())
+        enabled = len(self._broker_multiterminal_profiles(include_disabled=False))
         available = len(self._active_multiterminal_profiles())
         workers = min(worker_limit, available) if available else 0
         mode = "on" if self.multiterminal_enabled.get() else "off"
+        configured_label = "configurado" if configured == 1 else "configurados"
+        enabled_label = "habilitado" if enabled == 1 else "habilitados"
         self.multiterminal_summary.set(
-            f"{self._active_multiterminal_broker()}: {available} perfiles / usando hasta {workers} / {mode}"
+            f"{self._active_multiterminal_broker()}: {configured} {configured_label} / "
+            f"{enabled} {enabled_label} / usando hasta {workers} / {mode}"
         )
 
     def _save_current_multiterminal_editor(self) -> None:
