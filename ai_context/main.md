@@ -20,7 +20,8 @@ MetaTrader 5. It automates three related workflows:
 4. Run a UBS-specific set-generation agent that mutates known-good `.set`
    files, backtests variants, scores reports, tests accepted candidates through
    an optional out-of-sample robustness window and a Final Tick dual-model
-   comparison, and stores all results in SQLite.
+   comparison, an optional backward OHLC regression holdout, and stores all
+   results in SQLite.
 
 The main user-facing entry point is the Tkinter desktop app in
 [`app_ui.py`](../app_ui.py). The same functionality is also available through
@@ -100,6 +101,7 @@ batch wrappers.
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
+| [10-regression-validation.md](10-regression-validation.md) | Backward 2017-2019 OHLC validation: rationale, scoring, statuses, CLI, and official MT5 sources. |
 
 ## Common Entry Points
 
@@ -127,6 +129,7 @@ batch wrappers.
 | `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
 | `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
 | `ubs_final_tick_6m` | UBS Final Tick 6M | `ui/ubs_final_tick_6m_view.py` | `ui/ubs_final_tick_6m_logic.py` |
+| `ubs_regression` | UBS Regresiva | `ui/ubs_regression_view.py` | `ui/ubs_regression_logic.py` |
 | `ubs_historico` | UBS Historico | (part of ubs_results) | (part of ubs_results) |
 | `ubs_universo` | UBS Universo | `ui/ubs_universe_view.py` | `ui/ubs_universe_logic.py` |
 | `ubs_comparar` | UBS Comparar | (part of ubs_results) | (part of ubs_results) |
@@ -136,6 +139,17 @@ batch wrappers.
 | `buscador` | UBS Buscador | `ui/ubs_search_view.py` | `ui/ubs_search_logic.py` |
 
 ## Recent Important Changes
+
+### UBS backward regression validation (2017-2019 OHLC)
+
+Final Tick 6M accepted candidates can now enter an independent fifth evidence
+stage: `ubs_agent.py --evaluate-regression`. It uses MT5 `Model=1`, validates
+the exact configured report dates, stores rows in `candidate_regression`, and
+applies configurable audit points (`+80` accepted; `-100` plus capped cause
+penalties on strategy failure). Missing history/report, parse, symbol/TF, and
+date mismatches are neutral technical states. The new `UBS Regresiva` tab can
+run, resume, rescore, inspect, or manually classify the stage and optionally
+starts automatically after Final Tick 6M. See `10-regression-validation.md`.
 
 ### Package reorganisation (refactor branch)
 
@@ -193,7 +207,7 @@ generation scoring:
   `candidates` scores.
 - Selection feedback lives in `ubs/weights.py` and is shared by
   `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
-  and `UBS Universo`. It estimates the smoothed four-stage probability
+  and `UBS Universo`. It estimates the smoothed five-stage probability
   `P(base) * P(OOS|base) * P(probe eligible|OOS) * P(6M accepted|probe)`,
   grouped by correlated source. Its bounded relative log-odds score is centred
   on the global probability, so unknown evidence is neutral. The UI exposes

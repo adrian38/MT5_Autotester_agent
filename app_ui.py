@@ -57,6 +57,8 @@ from ui.ubs_final_tick_logic import UBSFinalTickLogicMixin
 from ui.ubs_final_tick_view import UBSFinalTickViewMixin
 from ui.ubs_final_tick_6m_logic import UBSFinalTick6MLogicMixin
 from ui.ubs_final_tick_6m_view import UBSFinalTick6MViewMixin
+from ui.ubs_regression_logic import UBSRegressionLogicMixin
+from ui.ubs_regression_view import UBSRegressionViewMixin
 from ui.ubs_robustness_logic import UBSRobustnessLogicMixin
 from ui.ubs_robustness_view import UBSRobustnessViewMixin
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
@@ -75,6 +77,10 @@ from ubs.account import (
     symbol_map_setting_key,
 )
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
+from ubs.regression_rules import (
+    DEFAULT_REGRESSION_FROM_DATE,
+    DEFAULT_REGRESSION_TO_DATE,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -674,6 +680,8 @@ class MT5AutotesterUI(
     UBSFinalTickLogicMixin,
     UBSFinalTick6MViewMixin,
     UBSFinalTick6MLogicMixin,
+    UBSRegressionViewMixin,
+    UBSRegressionLogicMixin,
     UBSSeedsViewMixin,
     UBSSeedsLogicMixin,
     UBSUniverseViewMixin,
@@ -796,6 +804,7 @@ class MT5AutotesterUI(
         self.ubs_robust_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_robust_auto"), False))
         self.ubs_final_tick_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_final_tick_auto"), False))
         self.ubs_final_tick_6m_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_final_tick_6m_auto"), False))
+        self.ubs_regression_auto = tk.BooleanVar(value=self._bool_setting(saved_general.get("ubs_regression_auto"), False))
         self.ubs_agent_from_date = tk.StringVar(value=saved_general.get("ubs_agent_from_date", ""))
         self.ubs_agent_to_date = tk.StringVar(value=saved_general.get("ubs_agent_to_date", ""))
         self.ubs_seed_from_date = tk.StringVar(value=saved_general.get("ubs_seed_from_date", ""))
@@ -810,6 +819,24 @@ class MT5AutotesterUI(
         self.ubs_final_tick_6m_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_to_date", "2026.06.30"))
         self.ubs_final_tick_6m_ohlc_from_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_ohlc_from_date", ""))
         self.ubs_final_tick_6m_ohlc_to_date = tk.StringVar(value=saved_general.get("ubs_final_tick_6m_ohlc_to_date", ""))
+        self.ubs_regression_from_date = tk.StringVar(
+            value=saved_general.get("ubs_regression_from_date", DEFAULT_REGRESSION_FROM_DATE)
+        )
+        self.ubs_regression_to_date = tk.StringVar(
+            value=saved_general.get("ubs_regression_to_date", DEFAULT_REGRESSION_TO_DATE)
+        )
+        self.ubs_regression_min_net_profit = tk.StringVar(value=saved_general.get("ubs_regression_min_net_profit", "0"))
+        self.ubs_regression_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_regression_min_profit_factor", "1.10"))
+        self.ubs_regression_min_trades = tk.StringVar(value=saved_general.get("ubs_regression_min_trades", "36"))
+        self.ubs_regression_min_trades_w1 = tk.StringVar(value=saved_general.get("ubs_regression_min_trades_w1", "12"))
+        self.ubs_regression_min_trades_mn = tk.StringVar(value=saved_general.get("ubs_regression_min_trades_mn", "4"))
+        self.ubs_regression_max_drawdown_pct = tk.StringVar(value=saved_general.get("ubs_regression_max_drawdown_pct", "30"))
+        self.ubs_regression_min_recovery_factor = tk.StringVar(value=saved_general.get("ubs_regression_min_recovery_factor", "0.75"))
+        self.ubs_regression_min_positive_month_ratio = tk.StringVar(
+            value=saved_general.get("ubs_regression_min_positive_month_ratio", "0.50")
+        )
+        self.ubs_regression_positive_points = tk.StringVar(value=saved_general.get("ubs_regression_positive_points", "80"))
+        self.ubs_regression_negative_points = tk.StringVar(value=saved_general.get("ubs_regression_negative_points", "-100"))
         self.ubs_final_tick_min_history_quality = tk.StringVar(
             value=saved_general.get("ubs_final_tick_min_history_quality", "80")
         )
@@ -1165,6 +1192,8 @@ class MT5AutotesterUI(
         self.ubs_final_tick_status = tk.StringVar(value="Sin resultados Final Tick")
         self.ubs_final_tick_6m_summary = tk.StringVar(value="Final Tick 6M: sin evaluar")
         self.ubs_final_tick_6m_status = tk.StringVar(value="Sin resultados Final Tick 6M")
+        self.ubs_regression_summary = tk.StringVar(value="Regresiva: sin evaluar")
+        self.ubs_regression_status = tk.StringVar(value="Sin resultados de la prueba regresiva")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
         self.ubs_timeframe_summary = tk.StringVar(value="Sin pesos de timeframe")
         self.ubs_universe_asset_search = tk.StringVar(value="")
@@ -1176,6 +1205,7 @@ class MT5AutotesterUI(
         self.ubs_robust_run_id = tk.StringVar(value="")
         self.ubs_final_tick_run_id = tk.StringVar(value="")
         self.ubs_final_tick_6m_run_id = tk.StringVar(value="")
+        self.ubs_regression_run_id = tk.StringVar(value="")
         self.ubs_seed_detail = tk.StringVar(value="Selecciona una semilla")
         self.ubs_seed_override_symbol = tk.StringVar(value="")
         self.ubs_weights_locked = tk.BooleanVar(value=False)
@@ -1219,6 +1249,8 @@ class MT5AutotesterUI(
         self.ubs_final_tick_paths: dict[str, dict[str, str]] = {}
         self.ubs_final_tick_checked: set[str] = set()
         self.ubs_final_tick_6m_paths: dict[str, dict[str, str]] = {}
+        self.ubs_regression_paths: dict[str, dict[str, str]] = {}
+        self.ubs_regression_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}
         self.ubs_universe_checked: set[str] = set()
         self.ubs_timeframe_checked: set[str] = set()
@@ -1495,7 +1527,7 @@ class MT5AutotesterUI(
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -1507,6 +1539,7 @@ class MT5AutotesterUI(
         self._build_ubs_robustness(self.section_frames["ubs_robustez"])
         self._build_ubs_final_tick(self.section_frames["ubs_final_tick"])
         self._build_ubs_final_tick_6m(self.section_frames["ubs_final_tick_6m"])
+        self._build_ubs_regression(self.section_frames["ubs_regression"])
         self._build_ubs_history(self.section_frames["ubs_historico"])
         self._build_ubs_universe(self.section_frames["ubs_universo"])
         self._build_ubs_comparison(self.section_frames["ubs_comparar"])
@@ -1580,6 +1613,7 @@ class MT5AutotesterUI(
             ("ubs_robustez", "UBS  Robustez"),
             ("ubs_final_tick", "UBS  Final Tick"),
             ("ubs_final_tick_6m", "UBS  Final Tick 6M"),
+            ("ubs_regression", "UBS  Regresiva"),
             ("ubs_historico", "UBS  Historico"),
             ("ubs_universo", "UBS  Universo"),
             ("ubs_comparar", "UBS  Comparar"),
@@ -1802,6 +1836,10 @@ class MT5AutotesterUI(
         elif "--evaluate-final-tick" in args:
             stage = (self._arg_value(args, "--final-tick-stage") or "").strip().lower().replace("-", "_")
             mode = "UBS Final Tick 6M" if stage in {"six_month", "6m", "sixmonth"} else "UBS Final Tick corto"
+        elif "--evaluate-regression" in args:
+            mode = "UBS Regresiva OHLC"
+        elif "--rescore-regression-only" in args:
+            mode = "UBS Regresiva rescore"
         elif "--evaluate-seeds" in args:
             mode = "UBS Seeds"
         elif "--rescore-seeds-only" in args:
@@ -1896,6 +1934,34 @@ class MT5AutotesterUI(
                     f"Run #{run_id} | {total_label}: {int(counts['total'] or 0)} | "
                     f"{evaluated_label}: {int(counts['evaluated'] or 0)} | "
                     f"OK: {int(counts['ok'] or 0)} | FAIL: {int(counts['fail'] or 0)} | neutros: {neutral}"
+                )
+
+            if "--evaluate-regression" in args or "--rescore-regression-only" in args:
+                run_id = int(self._arg_value(args, "--regression-run-id") or 0)
+                if run_id <= 0:
+                    row = conn.execute("select id from runs order by id desc limit 1").fetchone()
+                    run_id = int(row["id"]) if row else 0
+                counts = conn.execute(
+                    """
+                    select count(*) as total,
+                           sum(case when rg.status is not null then 1 else 0 end) as evaluated,
+                           sum(case when rg.status='accepted' then 1 else 0 end) as ok,
+                           sum(case when rg.status in ('rejected','no_trades') then 1 else 0 end) as fail,
+                           coalesce(sum(rg.points_applied),0) as points
+                    from candidates c
+                    join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted'
+                    left join candidate_regression rg on rg.candidate_id=c.id
+                    where c.run_id=? and c.status='accepted'
+                    """,
+                    (run_id,),
+                ).fetchone()
+                neutral = int(counts["evaluated"] or 0) - int(counts["ok"] or 0) - int(counts["fail"] or 0)
+                return (
+                    f"{self._ubs_notification_header(mode, prefix, account_label)}\n"
+                    f"Run #{run_id} | 6M accepted: {int(counts['total'] or 0)} | "
+                    f"evaluados: {int(counts['evaluated'] or 0)} | OK: {int(counts['ok'] or 0)} | "
+                    f"FAIL: {int(counts['fail'] or 0)} | tecnicos: {neutral} | "
+                    f"puntos: {float(counts['points'] or 0):+.0f}"
                 )
 
             if "--evaluate-seeds" in args or "--rescore-seeds-only" in args:
@@ -2051,6 +2117,7 @@ class MT5AutotesterUI(
             ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
+            ("ubs_regression", self._refresh_ubs_regression),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
             ("ubs_seeds", self._refresh_ubs_seeds),
@@ -2265,6 +2332,16 @@ class MT5AutotesterUI(
                         and hasattr(self, "_maybe_auto_run_ubs_final_tick")
                     ):
                         auto_followup_started = self._maybe_auto_run_ubs_final_tick(
+                            finished_script_name,
+                            finished_script_args,
+                            code,
+                        )
+                    if (
+                        code == 0
+                        and not auto_followup_started
+                        and hasattr(self, "_maybe_auto_run_ubs_regression")
+                    ):
+                        auto_followup_started = self._maybe_auto_run_ubs_regression(
                             finished_script_name,
                             finished_script_args,
                             code,

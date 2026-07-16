@@ -48,6 +48,26 @@ from ubs.account import (
 from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path
+from ubs.regression import (
+    RegressionRuntime,
+    evaluate_candidate_regression,
+    rescore_regression_only,
+)
+from ubs.regression_rules import (
+    DEFAULT_REGRESSION_FROM_DATE,
+    DEFAULT_REGRESSION_MAX_DRAWDOWN_PCT,
+    DEFAULT_REGRESSION_MIN_NET_PROFIT,
+    DEFAULT_REGRESSION_MIN_POSITIVE_MONTH_RATIO,
+    DEFAULT_REGRESSION_MIN_PROFIT_FACTOR,
+    DEFAULT_REGRESSION_MIN_RECOVERY_FACTOR,
+    DEFAULT_REGRESSION_MIN_TRADES,
+    DEFAULT_REGRESSION_MIN_TRADES_MN,
+    DEFAULT_REGRESSION_MIN_TRADES_W1,
+    DEFAULT_REGRESSION_NEGATIVE_POINTS,
+    DEFAULT_REGRESSION_POSITIVE_POINTS,
+    DEFAULT_REGRESSION_TO_DATE,
+    validate_regression_date_range,
+)
 from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
@@ -408,10 +428,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-max-pf-delta-pct", type=float, default=35.0, help="Diferencia maxima de PF vs OHLC.")
     parser.add_argument("--final-tick-max-dd-delta-pct", type=float, default=35.0, help="Diferencia maxima de DD pct vs OHLC.")
     parser.add_argument("--final-tick-max-trades-delta-pct", type=float, default=35.0, help="Diferencia maxima de trades vs OHLC.")
+    parser.add_argument(
+        "--evaluate-regression",
+        action="store_true",
+        help="Valida con Model=1 OHLC un rango historico anterior sobre Final Tick 6M accepted.",
+    )
+    parser.add_argument("--regression-run-id", type=int, help="Run SQLite cuyos Final Tick 6M accepted se evaluaran.")
+    parser.add_argument(
+        "--regression-candidate-id",
+        type=int,
+        action="append",
+        help="Limita la prueba regresiva a un candidate id. Puede repetirse.",
+    )
+    parser.add_argument(
+        "--regression-pending-only",
+        action="store_true",
+        help="Ejecuta solo Final Tick 6M accepted sin resultado regresivo final o con error tecnico retryable.",
+    )
+    parser.add_argument("--regression-from-date", default=DEFAULT_REGRESSION_FROM_DATE)
+    parser.add_argument("--regression-to-date", default=DEFAULT_REGRESSION_TO_DATE)
+    parser.add_argument("--regression-min-net-profit", type=float, default=DEFAULT_REGRESSION_MIN_NET_PROFIT)
+    parser.add_argument("--regression-min-profit-factor", type=float, default=DEFAULT_REGRESSION_MIN_PROFIT_FACTOR)
+    parser.add_argument("--regression-min-trades", type=int, default=DEFAULT_REGRESSION_MIN_TRADES)
+    parser.add_argument("--regression-min-trades-w1", type=int, default=DEFAULT_REGRESSION_MIN_TRADES_W1)
+    parser.add_argument("--regression-min-trades-mn", type=int, default=DEFAULT_REGRESSION_MIN_TRADES_MN)
+    parser.add_argument("--regression-max-drawdown-pct", type=float, default=DEFAULT_REGRESSION_MAX_DRAWDOWN_PCT)
+    parser.add_argument("--regression-min-recovery-factor", type=float, default=DEFAULT_REGRESSION_MIN_RECOVERY_FACTOR)
+    parser.add_argument(
+        "--regression-min-positive-month-ratio",
+        type=float,
+        default=DEFAULT_REGRESSION_MIN_POSITIVE_MONTH_RATIO,
+    )
+    parser.add_argument("--regression-positive-points", type=float, default=DEFAULT_REGRESSION_POSITIVE_POINTS)
+    parser.add_argument("--regression-negative-points", type=float, default=DEFAULT_REGRESSION_NEGATIVE_POINTS)
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
     parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes con reporte sin abrir MT5.")
     parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes con reporte sin abrir MT5.")
     parser.add_argument("--rescore-final-tick-only", action="store_true", help="Recalcula Final Tick existente desde reportes guardados sin abrir MT5.")
+    parser.add_argument(
+        "--rescore-regression-only",
+        action="store_true",
+        help="Recalcula la prueba regresiva desde reportes guardados sin abrir MT5.",
+    )
     parser.add_argument(
         "--reconcile-seed-eval-only",
         action="store_true",
@@ -905,6 +963,37 @@ def score_config_for_variant(
         variant.target_period,
         min_trades_w1=min_trades_w1,
         min_trades_mn=min_trades_mn,
+    )
+
+
+def regression_score_config(args: argparse.Namespace) -> ScoreConfig:
+    """Build the independent thresholds used by the backward OHLC holdout."""
+
+    return ScoreConfig(
+        min_net_profit=float(args.regression_min_net_profit),
+        min_profit_factor=float(args.regression_min_profit_factor),
+        min_trades=int(args.regression_min_trades),
+        max_drawdown_pct=float(args.regression_max_drawdown_pct),
+        min_recovery_factor=float(args.regression_min_recovery_factor),
+        min_positive_month_ratio=float(args.regression_min_positive_month_ratio),
+    )
+
+
+def regression_runtime() -> RegressionRuntime:
+    """Inject MT5/report helpers without coupling the regression domain module to this CLI."""
+
+    return RegressionRuntime(
+        running_terminal_exit_code=RUNNING_TERMINAL_EXIT_CODE,
+        recreate_work_dir=recreate_work_dir,
+        remove_report_artifacts=remove_report_artifacts,
+        variant_from_candidate_row=variant_from_candidate_row,
+        run_backtests=run_backtests,
+        find_report_for_set=find_report_for_set,
+        parse_symbol_map=parse_symbol_map,
+        report_matches_variant=report_matches_variant,
+        report_has_empty_tester_context=report_has_empty_tester_context,
+        read_report_dates=_read_ohlc_report_cfg_dates,
+        tester_log_no_history_metadata=tester_log_no_history_metadata,
     )
 
 
@@ -1854,7 +1943,14 @@ def create_history_probe_variant(
     )
 
 
-def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -> int:
+def run_backtests(
+    args: argparse.Namespace,
+    set_dir: Path,
+    *,
+    model: str = "",
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> int:
     if not args.expert and not args.multi_terminal:
         print("AVISO: --expert no indicado; se omiten backtests.")
         return 0
@@ -1895,10 +1991,12 @@ def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -
         command.extend(["--symbol-universe", str(Path(args.assets).expanduser())])
     if args.dry_run:
         command.append("--dry-run")
-    if getattr(args, "from_date", ""):
-        command.extend(["--from-date", args.from_date])
-    if getattr(args, "to_date", ""):
-        command.extend(["--to-date", args.to_date])
+    effective_from_date = getattr(args, "from_date", "") if from_date is None else from_date
+    effective_to_date = getattr(args, "to_date", "") if to_date is None else to_date
+    if effective_from_date:
+        command.extend(["--from-date", str(effective_from_date)])
+    if effective_to_date:
+        command.extend(["--to-date", str(effective_to_date)])
     if model:
         command.extend(["--model", str(model)])
     print("Ejecutando:", " ".join(f'"{part}"' if " " in part else part for part in command))
@@ -5762,6 +5860,16 @@ def run_agent(args: argparse.Namespace) -> int:
             return evaluate_candidate_final_tick(args, memory, score_config)
         finally:
             memory.close()
+    if args.evaluate_regression:
+        try:
+            return evaluate_candidate_regression(
+                args,
+                memory,
+                regression_score_config(args),
+                regression_runtime(),
+            )
+        finally:
+            memory.close()
     if args.rescore_seeds_only:
         try:
             return rescore_seed_scores_only(args, memory, score_config)
@@ -5780,6 +5888,16 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.rescore_final_tick_only:
         try:
             return rescore_final_tick_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_regression_only:
+        try:
+            return rescore_regression_only(
+                args,
+                memory,
+                regression_score_config(args),
+                regression_runtime(),
+            )
         finally:
             memory.close()
     if args.continue_last_run:
@@ -6150,6 +6268,30 @@ def main() -> int:
     if not 0 <= args.min_positive_month_ratio <= 1:
         print("ERROR: --min-positive-month-ratio debe estar entre 0 y 1")
         return 1
+    if args.evaluate_regression or args.rescore_regression_only:
+        date_error = validate_regression_date_range(args.regression_from_date, args.regression_to_date)
+        if date_error:
+            print(f"ERROR: rango regresivo invalido: {date_error}")
+            return 1
+        if min(
+            args.regression_min_trades,
+            args.regression_min_trades_w1,
+            args.regression_min_trades_mn,
+        ) < 0:
+            print("ERROR: minimos de operaciones de la prueba regresiva no pueden ser negativos")
+            return 1
+        if args.regression_min_profit_factor < 0 or args.regression_max_drawdown_pct < 0:
+            print("ERROR: profit factor y drawdown regresivos deben ser mayores o iguales a 0")
+            return 1
+        if args.regression_min_recovery_factor < 0:
+            print("ERROR: recovery regresivo debe ser mayor o igual a 0")
+            return 1
+        if not 0 <= args.regression_min_positive_month_ratio <= 1:
+            print("ERROR: --regression-min-positive-month-ratio debe estar entre 0 y 1")
+            return 1
+        if args.regression_positive_points < 0 or args.regression_negative_points > 0:
+            print("ERROR: puntos regresivos OK deben ser >=0 y FAIL <=0")
+            return 1
     return run_agent(args)
 
 

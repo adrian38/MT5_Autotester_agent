@@ -357,6 +357,20 @@ Missing `History Quality` is treated as not accepted because the real-tick data
 quality cannot be proven. `no_report`, `parse_error`, `report_mismatch`, and
 `no_trades` are diagnostic states and do not count as final accepted.
 
+## UBS Backward Regression
+
+After Final Tick 6M, `--evaluate-regression` can run a separate backward
+holdout over only `candidate_final_tick_6m.status='accepted'` candidates. The
+default interval is `2017.01.01 -> 2019.12.31`; the executor always overrides
+the tester with `Model=1` and these dates. Results live in
+`candidate_regression` and do not overwrite any earlier report.
+
+The evaluator verifies symbol, timeframe, and the exact configured period read
+from the report. A shifted range or unavailable old history becomes a neutral,
+retryable technical state instead of a false strategy rejection. Valid matching
+reports are scored using regression-specific thresholds and points. Full design
+and official sources are in `10-regression-validation.md`.
+
 ## UBS Unseeded Universe Exploration
 
 Normal target selection is intentionally biased toward the current seed symbol

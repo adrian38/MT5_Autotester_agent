@@ -175,6 +175,22 @@ class AgentMemory:
                 max_trades_delta_pct real not null default 35.0,
                 evaluated_at text not null
             );
+            create table if not exists candidate_regression (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                accepted integer,
+                report_path text,
+                score real,
+                metrics_json text,
+                details_json text,
+                from_date text not null default '2017.01.01',
+                to_date text not null default '2019.12.31',
+                positive_points real not null default 80.0,
+                negative_points real not null default -100.0,
+                points_applied real not null default 0.0,
+                evaluated_at text not null
+            );
             create table if not exists generation_seed_selection (
                 run_id integer not null,
                 generation integer not null,
@@ -465,6 +481,13 @@ class AgentMemory:
         if status != "accepted":
             self.conn.execute(
                 """
+                delete from candidate_regression
+                where candidate_id in (select id from candidates where set_path=?)
+                """,
+                (str(set_path),),
+            )
+            self.conn.execute(
+                """
                 delete from candidate_final_tick_6m
                 where candidate_id in (select id from candidates where set_path=?)
                 """,
@@ -493,6 +516,25 @@ class AgentMemory:
             scope_filter = "c.run_id=? and"
             params = (int(run_id),)
 
+        cur_regression = self.conn.execute(
+            f"""
+            delete from candidate_regression
+            where candidate_id in (
+                select rg.candidate_id
+                from candidate_regression rg
+                left join candidates c on c.id=rg.candidate_id
+                left join candidate_robustness cr on cr.candidate_id=rg.candidate_id
+                left join candidate_final_tick_6m ft6 on ft6.candidate_id=rg.candidate_id
+                where {scope_filter} (c.id is null
+                   or not (
+                       c.status='accepted'
+                       and cr.status='accepted'
+                       and ft6.status='accepted'
+                   ))
+            )
+            """,
+            params,
+        )
         cur_6m = self.conn.execute(
             f"""
             delete from candidate_final_tick_6m
@@ -549,6 +591,7 @@ class AgentMemory:
             "robustness": int(cur_robust.rowcount or 0),
             "final_tick": int(cur_ft.rowcount or 0),
             "final_tick_6m": int(cur_6m.rowcount or 0),
+            "regression": int(cur_regression.rowcount or 0),
         }
 
     def prepare_seed_evaluation(self, seeds: list[Seed], *, force: bool = False) -> list[Seed]:
@@ -827,6 +870,47 @@ class AgentMemory:
             (run_id,),
         ).fetchall()
 
+    def accepted_candidates_for_regression(self, run_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            select
+                c.*,
+                cr.status as robust_status,
+                ft6.status as final_tick_6m_status,
+                rg.status as regression_status,
+                rg.report_path as regression_report_path,
+                rg.from_date as regression_from_date,
+                rg.to_date as regression_to_date
+            from candidates c
+            join candidate_robustness cr
+              on cr.candidate_id = c.id
+             and cr.status = 'accepted'
+            join candidate_final_tick_6m ft6
+              on ft6.candidate_id = c.id
+             and ft6.status = 'accepted'
+            left join candidate_regression rg on rg.candidate_id = c.id
+            where c.run_id=? and c.status='accepted'
+            order by c.generation, c.id
+            """,
+            (run_id,),
+        ).fetchall()
+
+    def regression_rows_for_rescore(self, run_id: int | None = None) -> list[sqlite3.Row]:
+        where = "and c.run_id=?" if run_id else ""
+        params = (int(run_id),) if run_id else ()
+        return self.conn.execute(
+            f"""
+            select c.*, rg.report_path as regression_report_path, rg.status as regression_status
+            from candidates c
+            join candidate_regression rg on rg.candidate_id = c.id
+            where rg.status in ('accepted', 'rejected', 'no_trades')
+              and coalesce(rg.report_path, '') != ''
+              {where}
+            order by c.run_id, c.generation, c.id
+            """,
+            params,
+        ).fetchall()
+
     def record_candidate_robustness(
         self,
         candidate_id: int,
@@ -875,6 +959,7 @@ class AgentMemory:
             ),
         )
         if status != "accepted":
+            self.conn.execute("delete from candidate_regression where candidate_id=?", (int(candidate_id),))
             self.conn.execute("delete from candidate_final_tick_6m where candidate_id=?", (int(candidate_id),))
             self.conn.execute("delete from candidate_final_tick where candidate_id=?", (int(candidate_id),))
         self.conn.commit()
@@ -960,7 +1045,69 @@ class AgentMemory:
             ),
         )
         if final_tick_table == "candidate_final_tick" and status not in {"accepted", "pending_ohlc_trades"}:
+            self.conn.execute("delete from candidate_regression where candidate_id=?", (int(candidate_id),))
             self.conn.execute("delete from candidate_final_tick_6m where candidate_id=?", (int(candidate_id),))
+        if final_tick_table == "candidate_final_tick_6m" and status != "accepted":
+            self.conn.execute("delete from candidate_regression where candidate_id=?", (int(candidate_id),))
+        self.conn.commit()
+
+    def record_candidate_regression(
+        self,
+        candidate_id: int,
+        run_id: int,
+        status: str,
+        result: ScoreResult | None,
+        report_path: Path | None,
+        details_json: str | None,
+        from_date: str,
+        to_date: str,
+        positive_points: float,
+        negative_points: float,
+        points_applied: float,
+    ) -> None:
+        normalized_status = str(status or "").strip().lower()
+        accepted_value = 1 if normalized_status == "accepted" else (
+            0 if normalized_status in {"rejected", "no_trades"} else None
+        )
+        self.conn.execute(
+            """
+            insert into candidate_regression (
+                candidate_id, run_id, status, accepted, report_path, score,
+                metrics_json, details_json, from_date, to_date,
+                positive_points, negative_points, points_applied, evaluated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(candidate_id) do update set
+                run_id=excluded.run_id,
+                status=excluded.status,
+                accepted=excluded.accepted,
+                report_path=excluded.report_path,
+                score=excluded.score,
+                metrics_json=excluded.metrics_json,
+                details_json=excluded.details_json,
+                from_date=excluded.from_date,
+                to_date=excluded.to_date,
+                positive_points=excluded.positive_points,
+                negative_points=excluded.negative_points,
+                points_applied=excluded.points_applied,
+                evaluated_at=excluded.evaluated_at
+            """,
+            (
+                int(candidate_id),
+                int(run_id),
+                str(status),
+                accepted_value,
+                str(report_path) if report_path else (result.report_path if result else None),
+                result.score if result else None,
+                result.to_json() if result else None,
+                details_json,
+                str(from_date or "").strip(),
+                str(to_date or "").strip(),
+                float(positive_points),
+                float(negative_points),
+                float(points_applied),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
         self.conn.commit()
 
     def _candidate_feedback_rows(self) -> list[sqlite3.Row]:
@@ -977,7 +1124,11 @@ class AgentMemory:
                 ft.status as final_tick_status,
                 ft.similarity_json as final_tick_similarity_json,
                 ft6.status as final_tick_6m_status,
-                ft6.similarity_json as final_tick_6m_similarity_json
+                ft6.similarity_json as final_tick_6m_similarity_json,
+                rg.status as regression_status,
+                rg.metrics_json as regression_metrics_json,
+                rg.details_json as regression_details_json,
+                rg.points_applied as regression_points_applied
             from candidates c
             left join candidate_robustness cr
               on cr.candidate_id = c.id
@@ -991,6 +1142,9 @@ class AgentMemory:
              and c.status='accepted'
              and cr.status='accepted'
              and ft.status in ('accepted', 'pending_ohlc_trades')
+            left join candidate_regression rg
+              on rg.candidate_id = c.id
+             and ft6.status='accepted'
             where c.status in ('accepted', 'rejected', 'no_trades')
               and (c.score is not null or c.status = 'no_trades')
             """

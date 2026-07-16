@@ -286,9 +286,10 @@ requirement changes or a debt item is opened/closed.
   `generated` → `accepted` | `rejected` | `no_report` | `parse_error` |
   `report_mismatch` | `no_trades`.
 - **FR-1.8.2** Universe and mutation feedback MUST estimate the smoothed
-  end-to-end probability of the four-stage chain: base accepted, robustness
+  end-to-end probability of the five-stage chain: base accepted, robustness
   accepted, probe eligible (`accepted` or `pending_ohlc_trades`), and Final Tick
-  6M accepted. Each correlated candidate source group contributes at most one
+  6M accepted, followed by backward regression accepted when that evidence
+  exists. Each correlated candidate source group contributes at most one
   effective trial per stage. Technical/retryable states (`report_mismatch`,
   `no_report`, `parse_error`, `pending_history_quality`) MUST NOT become
   statistical failures. Stage probabilities MUST use an empirical global prior
@@ -356,6 +357,26 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.12** `--final-tick-pending-only` MUST limit the Final Tick pass to
   rows that have no stored result or are in a pending state. Without that flag,
   Final Tick MUST rerun all robust-accepted candidates and replace existing rows.
+- **FR-1.8.13** Final Tick 6M accepted candidates MAY be evaluated by a separate
+  backward regression pass with `--evaluate-regression`. The pass MUST use MT5
+  `Model=1` (1 minute OHLC), default to `2017.01.01 -> 2019.12.31`, require at
+  least 730 days, and store its result in `candidate_regression` without
+  overwriting base, robustness, or Final Tick rows.
+- **FR-1.8.14** A regression report MUST match the intended symbol/timeframe and
+  its reported configured period MUST exactly match the requested dates. Missing
+  history, missing reports, parse errors, report mismatch, or date mismatch MUST
+  be retryable technical states worth zero points and zero statistical trials.
+  A valid matching report with zero trades MUST be a strategy failure.
+- **FR-1.8.15** Regression defaults MUST require normalized net profit `> 0`,
+  PF `>= 1.10`, trades `>= 36` (`W1 >= 12`, `MN >= 4`), DD `<= 30%`, recovery
+  `>= 0.75`, and positive-month ratio `>= 0.50`. Accepted rows add `+80` points.
+  Rejected/no-trades rows start at `-100` and subtract per-cause penalties
+  capped at an additional `-60`; technical states apply `0`.
+- **FR-1.8.16** Regression evidence MUST participate in shared asset/timeframe/
+  mutation feedback as a fifth probabilistic stage. Before the first regression
+  trial, its prior MUST be neutral so existing probabilities do not change.
+  Regression MUST remain an evidence/weight stage, not a new hard portfolio gate;
+  Final Tick 6M remains the portfolio eligibility gate.
 
 ### 1.9 UBS agent — seed evaluation
 
@@ -725,6 +746,11 @@ requirement changes or a debt item is opened/closed.
   current DD, correlation, margin, group, and pipeline gate. The setting MUST
   apply consistently to generation, availability counts, reoptimization, and
   completion; quarantine remains a hard exclusion regardless of this option.
+- **FR-1.12.46** The UI MUST include a `UBS Regresiva` tab (`ubs_regression`)
+  with its own date/threshold/point configuration, `Continuar regresiva`,
+  `Reprobar`, `Aplicar criterios`, manual OK/FAIL, report actions, and an
+  optional automatic handoff after Final Tick 6M. It MUST distinguish strategy
+  failures from neutral technical/retryable states.
 
 ### 1.13 Packaging & runtime
 
@@ -880,6 +906,12 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   parsing.
 
 ### 2.8 Resolved debt
+
+- **2026-07** - Added the independent backward regression stage after Final
+  Tick 6M: exact-date 2017-2019 Model=1 validation, `candidate_regression`
+  persistence, neutral technical states, configurable points, fifth-stage
+  probability feedback, dedicated UI tab, audit/search integration, and
+  optional automatic handoff.
 
 - **2025-06** — Fixed portfolio parser to support English MT5 HTML reports
   (`Symbol`, `Period`, `Results`, `Orders`, `Deals`, `Balance Drawdown …`).

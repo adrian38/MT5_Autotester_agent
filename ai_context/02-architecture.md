@@ -225,7 +225,7 @@ UBS support code lives in the `ubs/` package:
 - `ubs/memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
   and conversion from candidate rows to `Variant`.
 - `ubs/weights.py`: shared probability feedback for `AgentMemory` and
-  `UBS Universo`. It estimates the smoothed four-stage end-to-end probability,
+  `UBS Universo`. It estimates the smoothed five-stage end-to-end probability,
   groups correlated sources, returns bounded relative log-odds plus confidence,
   and maps mutation evidence to percentile multipliers. The old additive row
   utility remains only for legacy audit detail.
@@ -234,6 +234,10 @@ UBS support code lives in the `ubs/` package:
   and timeframe, and keeps this fitness separate from the report score. Its
   predictions are persisted and applied as a bounded soft ranking nudge with
   selection scale `0.15`.
+- `ubs/regression.py` owns the backward OHLC validation runner and report
+  classification. `ubs/regression_rules.py` owns its independent default date
+  range, thresholds, retryable states, and point schedule. `ubs_agent.py` only
+  injects MT5/report callbacks and dispatches CLI flags.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
 - `ubs/universe.py`: broker universe parsing, common alias canonicalisation,

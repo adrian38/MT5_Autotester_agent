@@ -399,6 +399,7 @@ class SettingsLogicMixin:
             "ubs_robust_auto": "1" if self.ubs_robust_auto.get() else "0",
             "ubs_final_tick_auto": "1" if self.ubs_final_tick_auto.get() else "0",
             "ubs_final_tick_6m_auto": "1" if self.ubs_final_tick_6m_auto.get() else "0",
+            "ubs_regression_auto": "1" if self.ubs_regression_auto.get() else "0",
             "ubs_agent_from_date": self.ubs_agent_from_date.get().strip(),
             "ubs_agent_to_date": self.ubs_agent_to_date.get().strip(),
             "ubs_seed_from_date": self.ubs_seed_from_date.get().strip(),
@@ -413,6 +414,18 @@ class SettingsLogicMixin:
             "ubs_final_tick_6m_to_date": self.ubs_final_tick_6m_to_date.get().strip(),
             "ubs_final_tick_6m_ohlc_from_date": self.ubs_final_tick_6m_ohlc_from_date.get().strip(),
             "ubs_final_tick_6m_ohlc_to_date": self.ubs_final_tick_6m_ohlc_to_date.get().strip(),
+            "ubs_regression_from_date": self.ubs_regression_from_date.get().strip(),
+            "ubs_regression_to_date": self.ubs_regression_to_date.get().strip(),
+            "ubs_regression_min_net_profit": self.ubs_regression_min_net_profit.get().strip(),
+            "ubs_regression_min_profit_factor": self.ubs_regression_min_profit_factor.get().strip(),
+            "ubs_regression_min_trades": self.ubs_regression_min_trades.get().strip(),
+            "ubs_regression_min_trades_w1": self.ubs_regression_min_trades_w1.get().strip(),
+            "ubs_regression_min_trades_mn": self.ubs_regression_min_trades_mn.get().strip(),
+            "ubs_regression_max_drawdown_pct": self.ubs_regression_max_drawdown_pct.get().strip(),
+            "ubs_regression_min_recovery_factor": self.ubs_regression_min_recovery_factor.get().strip(),
+            "ubs_regression_min_positive_month_ratio": self.ubs_regression_min_positive_month_ratio.get().strip(),
+            "ubs_regression_positive_points": self.ubs_regression_positive_points.get().strip(),
+            "ubs_regression_negative_points": self.ubs_regression_negative_points.get().strip(),
             "ubs_final_tick_min_history_quality": self.ubs_final_tick_min_history_quality.get().strip(),
             "ubs_final_tick_min_ohlc_trades": self.ubs_final_tick_min_ohlc_trades.get().strip(),
             "ubs_final_tick_min_trades_w1": self.ubs_final_tick_min_trades_w1.get().strip(),
@@ -649,15 +662,18 @@ class SettingsLogicMixin:
                                ft.ohlc_report_path as final_ohlc_report,
                                ft.real_tick_report_path as final_tick_report,
                                ft6.ohlc_report_path as final_ohlc_6m_report,
-                               ft6.real_tick_report_path as final_tick_6m_report
+                               ft6.real_tick_report_path as final_tick_6m_report,
+                               rg.report_path as regression_report
                         from candidates c
                         left join candidate_robustness cr on cr.candidate_id = c.id
                         left join candidate_final_tick ft on ft.candidate_id = c.id
                         left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
+                        left join candidate_regression rg on rg.candidate_id = c.id
                         where c.status = 'accepted'
                            or cr.status = 'accepted'
                            or ft.status = 'accepted'
                            or ft6.status = 'accepted'
+                           or rg.status in ('accepted', 'rejected', 'no_trades')
                         """
                     ).fetchall()
                 except sqlite3.Error:
@@ -674,6 +690,7 @@ class SettingsLogicMixin:
                     "final_tick_report",
                     "final_ohlc_6m_report",
                     "final_tick_6m_report",
+                    "regression_report",
                 ):
                     value = str(row[key] or "").strip()
                     if not value:
