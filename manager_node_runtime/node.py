@@ -808,6 +808,8 @@ class JobController:
                 payload = dict(item.get("payload") or {})
                 if item.get("type") == "repair":
                     self._start_repair(payload)
+                elif item.get("type") == "regression":
+                    self._start_regression(payload)
                 else:
                     self._start_generation(payload)
             except Exception as exc:
@@ -914,7 +916,8 @@ class JobController:
         run_ids = request.get("run_ids") if isinstance(request.get("run_ids"), list) else []
         run_text = ", ".join(f"#{safe_int(value, 0, minimum=0)}" for value in run_ids) or "-"
         outcome = "OK" if return_code == 0 else f"ERROR codigo {return_code}"
-        job_label = "Reparacion" if self.state.get("job_type") == "repair" else "Ejecucion"
+        job_labels = {"repair": "Reparacion", "regression": "Prueba regresiva"}
+        job_label = job_labels.get(str(self.state.get("job_type") or ""), "Ejecucion")
         message = (
             f"MT5 Autotester Manager: {job_label} finalizada ({outcome}).\n"
             f"Nodo: {self.config.get('display_name') or self.config.get('node_id')} | "
@@ -1064,6 +1067,62 @@ class JobController:
         log_path = self.runtime_dir / f"{job_id}.log"
         self.state = {
             "job_id": job_id, "job_type": "repair", "status": "running", "pid": None,
+            "started_at": utc_now(), "finished_at": None, "return_code": None,
+            "request": payload, "command": None, "log_path": str(log_path), "error": None,
+            "pipeline": pipeline, "current_stage": None, "current_cycle": None,
+            "current_run_id": None, "current_attempt": None,
+            "completed_stages": [], "skipped_stages": [],
+            "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
+            "telegram_notifications": [],
+        }
+        try:
+            launched = self._launch_next_runnable(0, log_path, first=True)
+        except Exception as exc:
+            self.state["error"] = str(exc)
+            self.state["return_code"] = 1
+            self.state["finished_at"] = utc_now()
+            self.state["status"] = "failed"
+            self._persist()
+            raise
+        if not launched:
+            self._complete(0)
+        return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
+
+    def start_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            normalized = self._normalize_regression(payload)
+            if self._busy() or self.queue:
+                run_ids = normalized["run_ids"]
+                return self._enqueue(
+                    "regression", normalized,
+                    f"Run(s) {', '.join(str(value) for value in run_ids)} · solo regresiva",
+                )
+            return self._start_regression(normalized)
+
+    def _normalize_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
+        requested = payload.get("run_ids")
+        if not isinstance(requested, list):
+            raise ValueError("run_ids debe ser una lista")
+        run_ids = list(dict.fromkeys(safe_int(value, 0, minimum=0) for value in requested))
+        run_ids = [value for value in run_ids if value > 0]
+        if not run_ids:
+            raise ValueError("Selecciona al menos un run terminado")
+        payload = dict(payload)
+        payload["run_ids"] = run_ids
+        payload["execute_backtests"] = True
+        return payload
+
+    def _start_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = self._normalize_regression(payload)
+        run_ids = payload["run_ids"]
+        pipeline = [
+            {"action": "regression", "cycle": None, "run_id": run_id, "attempt": 1}
+            for run_id in run_ids
+        ]
+        job_id = "regression_" + time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
+        log_path = self.runtime_dir / f"{job_id}.log"
+        self.state = {
+            "job_id": job_id, "job_type": "regression", "status": "running", "pid": None,
             "started_at": utc_now(), "finished_at": None, "return_code": None,
             "request": payload, "command": None, "log_path": str(log_path), "error": None,
             "pipeline": pipeline, "current_stage": None, "current_cycle": None,
@@ -1492,6 +1551,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.start(self._body()))
             elif self.path == "/api/v1/jobs/repair":
                 self._send(202, self.server.controller.start_repair(self._body()))
+            elif self.path == "/api/v1/jobs/regression":
+                self._send(202, self.server.controller.start_regression(self._body()))
             elif self.path == "/api/v1/jobs/stop":
                 self._send(202, self.server.controller.stop())
             elif self.path == "/api/v1/jobs/queue/cancel":
