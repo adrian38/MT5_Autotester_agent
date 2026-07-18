@@ -511,6 +511,12 @@ multi-start search count. All are persisted in `ui_settings.ini` under the
 Do not reintroduce global scaling (`S = target_dd/current_dd`), risk-parity lot
 calibration, StartLots validation, or automatic lot normalization in this module.
 
+**AXI cash/future symbol unification**: `portfolio_symbol_key()` maps both legs
+of every `AXI_CASH_FUTURE_SYMBOL_FAMILIES` pair (e.g. `USTECH.sa` and
+`NAS100.fs`) to one family key, so top-K per symbol and per-symbol unit caps
+treat cash and future of the same underlying as one symbol. Only the suffixed
+AXI broker names (`.sa`/`.fs`) are remapped; other brokers' keys are unchanged.
+
 **Broker scope**: UBS full-history and monthly portfolios read candidate pools
 only from the accounts belonging to the currently selected broker. RoboForex can
 combine ECN+PRO; AXI and ICTrading remain separate pools. Used-set locks,
