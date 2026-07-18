@@ -530,3 +530,79 @@ class UBSAgentViewMixin:
             style="Primary.TButton",
             command=self._save_ubs_agent_clicked,
         ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))
+
+        regression = self._card(inner, "Prueba Regresiva")
+        regression.grid(row=6, column=0, sticky="ew", pady=(0, 24))
+        for column in (1, 3, 5):
+            regression.columnconfigure(column, weight=1)
+
+        reg_date_tip = (
+            "Formato: YYYY.MM.DD.\n"
+            "Holdout historico OHLC 1 minuto (Model=1) hacia atras.\n"
+            "El reporte debe cubrir exactamente el rango configurado."
+        )
+        reg_auto_row = tk.Frame(regression, bg=self.colors["panel"])
+        reg_auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
+        reg_auto_row.columnconfigure(0, weight=1)
+        tk.Label(
+            reg_auto_row,
+            text="Auto Regresiva",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self._toggle_switch_cls(
+            reg_auto_row,
+            variable=self.ubs_regression_auto,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="e")
+        self._tooltip_cls(
+            reg_auto_row,
+            "Al terminar Final Tick 6M, lanza la prueba regresiva automaticamente\nsobre los 6M accepted pendientes.",
+        )
+        regression_fields = [
+            ("Desde", self.ubs_regression_from_date, "date"),
+            ("Hasta", self.ubs_regression_to_date, "date"),
+            ("Net >", self.ubs_regression_min_net_profit, "entry"),
+            ("PF >=", self.ubs_regression_min_profit_factor, "entry"),
+            ("Ops >=", self.ubs_regression_min_trades, "spin"),
+            ("DD % <=", self.ubs_regression_max_drawdown_pct, "entry"),
+            ("Recovery >=", self.ubs_regression_min_recovery_factor, "entry"),
+            ("Meses + >=", self.ubs_regression_min_positive_month_ratio, "entry"),
+            ("Puntos OK", self.ubs_regression_positive_points, "entry"),
+            ("Puntos FAIL", self.ubs_regression_negative_points, "entry"),
+            ("W1 REG ops", self.ubs_regression_min_trades_w1, "spin"),
+            ("MN REG ops", self.ubs_regression_min_trades_mn, "spin"),
+        ]
+        for index, (label, variable, kind) in enumerate(regression_fields):
+            if index < 2:
+                row = 1
+                column = index * 2
+            else:
+                row = 2 + (index - 2) // 3
+                column = ((index - 2) % 3) * 2
+            left_pad = 20 if column == 0 else 10
+            ttk.Label(regression, text=label, style="Panel.TLabel").grid(
+                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            if kind == "spin":
+                widget = ttk.Spinbox(regression, from_=0, to=100000, textvariable=variable, width=8)
+            else:
+                widget = ttk.Entry(regression, textvariable=variable, width=14 if kind == "date" else 8)
+            widget.grid(row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7)
+            if kind == "date":
+                self._tooltip_cls(widget, reg_date_tip)
+
+        ttk.Label(
+            regression,
+            text="Holdout OHLC historico sobre Final Tick 6M accepted. Fallos tecnicos (historico, reporte, fechas) son neutros: 0 puntos.",
+            style="Muted.TLabel",
+        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
+        ttk.Button(
+            regression,
+            text="Guardar Regresiva",
+            style="Primary.TButton",
+            command=self._save_ubs_agent_clicked,
+        ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))
