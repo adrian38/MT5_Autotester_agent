@@ -571,6 +571,8 @@ class UBSAgentViewMixin:
             ("DD % <=", self.ubs_regression_max_drawdown_pct, "entry"),
             ("Recovery >=", self.ubs_regression_min_recovery_factor, "entry"),
             ("Meses + >=", self.ubs_regression_min_positive_month_ratio, "entry"),
+            ("PF ef >=", self.ubs_regression_min_pf_efficiency, "entry"),
+            ("DD x <=", self.ubs_regression_max_dd_ratio, "entry"),
             ("Puntos OK", self.ubs_regression_positive_points, "entry"),
             ("Puntos FAIL", self.ubs_regression_negative_points, "entry"),
             ("W1 REG ops", self.ubs_regression_min_trades_w1, "spin"),

@@ -62,6 +62,38 @@ selection recognize that this is an older regime and an approximate OHLC
 model. The minimum sample and monthly consistency checks prevent a small number
 of lucky trades from passing.
 
+### Degradation-relative criteria (walk-forward efficiency)
+
+In addition to the absolute floors above, the regression stage compares the
+backward holdout against the candidate's own base window (the metrics stored in
+`candidates.metrics_json`), following the standard out-of-sample rules of
+retaining edge (walk-forward efficiency) and bounding drawdown expansion. Only
+length-independent ratios are used, so windows of different length stay
+comparable:
+
+| Relative check | CLI flag | Default | Reason emitted |
+|---|---|---:|---|
+| Profit-factor efficiency `PF_reg / PF_base` | `--regression-min-pf-efficiency` | `>= 0.50` | `pf_efficiency` |
+| Drawdown ratio `DD%_reg / DD%_base` | `--regression-max-dd-ratio` | `<= 2.0` | `dd_ratio` |
+
+Guards (in `ubs/regression_rules.py:regression_degradation`):
+
+- A threshold of `0` disables that check.
+- If the candidate has no usable base metrics, the check is **skipped** (neutral,
+  never a failure) — a missing base window is not a strategy loss.
+- The profit-factor efficiency ignores the "no losing trades" sentinel
+  (`PF >= 50`) on either side, since the ratio would be meaningless.
+- The drawdown ratio floors the base denominator at `2.0` percentage points
+  (`REGRESSION_DD_RATIO_FLOOR_PCT`) so a near-zero base drawdown does not
+  explode the ratio and cause false failures.
+
+These criteria only run when the report has trades and passes the technical
+gates (match, dates, history). Their reasons merge with the absolute reasons, so
+a candidate that passes every absolute floor can still be `rejected` if it
+degraded too much from the base window (and the per-cause point penalties apply
+the same way as the absolute reasons). Re-apply after tuning with
+`--rescore-regression-only`; stored rows do not change until then.
+
 ## Points and statistical evidence
 
 - `accepted`: `+80`.
@@ -80,7 +112,8 @@ probabilities. Once evidence exists, an empirical global prior (clamped to
 Run or resume:
 
 ```powershell
-python .\ubs_agent.py --evaluate-regression --regression-run-id 1 --regression-pending-only --expert "C:\path\to\UBS.ex5"
+python .\ubs_agent.py --evaluate-regression --regression-run-id 1 --regression-pending-only --expert "C:\path\to\UBS.ex5" `
+  --regression-min-pf-efficiency 0.5 --regression-max-dd-ratio 2.0
 ```
 
 Reapply new thresholds without opening MT5:

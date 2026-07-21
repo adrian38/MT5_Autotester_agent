@@ -87,6 +87,8 @@ class UBSRegressionLogicMixin:
             "drawdown_pct": "drawdown",
             "recovery_factor": "recovery",
             "positive_month_ratio": "meses positivos",
+            "pf_efficiency": "PF vs base",
+            "dd_ratio": "DD vs base",
             "manual_verdict": "decision manual",
         }
         return ", ".join(translated.get(str(reason), str(reason)) for reason in reasons)
@@ -273,6 +275,8 @@ class UBSRegressionLogicMixin:
             "dd": float(self.ubs_regression_max_drawdown_pct.get()),
             "recovery": float(self.ubs_regression_min_recovery_factor.get()),
             "months": float(self.ubs_regression_min_positive_month_ratio.get()),
+            "pf_efficiency": float(self.ubs_regression_min_pf_efficiency.get()),
+            "dd_ratio": float(self.ubs_regression_max_dd_ratio.get()),
             "positive": float(self.ubs_regression_positive_points.get()),
             "negative": float(self.ubs_regression_negative_points.get()),
         }
@@ -282,6 +286,8 @@ class UBSRegressionLogicMixin:
             raise ValueError("Meses positivos debe estar entre 0 y 1.")
         if min(float(values["pf"]), float(values["dd"]), float(values["recovery"])) < 0:
             raise ValueError("PF, drawdown y recovery no pueden ser negativos.")
+        if min(float(values["pf_efficiency"]), float(values["dd_ratio"])) < 0:
+            raise ValueError("Eficiencia PF y cociente DD no pueden ser negativos (0 desactiva).")
         if float(values["positive"]) < 0 or float(values["negative"]) > 0:
             raise ValueError("Puntos OK deben ser >= 0 y puntos FAIL <= 0.")
         return values
@@ -303,6 +309,8 @@ class UBSRegressionLogicMixin:
             "--regression-max-drawdown-pct", str(values["dd"]),
             "--regression-min-recovery-factor", str(values["recovery"]),
             "--regression-min-positive-month-ratio", str(values["months"]),
+            "--regression-min-pf-efficiency", str(values["pf_efficiency"]),
+            "--regression-max-dd-ratio", str(values["dd_ratio"]),
             "--regression-positive-points", str(values["positive"]),
             "--regression-negative-points", str(values["negative"]),
             "--delay", str(self.delay.get()),

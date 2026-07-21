@@ -835,6 +835,12 @@ class MT5AutotesterUI(
         self.ubs_regression_min_positive_month_ratio = tk.StringVar(
             value=saved_general.get("ubs_regression_min_positive_month_ratio", "0.50")
         )
+        self.ubs_regression_min_pf_efficiency = tk.StringVar(
+            value=saved_general.get("ubs_regression_min_pf_efficiency", "0.50")
+        )
+        self.ubs_regression_max_dd_ratio = tk.StringVar(
+            value=saved_general.get("ubs_regression_max_dd_ratio", "2.0")
+        )
         self.ubs_regression_positive_points = tk.StringVar(value=saved_general.get("ubs_regression_positive_points", "80"))
         self.ubs_regression_negative_points = tk.StringVar(value=saved_general.get("ubs_regression_negative_points", "-100"))
         self.ubs_final_tick_min_history_quality = tk.StringVar(

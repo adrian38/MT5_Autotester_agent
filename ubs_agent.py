@@ -55,8 +55,10 @@ from ubs.regression import (
 )
 from ubs.regression_rules import (
     DEFAULT_REGRESSION_FROM_DATE,
+    DEFAULT_REGRESSION_MAX_DD_RATIO,
     DEFAULT_REGRESSION_MAX_DRAWDOWN_PCT,
     DEFAULT_REGRESSION_MIN_NET_PROFIT,
+    DEFAULT_REGRESSION_MIN_PF_EFFICIENCY,
     DEFAULT_REGRESSION_MIN_POSITIVE_MONTH_RATIO,
     DEFAULT_REGRESSION_MIN_PROFIT_FACTOR,
     DEFAULT_REGRESSION_MIN_RECOVERY_FACTOR,
@@ -454,6 +456,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--regression-min-trades-mn", type=int, default=DEFAULT_REGRESSION_MIN_TRADES_MN)
     parser.add_argument("--regression-max-drawdown-pct", type=float, default=DEFAULT_REGRESSION_MAX_DRAWDOWN_PCT)
     parser.add_argument("--regression-min-recovery-factor", type=float, default=DEFAULT_REGRESSION_MIN_RECOVERY_FACTOR)
+    parser.add_argument(
+        "--regression-min-pf-efficiency",
+        type=float,
+        default=DEFAULT_REGRESSION_MIN_PF_EFFICIENCY,
+        help="Minima eficiencia PF regresiva/base (WFE). 0 desactiva la comprobacion relativa.",
+    )
+    parser.add_argument(
+        "--regression-max-dd-ratio",
+        type=float,
+        default=DEFAULT_REGRESSION_MAX_DD_RATIO,
+        help="Maximo cociente DD%% regresiva/base (regla de crisis <=2x). 0 desactiva la comprobacion.",
+    )
     parser.add_argument(
         "--regression-min-positive-month-ratio",
         type=float,
@@ -6285,6 +6299,9 @@ def main() -> int:
             return 1
         if args.regression_min_recovery_factor < 0:
             print("ERROR: recovery regresivo debe ser mayor o igual a 0")
+            return 1
+        if args.regression_min_pf_efficiency < 0 or args.regression_max_dd_ratio < 0:
+            print("ERROR: eficiencia PF y cociente DD regresivos deben ser >= 0 (0 desactiva)")
             return 1
         if not 0 <= args.regression_min_positive_month_ratio <= 1:
             print("ERROR: --regression-min-positive-month-ratio debe estar entre 0 y 1")

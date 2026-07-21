@@ -13,6 +13,7 @@ from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.regression_rules import (
     REGRESSION_RETRYABLE_STATUSES,
+    regression_degradation,
     regression_points_breakdown,
     validate_regression_date_range,
 )
@@ -112,6 +113,24 @@ def _record_technical(
     return status
 
 
+def _base_metrics_from_row(row: sqlite3.Row | None) -> dict[str, object] | None:
+    """Parse the candidate's base-window metrics for degradation comparison."""
+
+    if row is None:
+        return None
+    try:
+        raw = row["metrics_json"]
+    except (KeyError, IndexError):
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def evaluate_regression_report(
     memory: AgentMemory,
     args: Any,
@@ -122,6 +141,7 @@ def evaluate_regression_report(
     candidate_id: int,
     variant: Variant,
     report: Path | None,
+    base_metrics: dict[str, object] | None = None,
 ) -> str:
     if report is None:
         return _record_technical(
@@ -220,14 +240,27 @@ def evaluate_regression_report(
             metadata={"date_error": date_error} if date_error else None,
         )
 
-    status = "accepted" if result.accepted else "rejected"
     if result.trades <= 0:
         status = "no_trades"
+        combined_reasons = tuple(result.reasons)
+        degradation_audit: dict[str, float] = {}
+    else:
+        degradation_reasons, degradation_audit = regression_degradation(
+            base_metrics,
+            result.profit_factor,
+            result.drawdown_pct,
+            min_pf_efficiency=float(getattr(args, "regression_min_pf_efficiency", 0.0)),
+            max_dd_ratio=float(getattr(args, "regression_max_dd_ratio", 0.0)),
+        )
+        combined_reasons = tuple(result.reasons) + degradation_reasons
+        status = "accepted" if not combined_reasons else "rejected"
     details_json, points_applied = _details_payload(
         status,
         result,
         args,
+        reasons=combined_reasons,
         actual_dates=actual_dates,
+        metadata={"degradation": degradation_audit} if degradation_audit else None,
     )
     memory.record_candidate_regression(
         candidate_id,
@@ -352,6 +385,7 @@ def evaluate_candidate_regression(
             int(row["id"]),
             variant,
             report,
+            _base_metrics_from_row(row),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
     print(
@@ -387,6 +421,7 @@ def rescore_regression_only(
             int(row["id"]),
             variant,
             report if report.exists() else None,
+            _base_metrics_from_row(row),
         )
         counts[status] = counts.get(status, 0) + 1
     print(

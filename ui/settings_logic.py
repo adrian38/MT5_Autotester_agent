@@ -424,6 +424,8 @@ class SettingsLogicMixin:
             "ubs_regression_max_drawdown_pct": self.ubs_regression_max_drawdown_pct.get().strip(),
             "ubs_regression_min_recovery_factor": self.ubs_regression_min_recovery_factor.get().strip(),
             "ubs_regression_min_positive_month_ratio": self.ubs_regression_min_positive_month_ratio.get().strip(),
+            "ubs_regression_min_pf_efficiency": self.ubs_regression_min_pf_efficiency.get().strip(),
+            "ubs_regression_max_dd_ratio": self.ubs_regression_max_dd_ratio.get().strip(),
             "ubs_regression_positive_points": self.ubs_regression_positive_points.get().strip(),
             "ubs_regression_negative_points": self.ubs_regression_negative_points.get().strip(),
             "ubs_final_tick_min_history_quality": self.ubs_final_tick_min_history_quality.get().strip(),

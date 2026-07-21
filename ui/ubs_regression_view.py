@@ -100,6 +100,8 @@ class UBSRegressionViewMixin:
             (1, "Meses + >=", self.ubs_regression_min_positive_month_ratio, 7),
             (1, "W1 ops", self.ubs_regression_min_trades_w1, 7),
             (1, "MN ops", self.ubs_regression_min_trades_mn, 7),
+            (1, "PF ef >=", self.ubs_regression_min_pf_efficiency, 7),
+            (1, "DD x <=", self.ubs_regression_max_dd_ratio, 7),
             (2, "Puntos OK", self.ubs_regression_positive_points, 7),
             (2, "Puntos FAIL", self.ubs_regression_negative_points, 7),
         ]
@@ -115,7 +117,10 @@ class UBSRegressionViewMixin:
             )
         ttk.Label(
             criteria,
-            text="Model=1 (OHLC 1 minuto). Errores de historico, fecha o reporte son neutros: 0 puntos.",
+            text=(
+                "Model=1 (OHLC 1 minuto). PF ef / DD x = degradacion vs ventana base (WFE); 0 desactiva. "
+                "Errores de historico, fecha o reporte son neutros: 0 puntos."
+            ),
             style="Muted.TLabel",
         ).grid(row=2, column=4, columnspan=8, sticky="w", padx=(8, 0))
 

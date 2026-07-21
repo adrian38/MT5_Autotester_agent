@@ -392,6 +392,8 @@ def build_pipeline_stage_command(
             "ubs_regression_max_drawdown_pct": "--regression-max-drawdown-pct",
             "ubs_regression_min_recovery_factor": "--regression-min-recovery-factor",
             "ubs_regression_min_positive_month_ratio": "--regression-min-positive-month-ratio",
+            "ubs_regression_min_pf_efficiency": "--regression-min-pf-efficiency",
+            "ubs_regression_max_dd_ratio": "--regression-max-dd-ratio",
             "ubs_regression_positive_points": "--regression-positive-points",
             "ubs_regression_negative_points": "--regression-negative-points",
         }
