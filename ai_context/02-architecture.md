@@ -293,10 +293,17 @@ UBS support code lives in the `ubs/` package:
   within configured deltas of the OHLC control report.
 - `rejected`: real-tick report failed quality or metric similarity checks.
 - `pending_history_quality`: real-tick report produced but history quality is
-  below threshold — retryable when real-tick data improves.
+  below threshold — retryable when real-tick data improves and not eligible to
+  advance to Final Tick 6M until resolved.
 - `pending_ohlc_trades`: OHLC batch produced fewer trades than the configured
-  minimum — retryable via the OHLC-retry date range.
+  minimum — retryable via the OHLC-retry date range, but also eligible to advance
+  to Final Tick 6M because the longer window supplies the missing sample.
 - `no_report`, `parse_error`, `report_mismatch`: diagnosis only.
+
+The short probe only discards candidates: `rejected` is terminal and invalidates
+downstream 6M evidence. Portfolio/export eligibility is granted only by Final
+Tick 6M `accepted`; a short `accepted` or `pending_ohlc_trades` result never
+grants live-use eligibility on its own.
 
 ### `ubs_score.py`
 

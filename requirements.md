@@ -342,18 +342,26 @@ requirement changes or a debt item is opened/closed.
   `similarity_json` for inspection only and MUST NOT block acceptance, because
   Final Tick validates operational similarity between data models rather than
   absolute profitability.
-- **FR-1.8.10a** Final Tick is an eligibility gate for live-use workflows:
-  `candidate_final_tick.status='accepted'` makes a base+robust accepted strategy
-  eligible for portfolio/export consideration; `rejected` excludes it from
-  live-use pools; `pending_*` rows are not eligible until resolved.
+- **FR-1.8.10a** The short Final Tick probe is a discard filter before the
+  six-month stage, not the final portfolio gate. A base+robust accepted strategy
+  with `candidate_final_tick.status='accepted'` MAY advance to Final Tick 6M;
+  `rejected` is terminal for that candidate and MUST exclude it from downstream
+  6M/portfolio/export/live-use pools. `pending_ohlc_trades` MAY also advance to
+  Final Tick 6M because the longer window supplies the sample that the short
+  probe lacked. `pending_history_quality` and technical/error states MUST NOT
+  advance until resolved. Passing or remaining sample-pending in the short probe
+  never authorizes live use by itself: only Final Tick 6M `accepted` does so.
 - **FR-1.8.11** Final Tick MUST support two intermediate pending states:
   `pending_history_quality` — real-tick report produced but history quality is
   below threshold (retryable when data improves); `pending_ohlc_trades` — the
   OHLC batch produced fewer trades than `--final-tick-min-ohlc-trades` (retryable
-  via OHLC-retry date range). Rows in pending states MUST NOT be treated as
-  final `accepted` or `rejected`. An empty Model=4 report whose tester journal
-  explicitly ends with `no history data, stop testing` is not low quality: it
-  MUST be finalized as `rejected` because the broker has no usable tick history.
+  via OHLC-retry date range). Pending rows MUST NOT be treated as final
+  `accepted` or `rejected`. `pending_history_quality` blocks progression, while
+  `pending_ohlc_trades` is probe-eligible for Final Tick 6M and is superseded for
+  live-use eligibility when that same candidate later obtains a final 6M
+  `accepted` result. An empty Model=4 report whose tester journal explicitly
+  ends with `no history data, stop testing` is not low quality: it MUST be
+  finalized as `rejected` because the broker has no usable tick history.
 - **FR-1.8.12** `--final-tick-pending-only` MUST limit the Final Tick pass to
   rows that have no stored result or are in a pending state. Without that flag,
   Final Tick MUST rerun all robust-accepted candidates and replace existing rows.
@@ -627,6 +635,11 @@ requirement changes or a debt item is opened/closed.
   Eligible strategies require base candidate, robustness, AND Final Tick 6M
   (`candidate_final_tick_6m.status='accepted'`) all `accepted`. The probe Final
   Tick (`candidate_final_tick`) is NOT the portfolio gate; only the 6M stage is.
+  A 6M row MAY only originate from a probe `accepted` or
+  `pending_ohlc_trades`; a probe `rejected` MUST invalidate/delete downstream 6M
+  evidence. Therefore a short-probe failure can never reach the portfolio,
+  while a short probe lacking enough trades may still be resolved by a passing
+  6M comparison.
   Portfolio history MUST still be built from the base report plus the robustness
   report; Final Tick 6M is an eligibility gate, not the curve source.
   Conservative/Balanced portfolios MUST share one lock pool within the active
@@ -1107,6 +1120,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   ≥ 180-day date range and adds a PF floor check (`profit_factor_floor` in
   `similarity_json`). `FINAL_TICK_REASON_PENALTIES` gained `"profit_factor_floor": 55.0`.
   New `UBS Final Tick 6M` tab added. Portfolio gate changed from probe to 6M stage.
+
+- **2026-07** — Clarified the two-stage Final Tick lifecycle: the short probe is
+  a discard filter, not the final live-use gate. Probe `rejected` is terminal;
+  probe `accepted` and `pending_ohlc_trades` may advance to 6M; only Final Tick
+  6M `accepted` authorizes portfolio/export eligibility.
 
 - **2026-06** — `UBS Buscador` tab added: run auditor (per-account per-run pipeline
   status and weight breakdown) plus free-text set search across pipeline stages

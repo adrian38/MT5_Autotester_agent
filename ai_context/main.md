@@ -326,10 +326,14 @@ active criteria because `normalized_net_profit` depends on the normalization gro
 produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
 delta, but PF/DD/trades practically identical).
 
-Final Tick is a hard live-use eligibility gate: only `candidate_final_tick.status='accepted'`
-can enter portfolio/export/live-use pools; `rejected` is a hard no for live use, and
-`pending_*` remains non-eligible until resolved. The weight bonus/penalty only teaches
-future exploration and does not override this gate.
+The short Final Tick probe is a discard filter, not the final live-use gate.
+`accepted` advances to Final Tick 6M; `rejected` is terminal and invalidates any
+downstream 6M evidence. `pending_ohlc_trades` may also advance because the longer
+6M window supplies the missing sample, while `pending_history_quality` and
+technical/error states must be resolved first. Neither short `accepted` nor
+`pending_ohlc_trades` authorizes live use by itself: only a later Final Tick 6M
+`accepted` result makes the strategy portfolio/export eligible. Weight feedback
+only teaches future exploration and never overrides candidate-level rejection.
 
 #### `from_date` / `to_date` consistency guard
 
@@ -974,7 +978,13 @@ The probe stage weight bonus (`DEFAULT_FINAL_TICK_ACCEPTED_BONUS = +120` / `DEFA
 
 ### UBS Portafolio — Final Tick 6M gate
 
-Portfolio candidate eligibility requires: `candidates.status='accepted'` AND `candidate_robustness.status='accepted'` AND `candidate_final_tick_6m.status='accepted'` (6M gate). The probe stage (`candidate_final_tick`) is no longer a gate for portfolio; only the 6M stage is.
+Portfolio candidate eligibility requires: `candidates.status='accepted'` AND
+`candidate_robustness.status='accepted'` AND
+`candidate_final_tick_6m.status='accepted'` (6M gate). The short probe
+(`candidate_final_tick`) is a prior discard filter, not a repeated portfolio
+gate: only probe `accepted` or `pending_ohlc_trades` can produce a 6M result,
+probe `rejected` invalidates downstream 6M evidence, and a passing 6M resolves a
+short probe that lacked enough trades.
 
 New portfolio filter: **"Requerir 3 meses positivos 6M"** checkbox (`ubs_portfolio_require_3_positive_months_6m`, persisted in `ui_settings.ini`). When enabled, the optimizer filters out candidates whose 6M curve has fewer than 3 positive months before optimization.
 
