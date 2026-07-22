@@ -184,20 +184,6 @@ def grouped_stage_evidence(grouped_rows: Mapping[object, Iterable[object]]) -> d
     }
 
 
-def _probe_terminal_blocked(groups: Mapping[object, Iterable[object]]) -> bool:
-    """True when short Final Tick failed and no 6M pass offsets that evidence."""
-
-    has_probe_rejection = False
-    has_six_month_acceptance = False
-    for rows in groups.values():
-        for row in rows:
-            if row_text(row, "final_tick_6m_status").lower() == "accepted":
-                has_six_month_acceptance = True
-            if row_text(row, "final_tick_status").lower() == "rejected":
-                has_probe_rejection = True
-    return has_probe_rejection and not has_six_month_acceptance
-
-
 def _posterior_probability(evidence: StageEvidence, prior: float, strength: float) -> float:
     return (evidence.successes + prior * strength) / (evidence.trials + strength)
 
@@ -238,9 +224,6 @@ def probability_feedback_signals(
             stage: _posterior_probability(evidence[stage], priors[stage], prior_strength)
             for stage in priors
         }
-        if _probe_terminal_blocked(groups):
-            stage_probabilities = dict(stage_probabilities)
-            stage_probabilities["six_month"] = 0.0
         probability = math.prod(stage_probabilities.values())
         score = RELATIVE_SCORE_SCALE * (_logit(probability) - _logit(global_probability))
         score = max(-RELATIVE_SCORE_LIMIT, min(RELATIVE_SCORE_LIMIT, score))

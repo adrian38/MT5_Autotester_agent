@@ -3046,10 +3046,9 @@ def select_next_seed_survivors(
         return []
     if fitness_feedback and SELECTION_FITNESS_APPLIED_SCALE:
         survivors.sort(
-            key=lambda item: (
+            key=lambda item: item[1].score + (
                 fitness_feedback.get(str(item[0].path), 0.0)
-                * SELECTION_FITNESS_APPLIED_SCALE,
-                item[1].score,
+                * SELECTION_FITNESS_APPLIED_SCALE
             ),
             reverse=True,
         )
@@ -3374,7 +3373,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
 
 
 def _relative_delta_pct(reference: float, observed: float, *, floor: float = 1.0) -> float:
-    denominator = max(abs(reference), floor)
+    denominator = max(abs(reference), abs(observed), floor)
     return abs(observed - reference) / denominator * 100.0
 
 
@@ -4538,6 +4537,7 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             policy=f"{original_variant.policy}+final_tick_ohlc_rescore",
         )
         thresholds = argparse.Namespace(
+            broker=args.broker,
             final_tick_min_history_quality=float(args.final_tick_min_history_quality),
             symbol_suffix=args.symbol_suffix,
             from_date=from_date,

@@ -32,6 +32,7 @@ from ubs_agent import (
     final_tick_ohlc_retry_exhausted_for_dates,
     final_tick_stage_prefixes,
     final_tick_similarity,
+    _relative_delta_pct,
     _evaluate_final_tick_tick_report,
     recreate_work_dir,
     related_timeframes,
@@ -47,6 +48,7 @@ from ubs_agent import (
     reserved_timeframe_plan,
     repair_seed_backtest_set,
     report_matches_variant,
+    rescore_final_tick_only,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
     run_backtests,
@@ -1344,7 +1346,37 @@ class UBSSetsFileTests(unittest.TestCase):
             {str(higher_score.path): -15.0, str(lower_score.path): 15.0},
         )
 
-        self.assertEqual(selected[0][0], lower_score)
+        self.assertEqual(selected[0][0], higher_score)
+
+    def test_next_seed_survivors_allow_fitness_to_nudge_close_scores(self) -> None:
+        slightly_higher_score = Variant(
+            Path("slightly_higher.set"),
+            Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
+            "XAUUSD", "H4", (), (), "", (), (),
+        )
+        slightly_lower_score = Variant(
+            Path("slightly_lower.set"),
+            Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+            "EURUSD", "H1", (), (), "", (), (),
+        )
+
+        selected = select_next_seed_survivors(
+            [(slightly_higher_score, score(52.0)), (slightly_lower_score, score(50.0))],
+            20.0,
+            1,
+            {},
+            {},
+            {str(slightly_higher_score.path): -15.0, str(slightly_lower_score.path): 15.0},
+        )
+
+        self.assertEqual(selected[0][0], slightly_lower_score)
+
+    def test_relative_delta_is_symmetric(self) -> None:
+        forward = _relative_delta_pct(100.0, 135.0)
+        reverse = _relative_delta_pct(135.0, 100.0)
+
+        self.assertAlmostEqual(forward, reverse)
+        self.assertAlmostEqual(forward, 35.0 / 135.0 * 100.0)
 
     def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
         selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]
@@ -1577,6 +1609,78 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(memory.calls[0][2], "pending_history_quality")
         self.assertEqual(status_counts, {"pending_history_quality": 1})
+
+    def test_final_tick_rescore_forwards_broker_to_real_tick_parser(self) -> None:
+        class Cursor:
+            def __init__(self, rows) -> None:
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+        class Connection:
+            def __init__(self, rows) -> None:
+                self.rows = rows
+
+            def execute(self, _query):
+                return Cursor(self.rows)
+
+        class Memory:
+            def __init__(self, rows) -> None:
+                self.conn = Connection(rows)
+                self.path = Path("memory.sqlite")
+                self.active_final_tick_stage = "probe"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ohlc_report = Path(temp_dir) / "ohlc.htm"
+            tick_report = Path(temp_dir) / "tick.htm"
+            ohlc_report.touch()
+            tick_report.touch()
+            row = {
+                "id": 42,
+                "run_id": 7,
+                "ft_run_id": 7,
+                "ft_ohlc_report_path": str(ohlc_report),
+                "ft_real_tick_report_path": str(tick_report),
+                "ft_from_date": "2026.05.01",
+                "ft_to_date": "2026.05.31",
+            }
+            args = SimpleNamespace(
+                broker="ICTRADING",
+                symbol_map="",
+                symbol_suffix="",
+                final_tick_stage="probe",
+                from_date="2026.05.01",
+                to_date="2026.05.31",
+                final_tick_min_history_quality=80.0,
+                final_tick_min_ohlc_trades=4,
+                final_tick_min_trades_w1=2,
+                final_tick_min_trades_mn=0,
+                final_tick_max_net_delta_pct=35.0,
+                final_tick_max_pf_delta_pct=35.0,
+                final_tick_max_dd_delta_pct=35.0,
+                final_tick_max_trades_delta_pct=35.0,
+            )
+            variant = Variant(
+                path=Path("candidate.set"),
+                seed=Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+                target_symbol="EURUSD",
+                target_period="H1",
+                mutated_keys=(),
+                missing_lot_keys=(),
+                policy="generated",
+            )
+            with (
+                patch("ubs_agent.variant_from_candidate_row", return_value=variant),
+                patch("ubs_agent._read_ohlc_report_cfg_dates", return_value=("", "")),
+                patch("ubs_agent.score_report_file", return_value=score(80.0, symbol="EURUSD", timeframe="H1", trades=10)),
+                patch("ubs_agent.report_matches_variant", return_value=(True, "")),
+                patch("ubs_agent._evaluate_final_tick_tick_report") as evaluate_tick,
+            ):
+                rescore_final_tick_only(args, Memory([row]), ScoreConfig())
+
+            forwarded_args = evaluate_tick.call_args.args[1]
+            self.assertEqual(forwarded_args.broker, "ICTRADING")
 
     def test_empty_real_tick_report_with_no_history_log_is_rejected(self) -> None:
         class Memory:

@@ -45,7 +45,7 @@ class UBSWeightsTests(unittest.TestCase):
         self.assertLess(signals["BAD"].score, 0.0)
         self.assertGreater(signals["GOOD"].probability, signals["BAD"].probability)
 
-    def test_probe_rejected_without_six_month_acceptance_is_terminal_negative_weight(self) -> None:
+    def test_probe_rejection_is_smoothed_without_zeroing_aggregate_probability(self) -> None:
         terminal = {
             "status": "accepted",
             "robust_status": "accepted",
@@ -75,7 +75,8 @@ class UBSWeightsTests(unittest.TestCase):
         )
 
         self.assertLess(signals["TERMINAL"].score, 0.0)
-        self.assertEqual(signals["TERMINAL"].probability, 0.0)
+        self.assertGreater(signals["TERMINAL"].probability, 0.0)
+        self.assertGreater(signals["TERMINAL"].stage_probabilities["six_month"], 0.0)
         self.assertGreater(signals["GOOD"].score, signals["TERMINAL"].score)
 
     def test_percentile_mutation_multipliers_preserve_order_and_ties(self) -> None:

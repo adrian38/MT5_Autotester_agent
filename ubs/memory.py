@@ -398,7 +398,7 @@ class AgentMemory:
         params: tuple[object, ...] = ()
         run_filter = ""
         if exclude_run_id is not None:
-            run_filter = "and c.run_id != ?"
+            run_filter = "and c.run_id < ?"
             params = (int(exclude_run_id),)
         rows = self.conn.execute(
             f"""

@@ -1,6 +1,8 @@
 import json
 import unittest
+from unittest.mock import Mock
 
+from ubs.memory import AgentMemory
 from ubs.selection import SelectionFitnessModel, finalized_six_month_label
 
 
@@ -19,6 +21,21 @@ def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: floa
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
+    def test_fitness_model_uses_only_runs_strictly_before_excluded_run(self) -> None:
+        connection = Mock()
+        connection.execute.return_value.fetchall.return_value = []
+        memory = AgentMemory.__new__(AgentMemory)
+        memory.conn = connection
+        memory._selection_fitness_models = {}
+
+        model = memory.selection_fitness_model(exclude_run_id=7)
+
+        self.assertIsNone(model)
+        query, params = connection.execute.call_args.args
+        self.assertIn("and c.run_id < ?", query)
+        self.assertNotIn("and c.run_id != ?", query)
+        self.assertEqual(params, (7,))
+
     def test_final_label_accepts_probe_pending_operations_when_six_month_passes(self) -> None:
         row = {
             "status": "accepted",
@@ -76,4 +93,3 @@ class UBSSelectionFitnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
