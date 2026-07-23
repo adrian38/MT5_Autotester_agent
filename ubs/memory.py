@@ -210,6 +210,7 @@ class AgentMemory:
             """
         )
         self._reclassify_empty_context_no_trades()
+        self._reclassify_legacy_real_tick_no_history()
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -265,6 +266,69 @@ class AgentMemory:
                     f"update {table} set status='report_mismatch', accepted=null where id in ({placeholders})",
                     tuple(ids),
                 )
+
+    def _reclassify_legacy_real_tick_no_history(self) -> int:
+        """Migrate transient Model=4 sync failures stored as final rejections."""
+        migrated = 0
+        migrated_at = datetime.now().isoformat(timespec="seconds")
+        for table in FINAL_TICK_STAGE_TABLES.values():
+            rows = self.conn.execute(
+                f"""
+                select candidate_id, similarity_json, history_quality, min_history_quality
+                from {table}
+                where status='rejected'
+                  and coalesce(similarity_json, '') != ''
+                """
+            ).fetchall()
+            for row in rows:
+                try:
+                    context = json.loads(row["similarity_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(context, dict):
+                    continue
+                reasons = context.get("reasons")
+                history = context.get("history")
+                if (
+                    not isinstance(reasons, list)
+                    or "real_tick_no_history" not in reasons
+                    or not isinstance(history, dict)
+                    or history.get("tick_download_failed") is not True
+                ):
+                    continue
+
+                context["accepted"] = False
+                context["technical_failure"] = True
+                context.setdefault("history_quality", row["history_quality"])
+                context.setdefault("min_history_quality", row["min_history_quality"])
+                history["retryable"] = True
+                history["failure_type"] = "tick_history_sync"
+                history["recommendation"] = (
+                    "reintentar tras estabilizar la conexion MT5; "
+                    "no asumir ausencia de historico del broker"
+                )
+                context["status_audit"] = {
+                    "classification": "transient_tick_sync_failure",
+                    "migrated_at": migrated_at,
+                    "migrated_from_status": "rejected",
+                }
+                self.conn.execute(
+                    f"""
+                    update {table}
+                    set status='pending_history_quality',
+                        accepted=0,
+                        real_tick_score=null,
+                        real_tick_metrics_json=null,
+                        similarity_json=?
+                    where candidate_id=? and status='rejected'
+                    """,
+                    (
+                        json.dumps(context, ensure_ascii=True, sort_keys=True),
+                        int(row["candidate_id"]),
+                    ),
+                )
+                migrated += 1
+        return migrated
 
     def create_run(
         self,

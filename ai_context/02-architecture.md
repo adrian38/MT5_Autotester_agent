@@ -134,14 +134,23 @@ Owns the Strategy Tester workflow:
 - Write logs to timestamped `logs/run_*.log` and `logs/last_run.log`.
 - Delete old report artifacts for the same report name immediately before
   real backtests, so stale HTML/images are not mistaken for fresh output.
+- Before a `Model=4` process starts, rotate every HCC year for the target symbol
+  through `prepare_model4_history_preflight()`. After MT5 exits,
+  `finish_model4_history_preflight()` keeps the refreshed cache or restores the
+  previous cache if synchronization did not complete. This deliberately places
+  reconnect-tolerant M1 synchronization before real-tick download. Rotating the
+  whole symbol history is intentional: on some terminal data folders, rotating
+  only the `ToDate` year lets MT5 rebuild it from adjacent cached years before
+  the startup reconnect occurs.
 - When `--infer-tester-from-set` is used, infer exact symbol tokens before
   loose aliases. This matters for UBS names like `XAGUSD__...__XAUUSD_MIX...`.
 - Support multiterminal execution with `--multi-terminal`,
   `--terminals-config`, and `--max-workers`. In this mode, jobs are queued and
   distributed across enabled terminal profiles. Each profile can have its own
   `terminal64.exe`, data directory, Experts root, UBS `.ex5`, and portable
-  flag. Report names remain compatible with the existing UBS stem-based
-  convention.
+  flag. Disabled profiles are never activated by `max_workers`; it is only a
+  concurrency cap. Report names remain compatible with the existing UBS
+  stem-based convention.
 
 ### `ubs_agent.py`
 
@@ -288,11 +297,19 @@ UBS support code lives in the `ubs/` package:
 - `accepted`: real-tick report has sufficient history quality and metrics are
   within configured deltas of the OHLC control report.
 - `rejected`: real-tick report failed quality or metric similarity checks.
-- `pending_history_quality`: real-tick report produced but history quality is
-  below threshold — retryable when real-tick data improves.
+- `pending_history_quality`: real-tick history quality is below threshold, or
+  Model=4 produced an empty tester context after a tick download/synchronization
+  failure — retryable when data or the MT5 connection improves. Empty Model=4
+  shells keep the report path and audit context but no Tick score/metrics.
 - `pending_ohlc_trades`: OHLC batch produced fewer trades than the configured
   minimum — retryable via the OHLC-retry date range.
 - `no_report`, `parse_error`, `report_mismatch`: diagnosis only.
+
+`AgentMemory._init()` migrates the exact legacy technical signature
+`rejected + real_tick_no_history + tick_download_failed=true` to
+`pending_history_quality` in both Final Tick stage tables and adds
+`similarity_json.status_audit`. The migration is idempotent and does not touch
+genuine threshold or similarity rejections.
 
 ### `ubs_score.py`
 

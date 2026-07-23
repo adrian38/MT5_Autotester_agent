@@ -3,7 +3,7 @@ import random
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 from ubs.models import Seed, Variant
@@ -33,6 +33,7 @@ from ubs_agent import (
     final_tick_stage_prefixes,
     final_tick_similarity,
     _evaluate_final_tick_tick_report,
+    reconcile_final_tick_reports,
     recreate_work_dir,
     related_timeframes,
     resolve_workspace_path,
@@ -100,6 +101,77 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_final_tick_reconcile_uses_explicit_broker_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_set = root / "candidate.set"
+            source_set.write_text("test", encoding="utf-8")
+            ohlc_report = root / "ohlc6m_000001_candidate.htm"
+            tick_report = root / "tick6m_000001_candidate.htm"
+            row = {
+                "id": 1,
+                "set_path": str(source_set),
+                "final_tick_status": "pending_history_quality",
+            }
+            memory = SimpleNamespace(
+                active_final_tick_stage="probe",
+                accepted_candidates_for_final_tick=Mock(return_value=[row]),
+                record_candidate_final_tick=Mock(),
+            )
+            seed = Seed(
+                path=source_set,
+                symbol="S&P.fs",
+                period="H1",
+                family="test",
+                run_strategy="1",
+            )
+            variant = Variant(
+                path=source_set,
+                seed=seed,
+                target_symbol="S&P.fs",
+                target_period="H1",
+                mutated_keys=(),
+                missing_lot_keys=(),
+                policy="test",
+            )
+            results = [
+                score(10.0, symbol="S&P.fs", timeframe="H1", trades=20),
+                score(5.0, symbol="S&P.fs", timeframe="H1", trades=20),
+            ]
+
+            def find_report(path: Path) -> Path:
+                return tick_report if path.name.startswith("tick6m_") else ohlc_report
+
+            with (
+                patch("ubs_agent.variant_from_candidate_row", return_value=variant),
+                patch("ubs_agent.find_report_for_set", side_effect=find_report),
+                patch(
+                    "ubs_agent._read_ohlc_report_cfg_dates",
+                    return_value=("2026.01.01", "2026.06.30"),
+                ),
+                patch("ubs_agent.score_report_file", side_effect=results) as score_report,
+                patch("ubs_agent.report_matches_variant", return_value=(True, "")),
+                patch(
+                    "ubs_agent.final_tick_similarity",
+                    return_value={"accepted": False, "reasons": ["profit_factor_floor"]},
+                ),
+            ):
+                counts = reconcile_final_tick_reports(
+                    memory,
+                    30,
+                    ScoreConfig(),
+                    {},
+                    broker="AXI",
+                    final_tick_stage="six_month",
+                )
+
+            self.assertEqual(counts, {"rejected": 1})
+            self.assertEqual(
+                [call.kwargs["broker"] for call in score_report.call_args_list],
+                ["AXI", "AXI"],
+            )
+            memory.record_candidate_final_tick.assert_called_once()
+
     def test_normalize_set_symbol_preserves_exchange_suffixes(self) -> None:
         self.assertEqual(normalize_set_symbol("WULF.NAS-24"), "WULF.NAS-24")
         self.assertEqual(normalize_set_symbol("DPZ.NAS"), "DPZ.NAS")
@@ -1576,9 +1648,14 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertEqual(memory.calls[0][2], "pending_history_quality")
+        self.assertIsNone(memory.calls[0][4])
         self.assertEqual(status_counts, {"pending_history_quality": 1})
+        similarity = json.loads(memory.calls[0][7])
+        self.assertEqual(similarity["reasons"], ["empty_tester_context"])
+        self.assertEqual(similarity["history_quality"], 99.0)
+        self.assertEqual(similarity["min_history_quality"], 80.0)
 
-    def test_empty_real_tick_report_with_no_history_log_is_rejected(self) -> None:
+    def test_empty_real_tick_report_with_no_history_log_stays_pending(self) -> None:
         class Memory:
             active_final_tick_stage = "six_month"
 
@@ -1589,8 +1666,8 @@ class UBSSetsFileTests(unittest.TestCase):
                 self.calls.append(args)
 
         args = SimpleNamespace(
-            broker="ROBOFOREX",
-            symbol_suffix="",
+            broker="AXI",
+            symbol_suffix=".sa",
             final_tick_min_history_quality=80.0,
             from_date="2026.01.01",
             to_date="2026.06.30",
@@ -1619,8 +1696,8 @@ class UBSSetsFileTests(unittest.TestCase):
             report.with_name("tick.mt5log.txt").write_text(
                 "\n".join(
                     [
-                        "Tester\tMSFT: preliminary downloading of history ticks started, it may take quite a long time",
-                        "Tester\tMSFT: preliminary downloading of history ticks canceled",
+                        "Tester\tMSFT.sa: preliminary downloading of history ticks started, it may take quite a long time",
+                        "Tester\tMSFT.sa: preliminary downloading of history ticks canceled",
                         "Tester\tno history data, stop testing",
                     ]
                 ),
@@ -1639,16 +1716,19 @@ class UBSSetsFileTests(unittest.TestCase):
                     21393,
                     variant,
                     Path("ohlc.htm"),
-                    score(175.0, symbol="MSFT", timeframe="H1", trades=24),
+                    score(175.0, symbol="MSFT.sa", timeframe="H1", trades=24),
                     report,
                     status_counts,
                 )
 
         self.assertTrue(handled)
-        self.assertEqual(memory.calls[0][2], "rejected")
-        self.assertEqual(status_counts, {"rejected": 1})
+        self.assertEqual(memory.calls[0][2], "pending_history_quality")
+        self.assertEqual(status_counts, {"pending_history_quality": 1})
         similarity = json.loads(memory.calls[0][7])
         self.assertEqual(similarity["reasons"], ["real_tick_no_history"])
+        self.assertTrue(similarity["technical_failure"])
+        self.assertEqual(similarity["history"]["failure_type"], "tick_history_sync")
+        self.assertTrue(similarity["history"]["retryable"])
 
     def test_zero_trade_real_tick_with_valid_context_is_rejected(self) -> None:
         class Memory:

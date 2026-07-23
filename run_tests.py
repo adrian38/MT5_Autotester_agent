@@ -28,6 +28,8 @@ TEMPLATE_FILE = BASE_DIR / "tester_template.ini"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RUNNING_TERMINAL_EXIT_CODE = 3
+MODEL4_NO_HISTORY_EXIT_CODE = 4
+MODEL4_NO_HISTORY_RETRY_DELAY_SECONDS = 5
 GENERATED_SET_ROOT_PREFIXES = ("accepted_gen_", "mismatch_gen_")
 
 # Lines in the MT5 tester journal that indicate MT5 is stuck waiting for tick download.
@@ -72,6 +74,12 @@ class BacktestJob:
     index: int
     expert: str
     set_file: Path | None
+
+
+@dataclass(frozen=True)
+class HistoryCacheRotation:
+    original: Path
+    backup: Path
 
 
 class RunLogger:
@@ -488,7 +496,7 @@ def terminal_section_sort_key(section: str) -> tuple[int, str]:
         return (999999, section)
 
 
-def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -> list[TerminalProfile]:
+def load_terminal_profiles(config_path: Path) -> list[TerminalProfile]:
     if not config_path.exists():
         raise FileNotFoundError(f"No existe la configuracion multiterminal: {config_path}")
 
@@ -507,7 +515,7 @@ def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -
         values = parser[section]
         if normalize_terminal_broker(values.get("broker", target_broker)) != target_broker:
             continue
-        if not ignore_enabled and not parse_bool(values.get("enabled"), True):
+        if not parse_bool(values.get("enabled"), True):
             continue
         mt5_raw = values.get("mt5_path", "").strip()
         experts_raw = values.get("experts_root", "").strip()
@@ -1450,6 +1458,119 @@ def tester_model_from_ini(ini_path: Path) -> str:
     return parser["Tester"].get("Model", "").strip()
 
 
+def model4_history_cache_files(ini_path: Path, terminal_data_dirs: list[Path]) -> list[Path]:
+    """Return all target-symbol HCC files whose refresh delays Model=4 safely.
+
+    Some MT5 builds start the automatic tester about 400 ms after the first
+    terminal synchronization, then briefly reconnect.  A Model=4 tick download
+    started in that window is cancelled and MT5 writes a zero-bars/zero-ticks
+    report.  M1 history synchronization survives the same reconnect.
+
+    Rotating only the ToDate-year HCC is insufficient on terminals that can
+    rebuild that single file from adjacent cached years in a few milliseconds.
+    Rotate every HCC for the selected symbol so MT5 must complete the resilient
+    M1 synchronization before it asks for real ticks.
+    """
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(ini_path, encoding="utf-8-sig")
+    if not parser.has_section("Tester"):
+        return []
+    tester = parser["Tester"]
+    symbol = tester.get("Symbol", "").strip()
+    if not symbol:
+        return []
+
+    candidates: set[Path] = set()
+    for data_dir in terminal_data_dirs:
+        bases_dir = data_dir / "bases"
+        if not bases_dir.is_dir():
+            continue
+        try:
+            server_dirs = [path for path in bases_dir.iterdir() if path.is_dir()]
+        except OSError:
+            continue
+        for server_dir in server_dirs:
+            symbol_history_dir = server_dir / "history" / symbol
+            if not symbol_history_dir.is_dir():
+                continue
+            try:
+                symbol_hcc_files = [
+                    path
+                    for path in symbol_history_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() == ".hcc"
+                ]
+            except OSError:
+                continue
+            candidates.update(symbol_hcc_files)
+    return sorted(candidates)
+
+
+def prepare_model4_history_preflight(
+    ini_path: Path,
+    terminal_data_dirs: list[Path],
+    logger: RunLogger,
+) -> list[HistoryCacheRotation]:
+    """Temporarily rotate cached M1 history so MT5 reconnects before tick sync."""
+    rotations: list[HistoryCacheRotation] = []
+    candidates = model4_history_cache_files(ini_path, terminal_data_dirs)
+    if not candidates:
+        logger.write(
+            "Preflight Model=4: no hay HCC del simbolo en cache; "
+            "MT5 sincronizara M1 antes de descargar ticks."
+        )
+        return rotations
+
+    for original in candidates:
+        backup = original.with_name(
+            f"{original.name}.model4-preflight-{os.getpid()}-{time.time_ns()}.bak"
+        )
+        try:
+            original.replace(backup)
+        except OSError as exc:
+            logger.write(f"AVISO: no pude preparar la sincronizacion M1 de {original}: {exc}")
+            continue
+        rotations.append(HistoryCacheRotation(original=original, backup=backup))
+        logger.write(
+            f"Preflight Model=4: cache M1 rotada temporalmente para "
+            f"{original.parent.name}/{original.stem}."
+        )
+    return rotations
+
+
+def finish_model4_history_preflight(
+    rotations: list[HistoryCacheRotation],
+    logger: RunLogger,
+) -> None:
+    """Keep MT5's refreshed HCC, or restore the old cache if refresh failed."""
+    for rotation in rotations:
+        try:
+            refreshed = rotation.original.is_file() and rotation.original.stat().st_size > 0
+        except OSError:
+            refreshed = False
+        if refreshed:
+            try:
+                rotation.backup.unlink()
+                logger.write(
+                    f"Preflight Model=4 completado: cache M1 renovada "
+                    f"({rotation.original.parent.name}/{rotation.original.stem})."
+                )
+            except OSError as exc:
+                logger.write(f"AVISO: no pude borrar la copia temporal {rotation.backup}: {exc}")
+            continue
+
+        try:
+            if rotation.original.exists():
+                rotation.original.unlink()
+            rotation.backup.replace(rotation.original)
+            logger.write(f"Preflight Model=4: cache M1 anterior restaurada ({rotation.original}).")
+        except OSError as exc:
+            logger.write(
+                f"ERROR: no pude restaurar la cache M1 {rotation.original} "
+                f"desde {rotation.backup}: {exc}"
+            )
+
+
 def find_tester_journal_log(terminal_data_dirs: list[Path], min_mtime: float = 0.0) -> Path | None:
     """Return the most recently modified .log in <data_dir>/Tester/logs/ modified after min_mtime."""
     best: Path | None = None
@@ -1537,6 +1658,59 @@ def write_tester_journal_sidecars(
             logger.write(f"  Log tester guardado: {sidecar}")
         except OSError as exc:
             logger.write(f"  Aviso: no pude guardar log tester para {report.name}: {exc}")
+
+
+def _read_mt5_report_text(report: Path) -> str:
+    try:
+        raw = report.read_bytes()
+    except OSError:
+        return ""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _mt5_report_integer_metric(text: str, *labels: str) -> int | None:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?:{label_pattern})\s*:?\s*</td>\s*"
+        rf"<td[^>]*>\s*(?:<b>)?\s*([0-9][0-9\s.,]*)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group(1))
+    return int(digits) if digits else None
+
+
+def model4_report_has_empty_tester_data(report_files: list[Path]) -> bool:
+    """Return True when MT5 emitted a report shell without bars or ticks.
+
+    MT5 can exit with code 0 after a transient connection loss while fetching
+    real ticks.  The resulting report may even retain a plausible History
+    Quality value, but Bars=0 and Ticks=0 means no test was executed.
+    """
+    main_report = next(
+        (path for path in report_files if path.suffix.lower() in {".htm", ".html"}),
+        None,
+    )
+    if main_report is None:
+        return False
+    text = _read_mt5_report_text(main_report)
+    if not text:
+        return False
+    bars = _mt5_report_integer_metric(text, "Barras", "Bars")
+    ticks = _mt5_report_integer_metric(text, "Ticks")
+    return bars == 0 and ticks == 0
 
 
 def _tester_log_is_stuck(last_line: str) -> bool:
@@ -1796,12 +1970,16 @@ def run_test(
 
     real_tick_model = tester_model_from_ini(ini_path) == "4"
     kick_after_seconds = settings.tester_kick_after_seconds if real_tick_model else 0
-    max_attempts = 2 if kick_after_seconds > 0 else 1
+    # Model=4 can produce an empty report and exit successfully when the broker
+    # connection drops during the preliminary tick download.  Always reserve a
+    # second attempt for that false-success path, even when stuck detection is
+    # disabled.
+    max_attempts = 2 if real_tick_model else 1
     last_exit_code = 1
 
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
-            logger.write(f"Reintentando MT5 Model=4 tras reinicio automatico ({attempt}/{max_attempts}).")
+            logger.write(f"Reintentando MT5 Model=4 ({attempt}/{max_attempts}).")
         delete_existing_report_files(
             report_path,
             terminal_data_dirs,
@@ -1810,23 +1988,31 @@ def run_test(
             protected_set_name=protected_set_name,
         )
 
-        before = time.time()
-        logger.write(f"DIAG MT5_POPEN_BEFORE mt5={settings.mt5_path} attempt={attempt}/{max_attempts}")
-        process = subprocess.Popen(command, creationflags=NO_WINDOW)
-        logger.write(
-            f"DIAG MT5_POPEN_AFTER pid={process.pid} mt5={settings.mt5_path} "
-            f"attempt={attempt}/{max_attempts}"
+        history_rotations = (
+            prepare_model4_history_preflight(ini_path, terminal_data_dirs, logger)
+            if real_tick_model
+            else []
         )
-        attempt_kick_after = kick_after_seconds if attempt < max_attempts else max(0, kick_after_seconds * 2)
-        exit_code, restarted, elapsed = wait_for_mt5_process(
-            process,
-            logger,
-            kick_after_seconds=attempt_kick_after,
-            tester_log_dirs=terminal_data_dirs,
-            log_check_min_mtime=before,
-            report_path=report_path,
-            mt5_path=settings.mt5_path,
-        )
+        try:
+            before = time.time()
+            logger.write(f"DIAG MT5_POPEN_BEFORE mt5={settings.mt5_path} attempt={attempt}/{max_attempts}")
+            process = subprocess.Popen(command, creationflags=NO_WINDOW)
+            logger.write(
+                f"DIAG MT5_POPEN_AFTER pid={process.pid} mt5={settings.mt5_path} "
+                f"attempt={attempt}/{max_attempts}"
+            )
+            attempt_kick_after = kick_after_seconds if attempt < max_attempts else max(0, kick_after_seconds * 2)
+            exit_code, restarted, elapsed = wait_for_mt5_process(
+                process,
+                logger,
+                kick_after_seconds=attempt_kick_after,
+                tester_log_dirs=terminal_data_dirs,
+                log_check_min_mtime=before,
+                report_path=report_path,
+                mt5_path=settings.mt5_path,
+            )
+        finally:
+            finish_model4_history_preflight(history_rotations, logger)
         last_exit_code = exit_code
         logger.write(f"MT5 termino con codigo: {exit_code}")
         logger.write(f"Duracion: {elapsed:.1f} segundos")
@@ -1849,6 +2035,18 @@ def run_test(
             logger,
         )
         if report_files:
+            empty_tester_data = (
+                real_tick_model
+                and model4_report_has_empty_tester_data(report_files)
+            )
+            if empty_tester_data and attempt < max_attempts:
+                logger.write(
+                    "MT5 Model=4 genero un reporte vacio (0 barras / 0 ticks); "
+                    "se considera un fallo tecnico de historico y se reintentara."
+                )
+                time.sleep(MODEL4_NO_HISTORY_RETRY_DELAY_SECONDS)
+                continue
+
             logger.write("Reportes encontrados:")
             for path in report_files:
                 logger.write(f"  {path} ({path.stat().st_size} bytes)")
@@ -1857,6 +2055,12 @@ def run_test(
                 logger.write("ERROR: No quedo ningun reporte nuevo copiado a reports.")
                 return 1
             write_tester_journal_sidecars(copied_reports, terminal_data_dirs, before, logger)
+            if empty_tester_data:
+                logger.write(
+                    "ERROR: MT5 Model=4 volvio a generar 0 barras / 0 ticks; "
+                    "el reporte se conserva como evidencia y el trabajo queda reintentable."
+                )
+                return MODEL4_NO_HISTORY_EXIT_CODE
             return exit_code
 
         if real_tick_model and attempt < max_attempts:
@@ -2058,10 +2262,7 @@ def main() -> int:
     terminal_profiles: list[TerminalProfile] = []
     if args.multi_terminal:
         try:
-            configured_profiles = load_terminal_profiles(
-                Path(args.terminals_config).expanduser(),
-                ignore_enabled=args.max_workers > 1,
-            )
+            configured_profiles = load_terminal_profiles(Path(args.terminals_config).expanduser())
         except (OSError, ValueError) as exc:
             logger.write(f"ERROR: {exc}")
             return 1
@@ -2285,7 +2486,16 @@ def main() -> int:
                     args.symbol_shares_suffix,
                     getattr(args, "symbol_suffix_universe", {}),
                 )
-            exit_code = run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs)
+            protected_set_name = job.set_file.name if job.set_file else ""
+            exit_code = run_test(
+                ini_path,
+                report_path,
+                settings,
+                args.dry_run,
+                logger,
+                terminal_data_dirs,
+                protected_set_name,
+            )
             if exit_code != 0:
                 failures += 1
 

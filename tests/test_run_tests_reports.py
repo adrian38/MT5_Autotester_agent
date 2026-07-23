@@ -15,6 +15,162 @@ class ListLogger:
 
 
 class CopyReportsToProjectTests(unittest.TestCase):
+    def test_detects_model4_report_shell_with_zero_bars_and_ticks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = run_tests.Path(temp_dir) / "empty.htm"
+            report.write_text(
+                "\n".join(
+                    [
+                        "<td>Calidad del historial:</td><td><b>99%</b></td>",
+                        "<td>Barras:</td><td><b>0</b></td>",
+                        "<td>Ticks:</td><td><b>0</b></td>",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(run_tests.model4_report_has_empty_tester_data([report]))
+
+    def test_does_not_treat_zero_trade_report_with_market_data_as_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = run_tests.Path(temp_dir) / "zero_trades.htm"
+            report.write_text(
+                "\n".join(
+                    [
+                        "<td>Bars:</td><td><b>2900</b></td>",
+                        "<td>Ticks:</td><td><b>15389412</b></td>",
+                        "<td>Total Trades:</td><td><b>0</b></td>",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(run_tests.model4_report_has_empty_tester_data([report]))
+
+    def test_model4_history_preflight_rotates_all_target_symbol_years(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            ini_path = root / "tester.ini"
+            ini_path.write_text(
+                "\n".join(
+                    [
+                        "[Tester]",
+                        "Symbol=S&P.fs",
+                        "ToDate=2026.06.30",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            wanted = root / "bases" / "Axi-Live" / "history" / "S&P.fs" / "2026.hcc"
+            other_year = wanted.with_name("2025.hcc")
+            other_symbol = root / "bases" / "Axi-Live" / "history" / "USDJPY" / "2026.hcc"
+            for path in (wanted, other_year, other_symbol):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(path.name.encode("ascii"))
+            logger = ListLogger()
+
+            rotations = run_tests.prepare_model4_history_preflight(ini_path, [root], logger)
+
+            self.assertEqual(
+                {rotation.original for rotation in rotations},
+                {wanted, other_year},
+            )
+            self.assertFalse(wanted.exists())
+            self.assertFalse(other_year.exists())
+            self.assertTrue(all(rotation.backup.exists() for rotation in rotations))
+            self.assertTrue(other_symbol.exists())
+
+            run_tests.finish_model4_history_preflight(rotations, logger)
+
+            self.assertTrue(wanted.exists())
+            self.assertTrue(other_year.exists())
+            self.assertTrue(all(not rotation.backup.exists() for rotation in rotations))
+            self.assertTrue(any("anterior restaurada" in message for message in logger.messages))
+
+    def test_model4_history_preflight_keeps_refreshed_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            ini_path = root / "tester.ini"
+            ini_path.write_text(
+                "[Tester]\nSymbol=S&P.fs\nToDate=2026.06.30\n",
+                encoding="utf-8",
+            )
+            cache = root / "bases" / "Axi-Live" / "history" / "S&P.fs" / "2026.hcc"
+            cache.parent.mkdir(parents=True)
+            cache.write_bytes(b"old")
+            logger = ListLogger()
+
+            rotations = run_tests.prepare_model4_history_preflight(ini_path, [root], logger)
+            cache.write_bytes(b"refreshed")
+            run_tests.finish_model4_history_preflight(rotations, logger)
+
+            self.assertEqual(cache.read_bytes(), b"refreshed")
+            self.assertFalse(rotations[0].backup.exists())
+            self.assertTrue(any("cache M1 renovada" in message for message in logger.messages))
+
+    def test_run_test_retries_model4_empty_report_even_without_kick_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            logger = ListLogger()
+            settings = run_tests.TesterSettings(
+                mt5_path=root / "terminal64.exe",
+                delay_seconds=0,
+                portable=False,
+                data_dir=None,
+                tester_kick_after_seconds=0,
+                terminal_cooldown_seconds=0,
+            )
+            first_report = root / "attempt1.htm"
+            second_report = root / "attempt2.htm"
+            first_report.write_text("empty", encoding="utf-8")
+            second_report.write_text("valid", encoding="utf-8")
+            first_process = Mock(pid=101)
+            second_process = Mock(pid=102)
+
+            with (
+                patch.object(run_tests, "tester_model_from_ini", return_value="4"),
+                patch.object(run_tests.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
+                patch.object(
+                    run_tests,
+                    "wait_for_mt5_process",
+                    side_effect=[(0, False, 1.0), (0, False, 2.0)],
+                ),
+                patch.object(run_tests, "delete_existing_report_files"),
+                patch.object(
+                    run_tests,
+                    "find_report_files",
+                    side_effect=[[first_report], [second_report]],
+                ),
+                patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
+                patch.object(
+                    run_tests,
+                    "model4_report_has_empty_tester_data",
+                    side_effect=[True, False],
+                ),
+                patch.object(run_tests, "copy_reports_to_project", return_value=[second_report]) as copy_reports,
+                patch.object(run_tests, "write_tester_journal_sidecars"),
+                patch.object(run_tests, "prepare_model4_history_preflight", return_value=[]) as preflight,
+                patch.object(run_tests, "finish_model4_history_preflight") as finish_preflight,
+                patch.object(run_tests, "log_ini_content"),
+                patch.object(run_tests.time, "sleep"),
+            ):
+                exit_code = run_tests.run_test(
+                    root / "tester.ini",
+                    root / "report",
+                    settings,
+                    False,
+                    logger,
+                    [],
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(preflight.call_count, 2)
+            self.assertEqual(finish_preflight.call_count, 2)
+            copy_reports.assert_called_once()
+            self.assertEqual(copy_reports.call_args.args[0], [second_report])
+            self.assertTrue(any("0 barras / 0 ticks" in message for message in logger.messages))
+
     def test_wait_closes_mt5_when_completed_report_stops_changing(self) -> None:
         process = Mock()
         process.poll.return_value = None
@@ -375,7 +531,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
 
             self.assertEqual([profile.name for profile in profiles], ["Axi"])
 
-    def test_multiterminal_config_can_ignore_enabled_for_multi_worker(self) -> None:
+    def test_multiterminal_config_never_loads_disabled_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)
             config = root / "ui_settings.ini"
@@ -401,9 +557,9 @@ class CopyReportsToProjectTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            profiles = run_tests.load_terminal_profiles(config, ignore_enabled=True)
+            profiles = run_tests.load_terminal_profiles(config)
 
-            self.assertEqual([profile.name for profile in profiles], ["IC enabled", "IC disabled"])
+            self.assertEqual([profile.name for profile in profiles], ["IC enabled"])
 
 
 if __name__ == "__main__":

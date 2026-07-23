@@ -61,6 +61,15 @@ requirement changes or a debt item is opened/closed.
   via CLI (`--model`). `--model 1` MUST generate 1 minute OHLC reports and
   `--model 4` MUST generate `Every tick based on real ticks` reports without
   editing `tester_template.ini`.
+- **FR-1.2.11** Before each real `Model=4` launch, the runner MUST force a
+  recoverable M1-history synchronization for the target symbol. It MUST
+  temporarily rotate every HCC year for that symbol, keep each refreshed HCC
+  produced by MT5, and restore any previous HCC that MT5 does not replace.
+  Rotating only the `ToDate` year is insufficient because some terminal
+  profiles rebuild it from adjacent cached years before the startup reconnect.
+  This preflight MUST run only while that terminal profile is closed. Its
+  purpose is to let MT5 survive the startup reconnect before the less resilient
+  real-tick download begins.
 
 ### 1.3 Multiterminal execution
 
@@ -87,6 +96,8 @@ requirement changes or a debt item is opened/closed.
   UI MUST show a specific MT5-open alert for exit code
   `RUNNING_TERMINAL_EXIT_CODE`. Checks MUST NOT interrupt terminal processes
   opened by the currently active batch itself.
+- **FR-1.3.8** `max_workers` MUST limit concurrency only. Increasing it MUST
+  never make a profile with `enabled=0` eligible for execution.
 
 ### 1.4 MT5 report parsing
 
@@ -347,12 +358,21 @@ requirement changes or a debt item is opened/closed.
   live-use pools; `pending_*` rows are not eligible until resolved.
 - **FR-1.8.11** Final Tick MUST support two intermediate pending states:
   `pending_history_quality` — real-tick report produced but history quality is
-  below threshold (retryable when data improves); `pending_ohlc_trades` — the
-  OHLC batch produced fewer trades than `--final-tick-min-ohlc-trades` (retryable
-  via OHLC-retry date range). Rows in pending states MUST NOT be treated as
-  final `accepted` or `rejected`. An empty Model=4 report whose tester journal
-  explicitly ends with `no history data, stop testing` is not low quality: it
-  MUST be finalized as `rejected` because the broker has no usable tick history.
+  below threshold or the Model=4 tick download/synchronization ended with an
+  empty tester context (retryable when the connection or data improves);
+  `pending_ohlc_trades` — the OHLC batch produced fewer trades than
+  `--final-tick-min-ohlc-trades` (retryable via OHLC-retry date range). Rows in
+  pending states MUST NOT be treated as final `accepted` or `rejected`. An empty
+  Model=4 report (`Bars=0` and `Ticks=0`) whose journal ends with
+  `no history data, stop testing` MUST be treated as a retryable technical
+  failure even when the HTML carries an apparently valid History Quality.
+  `run_tests.py` MUST retry that empty result once and return a nonzero technical
+  exit code if the retry is also empty. Scores and metrics parsed from an empty
+  Model=4 shell MUST NOT be stored or displayed as evaluated Tick results.
+  Persistent legacy rows with the exact signature
+  `rejected + real_tick_no_history + tick_download_failed=true` MUST be migrated
+  idempotently to `pending_history_quality`; genuine similarity or quality
+  rejections MUST remain unchanged.
 - **FR-1.8.12** `--final-tick-pending-only` MUST limit the Final Tick pass to
   rows that have no stored result or are in a pending state. Without that flag,
   Final Tick MUST rerun all robust-accepted candidates and replace existing rows.
@@ -1088,3 +1108,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 - **2026-06** — `UBS Portafolio` portfolio gate updated to `candidate_final_tick_6m`
   (6M stage), not probe. New optional filter: "Requerir 3 meses positivos 6M"
   via `filter_rows_by_recent_positive_months()` in `portfolio_manager/ubs_portfolio.py`.
+
+- **2026-07** — Model=4 startup reconnect hardening: before launching a real-tick
+  test, `run_tests.py` temporarily rotates every HCC year for the selected
+  symbol. This forces reconnect-tolerant M1 synchronization to span AXI's
+  predictable startup reconnect before the fragile real-tick download begins.
+  Final Tick disk reconciliation must receive broker, symbol suffix, and W1/MN
+  thresholds explicitly; reconciliation must not depend on a global CLI `args`
+  object.

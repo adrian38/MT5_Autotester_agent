@@ -86,6 +86,7 @@ class UBSFinalTickLogicMixin:
                 int(run["id"]),
                 score_config,
                 symbol_map,
+                broker=self._ubs_broker(),
                 min_history_quality=thresholds["min_quality"],
                 min_ohlc_trades=thresholds["min_ohlc_trades"],
                 min_trades_w1=thresholds["min_trades_w1"],
@@ -639,15 +640,46 @@ class UBSFinalTickLogicMixin:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _ubs_final_tick_reason(self, status: str, similarity: dict) -> str:
+    def _ubs_final_tick_reason(
+        self,
+        status: str,
+        similarity: dict,
+        *,
+        history_quality: object = None,
+        min_history_quality: object = None,
+    ) -> str:
         if status == "missing_6m":
             return "sin resultado Final Tick 6M"
         if status == "pending":
             return "pendiente"
         if status == "pending_history_quality":
-            quality = similarity.get("history_quality")
-            minimum = similarity.get("min_history_quality")
-            return f"calidad pendiente: {self._format_ubs_number(quality)}% < {self._format_ubs_number(minimum)}%"
+            quality = similarity.get("history_quality", history_quality)
+            minimum = similarity.get("min_history_quality", min_history_quality)
+            reasons = {str(reason) for reason in (similarity.get("reasons") or [])}
+            if "real_tick_no_history" in reasons:
+                return "descarga Real Tick interrumpida; reintento pendiente"
+            if "empty_tester_context" in reasons:
+                quality_text = self._format_ubs_number(quality)
+                return (
+                    f"contexto tester pendiente (calidad reportada {quality_text}%)"
+                    if quality_text
+                    else "contexto tester pendiente"
+                )
+            if quality is not None and minimum is not None:
+                try:
+                    quality_below_minimum = float(quality) < float(minimum)
+                except (TypeError, ValueError):
+                    quality_below_minimum = False
+                if quality_below_minimum:
+                    return (
+                        f"calidad pendiente: {self._format_ubs_number(quality)}% < "
+                        f"{self._format_ubs_number(minimum)}%"
+                    )
+                return (
+                    f"historico/contexto pendiente: calidad {self._format_ubs_number(quality)}% "
+                    f"(minimo {self._format_ubs_number(minimum)}%)"
+                )
+            return "historico/contexto pendiente"
         if status == "pending_ohlc_trades":
             checks = similarity.get("checks") if isinstance(similarity.get("checks"), dict) else {}
             check = checks.get("ohlc_trades", {}) if isinstance(checks, dict) else {}
@@ -811,7 +843,12 @@ class UBSFinalTickLogicMixin:
                     row["id"],
                     row["generation"],
                     self._format_ubs_status(status),
-                    self._ubs_final_tick_reason(status, similarity),
+                    self._ubs_final_tick_reason(
+                        status,
+                        similarity,
+                        history_quality=row["history_quality"],
+                        min_history_quality=row["min_history_quality"],
+                    ),
                     row["target_symbol"] or row["symbol"],
                     row["period"],
                     f"{self._format_ubs_number(row['history_quality'])}%" if row["history_quality"] is not None else "",

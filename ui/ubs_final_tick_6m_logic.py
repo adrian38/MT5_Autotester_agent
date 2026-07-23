@@ -133,6 +133,7 @@ class UBSFinalTick6MLogicMixin:
                     ft6.real_tick_metrics_json,
                     ft6.similarity_json,
                     ft6.history_quality,
+                    ft6.min_history_quality,
                     ft6.from_date,
                     ft6.to_date
                 from candidates c
@@ -196,7 +197,12 @@ class UBSFinalTick6MLogicMixin:
                     row["id"],
                     row["generation"],
                     self._format_ubs_status(status),
-                    self._ubs_final_tick_reason(status, similarity),
+                    self._ubs_final_tick_reason(
+                        status,
+                        similarity,
+                        history_quality=row["history_quality"],
+                        min_history_quality=row["min_history_quality"],
+                    ),
                     row["target_symbol"] or row["symbol"],
                     row["period"],
                     f"{self._format_ubs_number(row['history_quality'])}%" if row["history_quality"] is not None else "",
