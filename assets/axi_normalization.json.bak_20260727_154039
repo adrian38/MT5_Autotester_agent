@@ -1,0 +1,48 @@
+{
+  "broker": "AXI",
+  "basis": "axi_lot_0.01_equivalent_net_profit_from_report_audit_20260708",
+  "default_net_profit_factor": 1.0,
+  "group_net_profit_factors": {
+    "Forex": 1.0,
+    "Metals": 1.0,
+    "Crypto": 1.0,
+    "Bonds": 1.0,
+    "Indices": 1.0,
+    "Energies": 1.0,
+    "Stocks": 1.0,
+    "Commodities": 1.0,
+    "Other": 1.0
+  },
+  "group_suffix_net_profit_factors": {
+    "Commodities": {
+      ".fs": 1.0
+    },
+    "Energies": {
+      ".fs": 1.0,
+      ".sa": 0.1
+    },
+    "Forex": {
+      ".sa": 1.0
+    },
+    "Indices": {
+      ".fs": 1.0,
+      ".sa": 0.01
+    },
+    "Metals": {
+      ".sa": 1.0
+    },
+    "Stocks": {
+      "+": 0.01
+    }
+  },
+  "symbol_suffix_net_profit_factors": {},
+  "symbol_net_profit_factors": {
+    "BCHUSD.SA": 0.02,
+    "ETHUSD.SA": 0.1,
+    "IT40.SA": 0.1,
+    "LNKUSD.SA": 0.01,
+    "LTCUSD.SA": 0.1,
+    "XLMUSD.SA": 0.02,
+    "XRPUSD.SA": 0.1
+  }
+}

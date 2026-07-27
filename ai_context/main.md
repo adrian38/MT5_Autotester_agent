@@ -233,6 +233,24 @@ generation scoring:
   broker asset universe. RoboForex keeps the existing factors; brokers without
   a normalization file use neutral factor `1.0`. Metrics JSON includes raw net,
   normalized net, factor, basis, and group.
+- **Notional (contract-value) normalization** — the correct way to build a
+  broker normalization file. Backtests force `StartLots=0.01`, but the broker
+  clamps each order up to the symbol's `volume_min`, so share CFDs run at 1.0
+  lot on a tiny per-share notional while forex runs at 0.01 lot (~1000 units).
+  A flat per-group factor cannot compare them because stock prices span ~20x.
+  `ubs/normalization_gen.py` computes a **per-symbol** factor
+  `reference_notional / (lot_used * price * tick_value / tick_size)` from live
+  MT5 specs, anchored so 0.01-lot forex ≈ 1.0. Generate/refresh with
+  `tools/gen_axi_normalization.py` (reads `volume_min`, `trade_contract_size`,
+  `trade_tick_value`, `trade_tick_size`, price via
+  `ubs/mt5_symbol_extract.extract_symbol_specs_from_mt5`); it is dry-run by
+  default, backs up the old file on `--write`, and populates
+  `symbol_net_profit_factors` (per-symbol, highest precedence) plus a per-group
+  median fallback. After writing, re-apply to stored results with
+  `ubs_agent.py --rescore-candidates-only` / `--rescore-seeds-only` /
+  `--rescore-robustness-only` (no MT5). The legacy hand-tuned AXI factors
+  (`group_suffix Stocks "+" = 0.01`) wrongly rejected genuinely profitable
+  share strategies (e.g. Costco+ +26.9% acct → normalized 2.69 → rejected).
 
 Current local memory was migrated in June 2026 from old robustness bonus
 defaults `+30/-30` to `+70/-70` for rows that still had the old exact defaults.
