@@ -496,7 +496,7 @@ def terminal_section_sort_key(section: str) -> tuple[int, str]:
         return (999999, section)
 
 
-def load_terminal_profiles(config_path: Path) -> list[TerminalProfile]:
+def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -> list[TerminalProfile]:
     if not config_path.exists():
         raise FileNotFoundError(f"No existe la configuracion multiterminal: {config_path}")
 
@@ -515,7 +515,7 @@ def load_terminal_profiles(config_path: Path) -> list[TerminalProfile]:
         values = parser[section]
         if normalize_terminal_broker(values.get("broker", target_broker)) != target_broker:
             continue
-        if not parse_bool(values.get("enabled"), True):
+        if not ignore_enabled and not parse_bool(values.get("enabled"), True):
             continue
         mt5_raw = values.get("mt5_path", "").strip()
         experts_raw = values.get("experts_root", "").strip()
@@ -2262,7 +2262,10 @@ def main() -> int:
     terminal_profiles: list[TerminalProfile] = []
     if args.multi_terminal:
         try:
-            configured_profiles = load_terminal_profiles(Path(args.terminals_config).expanduser())
+            configured_profiles = load_terminal_profiles(
+                Path(args.terminals_config).expanduser(),
+                ignore_enabled=args.max_workers > 1,
+            )
         except (OSError, ValueError) as exc:
             logger.write(f"ERROR: {exc}")
             return 1

@@ -207,11 +207,17 @@ class MultiterminalLogicMixin:
         return workers
 
     def _active_multiterminal_profiles(self) -> list[dict[str, object]]:
+        worker_limit = self._multiterminal_worker_limit()
+        if worker_limit > 1:
+            return self._broker_multiterminal_profiles()
         return self._broker_multiterminal_profiles(include_disabled=False)
 
     def _selected_multiterminal_profile_items(self) -> list[tuple[int, dict[str, object]]]:
         worker_limit = self._multiterminal_worker_limit()
-        items = self._broker_multiterminal_profile_items(include_disabled=False)
+        if worker_limit > 1:
+            items = self._broker_multiterminal_profile_items()
+        else:
+            items = self._broker_multiterminal_profile_items(include_disabled=False)
         limit = max(1, min(worker_limit, len(items))) if items else 0
         return items[:limit]
 
