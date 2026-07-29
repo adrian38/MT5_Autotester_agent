@@ -31,7 +31,10 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 "manager_node_runtime.node.build_pipeline_stage_command",
                 return_value=(command, project),
             ) as build_command:
-                result = controller.start_regression({"run_ids": [9, 7, 9]})
+                result = controller.start_regression({
+                    "run_ids": [9, 7, 9],
+                    "max_workers": 5,
+                })
                 deadline = time.time() + 5
                 while time.time() < deadline:
                     if controller.status()["job"]["status"] != "running":
@@ -48,6 +51,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(build_command.call_args.args[2:], ("regression", 7))
+            self.assertEqual(build_command.call_args.args[1]["max_workers"], 5)
             self.assertEqual(controller.status()["job"]["status"], "completed")
             self.assertEqual(
                 controller.status()["job"]["completed_stages"],
@@ -104,6 +108,55 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 controller.start_regression({"run_ids": "7"})
             with self.assertRaises(ValueError):
                 controller.start_regression({"run_ids": [0, -3]})
+
+    def test_repair_and_regression_normalize_requested_worker_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            controller = self._controller(Path(temp_dir))
+
+            repair = controller._normalize_repair({
+                "run_ids": [7],
+                "max_workers": 6,
+            })
+            regression = controller._normalize_regression({
+                "run_ids": [7],
+                "max_workers": 8,
+            })
+
+            self.assertEqual(repair["max_workers"], 6)
+            self.assertEqual(regression["max_workers"], 8)
+            self.assertEqual(
+                controller._normalize_repair({"run_ids": [7], "max_workers": 99})["max_workers"],
+                64,
+            )
+            self.assertEqual(
+                controller._normalize_regression({"run_ids": [7], "max_workers": 0})["max_workers"],
+                1,
+            )
+
+    def test_auto_repair_inherits_the_generation_worker_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = self._controller(project)
+            command = [sys.executable, str(project / "worker.py")]
+            with patch(
+                "manager_node_runtime.node.build_generation_command",
+                return_value=(command, project),
+            ), patch.object(controller, "_launch_step"):
+                result = controller.start({
+                    "cycles": 1,
+                    "max_workers": 7,
+                    "repair_after_generation": True,
+                    "repair_attempts": 1,
+                    "run_robustness": True,
+                })
+
+            self.assertEqual(result["request"]["max_workers"], 7)
+            repair_steps = [
+                step for step in result["pipeline"]
+                if step["action"] != "generation"
+            ]
+            self.assertTrue(repair_steps)
+            self.assertTrue(all("max_workers" not in step for step in repair_steps))
 
 
 if __name__ == "__main__":

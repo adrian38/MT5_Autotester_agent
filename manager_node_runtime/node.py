@@ -989,7 +989,7 @@ class JobController:
                 pipeline.extend(
                     {
                         "action": action, "cycle": cycle, "run_id": None,
-                        "attempt": attempt, "max_workers": 1,
+                        "attempt": attempt,
                     }
                     for attempt in range(1, repair_attempts + 1)
                     for action in repair_actions
@@ -1041,7 +1041,9 @@ class JobController:
             raise ValueError("Selecciona al menos un run terminado")
         payload = dict(payload)
         payload["run_ids"] = run_ids
-        payload["max_workers"] = 1
+        payload["max_workers"] = safe_int(
+            payload.get("max_workers"), 1, minimum=1, maximum=64
+        )
         payload["execute_backtests"] = True
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         payload["retry_low_quality"] = bool(payload.get("retry_low_quality", True))
@@ -1111,6 +1113,9 @@ class JobController:
             raise ValueError("Selecciona al menos un run terminado")
         payload = dict(payload)
         payload["run_ids"] = run_ids
+        payload["max_workers"] = safe_int(
+            payload.get("max_workers"), 1, minimum=1, maximum=64
+        )
         payload["execute_backtests"] = True
         return payload
 
