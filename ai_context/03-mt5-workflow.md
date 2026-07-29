@@ -348,6 +348,13 @@ Final Tick runs two backtest batches for the same candidates and dates:
 `run_tests.py` accepts `--model` to override the template model per batch; do
 not edit `tester_template.ini` to switch between OHLC and real ticks.
 
+The EA input `UseEveryTick` follows a separate stage contract from the tester
+`Model`: generated/base result sets, robustness sets, and backward-regression
+sets use `UseEveryTick=false`. In short Final Tick and Final Tick 6M, the OHLC
+control copy also uses `UseEveryTick=false`, while only the real-tick copy uses
+`UseEveryTick=true`. These values are applied to stage copies without modifying
+the candidate source set.
+
 Results are stored in `candidate_final_tick`, not in `candidate_robustness`.
 The agent stores both report paths and both metrics JSON values. Acceptance is
 based on:

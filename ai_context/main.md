@@ -69,6 +69,10 @@ batch wrappers.
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
   `ubs_generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
+- UBS stage `.set` copies enforce `UseEveryTick`: `false` for generated/base
+  results, OOS robustness, backward regression, and the OHLC copies in short
+  Final Tick and Final Tick 6M; `true` only for their real-tick copies. Stage
+  copies must not modify the candidate source `.set`.
 - `app_ui.py` is the composition/layout root. Screen mixins live in `ui/`
   (`ui/dashboard_view.py`, `ui/dashboard_logic.py`, etc.) and UBS support
   modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, `ubs/account.py`,

@@ -388,6 +388,12 @@ requirement changes or a debt item is opened/closed.
   trial, its prior MUST be neutral so existing probabilities do not change.
   Regression MUST remain an evidence/weight stage, not a new hard portfolio gate;
   Final Tick 6M remains the portfolio eligibility gate.
+- **FR-1.8.17** UBS `.set` copies MUST use a stage-specific `UseEveryTick`
+  value. Generated/base result sets, OOS robustness sets, and backward
+  regression sets MUST use `UseEveryTick=false`. In short Final Tick and Final
+  Tick 6M, the OHLC set copy MUST use `UseEveryTick=false` and the real-tick
+  set copy MUST use `UseEveryTick=true`. Stage copies MUST NOT modify the
+  candidate source set.
 
 ### 1.9 UBS agent — seed evaluation
 

@@ -4,7 +4,6 @@ from dataclasses import dataclass, replace
 from functools import wraps
 import json
 from pathlib import Path
-import shutil
 import sqlite3
 import time
 from typing import Any, Callable
@@ -19,7 +18,7 @@ from ubs.regression_rules import (
     validate_regression_date_range,
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
-from ubs.set_utils import compact_safe_part
+from ubs.set_utils import compact_safe_part, write_set_use_every_tick
 
 
 def _batched_memory_updates(function):
@@ -334,7 +333,7 @@ def evaluate_candidate_regression(
     for row, source_set in rows_with_paths:
         set_label = compact_safe_part(source_set.stem, 72, fallback="candidate")
         destination = regression_dir / f"regression_{int(row['id']):06d}_{set_label}.set"
-        shutil.copy2(source_set, destination)
+        write_set_use_every_tick(source_set, destination, False)
         if not args.dry_run:
             runtime.remove_report_artifacts(destination)
         original = runtime.variant_from_candidate_row(row)

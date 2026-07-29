@@ -74,7 +74,16 @@ from ubs.regression_rules import (
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
-from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs.set_utils import (
+    compact_safe_part,
+    force_fixed_lot_text,
+    read_set_with_encoding,
+    safe_part,
+    set_matches_use_every_tick_source,
+    set_use_every_tick_text,
+    write_set_text,
+    write_set_use_every_tick,
+)
 from ubs.universe import (
     canonical_symbol,
     load_asset_universe,
@@ -229,6 +238,7 @@ FROZEN_KEYS = {
     "AdjustLotsizeToVariableValues",
     "Risk",
     "StartLots",
+    "UseEveryTick",
     "Lic_key",
     "URL",
     "LICURL",
@@ -338,6 +348,8 @@ def save_global_params(params: dict[str, str]) -> None:
 
 def is_agent_mutable_key(key: str) -> bool:
     """Return True if the agent is allowed to mutate this key."""
+    if key == "UseEveryTick":
+        return False
     frozen_ov, mutable_ov = load_mutation_overrides()
     if key in frozen_ov:
         return False
@@ -1915,6 +1927,7 @@ def create_variant(
         )
 
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized = set_use_every_tick_text(normalized, False)
     seed_label = compact_safe_part(seed.path.stem, 24)
     family_label = compact_safe_part(seed.family, 24)
     filename = (
@@ -1948,6 +1961,7 @@ def create_history_probe_variant(
     replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized = set_use_every_tick_text(normalized, False)
     filename = f"{safe_part(target_symbol)}_{safe_part(target_period)}_history_probe_{index:04d}.set"
     target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
     write_set_text(target, normalized, encoding)
@@ -3279,7 +3293,7 @@ def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Pa
             if previous.is_file():
                 previous.unlink()
         destination = accepted_dir / f"score_{result.score:07.2f}__{source_path.name}"
-        shutil.copy2(source_path, destination)
+        write_set_use_every_tick(source_path, destination, False)
         copied.append(destination)
     return copied
 
@@ -3404,7 +3418,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             return 1
         used_names.add(name)
         retry_set = robust_dir / name
-        shutil.copy2(source_set, retry_set)
+        write_set_use_every_tick(source_set, retry_set, False)
         if not args.dry_run:
             remove_report_artifacts(retry_set)
         original_variant = variant_from_candidate_row(row)
@@ -4002,13 +4016,14 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
 
         ohlc_set = ohlc_dir / ohlc_name
         real_tick_set = real_tick_dir / real_tick_name
-        if resume_pending_dir:
-            source_digest = file_digest(source_set)
-            ohlc_digest = file_digest(ohlc_set) if ohlc_set.exists() else None
-            if not source_digest or ohlc_digest != source_digest:
-                ohlc_sets_unchanged = False
-        shutil.copy2(source_set, ohlc_set)
-        shutil.copy2(source_set, real_tick_set)
+        if resume_pending_dir and not set_matches_use_every_tick_source(
+            source_set,
+            ohlc_set,
+            False,
+        ):
+            ohlc_sets_unchanged = False
+        write_set_use_every_tick(source_set, ohlc_set, False)
+        write_set_use_every_tick(source_set, real_tick_set, True)
         if not args.dry_run:
             remove_report_artifacts(real_tick_set)
             if not resume_pending_dir:
@@ -5001,7 +5016,7 @@ def _retry_single_candidate(
     generation = int(row["generation"] or 0)
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{candidate_id}")
     retry_set = retry_dir / set_path.name
-    shutil.copy2(set_path, retry_set)
+    write_set_use_every_tick(set_path, retry_set, False)
 
     variant = variant_from_candidate_row(row)
     if not args.dry_run:
@@ -5242,7 +5257,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        shutil.copy2(set_path, retry_set)
+        write_set_use_every_tick(set_path, retry_set, False)
         if not args.dry_run:
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
@@ -5322,7 +5337,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        shutil.copy2(set_path, retry_set)
+        write_set_use_every_tick(set_path, retry_set, False)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -5426,7 +5441,7 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        shutil.copy2(set_path, retry_set)
+        write_set_use_every_tick(set_path, retry_set, False)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -5627,6 +5642,8 @@ def evaluate_generation(
     if not (args.execute_backtests or args.dry_run):
         return scored
     generation_dir = run_dir / f"gen_{generation:03d}"
+    for variant in variants:
+        write_set_use_every_tick(variant.path, variant.path, False)
     batch_started_at = time.time()
     code = run_backtests(args, generation_dir)
     if code == RUNNING_TERMINAL_EXIT_CODE:
