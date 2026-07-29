@@ -2508,7 +2508,12 @@ def report_has_empty_tester_context(result: ScoreResult) -> bool:
     )
 
 
-def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, object] | None:
+def tester_log_no_history_metadata(
+    report: Path,
+    variant: Variant,
+    symbol_map: dict[str, str] | None = None,
+    symbol_suffix: str = "",
+) -> dict[str, object] | None:
     sidecar = tester_journal_sidecar_path(report)
     if not sidecar.exists():
         return None
@@ -2516,10 +2521,19 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
         text = sidecar.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    symbol = str(variant.target_symbol or "").strip()
-    if not symbol:
+    raw_symbol = str(variant.target_symbol or "").strip()
+    if not raw_symbol:
         return None
-    escaped = re.escape(symbol)
+    broker_symbol = apply_symbol_suffix(
+        apply_symbol_map(raw_symbol, symbol_map or {}),
+        symbol_suffix,
+    )
+    symbols = sorted(
+        {symbol for symbol in (raw_symbol, broker_symbol) if symbol},
+        key=len,
+        reverse=True,
+    )
+    escaped = "(?:" + "|".join(re.escape(symbol) for symbol in symbols) + ")"
     found_pattern = re.compile(
         rf"{escaped}:\s+found history data from\s+(.+?)\s+to\s+(.+?),\s+specified period is out of this range",
         re.IGNORECASE,
@@ -2576,10 +2590,16 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
         return None
     found = found_matches[-1] if found_matches else None
     missing = missing_matches[-1] if missing_matches else None
+    recommendation = "desactivar simbolo y revisar historico del broker"
+    if tick_download_failed:
+        recommendation = (
+            "reintentar tras estabilizar la conexion MT5; "
+            "no asumir ausencia de historico del broker"
+        )
     metadata = {
         "reasons": ["no_history_data"],
         "no_score": True,
-        "recommendation": "desactivar simbolo y revisar historico del broker",
+        "recommendation": recommendation,
         "log_source": str(sidecar),
         "history_available_from": found.group(1).strip() if found else "",
         "history_available_to": found.group(2).strip() if found else "",
@@ -2588,6 +2608,8 @@ def tester_log_no_history_metadata(report: Path, variant: Variant) -> dict[str, 
     }
     if tick_download_failed:
         metadata["tick_download_failed"] = True
+        metadata["retryable"] = True
+        metadata["failure_type"] = "tick_history_sync"
     return metadata
 
 
@@ -2690,7 +2712,12 @@ def evaluate_history_probe(
             {"reasons": ["parse_error"], "error": str(exc), "history_probe": True},
         )
         return "parse_error", None
-    no_history = tester_log_no_history_metadata(report, variant)
+    no_history = tester_log_no_history_metadata(
+        report,
+        variant,
+        symbol_map,
+        symbol_suffix,
+    )
     if no_history:
         print(
             f"AVISO: {variant.target_symbol} sin historico completo para el rango pedido; "
@@ -2879,7 +2906,12 @@ def evaluate_variant_report(
         print(f"AVISO: no pude parsear {report}: {exc}")
         memory.record_score(variant.path, None, "parse_error", report)
         return "parse_error", None
-    no_history = tester_log_no_history_metadata(report, variant)
+    no_history = tester_log_no_history_metadata(
+        report,
+        variant,
+        symbol_map,
+        symbol_suffix,
+    )
     if no_history:
         print(
             f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
@@ -3540,13 +3572,17 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             int(run["id"]),
             score_config,
             parse_symbol_map(args.symbol_map),
+            broker=args.broker,
             final_tick_stage=final_tick_stage,
             min_history_quality=args.final_tick_min_history_quality,
             min_ohlc_trades=args.final_tick_min_ohlc_trades,
+            min_trades_w1=args.final_tick_min_trades_w1,
+            min_trades_mn=args.final_tick_min_trades_mn,
             max_net_delta_pct=args.final_tick_max_net_delta_pct,
             max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
             max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
             max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+            symbol_suffix=args.symbol_suffix,
         )
         if counts:
             print(
@@ -4159,27 +4195,38 @@ def _evaluate_final_tick_tick_report(
 
     no_tick_history = None
     if report_has_empty_tester_context(real_tick_result):
-        no_tick_history = tester_log_no_history_metadata(real_tick_report, real_tick_variant)
+        no_tick_history = tester_log_no_history_metadata(
+            real_tick_report,
+            real_tick_variant,
+            symbol_map,
+            getattr(args, "symbol_suffix", ""),
+        )
     if no_tick_history:
+        if reconcile:
+            return False
         similarity = {
             "accepted": False,
             "reasons": ["real_tick_no_history"],
+            "history_quality": real_tick_result.history_quality,
+            "min_history_quality": float(args.final_tick_min_history_quality),
+            "technical_failure": True,
             "checks": {},
             "history": no_tick_history,
         }
         print(
-            f"AVISO: {real_tick_variant.target_symbol} sin historico Real Tick del broker "
-            f"para Final Tick candidate #{candidate_id}; marcado como rejected."
+            f"AVISO: descarga/sincronizacion Real Tick interrumpida para "
+            f"{real_tick_variant.target_symbol}, candidate #{candidate_id}; "
+            "se reintentara como historico pendiente."
         )
         memory.record_candidate_final_tick(
-            candidate_id, run_id, "rejected", ohlc_result, real_tick_result,
+            candidate_id, run_id, "pending_history_quality", ohlc_result, None,
             ohlc_report, real_tick_report, json.dumps(similarity, sort_keys=True),
             real_tick_result.history_quality,
             args.final_tick_min_history_quality, args.from_date, args.to_date,
             args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
             args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
         )
-        status_counts["rejected"] = status_counts.get("rejected", 0) + 1
+        status_counts["pending_history_quality"] = status_counts.get("pending_history_quality", 0) + 1
         return True
 
     real_matches, real_mismatch = report_matches_variant(
@@ -4199,13 +4246,22 @@ def _evaluate_final_tick_tick_report(
         if report_has_empty_tester_context(real_tick_result):
             if reconcile:
                 return False
+            pending_similarity = {
+                "accepted": False,
+                "reasons": ["empty_tester_context"],
+                "history_quality": real_tick_result.history_quality,
+                "min_history_quality": float(args.final_tick_min_history_quality),
+                "checks": {},
+            }
             print(
                 f"AVISO: reporte Real Tick Final Tick sin contexto usable para candidate #{candidate_id}: "
                 f"{real_mismatch}; se reintentara como calidad/historico pendiente."
             )
             memory.record_candidate_final_tick(
-                candidate_id, run_id, "pending_history_quality", ohlc_result, real_tick_result,
-                ohlc_report, real_tick_report, None, real_tick_result.history_quality,
+                candidate_id, run_id, "pending_history_quality", ohlc_result, None,
+                ohlc_report, real_tick_report,
+                json.dumps(pending_similarity, ensure_ascii=True, sort_keys=True),
+                real_tick_result.history_quality,
                 args.final_tick_min_history_quality, args.from_date, args.to_date,
                 args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
                 args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
@@ -4260,6 +4316,7 @@ def reconcile_final_tick_reports(
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
     *,
+    broker: str = "",
     final_tick_stage: str = "probe",
     min_history_quality: float = 80.0,
     min_ohlc_trades: int = 5,
@@ -4320,7 +4377,7 @@ def reconcile_final_tick_reports(
                     min_trades_w1=min_trades_w1,
                     min_trades_mn=min_trades_mn,
                 ),
-                broker=args.broker,
+                broker=broker,
             )
         except Exception:
             continue
@@ -4328,6 +4385,7 @@ def reconcile_final_tick_reports(
         if not ohlc_matches:
             continue
         thresholds = argparse.Namespace(
+            broker=broker,
             final_tick_min_history_quality=float(min_history_quality),
             symbol_suffix=symbol_suffix,
             from_date=ohlc_dates[0],
