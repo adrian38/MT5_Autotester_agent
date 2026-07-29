@@ -3373,6 +3373,12 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
 
 
 def _relative_delta_pct(reference: float, observed: float, *, floor: float = 1.0) -> float:
+    """Return the symmetric max-denominator percentage difference.
+
+    This is intentionally not the classic percentage change from ``reference``:
+    for example, 100 versus 150 is 33.33%, regardless of argument order.
+    """
+
     denominator = max(abs(reference), abs(observed), floor)
     return abs(observed - reference) / denominator * 100.0
 
@@ -3651,13 +3657,17 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             int(run["id"]),
             score_config,
             parse_symbol_map(args.symbol_map),
+            broker=args.broker,
             final_tick_stage=final_tick_stage,
             min_history_quality=args.final_tick_min_history_quality,
             min_ohlc_trades=args.final_tick_min_ohlc_trades,
+            min_trades_w1=args.final_tick_min_trades_w1,
+            min_trades_mn=args.final_tick_min_trades_mn,
             max_net_delta_pct=args.final_tick_max_net_delta_pct,
             max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
             max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
             max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+            symbol_suffix=args.symbol_suffix,
         )
         if counts:
             print(
@@ -4371,6 +4381,7 @@ def reconcile_final_tick_reports(
     score_config: ScoreConfig,
     symbol_map: dict[str, str],
     *,
+    broker: str = "",
     final_tick_stage: str = "probe",
     min_history_quality: float = 80.0,
     min_ohlc_trades: int = 5,
@@ -4431,14 +4442,19 @@ def reconcile_final_tick_reports(
                     min_trades_w1=min_trades_w1,
                     min_trades_mn=min_trades_mn,
                 ),
-                broker=args.broker,
+                broker=broker,
             )
-        except Exception:
+        except Exception as exc:
+            print(
+                f"AVISO: no pude parsear OHLC Final Tick para reconciliar "
+                f"candidate #{candidate_id}: {exc}"
+            )
             continue
         ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map, symbol_suffix)
         if not ohlc_matches:
             continue
         thresholds = argparse.Namespace(
+            broker=broker,
             final_tick_min_history_quality=float(min_history_quality),
             symbol_suffix=symbol_suffix,
             from_date=ohlc_dates[0],

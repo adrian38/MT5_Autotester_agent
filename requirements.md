@@ -338,6 +338,9 @@ requirement changes or a debt item is opened/closed.
   has `History Quality` greater than or equal to the configured minimum (`80` by
   default) and the active similarity checks (`profit_factor`, `drawdown_pct`,
   and trade count) remain close to the OHLC metrics within configured deltas.
+  Each percentage delta MUST use the symmetric max-denominator formula
+  `abs(OHLC - tick) / max(abs(OHLC), abs(tick), 1) * 100`; it is not a classic
+  percentage change measured only from the OHLC control value.
   Missing `History Quality` MUST fail the row. `net_profit` MUST be stored in
   `similarity_json` for inspection only and MUST NOT block acceptance, because
   Final Tick validates operational similarity between data models rather than

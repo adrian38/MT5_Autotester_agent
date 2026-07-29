@@ -292,6 +292,10 @@ enter this queue.
   may be used to get a qualifying OHLC before re-running real tick.
 - A row is final `accepted` when history quality ≥ threshold AND the three active
   similarity checks pass (see below). `net_profit` is **not** an active check.
+- Percentage deltas use a symmetric max-denominator difference:
+  `abs(OHLC - tick) / max(abs(OHLC), abs(tick), 1) * 100`. Therefore a configured
+  `35%` tolerance is intentionally symmetric and is not the classic percentage
+  change measured only from the OHLC value.
 - UI: `UBS Final Tick` shows robust-accepted candidates, final status, cause,
   history quality %, OHLC metrics, real-tick metrics, date range, set path, and
   "Abrir set" / "Abrir OHLC" / "Abrir Real Tick" report actions.
