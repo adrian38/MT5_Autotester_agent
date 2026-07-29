@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -46,6 +47,7 @@ class AgentMemory:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.active_final_tick_stage = "probe"
+        self._defer_commits = 0
         self._selection_fitness_models: dict[int | None, SelectionFitnessModel | None] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = connect_memory(self.path, enable_wal=True)
@@ -53,6 +55,26 @@ class AgentMemory:
 
     def close(self) -> None:
         self.conn.close()
+
+    def _commit(self) -> None:
+        if self._defer_commits <= 0:
+            self.conn.commit()
+
+    @contextmanager
+    def batch_updates(self):
+        """Commit a group of row updates atomically instead of per row."""
+
+        self._defer_commits += 1
+        try:
+            yield
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
+            if self._defer_commits == 1:
+                self.conn.commit()
+        finally:
+            self._defer_commits -= 1
 
     def _init(self) -> None:
         self.conn.executescript(
@@ -507,7 +529,7 @@ class AgentMemory:
                 """,
                 (str(set_path),),
             )
-        self.conn.commit()
+        self._commit()
 
     def cleanup_stale_stage_rows(self, run_id: int | None = None) -> dict[str, int]:
         scope_filter = ""
@@ -586,7 +608,7 @@ class AgentMemory:
             """,
             params,
         )
-        self.conn.commit()
+        self._commit()
         return {
             "robustness": int(cur_robust.rowcount or 0),
             "final_tick": int(cur_ft.rowcount or 0),
@@ -962,7 +984,7 @@ class AgentMemory:
             self.conn.execute("delete from candidate_regression where candidate_id=?", (int(candidate_id),))
             self.conn.execute("delete from candidate_final_tick_6m where candidate_id=?", (int(candidate_id),))
             self.conn.execute("delete from candidate_final_tick where candidate_id=?", (int(candidate_id),))
-        self.conn.commit()
+        self._commit()
 
     def record_candidate_final_tick(
         self,
@@ -1049,7 +1071,7 @@ class AgentMemory:
             self.conn.execute("delete from candidate_final_tick_6m where candidate_id=?", (int(candidate_id),))
         if final_tick_table == "candidate_final_tick_6m" and status != "accepted":
             self.conn.execute("delete from candidate_regression where candidate_id=?", (int(candidate_id),))
-        self.conn.commit()
+        self._commit()
 
     def record_candidate_regression(
         self,
@@ -1108,7 +1130,7 @@ class AgentMemory:
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        self.conn.commit()
+        self._commit()
 
     def _candidate_feedback_rows(self) -> list[sqlite3.Row]:
         return self.conn.execute(

@@ -444,10 +444,15 @@ requirement changes or a debt item is opened/closed.
   seed thresholds, without requiring another MT5 backtest when the seed file and
   symbol/TF are unchanged.
 - **FR-1.9.11** `ubs_agent.py --rescore-seeds-only` MUST re-score existing
-  active seed rows with stored reports and MUST NOT require an MT5 expert path
-  or launch MT5. `--rescore-candidates-only` and `--rescore-robustness-only`
-  MUST do the same for base candidates and OOS robustness rows. These commands
-  MUST be run with the correct threshold set for seeds, generation, and OOS.
+  active seed rows and MUST NOT require an MT5 expert path or launch MT5.
+  `--rescore-candidates-only`, `--rescore-robustness-only`,
+  `--rescore-final-tick-only`, and `--rescore-regression-only` MUST re-score
+  final rows directly from their persisted `metrics_json` by default and MUST
+  use one atomic batch transaction per stage. Technical validation states MUST
+  remain unchanged. `--rescore-from-reports` MAY explicitly force HTML parsing
+  when the report parser or broker normalization changed. These commands MUST
+  be run with the correct threshold set for seeds, generation, OOS, Final Tick,
+  and regression.
 - **FR-1.9.12** Before launching new seed backtests, `--evaluate-seeds` MUST
   reconcile reports left by interrupted
   `outputs/ubs_agent/{BROKER}/{ACCOUNT}/seed_eval/eval_*`

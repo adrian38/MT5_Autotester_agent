@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import wraps
 import json
 from pathlib import Path
 import shutil
@@ -17,8 +18,17 @@ from ubs.regression_rules import (
     regression_points_breakdown,
     validate_regression_date_range,
 )
-from ubs.score import ScoreConfig, ScoreResult, score_report_file
+from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.set_utils import compact_safe_part
+
+
+def _batched_memory_updates(function):
+    @wraps(function)
+    def wrapped(args, memory, score_config, runtime):
+        with memory.batch_updates():
+            return function(args, memory, score_config, runtime)
+
+    return wrapped
 
 
 @dataclass(frozen=True)
@@ -396,12 +406,120 @@ def evaluate_candidate_regression(
     return 0
 
 
+@_batched_memory_updates
 def rescore_regression_only(
     args: Any,
     memory: AgentMemory,
     score_config: ScoreConfig,
     runtime: RegressionRuntime,
 ) -> int:
+    if not bool(getattr(args, "rescore_from_reports", False)):
+        rows = memory.conn.execute(
+            """
+            select
+                c.id,
+                c.run_id,
+                c.period,
+                c.metrics_json as base_metrics_json,
+                rg.status as regression_status,
+                rg.report_path as regression_report_path,
+                rg.metrics_json as regression_metrics_json,
+                rg.details_json as regression_details_json,
+                rg.from_date as regression_from_date,
+                rg.to_date as regression_to_date
+            from candidate_regression rg
+            join candidates c on c.id = rg.candidate_id
+            where rg.status in ('accepted', 'rejected', 'no_trades')
+              and coalesce(rg.metrics_json, '') != ''
+              and (? = 0 or c.run_id = ?)
+            order by c.run_id, c.generation, c.id
+            """,
+            (int(args.regression_run_id or 0), int(args.regression_run_id or 0)),
+        ).fetchall()
+        counts: dict[str, int] = {}
+        invalid_metrics = 0
+        window_mismatch = 0
+        expected_dates = (
+            str(args.regression_from_date).strip(),
+            str(args.regression_to_date).strip(),
+        )
+        for row in rows:
+            stored_dates = (
+                str(row["regression_from_date"] or "").strip(),
+                str(row["regression_to_date"] or "").strip(),
+            )
+            if stored_dates != expected_dates:
+                window_mismatch += 1
+                continue
+            try:
+                result = rescore_result(
+                    ScoreResult.from_json(str(row["regression_metrics_json"])),
+                    _score_config_for_period(score_config, str(row["period"] or ""), args),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                invalid_metrics += 1
+                print(f"AVISO: metrics_json regresiva invalido candidate #{int(row['id'])}: {exc}")
+                continue
+            try:
+                base_metrics = json.loads(str(row["base_metrics_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                base_metrics = None
+            if not isinstance(base_metrics, dict):
+                base_metrics = None
+            if result.trades <= 0:
+                status = "no_trades"
+                combined_reasons = tuple(result.reasons)
+                degradation_audit: dict[str, float] = {}
+            else:
+                degradation_reasons, degradation_audit = regression_degradation(
+                    base_metrics,
+                    result.profit_factor,
+                    result.drawdown_pct,
+                    min_pf_efficiency=float(getattr(args, "regression_min_pf_efficiency", 0.0)),
+                    max_dd_ratio=float(getattr(args, "regression_max_dd_ratio", 0.0)),
+                )
+                combined_reasons = tuple(result.reasons) + degradation_reasons
+                status = "accepted" if not combined_reasons else "rejected"
+            try:
+                previous_details = json.loads(str(row["regression_details_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                previous_details = {}
+            actual_dates = None
+            if isinstance(previous_details, dict):
+                actual_from = str(previous_details.get("actual_from_date") or "").strip()
+                actual_to = str(previous_details.get("actual_to_date") or "").strip()
+                if actual_from and actual_to:
+                    actual_dates = (actual_from, actual_to)
+            details_json, points_applied = _details_payload(
+                status,
+                result,
+                args,
+                reasons=combined_reasons,
+                actual_dates=actual_dates or stored_dates,
+                metadata={"degradation": degradation_audit} if degradation_audit else None,
+            )
+            report_raw = str(row["regression_report_path"] or "").strip()
+            memory.record_candidate_regression(
+                int(row["id"]),
+                int(row["run_id"]),
+                status,
+                result,
+                Path(report_raw) if report_raw else None,
+                details_json,
+                expected_dates[0],
+                expected_dates[1],
+                args.regression_positive_points,
+                args.regression_negative_points,
+                points_applied,
+            )
+            counts[status] = counts.get(status, 0) + 1
+        print(
+            "Regresiva repuntuada desde SQLite: "
+            + (", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "sin filas")
+            + f"; total={sum(counts.values())}; ventana_distinta={window_mismatch}; invalidos={invalid_metrics}"
+        )
+        return 0
+
     rows = memory.regression_rows_for_rescore(args.regression_run_id or None)
     if not rows:
         print("Regresiva rescore: no hay filas finales con reporte guardado.")

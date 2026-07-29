@@ -1656,6 +1656,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 broker="ICTRADING",
                 symbol_map="",
                 symbol_suffix="",
+                rescore_from_reports=True,
                 final_tick_stage="probe",
                 from_date="2026.05.01",
                 to_date="2026.05.31",

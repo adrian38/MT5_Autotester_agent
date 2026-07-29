@@ -185,8 +185,11 @@ Owns the UBS agent workflow:
 - Retry a single candidate with `--retry-candidate-id`.
 - Retry all `report_mismatch` / `no_report` candidates in a run with `--retry-run-id`
   and `--retry-mismatch-run`. Retry a single seed with `--retry-seed-path`.
-- Rescore without backtesting via `--rescore-seeds-only`, `--rescore-candidates-only`,
-  `--rescore-robustness-only`.
+- Rescore without backtesting via `--rescore-seeds-only`,
+  `--rescore-candidates-only`, `--rescore-robustness-only`,
+  `--rescore-final-tick-only`, and `--rescore-regression-only`. Candidate-stage
+  rescores use stored SQLite metrics by default; `--rescore-from-reports`
+  explicitly reparses HTML after parser or normalization changes.
 - Reconcile interrupted seed-eval batches with `--reconcile-seed-eval-only`.
 
 **Main CLI flags summary:**

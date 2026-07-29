@@ -12,8 +12,10 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 
 from run_tests import (
@@ -70,7 +72,7 @@ from ubs.regression_rules import (
     DEFAULT_REGRESSION_TO_DATE,
     validate_regression_date_range,
 )
-from ubs.score import ScoreConfig, ScoreResult, score_report_file
+from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
 from ubs.universe import (
@@ -476,13 +478,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--regression-positive-points", type=float, default=DEFAULT_REGRESSION_POSITIVE_POINTS)
     parser.add_argument("--regression-negative-points", type=float, default=DEFAULT_REGRESSION_NEGATIVE_POINTS)
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
-    parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes con reporte sin abrir MT5.")
-    parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes con reporte sin abrir MT5.")
-    parser.add_argument("--rescore-final-tick-only", action="store_true", help="Recalcula Final Tick existente desde reportes guardados sin abrir MT5.")
+    parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes desde metrics_json sin abrir MT5.")
+    parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes desde metrics_json sin abrir MT5.")
+    parser.add_argument("--rescore-final-tick-only", action="store_true", help="Recalcula Final Tick existente desde metrics_json sin abrir MT5.")
     parser.add_argument(
         "--rescore-regression-only",
         action="store_true",
-        help="Recalcula la prueba regresiva desde reportes guardados sin abrir MT5.",
+        help="Recalcula la prueba regresiva desde metrics_json sin abrir MT5.",
+    )
+    parser.add_argument(
+        "--rescore-from-reports",
+        action="store_true",
+        help="Fuerza que los modos --rescore-* vuelvan a parsear HTML; usar solo si cambio el parser o la normalizacion.",
     )
     parser.add_argument(
         "--reconcile-seed-eval-only",
@@ -2425,7 +2432,89 @@ def _stored_or_discovered_report(row: sqlite3.Row) -> Path | None:
     return None
 
 
+def _rescore_metrics_json(raw: object, config: ScoreConfig) -> ScoreResult:
+    if raw is None or not str(raw).strip():
+        raise ValueError("metrics_json vacio")
+    return rescore_result(ScoreResult.from_json(str(raw)), config)
+
+
+def _batched_memory_updates(function):
+    @wraps(function)
+    def wrapped(args, memory, score_config):
+        context = memory.batch_updates() if hasattr(memory, "batch_updates") else nullcontext()
+        with context:
+            return function(args, memory, score_config)
+
+    return wrapped
+
+
+@_batched_memory_updates
 def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_candidate_scores_from_reports(args, memory, score_config)
+    rows = memory.conn.execute(
+        """
+        select *
+        from candidates
+        where status in ('accepted', 'rejected', 'no_trades')
+          and coalesce(metrics_json, '') != ''
+        order by run_id, generation, id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    updates: list[tuple[object, ...]] = []
+    for row in rows:
+        variant = variant_from_candidate_row(row)
+        config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
+        try:
+            result = _rescore_metrics_json(row["metrics_json"], config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json base invalido candidate #{int(row['id'])}: {exc}")
+            continue
+        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        updates.append(
+            (
+                result.score,
+                int(status == "accepted" and result.accepted),
+                result.to_json(),
+                status,
+                int(row["id"]),
+            )
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+    if updates:
+        memory.conn.executemany(
+            """
+            update candidates
+            set score=?, accepted=?, metrics_json=?, status=?
+            where id=?
+            """,
+            updates,
+        )
+        memory.cleanup_stale_stage_rows()
+
+    total = sum(status_counts.values())
+    print(
+        "Candidatos repuntuados desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={total}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def _rescore_candidate_scores_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
     symbol_map = parse_symbol_map(args.symbol_map)
     rows = memory.conn.execute(
         """
@@ -2485,7 +2574,83 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
     return 0
 
 
+@_batched_memory_updates
 def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_robustness_from_reports(args, memory, score_config)
+    rows = memory.conn.execute(
+        """
+        select
+            c.*,
+            cr.metrics_json as robust_metrics_json,
+            cr.report_path as robust_report_path,
+            cr.from_date as robust_from_date,
+            cr.to_date as robust_to_date,
+            cr.positive_bonus as robust_positive_bonus,
+            cr.negative_bonus as robust_negative_bonus
+        from candidate_robustness cr
+        join candidates c on c.id = cr.candidate_id
+        where cr.status in ('accepted', 'rejected', 'no_trades')
+          and coalesce(cr.metrics_json, '') != ''
+        order by cr.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    updates: list[tuple[object, ...]] = []
+    for row in rows:
+        candidate_id = int(row["id"])
+        variant = variant_from_candidate_row(row)
+        config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
+        try:
+            result = _rescore_metrics_json(row["robust_metrics_json"], config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
+            continue
+        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        updates.append(
+            (
+                status,
+                int(status == "accepted" and result.accepted),
+                result.score,
+                result.to_json(),
+                datetime.now().isoformat(timespec="seconds"),
+                candidate_id,
+            )
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+    if updates:
+        memory.conn.executemany(
+            """
+            update candidate_robustness
+            set status=?, accepted=?, score=?, metrics_json=?, evaluated_at=?
+            where candidate_id=?
+            """,
+            updates,
+        )
+        memory.cleanup_stale_stage_rows()
+
+    total = sum(status_counts.values())
+    print(
+        "Robustez repuntuada desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={total}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def _rescore_robustness_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
     symbol_map = parse_symbol_map(args.symbol_map)
     rows = memory.conn.execute(
         """
@@ -4508,7 +4673,129 @@ def reconcile_final_tick_reports(
     return status_counts
 
 
+@_batched_memory_updates
 def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_final_tick_from_reports(args, memory, score_config)
+    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    memory.active_final_tick_stage = final_tick_stage
+    final_tick_table = final_tick_table_for_stage(final_tick_stage)
+    rows = memory.conn.execute(
+        f"""
+        select
+            c.*,
+            ft.run_id as ft_run_id,
+            ft.status as ft_status,
+            ft.ohlc_report_path as ft_ohlc_report_path,
+            ft.real_tick_report_path as ft_real_tick_report_path,
+            ft.ohlc_metrics_json as ft_ohlc_metrics_json,
+            ft.real_tick_metrics_json as ft_real_tick_metrics_json,
+            ft.from_date as ft_from_date,
+            ft.to_date as ft_to_date
+        from {final_tick_table} ft
+        join candidates c on c.id = ft.candidate_id
+        where coalesce(ft.ohlc_metrics_json, '') != ''
+        order by ft.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    skipped_without_tick = 0
+    is_six_month = final_tick_stage == "six_month"
+    for row in rows:
+        candidate_id = int(row["id"])
+        variant = variant_from_candidate_row(row)
+        config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.final_tick_min_trades_w1,
+            min_trades_mn=args.final_tick_min_trades_mn,
+        )
+        try:
+            ohlc_result = _rescore_metrics_json(row["ft_ohlc_metrics_json"], config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json OHLC Final Tick invalido candidate #{candidate_id}: {exc}")
+            continue
+        ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
+        real_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
+        ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
+        real_report = Path(real_report_raw) if real_report_raw else None
+        from_date = str(row["ft_from_date"] or "")
+        to_date = str(row["ft_to_date"] or "")
+        min_ohlc_trades = min_trades_for_period(
+            variant.target_period,
+            int(args.final_tick_min_ohlc_trades),
+            int(args.final_tick_min_trades_w1),
+            int(args.final_tick_min_trades_mn),
+        )
+        if ohlc_result.trades < min_ohlc_trades:
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
+            memory.record_candidate_final_tick(
+                candidate_id, int(row["ft_run_id"] or row["run_id"]), "pending_ohlc_trades",
+                ohlc_result, None, ohlc_report, real_report,
+                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
+                float(args.final_tick_min_history_quality), from_date, to_date,
+                float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
+                float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
+                final_tick_stage=final_tick_stage,
+            )
+            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
+            continue
+        real_raw = row["ft_real_tick_metrics_json"]
+        if real_raw is None or not str(real_raw).strip():
+            skipped_without_tick += 1
+            continue
+        try:
+            real_result = _rescore_metrics_json(real_raw, config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json Real Tick invalido candidate #{candidate_id}: {exc}")
+            continue
+        similarity = final_tick_similarity(
+            ohlc_result,
+            real_result,
+            min_history_quality=float(args.final_tick_min_history_quality),
+            max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
+            max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0)
+            if is_six_month else float(args.final_tick_max_pf_delta_pct),
+            max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
+            max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+            min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
+        )
+        reasons = {str(reason) for reason in similarity.get("reasons") or ()}
+        status = (
+            "pending_history_quality"
+            if "history_quality" in reasons
+            else ("accepted" if bool(similarity.get("accepted")) else "rejected")
+        )
+        memory.record_candidate_final_tick(
+            candidate_id, int(row["ft_run_id"] or row["run_id"]), status,
+            ohlc_result, real_result, ohlc_report, real_report,
+            json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+            real_result.history_quality, float(args.final_tick_min_history_quality),
+            from_date, to_date,
+            float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
+            float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
+            final_tick_stage=final_tick_stage,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    total = sum(status_counts.values())
+    print(
+        f"Final Tick {final_tick_stage} repuntuado desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={total}; sin_tick={skipped_without_tick}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def _rescore_final_tick_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
     final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
     memory.active_final_tick_stage = final_tick_stage
     final_tick_table = final_tick_table_for_stage(final_tick_stage)

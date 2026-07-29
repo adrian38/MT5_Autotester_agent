@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 import hashlib
 import json
@@ -64,6 +64,16 @@ class ScoreResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=True, sort_keys=True)
+
+    @classmethod
+    def from_json(cls, payload: str | bytes | dict[str, object]) -> ScoreResult:
+        """Rehydrate metrics persisted in SQLite, including legacy rows."""
+
+        data = json.loads(payload) if isinstance(payload, (str, bytes)) else dict(payload)
+        if not isinstance(data, dict):
+            raise ValueError("ScoreResult JSON must contain an object")
+        data["reasons"] = tuple(str(reason) for reason in data.get("reasons") or ())
+        return cls(**data)
 
 
 def score_report_file(path: Path, config: ScoreConfig | None = None, *, broker: object = DEFAULT_BROKER) -> ScoreResult:
@@ -151,6 +161,48 @@ def score_report(
         max_month_concentration=round(max_month_concentration, 4),
         avg_trade=round(avg_trade, 4),
         sqn=round(sqn, 4),
+        reasons=tuple(reasons),
+        score_formula_version=SCORE_FORMULA_VERSION,
+        score_config=config.to_dict(),
+        score_config_hash=config.stable_hash(),
+    )
+
+
+def rescore_result(result: ScoreResult, config: ScoreConfig | None = None) -> ScoreResult:
+    """Apply current score weights and gates to already persisted raw metrics.
+
+    This deliberately preserves normalization and parser-derived fields. Use a
+    fresh report parse instead when either of those algorithms changes.
+    """
+
+    config = config or ScoreConfig()
+    score = _score_formula(
+        net_profit=result.normalized_net_profit,
+        profit_factor=result.profit_factor,
+        recovery_factor=result.recovery_factor,
+        drawdown_pct=result.drawdown_pct,
+        trades=result.trades,
+        positive_month_ratio=result.positive_month_ratio,
+        max_month_concentration=result.max_month_concentration,
+        sqn=result.sqn,
+    )
+    reasons: list[str] = []
+    if result.normalized_net_profit <= config.min_net_profit:
+        reasons.append("net_profit")
+    if result.profit_factor < config.min_profit_factor:
+        reasons.append("profit_factor")
+    if result.trades < config.min_trades:
+        reasons.append("trades")
+    if result.drawdown_pct > config.max_drawdown_pct:
+        reasons.append("drawdown_pct")
+    if result.recovery_factor < config.min_recovery_factor:
+        reasons.append("recovery_factor")
+    if result.positive_month_ratio < config.min_positive_month_ratio:
+        reasons.append("positive_month_ratio")
+    return replace(
+        result,
+        score=round(score, 4),
+        accepted=not reasons,
         reasons=tuple(reasons),
         score_formula_version=SCORE_FORMULA_VERSION,
         score_config=config.to_dict(),

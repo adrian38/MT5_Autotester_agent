@@ -234,9 +234,13 @@ broker normalization file, for example
 When `--evaluate-seeds` runs, already evaluated `accepted`/`rejected` seeds are
 re-scored from their stored reports using the current seed thresholds, without
 rerunning MT5 if the seed file and symbol/timeframe are unchanged.
-Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`, and
-`--rescore-robustness-only` when thresholds or normalization changed and MT5
-should not be launched.
+Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`,
+`--rescore-robustness-only`, `--rescore-final-tick-only`, and
+`--rescore-regression-only` when thresholds or weights changed and MT5 should
+not be launched. Candidate-stage rescores use persisted SQLite `metrics_json`
+by default and commit once per stage; technical states are left untouched.
+Pass `--rescore-from-reports` only when the HTML parser or broker normalization
+changed and the stored metrics themselves must be rebuilt.
 
 Seed evaluation is resumable after an interrupted MT5 batch. Before launching
 new backtests, `--evaluate-seeds` scans
