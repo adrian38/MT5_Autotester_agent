@@ -20,7 +20,8 @@ MetaTrader 5. It automates three related workflows:
 4. Run a UBS-specific set-generation agent that mutates known-good `.set`
    files, backtests variants, scores reports, tests accepted candidates through
    an optional out-of-sample robustness window and a Final Tick dual-model
-   comparison, and stores all results in SQLite.
+   comparison, an optional backward OHLC regression holdout, and stores all
+   results in SQLite.
 
 The main user-facing entry point is the Tkinter desktop app in
 [`app_ui.py`](../app_ui.py). The same functionality is also available through
@@ -68,6 +69,10 @@ batch wrappers.
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
   `ubs_generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
+- UBS stage `.set` copies enforce `UseEveryTick`: `false` for generated/base
+  results, OOS robustness, backward regression, and the OHLC copies in short
+  Final Tick and Final Tick 6M; `true` only for their real-tick copies. Stage
+  copies must not modify the candidate source `.set`.
 - `app_ui.py` is the composition/layout root. Screen mixins live in `ui/`
   (`ui/dashboard_view.py`, `ui/dashboard_logic.py`, etc.) and UBS support
   modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, `ubs/account.py`,
@@ -100,6 +105,7 @@ batch wrappers.
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
+| [10-regression-validation.md](10-regression-validation.md) | Backward 2017-2019 OHLC validation: rationale, scoring, statuses, CLI, and official MT5 sources. |
 
 ## Common Entry Points
 
@@ -127,6 +133,7 @@ batch wrappers.
 | `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
 | `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
 | `ubs_final_tick_6m` | UBS Final Tick 6M | `ui/ubs_final_tick_6m_view.py` | `ui/ubs_final_tick_6m_logic.py` |
+| `ubs_regression` | UBS Regresiva | `ui/ubs_regression_view.py` | `ui/ubs_regression_logic.py` |
 | `ubs_historico` | UBS Historico | (part of ubs_results) | (part of ubs_results) |
 | `ubs_universo` | UBS Universo | `ui/ubs_universe_view.py` | `ui/ubs_universe_logic.py` |
 | `ubs_comparar` | UBS Comparar | (part of ubs_results) | (part of ubs_results) |
@@ -136,6 +143,17 @@ batch wrappers.
 | `buscador` | UBS Buscador | `ui/ubs_search_view.py` | `ui/ubs_search_logic.py` |
 
 ## Recent Important Changes
+
+### UBS backward regression validation (2017-2019 OHLC)
+
+Final Tick 6M accepted candidates can now enter an independent fifth evidence
+stage: `ubs_agent.py --evaluate-regression`. It uses MT5 `Model=1`, validates
+the exact configured report dates, stores rows in `candidate_regression`, and
+applies configurable audit points (`+80` accepted; `-100` plus capped cause
+penalties on strategy failure). Missing history/report, parse, symbol/TF, and
+date mismatches are neutral technical states. The new `UBS Regresiva` tab can
+run, resume, rescore, inspect, or manually classify the stage and optionally
+starts automatically after Final Tick 6M. See `10-regression-validation.md`.
 
 ### Package reorganisation (refactor branch)
 
@@ -193,7 +211,7 @@ generation scoring:
   `candidates` scores.
 - Selection feedback lives in `ubs/weights.py` and is shared by
   `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
-  and `UBS Universo`. It estimates the smoothed four-stage probability
+  and `UBS Universo`. It estimates the smoothed five-stage probability
   `P(base) * P(OOS|base) * P(probe eligible|OOS) * P(6M accepted|probe)`,
   grouped by correlated source. Its bounded relative log-odds score is centred
   on the global probability, so unknown evidence is neutral. The UI exposes
@@ -278,6 +296,10 @@ enter this queue.
   may be used to get a qualifying OHLC before re-running real tick.
 - A row is final `accepted` when history quality ≥ threshold AND the three active
   similarity checks pass (see below). `net_profit` is **not** an active check.
+- Percentage deltas use a symmetric max-denominator difference:
+  `abs(OHLC - tick) / max(abs(OHLC), abs(tick), 1) * 100`. Therefore a configured
+  `35%` tolerance is intentionally symmetric and is not the classic percentage
+  change measured only from the OHLC value.
 - UI: `UBS Final Tick` shows robust-accepted candidates, final status, cause,
   history quality %, OHLC metrics, real-tick metrics, date range, set path, and
   "Abrir set" / "Abrir OHLC" / "Abrir Real Tick" report actions.
@@ -312,10 +334,14 @@ active criteria because `normalized_net_profit` depends on the normalization gro
 produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
 delta, but PF/DD/trades practically identical).
 
-Final Tick is a hard live-use eligibility gate: only `candidate_final_tick.status='accepted'`
-can enter portfolio/export/live-use pools; `rejected` is a hard no for live use, and
-`pending_*` remains non-eligible until resolved. The weight bonus/penalty only teaches
-future exploration and does not override this gate.
+The short Final Tick probe is a discard filter, not the final live-use gate.
+`accepted` advances to Final Tick 6M; `rejected` is terminal and invalidates any
+downstream 6M evidence. `pending_ohlc_trades` may also advance because the longer
+6M window supplies the missing sample, while `pending_history_quality` and
+technical/error states must be resolved first. Neither short `accepted` nor
+`pending_ohlc_trades` authorizes live use by itself: only a later Final Tick 6M
+`accepted` result makes the strategy portfolio/export eligible. Weight feedback
+only teaches future exploration and never overrides candidate-level rejection.
 
 #### `from_date` / `to_date` consistency guard
 
@@ -960,7 +986,13 @@ The probe stage weight bonus (`DEFAULT_FINAL_TICK_ACCEPTED_BONUS = +120` / `DEFA
 
 ### UBS Portafolio — Final Tick 6M gate
 
-Portfolio candidate eligibility requires: `candidates.status='accepted'` AND `candidate_robustness.status='accepted'` AND `candidate_final_tick_6m.status='accepted'` (6M gate). The probe stage (`candidate_final_tick`) is no longer a gate for portfolio; only the 6M stage is.
+Portfolio candidate eligibility requires: `candidates.status='accepted'` AND
+`candidate_robustness.status='accepted'` AND
+`candidate_final_tick_6m.status='accepted'` (6M gate). The short probe
+(`candidate_final_tick`) is a prior discard filter, not a repeated portfolio
+gate: only probe `accepted` or `pending_ohlc_trades` can produce a 6M result,
+probe `rejected` invalidates downstream 6M evidence, and a passing 6M resolves a
+short probe that lacked enough trades.
 
 New portfolio filter: **"Requerir 3 meses positivos 6M"** checkbox (`ubs_portfolio_require_3_positive_months_6m`, persisted in `ui_settings.ini`). When enabled, the optimizer filters out candidates whose 6M curve has fewer than 3 positive months before optimization.
 

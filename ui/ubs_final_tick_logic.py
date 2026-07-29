@@ -86,6 +86,7 @@ class UBSFinalTickLogicMixin:
                 int(run["id"]),
                 score_config,
                 symbol_map,
+                broker=self._ubs_broker(),
                 min_history_quality=thresholds["min_quality"],
                 min_ohlc_trades=thresholds["min_ohlc_trades"],
                 min_trades_w1=thresholds["min_trades_w1"],

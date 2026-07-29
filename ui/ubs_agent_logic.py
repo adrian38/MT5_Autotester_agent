@@ -191,6 +191,7 @@ class UBSAgentLogicMixin:
             ("ubs_robustness", "_refresh_ubs_robustness_panel"),
             ("ubs_final_tick", "_refresh_ubs_final_tick_panel"),
             ("ubs_final_tick_6m", "_refresh_ubs_final_tick_6m_panel"),
+            ("ubs_regression", "_refresh_ubs_regression_panel"),
             ("ubs_universe", "_refresh_ubs_universe_panel"),
             ("ubs_portfolio", "_refresh_ubs_portfolio"),
         ):

@@ -754,11 +754,14 @@ class UBSUniverseLogicMixin:
                         ft.status as final_tick_status,
                         ft.similarity_json as final_tick_similarity_json,
                         ft6.status as final_tick_6m_status,
-                        ft6.similarity_json as final_tick_6m_similarity_json
+                        ft6.similarity_json as final_tick_6m_similarity_json,
+                        rg.status as regression_status,
+                        rg.points_applied as regression_points_applied
                     from candidates c
                     left join candidate_robustness cr on cr.candidate_id = c.id
                     left join candidate_final_tick ft on ft.candidate_id = c.id
                     left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
+                    left join candidate_regression rg on rg.candidate_id = c.id
                     """
                 ).fetchall()
                 seed_table = conn.execute(
@@ -923,8 +926,9 @@ class UBSUniverseLogicMixin:
             probability = signal.probability if signal is not None else None
             confidence = signal.confidence if signal is not None else None
             final_trials = signal.final_trials if signal is not None else 0
+            regression_trials = signal.regression_trials if signal is not None else 0
             avg_score = (sum(scores) / len(scores)) if scores else None
-            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, avg_score))
+            ranked_assets.append((weight_value if weight_value is not None else -999999.0, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, regression_trials, avg_score))
         ranked_assets.sort(key=lambda item: (item[0], item[4]["pending"]), reverse=True)
         asset_total_before_filter = len(ranked_assets)
         asset_search_terms = self._ubs_universe_search_terms("ubs_universe_asset_search")
@@ -935,7 +939,7 @@ class UBSUniverseLogicMixin:
             ]
 
         if hasattr(self, "ubs_universe_assets_tree"):
-            for _, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, avg_score in ranked_assets:
+            for _, group, symbol, symbol_aliases, stat, weight_value, probability, confidence, final_trials, regression_trials, avg_score in ranked_assets:
                 is_disabled = symbol.upper() in disabled_symbols
                 seed_enabled = (not is_disabled) or symbol.upper() in seed_enabled_when_disabled
                 item = self.ubs_universe_assets_tree.insert(
@@ -952,6 +956,7 @@ class UBSUniverseLogicMixin:
                         self._format_ubs_number(probability * 100.0 if probability is not None else None),
                         self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
                         int(final_trials),
+                        int(regression_trials),
                         self._format_ubs_number(avg_score),
                         self._format_ubs_number(stat["best"]),
                         int(stat["tests"]),
@@ -984,8 +989,9 @@ class UBSUniverseLogicMixin:
             probability = signal.probability if signal is not None else None
             confidence = signal.confidence if signal is not None else None
             final_trials = signal.final_trials if signal is not None else 0
+            regression_trials = signal.regression_trials if signal is not None else 0
             avg_score = (sum(scores) / len(scores)) if scores else None
-            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, probability, confidence, final_trials, avg_score))
+            tf_rows.append((weight_value if weight_value is not None else -999999.0, period, stat, weight_value, probability, confidence, final_trials, regression_trials, avg_score))
         tf_rows.sort(key=lambda item: item[0], reverse=True)
         tf_total_before_filter = len(tf_rows)
         tf_search_terms = self._ubs_universe_search_terms("ubs_universe_tf_search")
@@ -994,7 +1000,7 @@ class UBSUniverseLogicMixin:
 
         if hasattr(self, "ubs_timeframes_tree"):
             valid_tfs: set[str] = set()
-            for _, period, stat, weight_value, probability, confidence, final_trials, avg_score in tf_rows:
+            for _, period, stat, weight_value, probability, confidence, final_trials, regression_trials, avg_score in tf_rows:
                 valid_tfs.add(period.upper())
                 self.ubs_timeframes_tree.insert(
                     "",
@@ -1006,6 +1012,7 @@ class UBSUniverseLogicMixin:
                         self._format_ubs_number(probability * 100.0 if probability is not None else None),
                         self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
                         int(final_trials),
+                        int(regression_trials),
                         self._format_ubs_number(avg_score),
                         self._format_ubs_number(stat["best"]),
                         int(stat["tests"]),
@@ -1031,7 +1038,7 @@ class UBSUniverseLogicMixin:
             f"deshabilitados: {len(disabled_symbols)} | seeds en deshab.: {len(seed_enabled_when_disabled)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(
-            "PESO REL = score probabilistico relativo end-to-end; P 6M = probabilidad estimada hasta Final Tick 6M; "
+            "PESO REL = score probabilistico relativo end-to-end; P FINAL = probabilidad estimada hasta regresiva; "
             "pendientes/mismatch/history_probe no aportan; GEN=no bloquea generacion."
         )
 

@@ -49,6 +49,12 @@ VALUE_OPTIONS = {
     "--final-tick-max-net-delta-pct", "--final-tick-max-pf-delta-pct",
     "--final-tick-max-dd-delta-pct", "--final-tick-max-trades-delta-pct",
     "--final-tick-ohlc-from-date", "--final-tick-ohlc-to-date",
+    "--regression-run-id", "--regression-from-date", "--regression-to-date",
+    "--regression-min-net-profit", "--regression-min-profit-factor",
+    "--regression-min-trades", "--regression-min-trades-w1", "--regression-min-trades-mn",
+    "--regression-max-drawdown-pct", "--regression-min-recovery-factor",
+    "--regression-min-positive-month-ratio", "--regression-positive-points",
+    "--regression-negative-points",
 }
 
 STAGE_NOTIFICATION_LABELS = {
@@ -59,6 +65,7 @@ STAGE_NOTIFICATION_LABELS = {
     "final_tick_quality": "Calidad baja Final Tick corto",
     "final_tick_6m": "Final Tick 6M",
     "final_tick_6m_quality": "Calidad baja Final Tick 6M",
+    "regression": "Regresiva OHLC",
 }
 
 STAGE_TABLES = {
@@ -69,10 +76,11 @@ STAGE_TABLES = {
     "final_tick_quality": "candidate_final_tick",
     "final_tick_6m": "candidate_final_tick_6m",
     "final_tick_6m_quality": "candidate_final_tick_6m",
+    "regression": "candidate_regression",
 }
 
 STATUS_NOTIFICATION_ORDER = (
-    "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history",
+    "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history", "date_mismatch",
     "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
     "pending", "generated", "running",
 )
@@ -370,6 +378,27 @@ def build_pipeline_stage_command(
         }
         for key, option in final_options.items():
             _add(args, option, setting(cfg, "General", key))
+    elif stage == "regression":
+        args.extend(["--evaluate-regression", "--regression-pending-only"])
+        _add(args, "--regression-run-id", run_id)
+        regression_options = {
+            "ubs_regression_from_date": "--regression-from-date",
+            "ubs_regression_to_date": "--regression-to-date",
+            "ubs_regression_min_net_profit": "--regression-min-net-profit",
+            "ubs_regression_min_profit_factor": "--regression-min-profit-factor",
+            "ubs_regression_min_trades": "--regression-min-trades",
+            "ubs_regression_min_trades_w1": "--regression-min-trades-w1",
+            "ubs_regression_min_trades_mn": "--regression-min-trades-mn",
+            "ubs_regression_max_drawdown_pct": "--regression-max-drawdown-pct",
+            "ubs_regression_min_recovery_factor": "--regression-min-recovery-factor",
+            "ubs_regression_min_positive_month_ratio": "--regression-min-positive-month-ratio",
+            "ubs_regression_min_pf_efficiency": "--regression-min-pf-efficiency",
+            "ubs_regression_max_dd_ratio": "--regression-max-dd-ratio",
+            "ubs_regression_positive_points": "--regression-positive-points",
+            "ubs_regression_negative_points": "--regression-negative-points",
+        }
+        for key, option in regression_options.items():
+            _add(args, option, setting(cfg, "General", key))
     else:
         raise ValueError(f"Etapa de pipeline desconocida: {stage}")
 
@@ -429,6 +458,7 @@ def database_snapshot(path: Path) -> dict[str, Any]:
                 "robustness": _counts(conn, "candidate_robustness", run_id),
                 "final_tick": _counts(conn, "candidate_final_tick", run_id),
                 "final_tick_6m": _counts(conn, "candidate_final_tick_6m", run_id),
+                "regression": _counts(conn, "candidate_regression", run_id),
             }
             return {
                 "available": True,
@@ -533,6 +563,7 @@ def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]
                         "robustness": _counts(conn, "candidate_robustness", run_id),
                         "final_tick": _counts(conn, "candidate_final_tick", run_id),
                         "final_tick_6m": _counts(conn, "candidate_final_tick_6m", run_id),
+                        "regression": _counts(conn, "candidate_regression", run_id),
                     },
                 })
             return result
@@ -605,6 +636,28 @@ def pipeline_stage_pending_count(
                 if _workspace_path_exists(row["set_path"], project)
                 and (not str(row["stage_status"] or "").strip()
                      or str(row["stage_status"] or "").strip() in ROBUST_RETRYABLE_STATUSES)
+            )
+
+        if stage == "regression":
+            if not _table_exists(conn, "candidate_final_tick_6m"):
+                return 0
+            regression_join = (
+                "left join candidate_regression rg on rg.candidate_id=c.id"
+                if _table_exists(conn, "candidate_regression") else ""
+            )
+            status_expr = "rg.status" if regression_join else "null"
+            rows = conn.execute(
+                f"select c.set_path,{status_expr} stage_status from candidates c "
+                "join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted' "
+                f"{regression_join} where c.run_id=? and c.status='accepted'",
+                (run_id,),
+            ).fetchall()
+            retryable = {"no_report", "parse_error", "report_mismatch", "date_mismatch", "no_history"}
+            return sum(
+                1 for row in rows
+                if _workspace_path_exists(row["set_path"], project)
+                and (not str(row["stage_status"] or "").strip()
+                     or str(row["stage_status"] or "").strip() in retryable)
             )
 
         if stage not in {"final_tick", "final_tick_quality", "final_tick_6m", "final_tick_6m_quality"}:
@@ -757,6 +810,8 @@ class JobController:
                 payload = dict(item.get("payload") or {})
                 if item.get("type") == "repair":
                     self._start_repair(payload)
+                elif item.get("type") == "regression":
+                    self._start_regression(payload)
                 else:
                     self._start_generation(payload)
             except Exception as exc:
@@ -863,7 +918,8 @@ class JobController:
         run_ids = request.get("run_ids") if isinstance(request.get("run_ids"), list) else []
         run_text = ", ".join(f"#{safe_int(value, 0, minimum=0)}" for value in run_ids) or "-"
         outcome = "OK" if return_code == 0 else f"ERROR codigo {return_code}"
-        job_label = "Reparacion" if self.state.get("job_type") == "repair" else "Ejecucion"
+        job_labels = {"repair": "Reparacion", "regression": "Prueba regresiva"}
+        job_label = job_labels.get(str(self.state.get("job_type") or ""), "Ejecucion")
         message = (
             f"MT5 Autotester Manager: {job_label} finalizada ({outcome}).\n"
             f"Nodo: {self.config.get('display_name') or self.config.get('node_id')} | "
@@ -890,7 +946,12 @@ class JobController:
         run_robustness = bool(payload.get("run_robustness", False))
         run_final_tick = bool(payload.get("run_final_tick", False))
         run_final_tick_6m = bool(payload.get("run_final_tick_6m", False))
-        if run_final_tick_6m:
+        run_regression = bool(payload.get("run_regression", False))
+        if run_regression:
+            run_final_tick_6m = True
+            run_final_tick = True
+            run_robustness = True
+        elif run_final_tick_6m:
             run_final_tick = True
             run_robustness = True
         elif run_final_tick:
@@ -898,6 +959,7 @@ class JobController:
         payload["run_robustness"] = run_robustness
         payload["run_final_tick"] = run_final_tick
         payload["run_final_tick_6m"] = run_final_tick_6m
+        payload["run_regression"] = run_regression
         payload["repair_after_generation"] = bool(payload.get("repair_after_generation", False))
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         return payload
@@ -908,6 +970,7 @@ class JobController:
         run_robustness = payload["run_robustness"]
         run_final_tick = payload["run_final_tick"]
         run_final_tick_6m = payload["run_final_tick_6m"]
+        run_regression = payload["run_regression"]
         repair_after_generation = payload["repair_after_generation"]
         repair_attempts = payload["repair_attempts"]
         pipeline: list[dict[str, Any]] = []
@@ -921,6 +984,8 @@ class JobController:
                     repair_actions.extend(["final_tick", "final_tick_quality"])
                 if run_final_tick_6m:
                     repair_actions.extend(["final_tick_6m", "final_tick_6m_quality"])
+                if run_regression:
+                    repair_actions.append("regression")
                 pipeline.extend(
                     {
                         "action": action, "cycle": cycle, "run_id": None,
@@ -936,6 +1001,8 @@ class JobController:
                     pipeline.append({"action": "final_tick", "cycle": cycle, "run_id": None})
                 if run_final_tick_6m:
                     pipeline.append({"action": "final_tick_6m", "cycle": cycle, "run_id": None})
+                if run_regression:
+                    pipeline.append({"action": "regression", "cycle": cycle, "run_id": None})
         command, cwd = build_generation_command(self.config, payload)
         job_id = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
         log_path = self.runtime_dir / f"generation_{job_id}.log"
@@ -991,6 +1058,7 @@ class JobController:
         actions.append("final_tick_6m")
         if retry_low_quality:
             actions.append("final_tick_6m_quality")
+        actions.append("regression")
         pipeline = [
             {"action": action, "cycle": None, "run_id": run_id, "attempt": attempt}
             for run_id in run_ids
@@ -1001,6 +1069,62 @@ class JobController:
         log_path = self.runtime_dir / f"{job_id}.log"
         self.state = {
             "job_id": job_id, "job_type": "repair", "status": "running", "pid": None,
+            "started_at": utc_now(), "finished_at": None, "return_code": None,
+            "request": payload, "command": None, "log_path": str(log_path), "error": None,
+            "pipeline": pipeline, "current_stage": None, "current_cycle": None,
+            "current_run_id": None, "current_attempt": None,
+            "completed_stages": [], "skipped_stages": [],
+            "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
+            "telegram_notifications": [],
+        }
+        try:
+            launched = self._launch_next_runnable(0, log_path, first=True)
+        except Exception as exc:
+            self.state["error"] = str(exc)
+            self.state["return_code"] = 1
+            self.state["finished_at"] = utc_now()
+            self.state["status"] = "failed"
+            self._persist()
+            raise
+        if not launched:
+            self._complete(0)
+        return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
+
+    def start_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            normalized = self._normalize_regression(payload)
+            if self._busy() or self.queue:
+                run_ids = normalized["run_ids"]
+                return self._enqueue(
+                    "regression", normalized,
+                    f"Run(s) {', '.join(str(value) for value in run_ids)} · solo regresiva",
+                )
+            return self._start_regression(normalized)
+
+    def _normalize_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
+        requested = payload.get("run_ids")
+        if not isinstance(requested, list):
+            raise ValueError("run_ids debe ser una lista")
+        run_ids = list(dict.fromkeys(safe_int(value, 0, minimum=0) for value in requested))
+        run_ids = [value for value in run_ids if value > 0]
+        if not run_ids:
+            raise ValueError("Selecciona al menos un run terminado")
+        payload = dict(payload)
+        payload["run_ids"] = run_ids
+        payload["execute_backtests"] = True
+        return payload
+
+    def _start_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = self._normalize_regression(payload)
+        run_ids = payload["run_ids"]
+        pipeline = [
+            {"action": "regression", "cycle": None, "run_id": run_id, "attempt": 1}
+            for run_id in run_ids
+        ]
+        job_id = "regression_" + time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
+        log_path = self.runtime_dir / f"{job_id}.log"
+        self.state = {
+            "job_id": job_id, "job_type": "regression", "status": "running", "pid": None,
             "started_at": utc_now(), "finished_at": None, "return_code": None,
             "request": payload, "command": None, "log_path": str(log_path), "error": None,
             "pipeline": pipeline, "current_stage": None, "current_cycle": None,
@@ -1192,6 +1316,7 @@ class JobController:
                 "run_robustness": setting_bool(cfg, "General", "ubs_robust_auto", False),
                 "run_final_tick": setting_bool(cfg, "General", "ubs_final_tick_auto", False),
                 "run_final_tick_6m": setting_bool(cfg, "General", "ubs_final_tick_6m_auto", False),
+                "run_regression": setting_bool(cfg, "General", "ubs_regression_auto", False),
             }
         except Exception as exc:
             db = {"available": False, "error": str(exc)}
@@ -1428,6 +1553,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.start(self._body()))
             elif self.path == "/api/v1/jobs/repair":
                 self._send(202, self.server.controller.start_repair(self._body()))
+            elif self.path == "/api/v1/jobs/regression":
+                self._send(202, self.server.controller.start_regression(self._body()))
             elif self.path == "/api/v1/jobs/stop":
                 self._send(202, self.server.controller.stop())
             elif self.path == "/api/v1/jobs/queue/cancel":

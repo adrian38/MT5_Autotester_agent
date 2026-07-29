@@ -203,6 +203,7 @@ class UBSResultsLogicMixin:
             ("ubs_robustness", self._refresh_ubs_robustness),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
+            ("ubs_regression", self._refresh_ubs_regression),
             ("ubs_universe", self._refresh_ubs_universe),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_comparison", self._refresh_ubs_comparison),
@@ -341,6 +342,26 @@ class UBSResultsLogicMixin:
                 max_pf_delta_pct real not null default 35.0,
                 max_dd_delta_pct real not null default 35.0,
                 max_trades_delta_pct real not null default 35.0,
+                evaluated_at text not null
+            )
+            """
+        )
+        conn.execute(
+            """
+            create table if not exists candidate_regression (
+                candidate_id integer primary key,
+                run_id integer not null,
+                status text not null,
+                accepted integer,
+                report_path text,
+                score real,
+                metrics_json text,
+                details_json text,
+                from_date text not null default '2017.01.01',
+                to_date text not null default '2019.12.31',
+                positive_points real not null default 80.0,
+                negative_points real not null default -100.0,
+                points_applied real not null default 0.0,
                 evaluated_at text not null
             )
             """
@@ -2080,6 +2101,10 @@ class UBSResultsLogicMixin:
 
         try:
             conn = connect_memory(memory_path)
+            conn.execute("delete from candidate_regression where run_id=?", (run_id,))
+            conn.execute("delete from candidate_final_tick_6m where run_id=?", (run_id,))
+            conn.execute("delete from candidate_final_tick where run_id=?", (run_id,))
+            conn.execute("delete from candidate_robustness where run_id=?", (run_id,))
             conn.execute("delete from candidates where run_id=?", (run_id,))
             conn.execute("delete from runs where id=?", (run_id,))
             # Limpiar también los scores de seed_scores → los pesos del Universo van a 0

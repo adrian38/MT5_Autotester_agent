@@ -3,6 +3,7 @@ import unittest
 
 from ubs.manual_status import (
     mark_candidate_final_tick,
+    mark_candidate_regression,
     mark_candidate_robustness,
     mark_candidates,
     mark_seed_scores,
@@ -92,6 +93,22 @@ def memory_conn() -> sqlite3.Connection:
             max_pf_delta_pct real not null default 35.0,
             max_dd_delta_pct real not null default 35.0,
             max_trades_delta_pct real not null default 35.0,
+            evaluated_at text not null
+        );
+        create table candidate_regression (
+            candidate_id integer primary key,
+            run_id integer not null,
+            status text not null,
+            accepted integer,
+            report_path text,
+            score real,
+            metrics_json text,
+            details_json text,
+            from_date text not null default '2017.01.01',
+            to_date text not null default '2019.12.31',
+            positive_points real not null default 80.0,
+            negative_points real not null default -100.0,
+            points_applied real not null default 0.0,
             evaluated_at text not null
         );
         """
@@ -204,6 +221,18 @@ class UBSManualStatusTests(unittest.TestCase):
         ).fetchone()
 
         self.assertEqual(feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS), -160.0)
+
+    def test_manual_regression_requires_6m_acceptance_and_applies_points(self) -> None:
+        conn = memory_conn()
+        conn.execute(
+            "insert into candidates (id, run_id, status, score, target_symbol, period) values (6, 7, 'accepted', 100, 'EURUSD', 'H1')"
+        )
+        mark_candidate_final_tick(conn, [6], "accepted", final_tick_stage="six_month")
+
+        self.assertEqual(mark_candidate_regression(conn, [6], "rejected"), 1)
+        row = conn.execute("select * from candidate_regression where candidate_id=6").fetchone()
+        self.assertEqual(row["status"], "rejected")
+        self.assertEqual(row["points_applied"], -100.0)
 
 
 if __name__ == "__main__":

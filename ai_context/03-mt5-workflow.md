@@ -234,9 +234,13 @@ broker normalization file, for example
 When `--evaluate-seeds` runs, already evaluated `accepted`/`rejected` seeds are
 re-scored from their stored reports using the current seed thresholds, without
 rerunning MT5 if the seed file and symbol/timeframe are unchanged.
-Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`, and
-`--rescore-robustness-only` when thresholds or normalization changed and MT5
-should not be launched.
+Use `ubs_agent.py --rescore-seeds-only`, `--rescore-candidates-only`,
+`--rescore-robustness-only`, `--rescore-final-tick-only`, and
+`--rescore-regression-only` when thresholds or weights changed and MT5 should
+not be launched. Candidate-stage rescores use persisted SQLite `metrics_json`
+by default and commit once per stage; technical states are left untouched.
+Pass `--rescore-from-reports` only when the HTML parser or broker normalization
+changed and the stored metrics themselves must be rebuilt.
 
 Seed evaluation is resumable after an interrupted MT5 batch. Before launching
 new backtests, `--evaluate-seeds` scans
@@ -344,6 +348,13 @@ Final Tick runs two backtest batches for the same candidates and dates:
 `run_tests.py` accepts `--model` to override the template model per batch; do
 not edit `tester_template.ini` to switch between OHLC and real ticks.
 
+The EA input `UseEveryTick` follows a separate stage contract from the tester
+`Model`: generated/base result sets, robustness sets, and backward-regression
+sets use `UseEveryTick=false`. In short Final Tick and Final Tick 6M, the OHLC
+control copy also uses `UseEveryTick=false`, while only the real-tick copy uses
+`UseEveryTick=true`. These values are applied to stage copies without modifying
+the candidate source set.
+
 Results are stored in `candidate_final_tick`, not in `candidate_robustness`.
 The agent stores both report paths and both metrics JSON values. Acceptance is
 based on:
@@ -356,6 +367,20 @@ based on:
 Missing `History Quality` is treated as not accepted because the real-tick data
 quality cannot be proven. `no_report`, `parse_error`, `report_mismatch`, and
 `no_trades` are diagnostic states and do not count as final accepted.
+
+## UBS Backward Regression
+
+After Final Tick 6M, `--evaluate-regression` can run a separate backward
+holdout over only `candidate_final_tick_6m.status='accepted'` candidates. The
+default interval is `2017.01.01 -> 2019.12.31`; the executor always overrides
+the tester with `Model=1` and these dates. Results live in
+`candidate_regression` and do not overwrite any earlier report.
+
+The evaluator verifies symbol, timeframe, and the exact configured period read
+from the report. A shifted range or unavailable old history becomes a neutral,
+retryable technical state instead of a false strategy rejection. Valid matching
+reports are scored using regression-specific thresholds and points. Full design
+and official sources are in `10-regression-validation.md`.
 
 ## UBS Unseeded Universe Exploration
 

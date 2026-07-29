@@ -41,6 +41,8 @@ python .\ubs_agent.py --generation-mode discovery --dry-run
 python .\ubs_agent.py --rescore-seeds-only --min-net-profit 0 --min-trades 50
 python .\ubs_agent.py --rescore-candidates-only --min-net-profit 100 --min-trades 49
 python .\ubs_agent.py --rescore-robustness-only --min-net-profit 20 --min-trades 50
+python .\ubs_agent.py --evaluate-regression --regression-run-id 1 --regression-pending-only --expert "C:\path\to\Ultimate Breakout System_4.3.ex5" --dry-run
+python .\ubs_agent.py --rescore-regression-only --regression-run-id 1
 ```
 
 Audit current UBS memory and weights:
@@ -89,6 +91,9 @@ For UBS agent changes:
   `Symbol=.JP225Cash`, not `XAUUSD`.
 - For seed evaluation changes, run `ubs_agent.py --evaluate-seeds --dry-run`
   against a small seed folder.
+- For regression changes, verify the generated command uses `Model=1`, the
+  report period exactly matches the requested dates, only Final Tick 6M
+  accepted rows are selected, and technical states remain neutral.
 - Confirm a UBS seed with missing/unknown symbol or timeframe is stored as
   `report_mismatch` before `run_tests.py` is launched. This case must not
   create a backtest job.

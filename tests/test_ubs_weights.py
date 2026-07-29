@@ -45,7 +45,7 @@ class UBSWeightsTests(unittest.TestCase):
         self.assertLess(signals["BAD"].score, 0.0)
         self.assertGreater(signals["GOOD"].probability, signals["BAD"].probability)
 
-    def test_probe_rejected_without_six_month_acceptance_is_terminal_negative_weight(self) -> None:
+    def test_probe_rejection_is_smoothed_without_zeroing_aggregate_probability(self) -> None:
         terminal = {
             "status": "accepted",
             "robust_status": "accepted",
@@ -75,7 +75,8 @@ class UBSWeightsTests(unittest.TestCase):
         )
 
         self.assertLess(signals["TERMINAL"].score, 0.0)
-        self.assertEqual(signals["TERMINAL"].probability, 0.0)
+        self.assertGreater(signals["TERMINAL"].probability, 0.0)
+        self.assertGreater(signals["TERMINAL"].stage_probabilities["six_month"], 0.0)
         self.assertGreater(signals["GOOD"].score, signals["TERMINAL"].score)
 
     def test_percentile_mutation_multipliers_preserve_order_and_ties(self) -> None:
@@ -111,6 +112,40 @@ class UBSWeightsTests(unittest.TestCase):
             feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
             100.0 + ASSET_ACCEPTED_BONUS + DEFAULT_FINAL_TICK_ACCEPTED_BONUS,
         )
+
+    def test_regression_points_are_added_after_six_month_acceptance(self) -> None:
+        row = {
+            "status": "accepted",
+            "score": 100.0,
+            "final_tick_6m_status": "accepted",
+            "regression_status": "accepted",
+            "regression_points_applied": 80.0,
+        }
+        self.assertEqual(
+            feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
+            100.0 + ASSET_ACCEPTED_BONUS + DEFAULT_FINAL_TICK_ACCEPTED_BONUS + 80.0,
+        )
+
+    def test_regression_failure_caps_previous_positive_weight(self) -> None:
+        row = {
+            "status": "accepted",
+            "score": 400.0,
+            "final_tick_6m_status": "accepted",
+            "regression_status": "rejected",
+            "regression_points_applied": -145.0,
+        }
+        self.assertEqual(feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS), -145.0)
+
+    def test_regression_technical_status_is_neutral(self) -> None:
+        base = {"status": "accepted", "score": 100.0, "final_tick_6m_status": "accepted"}
+        row = {**base, "regression_status": "no_history", "regression_points_applied": -100.0}
+        self.assertEqual(
+            feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS),
+            feedback_weight(base, accepted_bonus=ASSET_ACCEPTED_BONUS),
+        )
+        self.assertEqual(row_stage_outcome(row, "regression"), (False, 0.0))
+        self.assertEqual(row_stage_outcome({"regression_status": "accepted"}, "regression"), (True, 1.0))
+        self.assertEqual(row_stage_outcome({"regression_status": "no_trades"}, "regression"), (True, 0.0))
 
     def test_final_tick_rejected_adds_live_signal_penalty_and_reason_penalties(self) -> None:
         row = {
