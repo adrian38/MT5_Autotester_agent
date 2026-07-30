@@ -332,6 +332,8 @@ class SettingsLogicMixin:
         saved_multiterminal_tuning = {
             "terminal_cooldown": "1",
             "tester_kick_after": "30",
+            "tester_stall_after": "300",
+            "tester_max_runtime": "1800",
         }
         if UI_SETTINGS_FILE.exists():
             existing = configparser.ConfigParser(interpolation=None)
@@ -566,6 +568,8 @@ class SettingsLogicMixin:
             "workers": str(self._multiterminal_worker_limit()),
             "terminal_cooldown": saved_multiterminal_tuning["terminal_cooldown"],
             "tester_kick_after": saved_multiterminal_tuning["tester_kick_after"],
+            "tester_stall_after": saved_multiterminal_tuning["tester_stall_after"],
+            "tester_max_runtime": saved_multiterminal_tuning["tester_max_runtime"],
         }
         for index, profile in enumerate(self.multiterminal_profiles, start=1):
             parser[f"Terminal.{index}"] = {

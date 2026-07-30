@@ -913,7 +913,7 @@ UI buttons: each relevant tab has **Aceptar seleccionadas** / **Rechazar selecci
 (Type B bar buttons) that act on checked rows and then call
 `self._safe_refresh("ubs_universe", ...)` so weights update immediately.
 
-### `run_tests.py` — Model=4 stuck detection and restart
+### `run_tests.py` — all-model watchdog and Model=4 recovery
 
 When running `Model=4` (Every Tick based on real ticks), MT5 can get stuck
 indefinitely waiting to download tick history. The stuck-detection subsystem
@@ -927,15 +927,35 @@ TESTER_STUCK_MARKERS = (
 )
 ```
 
-**Detection logic** (`_wait_for_process` / `wait_for_mt5_exit`):
+**Model=4 detection logic** (`wait_for_mt5_process`):
 - Every 10 s the tester journal (`Tester.log` in MT5 data dir) is read.
 - If the last line matches a `TESTER_STUCK_MARKERS` entry AND the file has not
   grown since the previous check → stuck counter increments.
 - After 2 consecutive stuck checks (≈20 s idle), the process is killed and the
   run is retried once. On the second attempt the kick timeout is doubled before
   giving up.
-- `kick_after_seconds` only applies when `real_tick_model=True`; OHLC/other
-  models are never killed early.
+- `kick_after_seconds` remains specific to `real_tick_model=True`.
+
+**All-model watchdog**:
+- Every model, including regression `Model=1`, monitors tester-journal and fresh
+  report progress every 10 seconds.
+- After `tester_stall_after` seconds without either signal, two consecutive
+  checks are required before the MT5 process tree is killed and retried once.
+  Default: `300` seconds.
+- `tester_max_runtime` is an independent hard per-job ceiling even when the
+  journal cannot be located. Default: `1800` seconds.
+- A watchdog termination writes
+  `reports/<report>.watchdog_attempt_N.mt5log.txt` even when MT5 never generated
+  an HTML report. Missing journals are recorded explicitly in that snapshot.
+- Tester-report discovery accepts only `.htm`, `.html`, and `.xml`; watchdog
+  snapshots are diagnostic evidence, never parser input.
+- Regression without a fresh report but with a fresh watchdog snapshot records
+  neutral `watchdog_timeout` and retains the snapshot path. This state is
+  intentionally excluded from pending/automatic continuation so a broken
+  symbol history cannot be relaunched forever. Use a full or selected rerun
+  explicitly after repairing history.
+- Set either value to `0` to disable that layer. The existing completed-report
+  stability guard remains active independently.
 
 **Empty Model=4 false-success guard**:
 - A tester process can exit normally while its fresh HTML contains
@@ -966,11 +986,12 @@ TESTER_STUCK_MARKERS = (
 |------|-----------|---------|-------------|
 | `--model N` | — | from INI | Override `Model` in the generated INI |
 | `--tester-kick-after N` | `[Multiterminal] tester_kick_after` | `30` | Seconds before killing a stuck Model=4 process |
+| `--tester-stall-after N` | `[Multiterminal] tester_stall_after` | `300` | Journal/report inactivity window for every model |
+| `--tester-max-runtime N` | `[Multiterminal] tester_max_runtime` | `1800` | Absolute per-backtest ceiling for every model |
 | `--terminal-cooldown N` | `[Multiterminal] terminal_cooldown` | `0` | Pause in seconds after MT5 exits (prevents rapid restart) |
 
-`load_runner_tuning(terminals_config_path, tester_kick_after, terminal_cooldown)`
-reads `[Multiterminal]` from `ui_settings.ini` for saved defaults, overridden by
-explicit CLI flags. Set `--tester-kick-after 0` to disable auto-restart entirely.
+`load_runner_tuning(...)` reads all four tuning values from `[Multiterminal]`
+in `ui_settings.ini`, overridden by explicit CLI flags.
 
 `ubs_agent.py` forwards these flags to `run_tests.py` for Final Tick (`--model 4`)
 and seed evaluation runs.

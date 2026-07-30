@@ -40,6 +40,8 @@ TESTER_STUCK_MARKERS = (
 )
 REPORT_SAVE_STALL_SECONDS = 30
 REPORT_SAVE_CHECK_INTERVAL = 2
+DEFAULT_TESTER_STALL_AFTER_SECONDS = 300
+DEFAULT_TESTER_MAX_RUNTIME_SECONDS = 1800
 GENERATED_SET_ROOT_NAMES = {"retry_mismatch", "robustness", "final_tick"}
 
 DEFAULT_MT5_PATHS = (
@@ -57,6 +59,8 @@ class TesterSettings:
     data_dir: Path | None
     tester_kick_after_seconds: int = 0
     terminal_cooldown_seconds: int = 0
+    tester_stall_after_seconds: int = DEFAULT_TESTER_STALL_AFTER_SECONDS
+    tester_max_runtime_seconds: int = DEFAULT_TESTER_MAX_RUNTIME_SECONDS
 
 
 @dataclass(frozen=True)
@@ -228,6 +232,24 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Solo para Model=4: si MT5 sigue activo tras N segundos, mata el proceso "
             "lanzado y reintenta una vez. Por defecto lee [Multiterminal] tester_kick_after."
+        ),
+    )
+    parser.add_argument(
+        "--tester-stall-after",
+        type=int,
+        default=None,
+        help=(
+            "Para cualquier Model: si no hay progreso de journal/reporte durante N segundos, "
+            "mata el proceso y reintenta una vez. Por defecto lee [Multiterminal] tester_stall_after."
+        ),
+    )
+    parser.add_argument(
+        "--tester-max-runtime",
+        type=int,
+        default=None,
+        help=(
+            "Para cualquier Model: limite absoluto por backtest en segundos. "
+            "Por defecto lee [Multiterminal] tester_max_runtime. 0 lo desactiva."
         ),
     )
     parser.add_argument(
@@ -466,9 +488,13 @@ def load_runner_tuning(
     config_path: Path,
     *,
     tester_kick_after: int | None,
+    tester_stall_after: int | None,
+    tester_max_runtime: int | None,
     terminal_cooldown: int | None,
-) -> tuple[int, int]:
+) -> tuple[int, int, int, int]:
     saved_kick_after = 30
+    saved_stall_after = DEFAULT_TESTER_STALL_AFTER_SECONDS
+    saved_max_runtime = DEFAULT_TESTER_MAX_RUNTIME_SECONDS
     saved_cooldown = 1
     if config_path.exists():
         parser = configparser.ConfigParser(interpolation=None)
@@ -479,13 +505,31 @@ def load_runner_tuning(
                 parser["Multiterminal"].get("tester_kick_after"),
                 saved_kick_after,
             )
+            saved_stall_after = parse_non_negative_int(
+                parser["Multiterminal"].get("tester_stall_after"),
+                saved_stall_after,
+            )
+            saved_max_runtime = parse_non_negative_int(
+                parser["Multiterminal"].get("tester_max_runtime"),
+                saved_max_runtime,
+            )
             saved_cooldown = parse_non_negative_int(
                 parser["Multiterminal"].get("terminal_cooldown"),
                 saved_cooldown,
             )
     kick_after_value = saved_kick_after if tester_kick_after is None else parse_non_negative_int(tester_kick_after, 0)
+    stall_after_value = (
+        saved_stall_after
+        if tester_stall_after is None
+        else parse_non_negative_int(tester_stall_after, 0)
+    )
+    max_runtime_value = (
+        saved_max_runtime
+        if tester_max_runtime is None
+        else parse_non_negative_int(tester_max_runtime, 0)
+    )
     cooldown_value = saved_cooldown if terminal_cooldown is None else parse_non_negative_int(terminal_cooldown, 0)
-    return kick_after_value, cooldown_value
+    return kick_after_value, stall_after_value, max_runtime_value, cooldown_value
 
 
 def terminal_section_sort_key(section: str) -> tuple[int, str]:
@@ -552,6 +596,8 @@ def settings_from_profile(
     profile: TerminalProfile,
     delay_seconds: int,
     tester_kick_after_seconds: int,
+    tester_stall_after_seconds: int,
+    tester_max_runtime_seconds: int,
     terminal_cooldown_seconds: int,
 ) -> TesterSettings:
     return TesterSettings(
@@ -560,6 +606,8 @@ def settings_from_profile(
         portable=profile.portable,
         data_dir=profile_data_dir(profile),
         tester_kick_after_seconds=tester_kick_after_seconds,
+        tester_stall_after_seconds=tester_stall_after_seconds,
+        tester_max_runtime_seconds=tester_max_runtime_seconds,
         terminal_cooldown_seconds=terminal_cooldown_seconds,
     )
 
@@ -1660,6 +1708,33 @@ def write_tester_journal_sidecars(
             logger.write(f"  Aviso: no pude guardar log tester para {report.name}: {exc}")
 
 
+def write_tester_journal_snapshot(
+    report_path: Path,
+    terminal_data_dirs: list[Path],
+    min_mtime: float,
+    logger: RunLogger,
+    *,
+    label: str,
+) -> Path | None:
+    """Persist watchdog evidence even when MT5 never produced a report."""
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label.strip()) or "watchdog"
+    snapshot = report_path.with_name(f"{report_path.stem}.{safe_label}.mt5log.txt")
+    journal = find_tester_journal_log(terminal_data_dirs, min_mtime=min_mtime)
+    if journal is None:
+        payload = "MT5 tester journal unavailable for this attempt.\n"
+    else:
+        text = read_tester_journal_tail_text(journal)
+        payload = f"MT5 tester journal: {journal}\n\n{text}"
+    try:
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(payload, encoding="utf-8")
+        logger.write(f"  Diagnostico watchdog guardado: {snapshot}")
+        return snapshot
+    except OSError as exc:
+        logger.write(f"  Aviso: no pude guardar diagnostico watchdog {snapshot.name}: {exc}")
+        return None
+
+
 def _read_mt5_report_text(report: Path) -> str:
     try:
         raw = report.read_bytes()
@@ -1797,6 +1872,9 @@ def wait_for_mt5_process(
     logger: RunLogger,
     *,
     kick_after_seconds: int = 0,
+    stall_after_seconds: int = 0,
+    max_runtime_seconds: int = 0,
+    tester_model: str = "",
     tester_log_dirs: list[Path] | None = None,
     log_check_min_mtime: float = 0.0,
     report_path: Path | None = None,
@@ -1805,11 +1883,10 @@ def wait_for_mt5_process(
 ) -> tuple[int, bool, float]:
     """Wait for MT5 to exit.
 
-    When kick_after_seconds > 0 and tester_log_dirs is provided, uses log-based
-    stuck detection: every 10 s the tester journal is read; if the last line is a
-    TESTER_STUCK_MARKERS entry AND the file has not grown since the previous check,
-    a stuck counter increments.  After 2 consecutive stuck checks (≈20 s idle) the
-    process is killed and restarted.
+    Model=4 keeps its marker/tick-download detector through kick_after_seconds.
+    Independently, stall_after_seconds applies to every model: if neither the
+    tester journal nor a fresh report progresses for two checks after that idle
+    window, MT5 is killed. max_runtime_seconds is an absolute per-job failsafe.
 
     If tester_log_dirs is empty/None, falls back to the original fixed-timeout
     behaviour (kill after kick_after_seconds of no exit).
@@ -1821,11 +1898,16 @@ def wait_for_mt5_process(
     started = time.time()
     next_alive_log = 30.0
 
-    use_log_check = kick_after_seconds > 0 and bool(tester_log_dirs)
+    use_model4_log_check = kick_after_seconds > 0 and bool(tester_log_dirs)
+    use_generic_stall_check = stall_after_seconds > 0 and bool(tester_log_dirs)
+    use_log_check = use_model4_log_check or use_generic_stall_check
     next_log_check = float(_LOG_CHECK_INTERVAL)
     last_log_size: int = -1
     last_log_path: Path | None = None
-    prev_was_stuck = False
+    last_log_line = ""
+    prev_was_marker_stuck = False
+    generic_stall_checks = 0
+    last_progress_at = 0.0
     last_bases_signature: tuple[int, int, float] | None = None
     next_report_check = 0.0
     last_report_signature: tuple[tuple[str, int, int], ...] = ()
@@ -1867,6 +1949,9 @@ def wait_for_mt5_process(
                     return 0, False, elapsed
             else:
                 report_stable_since = now if report_signature else None
+                if report_signature:
+                    last_progress_at = elapsed
+                    generic_stall_checks = 0
                 last_report_signature = report_signature
             next_report_check = elapsed + REPORT_SAVE_CHECK_INTERVAL
 
@@ -1875,33 +1960,59 @@ def wait_for_mt5_process(
             # tester mientras descarga, asi que el log puede no existir o no
             # crecer durante minutos aunque la descarga avance. Los .tkc de
             # bases/ si crecen en tiempo real.
-            bases_signature = _tick_bases_progress_signature(tester_log_dirs)
-            bases_progress = last_bases_signature is not None and bases_signature != last_bases_signature
-            first_bases_check = last_bases_signature is None
-            last_bases_signature = bases_signature
+            if use_model4_log_check:
+                bases_signature = _tick_bases_progress_signature(tester_log_dirs)
+                bases_progress = last_bases_signature is not None and bases_signature != last_bases_signature
+                first_bases_check = last_bases_signature is None
+                last_bases_signature = bases_signature
+            else:
+                bases_signature = (0, 0, 0.0)
+                bases_progress = False
+                first_bases_check = True
 
             journal = find_tester_journal_log(tester_log_dirs, min_mtime=log_check_min_mtime)
             if journal is not None:
                 last_line, current_size = read_tester_journal_tail(journal)
                 is_stuck_line = _tester_log_is_stuck(last_line)
-                log_unchanged = (journal == last_log_path and current_size == last_log_size)
-                stuck_now = is_stuck_line and log_unchanged and not bases_progress
+                log_unchanged = (
+                    journal == last_log_path
+                    and current_size == last_log_size
+                    and last_line == last_log_line
+                )
+                journal_progress = not log_unchanged
+                marker_stuck_now = (
+                    use_model4_log_check
+                    and is_stuck_line
+                    and log_unchanged
+                    and not bases_progress
+                )
                 stuck_detail = f"ultima linea log: {last_line!r}"
                 last_log_size = current_size
                 last_log_path = journal
+                last_log_line = last_line
             else:
                 # Sin journal volcado a disco: si los .tkc tampoco avanzan tras
                 # el primer chequeo, MT5 esta colgado sin escribir nada.
-                stuck_now = not bases_progress and not first_bases_check and elapsed >= kick_after_seconds
+                journal_progress = False
+                marker_stuck_now = (
+                    use_model4_log_check
+                    and not bases_progress
+                    and not first_bases_check
+                    and elapsed >= kick_after_seconds
+                )
                 stuck_detail = "journal del tester sin volcar a disco"
-                if not stuck_now:
+                if use_model4_log_check and not marker_stuck_now:
                     logger.write(
                         f"MT5 activo ({elapsed:.0f}s): journal sin volcar; "
                         f"ticks {'descargando' if bases_progress else 'sin datos aun'} "
                         f"({bases_signature[0]} .tkc / {bases_signature[1] / 1048576:.1f} MB)."
                     )
 
-            if stuck_now and prev_was_stuck:
+            if journal_progress or bases_progress:
+                last_progress_at = elapsed
+                generic_stall_checks = 0
+
+            if marker_stuck_now and prev_was_marker_stuck:
                 logger.write(
                     f"MT5 sigue activo tras {elapsed:.0f}s sin progreso de journal ni de descarga de ticks "
                     f"(2 checks sin cambio); se reinicia para destrabar."
@@ -1914,23 +2025,66 @@ def wait_for_mt5_process(
                     logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
                 return process.returncode if process.returncode is not None else 1, True, elapsed
 
-            if stuck_now:
+            if marker_stuck_now:
                 logger.write(
                     f"MT5 sin progreso ({elapsed:.0f}s): {stuck_detail} — esperando {_LOG_CHECK_INTERVAL}s mas."
                 )
-                prev_was_stuck = True
+                prev_was_marker_stuck = True
             else:
-                if prev_was_stuck:
+                if prev_was_marker_stuck:
                     logger.write("MT5 volvio a avanzar (journal o descarga de ticks), reset detector stuck.")
-                prev_was_stuck = False
+                prev_was_marker_stuck = False
+
+            stalled_for = elapsed - last_progress_at
+            generic_stalled = (
+                use_generic_stall_check
+                and not journal_progress
+                and not bases_progress
+                and stalled_for >= stall_after_seconds
+            )
+            if generic_stalled:
+                generic_stall_checks += 1
+                if generic_stall_checks >= 2:
+                    model_label = tester_model or "desconocido"
+                    logger.write(
+                        f"MT5 Model={model_label} lleva {stalled_for:.0f}s sin progreso de journal "
+                        f"ni de reporte (2 checks); se reinicia el proceso."
+                    )
+                    logger.write(f"  {stuck_detail}")
+                    terminate_process_tree(process, logger)
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        logger.write(
+                            "MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido."
+                        )
+                    return process.returncode if process.returncode is not None else 1, True, elapsed
+                logger.write(
+                    f"MT5 Model={tester_model or 'desconocido'} sin progreso durante {stalled_for:.0f}s; "
+                    f"se confirmara en {_LOG_CHECK_INTERVAL}s."
+                )
+            elif journal_progress or bases_progress:
+                generic_stall_checks = 0
 
             next_log_check = elapsed + _LOG_CHECK_INTERVAL
 
-        elif not use_log_check and kick_after_seconds > 0 and elapsed >= kick_after_seconds:
+        elif not use_model4_log_check and kick_after_seconds > 0 and elapsed >= kick_after_seconds:
             # Fallback: original fixed-timeout when no log dirs available
             logger.write(
                 f"MT5 sigue activo tras {elapsed:.0f}s en Model=4; "
                 "se reinicia el proceso lanzado para destrabar descarga de ticks."
+            )
+            terminate_process_tree(process, logger)
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                logger.write("MT5 no cerro tras taskkill/terminate; se continua marcando el intento como fallido.")
+            return process.returncode if process.returncode is not None else 1, True, elapsed
+
+        if max_runtime_seconds > 0 and elapsed >= max_runtime_seconds:
+            logger.write(
+                f"MT5 Model={tester_model or 'desconocido'} supero el limite absoluto "
+                f"de {max_runtime_seconds}s; se termina el proceso."
             )
             terminate_process_tree(process, logger)
             try:
@@ -1968,18 +2122,22 @@ def run_test(
     if dry_run:
         return 0
 
-    real_tick_model = tester_model_from_ini(ini_path) == "4"
+    tester_model = tester_model_from_ini(ini_path)
+    real_tick_model = tester_model == "4"
     kick_after_seconds = settings.tester_kick_after_seconds if real_tick_model else 0
+    stall_after_seconds = settings.tester_stall_after_seconds
+    max_runtime_seconds = settings.tester_max_runtime_seconds
     # Model=4 can produce an empty report and exit successfully when the broker
     # connection drops during the preliminary tick download.  Always reserve a
-    # second attempt for that false-success path, even when stuck detection is
-    # disabled.
-    max_attempts = 2 if real_tick_model else 1
+    # second attempt for that false-success path. The general watchdog also gets
+    # one retry for every model after a confirmed stall or absolute timeout.
+    watchdog_enabled = stall_after_seconds > 0 or max_runtime_seconds > 0
+    max_attempts = 2 if real_tick_model or watchdog_enabled else 1
     last_exit_code = 1
 
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
-            logger.write(f"Reintentando MT5 Model=4 ({attempt}/{max_attempts}).")
+            logger.write(f"Reintentando MT5 Model={tester_model or 'desconocido'} ({attempt}/{max_attempts}).")
         delete_existing_report_files(
             report_path,
             terminal_data_dirs,
@@ -2006,6 +2164,9 @@ def run_test(
                 process,
                 logger,
                 kick_after_seconds=attempt_kick_after,
+                stall_after_seconds=stall_after_seconds,
+                max_runtime_seconds=max_runtime_seconds,
+                tester_model=tester_model,
                 tester_log_dirs=terminal_data_dirs,
                 log_check_min_mtime=before,
                 report_path=report_path,
@@ -2016,6 +2177,14 @@ def run_test(
         last_exit_code = exit_code
         logger.write(f"MT5 termino con codigo: {exit_code}")
         logger.write(f"Duracion: {elapsed:.1f} segundos")
+        if restarted:
+            write_tester_journal_snapshot(
+                report_path,
+                terminal_data_dirs,
+                before,
+                logger,
+                label=f"watchdog_attempt_{attempt}",
+            )
 
         if settings.terminal_cooldown_seconds > 0:
             logger.write(f"Cooldown MT5: {settings.terminal_cooldown_seconds}s")
@@ -2024,7 +2193,10 @@ def run_test(
         if restarted and attempt < max_attempts:
             continue
         if restarted:
-            logger.write("ERROR: MT5 Model=4 volvio a bloquearse tras el reintento automatico.")
+            logger.write(
+                f"ERROR: MT5 Model={tester_model or 'desconocido'} volvio a bloquearse "
+                "tras el reintento automatico."
+            )
             return 1
 
         time.sleep(settings.delay_seconds)
@@ -2161,6 +2333,8 @@ def run_jobs_parallel(
             profile,
             args.delay,
             args.tester_kick_after_seconds,
+            args.tester_stall_after_seconds,
+            args.tester_max_runtime_seconds,
             args.terminal_cooldown_seconds,
         )
         while True:
@@ -2240,12 +2414,21 @@ def main() -> int:
         args.symbol_futures_suffix,
         args.symbol_shares_suffix,
     )
-    tester_kick_after_seconds, terminal_cooldown_seconds = load_runner_tuning(
+    (
+        tester_kick_after_seconds,
+        tester_stall_after_seconds,
+        tester_max_runtime_seconds,
+        terminal_cooldown_seconds,
+    ) = load_runner_tuning(
         Path(args.terminals_config).expanduser(),
         tester_kick_after=args.tester_kick_after,
+        tester_stall_after=args.tester_stall_after,
+        tester_max_runtime=args.tester_max_runtime,
         terminal_cooldown=args.terminal_cooldown,
     )
     args.tester_kick_after_seconds = tester_kick_after_seconds
+    args.tester_stall_after_seconds = tester_stall_after_seconds
+    args.tester_max_runtime_seconds = tester_max_runtime_seconds
     args.terminal_cooldown_seconds = terminal_cooldown_seconds
     data_dir = explicit_data_dir or (portable_terminal_data_dir(mt5_path) if portable else terminal_data_dir_from_origin(mt5_path))
     settings = TesterSettings(
@@ -2254,6 +2437,8 @@ def main() -> int:
         portable=portable,
         data_dir=data_dir,
         tester_kick_after_seconds=tester_kick_after_seconds,
+        tester_stall_after_seconds=tester_stall_after_seconds,
+        tester_max_runtime_seconds=tester_max_runtime_seconds,
         terminal_cooldown_seconds=terminal_cooldown_seconds,
     )
 
@@ -2375,6 +2560,11 @@ def main() -> int:
         )
     else:
         logger.write("Model=4 auto-restart: desactivado")
+    logger.write(
+        "Watchdog general: "
+        f"stall_after={tester_stall_after_seconds}s, "
+        f"max_runtime={tester_max_runtime_seconds}s"
+    )
     logger.write(f"Origen EAs: {experts_dir if experts_dir else EXPERTS_FILE}")
     logger.write(f"Expert Advisors: {len(experts)}")
     if set_files:
