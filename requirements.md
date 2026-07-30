@@ -813,6 +813,12 @@ requirement changes or a debt item is opened/closed.
   `Reprobar`, `Aplicar criterios`, manual OK/FAIL, report actions, and an
   optional automatic handoff after Final Tick 6M. It MUST distinguish strategy
   failures from neutral technical/retryable states.
+- **FR-1.12.47** The manager node MUST expose historical cleanup when
+  `cleanOldTest.ps1` and `cleanOlddata.ps1` are available. It MUST allow the
+  manager card to enqueue a manual cleanup and MUST run the same two scripts,
+  followed by leftover verification, after every completed generation cycle
+  and after each run selected through the manual Repair or Regression actions.
+  Cleanup failure MUST fail the job and prevent the next run or cycle.
 
 ### 1.13 Packaging & runtime
 
