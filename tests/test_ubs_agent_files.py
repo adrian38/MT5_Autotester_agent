@@ -25,6 +25,7 @@ from ubs_agent import (
     create_history_probe_variant,
     create_variant,
     discovery_seed_pool,
+    evaluate_candidate_final_tick,
     evaluate_history_probe,
     evaluate_variant_report,
     final_tick_row_pending_for_dates,
@@ -32,9 +33,11 @@ from ubs_agent import (
     final_tick_ohlc_retry_exhausted_for_dates,
     final_tick_stage_prefixes,
     final_tick_similarity,
+    _relative_delta_pct,
     _evaluate_final_tick_tick_report,
     reconcile_final_tick_reports,
     recreate_work_dir,
+    reconcile_final_tick_reports,
     related_timeframes,
     resolve_workspace_path,
     robust_status_pending_for_retry,
@@ -48,6 +51,7 @@ from ubs_agent import (
     reserved_timeframe_plan,
     repair_seed_backtest_set,
     report_matches_variant,
+    rescore_final_tick_only,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
     run_backtests,
@@ -1416,7 +1420,42 @@ class UBSSetsFileTests(unittest.TestCase):
             {str(higher_score.path): -15.0, str(lower_score.path): 15.0},
         )
 
-        self.assertEqual(selected[0][0], lower_score)
+        self.assertEqual(selected[0][0], higher_score)
+
+    def test_next_seed_survivors_allow_fitness_to_nudge_close_scores(self) -> None:
+        slightly_higher_score = Variant(
+            Path("slightly_higher.set"),
+            Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1"),
+            "XAUUSD", "H4", (), (), "", (), (),
+        )
+        slightly_lower_score = Variant(
+            Path("slightly_lower.set"),
+            Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+            "EURUSD", "H1", (), (), "", (), (),
+        )
+
+        selected = select_next_seed_survivors(
+            [(slightly_higher_score, score(52.0)), (slightly_lower_score, score(50.0))],
+            20.0,
+            1,
+            {},
+            {},
+            {str(slightly_higher_score.path): -15.0, str(slightly_lower_score.path): 15.0},
+        )
+
+        self.assertEqual(selected[0][0], slightly_lower_score)
+
+    def test_relative_delta_is_symmetric(self) -> None:
+        forward = _relative_delta_pct(100.0, 135.0)
+        reverse = _relative_delta_pct(135.0, 100.0)
+
+        self.assertAlmostEqual(forward, reverse)
+        self.assertAlmostEqual(forward, 35.0 / 135.0 * 100.0)
+
+    def test_relative_delta_uses_explicit_symmetric_threshold_semantics(self) -> None:
+        self.assertAlmostEqual(_relative_delta_pct(100.0, 150.0), 100.0 / 3.0)
+        self.assertLessEqual(_relative_delta_pct(100.0, 150.0), 35.0)
+        self.assertGreater(_relative_delta_pct(100.0, 160.0), 35.0)
 
     def test_reserved_timeframe_plan_targets_missing_allowed_timeframes(self) -> None:
         selected = [Seed(Path("seed.set"), "XAUUSD", "H4", "family", "1")]
@@ -1654,6 +1693,176 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(similarity["reasons"], ["empty_tester_context"])
         self.assertEqual(similarity["history_quality"], 99.0)
         self.assertEqual(similarity["min_history_quality"], 80.0)
+
+    def test_final_tick_rescore_forwards_broker_to_real_tick_parser(self) -> None:
+        class Cursor:
+            def __init__(self, rows) -> None:
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+        class Connection:
+            def __init__(self, rows) -> None:
+                self.rows = rows
+
+            def execute(self, _query):
+                return Cursor(self.rows)
+
+        class Memory:
+            def __init__(self, rows) -> None:
+                self.conn = Connection(rows)
+                self.path = Path("memory.sqlite")
+                self.active_final_tick_stage = "probe"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ohlc_report = Path(temp_dir) / "ohlc.htm"
+            tick_report = Path(temp_dir) / "tick.htm"
+            ohlc_report.touch()
+            tick_report.touch()
+            row = {
+                "id": 42,
+                "run_id": 7,
+                "ft_run_id": 7,
+                "ft_ohlc_report_path": str(ohlc_report),
+                "ft_real_tick_report_path": str(tick_report),
+                "ft_from_date": "2026.05.01",
+                "ft_to_date": "2026.05.31",
+            }
+            args = SimpleNamespace(
+                broker="ICTRADING",
+                symbol_map="",
+                symbol_suffix="",
+                rescore_from_reports=True,
+                final_tick_stage="probe",
+                from_date="2026.05.01",
+                to_date="2026.05.31",
+                final_tick_min_history_quality=80.0,
+                final_tick_min_ohlc_trades=4,
+                final_tick_min_trades_w1=2,
+                final_tick_min_trades_mn=0,
+                final_tick_max_net_delta_pct=35.0,
+                final_tick_max_pf_delta_pct=35.0,
+                final_tick_max_dd_delta_pct=35.0,
+                final_tick_max_trades_delta_pct=35.0,
+            )
+            variant = Variant(
+                path=Path("candidate.set"),
+                seed=Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+                target_symbol="EURUSD",
+                target_period="H1",
+                mutated_keys=(),
+                missing_lot_keys=(),
+                policy="generated",
+            )
+            with (
+                patch("ubs_agent.variant_from_candidate_row", return_value=variant),
+                patch("ubs_agent._read_ohlc_report_cfg_dates", return_value=("", "")),
+                patch("ubs_agent.score_report_file", return_value=score(80.0, symbol="EURUSD", timeframe="H1", trades=10)),
+                patch("ubs_agent.report_matches_variant", return_value=(True, "")),
+                patch("ubs_agent._evaluate_final_tick_tick_report") as evaluate_tick,
+            ):
+                rescore_final_tick_only(args, Memory([row]), ScoreConfig())
+
+            forwarded_args = evaluate_tick.call_args.args[1]
+            self.assertEqual(forwarded_args.broker, "ICTRADING")
+
+    def test_final_tick_reconcile_forwards_broker_and_period_thresholds(self) -> None:
+        class Memory:
+            active_final_tick_stage = "probe"
+
+            def __init__(self, set_path: Path) -> None:
+                self.set_path = set_path
+
+            def accepted_candidates_for_final_tick(self, _run_id, *, final_tick_stage):
+                self.active_final_tick_stage = final_tick_stage
+                return [{
+                    "id": 42,
+                    "set_path": str(self.set_path),
+                    "final_tick_status": "",
+                }]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_set = Path(temp_dir) / "candidate.set"
+            ohlc_report = Path(temp_dir) / "ohlc.htm"
+            tick_report = Path(temp_dir) / "tick.htm"
+            source_set.touch()
+            ohlc_report.touch()
+            tick_report.touch()
+            variant = Variant(
+                path=source_set,
+                seed=Seed(Path("seed.set"), "EURUSD", "H1", "family", "1"),
+                target_symbol="EURUSD",
+                target_period="H1",
+                mutated_keys=(),
+                missing_lot_keys=(),
+                policy="generated",
+            )
+            with (
+                patch("ubs_agent.find_report_for_set", side_effect=[ohlc_report, tick_report]),
+                patch(
+                    "ubs_agent._read_ohlc_report_cfg_dates",
+                    return_value=("2026.01.01", "2026.06.30"),
+                ),
+                patch("ubs_agent.variant_from_candidate_row", return_value=variant),
+                patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(80.0, symbol="EURUSD", timeframe="H1", trades=10),
+                ) as score_report,
+                patch("ubs_agent.report_matches_variant", return_value=(True, "")),
+                patch("ubs_agent._evaluate_final_tick_tick_report", return_value=True) as evaluate_tick,
+            ):
+                reconcile_final_tick_reports(
+                    Memory(source_set),
+                    7,
+                    ScoreConfig(),
+                    {},
+                    broker="ICTRADING",
+                    min_ohlc_trades=4,
+                    min_trades_w1=7,
+                    min_trades_mn=3,
+                    symbol_suffix=".a",
+                )
+
+            self.assertEqual(score_report.call_args.kwargs["broker"], "ICTRADING")
+            forwarded_args = evaluate_tick.call_args.args[1]
+            self.assertEqual(forwarded_args.broker, "ICTRADING")
+            self.assertEqual(forwarded_args.final_tick_min_trades_w1, 7)
+            self.assertEqual(forwarded_args.final_tick_min_trades_mn, 3)
+            self.assertEqual(forwarded_args.symbol_suffix, ".a")
+
+    def test_final_tick_reconcile_cli_forwards_all_parser_context(self) -> None:
+        args = SimpleNamespace(
+            final_tick_stage="six_month",
+            final_tick_reconcile_only=True,
+            final_tick_run_id=7,
+            broker="ICTRADING",
+            symbol_map="EURUSD=EURUSD.a",
+            symbol_suffix=".a",
+            final_tick_min_history_quality=91.0,
+            final_tick_min_ohlc_trades=8,
+            final_tick_min_trades_w1=7,
+            final_tick_min_trades_mn=3,
+            final_tick_max_net_delta_pct=31.0,
+            final_tick_max_pf_delta_pct=29.0,
+            final_tick_max_dd_delta_pct=27.0,
+            final_tick_max_trades_delta_pct=25.0,
+        )
+        memory = SimpleNamespace(
+            run_by_id=lambda _run_id: {"id": 7},
+            latest_run=lambda: None,
+            path=Path("memory.sqlite"),
+        )
+        with patch("ubs_agent.reconcile_final_tick_reports", return_value={}) as reconcile:
+            code = evaluate_candidate_final_tick(args, memory, ScoreConfig())
+
+        self.assertEqual(code, 0)
+        kwargs = reconcile.call_args.kwargs
+        self.assertEqual(kwargs["broker"], "ICTRADING")
+        self.assertEqual(kwargs["final_tick_stage"], "six_month")
+        self.assertEqual(kwargs["min_trades_w1"], 7)
+        self.assertEqual(kwargs["min_trades_mn"], 3)
+        self.assertEqual(kwargs["symbol_suffix"], ".a")
 
     def test_empty_real_tick_report_with_no_history_log_stays_pending(self) -> None:
         class Memory:

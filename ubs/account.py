@@ -221,6 +221,7 @@ UBS_DATA_TABLES = (
     "candidate_robustness",
     "candidate_final_tick",
     "candidate_final_tick_6m",
+    "candidate_regression",
 )
 
 SEED_PATH_COLUMNS = (

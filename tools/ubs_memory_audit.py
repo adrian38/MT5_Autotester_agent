@@ -492,6 +492,45 @@ def audit_final_tick(conn, audit: Audit) -> None:
     print(f"elegibles por gate duro base+robust+final_tick_6m: {portfolio_eligible}")
 
 
+def audit_regression(conn, audit: Audit) -> None:
+    print_heading("Prueba regresiva")
+    if not table_exists(conn, "candidate_regression"):
+        audit.warn("No existe tabla candidate_regression.")
+        return
+    rows = conn.execute(
+        "select status, count(*) n from candidate_regression group by status order by n desc, status"
+    ).fetchall()
+    if rows:
+        for row in rows:
+            print(f"{row['status']}: {row['n']}")
+    else:
+        print("sin resultados regresivos")
+    eligible_missing = scalar(
+        conn,
+        """
+        select count(*)
+        from candidates c
+        join candidate_robustness cr on cr.candidate_id=c.id and cr.status='accepted'
+        join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted'
+        left join candidate_regression rg on rg.candidate_id=c.id
+        where c.status='accepted' and rg.candidate_id is null
+        """,
+    )
+    technical = scalar(
+        conn,
+        """
+        select count(*) from candidate_regression
+        where status in ('no_report','parse_error','report_mismatch','date_mismatch','no_history')
+        """,
+    )
+    point_total = conn.execute("select coalesce(sum(points_applied),0) from candidate_regression").fetchone()[0]
+    print(f"Final Tick 6M accepted sin regresiva: {eligible_missing}")
+    print(f"retryables tecnicos neutros: {technical}")
+    print(f"puntos aplicados acumulados: {float(point_total or 0.0):+.2f}")
+    if technical:
+        audit.warn(f"La regresiva conserva {technical} fila(s) tecnica(s) retryable(s).")
+
+
 def audit_weights(memory_path: Path, assets_path: Path, account_type: str, broker: str) -> None:
     print_heading("Pesos")
     disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type, broker))
@@ -525,10 +564,10 @@ def audit_weights(memory_path: Path, assets_path: Path, account_type: str, broke
 def audit_json_metrics(conn, audit: Audit) -> None:
     print_heading("Metricas JSON")
     bad: list[str] = []
-    for table in ("candidates", "seed_scores", "candidate_robustness"):
+    for table in ("candidates", "seed_scores", "candidate_robustness", "candidate_regression"):
         if not table_exists(conn, table):
             continue
-        id_col = "candidate_id" if table == "candidate_robustness" else "id"
+        id_col = "candidate_id" if table in {"candidate_robustness", "candidate_regression"} else "id"
         for row in conn.execute(
             f"select {id_col} as row_id, metrics_json from {table} where coalesce(metrics_json, '') != ''"
         ):
@@ -567,6 +606,7 @@ def main() -> int:
         audit_seeds(conn, audit)
         audit_robustness(conn, audit)
         audit_final_tick(conn, audit)
+        audit_regression(conn, audit)
         audit_json_metrics(conn, audit)
     finally:
         conn.close()

@@ -41,6 +41,7 @@ class ManagerNodeQueueTests(unittest.TestCase):
                 self.assertFalse(first["queued"])
                 self.assertEqual(second["queue_item"]["position"], 1)
                 self.assertEqual(third["queue_item"]["position"], 2)
+                self.assertNotEqual(second["queue_item"]["id"], third["queue_item"]["id"])
                 stored = json.loads(controller.queue_path.read_text(encoding="utf-8"))
                 self.assertEqual(
                     [item["payload"]["variants_per_seed"] for item in stored],

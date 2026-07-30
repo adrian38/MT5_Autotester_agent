@@ -146,11 +146,12 @@ Owns the Strategy Tester workflow:
   loose aliases. This matters for UBS names like `XAGUSD__...__XAUUSD_MIX...`.
 - Support multiterminal execution with `--multi-terminal`,
   `--terminals-config`, and `--max-workers`. In this mode, jobs are queued and
-  distributed across enabled terminal profiles. Each profile can have its own
-  `terminal64.exe`, data directory, Experts root, UBS `.ex5`, and portable
-  flag. Disabled profiles are never activated by `max_workers`; it is only a
-  concurrency cap. Report names remain compatible with the existing UBS
-  stem-based convention.
+  distributed across profiles for the active broker. With one worker,
+  `enabled` selects which profile is used; with more than one worker, all
+  configured profiles for that broker are eligible up to the worker limit.
+  Each profile can have its own `terminal64.exe`, data directory, Experts root,
+  UBS `.ex5`, and portable flag. Report names remain compatible with the
+  existing UBS stem-based convention.
 
 ### `ubs_agent.py`
 
@@ -194,8 +195,11 @@ Owns the UBS agent workflow:
 - Retry a single candidate with `--retry-candidate-id`.
 - Retry all `report_mismatch` / `no_report` candidates in a run with `--retry-run-id`
   and `--retry-mismatch-run`. Retry a single seed with `--retry-seed-path`.
-- Rescore without backtesting via `--rescore-seeds-only`, `--rescore-candidates-only`,
-  `--rescore-robustness-only`.
+- Rescore without backtesting via `--rescore-seeds-only`,
+  `--rescore-candidates-only`, `--rescore-robustness-only`,
+  `--rescore-final-tick-only`, and `--rescore-regression-only`. Candidate-stage
+  rescores use stored SQLite metrics by default; `--rescore-from-reports`
+  explicitly reparses HTML after parser or normalization changes.
 - Reconcile interrupted seed-eval batches with `--reconcile-seed-eval-only`.
 
 **Main CLI flags summary:**
@@ -234,7 +238,7 @@ UBS support code lives in the `ubs/` package:
 - `ubs/memory.py`: SQLite schema, `AgentMemory`, seed/candidate persistence,
   and conversion from candidate rows to `Variant`.
 - `ubs/weights.py`: shared probability feedback for `AgentMemory` and
-  `UBS Universo`. It estimates the smoothed four-stage end-to-end probability,
+  `UBS Universo`. It estimates the smoothed five-stage end-to-end probability,
   groups correlated sources, returns bounded relative log-odds plus confidence,
   and maps mutation evidence to percentile multipliers. The old additive row
   utility remains only for legacy audit detail.
@@ -243,6 +247,10 @@ UBS support code lives in the `ubs/` package:
   and timeframe, and keeps this fitness separate from the report score. Its
   predictions are persisted and applied as a bounded soft ranking nudge with
   selection scale `0.15`.
+- `ubs/regression.py` owns the backward OHLC validation runner and report
+  classification. `ubs/regression_rules.py` owns its independent default date
+  range, thresholds, retryable states, and point schedule. `ubs_agent.py` only
+  injects MT5/report callbacks and dispatches CLI flags.
 - `ubs/seeds.py`: seed `.set` discovery, manifest handling, seed report copy
   names, and file hashing used to reconcile interrupted seed evaluations.
 - `ubs/universe.py`: broker universe parsing, common alias canonicalisation,
@@ -302,7 +310,8 @@ UBS support code lives in the `ubs/` package:
   failure — retryable when data or the MT5 connection improves. Empty Model=4
   shells keep the report path and audit context but no Tick score/metrics.
 - `pending_ohlc_trades`: OHLC batch produced fewer trades than the configured
-  minimum — retryable via the OHLC-retry date range.
+  minimum — retryable via the OHLC-retry date range, but also eligible to advance
+  to Final Tick 6M because the longer window supplies the missing sample.
 - `no_report`, `parse_error`, `report_mismatch`: diagnosis only.
 
 `AgentMemory._init()` migrates the exact legacy technical signature
@@ -310,6 +319,11 @@ UBS support code lives in the `ubs/` package:
 `pending_history_quality` in both Final Tick stage tables and adds
 `similarity_json.status_audit`. The migration is idempotent and does not touch
 genuine threshold or similarity rejections.
+
+The short probe only discards candidates: `rejected` is terminal and invalidates
+downstream 6M evidence. Portfolio/export eligibility is granted only by Final
+Tick 6M `accepted`; a short `accepted` or `pending_ohlc_trades` result never
+grants live-use eligibility on its own.
 
 ### `ubs_score.py`
 

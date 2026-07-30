@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from datetime import datetime
@@ -7,6 +8,13 @@ from pathlib import Path
 from typing import Iterable
 
 from ubs.path_utils import resolve_workspace_path
+from ubs.regression_rules import (
+    DEFAULT_REGRESSION_FROM_DATE,
+    DEFAULT_REGRESSION_NEGATIVE_POINTS,
+    DEFAULT_REGRESSION_POSITIVE_POINTS,
+    DEFAULT_REGRESSION_TO_DATE,
+    regression_points,
+)
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
 
 
@@ -42,6 +50,13 @@ def _ids(values: Iterable[object]) -> list[int]:
 
 def _placeholders(count: int) -> str:
     return ",".join("?" for _ in range(count))
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "select 1 from sqlite_master where type='table' and name=?",
+        (table,),
+    ).fetchone() is not None
 
 
 def _final_tick_table(stage: str) -> str:
@@ -88,6 +103,8 @@ def mark_candidates(conn: sqlite3.Connection, candidate_ids: Iterable[object], s
     )
     if status != "accepted":
         placeholders = _placeholders(len(ids))
+        if _table_exists(conn, "candidate_regression"):
+            conn.execute(f"delete from candidate_regression where candidate_id in ({placeholders})", tuple(ids))
         conn.execute(f"delete from candidate_final_tick_6m where candidate_id in ({placeholders})", tuple(ids))
         conn.execute(f"delete from candidate_final_tick where candidate_id in ({placeholders})", tuple(ids))
         conn.execute(f"delete from candidate_robustness where candidate_id in ({placeholders})", tuple(ids))
@@ -216,6 +233,8 @@ def mark_candidate_robustness(
         )
     if status != "accepted":
         placeholders = _placeholders(len(ids))
+        if _table_exists(conn, "candidate_regression"):
+            conn.execute(f"delete from candidate_regression where candidate_id in ({placeholders})", tuple(ids))
         conn.execute(f"delete from candidate_final_tick_6m where candidate_id in ({placeholders})", tuple(ids))
         conn.execute(f"delete from candidate_final_tick where candidate_id in ({placeholders})", tuple(ids))
     return len(rows)
@@ -324,8 +343,113 @@ def mark_candidate_final_tick(
             ),
         )
     if table == "candidate_final_tick" and status not in {"accepted", "pending_ohlc_trades"}:
+        if _table_exists(conn, "candidate_regression"):
+            conn.execute(
+                f"delete from candidate_regression where candidate_id in ({_placeholders(len(ids))})",
+                tuple(ids),
+            )
         conn.execute(
             f"delete from candidate_final_tick_6m where candidate_id in ({_placeholders(len(ids))})",
             tuple(ids),
+        )
+    if table == "candidate_final_tick_6m" and status != "accepted":
+        if _table_exists(conn, "candidate_regression"):
+            conn.execute(
+                f"delete from candidate_regression where candidate_id in ({_placeholders(len(ids))})",
+                tuple(ids),
+            )
+    return len(rows)
+
+
+def mark_candidate_regression(
+    conn: sqlite3.Connection,
+    candidate_ids: Iterable[object],
+    status: str,
+    *,
+    from_date: str = DEFAULT_REGRESSION_FROM_DATE,
+    to_date: str = DEFAULT_REGRESSION_TO_DATE,
+    positive_points: float = DEFAULT_REGRESSION_POSITIVE_POINTS,
+    negative_points: float = DEFAULT_REGRESSION_NEGATIVE_POINTS,
+) -> int:
+    """Apply an auditable manual verdict without inventing report metrics."""
+
+    status = _normalize_status(status)
+    ids = _ids(candidate_ids)
+    if not ids:
+        return 0
+    rows = conn.execute(
+        f"""
+        select
+            c.id as candidate_id,
+            c.run_id,
+            rg.report_path,
+            rg.score,
+            rg.metrics_json,
+            rg.from_date,
+            rg.to_date,
+            rg.positive_points,
+            rg.negative_points
+        from candidates c
+        join candidate_final_tick_6m ft6
+          on ft6.candidate_id=c.id and ft6.status='accepted'
+        left join candidate_regression rg on rg.candidate_id=c.id
+        where c.id in ({_placeholders(len(ids))})
+        """,
+        tuple(ids),
+    ).fetchall()
+    now = datetime.now().isoformat(timespec="seconds")
+    for row in rows:
+        positive = float(row["positive_points"] if row["positive_points"] is not None else positive_points)
+        negative = float(row["negative_points"] if row["negative_points"] is not None else negative_points)
+        applied = regression_points(status, positive_points=positive, negative_points=negative)
+        details = json.dumps(
+            {
+                "accepted": status == "accepted",
+                "manual": True,
+                "model": "1_minute_ohlc",
+                "reasons": ["manual_verdict"],
+                "points": {"base": applied, "reason_penalty": 0.0, "applied": applied},
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+        conn.execute(
+            """
+            insert into candidate_regression (
+                candidate_id, run_id, status, accepted, report_path, score,
+                metrics_json, details_json, from_date, to_date,
+                positive_points, negative_points, points_applied, evaluated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(candidate_id) do update set
+                run_id=excluded.run_id,
+                status=excluded.status,
+                accepted=excluded.accepted,
+                report_path=excluded.report_path,
+                score=excluded.score,
+                metrics_json=excluded.metrics_json,
+                details_json=excluded.details_json,
+                from_date=excluded.from_date,
+                to_date=excluded.to_date,
+                positive_points=excluded.positive_points,
+                negative_points=excluded.negative_points,
+                points_applied=excluded.points_applied,
+                evaluated_at=excluded.evaluated_at
+            """,
+            (
+                int(row["candidate_id"]),
+                int(row["run_id"]),
+                status,
+                _accepted_value(status),
+                row["report_path"],
+                row["score"],
+                row["metrics_json"],
+                details,
+                str(row["from_date"] or from_date),
+                str(row["to_date"] or to_date),
+                positive,
+                negative,
+                applied,
+                now,
+            ),
         )
     return len(rows)

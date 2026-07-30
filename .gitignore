@@ -73,3 +73,4 @@ Thumbs.db
 *.bak
 .claude
 .mcp.json
+.codex/config.toml

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from ubs.normalization import net_profit_normalization
-from ubs.score import SCORE_FORMULA_VERSION, ScoreConfig, ScoreResult
+from ubs.score import SCORE_FORMULA_VERSION, ScoreConfig, ScoreResult, rescore_result
 
 
 class UBSScoreTests(unittest.TestCase):
@@ -40,6 +40,43 @@ class UBSScoreTests(unittest.TestCase):
         self.assertEqual(result.score_formula_version, SCORE_FORMULA_VERSION)
         self.assertEqual(result.score_config, {})
         self.assertEqual(result.score_config_hash, "")
+
+    def test_rescore_result_reclassifies_persisted_metrics_without_report(self) -> None:
+        payload = {
+            "report_path": "missing-report.htm",
+            "name": "report",
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "score": -999.0,
+            "accepted": False,
+            "net_profit": 150.0,
+            "raw_net_profit": 150.0,
+            "normalized_net_profit": 150.0,
+            "net_profit_factor": 1.0,
+            "net_profit_basis": "stored",
+            "normalization_group": "stored",
+            "history_quality": 99.0,
+            "profit_factor": 1.4,
+            "recovery_factor": 1.5,
+            "drawdown": 10.0,
+            "drawdown_pct": 10.0,
+            "trades": 60,
+            "positive_month_ratio": 0.6,
+            "max_month_concentration": 0.2,
+            "avg_trade": 2.5,
+            "sqn": 1.2,
+            "reasons": ["old_rule"],
+        }
+
+        stored = ScoreResult.from_json(json.dumps(payload))
+        config = ScoreConfig(min_net_profit=100.0)
+        rescored = rescore_result(stored, config)
+
+        self.assertTrue(rescored.accepted)
+        self.assertEqual(rescored.reasons, ())
+        self.assertNotEqual(rescored.score, -999.0)
+        self.assertEqual(rescored.score_config_hash, config.stable_hash())
+        self.assertEqual(rescored.normalized_net_profit, 150.0)
 
     def test_score_config_hash_is_stable_and_changes_with_thresholds(self) -> None:
         base = ScoreConfig()
