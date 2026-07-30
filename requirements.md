@@ -819,6 +819,11 @@ requirement changes or a debt item is opened/closed.
   followed by leftover verification, after every completed generation cycle
   and after each run selected through the manual Repair or Regression actions.
   Cleanup failure MUST fail the job and prevent the next run or cycle.
+- **FR-1.12.48** Automatic repair after a generation run MUST accept an
+  independent `repair_max_workers` limit for all of its repair stages. It MUST
+  not consume the generation `max_workers` value when the independent value is
+  supplied; clients that omit it remain backward compatible by inheriting
+  `max_workers`.
 
 ### 1.13 Packaging & runtime
 
