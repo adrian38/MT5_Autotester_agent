@@ -28,6 +28,8 @@ from ubs_agent import (
     evaluate_candidate_final_tick,
     evaluate_history_probe,
     evaluate_variant_report,
+    find_report_for_set,
+    find_watchdog_snapshot_for_set,
     final_tick_row_pending_for_dates,
     final_tick_ohlc_retry_needed_for_dates,
     final_tick_ohlc_retry_exhausted_for_dates,
@@ -105,6 +107,23 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_report_discovery_excludes_watchdog_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            reports = root / "reports"
+            reports.mkdir()
+            set_path = root / "candidate.set"
+            snapshot = reports / "candidate.watchdog_attempt_1.mt5log.txt"
+            snapshot.write_text("watchdog evidence", encoding="utf-8")
+
+            with patch("ubs_agent.BASE_DIR", root):
+                self.assertIsNone(find_report_for_set(set_path))
+                self.assertEqual(find_watchdog_snapshot_for_set(set_path), snapshot)
+
+                report = reports / "candidate.HTM"
+                report.write_text("<html></html>", encoding="utf-8")
+                self.assertEqual(find_report_for_set(set_path), report)
+
     def test_final_tick_reconcile_uses_explicit_broker_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

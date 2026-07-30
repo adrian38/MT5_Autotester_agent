@@ -43,6 +43,7 @@ class RegressionRuntime:
     report_has_empty_tester_context: Callable[[ScoreResult], bool]
     read_report_dates: Callable[[Path], tuple[str, str] | None]
     tester_log_no_history_metadata: Callable[[Path, Variant], dict[str, object] | None]
+    find_watchdog_snapshot_for_set: Callable[..., Path | None] | None = None
 
 
 def _score_config_for_period(config: ScoreConfig, period: str, args: Any) -> ScoreConfig:
@@ -140,6 +141,32 @@ def _base_metrics_from_row(row: sqlite3.Row | None) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+def _watchdog_snapshot_metadata(snapshot: Path, variant: Variant) -> dict[str, object]:
+    metadata: dict[str, object] = {"watchdog_snapshot": str(snapshot)}
+    try:
+        text = snapshot.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        metadata["watchdog_snapshot_error"] = str(exc)
+        return metadata
+
+    symbol = str(variant.target_symbol or "").strip().lower()
+    lines = text.splitlines()
+    old_tick_lines = sum(
+        1
+        for line in lines
+        if "old tick" in line.lower() and (not symbol or symbol in line.lower())
+    )
+    gmt_url_error_lines = sum(
+        1 for line in lines if "error when reading gmt url" in line.lower()
+    )
+    if old_tick_lines:
+        metadata["history_signal"] = "old_tick_seen"
+        metadata["old_tick_lines"] = old_tick_lines
+    if gmt_url_error_lines:
+        metadata["gmt_url_error_lines"] = gmt_url_error_lines
+    return metadata
+
+
 def evaluate_regression_report(
     memory: AgentMemory,
     args: Any,
@@ -151,8 +178,20 @@ def evaluate_regression_report(
     variant: Variant,
     report: Path | None,
     base_metrics: dict[str, object] | None = None,
+    watchdog_snapshot: Path | None = None,
 ) -> str:
     if report is None:
+        if watchdog_snapshot is not None:
+            return _record_technical(
+                memory,
+                args,
+                candidate_id=candidate_id,
+                run_id=run_id,
+                status="watchdog_timeout",
+                report=watchdog_snapshot,
+                reasons=("watchdog_timeout",),
+                metadata=_watchdog_snapshot_metadata(watchdog_snapshot, variant),
+            )
         return _record_technical(
             memory,
             args,
@@ -384,6 +423,12 @@ def evaluate_candidate_regression(
     status_counts: dict[str, int] = {}
     for row, variant in copied:
         report = runtime.find_report_for_set(variant.path, min_mtime=started_at - 1.0)
+        watchdog_snapshot = None
+        if report is None and runtime.find_watchdog_snapshot_for_set is not None:
+            watchdog_snapshot = runtime.find_watchdog_snapshot_for_set(
+                variant.path,
+                min_mtime=started_at - 1.0,
+            )
         status = evaluate_regression_report(
             memory,
             args,
@@ -395,6 +440,7 @@ def evaluate_candidate_regression(
             variant,
             report,
             _base_metrics_from_row(row),
+            watchdog_snapshot=watchdog_snapshot,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
     print(

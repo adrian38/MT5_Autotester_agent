@@ -35,7 +35,7 @@ REGRESSION_RETRYABLE_STATUSES = frozenset(
     {"no_report", "parse_error", "report_mismatch", "date_mismatch", "no_history"}
 )
 REGRESSION_FAILURE_STATUSES = frozenset({"rejected", "no_trades"})
-REGRESSION_TECHNICAL_STATUSES = REGRESSION_RETRYABLE_STATUSES
+REGRESSION_TECHNICAL_STATUSES = REGRESSION_RETRYABLE_STATUSES | {"watchdog_timeout"}
 
 REGRESSION_REASON_PENALTIES = {
     "net_profit": 20.0,

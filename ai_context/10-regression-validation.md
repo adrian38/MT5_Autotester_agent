@@ -101,6 +101,9 @@ the same way as the absolute reasons). Re-apply after tuning with
   per-cause penalties, capped at `-60` additional (`-160` maximum total).
 - `no_report`, `parse_error`, `report_mismatch`, `date_mismatch`, `no_history`:
   `0`; these are technical/retryable and do not create a probability trial.
+- `watchdog_timeout`: `0`; it is technical and does not create a probability
+  trial, but `--regression-pending-only` does not retry it automatically. Repair
+  the MT5/history condition first, then use an explicit full or selected rerun.
 
 The regression stage is the fifth factor in shared probability feedback. Its
 prior is exactly `1.0` until the first real trial exists, preserving all legacy
@@ -122,8 +125,13 @@ report artifacts every 10 seconds. The defaults are:
 Both values live in `[Multiterminal]` in `ui_settings.ini` and have CLI
 overrides `--tester-stall-after` and `--tester-max-runtime`. A forced
 termination saves `reports/<report>.watchdog_attempt_N.mt5log.txt` even when no
-HTML report exists. The regression evaluator then records the missing report as
-the neutral, retryable `no_report` state rather than waiting indefinitely.
+HTML report exists. Report discovery accepts only `.htm`, `.html`, and `.xml`,
+so this diagnostic can never be parsed as a tester report. If the snapshot is
+fresh and no report exists, regression records the neutral
+`watchdog_timeout` state and keeps the TXT in `report_path` for inspection.
+Snapshots containing symbol-specific `old tick` lines also store that history
+signal in `details_json`. The normal pending/automatic continuation excludes
+`watchdog_timeout` to prevent an unrepaired history defect from looping forever.
 
 ## CLI and UI
 

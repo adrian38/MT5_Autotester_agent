@@ -947,6 +947,13 @@ TESTER_STUCK_MARKERS = (
 - A watchdog termination writes
   `reports/<report>.watchdog_attempt_N.mt5log.txt` even when MT5 never generated
   an HTML report. Missing journals are recorded explicitly in that snapshot.
+- Tester-report discovery accepts only `.htm`, `.html`, and `.xml`; watchdog
+  snapshots are diagnostic evidence, never parser input.
+- Regression without a fresh report but with a fresh watchdog snapshot records
+  neutral `watchdog_timeout` and retains the snapshot path. This state is
+  intentionally excluded from pending/automatic continuation so a broken
+  symbol history cannot be relaunched forever. Use a full or selected rerun
+  explicitly after repairing history.
 - Set either value to `0` to disable that layer. The existing completed-report
   stability guard remains active independently.
 
