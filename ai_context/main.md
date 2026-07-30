@@ -1114,6 +1114,14 @@ A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It 
 - Blocks if any process is active or if MT5 terminals are still running.
 - Implemented via `build_tester_cleanup_plan()` + `execute_tester_cleanup()` in `ui/multiterminal_logic.py`.
 
+### Manager node — terminales de reparación automática
+
+Las ejecuciones de generación aceptan `repair_max_workers` como límite
+independiente para todas las etapas de la reparación automática posterior al
+run. `max_workers` sigue perteneciendo exclusivamente a la generación. Si un
+cliente antiguo omite `repair_max_workers`, el nodo hereda `max_workers` para
+mantener compatibilidad.
+
 ### Final Tick similarity — `profit_factor_floor` check (6M only)
 
 `final_tick_similarity()` in `ubs_agent.py` accepts an optional `min_model_profit_factor` parameter. When set (only for `six_month` stage), it adds a **symmetric floor check**: both OHLC PF and real-tick PF must be ≥ the minimum. This is separate from the delta check and fires even when the two values are close to each other but both below the threshold. The check appears as `"profit_factor_floor"` in `similarity_json.checks` and in UI `CAUSA` columns.
