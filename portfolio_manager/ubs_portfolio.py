@@ -21,6 +21,7 @@ import unicodedata
 from typing import Callable, Iterable, Sequence
 
 from .mt5_report import StrategyReport, parse_report
+from ubs.account import AXI_CASH_FUTURE_SYMBOL_FAMILIES
 from ubs.path_utils import resolve_workspace_path
 from ubs.universe import load_asset_universe
 
@@ -50,6 +51,15 @@ PORTFOLIO_SYMBOL_ALIASES = {
     "USOIL": "WTI",
     "CRUDEOIL": "WTI",
     "WTI": "WTI",
+}
+
+# AXI lists the same underlying twice (cash `.sa` and future `.fs`). For
+# per-symbol portfolio caps both legs must share one symbol key; only the
+# suffixed AXI broker names are mapped so other brokers keep their keys.
+AXI_FAMILY_KEY_BY_BROKER_SYMBOL = {
+    str(target).strip().upper(): family_names[0]
+    for family_names, targets in AXI_CASH_FUTURE_SYMBOL_FAMILIES
+    for target in targets
 }
 
 PORTFOLIO_GROUP_BY_SYMBOL = {
@@ -4914,6 +4924,9 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 def portfolio_symbol_key(symbol: str) -> str:
+    family = AXI_FAMILY_KEY_BY_BROKER_SYMBOL.get(str(symbol or "").strip().upper())
+    if family is not None:
+        return PORTFOLIO_SYMBOL_ALIASES.get(family, family)
     normalized = _normalize_symbol(symbol)
     return PORTFOLIO_SYMBOL_ALIASES.get(normalized, normalized)
 

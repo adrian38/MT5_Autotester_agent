@@ -251,6 +251,24 @@ generation scoring:
   broker asset universe. RoboForex keeps the existing factors; brokers without
   a normalization file use neutral factor `1.0`. Metrics JSON includes raw net,
   normalized net, factor, basis, and group.
+- **Notional (contract-value) normalization** — the correct way to build a
+  broker normalization file. Backtests force `StartLots=0.01`, but the broker
+  clamps each order up to the symbol's `volume_min`, so share CFDs run at 1.0
+  lot on a tiny per-share notional while forex runs at 0.01 lot (~1000 units).
+  A flat per-group factor cannot compare them because stock prices span ~20x.
+  `ubs/normalization_gen.py` computes a **per-symbol** factor
+  `reference_notional / (lot_used * price * tick_value / tick_size)` from live
+  MT5 specs, anchored so 0.01-lot forex ≈ 1.0. Generate/refresh with
+  `tools/gen_axi_normalization.py` (reads `volume_min`, `trade_contract_size`,
+  `trade_tick_value`, `trade_tick_size`, price via
+  `ubs/mt5_symbol_extract.extract_symbol_specs_from_mt5`); it is dry-run by
+  default, backs up the old file on `--write`, and populates
+  `symbol_net_profit_factors` (per-symbol, highest precedence) plus a per-group
+  median fallback. After writing, re-apply to stored results with
+  `ubs_agent.py --rescore-candidates-only` / `--rescore-seeds-only` /
+  `--rescore-robustness-only` (no MT5). The legacy hand-tuned AXI factors
+  (`group_suffix Stocks "+" = 0.01`) wrongly rejected genuinely profitable
+  share strategies (e.g. Costco+ +26.9% acct → normalized 2.69 → rejected).
 
 Current local memory was migrated in June 2026 from old robustness bonus
 defaults `+30/-30` to `+70/-70` for rows that still had the old exact defaults.
@@ -288,12 +306,23 @@ enter this queue.
   one real-tick batch with `Model=4` (`Every tick based on real ticks`).
 - Final Tick requires explicit `--from-date` and `--to-date`; the UI defaults to
   `2026.05.01 -> 2026.05.31` as the last robustness segment example.
-- Results are stored in `candidate_final_tick` with both report paths, both
+- Results are stored in `candidate_final_tick` with both report paths, valid
   metrics JSON blobs, `history_quality`, date range, and `similarity_json`.
-- **Pending states** (intermediate, not final): `pending_history_quality` — real-tick
-  report produced but history quality is below threshold; `pending_ohlc_trades` —
-  OHLC batch produced too few trades to make a valid comparison, OHLC retry dates
-  may be used to get a qualifying OHLC before re-running real tick.
+- **Pending states** (intermediate, not final): `pending_history_quality` — the
+  real-tick report has quality below threshold, or Model=4 ended with an empty
+  tester context because tick download/synchronization failed;
+  `pending_ohlc_trades` — the OHLC batch produced too few trades to make a valid
+  comparison, so OHLC retry dates may be used before re-running real tick.
+- An empty Model=4 HTML (`Bars=0`, `Ticks=0`, empty symbol/M0) is a technical
+  result, not evidence that the broker lacks historical ticks. Its displayed
+  History Quality is not trusted. The row stays `pending_history_quality`,
+  `similarity_json` records `technical_failure=true` plus retry metadata, and
+  invalid Tick score/metrics remain NULL while the report path is preserved.
+- On memory initialization, `AgentMemory` idempotently upgrades only the legacy
+  signature `rejected + real_tick_no_history + tick_download_failed=true` in
+  both `candidate_final_tick` and `candidate_final_tick_6m`. It records a
+  `status_audit` object in `similarity_json`; real PF/DD/trades rejections are
+  not changed.
 - A row is final `accepted` when history quality ≥ threshold AND the three active
   similarity checks pass (see below). `net_profit` is **not** an active check.
 - Percentage deltas use a symmetric max-denominator difference:
@@ -536,6 +565,12 @@ multi-start search count. All are persisted in `ui_settings.ini` under the
 
 Do not reintroduce global scaling (`S = target_dd/current_dd`), risk-parity lot
 calibration, StartLots validation, or automatic lot normalization in this module.
+
+**AXI cash/future symbol unification**: `portfolio_symbol_key()` maps both legs
+of every `AXI_CASH_FUTURE_SYMBOL_FAMILIES` pair (e.g. `USTECH.sa` and
+`NAS100.fs`) to one family key, so top-K per symbol and per-symbol unit caps
+treat cash and future of the same underlying as one symbol. Only the suffixed
+AXI broker names (`.sa`/`.fs`) are remapped; other brokers' keys are unchanged.
 
 **Broker scope**: UBS full-history and monthly portfolios read candidate pools
 only from the accounts belonging to the currently selected broker. RoboForex can
@@ -901,6 +936,29 @@ TESTER_STUCK_MARKERS = (
   giving up.
 - `kick_after_seconds` only applies when `real_tick_model=True`; OHLC/other
   models are never killed early.
+
+**Empty Model=4 false-success guard**:
+- A tester process can exit normally while its fresh HTML contains
+  `Bars=0` and `Ticks=0`; this commonly follows a connection loss during the
+  first tick-history synchronization.
+- `run_tests.py` treats that report as a technical failure even with exit code
+  zero, retries once independently of the kick-timeout setting, and preserves
+  the final empty report plus journal sidecar for diagnosis.
+- If the second attempt is also empty, the runner returns exit code `4`.
+  `ubs_agent.py` stores the candidate as `pending_history_quality`, never as a
+  final rejection.
+- Before each Model=4 attempt, the runner temporarily rotates every HCC year
+  for the target symbol. Rotating only `ToDate` can be rebuilt too quickly from
+  adjacent cache on some terminal profiles. The full-symbol rotation forces
+  MT5's reconnect-tolerant M1 synchronization to happen before real-tick
+  download. Newly generated HCC files replace the temporary copies; any year
+  MT5 fails to recreate is restored.
+- Final Tick disk reconciliation receives broker, symbol suffix, and W1/MN
+  trade thresholds explicitly. It never relies on a global CLI `args` object,
+  so both CLI and in-app refresh can parse and persist completed reports.
+- In multiterminal mode, `enabled` selects the profile used with one worker.
+  With more than one worker, every configured profile for the active broker is
+  eligible up to the `--max-workers` concurrency limit.
 
 **New CLI arguments for `run_tests.py`**:
 

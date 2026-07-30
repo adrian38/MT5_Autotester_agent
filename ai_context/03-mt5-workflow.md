@@ -60,6 +60,8 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
    - create a generated `.ini` under `configs/`;
    - delete previous report artifacts with the same report name before real
      execution;
+   - for `Model=4`, temporarily rotate every HCC year for the target symbol so
+     MT5 performs M1 synchronization before requesting real ticks;
    - launch `terminal64.exe /config:<ini>`.
 7. Locate reports in MT5 data/install report locations.
 8. Copy report files into `reports/`.
@@ -83,12 +85,14 @@ configured MT5 terminals:
   `[Terminal.N]`.
 - Each terminal profile can specify `enabled`, `name`, `mt5_path`, `data_dir`,
   `experts_root`, `ubs_ex5_file`, and `portable`.
-- In UBS mode, enabled profiles must point `ubs_ex5_file` to a UBS / Ultimate
-  Breakout System `.ex5`. A profile configured with another EA must fail before
-  MT5 launches, because the report can otherwise look valid while scoring the
-  wrong expert.
-- The worker count is a limit, not a required exact count: use up to `N`
-  enabled terminals and never more workers than jobs.
+- In UBS mode, every profile eligible for the active worker mode must point
+  `ubs_ex5_file` to a UBS / Ultimate Breakout System `.ex5`. A profile
+  configured with another EA must fail before MT5 launches, because the report
+  can otherwise look valid while scoring the wrong expert.
+- With one worker, `enabled` selects which broker profile is used. With more
+  than one worker, all configured profiles for the active broker are eligible.
+  The worker count caps concurrency and the runner never creates more workers
+  than jobs.
 - Compilation remains sequential. Multiterminal mode applies to backtest
   queues, including UBS Tester and UBS Agent backtest execution.
 - Multiterminal still follows the same one-job `/config` contract per profile:
@@ -356,7 +360,7 @@ control copy also uses `UseEveryTick=false`, while only the real-tick copy uses
 the candidate source set.
 
 Results are stored in `candidate_final_tick`, not in `candidate_robustness`.
-The agent stores both report paths and both metrics JSON values. Acceptance is
+The agent stores both report paths and valid metrics JSON values. Acceptance is
 based on:
 
 - real-tick report `History Quality` strictly greater than the configured
@@ -367,6 +371,39 @@ based on:
 Missing `History Quality` is treated as not accepted because the real-tick data
 quality cannot be proven. `no_report`, `parse_error`, `report_mismatch`, and
 `no_trades` are diagnostic states and do not count as final accepted.
+
+An empty Model=4 result (`Bars=0`, `Ticks=0`, empty symbol/M0) is different from
+a valid zero-trade strategy result. It usually means MT5 lost or had not yet
+stabilized its connection while starting the tick-history download. The HTML
+may still show 99% History Quality, but that value is not evidence of a
+completed test.
+
+On affected AXI terminals, the automatic tester starts roughly 400 ms after
+the first terminal synchronization and the connection can drop about 200 ms
+later. Tick-history download is canceled by that reconnect, while preliminary
+M1 synchronization survives it. Before every real `Model=4` attempt,
+`run_tests.py` therefore renames every cached HCC year for the target symbol.
+Rotating only `ToDate` is insufficient on profiles that can rebuild that year
+from adjacent cache in milliseconds. MT5 recreates the required history,
+absorbs the startup reconnect during M1 synchronization, and only then starts
+real-tick synchronization. After the terminal exits, the runner deletes each
+temporary old copy when a fresh HCC exists, or restores it if refresh failed.
+This is scoped to the closed terminal profile and does not clear tick files or
+other symbols.
+
+The empty-report guard remains as a second line of defense: `run_tests.py`
+retries once; if the second report is also empty, it preserves the
+report/journal evidence and returns technical exit code `4`.
+Final Tick records `pending_history_quality` with
+`failure_type=tick_history_sync`, keeps the report path, and leaves Tick
+score/metrics NULL. Do not classify this signature as a broker-wide absence of
+history without an independent successful/failed terminal comparison.
+
+At DB initialization, the exact legacy signature
+`rejected + real_tick_no_history + tick_download_failed=true` is migrated
+idempotently in both Final Tick stage tables. Its `similarity_json` receives a
+`status_audit` record; genuine PF/DD/trades/history-quality failures remain
+unchanged.
 
 ## UBS Backward Regression
 

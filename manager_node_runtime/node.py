@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -778,7 +779,7 @@ class JobController:
     def _enqueue(self, task_type: str, payload: dict[str, Any], summary: str) -> dict[str, Any]:
         if len(self.queue) >= 100:
             raise RuntimeError("La cola de este nodo alcanzo el limite de 100 tareas")
-        task_id = f"{int(time.time() * 1000)}_{time.time_ns() % 1_000_000:06d}"
+        task_id = uuid.uuid4().hex
         item = {
             "id": task_id,
             "type": task_type,
