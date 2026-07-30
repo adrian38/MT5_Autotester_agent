@@ -417,6 +417,18 @@ requirement changes or a debt item is opened/closed.
   Tick 6M, the OHLC set copy MUST use `UseEveryTick=false` and the real-tick
   set copy MUST use `UseEveryTick=true`. Stage copies MUST NOT modify the
   candidate source set.
+- **FR-1.8.18** Every MT5 model MUST have a configurable no-progress watchdog
+  and an independent absolute per-job runtime ceiling. Journal or report
+  progress MUST reset the inactivity window; a confirmed stall MUST terminate
+  the launched process tree and retry once. A forced termination MUST preserve
+  a tester-journal diagnostic even when no HTML report exists. Regression
+  watchdog failures MUST be stored as the neutral technical state
+  `watchdog_timeout`, with the diagnostic path retained and zero score/trial
+  effect. `watchdog_timeout` MUST NOT be included in pending/automatic retries;
+  it may only run again through an explicit full or selected regression rerun
+  after the MT5/history problem is repaired. Report discovery MUST accept only
+  `.htm`, `.html`, and `.xml`; watchdog `.mt5log.txt` snapshots MUST NEVER be
+  parsed as tester reports.
 
 ### 1.9 UBS agent — seed evaluation
 

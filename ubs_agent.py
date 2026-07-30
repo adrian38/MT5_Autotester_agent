@@ -1022,6 +1022,7 @@ def regression_runtime() -> RegressionRuntime:
         variant_from_candidate_row=variant_from_candidate_row,
         run_backtests=run_backtests,
         find_report_for_set=find_report_for_set,
+        find_watchdog_snapshot_for_set=find_watchdog_snapshot_for_set,
         parse_symbol_map=parse_symbol_map,
         report_matches_variant=report_matches_variant,
         report_has_empty_tester_context=report_has_empty_tester_context,
@@ -2761,15 +2762,35 @@ def _report_is_fresh(path: Path, min_mtime: float | None) -> bool:
 
 
 def find_report_for_set(set_path: Path, *, min_mtime: float | None = None) -> Path | None:
+    report_suffixes = {".htm", ".html", ".xml"}
     for suffix in (".htm", ".html", ".xml"):
         candidate = BASE_DIR / "reports" / f"{set_path.stem}{suffix}"
-        if candidate.exists() and _report_is_fresh(candidate, min_mtime):
+        if candidate.is_file() and _report_is_fresh(candidate, min_mtime):
             return candidate
     candidates = sorted(
         path for path in (BASE_DIR / "reports").glob(f"{set_path.stem}.*")
-        if _report_is_fresh(path, min_mtime)
+        if path.is_file()
+        and path.suffix.lower() in report_suffixes
+        and _report_is_fresh(path, min_mtime)
     )
     return candidates[0] if candidates else None
+
+
+def find_watchdog_snapshot_for_set(
+    set_path: Path,
+    *,
+    min_mtime: float | None = None,
+) -> Path | None:
+    candidates = [
+        path
+        for path in (BASE_DIR / "reports").glob(
+            f"{set_path.stem}.watchdog_attempt_*.mt5log.txt"
+        )
+        if path.is_file() and _report_is_fresh(path, min_mtime)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (path.stat().st_mtime, path.name))
 
 
 def report_matches_variant(

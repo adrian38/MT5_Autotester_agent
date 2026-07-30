@@ -75,6 +75,7 @@ class UBSRegressionLogicMixin:
             "report_mismatch": "mismatch symbol/TF",
             "date_mismatch": "el reporte no cubre exactamente el rango",
             "no_history": "historico MT5 no disponible",
+            "watchdog_timeout": "watchdog MT5: revisar historico/log",
             "no_trades": "sin operaciones en el tramo",
         }
         reasons = details.get("reasons") or metrics.get("reasons") or []

@@ -101,11 +101,37 @@ the same way as the absolute reasons). Re-apply after tuning with
   per-cause penalties, capped at `-60` additional (`-160` maximum total).
 - `no_report`, `parse_error`, `report_mismatch`, `date_mismatch`, `no_history`:
   `0`; these are technical/retryable and do not create a probability trial.
+- `watchdog_timeout`: `0`; it is technical and does not create a probability
+  trial, but `--regression-pending-only` does not retry it automatically. Repair
+  the MT5/history condition first, then use an explicit full or selected rerun.
 
 The regression stage is the fifth factor in shared probability feedback. Its
 prior is exactly `1.0` until the first real trial exists, preserving all legacy
 probabilities. Once evidence exists, an empirical global prior (clamped to
 `0.05..0.95`) and the existing shrinkage prevent tiny samples from dominating.
+
+## MT5 runtime watchdog
+
+Regression uses `Model=1`, but it is protected by the same general runner
+watchdog as every other model. `run_tests.py` polls the fresh tester journal and
+report artifacts every 10 seconds. The defaults are:
+
+- `tester_stall_after=300`: after five minutes without journal or report
+  progress, two consecutive checks terminate the process tree and retry the
+  candidate once.
+- `tester_max_runtime=1800`: absolute 30-minute ceiling for one backtest,
+  including cases where the journal cannot be found.
+
+Both values live in `[Multiterminal]` in `ui_settings.ini` and have CLI
+overrides `--tester-stall-after` and `--tester-max-runtime`. A forced
+termination saves `reports/<report>.watchdog_attempt_N.mt5log.txt` even when no
+HTML report exists. Report discovery accepts only `.htm`, `.html`, and `.xml`,
+so this diagnostic can never be parsed as a tester report. If the snapshot is
+fresh and no report exists, regression records the neutral
+`watchdog_timeout` state and keeps the TXT in `report_path` for inspection.
+Snapshots containing symbol-specific `old tick` lines also store that history
+signal in `details_json`. The normal pending/automatic continuation excludes
+`watchdog_timeout` to prevent an unrepaired history defect from looping forever.
 
 ## CLI and UI
 

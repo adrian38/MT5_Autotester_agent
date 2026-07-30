@@ -201,6 +201,180 @@ class CopyReportsToProjectTests(unittest.TestCase):
         terminate.assert_called_once_with(process, logger)
         self.assertTrue(any("se conserva el resultado" in message for message in logger.messages))
 
+    def test_wait_restarts_model1_after_journal_stops_progressing(self) -> None:
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        process.returncode = None
+        logger = ListLogger()
+        journal = run_tests.Path("Tester") / "logs" / "current.log"
+        clock = iter([0, 0, 10, 20, 30, 40])
+
+        with (
+            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests.time, "sleep"),
+            patch.object(run_tests, "find_tester_journal_log", return_value=journal),
+            patch.object(run_tests, "read_tester_journal_tail", return_value=("testing started", 100)),
+            patch.object(run_tests, "terminate_process_tree") as terminate,
+        ):
+            exit_code, restarted, elapsed = run_tests.wait_for_mt5_process(
+                process,
+                logger,
+                stall_after_seconds=20,
+                tester_model="1",
+                tester_log_dirs=[run_tests.Path("data")],
+                report_stable_seconds=0,
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(restarted)
+        self.assertEqual(elapsed, 40)
+        terminate.assert_called_once_with(process, logger)
+        self.assertTrue(any("Model=1" in message and "sin progreso" in message for message in logger.messages))
+
+    def test_wait_does_not_restart_model1_when_journal_resumes_progress(self) -> None:
+        process = Mock()
+        process.poll.side_effect = [None, None, None, None, 0]
+        process.returncode = 0
+        logger = ListLogger()
+        journal = run_tests.Path("Tester") / "logs" / "current.log"
+        clock = iter([0, 0, 10, 20, 30, 40])
+
+        with (
+            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests.time, "sleep"),
+            patch.object(run_tests, "find_tester_journal_log", return_value=journal),
+            patch.object(
+                run_tests,
+                "read_tester_journal_tail",
+                side_effect=[
+                    ("testing started", 100),
+                    ("testing started", 100),
+                    ("testing advanced", 200),
+                ],
+            ),
+            patch.object(run_tests, "terminate_process_tree") as terminate,
+        ):
+            exit_code, restarted, elapsed = run_tests.wait_for_mt5_process(
+                process,
+                logger,
+                stall_after_seconds=20,
+                tester_model="1",
+                tester_log_dirs=[run_tests.Path("data")],
+                report_stable_seconds=0,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(restarted)
+        self.assertEqual(elapsed, 40)
+        terminate.assert_not_called()
+
+    def test_wait_enforces_absolute_runtime_without_tester_logs(self) -> None:
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        process.returncode = None
+        logger = ListLogger()
+        clock = iter([0, 0, 10, 20, 30])
+
+        with (
+            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests.time, "sleep"),
+            patch.object(run_tests, "terminate_process_tree") as terminate,
+        ):
+            exit_code, restarted, elapsed = run_tests.wait_for_mt5_process(
+                process,
+                logger,
+                max_runtime_seconds=30,
+                tester_model="1",
+                tester_log_dirs=[],
+                report_stable_seconds=0,
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(restarted)
+        self.assertEqual(elapsed, 30)
+        terminate.assert_called_once_with(process, logger)
+        self.assertTrue(any("limite absoluto de 30s" in message for message in logger.messages))
+
+    def test_run_test_applies_general_watchdog_to_model1_and_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            logger = ListLogger()
+            settings = run_tests.TesterSettings(
+                mt5_path=root / "terminal64.exe",
+                delay_seconds=0,
+                portable=False,
+                data_dir=root / "data",
+                tester_kick_after_seconds=30,
+                tester_stall_after_seconds=20,
+                tester_max_runtime_seconds=100,
+                terminal_cooldown_seconds=0,
+            )
+            report = root / "report.htm"
+            report.write_text("valid", encoding="utf-8")
+            first_process = Mock(pid=101)
+            second_process = Mock(pid=102)
+
+            with (
+                patch.object(run_tests, "tester_model_from_ini", return_value="1"),
+                patch.object(run_tests.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
+                patch.object(
+                    run_tests,
+                    "wait_for_mt5_process",
+                    side_effect=[(1, True, 40.0), (0, False, 2.0)],
+                ) as wait_process,
+                patch.object(run_tests, "write_tester_journal_snapshot") as snapshot,
+                patch.object(run_tests, "delete_existing_report_files"),
+                patch.object(run_tests, "find_report_files", return_value=[report]),
+                patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
+                patch.object(run_tests, "copy_reports_to_project", return_value=[report]),
+                patch.object(run_tests, "write_tester_journal_sidecars"),
+                patch.object(run_tests, "finish_model4_history_preflight"),
+                patch.object(run_tests, "log_ini_content"),
+                patch.object(run_tests.time, "sleep"),
+            ):
+                exit_code = run_tests.run_test(
+                    root / "tester.ini",
+                    root / "report",
+                    settings,
+                    False,
+                    logger,
+                    [root / "data"],
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(wait_process.call_count, 2)
+            self.assertEqual(wait_process.call_args_list[0].kwargs["kick_after_seconds"], 0)
+            self.assertEqual(wait_process.call_args_list[0].kwargs["stall_after_seconds"], 20)
+            self.assertEqual(wait_process.call_args_list[0].kwargs["max_runtime_seconds"], 100)
+            snapshot.assert_called_once()
+            self.assertTrue(any("Reintentando MT5 Model=1" in message for message in logger.messages))
+
+    def test_watchdog_snapshot_is_saved_without_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            report_path = root / "reports" / "regression_000001"
+            journal = root / "data" / "Tester" / "logs" / "20260730.log"
+            journal.parent.mkdir(parents=True)
+            journal.write_text("testing started\nwaiting for history\n", encoding="utf-16-le")
+            logger = ListLogger()
+
+            snapshot = run_tests.write_tester_journal_snapshot(
+                report_path,
+                [root / "data"],
+                0.0,
+                logger,
+                label="watchdog_attempt_1",
+            )
+
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertTrue(snapshot.exists())
+            self.assertIn("waiting for history", snapshot.read_text(encoding="utf-8"))
+            self.assertTrue(any("Diagnostico watchdog guardado" in message for message in logger.messages))
+
     def test_removes_copied_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)
@@ -530,6 +704,32 @@ class CopyReportsToProjectTests(unittest.TestCase):
             profiles = run_tests.load_terminal_profiles(config)
 
             self.assertEqual([profile.name for profile in profiles], ["Axi"])
+
+    def test_runner_tuning_loads_general_watchdog_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = run_tests.Path(temp_dir) / "ui_settings.ini"
+            config.write_text(
+                "\n".join(
+                    [
+                        "[Multiterminal]",
+                        "tester_kick_after=45",
+                        "tester_stall_after=420",
+                        "tester_max_runtime=2400",
+                        "terminal_cooldown=2",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            values = run_tests.load_runner_tuning(
+                config,
+                tester_kick_after=None,
+                tester_stall_after=None,
+                tester_max_runtime=None,
+                terminal_cooldown=None,
+            )
+
+            self.assertEqual(values, (45, 420, 2400, 2))
 
     def test_multiterminal_config_never_loads_disabled_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

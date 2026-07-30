@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,8 @@ from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.regression import RegressionRuntime, evaluate_regression_report
 from ubs.regression_rules import (
+    REGRESSION_RETRYABLE_STATUSES,
+    REGRESSION_TECHNICAL_STATUSES,
     regression_degradation,
     regression_points,
     regression_points_breakdown,
@@ -34,9 +37,20 @@ class UBSRegressionRulesTests(unittest.TestCase):
         self.assertEqual(breakdown["applied"], -160.0)
 
     def test_technical_statuses_are_neutral(self) -> None:
-        for status in ("no_report", "parse_error", "report_mismatch", "date_mismatch", "no_history"):
+        for status in (
+            "no_report",
+            "parse_error",
+            "report_mismatch",
+            "date_mismatch",
+            "no_history",
+            "watchdog_timeout",
+        ):
             with self.subTest(status=status):
                 self.assertEqual(regression_points(status, ("profit_factor",)), 0.0)
+
+    def test_watchdog_timeout_is_technical_but_not_automatically_retryable(self) -> None:
+        self.assertIn("watchdog_timeout", REGRESSION_TECHNICAL_STATUSES)
+        self.assertNotIn("watchdog_timeout", REGRESSION_RETRYABLE_STATUSES)
 
 
 class UBSRegressionDegradationTests(unittest.TestCase):
@@ -214,6 +228,42 @@ class UBSRegressionReportTests(unittest.TestCase):
             )
         self.assertEqual(status, "date_mismatch")
         self.assertEqual(recorded[0][10], 0.0)
+
+    def test_watchdog_snapshot_is_recorded_without_parsing_it_as_report(self) -> None:
+        recorded: list[tuple] = []
+        memory = SimpleNamespace(record_candidate_regression=lambda *args: recorded.append(args))
+        runtime = RegressionRuntime(
+            3, lambda path: path, lambda path: None, lambda row: self._variant(),
+            lambda *args, **kwargs: 1, lambda *args, **kwargs: None,
+            lambda value: {}, lambda *args: (True, ""), lambda result: False,
+            lambda report: None, lambda report, variant: None,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir) / "candidate.watchdog_attempt_2.mt5log.txt"
+            snapshot.write_text(
+                "AA old tick EURUSD 2017.01.02 00:00:00 instead of 2019.01.02\n",
+                encoding="utf-8",
+            )
+            status = evaluate_regression_report(
+                memory,
+                self._args(),
+                runtime,
+                ScoreConfig(),
+                {},
+                1,
+                7,
+                self._variant(),
+                None,
+                watchdog_snapshot=snapshot,
+            )
+
+        self.assertEqual(status, "watchdog_timeout")
+        self.assertEqual(recorded[0][2], "watchdog_timeout")
+        self.assertEqual(recorded[0][4], snapshot)
+        self.assertEqual(recorded[0][10], 0.0)
+        details = json.loads(recorded[0][5])
+        self.assertEqual(details["reasons"], ["watchdog_timeout"])
+        self.assertEqual(details["history_signal"], "old_tick_seen")
 
     def test_losing_six_month_acceptance_invalidates_regression(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
