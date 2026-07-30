@@ -144,6 +144,16 @@ batch wrappers.
 
 ## Recent Important Changes
 
+### Manager card historical cleanup
+
+The IC manager node advertises `historical_cleanup` when both
+`scripts/cleanOldTest.ps1` and `scripts/cleanOlddata.ps1` exist. The manager can
+enqueue `POST /api/v1/jobs/cleanup`; generation cycles clean automatically when
+`cleanup_after_run` is enabled, and the manual Repair and Regression jobs
+interleave cleanup after every selected run. Cleanup always runs the two agent
+scripts in order and then verifies that the MetaQuotes historical trees are
+empty. A cleanup failure stops the job before the next run or cycle.
+
 ### UBS backward regression validation (2017-2019 OHLC)
 
 Final Tick 6M accepted candidates can now enter an independent fifth evidence

@@ -67,6 +67,9 @@ STAGE_NOTIFICATION_LABELS = {
     "final_tick_6m": "Final Tick 6M",
     "final_tick_6m_quality": "Calidad baja Final Tick 6M",
     "regression": "Regresiva OHLC",
+    "cleanup_tester": "Limpieza historica Tester",
+    "cleanup_data": "Limpieza historica bases/history",
+    "cleanup_verify": "Verificacion de limpieza historica",
 }
 
 STAGE_TABLES = {
@@ -86,6 +89,12 @@ STATUS_NOTIFICATION_ORDER = (
     "pending", "generated", "running",
 )
 
+CLEANUP_STAGE_SCRIPTS = {
+    "cleanup_tester": "cleanOldTest.ps1",
+    "cleanup_data": "cleanOlddata.ps1",
+}
+CLEANUP_STAGES = (*CLEANUP_STAGE_SCRIPTS, "cleanup_verify")
+
 
 def read_settings(path: Path) -> configparser.ConfigParser:
     parser = configparser.ConfigParser(interpolation=None)
@@ -102,6 +111,83 @@ def setting_bool(parser: configparser.ConfigParser, section: str, key: str, defa
         return parser.getboolean(section, key, fallback=default)
     except ValueError:
         return default
+
+
+def historical_cleanup_scripts(config: dict[str, Any], *, required: bool = True) -> dict[str, Path]:
+    project = Path(str(config["project_dir"])).expanduser().resolve()
+    candidate_dirs = [project / "scripts", project]
+    bundled_root = getattr(sys, "_MEIPASS", None)
+    if bundled_root:
+        candidate_dirs.insert(0, Path(str(bundled_root)) / "scripts")
+    for directory in candidate_dirs:
+        scripts = {
+            stage: directory / filename
+            for stage, filename in CLEANUP_STAGE_SCRIPTS.items()
+        }
+        if all(path.is_file() for path in scripts.values()):
+            return scripts
+    if required:
+        names = " / ".join(CLEANUP_STAGE_SCRIPTS.values())
+        raise ValueError(f"No se encontraron {names} en la carpeta scripts del nodo")
+    return {}
+
+
+def cleanup_after_run_enabled(config: dict[str, Any], payload: dict[str, Any]) -> bool:
+    available = bool(historical_cleanup_scripts(config, required=False))
+    enabled = bool(payload.get("cleanup_after_run", available))
+    if enabled:
+        historical_cleanup_scripts(config)
+    return enabled
+
+
+def build_historical_cleanup_command(
+    config: dict[str, Any], stage: str,
+) -> tuple[list[str], Path]:
+    project = Path(str(config["project_dir"])).expanduser().resolve()
+    if stage in CLEANUP_STAGE_SCRIPTS:
+        script = historical_cleanup_scripts(config)[stage]
+        return (
+            [
+                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(script),
+            ],
+            project,
+        )
+    if stage != "cleanup_verify":
+        raise ValueError(f"Etapa de limpieza desconocida: {stage}")
+    verification = r"""
+import os
+from pathlib import Path
+
+appdata = str(os.environ.get("APPDATA") or "").strip()
+if not appdata:
+    print("ERROR: APPDATA no esta disponible para verificar la limpieza.", flush=True)
+    raise SystemExit(1)
+metaquotes = Path(appdata) / "MetaQuotes"
+paths = [metaquotes / "Tester"]
+terminal_root = metaquotes / "Terminal"
+if terminal_root.is_dir():
+    for terminal in terminal_root.iterdir():
+        if terminal.is_dir():
+            paths.extend(terminal / name for name in ("tester", "Tester", "bases", "history"))
+leftovers = []
+for path in paths:
+    if not path.is_dir():
+        continue
+    try:
+        count = sum(1 for item in path.rglob("*") if item.is_file())
+    except OSError:
+        count = 1
+    if count:
+        leftovers.append((path, count))
+if leftovers:
+    print("ERROR: quedan datos historicos despues de limpiar:", flush=True)
+    for path, count in leftovers[:20]:
+        print(f" - {path} | {count} archivo(s)", flush=True)
+    raise SystemExit(1)
+print("Verificacion completada: no quedan datos historicos de MT5.", flush=True)
+"""
+    return [sys.executable, "-c", verification], project
 
 
 def _universe_paths(config: dict[str, Any]) -> tuple[Path, Path]:
@@ -813,6 +899,8 @@ class JobController:
                     self._start_repair(payload)
                 elif item.get("type") == "regression":
                     self._start_regression(payload)
+                elif item.get("type") == "cleanup":
+                    self._start_cleanup()
                 else:
                     self._start_generation(payload)
             except Exception as exc:
@@ -963,6 +1051,7 @@ class JobController:
         payload["run_regression"] = run_regression
         payload["repair_after_generation"] = bool(payload.get("repair_after_generation", False))
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
+        payload["cleanup_after_run"] = cleanup_after_run_enabled(self.config, payload)
         return payload
 
     def _start_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -974,6 +1063,7 @@ class JobController:
         run_regression = payload["run_regression"]
         repair_after_generation = payload["repair_after_generation"]
         repair_attempts = payload["repair_attempts"]
+        cleanup_after_run = payload["cleanup_after_run"]
         pipeline: list[dict[str, Any]] = []
         for cycle in range(1, cycles + 1):
             pipeline.append({"action": "generation", "cycle": cycle, "run_id": None})
@@ -1004,6 +1094,11 @@ class JobController:
                     pipeline.append({"action": "final_tick_6m", "cycle": cycle, "run_id": None})
                 if run_regression:
                     pipeline.append({"action": "regression", "cycle": cycle, "run_id": None})
+            if cleanup_after_run:
+                pipeline.extend(
+                    {"action": action, "cycle": cycle, "run_id": None}
+                    for action in CLEANUP_STAGES
+                )
         command, cwd = build_generation_command(self.config, payload)
         job_id = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
         log_path = self.runtime_dir / f"generation_{job_id}.log"
@@ -1015,7 +1110,7 @@ class JobController:
             "current_cycle": 1, "current_run_id": None, "completed_stages": [],
             "stage_return_codes": {}, "commands": {"cycle_1_generation": command},
             "cycle_run_ids": {}, "skipped_stages": [], "stage_pending_counts": {},
-            "telegram_notifications": [],
+            "telegram_notifications": [], "cleanup_failed": False,
         }
         self._launch_step(0, command, cwd, log_path, first=True)
         return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
@@ -1048,6 +1143,7 @@ class JobController:
         payload["execute_backtests"] = True
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         payload["retry_low_quality"] = bool(payload.get("retry_low_quality", True))
+        payload["cleanup_after_run"] = cleanup_after_run_enabled(self.config, payload)
         return payload
 
     def _start_repair(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1062,12 +1158,18 @@ class JobController:
         if retry_low_quality:
             actions.append("final_tick_6m_quality")
         actions.append("regression")
-        pipeline = [
-            {"action": action, "cycle": None, "run_id": run_id, "attempt": attempt}
-            for run_id in run_ids
-            for attempt in range(1, repair_attempts + 1)
-            for action in actions
-        ]
+        pipeline: list[dict[str, Any]] = []
+        for run_id in run_ids:
+            pipeline.extend(
+                {"action": action, "cycle": None, "run_id": run_id, "attempt": attempt}
+                for attempt in range(1, repair_attempts + 1)
+                for action in actions
+            )
+            if payload["cleanup_after_run"]:
+                pipeline.extend(
+                    {"action": action, "cycle": None, "run_id": run_id}
+                    for action in CLEANUP_STAGES
+                )
         job_id = "repair_" + time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
         log_path = self.runtime_dir / f"{job_id}.log"
         self.state = {
@@ -1078,7 +1180,7 @@ class JobController:
             "current_run_id": None, "current_attempt": None,
             "completed_stages": [], "skipped_stages": [],
             "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
-            "telegram_notifications": [],
+            "telegram_notifications": [], "cleanup_failed": False,
         }
         try:
             launched = self._launch_next_runnable(0, log_path, first=True)
@@ -1118,15 +1220,21 @@ class JobController:
             payload.get("max_workers"), 1, minimum=1, maximum=64
         )
         payload["execute_backtests"] = True
+        payload["cleanup_after_run"] = cleanup_after_run_enabled(self.config, payload)
         return payload
 
     def _start_regression(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload = self._normalize_regression(payload)
-        run_ids = payload["run_ids"]
-        pipeline = [
-            {"action": "regression", "cycle": None, "run_id": run_id, "attempt": 1}
-            for run_id in run_ids
-        ]
+        pipeline: list[dict[str, Any]] = []
+        for run_id in payload["run_ids"]:
+            pipeline.append({
+                "action": "regression", "cycle": None, "run_id": run_id, "attempt": 1,
+            })
+            if payload["cleanup_after_run"]:
+                pipeline.extend(
+                    {"action": action, "cycle": None, "run_id": run_id}
+                    for action in CLEANUP_STAGES
+                )
         job_id = "regression_" + time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
         log_path = self.runtime_dir / f"{job_id}.log"
         self.state = {
@@ -1137,7 +1245,7 @@ class JobController:
             "current_run_id": None, "current_attempt": None,
             "completed_stages": [], "skipped_stages": [],
             "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
-            "telegram_notifications": [],
+            "telegram_notifications": [], "cleanup_failed": False,
         }
         try:
             launched = self._launch_next_runnable(0, log_path, first=True)
@@ -1152,10 +1260,43 @@ class JobController:
             self._complete(0)
         return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
 
+    def start_cleanup(self) -> dict[str, Any]:
+        with self.lock:
+            historical_cleanup_scripts(self.config)
+            if self._busy() or self.queue:
+                return self._enqueue(
+                    "cleanup", {}, "Cierra MT5 y elimina tester/bases/history",
+                )
+            return self._start_cleanup()
+
+    def _start_cleanup(self) -> dict[str, Any]:
+        historical_cleanup_scripts(self.config)
+        pipeline = [{"action": action, "cycle": None, "run_id": None} for action in CLEANUP_STAGES]
+        job_id = (
+            "cleanup_" + time.strftime("%Y%m%d_%H%M%S")
+            + f"_{time.time_ns() % 1_000_000:06d}"
+        )
+        log_path = self.runtime_dir / f"{job_id}.log"
+        self.state = {
+            "job_id": job_id, "job_type": "cleanup", "status": "running", "pid": None,
+            "started_at": utc_now(), "finished_at": None, "return_code": None,
+            "request": {}, "command": None, "log_path": str(log_path), "error": None,
+            "pipeline": pipeline, "current_stage": "cleanup_tester", "current_cycle": None,
+            "current_run_id": None, "current_attempt": None, "completed_stages": [],
+            "skipped_stages": [], "stage_return_codes": {}, "stage_pending_counts": {},
+            "commands": {}, "cycle_run_ids": {}, "telegram_notifications": [],
+            "cleanup_failed": False,
+        }
+        self._launch_next_runnable(0, log_path, first=True)
+        return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
+
     @staticmethod
     def _step_label(step: dict[str, Any]) -> str:
         cycle = step.get("cycle")
         stage = str(step["action"])
+        if cycle is None and stage in CLEANUP_STAGES:
+            run_id = safe_int(step.get("run_id"), 0, minimum=0)
+            return f"run_{run_id}_{stage}" if run_id > 0 else stage
         if cycle is not None:
             if step.get("attempt") is not None:
                 return f"cycle_{cycle}_attempt_{step.get('attempt')}_{stage}"
@@ -1179,6 +1320,8 @@ class JobController:
                 step_request["max_workers"] = step["max_workers"]
             if stage == "generation":
                 command, cwd = build_generation_command(self.config, step_request)
+            elif stage in CLEANUP_STAGES:
+                command, cwd = build_historical_cleanup_command(self.config, stage)
             else:
                 run_id = safe_int(step.get("run_id"), 0, minimum=0)
                 if run_id <= 0:
@@ -1249,6 +1392,8 @@ class JobController:
             self.state.setdefault("stage_return_codes", {})[label] = return_code
             if return_code == 0:
                 self.state.setdefault("completed_stages", []).append(label)
+            elif stage in CLEANUP_STAGES:
+                self.state["cleanup_failed"] = True
             has_downstream_for_cycle = any(
                 pending.get("cycle") == cycle and pending.get("action") != "generation"
                 for pending in pipeline[step_index + 1:]
@@ -1274,13 +1419,23 @@ class JobController:
                     return_code = 1
             self._notify_stage_completion(step, return_code)
             next_index = step_index + 1
-            if return_code == 0 and next_index < len(pipeline):
+            next_is_cleanup = (
+                next_index < len(pipeline)
+                and str(pipeline[next_index].get("action")) in CLEANUP_STAGES
+            )
+            cleanup_failed = bool(self.state.get("cleanup_failed"))
+            continue_pipeline = return_code == 0 and not cleanup_failed
+            if stage in CLEANUP_STAGES and next_is_cleanup:
+                continue_pipeline = True
+            if continue_pipeline and next_index < len(pipeline):
                 try:
                     if self._launch_next_runnable(next_index, Path(str(self.state["log_path"]))):
                         return
                 except Exception as exc:
                     self.state["error"] = str(exc)
                     return_code = 1
+            if cleanup_failed:
+                return_code = 1
             self._complete(return_code)
 
     def stop(self) -> dict[str, Any]:
@@ -1323,6 +1478,7 @@ class JobController:
                 "run_final_tick": setting_bool(cfg, "General", "ubs_final_tick_auto", False),
                 "run_final_tick_6m": setting_bool(cfg, "General", "ubs_final_tick_6m_auto", False),
                 "run_regression": setting_bool(cfg, "General", "ubs_regression_auto", False),
+                "cleanup_after_run": bool(historical_cleanup_scripts(self.config, required=False)),
             }
         except Exception as exc:
             db = {"available": False, "error": str(exc)}
@@ -1349,6 +1505,7 @@ class JobController:
                 "universe_management": True,
                 "portfolio_views": True,
                 "task_queue": True,
+                "historical_cleanup": bool(historical_cleanup_scripts(self.config, required=False)),
             },
             "observed_at": utc_now(),
         }
@@ -1561,6 +1718,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.start_repair(self._body()))
             elif self.path == "/api/v1/jobs/regression":
                 self._send(202, self.server.controller.start_regression(self._body()))
+            elif self.path == "/api/v1/jobs/cleanup":
+                self._send(202, self.server.controller.start_cleanup())
             elif self.path == "/api/v1/jobs/stop":
                 self._send(202, self.server.controller.stop())
             elif self.path == "/api/v1/jobs/queue/cancel":
