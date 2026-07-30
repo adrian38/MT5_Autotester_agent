@@ -107,6 +107,24 @@ prior is exactly `1.0` until the first real trial exists, preserving all legacy
 probabilities. Once evidence exists, an empirical global prior (clamped to
 `0.05..0.95`) and the existing shrinkage prevent tiny samples from dominating.
 
+## MT5 runtime watchdog
+
+Regression uses `Model=1`, but it is protected by the same general runner
+watchdog as every other model. `run_tests.py` polls the fresh tester journal and
+report artifacts every 10 seconds. The defaults are:
+
+- `tester_stall_after=300`: after five minutes without journal or report
+  progress, two consecutive checks terminate the process tree and retry the
+  candidate once.
+- `tester_max_runtime=1800`: absolute 30-minute ceiling for one backtest,
+  including cases where the journal cannot be found.
+
+Both values live in `[Multiterminal]` in `ui_settings.ini` and have CLI
+overrides `--tester-stall-after` and `--tester-max-runtime`. A forced
+termination saves `reports/<report>.watchdog_attempt_N.mt5log.txt` even when no
+HTML report exists. The regression evaluator then records the missing report as
+the neutral, retryable `no_report` state rather than waiting indefinitely.
+
 ## CLI and UI
 
 Run or resume:
