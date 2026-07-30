@@ -133,7 +133,34 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 1,
             )
 
-    def test_auto_repair_inherits_the_generation_worker_limit(self) -> None:
+    def test_auto_repair_uses_its_own_worker_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = self._controller(project)
+            command = [sys.executable, str(project / "worker.py")]
+            with patch(
+                "manager_node_runtime.node.build_generation_command",
+                return_value=(command, project),
+            ), patch.object(controller, "_launch_step"):
+                result = controller.start({
+                    "cycles": 1,
+                    "max_workers": 7,
+                    "repair_max_workers": 3,
+                    "repair_after_generation": True,
+                    "repair_attempts": 1,
+                    "run_robustness": True,
+                })
+
+            self.assertEqual(result["request"]["max_workers"], 7)
+            self.assertEqual(result["request"]["repair_max_workers"], 3)
+            repair_steps = [
+                step for step in result["pipeline"]
+                if step["action"] != "generation"
+            ]
+            self.assertTrue(repair_steps)
+            self.assertTrue(all(step["max_workers"] == 3 for step in repair_steps))
+
+    def test_auto_repair_defaults_to_the_generation_worker_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)
             controller = self._controller(project)
@@ -150,13 +177,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                     "run_robustness": True,
                 })
 
-            self.assertEqual(result["request"]["max_workers"], 7)
-            repair_steps = [
-                step for step in result["pipeline"]
-                if step["action"] != "generation"
-            ]
-            self.assertTrue(repair_steps)
-            self.assertTrue(all("max_workers" not in step for step in repair_steps))
+            self.assertEqual(result["request"]["repair_max_workers"], 7)
 
 
 if __name__ == "__main__":

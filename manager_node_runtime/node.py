@@ -1050,6 +1050,12 @@ class JobController:
         payload["run_final_tick_6m"] = run_final_tick_6m
         payload["run_regression"] = run_regression
         payload["repair_after_generation"] = bool(payload.get("repair_after_generation", False))
+        payload["repair_max_workers"] = safe_int(
+            payload.get("repair_max_workers"),
+            safe_int(payload.get("max_workers"), 1, minimum=1, maximum=64),
+            minimum=1,
+            maximum=64,
+        )
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         payload["cleanup_after_run"] = cleanup_after_run_enabled(self.config, payload)
         return payload
@@ -1062,6 +1068,7 @@ class JobController:
         run_final_tick_6m = payload["run_final_tick_6m"]
         run_regression = payload["run_regression"]
         repair_after_generation = payload["repair_after_generation"]
+        repair_max_workers = payload["repair_max_workers"]
         repair_attempts = payload["repair_attempts"]
         cleanup_after_run = payload["cleanup_after_run"]
         pipeline: list[dict[str, Any]] = []
@@ -1080,7 +1087,7 @@ class JobController:
                 pipeline.extend(
                     {
                         "action": action, "cycle": cycle, "run_id": None,
-                        "attempt": attempt,
+                        "attempt": attempt, "max_workers": repair_max_workers,
                     }
                     for attempt in range(1, repair_attempts + 1)
                     for action in repair_actions
