@@ -73,19 +73,23 @@ requirement changes or a debt item is opened/closed.
 
 ### 1.3 Multiterminal execution
 
-- **FR-1.3.1** When `--multi-terminal` is passed, backtest jobs MUST be
-  distributed across enabled terminal profiles for the active broker defined in
-  `ui_settings.ini` `[Multiterminal]` / `[Terminal.N]` sections. Profiles MAY
-  coexist for multiple brokers, but a run MUST NOT mix terminal profiles from
-  different brokers.
-- **FR-1.3.2** The concurrency limit MUST be `min(max_workers, enabled_terminal_count,
-  job_count)`. The runner MUST never spawn more workers than there are jobs.
+- **FR-1.3.1** When `--multi-terminal` is passed, backtest jobs MUST use terminal
+  profiles for the active broker defined in `ui_settings.ini`
+  `[Multiterminal]` / `[Terminal.N]` sections. With one worker, `enabled`
+  selects the profile(s) eligible for that single-terminal run. With more than
+  one worker, every configured profile for the active broker is eligible.
+  Profiles MAY coexist for multiple brokers, but a run MUST NOT mix terminal
+  profiles from different brokers.
+- **FR-1.3.2** The concurrency limit MUST be
+  `min(max_workers, eligible_broker_terminal_count, job_count)`. The runner MUST
+  never spawn more workers than there are jobs.
 - **FR-1.3.3** Each terminal profile MAY override: `enabled`, `broker`, `name`,
   `mt5_path`, `data_dir`, `experts_root`, `ubs_ex5_file`, `portable`.
 - **FR-1.3.4** Compilation MUST remain sequential even in multiterminal mode.
-- **FR-1.3.5** In UBS multiterminal mode, every enabled profile MUST point
-  `ubs_ex5_file` to a UBS / Ultimate Breakout System `.ex5`. Profiles that
-  point to another EA MUST fail validation before MT5 is launched.
+- **FR-1.3.5** In UBS multiterminal mode, every profile eligible for the active
+  worker mode MUST point `ubs_ex5_file` to a UBS / Ultimate Breakout System
+  `.ex5`. Profiles that point to another EA MUST fail validation before MT5 is
+  launched.
 - **FR-1.3.6** Multiterminal workers MUST keep the same `/config` execution
   contract as single-terminal mode: launch one MT5 process for one generated
   `.ini`, wait for that process to exit, collect fresh reports, then move to the
@@ -96,8 +100,10 @@ requirement changes or a debt item is opened/closed.
   UI MUST show a specific MT5-open alert for exit code
   `RUNNING_TERMINAL_EXIT_CODE`. Checks MUST NOT interrupt terminal processes
   opened by the currently active batch itself.
-- **FR-1.3.8** `max_workers` MUST limit concurrency only. Increasing it MUST
-  never make a profile with `enabled=0` eligible for execution.
+- **FR-1.3.8** `enabled` MUST act as the profile selector when `max_workers=1`.
+  When `max_workers>1`, the runner MUST use the active broker's configured
+  profiles regardless of `enabled`, with `max_workers` acting as the concurrency
+  cap.
 
 ### 1.4 MT5 report parsing
 
@@ -297,9 +303,10 @@ requirement changes or a debt item is opened/closed.
   `generated` → `accepted` | `rejected` | `no_report` | `parse_error` |
   `report_mismatch` | `no_trades`.
 - **FR-1.8.2** Universe and mutation feedback MUST estimate the smoothed
-  end-to-end probability of the four-stage chain: base accepted, robustness
+  end-to-end probability of the five-stage chain: base accepted, robustness
   accepted, probe eligible (`accepted` or `pending_ohlc_trades`), and Final Tick
-  6M accepted. Each correlated candidate source group contributes at most one
+  6M accepted, followed by backward regression accepted when that evidence
+  exists. Each correlated candidate source group contributes at most one
   effective trial per stage. Technical/retryable states (`report_mismatch`,
   `no_report`, `parse_error`, `pending_history_quality`) MUST NOT become
   statistical failures. Stage probabilities MUST use an empirical global prior
@@ -348,14 +355,22 @@ requirement changes or a debt item is opened/closed.
   has `History Quality` greater than or equal to the configured minimum (`80` by
   default) and the active similarity checks (`profit_factor`, `drawdown_pct`,
   and trade count) remain close to the OHLC metrics within configured deltas.
+  Each percentage delta MUST use the symmetric max-denominator formula
+  `abs(OHLC - tick) / max(abs(OHLC), abs(tick), 1) * 100`; it is not a classic
+  percentage change measured only from the OHLC control value.
   Missing `History Quality` MUST fail the row. `net_profit` MUST be stored in
   `similarity_json` for inspection only and MUST NOT block acceptance, because
   Final Tick validates operational similarity between data models rather than
   absolute profitability.
-- **FR-1.8.10a** Final Tick is an eligibility gate for live-use workflows:
-  `candidate_final_tick.status='accepted'` makes a base+robust accepted strategy
-  eligible for portfolio/export consideration; `rejected` excludes it from
-  live-use pools; `pending_*` rows are not eligible until resolved.
+- **FR-1.8.10a** The short Final Tick probe is a discard filter before the
+  six-month stage, not the final portfolio gate. A base+robust accepted strategy
+  with `candidate_final_tick.status='accepted'` MAY advance to Final Tick 6M;
+  `rejected` is terminal for that candidate and MUST exclude it from downstream
+  6M/portfolio/export/live-use pools. `pending_ohlc_trades` MAY also advance to
+  Final Tick 6M because the longer window supplies the sample that the short
+  probe lacked. `pending_history_quality` and technical/error states MUST NOT
+  advance until resolved. Passing or remaining sample-pending in the short probe
+  never authorizes live use by itself: only Final Tick 6M `accepted` does so.
 - **FR-1.8.11** Final Tick MUST support two intermediate pending states:
   `pending_history_quality` — real-tick report produced but history quality is
   below threshold or the Model=4 tick download/synchronization ended with an
@@ -376,6 +391,32 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.12** `--final-tick-pending-only` MUST limit the Final Tick pass to
   rows that have no stored result or are in a pending state. Without that flag,
   Final Tick MUST rerun all robust-accepted candidates and replace existing rows.
+- **FR-1.8.13** Final Tick 6M accepted candidates MAY be evaluated by a separate
+  backward regression pass with `--evaluate-regression`. The pass MUST use MT5
+  `Model=1` (1 minute OHLC), default to `2017.01.01 -> 2019.12.31`, require at
+  least 730 days, and store its result in `candidate_regression` without
+  overwriting base, robustness, or Final Tick rows.
+- **FR-1.8.14** A regression report MUST match the intended symbol/timeframe and
+  its reported configured period MUST exactly match the requested dates. Missing
+  history, missing reports, parse errors, report mismatch, or date mismatch MUST
+  be retryable technical states worth zero points and zero statistical trials.
+  A valid matching report with zero trades MUST be a strategy failure.
+- **FR-1.8.15** Regression defaults MUST require normalized net profit `> 0`,
+  PF `>= 1.10`, trades `>= 36` (`W1 >= 12`, `MN >= 4`), DD `<= 30%`, recovery
+  `>= 0.75`, and positive-month ratio `>= 0.50`. Accepted rows add `+80` points.
+  Rejected/no-trades rows start at `-100` and subtract per-cause penalties
+  capped at an additional `-60`; technical states apply `0`.
+- **FR-1.8.16** Regression evidence MUST participate in shared asset/timeframe/
+  mutation feedback as a fifth probabilistic stage. Before the first regression
+  trial, its prior MUST be neutral so existing probabilities do not change.
+  Regression MUST remain an evidence/weight stage, not a new hard portfolio gate;
+  Final Tick 6M remains the portfolio eligibility gate.
+- **FR-1.8.17** UBS `.set` copies MUST use a stage-specific `UseEveryTick`
+  value. Generated/base result sets, OOS robustness sets, and backward
+  regression sets MUST use `UseEveryTick=false`. In short Final Tick and Final
+  Tick 6M, the OHLC set copy MUST use `UseEveryTick=false` and the real-tick
+  set copy MUST use `UseEveryTick=true`. Stage copies MUST NOT modify the
+  candidate source set.
 
 ### 1.9 UBS agent — seed evaluation
 
@@ -432,10 +473,15 @@ requirement changes or a debt item is opened/closed.
   seed thresholds, without requiring another MT5 backtest when the seed file and
   symbol/TF are unchanged.
 - **FR-1.9.11** `ubs_agent.py --rescore-seeds-only` MUST re-score existing
-  active seed rows with stored reports and MUST NOT require an MT5 expert path
-  or launch MT5. `--rescore-candidates-only` and `--rescore-robustness-only`
-  MUST do the same for base candidates and OOS robustness rows. These commands
-  MUST be run with the correct threshold set for seeds, generation, and OOS.
+  active seed rows and MUST NOT require an MT5 expert path or launch MT5.
+  `--rescore-candidates-only`, `--rescore-robustness-only`,
+  `--rescore-final-tick-only`, and `--rescore-regression-only` MUST re-score
+  final rows directly from their persisted `metrics_json` by default and MUST
+  use one atomic batch transaction per stage. Technical validation states MUST
+  remain unchanged. `--rescore-from-reports` MAY explicitly force HTML parsing
+  when the report parser or broker normalization changed. These commands MUST
+  be run with the correct threshold set for seeds, generation, OOS, Final Tick,
+  and regression.
 - **FR-1.9.12** Before launching new seed backtests, `--evaluate-seeds` MUST
   reconcile reports left by interrupted
   `outputs/ubs_agent/{BROKER}/{ACCOUNT}/seed_eval/eval_*`
@@ -626,6 +672,11 @@ requirement changes or a debt item is opened/closed.
   Eligible strategies require base candidate, robustness, AND Final Tick 6M
   (`candidate_final_tick_6m.status='accepted'`) all `accepted`. The probe Final
   Tick (`candidate_final_tick`) is NOT the portfolio gate; only the 6M stage is.
+  A 6M row MAY only originate from a probe `accepted` or
+  `pending_ohlc_trades`; a probe `rejected` MUST invalidate/delete downstream 6M
+  evidence. Therefore a short-probe failure can never reach the portfolio,
+  while a short probe lacking enough trades may still be resolved by a passing
+  6M comparison.
   Portfolio history MUST still be built from the base report plus the robustness
   report; Final Tick 6M is an eligibility gate, not the curve source.
   Conservative/Balanced portfolios MUST share one lock pool within the active
@@ -745,6 +796,11 @@ requirement changes or a debt item is opened/closed.
   current DD, correlation, margin, group, and pipeline gate. The setting MUST
   apply consistently to generation, availability counts, reoptimization, and
   completion; quarantine remains a hard exclusion regardless of this option.
+- **FR-1.12.46** The UI MUST include a `UBS Regresiva` tab (`ubs_regression`)
+  with its own date/threshold/point configuration, `Continuar regresiva`,
+  `Reprobar`, `Aplicar criterios`, manual OK/FAIL, report actions, and an
+  optional automatic handoff after Final Tick 6M. It MUST distinguish strategy
+  failures from neutral technical/retryable states.
 
 ### 1.13 Packaging & runtime
 
@@ -900,6 +956,12 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   parsing.
 
 ### 2.8 Resolved debt
+
+- **2026-07** - Added the independent backward regression stage after Final
+  Tick 6M: exact-date 2017-2019 Model=1 validation, `candidate_regression`
+  persistence, neutral technical states, configurable points, fifth-stage
+  probability feedback, dedicated UI tab, audit/search integration, and
+  optional automatic handoff.
 
 - **2025-06** — Fixed portfolio parser to support English MT5 HTML reports
   (`Symbol`, `Period`, `Results`, `Orders`, `Deals`, `Balance Drawdown …`).
@@ -1095,6 +1157,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   ≥ 180-day date range and adds a PF floor check (`profit_factor_floor` in
   `similarity_json`). `FINAL_TICK_REASON_PENALTIES` gained `"profit_factor_floor": 55.0`.
   New `UBS Final Tick 6M` tab added. Portfolio gate changed from probe to 6M stage.
+
+- **2026-07** — Clarified the two-stage Final Tick lifecycle: the short probe is
+  a discard filter, not the final live-use gate. Probe `rejected` is terminal;
+  probe `accepted` and `pending_ohlc_trades` may advance to 6M; only Final Tick
+  6M `accepted` authorizes portfolio/export eligibility.
 
 - **2026-06** — `UBS Buscador` tab added: run auditor (per-account per-run pipeline
   status and weight breakdown) plus free-text set search across pipeline stages

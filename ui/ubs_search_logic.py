@@ -582,6 +582,7 @@ class UBSSearchLogicMixin:
             ("ubs_robustness", "_refresh_ubs_robustness"),
             ("ubs_final_tick", "_refresh_ubs_final_tick"),
             ("ubs_final_tick_6m", "_refresh_ubs_final_tick_6m"),
+            ("ubs_regression", "_refresh_ubs_regression"),
             ("ubs_universe", "_refresh_ubs_universe"),
         ):
             callback = getattr(self, callback_name, None)
@@ -679,11 +680,44 @@ class UBSSearchLogicMixin:
                 )
             return len(valid_ids)
 
-        changed = {"base": 0, "robust": 0, "final_tick": 0, "final_tick_6m": 0}
+        def mark_regression_pending(ids: set[int]) -> int:
+            valid_ids = scoped(ids)
+            if not valid_ids:
+                return 0
+            now = datetime.now().isoformat(timespec="seconds")
+            for candidate_id in valid_ids:
+                conn.execute(
+                    """
+                    insert into candidate_regression (
+                        candidate_id, run_id, status, accepted, report_path, score,
+                        metrics_json, details_json, from_date, to_date,
+                        positive_points, negative_points, points_applied, evaluated_at
+                    ) values (?, ?, 'pending', null, null, null, null, null,
+                              '2017.01.01', '2019.12.31', 80.0, -100.0, 0.0, ?)
+                    on conflict(candidate_id) do update set
+                        run_id=excluded.run_id,
+                        status='pending',
+                        accepted=null,
+                        report_path=null,
+                        score=null,
+                        metrics_json=null,
+                        details_json=null,
+                        points_applied=0.0,
+                        evaluated_at=excluded.evaluated_at
+                    """,
+                    (candidate_id, int(run_id), now),
+                )
+            return len(valid_ids)
+
+        changed = {"base": 0, "robust": 0, "final_tick": 0, "final_tick_6m": 0, "regression": 0}
 
         base_ids = set(scoped(stage_ids.get("base", set())))
         if base_ids:
             placeholders = ",".join("?" for _ in base_ids)
+            conn.execute(
+                f"delete from candidate_regression where run_id=? and candidate_id in ({placeholders})",
+                (int(run_id), *sorted(base_ids)),
+            )
             conn.execute(
                 f"delete from candidate_final_tick_6m where run_id=? and candidate_id in ({placeholders})",
                 (int(run_id), *sorted(base_ids)),
@@ -712,18 +746,25 @@ class UBSSearchLogicMixin:
 
         robust_ids = set(scoped(stage_ids.get("robust", set())))
         if robust_ids:
+            delete_stage("candidate_regression", robust_ids)
             delete_stage("candidate_final_tick_6m", robust_ids)
             delete_stage("candidate_final_tick", robust_ids)
             changed["robust"] = mark_robust_pending(robust_ids)
 
         final_tick_ids = set(scoped(stage_ids.get("final_tick", set())))
         if final_tick_ids:
+            delete_stage("candidate_regression", final_tick_ids)
             delete_stage("candidate_final_tick_6m", final_tick_ids)
             changed["final_tick"] = mark_stage_pending("candidate_final_tick", final_tick_ids)
 
         final_tick_6m_ids = set(scoped(stage_ids.get("final_tick_6m", set())))
         if final_tick_6m_ids:
+            delete_stage("candidate_regression", final_tick_6m_ids)
             changed["final_tick_6m"] = mark_stage_pending("candidate_final_tick_6m", final_tick_6m_ids)
+
+        regression_ids = set(scoped(stage_ids.get("regression", set())))
+        if regression_ids:
+            changed["regression"] = mark_regression_pending(regression_ids)
 
         return changed
 
@@ -1207,6 +1248,35 @@ class UBSSearchLogicMixin:
         ):
             line(f"  gen {row['generation']}: {row['status']}={row['n']}")
 
+        regression = counts(
+            "select rg.status,count(*) from candidate_regression rg join candidates c on c.id=rg.candidate_id "
+            "where c.run_id=? group by rg.status"
+        )
+        nonfinal_regression = audit_nonfinal_count(regression, additional_final_statuses={"no_trades"})
+        missing_regression = one(
+            "select count(*) from candidates c "
+            "join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted' "
+            "left join candidate_regression rg on rg.candidate_id=c.id "
+            "where c.run_id=? and c.status='accepted' and rg.candidate_id is null"
+        )
+        stale_regression = one(
+            "select count(*) from candidate_regression rg join candidates c on c.id=rg.candidate_id "
+            "left join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id "
+            "where c.run_id=? and not (c.status='accepted' and ft6.status='accepted')"
+        )
+        regression_points_total = conn.execute(
+            "select coalesce(sum(rg.points_applied),0) from candidate_regression rg "
+            "join candidates c on c.id=rg.candidate_id where c.run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+        line("\nREGRESIVA OHLC")
+        line("-" * 96)
+        line(fmt_counts(regression))
+        line(
+            f"6M accepted sin regresiva={missing_regression} | tecnicos/retryables={nonfinal_regression} | "
+            f"stale={stale_regression} | puntos acumulados={float(regression_points_total or 0):+.2f}"
+        )
+
         feedback_rows = rows(
             """
             select c.id,c.run_id,c.generation,c.set_path,c.seed_path,c.target_symbol,c.symbol,c.period,c.family,c.mutated_keys,
@@ -1214,7 +1284,8 @@ class UBSSearchLogicMixin:
                    cr.status as robust_status,cr.positive_bonus as robust_positive_bonus,
                    cr.negative_bonus as robust_negative_bonus,cr.metrics_json as robust_metrics_json,
                    ft.status as final_tick_status,ft.similarity_json as final_tick_similarity_json,
-                   ft6.status as final_tick_6m_status,ft6.similarity_json as final_tick_6m_similarity_json
+                   ft6.status as final_tick_6m_status,ft6.similarity_json as final_tick_6m_similarity_json,
+                   rg.status as regression_status,rg.points_applied as regression_points_applied
             from candidates c
             left join candidate_robustness cr on cr.candidate_id=c.id and c.status='accepted'
             left join candidate_final_tick ft on ft.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
@@ -1223,6 +1294,7 @@ class UBSSearchLogicMixin:
              and c.status='accepted'
              and cr.status='accepted'
              and ft.status in ('accepted','pending_ohlc_trades')
+            left join candidate_regression rg on rg.candidate_id=c.id and ft6.status='accepted'
             where c.run_id=? and c.status in ('accepted','rejected','no_trades')
               and (c.score is not null or c.status='no_trades')
             """
@@ -1239,6 +1311,9 @@ class UBSSearchLogicMixin:
             f"Final Tick 6M accepted\t+{DEFAULT_FINAL_TICK_ACCEPTED_BONUS:.2f}",
             f"Final Tick 6M rejected\t{DEFAULT_FINAL_TICK_REJECTED_PENALTY:.2f} menos penalizaciones por razones; gate duro para portafolio",
             "Final Tick pending / sin fila\t0.00; neutral",
+            "Regresiva accepted\t+puntos configurados (default +80)",
+            "Regresiva rejected/no_trades\tpuntos FAIL y penalizacion por causas (default -100 a -160)",
+            "Regresiva tecnica/sin fila\t0.00; neutral",
         ]
 
         def fnum(value: object) -> str:
@@ -1249,7 +1324,7 @@ class UBSSearchLogicMixin:
 
         def weight_breakdown(row: sqlite3.Row) -> tuple[float | None, dict[str, float], str]:
             status = str(row["status"] or "").lower()
-            parts = {"base": 0.0, "robust": 0.0, "ft": 0.0, "ft6": 0.0}
+            parts = {"base": 0.0, "robust": 0.0, "ft": 0.0, "ft6": 0.0, "regression": 0.0}
             reason_parts: list[str] = []
             if status == "no_trades":
                 if not str(row["report_path"] or "").strip():
@@ -1313,10 +1388,18 @@ class UBSSearchLogicMixin:
                 if ft6_reasons:
                     reason_parts.append("ft6 razones=" + ",".join(ft6_reasons))
 
-            total = parts["base"] + parts["robust"] + parts["ft"] + parts["ft6"]
+            regression_status = str(row["regression_status"] or "").lower()
+            if regression_status in {"accepted", "rejected", "no_trades"}:
+                parts["regression"] = float(row["regression_points_applied"] or 0.0)
+                reason_parts.append(f"regresiva {regression_status} {parts['regression']:+.2f}")
+
+            total = parts["base"] + parts["robust"] + parts["ft"] + parts["ft6"] + parts["regression"]
             if rejected_ceilings:
                 total = min(total, min(rejected_ceilings))
                 reason_parts.append(f"cap final tick {min(rejected_ceilings):.2f}")
+            if parts["regression"] < 0:
+                total = min(total, parts["regression"])
+                reason_parts.append(f"cap regresiva {parts['regression']:.2f}")
             return total, parts, " | ".join(reason_parts)
 
         weights: list[float] = []
@@ -1324,7 +1407,7 @@ class UBSSearchLogicMixin:
         weights_by_asset: dict[str, list[float]] = {}
         weights_by_tf: dict[str, list[float]] = {}
         weight_detail = [
-            "GEN\tID\tSTATUS\tROBUST\tFT CORTO\tFT 6M\tSIMBOLO\tTF\tSCORE\tBASE\tROBUST ADJ\tFT ADJ\tFT6 ADJ\tPESO FORMULA\tPESO FUNC\tCHECK\tRAZONES\tSET"
+            "GEN\tID\tSTATUS\tROBUST\tFT CORTO\tFT 6M\tREG\tSIMBOLO\tTF\tSCORE\tBASE\tROBUST ADJ\tFT ADJ\tFT6 ADJ\tREG ADJ\tPESO FORMULA\tPESO FUNC\tCHECK\tRAZONES\tSET"
         ]
         weight_mismatches = 0
         for row in feedback_rows:
@@ -1349,6 +1432,7 @@ class UBSSearchLogicMixin:
                         str(row["robust_status"] or ""),
                         str(row["final_tick_status"] or ""),
                         str(row["final_tick_6m_status"] or ""),
+                        str(row["regression_status"] or ""),
                         str(row["target_symbol"] or row["symbol"] or ""),
                         str(row["period"] or ""),
                         fnum(row["score"]),
@@ -1356,6 +1440,7 @@ class UBSSearchLogicMixin:
                         fnum(parts["robust"]),
                         fnum(parts["ft"]),
                         fnum(parts["ft6"]),
+                        fnum(parts["regression"]),
                         fnum(formula_value),
                         fnum(value),
                         check,
@@ -1396,11 +1481,13 @@ class UBSSearchLogicMixin:
                    cr.status robust_status,cr.positive_bonus robust_positive_bonus,
                    cr.negative_bonus robust_negative_bonus,cr.metrics_json robust_metrics_json,
                    ft.status final_tick_status,ft.similarity_json final_tick_similarity_json,
-                   ft6.status final_tick_6m_status,ft6.similarity_json final_tick_6m_similarity_json
+                   ft6.status final_tick_6m_status,ft6.similarity_json final_tick_6m_similarity_json,
+                   rg.status regression_status,rg.points_applied regression_points_applied
             from candidates c
             join candidate_robustness cr on cr.candidate_id=c.id
             join candidate_final_tick ft on ft.candidate_id=c.id and ft.status in ('accepted','pending_ohlc_trades')
             join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
+            left join candidate_regression rg on rg.candidate_id=c.id
             where c.run_id=? and c.status='accepted' and cr.status='accepted' and ft6.status='accepted'
             order by c.id
             """
@@ -1439,8 +1526,10 @@ class UBSSearchLogicMixin:
             issues.append(f"reportes base faltantes path={len(missing_report_path)} files={len(missing_report_files)}")
         if account_mismatches:
             issues.append(f"mismatch cuenta MT5 en reportes={len(account_mismatches)}")
-        if stale_robust or stale_ft or stale_ft6:
-            issues.append(f"stale rows robust={stale_robust} ft={stale_ft} ft6={stale_ft6}")
+        if stale_robust or stale_ft or stale_ft6 or stale_regression:
+            issues.append(
+                f"stale rows robust={stale_robust} ft={stale_ft} ft6={stale_ft6} reg={stale_regression}"
+            )
         if missing_robust or missing_ft or missing_ft6:
             issues.append(f"pendientes missing robust={missing_robust} ft={missing_ft} ft6={missing_ft6}")
         if nonfinal_robust or nonfinal_ft or nonfinal_ft6:
@@ -1448,6 +1537,8 @@ class UBSSearchLogicMixin:
                 "estados no finales "
                 f"robust={nonfinal_robust} ft={nonfinal_ft} ft6={nonfinal_ft6}"
             )
+        if nonfinal_regression:
+            issues.append(f"regresiva tecnica/retryable={nonfinal_regression}")
         if weight_mismatches:
             issues.append(f"mismatch diagnostico legacy vs feedback_weight={weight_mismatches}")
         if not issues:
@@ -1552,6 +1643,7 @@ class UBSSearchLogicMixin:
                     row.get("robust_status", ""),
                     row.get("final_tick_status", ""),
                     row.get("final_tick_6m_status", ""),
+                    row.get("regression_status", ""),
                     row.get("target_symbol", "") or row.get("symbol", ""),
                     row.get("period", ""),
                     self._ubs_search_score(row.get("score")),
@@ -1568,6 +1660,7 @@ class UBSSearchLogicMixin:
                 "tick_report": str(row.get("real_tick_report_path") or ""),
                 "ohlc_6m_report": str(row.get("ohlc_6m_report_path") or ""),
                 "tick_6m_report": str(row.get("real_tick_6m_report_path") or ""),
+                "regression_report": str(row.get("regression_report_path") or ""),
             }
 
         message = f"{len(rows)} resultado(s) para: {query}"
@@ -1599,11 +1692,14 @@ class UBSSearchLogicMixin:
                        ft.real_tick_report_path,
                        ft6.status as final_tick_6m_status,
                        ft6.ohlc_report_path as ohlc_6m_report_path,
-                       ft6.real_tick_report_path as real_tick_6m_report_path
+                       ft6.real_tick_report_path as real_tick_6m_report_path,
+                       rg.status as regression_status,
+                       rg.report_path as regression_report_path
                 from candidates c
                 left join candidate_robustness cr on cr.candidate_id = c.id
                 left join candidate_final_tick ft on ft.candidate_id = c.id
                 left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
+                left join candidate_regression rg on rg.candidate_id = c.id
                 where lower(c.set_path) like ?
                    or lower(coalesce(c.seed_path, '')) like ?
                    or lower(coalesce(c.report_path, '')) like ?
@@ -1612,10 +1708,11 @@ class UBSSearchLogicMixin:
                    or lower(coalesce(ft.real_tick_report_path, '')) like ?
                    or lower(coalesce(ft6.ohlc_report_path, '')) like ?
                    or lower(coalesce(ft6.real_tick_report_path, '')) like ?
+                   or lower(coalesce(rg.report_path, '')) like ?
                 order by c.id desc
                 limit 1000
                 """,
-                (account_type, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern),
+                (account_type, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern),
             ).fetchall()
         finally:
             conn.close()
@@ -1633,17 +1730,18 @@ class UBSSearchLogicMixin:
             return ""
 
     def _ubs_search_row_tag(self, row: dict[str, object]) -> str:
+        regression_status = str(row.get("regression_status") or "").strip().lower()
         final_6m_status = str(row.get("final_tick_6m_status") or "").strip().lower()
         final_status = str(row.get("final_tick_status") or "").strip().lower()
         robust_status = str(row.get("robust_status") or "").strip().lower()
         base_status = str(row.get("status") or "").strip().lower()
-        if final_6m_status == "accepted" or (
+        if regression_status == "accepted" or (not regression_status and final_6m_status == "accepted") or (
             not final_6m_status and final_status == "accepted"
         ) or (not final_6m_status and not final_status and robust_status == "accepted") or (
             not final_status and not robust_status and base_status == "accepted"
         ):
             return "accepted"
-        if final_6m_status == "rejected" or final_status == "rejected" or robust_status == "rejected" or base_status == "rejected":
+        if regression_status in {"rejected", "no_trades"} or final_6m_status == "rejected" or final_status == "rejected" or robust_status == "rejected" or base_status == "rejected":
             return "rejected"
         return "pending"
 
@@ -1673,7 +1771,7 @@ class UBSSearchLogicMixin:
         paths = self._selected_ubs_search_paths()
         if not paths:
             return
-        for key in ("tick_6m_report", "ohlc_6m_report", "tick_report", "ohlc_report", "robust_report", "base_report"):
+        for key in ("regression_report", "tick_6m_report", "ohlc_6m_report", "tick_report", "ohlc_report", "robust_report", "base_report"):
             value = paths.get(key)
             if value and workspace_path_exists(value):
                 self._open_local_file(resolve_workspace_path(value))

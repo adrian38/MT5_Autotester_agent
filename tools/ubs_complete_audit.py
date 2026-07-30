@@ -219,6 +219,13 @@ def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, w
                         (run_id,),
                     )
                 ),
+                "regression": _count_map(
+                    _rows(
+                        conn,
+                        "select rg.status,count(*) n from candidate_regression rg join candidates c on c.id=rg.candidate_id where c.run_id=? group by rg.status",
+                        (run_id,),
+                    )
+                ),
             },
         }
 
@@ -266,6 +273,16 @@ def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, w
                 join candidate_robustness cr on cr.candidate_id=c.id
                 join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
                 where c.run_id=? and c.status='accepted' and cr.status='accepted' and ft6.status='accepted'
+                """,
+                (run_id,),
+            ).fetchone()[0],
+            "six_month_accepted_without_regression": conn.execute(
+                """
+                select count(*)
+                from candidates c
+                join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted'
+                left join candidate_regression rg on rg.candidate_id=c.id
+                where c.run_id=? and c.status='accepted' and rg.candidate_id is null
                 """,
                 (run_id,),
             ).fetchone()[0],
@@ -331,6 +348,25 @@ def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, w
                     status=row["status"],
                     metrics_json=row["real_tick_metrics_json"],
                 )
+        regression_rows = _rows(
+            conn,
+            """
+            select rg.candidate_id,rg.status,rg.report_path,rg.metrics_json,rg.details_json
+            from candidate_regression rg
+            join candidates c on c.id=rg.candidate_id
+            where c.run_id=?
+            """,
+            (run_id,),
+        )
+        for row in regression_rows:
+            _add_report_ref(
+                refs,
+                row["report_path"],
+                stage="regression_ohlc",
+                row_id=int(row["candidate_id"]),
+                status=row["status"],
+                metrics_json=row["metrics_json"],
+            )
         seed_rows = _rows(
             conn,
             "select id,status,seed_path,report_path,score,metrics_json from seed_scores where active=1",
@@ -375,6 +411,10 @@ def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, w
             ):
                 counter.update(metric_reasons(row["similarity_json"]))
             reason_counts[stage] = dict(counter.most_common())
+        regression_counter = Counter()
+        for row in regression_rows:
+            regression_counter.update(metric_reasons(row["details_json"] or row["metrics_json"]))
+        reason_counts["regression"] = dict(regression_counter.most_common())
         summary["reason_counts"] = reason_counts
 
         feedback_rows = _rows(
@@ -385,13 +425,15 @@ def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, w
                    cr.status robust_status,cr.positive_bonus robust_positive_bonus,
                    cr.negative_bonus robust_negative_bonus,cr.metrics_json robust_metrics_json,
                    ft.status final_tick_status,ft.similarity_json final_tick_similarity_json,
-                   ft6.status final_tick_6m_status,ft6.similarity_json final_tick_6m_similarity_json
+                   ft6.status final_tick_6m_status,ft6.similarity_json final_tick_6m_similarity_json,
+                   rg.status regression_status,rg.points_applied regression_points_applied
             from candidates c
             left join candidate_robustness cr on cr.candidate_id=c.id and c.status='accepted'
             left join candidate_final_tick ft on ft.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
             left join candidate_final_tick_6m ft6
               on ft6.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
              and ft.status in ('accepted','pending_ohlc_trades')
+            left join candidate_regression rg on rg.candidate_id=c.id and ft6.status='accepted'
             where c.run_id=? and c.status in ('accepted','rejected','no_trades')
               and (c.score is not null or c.status='no_trades')
             """,

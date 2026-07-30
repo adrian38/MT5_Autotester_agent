@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import json
 import math
 
+from ubs.regression_rules import REGRESSION_FAILURE_STATUSES
+
 
 DEFAULT_ROBUST_POSITIVE_BONUS = 70.0
 DEFAULT_ROBUST_NEGATIVE_BONUS = -70.0
@@ -32,6 +34,9 @@ DEFAULT_STAGE_PRIORS = {
     "robust": 0.50,
     "probe": 0.50,
     "six_month": 0.05,
+    # Neutral until the first backward-validation results exist. Multiplying
+    # by 1.0 preserves every pre-regression probability and relative weight.
+    "regression": 1.0,
 }
 
 TIMEFRAME_PATCH_KEYS = frozenset({
@@ -85,6 +90,7 @@ class FeedbackSignal:
     groups: int
     final_trials: float
     stage_probabilities: dict[str, float]
+    regression_trials: float = 0.0
 
 
 def row_get(row: object, key: str, default: object = None) -> object:
@@ -150,6 +156,13 @@ def row_stage_outcome(row: object, stage: str) -> tuple[bool, float]:
         if status in {"accepted", "rejected"}:
             return True, 1.0 if status == "accepted" else 0.0
         return False, 0.0
+    if stage == "regression":
+        status = row_text(row, "regression_status").lower()
+        if status == "accepted":
+            return True, 1.0
+        if status in REGRESSION_FAILURE_STATUSES:
+            return True, 0.0
+        return False, 0.0
     raise ValueError(f"Etapa de feedback desconocida: {stage}")
 
 
@@ -169,20 +182,6 @@ def grouped_stage_evidence(grouped_rows: Mapping[object, Iterable[object]]) -> d
         stage: StageEvidence(successes=values[0], trials=values[1])
         for stage, values in totals.items()
     }
-
-
-def _probe_terminal_blocked(groups: Mapping[object, Iterable[object]]) -> bool:
-    """True when short Final Tick failed and no 6M pass offsets that evidence."""
-
-    has_probe_rejection = False
-    has_six_month_acceptance = False
-    for rows in groups.values():
-        for row in rows:
-            if row_text(row, "final_tick_6m_status").lower() == "accepted":
-                has_six_month_acceptance = True
-            if row_text(row, "final_tick_status").lower() == "rejected":
-                has_probe_rejection = True
-    return has_probe_rejection and not has_six_month_acceptance
 
 
 def _posterior_probability(evidence: StageEvidence, prior: float, strength: float) -> float:
@@ -207,7 +206,10 @@ def probability_feedback_signals(
     priors: dict[str, float] = {}
     for stage, fallback in DEFAULT_STAGE_PRIORS.items():
         evidence = global_evidence[stage]
-        priors[stage] = evidence.successes / evidence.trials if evidence.trials else fallback
+        observed = evidence.successes / evidence.trials if evidence.trials else fallback
+        if stage == "regression" and evidence.trials:
+            observed = min(0.95, max(0.05, observed))
+        priors[stage] = observed
     global_probability = math.prod(priors.values())
 
     result: dict[str, FeedbackSignal] = {}
@@ -222,9 +224,6 @@ def probability_feedback_signals(
             stage: _posterior_probability(evidence[stage], priors[stage], prior_strength)
             for stage in priors
         }
-        if _probe_terminal_blocked(groups):
-            stage_probabilities = dict(stage_probabilities)
-            stage_probabilities["six_month"] = 0.0
         probability = math.prod(stage_probabilities.values())
         score = RELATIVE_SCORE_SCALE * (_logit(probability) - _logit(global_probability))
         score = max(-RELATIVE_SCORE_LIMIT, min(RELATIVE_SCORE_LIMIT, score))
@@ -233,8 +232,10 @@ def probability_feedback_signals(
             + 2.0 * evidence["robust"].trials
             + 3.0 * evidence["probe"].trials
             + 4.0 * evidence["six_month"].trials
+            + 5.0 * evidence["regression"].trials
         )
-        confidence = weighted_trials / (weighted_trials + prior_strength * 4.0)
+        confidence_stages = 5.0 if global_evidence["regression"].trials else 4.0
+        confidence = weighted_trials / (weighted_trials + prior_strength * confidence_stages)
         result[key] = FeedbackSignal(
             score=round(score, 6),
             probability=round(probability, 8),
@@ -242,6 +243,7 @@ def probability_feedback_signals(
             groups=len(groups),
             final_trials=evidence["six_month"].trials,
             stage_probabilities={stage: round(value, 8) for stage, value in stage_probabilities.items()},
+            regression_trials=evidence["regression"].trials,
         )
     return result
 
@@ -322,6 +324,13 @@ def final_tick_rejected_ceiling(row: object) -> float | None:
     return min(ceilings) if ceilings else None
 
 
+def regression_adjustment(row: object) -> float:
+    status = row_text(row, "regression_status").lower()
+    if status == "accepted" or status in REGRESSION_FAILURE_STATUSES:
+        return row_float(row, "regression_points_applied", 0.0)
+    return 0.0
+
+
 def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
     status = row_text(row, "status").lower()
     if status == "no_trades":
@@ -355,6 +364,10 @@ def feedback_weight(row: object, *, accepted_bonus: float) -> float | None:
     final_tick_ceiling = final_tick_rejected_ceiling(row)
     if final_tick_ceiling is not None:
         value = min(value, final_tick_ceiling)
+    regression_value = regression_adjustment(row)
+    value += regression_value
+    if regression_value < 0:
+        value = min(value, regression_value)
     return value
 
 

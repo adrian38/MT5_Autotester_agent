@@ -272,9 +272,11 @@ def exclude_portfolio_members_payload(
     portfolio_id = int(payload.get("portfolio_id") or 0)
     scope = "monthly" if str(payload.get("scope") or "") == "monthly" else "full_history"
     raw_paths = payload.get("set_paths")
+    single_path = payload.get("set_path") or payload.get("set_id")
     if portfolio_id <= 0:
         raise ValueError("Falta el portafolio que contiene las estrategias")
-    if not isinstance(raw_paths, list) or not raw_paths:
+    multiple = isinstance(raw_paths, list) and bool(raw_paths)
+    if not multiple and not single_path:
         raise ValueError("Selecciona al menos una estrategia")
 
     def path_key(value: object) -> str:
@@ -295,9 +297,10 @@ def exclude_portfolio_members_payload(
         except (TypeError, json.JSONDecodeError):
             metrics = {}
         portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
-        if scope != "full_history" or not (
-            portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
-        ):
+        is_bundle = portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
+        # Multiple exclusion stays reserved for full_history A/M/C bundles.
+        # Single exclusion works for any portfolio (monthly, bundle, or plain).
+        if multiple and not (scope == "full_history" and is_bundle):
             raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C")
         rows = [dict(row) for row in conn.execute(
             "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
@@ -312,15 +315,24 @@ def exclude_portfolio_members_payload(
     }
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for raw_path in raw_paths:
+    for raw_path in (raw_paths if multiple else [single_path]):
         key = path_key(raw_path)
         if key in seen:
             continue
         member = members_by_path.get(key)
         if member is None:
-            raise ValueError("Una estrategia seleccionada ya no pertenece al portafolio")
+            raise ValueError(
+                "Una estrategia seleccionada ya no pertenece al portafolio"
+                if multiple else "No se encontró la estrategia dentro del portafolio"
+            )
         seen.add(key)
         selected.append(member)
+
+    reason = (
+        "Excluida manualmente de un portafolio A/M/C eliminado" if is_bundle
+        else "Excluida manualmente de un Portafolio UBS mensual eliminado" if scope == "monthly"
+        else "Retirada manualmente de un portafolio guardado"
+    )
 
     grouped: dict[Path, list[tuple[str, int | None, dict[str, Any]]]] = {}
     for member in selected:
@@ -364,7 +376,7 @@ def exclude_portfolio_members_payload(
                         set_path,
                         str(member.get("symbol") or ""),
                         str(member.get("timeframe") or ""),
-                        "Excluida manualmente de un portafolio A/M/C eliminado",
+                        reason,
                         portfolio_id,
                         datetime.now().isoformat(timespec="seconds"),
                     ),
@@ -380,25 +392,61 @@ def exclude_portfolio_members_payload(
         finally:
             source_conn.close()
 
+    # Bundles and monthly portfolios are deleted whole; a single exclusion from a
+    # plain full_history portfolio drops the member and recalculates the rest.
+    delete_whole = multiple or is_bundle or scope == "monthly"
     conn = connect_memory(active_memory, timeout=10.0)
     try:
+        conn.row_factory = sqlite3.Row
         conn.execute("begin immediate")
-        for table in (
-            "portfolio_decision_log", "portfolio_allocations", "portfolio_members", "portfolio_versions"
-        ):
-            conn.execute(f"delete from {table} where portfolio_id=?", (portfolio_id,))
-        deleted = conn.execute("delete from portfolios where id=?", (portfolio_id,))
-        if deleted.rowcount != 1:
-            raise RuntimeError(f"No se pudo borrar el portafolio #{portfolio_id}")
+        if delete_whole:
+            for table in (
+                "portfolio_decision_log", "portfolio_allocations", "portfolio_members", "portfolio_versions"
+            ):
+                conn.execute(f"delete from {table} where portfolio_id=?", (portfolio_id,))
+            deleted = conn.execute("delete from portfolios where id=?", (portfolio_id,))
+            if deleted.rowcount != 1:
+                raise RuntimeError(f"No se pudo borrar el portafolio #{portfolio_id}")
+        else:
+            portfolio_row = conn.execute(
+                "select target_strategies,active_strategies from portfolios where id=?",
+                (portfolio_id,),
+            ).fetchone()
+            if portfolio_row is None:
+                raise ValueError("El portafolio ya no existe")
+            target = max(
+                int(portfolio_row["target_strategies"] or 0),
+                int(portfolio_row["active_strategies"] or 0),
+            )
+            conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
+            set_path_value = str(selected[0].get("set_path") or selected[0].get("set_id") or "")
+            allocation_delete = conn.execute(
+                "delete from portfolio_allocations where portfolio_id=? and set_path=?",
+                (portfolio_id, set_path_value),
+            )
+            conn.execute(
+                "delete from portfolio_members where portfolio_id=? and set_path=?",
+                (portfolio_id, set_path_value),
+            )
+            if allocation_delete.rowcount == 0:
+                raise ValueError("No se encontró la asignación dentro del portafolio")
+            _PortfolioPersistence()._recalculate_saved_portfolio(conn, portfolio_id)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    if multiple:
+        return {
+            "quarantine_ids": quarantine_ids,
+            "deleted": True,
+            "portfolio_id": portfolio_id,
+            "scope": scope,
+        }
     return {
-        "quarantine_ids": quarantine_ids,
-        "deleted": True,
+        "quarantine_id": quarantine_ids[0] if quarantine_ids else 0,
+        "deleted": delete_whole,
         "portfolio_id": portfolio_id,
         "scope": scope,
     }

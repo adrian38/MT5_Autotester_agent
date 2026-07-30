@@ -100,8 +100,11 @@ Pure math module (no Tkinter, no sqlite) for the "UBS Portafolio" tab.
 
 - **Final Tick-gated input**: UBS Portafolio reads both ECN and PRO memories
   and only offers rows where the base candidate, robustness result, and Final
-  Tick 6M result are all accepted. The probe stage is not a gate. The portfolio curve still uses the base report
-  (`candidates.report_path`) plus the robustness report
+  Tick 6M result are all accepted. The short probe is a prior discard filter,
+  not a repeated portfolio gate: `rejected` invalidates downstream 6M evidence,
+  while `accepted` or `pending_ohlc_trades` may advance to 6M. A passing 6M
+  resolves the short probe's insufficient-trade state. The portfolio curve
+  still uses the base report (`candidates.report_path`) plus the robustness report
   (`candidate_robustness.report_path`) as the 2020-2026 history; Final Tick is
   the eligibility gate, not the curve source.
 - **Historical curve**: both periods are treated as consecutive parts of one

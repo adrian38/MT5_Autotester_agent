@@ -12,6 +12,7 @@ LOTS_REPLACEMENTS = {
     "Risk": "0||0||0||20||N",
     "StartLots": "0.01||0.01||0.001000||0.100000||N",
 }
+USE_EVERY_TICK_KEY = "UseEveryTick"
 
 
 def read_set_with_encoding(path: Path) -> tuple[str, str]:
@@ -46,6 +47,51 @@ def write_set_text(path: Path, text: str, encoding: str) -> None:
         except OSError:
             pass
         raise
+
+
+def set_use_every_tick_text(text: str, enabled: bool) -> str:
+    value = "true" if enabled else "false"
+    lines = text.splitlines()
+    found = False
+    for index, line in enumerate(lines):
+        if "=" not in line or line.lstrip().startswith(";"):
+            continue
+        lhs, raw_value = line.split("=", 1)
+        if lhs.strip() != USE_EVERY_TICK_KEY:
+            continue
+        found = True
+        if "||" in raw_value:
+            parts = raw_value.split("||")
+            parts[0] = value
+            lines[index] = f"{lhs}={'||'.join(parts)}"
+        else:
+            lines[index] = f"{lhs}={value}"
+    if found:
+        return "\n".join(lines)
+
+    insert_at = 0
+    while insert_at < len(lines) and (
+        not lines[insert_at].strip() or lines[insert_at].lstrip().startswith(";")
+    ):
+        insert_at += 1
+    lines.insert(insert_at, f"{USE_EVERY_TICK_KEY}={value}||false||0||true||N")
+    return "\n".join(lines)
+
+
+def write_set_use_every_tick(source: Path, destination: Path, enabled: bool) -> None:
+    text, encoding = read_set_with_encoding(source)
+    write_set_text(destination, set_use_every_tick_text(text, enabled), encoding)
+
+
+def set_matches_use_every_tick_source(source: Path, destination: Path, enabled: bool) -> bool:
+    if not destination.exists():
+        return False
+    try:
+        source_text, _ = read_set_with_encoding(source)
+        destination_text, _ = read_set_with_encoding(destination)
+    except OSError:
+        return False
+    return destination_text == set_use_every_tick_text(source_text, enabled)
 
 
 def force_fixed_lot_text(text: str) -> tuple[str, set[str], set[str]]:

@@ -12,8 +12,10 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 
 from run_tests import (
@@ -48,9 +50,40 @@ from ubs.account import (
 from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path
-from ubs.score import ScoreConfig, ScoreResult, score_report_file
+from ubs.regression import (
+    RegressionRuntime,
+    evaluate_candidate_regression,
+    rescore_regression_only,
+)
+from ubs.regression_rules import (
+    DEFAULT_REGRESSION_FROM_DATE,
+    DEFAULT_REGRESSION_MAX_DD_RATIO,
+    DEFAULT_REGRESSION_MAX_DRAWDOWN_PCT,
+    DEFAULT_REGRESSION_MIN_NET_PROFIT,
+    DEFAULT_REGRESSION_MIN_PF_EFFICIENCY,
+    DEFAULT_REGRESSION_MIN_POSITIVE_MONTH_RATIO,
+    DEFAULT_REGRESSION_MIN_PROFIT_FACTOR,
+    DEFAULT_REGRESSION_MIN_RECOVERY_FACTOR,
+    DEFAULT_REGRESSION_MIN_TRADES,
+    DEFAULT_REGRESSION_MIN_TRADES_MN,
+    DEFAULT_REGRESSION_MIN_TRADES_W1,
+    DEFAULT_REGRESSION_NEGATIVE_POINTS,
+    DEFAULT_REGRESSION_POSITIVE_POINTS,
+    DEFAULT_REGRESSION_TO_DATE,
+    validate_regression_date_range,
+)
+from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
-from ubs.set_utils import compact_safe_part, force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+from ubs.set_utils import (
+    compact_safe_part,
+    force_fixed_lot_text,
+    read_set_with_encoding,
+    safe_part,
+    set_matches_use_every_tick_source,
+    set_use_every_tick_text,
+    write_set_text,
+    write_set_use_every_tick,
+)
 from ubs.universe import (
     canonical_symbol,
     load_asset_universe,
@@ -205,6 +238,7 @@ FROZEN_KEYS = {
     "AdjustLotsizeToVariableValues",
     "Risk",
     "StartLots",
+    "UseEveryTick",
     "Lic_key",
     "URL",
     "LICURL",
@@ -314,6 +348,8 @@ def save_global_params(params: dict[str, str]) -> None:
 
 def is_agent_mutable_key(key: str) -> bool:
     """Return True if the agent is allowed to mutate this key."""
+    if key == "UseEveryTick":
+        return False
     frozen_ov, mutable_ov = load_mutation_overrides()
     if key in frozen_ov:
         return False
@@ -408,10 +444,65 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-max-pf-delta-pct", type=float, default=35.0, help="Diferencia maxima de PF vs OHLC.")
     parser.add_argument("--final-tick-max-dd-delta-pct", type=float, default=35.0, help="Diferencia maxima de DD pct vs OHLC.")
     parser.add_argument("--final-tick-max-trades-delta-pct", type=float, default=35.0, help="Diferencia maxima de trades vs OHLC.")
+    parser.add_argument(
+        "--evaluate-regression",
+        action="store_true",
+        help="Valida con Model=1 OHLC un rango historico anterior sobre Final Tick 6M accepted.",
+    )
+    parser.add_argument("--regression-run-id", type=int, help="Run SQLite cuyos Final Tick 6M accepted se evaluaran.")
+    parser.add_argument(
+        "--regression-candidate-id",
+        type=int,
+        action="append",
+        help="Limita la prueba regresiva a un candidate id. Puede repetirse.",
+    )
+    parser.add_argument(
+        "--regression-pending-only",
+        action="store_true",
+        help="Ejecuta solo Final Tick 6M accepted sin resultado regresivo final o con error tecnico retryable.",
+    )
+    parser.add_argument("--regression-from-date", default=DEFAULT_REGRESSION_FROM_DATE)
+    parser.add_argument("--regression-to-date", default=DEFAULT_REGRESSION_TO_DATE)
+    parser.add_argument("--regression-min-net-profit", type=float, default=DEFAULT_REGRESSION_MIN_NET_PROFIT)
+    parser.add_argument("--regression-min-profit-factor", type=float, default=DEFAULT_REGRESSION_MIN_PROFIT_FACTOR)
+    parser.add_argument("--regression-min-trades", type=int, default=DEFAULT_REGRESSION_MIN_TRADES)
+    parser.add_argument("--regression-min-trades-w1", type=int, default=DEFAULT_REGRESSION_MIN_TRADES_W1)
+    parser.add_argument("--regression-min-trades-mn", type=int, default=DEFAULT_REGRESSION_MIN_TRADES_MN)
+    parser.add_argument("--regression-max-drawdown-pct", type=float, default=DEFAULT_REGRESSION_MAX_DRAWDOWN_PCT)
+    parser.add_argument("--regression-min-recovery-factor", type=float, default=DEFAULT_REGRESSION_MIN_RECOVERY_FACTOR)
+    parser.add_argument(
+        "--regression-min-pf-efficiency",
+        type=float,
+        default=DEFAULT_REGRESSION_MIN_PF_EFFICIENCY,
+        help="Minima eficiencia PF regresiva/base (WFE). 0 desactiva la comprobacion relativa.",
+    )
+    parser.add_argument(
+        "--regression-max-dd-ratio",
+        type=float,
+        default=DEFAULT_REGRESSION_MAX_DD_RATIO,
+        help="Maximo cociente DD%% regresiva/base (regla de crisis <=2x). 0 desactiva la comprobacion.",
+    )
+    parser.add_argument(
+        "--regression-min-positive-month-ratio",
+        type=float,
+        default=DEFAULT_REGRESSION_MIN_POSITIVE_MONTH_RATIO,
+    )
+    parser.add_argument("--regression-positive-points", type=float, default=DEFAULT_REGRESSION_POSITIVE_POINTS)
+    parser.add_argument("--regression-negative-points", type=float, default=DEFAULT_REGRESSION_NEGATIVE_POINTS)
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
-    parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes con reporte sin abrir MT5.")
-    parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes con reporte sin abrir MT5.")
-    parser.add_argument("--rescore-final-tick-only", action="store_true", help="Recalcula Final Tick existente desde reportes guardados sin abrir MT5.")
+    parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes desde metrics_json sin abrir MT5.")
+    parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes desde metrics_json sin abrir MT5.")
+    parser.add_argument("--rescore-final-tick-only", action="store_true", help="Recalcula Final Tick existente desde metrics_json sin abrir MT5.")
+    parser.add_argument(
+        "--rescore-regression-only",
+        action="store_true",
+        help="Recalcula la prueba regresiva desde metrics_json sin abrir MT5.",
+    )
+    parser.add_argument(
+        "--rescore-from-reports",
+        action="store_true",
+        help="Fuerza que los modos --rescore-* vuelvan a parsear HTML; usar solo si cambio el parser o la normalizacion.",
+    )
     parser.add_argument(
         "--reconcile-seed-eval-only",
         action="store_true",
@@ -905,6 +996,37 @@ def score_config_for_variant(
         variant.target_period,
         min_trades_w1=min_trades_w1,
         min_trades_mn=min_trades_mn,
+    )
+
+
+def regression_score_config(args: argparse.Namespace) -> ScoreConfig:
+    """Build the independent thresholds used by the backward OHLC holdout."""
+
+    return ScoreConfig(
+        min_net_profit=float(args.regression_min_net_profit),
+        min_profit_factor=float(args.regression_min_profit_factor),
+        min_trades=int(args.regression_min_trades),
+        max_drawdown_pct=float(args.regression_max_drawdown_pct),
+        min_recovery_factor=float(args.regression_min_recovery_factor),
+        min_positive_month_ratio=float(args.regression_min_positive_month_ratio),
+    )
+
+
+def regression_runtime() -> RegressionRuntime:
+    """Inject MT5/report helpers without coupling the regression domain module to this CLI."""
+
+    return RegressionRuntime(
+        running_terminal_exit_code=RUNNING_TERMINAL_EXIT_CODE,
+        recreate_work_dir=recreate_work_dir,
+        remove_report_artifacts=remove_report_artifacts,
+        variant_from_candidate_row=variant_from_candidate_row,
+        run_backtests=run_backtests,
+        find_report_for_set=find_report_for_set,
+        parse_symbol_map=parse_symbol_map,
+        report_matches_variant=report_matches_variant,
+        report_has_empty_tester_context=report_has_empty_tester_context,
+        read_report_dates=_read_ohlc_report_cfg_dates,
+        tester_log_no_history_metadata=tester_log_no_history_metadata,
     )
 
 
@@ -1805,6 +1927,7 @@ def create_variant(
         )
 
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized = set_use_every_tick_text(normalized, False)
     seed_label = compact_safe_part(seed.path.stem, 24)
     family_label = compact_safe_part(seed.family, 24)
     filename = (
@@ -1838,6 +1961,7 @@ def create_history_probe_variant(
     replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized = set_use_every_tick_text(normalized, False)
     filename = f"{safe_part(target_symbol)}_{safe_part(target_period)}_history_probe_{index:04d}.set"
     target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
     write_set_text(target, normalized, encoding)
@@ -1854,7 +1978,14 @@ def create_history_probe_variant(
     )
 
 
-def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -> int:
+def run_backtests(
+    args: argparse.Namespace,
+    set_dir: Path,
+    *,
+    model: str = "",
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> int:
     if not args.expert and not args.multi_terminal:
         print("AVISO: --expert no indicado; se omiten backtests.")
         return 0
@@ -1895,10 +2026,12 @@ def run_backtests(args: argparse.Namespace, set_dir: Path, *, model: str = "") -
         command.extend(["--symbol-universe", str(Path(args.assets).expanduser())])
     if args.dry_run:
         command.append("--dry-run")
-    if getattr(args, "from_date", ""):
-        command.extend(["--from-date", args.from_date])
-    if getattr(args, "to_date", ""):
-        command.extend(["--to-date", args.to_date])
+    effective_from_date = getattr(args, "from_date", "") if from_date is None else from_date
+    effective_to_date = getattr(args, "to_date", "") if to_date is None else to_date
+    if effective_from_date:
+        command.extend(["--from-date", str(effective_from_date)])
+    if effective_to_date:
+        command.extend(["--to-date", str(effective_to_date)])
     if model:
         command.extend(["--model", str(model)])
     print("Ejecutando:", " ".join(f'"{part}"' if " " in part else part for part in command))
@@ -2313,7 +2446,89 @@ def _stored_or_discovered_report(row: sqlite3.Row) -> Path | None:
     return None
 
 
+def _rescore_metrics_json(raw: object, config: ScoreConfig) -> ScoreResult:
+    if raw is None or not str(raw).strip():
+        raise ValueError("metrics_json vacio")
+    return rescore_result(ScoreResult.from_json(str(raw)), config)
+
+
+def _batched_memory_updates(function):
+    @wraps(function)
+    def wrapped(args, memory, score_config):
+        context = memory.batch_updates() if hasattr(memory, "batch_updates") else nullcontext()
+        with context:
+            return function(args, memory, score_config)
+
+    return wrapped
+
+
+@_batched_memory_updates
 def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_candidate_scores_from_reports(args, memory, score_config)
+    rows = memory.conn.execute(
+        """
+        select *
+        from candidates
+        where status in ('accepted', 'rejected', 'no_trades')
+          and coalesce(metrics_json, '') != ''
+        order by run_id, generation, id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    updates: list[tuple[object, ...]] = []
+    for row in rows:
+        variant = variant_from_candidate_row(row)
+        config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
+        try:
+            result = _rescore_metrics_json(row["metrics_json"], config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json base invalido candidate #{int(row['id'])}: {exc}")
+            continue
+        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        updates.append(
+            (
+                result.score,
+                int(status == "accepted" and result.accepted),
+                result.to_json(),
+                status,
+                int(row["id"]),
+            )
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+    if updates:
+        memory.conn.executemany(
+            """
+            update candidates
+            set score=?, accepted=?, metrics_json=?, status=?
+            where id=?
+            """,
+            updates,
+        )
+        memory.cleanup_stale_stage_rows()
+
+    total = sum(status_counts.values())
+    print(
+        "Candidatos repuntuados desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={total}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def _rescore_candidate_scores_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
     symbol_map = parse_symbol_map(args.symbol_map)
     rows = memory.conn.execute(
         """
@@ -2373,7 +2588,83 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
     return 0
 
 
+@_batched_memory_updates
 def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_robustness_from_reports(args, memory, score_config)
+    rows = memory.conn.execute(
+        """
+        select
+            c.*,
+            cr.metrics_json as robust_metrics_json,
+            cr.report_path as robust_report_path,
+            cr.from_date as robust_from_date,
+            cr.to_date as robust_to_date,
+            cr.positive_bonus as robust_positive_bonus,
+            cr.negative_bonus as robust_negative_bonus
+        from candidate_robustness cr
+        join candidates c on c.id = cr.candidate_id
+        where cr.status in ('accepted', 'rejected', 'no_trades')
+          and coalesce(cr.metrics_json, '') != ''
+        order by cr.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    updates: list[tuple[object, ...]] = []
+    for row in rows:
+        candidate_id = int(row["id"])
+        variant = variant_from_candidate_row(row)
+        config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
+        try:
+            result = _rescore_metrics_json(row["robust_metrics_json"], config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
+            continue
+        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        updates.append(
+            (
+                status,
+                int(status == "accepted" and result.accepted),
+                result.score,
+                result.to_json(),
+                datetime.now().isoformat(timespec="seconds"),
+                candidate_id,
+            )
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+    if updates:
+        memory.conn.executemany(
+            """
+            update candidate_robustness
+            set status=?, accepted=?, score=?, metrics_json=?, evaluated_at=?
+            where candidate_id=?
+            """,
+            updates,
+        )
+        memory.cleanup_stale_stage_rows()
+
+    total = sum(status_counts.values())
+    print(
+        "Robustez repuntuada desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={total}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def _rescore_robustness_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
     symbol_map = parse_symbol_map(args.symbol_map)
     rows = memory.conn.execute(
         """
@@ -2966,10 +3257,9 @@ def select_next_seed_survivors(
         return []
     if fitness_feedback and SELECTION_FITNESS_APPLIED_SCALE:
         survivors.sort(
-            key=lambda item: (
+            key=lambda item: item[1].score + (
                 fitness_feedback.get(str(item[0].path), 0.0)
-                * SELECTION_FITNESS_APPLIED_SCALE,
-                item[1].score,
+                * SELECTION_FITNESS_APPLIED_SCALE
             ),
             reverse=True,
         )
@@ -3035,7 +3325,7 @@ def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Pa
             if previous.is_file():
                 previous.unlink()
         destination = accepted_dir / f"score_{result.score:07.2f}__{source_path.name}"
-        shutil.copy2(source_path, destination)
+        write_set_use_every_tick(source_path, destination, False)
         copied.append(destination)
     return copied
 
@@ -3160,7 +3450,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             return 1
         used_names.add(name)
         retry_set = robust_dir / name
-        shutil.copy2(source_set, retry_set)
+        write_set_use_every_tick(source_set, retry_set, False)
         if not args.dry_run:
             remove_report_artifacts(retry_set)
         original_variant = variant_from_candidate_row(row)
@@ -3294,7 +3584,13 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
 
 
 def _relative_delta_pct(reference: float, observed: float, *, floor: float = 1.0) -> float:
-    denominator = max(abs(reference), floor)
+    """Return the symmetric max-denominator percentage difference.
+
+    This is intentionally not the classic percentage change from ``reference``:
+    for example, 100 versus 150 is 33.33%, regardless of argument order.
+    """
+
+    denominator = max(abs(reference), abs(observed), floor)
     return abs(observed - reference) / denominator * 100.0
 
 
@@ -3752,13 +4048,14 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
 
         ohlc_set = ohlc_dir / ohlc_name
         real_tick_set = real_tick_dir / real_tick_name
-        if resume_pending_dir:
-            source_digest = file_digest(source_set)
-            ohlc_digest = file_digest(ohlc_set) if ohlc_set.exists() else None
-            if not source_digest or ohlc_digest != source_digest:
-                ohlc_sets_unchanged = False
-        shutil.copy2(source_set, ohlc_set)
-        shutil.copy2(source_set, real_tick_set)
+        if resume_pending_dir and not set_matches_use_every_tick_source(
+            source_set,
+            ohlc_set,
+            False,
+        ):
+            ohlc_sets_unchanged = False
+        write_set_use_every_tick(source_set, ohlc_set, False)
+        write_set_use_every_tick(source_set, real_tick_set, True)
         if not args.dry_run:
             remove_report_artifacts(real_tick_set)
             if not resume_pending_dir:
@@ -4379,7 +4676,11 @@ def reconcile_final_tick_reports(
                 ),
                 broker=broker,
             )
-        except Exception:
+        except Exception as exc:
+            print(
+                f"AVISO: no pude parsear OHLC Final Tick para reconciliar "
+                f"candidate #{candidate_id}: {exc}"
+            )
             continue
         ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map, symbol_suffix)
         if not ohlc_matches:
@@ -4439,7 +4740,129 @@ def reconcile_final_tick_reports(
     return status_counts
 
 
+@_batched_memory_updates
 def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_final_tick_from_reports(args, memory, score_config)
+    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    memory.active_final_tick_stage = final_tick_stage
+    final_tick_table = final_tick_table_for_stage(final_tick_stage)
+    rows = memory.conn.execute(
+        f"""
+        select
+            c.*,
+            ft.run_id as ft_run_id,
+            ft.status as ft_status,
+            ft.ohlc_report_path as ft_ohlc_report_path,
+            ft.real_tick_report_path as ft_real_tick_report_path,
+            ft.ohlc_metrics_json as ft_ohlc_metrics_json,
+            ft.real_tick_metrics_json as ft_real_tick_metrics_json,
+            ft.from_date as ft_from_date,
+            ft.to_date as ft_to_date
+        from {final_tick_table} ft
+        join candidates c on c.id = ft.candidate_id
+        where coalesce(ft.ohlc_metrics_json, '') != ''
+        order by ft.run_id, c.generation, c.id
+        """
+    ).fetchall()
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    skipped_without_tick = 0
+    is_six_month = final_tick_stage == "six_month"
+    for row in rows:
+        candidate_id = int(row["id"])
+        variant = variant_from_candidate_row(row)
+        config = score_config_for_variant(
+            score_config,
+            variant,
+            min_trades_w1=args.final_tick_min_trades_w1,
+            min_trades_mn=args.final_tick_min_trades_mn,
+        )
+        try:
+            ohlc_result = _rescore_metrics_json(row["ft_ohlc_metrics_json"], config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json OHLC Final Tick invalido candidate #{candidate_id}: {exc}")
+            continue
+        ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
+        real_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
+        ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
+        real_report = Path(real_report_raw) if real_report_raw else None
+        from_date = str(row["ft_from_date"] or "")
+        to_date = str(row["ft_to_date"] or "")
+        min_ohlc_trades = min_trades_for_period(
+            variant.target_period,
+            int(args.final_tick_min_ohlc_trades),
+            int(args.final_tick_min_trades_w1),
+            int(args.final_tick_min_trades_mn),
+        )
+        if ohlc_result.trades < min_ohlc_trades:
+            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
+            memory.record_candidate_final_tick(
+                candidate_id, int(row["ft_run_id"] or row["run_id"]), "pending_ohlc_trades",
+                ohlc_result, None, ohlc_report, real_report,
+                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
+                float(args.final_tick_min_history_quality), from_date, to_date,
+                float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
+                float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
+                final_tick_stage=final_tick_stage,
+            )
+            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
+            continue
+        real_raw = row["ft_real_tick_metrics_json"]
+        if real_raw is None or not str(real_raw).strip():
+            skipped_without_tick += 1
+            continue
+        try:
+            real_result = _rescore_metrics_json(real_raw, config)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json Real Tick invalido candidate #{candidate_id}: {exc}")
+            continue
+        similarity = final_tick_similarity(
+            ohlc_result,
+            real_result,
+            min_history_quality=float(args.final_tick_min_history_quality),
+            max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
+            max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0)
+            if is_six_month else float(args.final_tick_max_pf_delta_pct),
+            max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
+            max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+            min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
+        )
+        reasons = {str(reason) for reason in similarity.get("reasons") or ()}
+        status = (
+            "pending_history_quality"
+            if "history_quality" in reasons
+            else ("accepted" if bool(similarity.get("accepted")) else "rejected")
+        )
+        memory.record_candidate_final_tick(
+            candidate_id, int(row["ft_run_id"] or row["run_id"]), status,
+            ohlc_result, real_result, ohlc_report, real_report,
+            json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+            real_result.history_quality, float(args.final_tick_min_history_quality),
+            from_date, to_date,
+            float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
+            float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
+            final_tick_stage=final_tick_stage,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    total = sum(status_counts.values())
+    print(
+        f"Final Tick {final_tick_stage} repuntuado desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={total}; sin_tick={skipped_without_tick}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
+def _rescore_final_tick_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
     final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
     memory.active_final_tick_stage = final_tick_stage
     final_tick_table = final_tick_table_for_stage(final_tick_stage)
@@ -4484,6 +4907,7 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             policy=f"{original_variant.policy}+final_tick_ohlc_rescore",
         )
         thresholds = argparse.Namespace(
+            broker=args.broker,
             final_tick_min_history_quality=float(args.final_tick_min_history_quality),
             symbol_suffix=args.symbol_suffix,
             from_date=from_date,
@@ -4644,7 +5068,7 @@ def _retry_single_candidate(
     generation = int(row["generation"] or 0)
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{candidate_id}")
     retry_set = retry_dir / set_path.name
-    shutil.copy2(set_path, retry_set)
+    write_set_use_every_tick(set_path, retry_set, False)
 
     variant = variant_from_candidate_row(row)
     if not args.dry_run:
@@ -4885,7 +5309,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        shutil.copy2(set_path, retry_set)
+        write_set_use_every_tick(set_path, retry_set, False)
         if not args.dry_run:
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
@@ -4965,7 +5389,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        shutil.copy2(set_path, retry_set)
+        write_set_use_every_tick(set_path, retry_set, False)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -5069,7 +5493,7 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        shutil.copy2(set_path, retry_set)
+        write_set_use_every_tick(set_path, retry_set, False)
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -5270,6 +5694,8 @@ def evaluate_generation(
     if not (args.execute_backtests or args.dry_run):
         return scored
     generation_dir = run_dir / f"gen_{generation:03d}"
+    for variant in variants:
+        write_set_use_every_tick(variant.path, variant.path, False)
     batch_started_at = time.time()
     code = run_backtests(args, generation_dir)
     if code == RUNNING_TERMINAL_EXIT_CODE:
@@ -5820,6 +6246,16 @@ def run_agent(args: argparse.Namespace) -> int:
             return evaluate_candidate_final_tick(args, memory, score_config)
         finally:
             memory.close()
+    if args.evaluate_regression:
+        try:
+            return evaluate_candidate_regression(
+                args,
+                memory,
+                regression_score_config(args),
+                regression_runtime(),
+            )
+        finally:
+            memory.close()
     if args.rescore_seeds_only:
         try:
             return rescore_seed_scores_only(args, memory, score_config)
@@ -5838,6 +6274,16 @@ def run_agent(args: argparse.Namespace) -> int:
     if args.rescore_final_tick_only:
         try:
             return rescore_final_tick_only(args, memory, score_config)
+        finally:
+            memory.close()
+    if args.rescore_regression_only:
+        try:
+            return rescore_regression_only(
+                args,
+                memory,
+                regression_score_config(args),
+                regression_runtime(),
+            )
         finally:
             memory.close()
     if args.continue_last_run:
@@ -6208,6 +6654,33 @@ def main() -> int:
     if not 0 <= args.min_positive_month_ratio <= 1:
         print("ERROR: --min-positive-month-ratio debe estar entre 0 y 1")
         return 1
+    if args.evaluate_regression or args.rescore_regression_only:
+        date_error = validate_regression_date_range(args.regression_from_date, args.regression_to_date)
+        if date_error:
+            print(f"ERROR: rango regresivo invalido: {date_error}")
+            return 1
+        if min(
+            args.regression_min_trades,
+            args.regression_min_trades_w1,
+            args.regression_min_trades_mn,
+        ) < 0:
+            print("ERROR: minimos de operaciones de la prueba regresiva no pueden ser negativos")
+            return 1
+        if args.regression_min_profit_factor < 0 or args.regression_max_drawdown_pct < 0:
+            print("ERROR: profit factor y drawdown regresivos deben ser mayores o iguales a 0")
+            return 1
+        if args.regression_min_recovery_factor < 0:
+            print("ERROR: recovery regresivo debe ser mayor o igual a 0")
+            return 1
+        if args.regression_min_pf_efficiency < 0 or args.regression_max_dd_ratio < 0:
+            print("ERROR: eficiencia PF y cociente DD regresivos deben ser >= 0 (0 desactiva)")
+            return 1
+        if not 0 <= args.regression_min_positive_month_ratio <= 1:
+            print("ERROR: --regression-min-positive-month-ratio debe estar entre 0 y 1")
+            return 1
+        if args.regression_positive_points < 0 or args.regression_negative_points > 0:
+            print("ERROR: puntos regresivos OK deben ser >=0 y FAIL <=0")
+            return 1
     return run_agent(args)
 
 
