@@ -851,6 +851,31 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.14.4** `tkinter`, `sqlite3`, `winreg`, `urllib`, and other Windows/Python
   standard library modules MUST NOT be listed as pip dependencies.
 
+### 1.15 AI agent tooling — `codebase-memory-mcp`
+
+- **FR-1.15.1** Code discovery by AI agents MUST use the DeusData
+  **`codebase-memory-mcp`** server (project key
+  `F-TRADING-MT5_Autotester_agent_AXI`, root `F:/TRADING/MT5_Autotester_agent_AXI`)
+  as the primary tool, falling back to text search (grep/glob) only for
+  non-indexed material (`.set`, `.ini`, HTML reports, generated outputs) or when
+  the index is stale.
+- **FR-1.15.2** The server MUST be declared in the project `.mcp.json` under the
+  name `codebase-memory` (stdio transport, no args). Because the entry points to
+  a machine-specific binary
+  (`C:\Users\13199\.claude\tools\codebase-memory-mcp\codebase-memory-mcp.exe`),
+  `.mcp.json` stays in `.gitignore` and MUST be recreated on each machine.
+- **FR-1.15.3** The MCP server is a **development-time dependency only**. Runtime
+  code (`app_ui.py`, `ubs_agent.py`, `run_tests.py`, …) MUST NOT import, launch,
+  or depend on it, and it MUST NOT be added to packaging/installer inputs.
+- **FR-1.15.4** The graph index MUST be kept fresh: `index_status` /
+  `detect_changes` after substantial refactors, `index_repository` to re-index.
+  The index is git/branch-scoped, so branch switches (e.g. `AXI` ↔ `IC` ↔ `main`)
+  can require re-indexing.
+- **FR-1.15.5** Agent-facing entry documents ([CLAUDE.md](CLAUDE.md),
+  [AGENTS.md](AGENTS.md)) MUST document this workflow, including the preferred
+  tools (`search_graph`, `search_code`, `trace_path`, `get_code_snippet`,
+  `query_graph`, `get_architecture`) and the gitignored `.mcp.json` caveat.
+
 ---
 
 ## 2. Technical debt backlog
