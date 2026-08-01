@@ -296,6 +296,28 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.7.6** After each MT5 batch, reports older than the batch start time MUST
   be ignored. History-cache failures or stale files MUST NOT be scored as if
   they belonged to the current backtest.
+- **FR-1.7.7** The per-symbol factor MUST be measured from the symbol's real
+  contract value: `reference_notional / (lot_MT5_executes × price × contract ×
+  fx_rate)`. When MT5 reports no `trade_tick_value` (every GBX-quoted LSE share,
+  and any pair whose conversion is not loaded at extraction time), the notional
+  MUST be rebuilt as `price × contract_size × rate`, with the rate implied by the
+  symbols MT5 did convert (`ubs/normalization_gen.implied_currency_rates`). Minor
+  currency units (`GBX`, `GBp`) MUST be kept distinct from their parent currency:
+  upper-casing `GBp` into `GBP` undervalues every LSE share by 100x.
+- **FR-1.7.8** A symbol a given extraction cannot measure MUST keep the factor of
+  the file being replaced (`carried_symbols`). Only symbols never measured land in
+  `skipped_symbols`, and the per-group fallback they receive MUST be the group's
+  **minimum** measured factor, never the median: an unmeasured symbol may be
+  understated (false reject) but MUST NOT be amplified (false accept). The median
+  is what turned 102 unmeasured LSE shares into a 10.0 factor, inflating their net
+  profit by up to 96x.
+- **FR-1.7.9** Re-applying a normalization change to stored results MUST go
+  through `tools/fast_rescore_from_metrics.py`, which reads its thresholds from
+  `ui_settings.ini`. `ubs_agent.py --rescore-*-only` deliberately preserves the
+  stored factor (`ubs.score.rescore_result`) and MUST NOT be relied on for this.
+  Stages whose verdict does not depend on the net gate (Final Tick, Final Tick 6M,
+  regression) and rows in non-scored states MUST have their normalization fields
+  refreshed without their status being re-judged.
 
 ### 1.8 UBS agent — candidate lifecycle
 
@@ -875,6 +897,45 @@ requirement changes or a debt item is opened/closed.
   [AGENTS.md](AGENTS.md)) MUST document this workflow, including the preferred
   tools (`search_graph`, `search_code`, `trace_path`, `get_code_snippet`,
   `query_graph`, `get_architecture`) and the gitignored `.mcp.json` caveat.
+
+### 1.16 Interface with `MT5_Autotester_agent_manager`
+
+The manager (`I:\TRADING\MT5_Autotester_agent_manager`, node `axi` in its
+`manager.json`) reads this project directory. The dependency is one-way: this
+repository MUST NOT read anything from the manager.
+
+- **FR-1.16.1** These are the only files the manager consumes, and their
+  ownership MUST stay explicit:
+
+  | File | Produced by | Consumed by |
+  |------|-------------|-------------|
+  | `assets/<broker>_normalization.json` | this repo (`tools/gen_axi_normalization.py`) | both — the agent as a scoring factor, the manager inverted into notional per minimum position |
+  | `assets/<broker>_symbol_specs.json` | this repo (`tools/gen_axi_normalization.py --dump-specs`) | manager only (`margin_min_lot`, `volume_min`, `contract_size`, `account_leverage`) |
+  | `assets/<broker>_max_product_leverage.json` | broker schedule + terminal measurement | manager only (product leverage caps) |
+  | `assets/<broker>_assets.ini` | this repo | both |
+  | `outputs/ubs_memory_<BROKER>_<ACCOUNT>.sqlite` | this repo | both (manager read-only) |
+
+- **FR-1.16.2** Derived money fields in the spec dump (`notional_min_lot`,
+  `observed_leverage`) MUST be expressed in the account currency. Multiplying the
+  quoted price without converting makes a pence-quoted share read 74x its real
+  exposure and an AED share report 1:73.9 where the cap is 1:20.
+  `--dump-specs` writes them converted; `tools/fix_broker_specs_currency.py`
+  repairs a dump produced elsewhere. Both are idempotent and only touch
+  `origin: terminal*` leverage entries, never the ones taken from the broker's
+  published schedule. A measured leverage MUST NOT exceed the account leverage of
+  the snapshot: anything above it is timing noise between the price and margin
+  reads, and a cap that is too high asks for less margin than the broker will.
+- **FR-1.16.3** The `skipped_symbols` list is the contract for "the agent could
+  not measure this". Consumers MUST NOT infer a notional, a margin or a leverage
+  for those symbols from group aggregates.
+- **FR-1.16.4** Writing any of these files MUST preserve what the current run
+  could not measure: per-symbol factors, per-symbol margins, and whole symbols the
+  terminal failed to resolve are carried from the previous file and reported as
+  `carried_symbols`. A snapshot taken while a quote or a name was unavailable MUST
+  NOT delete a measurement.
+- **FR-1.16.5** Regenerating any of these files MUST be followed by
+  `tools/fast_rescore_from_metrics.py` (see FR-1.7.9) so stored results and the
+  active factors never disagree.
 
 ---
 

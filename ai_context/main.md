@@ -91,6 +91,15 @@ batch wrappers.
   widget.** Three button types, action-bar pattern, Treeview standard, and
   input sizes are all defined there. Using a wrong button type or omitting
   `stretch=False` on a Treeview column is a bug.
+- **Not everything under `assets/` belongs to this project.**
+  `MT5_Autotester_agent_manager` reads this directory (node `axi` in its
+  `manager.json`) and is the *only* consumer of
+  `assets/<broker>_symbol_specs.json` (margin per minimum position, minimum lot,
+  contract size) and `assets/<broker>_max_product_leverage.json` (product
+  leverage caps). `assets/<broker>_normalization.json` is shared: this project
+  scores with it, the manager inverts it into notional per position. The
+  dependency is one-way — nothing here reads the manager. Before "fixing" one of
+  those files, check who consumes each field; see § 1.16 of `requirements.md`.
 
 ## Topic Index
 
@@ -271,14 +280,51 @@ generation scoring:
   MT5 specs, anchored so 0.01-lot forex ≈ 1.0. Generate/refresh with
   `tools/gen_axi_normalization.py` (reads `volume_min`, `trade_contract_size`,
   `trade_tick_value`, `trade_tick_size`, price via
-  `ubs/mt5_symbol_extract.extract_symbol_specs_from_mt5`); it is dry-run by
-  default, backs up the old file on `--write`, and populates
-  `symbol_net_profit_factors` (per-symbol, highest precedence) plus a per-group
-  median fallback. After writing, re-apply to stored results with
-  `ubs_agent.py --rescore-candidates-only` / `--rescore-seeds-only` /
-  `--rescore-robustness-only` (no MT5). The legacy hand-tuned AXI factors
+  `ubs/mt5_symbol_extract.extract_symbol_specs_from_mt5`, or `--specs-json` with
+  any spec dump); it is dry-run by default and backs up the old file on
+  `--write`. The legacy hand-tuned AXI factors
   (`group_suffix Stocks "+" = 0.01`) wrongly rejected genuinely profitable
   share strategies (e.g. Costco+ +26.9% acct → normalized 2.69 → rejected).
+
+  Three rules exist because breaking any of them silently inflates net profit:
+
+  - **Symbols MT5 cannot convert are rebuilt, not guessed.** `trade_tick_value`
+    comes back 0 for every GBX-quoted LSE share (and for any pair whose
+    conversion is not loaded when the snapshot is taken). The notional is then
+    `price * contract_size * rate`, with the rate implied by the symbols MT5 did
+    convert (`implied_currency_rates`). `GBp`/`GBX` are minor units: upper-casing
+    `GBp` into `GBP` would undervalue every LSE share by 100x, so
+    `currency_key()` keeps them apart.
+  - **Unmeasurable ≠ unknown.** A symbol this run could not measure keeps the
+    factor of the file being replaced (`carried_symbols`). Only never-measured
+    symbols reach `skipped_symbols`.
+  - **The group fallback is the group's minimum factor, not its median**
+    (`group_factor_policy: min_measured_factor`). The median of AXI Stocks is
+    10.0 — the amplification cap of hundreds of cheap US shares — and handing it
+    to 102 unmeasured LSE shares inflated their net profit up to 96x
+    (RioTinto+: 10.0 applied vs 0.1045 real). Understating an unmeasured symbol
+    costs a false reject; amplifying it costs a false accept.
+
+  `--dump-specs <path>` writes the live read as the spec dump the portfolio
+  manager consumes (margin per minimum position via `order_calc_margin`, minimum
+  lot, contract size, account leverage, all in account currency). It merges with
+  the existing file, so a partial read never deletes a measurement; the symbols it
+  could not take are reported as `carried_symbols`. Full refresh:
+
+  ```
+  py tools/gen_axi_normalization.py --broker AXI --dump-specs assets/axi_symbol_specs.json --write
+  py tools/fast_rescore_from_metrics.py --broker AXI --account-type STANDARD
+  ```
+
+  After writing, re-apply to stored results with
+  `py tools/fast_rescore_from_metrics.py --broker AXI --account-type STANDARD`
+  (seconds, no MT5, thresholds read from `ui_settings.ini`). **`ubs_agent.py
+  --rescore-*-only` will not do it**: that path deliberately preserves the stored
+  factor (`ubs.score.rescore_result`) and only re-applies the gates, which is why
+  Final Tick stayed on a July basis for months. The tool re-judges the stages
+  whose verdict depends on the net gate (candidates, seeds, robustness) and only
+  refreshes the normalization fields of the rest (Final Tick, Final Tick 6M,
+  regression, and rows in non-scored states such as `no_trades`).
 
 Current local memory was migrated in June 2026 from old robustness bonus
 defaults `+30/-30` to `+70/-70` for rows that still had the old exact defaults.
