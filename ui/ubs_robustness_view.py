@@ -154,21 +154,34 @@ class UBSRobustnessViewMixin:
 
         crit = ttk.Frame(panel, style="Panel.TFrame")
         crit.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 6))
-        ttk.Label(crit, text="Criterios robustez:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        fields = [
+        absolute_fields = [
             ("Net >", self.ubs_robust_pass_min_net_profit),
             ("PF >=", self.ubs_robust_pass_min_profit_factor),
             ("Trades >=", self.ubs_robust_pass_min_trades),
             ("DD <= %", self.ubs_robust_pass_max_drawdown_pct),
             ("Recovery >=", self.ubs_robust_pass_min_recovery_factor),
+        ]
+        degradation_fields = [
+            ("Ret. net >=", self.ubs_robust_min_net_retention),
+            ("Ret. edge PF >=", self.ubs_robust_min_pf_edge_retention),
+            ("Ret. recovery >=", self.ubs_robust_min_recovery_retention),
+            ("Inflacion DD <= x", self.ubs_robust_max_dd_inflation),
             ("Bonus OK legacy", self.ubs_robust_positive_bonus),
             ("Bonus FAIL legacy", self.ubs_robust_negative_bonus),
         ]
-        for col, (label, var) in enumerate(fields, start=1):
-            ttk.Label(crit, text=label, style="Muted.TLabel").grid(row=0, column=col * 2 - 1, sticky="w", padx=(0, 4))
-            ttk.Entry(crit, textvariable=var, width=8, state="readonly").grid(
-                row=0, column=col * 2, sticky="w", padx=(0, 12)
+        for row_index, (group, fields) in enumerate(
+            (("Absolutos OOS:", absolute_fields), ("Degradacion vs Resultados:", degradation_fields))
+        ):
+            ttk.Label(crit, text=group, style="Muted.TLabel").grid(
+                row=row_index, column=0, sticky="w", padx=(0, 8), pady=2
             )
+            for col, (label, var) in enumerate(fields, start=1):
+                ttk.Label(crit, text=label, style="Muted.TLabel").grid(
+                    row=row_index, column=col * 2 - 1, sticky="w", padx=(0, 4), pady=2
+                )
+                ttk.Entry(crit, textvariable=var, width=8, state="readonly").grid(
+                    row=row_index, column=col * 2, sticky="w", padx=(0, 12), pady=2
+                )
 
         table_frame = ttk.Frame(panel, style="Panel.TFrame")
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
@@ -176,7 +189,8 @@ class UBSRobustnessViewMixin:
         table_frame.rowconfigure(0, weight=1)
         columns = (
             "mark", "run", "id", "gen", "status", "cause", "symbol", "period", "train_score",
-            "robust_score", "bonus", "profit", "profit_norm", "pf", "dd", "trades", "dates", "set",
+            "robust_score", "bonus", "profit", "profit_norm", "pf", "dd", "trades",
+            "net_ret", "pf_edge_ret", "recovery_ret", "dd_inflation", "dates", "set",
         )
         self.ubs_robust_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
         headings = {
@@ -196,6 +210,10 @@ class UBSRobustnessViewMixin:
             "pf": "PF",
             "dd": "DD %",
             "trades": "TRADES",
+            "net_ret": "RET NET",
+            "pf_edge_ret": "RET EDGE PF",
+            "recovery_ret": "RET RECOVERY",
+            "dd_inflation": "DD x",
             "dates": "FECHAS",
             "set": "SET",
         }
@@ -216,6 +234,10 @@ class UBSRobustnessViewMixin:
             "pf": 66,
             "dd": 66,
             "trades": 68,
+            "net_ret": 78,
+            "pf_edge_ret": 92,
+            "recovery_ret": 96,
+            "dd_inflation": 68,
             "dates": 170,
             "set": 260,
         }

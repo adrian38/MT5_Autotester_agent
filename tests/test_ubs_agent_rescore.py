@@ -1,13 +1,15 @@
 import argparse
+import json
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from ubs.memory import AgentMemory
 from ubs.score import ScoreConfig, ScoreResult
-from ubs_agent import rescore_candidate_scores_only
+from ubs_agent import rescore_candidate_scores_only, rescore_robustness_only
 
 
 class UBSAgentRescoreTests(unittest.TestCase):
@@ -124,6 +126,90 @@ class UBSAgentRescoreTests(unittest.TestCase):
             history_probe.assert_called_once()
             self.assertEqual(history_probe.call_args.kwargs["report_path"], report)
             candidate_score.assert_not_called()
+
+    def test_rescore_robustness_applies_degradation_gate_and_persists_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = AgentMemory(Path(temp_dir) / "memory.sqlite")
+            try:
+                base = replace(
+                    self._stored_result(),
+                    normalized_net_profit=500.0,
+                    profit_factor=2.0,
+                    recovery_factor=2.0,
+                    drawdown_pct=10.0,
+                )
+                oos = replace(
+                    self._stored_result(),
+                    normalized_net_profit=100.0,
+                    profit_factor=1.2,
+                    recovery_factor=1.2,
+                    drawdown_pct=15.0,
+                )
+                config_json = json.dumps(
+                    {"execution": {"from_date": "2020.01.01", "to_date": "2024.12.31"}}
+                )
+                memory.conn.execute(
+                    """
+                    insert into runs (
+                        id, created_at, source_dir, output_dir, generations,
+                        variants_per_seed, max_seeds, execute_backtests, dry_run, config_json
+                    ) values (1, 'now', 'src', 'out', 1, 1, 1, 1, 0, ?)
+                    """,
+                    (config_json,),
+                )
+                memory.conn.execute(
+                    """
+                    insert into candidates (
+                        id, run_id, generation, seed_path, set_path, symbol, target_symbol,
+                        period, family, run_strategy, mutated_keys, missing_lot_keys, policy,
+                        score, accepted, metrics_json, status, created_at
+                    ) values (
+                        1, 1, 1, 'seed.set', 'candidate.set', 'EURUSD', 'EURUSD',
+                        'H1', 'fam', 'strat', '', '', 'test', 50, 1, ?, 'accepted', 'now'
+                    )
+                    """,
+                    (base.to_json(),),
+                )
+                memory.record_candidate_robustness(
+                    1, 1, oos, "accepted", None,
+                    "2025.01.01", "2026.06.01", 70.0, -70.0,
+                )
+                args = argparse.Namespace(
+                    min_trades_w1=12,
+                    min_trades_mn=4,
+                    rescore_from_reports=False,
+                    robust_min_net_retention=0.5,
+                    robust_min_pf_edge_retention=0.5,
+                    robust_min_recovery_retention=0.5,
+                    robust_max_dd_inflation=2.0,
+                )
+
+                self.assertEqual(
+                    rescore_robustness_only(
+                        args,
+                        memory,
+                        ScoreConfig(
+                            min_net_profit=0.0,
+                            min_profit_factor=1.0,
+                            min_trades=1,
+                            max_drawdown_pct=25.0,
+                            min_recovery_factor=0.1,
+                        ),
+                    ),
+                    0,
+                )
+
+                row = memory.conn.execute(
+                    "select status, accepted, metrics_json, degradation_json from candidate_robustness where candidate_id=1"
+                ).fetchone()
+                self.assertEqual(row["status"], "rejected")
+                self.assertEqual(row["accepted"], 0)
+                self.assertIn("degradation_profit_factor", ScoreResult.from_json(row["metrics_json"]).reasons)
+                audit = json.loads(row["degradation_json"])
+                self.assertFalse(audit["accepted"])
+                self.assertEqual(audit["checks"]["pf_edge_retention"]["value"], 0.2)
+            finally:
+                memory.close()
 
 
 if __name__ == "__main__":

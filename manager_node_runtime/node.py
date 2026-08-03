@@ -435,6 +435,10 @@ def build_pipeline_stage_command(
             "ubs_robust_pass_min_trades": "--min-trades",
             "ubs_robust_pass_max_drawdown_pct": "--max-drawdown-pct",
             "ubs_robust_pass_min_recovery_factor": "--min-recovery-factor",
+            "ubs_robust_min_net_retention": "--robust-min-net-retention",
+            "ubs_robust_min_pf_edge_retention": "--robust-min-pf-edge-retention",
+            "ubs_robust_min_recovery_retention": "--robust-min-recovery-retention",
+            "ubs_robust_max_dd_inflation": "--robust-max-dd-inflation",
             "ubs_long_tf_min_trades_w1": "--min-trades-w1",
             "ubs_long_tf_min_trades_mn": "--min-trades-mn",
         }

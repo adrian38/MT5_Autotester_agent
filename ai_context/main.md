@@ -207,8 +207,8 @@ generation scoring:
 - CLI: `ubs_agent.py --evaluate-robustness --robust-run-id <id>`.
 - UI:
   - `UBS Agente UBS` has a **Robustez OOS** config block with separate dates,
-    separate scoring thresholds, positive/negative bonus values, and an
-    auto-run toggle.
+    separate scoring thresholds, degradation thresholds against Resultados,
+    positive/negative bonus values, and an auto-run toggle.
   - `UBS Agente UBS` also has a **Final Tick (Every Tick)** config block
     mirroring the Final Tick tab settings (dates, OHLC retry dates, min history
     quality, min OHLC trades, delta tolerances) plus an **Auto Final Tick**
@@ -223,11 +223,19 @@ generation scoring:
     accepted candidates without OOS already stored. **Reprobar robustez**
     reruns all accepted candidates and overwrites their OOS row.
   - `UBS Robustez` shows accepted candidates from the visible run plus their
-    OOS status, cause, score, bonus, report, and OOS metrics. Its table has a
+    OOS status, cause, score, bonus, report, OOS metrics, and the four
+    degradation ratios. Its table has a
     `SEL` checkbox column and a `CAUSA` column derived from OOS
     `metrics_json.reasons`.
+- Acceptance is `absolute OOS pass AND degradation pass`. Defaults compare the
+  construction result with OOS using annualized normalized-net retention
+  `>= 0.50`, PF edge retention `(PF_OOS-1)/(PF_IS-1) >= 0.50`, Recovery
+  retention `>= 0.50`, and DD inflation `DD_OOS/max(DD_IS, 2%) <= 2.0`.
+  Setting an individual limit to `0` disables it. Missing comparison data is
+  auditable but neutral; it does not fabricate a rejection.
 - SQLite: results are stored in `candidate_robustness`, separate from base
-  `candidates` scores.
+  `candidates` scores. `degradation_json` stores formula version, windows,
+  thresholds, values, availability, pass/fail flags, and final acceptance.
 - Selection feedback lives in `ubs/weights.py` and is shared by
   `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
   and `UBS Universo`. It estimates the smoothed five-stage probability

@@ -47,6 +47,14 @@ from ubs.account import (
     normalize_account_type,
     normalize_broker,
 )
+from ubs.degradation import (
+    DEFAULT_MAX_DD_INFLATION,
+    DEFAULT_MIN_NET_RETENTION,
+    DEFAULT_MIN_PF_EDGE_RETENTION,
+    DEFAULT_MIN_RECOVERY_RETENTION,
+    RobustnessDegradationConfig,
+    evaluate_robustness_degradation,
+)
 from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
 from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path
@@ -422,6 +430,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robust-pending-only", action="store_true", help="Con --evaluate-robustness, testea solo accepted sin robustez registrada.")
     parser.add_argument("--robust-positive-bonus", type=float, default=DEFAULT_ROBUST_POSITIVE_BONUS, help="Bonus de peso si el candidato pasa robustez.")
     parser.add_argument("--robust-negative-bonus", type=float, default=DEFAULT_ROBUST_NEGATIVE_BONUS, help="Bonus de peso si el candidato falla robustez.")
+    parser.add_argument("--robust-min-net-retention", type=float, default=DEFAULT_MIN_NET_RETENTION, help="Retencion minima del net anualizado OOS frente a construccion; 0 desactiva.")
+    parser.add_argument("--robust-min-pf-edge-retention", type=float, default=DEFAULT_MIN_PF_EDGE_RETENTION, help="Retencion minima de la ventaja PF sobre 1.0; 0 desactiva.")
+    parser.add_argument("--robust-min-recovery-retention", type=float, default=DEFAULT_MIN_RECOVERY_RETENTION, help="Retencion minima del Recovery Factor; 0 desactiva.")
+    parser.add_argument("--robust-max-dd-inflation", type=float, default=DEFAULT_MAX_DD_INFLATION, help="Inflacion maxima del drawdown OOS frente a construccion; 0 desactiva.")
     parser.add_argument("--evaluate-final-tick", action="store_true", help="Compara OHLC vs Every tick based on real ticks para robustez accepted.")
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument(
@@ -2453,6 +2465,74 @@ def _rescore_metrics_json(raw: object, config: ScoreConfig) -> ScoreResult:
     return rescore_result(ScoreResult.from_json(str(raw)), config)
 
 
+def robustness_degradation_config(args: argparse.Namespace) -> RobustnessDegradationConfig:
+    return RobustnessDegradationConfig(
+        min_net_retention=float(getattr(args, "robust_min_net_retention", DEFAULT_MIN_NET_RETENTION)),
+        min_pf_edge_retention=float(
+            getattr(args, "robust_min_pf_edge_retention", DEFAULT_MIN_PF_EDGE_RETENTION)
+        ),
+        min_recovery_retention=float(
+            getattr(args, "robust_min_recovery_retention", DEFAULT_MIN_RECOVERY_RETENTION)
+        ),
+        max_dd_inflation=float(getattr(args, "robust_max_dd_inflation", DEFAULT_MAX_DD_INFLATION)),
+    )
+
+
+def _run_execution_dates(raw: object) -> tuple[str, str]:
+    try:
+        payload = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "", ""
+    if not isinstance(payload, dict):
+        return "", ""
+    execution = payload.get("execution")
+    execution = execution if isinstance(execution, dict) else {}
+    run_args = payload.get("args")
+    run_args = run_args if isinstance(run_args, dict) else {}
+    return (
+        str(execution.get("from_date") or run_args.get("from_date") or "").strip(),
+        str(execution.get("to_date") or run_args.get("to_date") or "").strip(),
+    )
+
+
+def apply_robustness_degradation(
+    result: ScoreResult,
+    *,
+    base_metrics_raw: object,
+    run_config_raw: object,
+    oos_from_date: object,
+    oos_to_date: object,
+    config: RobustnessDegradationConfig,
+) -> tuple[ScoreResult, dict[str, object]]:
+    try:
+        base_metrics = json.loads(str(base_metrics_raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        base_metrics = {}
+    if not isinstance(base_metrics, dict):
+        base_metrics = {}
+    base_from_date, base_to_date = _run_execution_dates(run_config_raw)
+    oos_metrics = json.loads(result.to_json())
+    degradation = evaluate_robustness_degradation(
+        base_metrics,
+        oos_metrics,
+        base_from_date=base_from_date,
+        base_to_date=base_to_date,
+        oos_from_date=oos_from_date,
+        oos_to_date=oos_to_date,
+        config=config,
+    )
+    absolute_accepted = bool(result.accepted)
+    reasons = tuple(dict.fromkeys((*result.reasons, *degradation["reasons"])))
+    combined = replace(
+        result,
+        accepted=absolute_accepted and bool(degradation["accepted"]),
+        reasons=reasons,
+    )
+    degradation["absolute_accepted"] = absolute_accepted
+    degradation["final_accepted"] = combined.accepted
+    return combined, degradation
+
+
 def _batched_memory_updates(function):
     @wraps(function)
     def wrapped(args, memory, score_config):
@@ -2602,9 +2682,11 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             cr.from_date as robust_from_date,
             cr.to_date as robust_to_date,
             cr.positive_bonus as robust_positive_bonus,
-            cr.negative_bonus as robust_negative_bonus
+            cr.negative_bonus as robust_negative_bonus,
+            r.config_json as run_config_json
         from candidate_robustness cr
         join candidates c on c.id = cr.candidate_id
+        join runs r on r.id = cr.run_id
         where cr.status in ('accepted', 'rejected', 'no_trades')
           and coalesce(cr.metrics_json, '') != ''
         order by cr.run_id, c.generation, c.id
@@ -2613,6 +2695,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
     status_counts: dict[str, int] = {}
     invalid_metrics = 0
     updates: list[tuple[object, ...]] = []
+    degradation_config = robustness_degradation_config(args)
     for row in rows:
         candidate_id = int(row["id"])
         variant = variant_from_candidate_row(row)
@@ -2628,6 +2711,16 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             invalid_metrics += 1
             print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
             continue
+        degradation: dict[str, object] = {}
+        if result.trades > 0:
+            result, degradation = apply_robustness_degradation(
+                result,
+                base_metrics_raw=row["metrics_json"],
+                run_config_raw=row["run_config_json"],
+                oos_from_date=row["robust_from_date"],
+                oos_to_date=row["robust_to_date"],
+                config=degradation_config,
+            )
         status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
         updates.append(
             (
@@ -2635,6 +2728,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
                 int(status == "accepted" and result.accepted),
                 result.score,
                 result.to_json(),
+                json.dumps(degradation, ensure_ascii=True, sort_keys=True),
                 datetime.now().isoformat(timespec="seconds"),
                 candidate_id,
             )
@@ -2644,12 +2738,17 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
         memory.conn.executemany(
             """
             update candidate_robustness
-            set status=?, accepted=?, score=?, metrics_json=?, evaluated_at=?
+            set status=?, accepted=?, score=?, metrics_json=?, degradation_json=?, evaluated_at=?
             where candidate_id=?
             """,
             updates,
         )
-        memory.cleanup_stale_stage_rows()
+        removed = memory.cleanup_stale_stage_rows()
+        if any(removed.values()):
+            print(
+                "Etapas posteriores invalidadas: "
+                + ", ".join(f"{stage}={count}" for stage, count in removed.items() if count)
+            )
 
     total = sum(status_counts.values())
     print(
@@ -2676,14 +2775,17 @@ def _rescore_robustness_from_reports(
             cr.from_date as robust_from_date,
             cr.to_date as robust_to_date,
             cr.positive_bonus as robust_positive_bonus,
-            cr.negative_bonus as robust_negative_bonus
+            cr.negative_bonus as robust_negative_bonus,
+            r.config_json as run_config_json
         from candidate_robustness cr
         join candidates c on c.id = cr.candidate_id
+        join runs r on r.id = cr.run_id
         order by cr.run_id, c.generation, c.id
         """
     ).fetchall()
     status_counts: dict[str, int] = {}
     skipped_no_report = 0
+    degradation_config = robustness_degradation_config(args)
     for row in rows:
         report_raw = str(row["robust_report_path"] or "").strip()
         report = Path(report_raw) if report_raw else None
@@ -2717,12 +2819,21 @@ def _rescore_robustness_from_reports(
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
         matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, args.symbol_suffix)
+        degradation: dict[str, object] = {}
         if not matches:
             print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
             status = "report_mismatch"
         elif result.trades <= 0:
             status = "no_trades"
         else:
+            result, degradation = apply_robustness_degradation(
+                result,
+                base_metrics_raw=row["metrics_json"],
+                run_config_raw=row["run_config_json"],
+                oos_from_date=row["robust_from_date"],
+                oos_to_date=row["robust_to_date"],
+                config=degradation_config,
+            )
             status = "accepted" if result.accepted else "rejected"
         memory.record_candidate_robustness(
             candidate_id,
@@ -2734,6 +2845,7 @@ def _rescore_robustness_from_reports(
             str(row["robust_to_date"] or ""),
             float(row["robust_positive_bonus"] or DEFAULT_ROBUST_POSITIVE_BONUS),
             float(row["robust_negative_bonus"] or DEFAULT_ROBUST_NEGATIVE_BONUS),
+            degradation=degradation,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
 
@@ -3498,6 +3610,14 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
         "Bonus robustez: "
         f"accepted={args.robust_positive_bonus:+.2f}, rejected={args.robust_negative_bonus:+.2f}"
     )
+    degradation_config = robustness_degradation_config(args)
+    print(
+        "Degradacion maxima: "
+        f"net>={degradation_config.min_net_retention:.2f}, "
+        f"edge PF>={degradation_config.min_pf_edge_retention:.2f}, "
+        f"recovery>={degradation_config.min_recovery_retention:.2f}, "
+        f"DD<={degradation_config.max_dd_inflation:.2f}x"
+    )
     batch_started_at = time.time()
     code = run_backtests(args, robust_dir)
     if code == RUNNING_TERMINAL_EXIT_CODE:
@@ -3582,6 +3702,14 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             )
             status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
             continue
+        result, degradation = apply_robustness_degradation(
+            result,
+            base_metrics_raw=row["metrics_json"],
+            run_config_raw=run["config_json"],
+            oos_from_date=args.from_date,
+            oos_to_date=args.to_date,
+            config=degradation_config,
+        )
         status = "accepted" if result.accepted else "rejected"
         memory.record_candidate_robustness(
             candidate_id,
@@ -3593,6 +3721,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             args.to_date,
             args.robust_positive_bonus,
             args.robust_negative_bonus,
+            degradation=degradation,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
 
@@ -5892,6 +6021,10 @@ def build_run_config(
         "robustness_defaults": {
             "positive_bonus": float(args.robust_positive_bonus),
             "negative_bonus": float(args.robust_negative_bonus),
+            "min_net_retention": float(getattr(args, "robust_min_net_retention", DEFAULT_MIN_NET_RETENTION)),
+            "min_pf_edge_retention": float(getattr(args, "robust_min_pf_edge_retention", DEFAULT_MIN_PF_EDGE_RETENTION)),
+            "min_recovery_retention": float(getattr(args, "robust_min_recovery_retention", DEFAULT_MIN_RECOVERY_RETENTION)),
+            "max_dd_inflation": float(getattr(args, "robust_max_dd_inflation", DEFAULT_MAX_DD_INFLATION)),
             "robust_run_id": args.robust_run_id,
         },
         "final_tick_defaults": {
@@ -6671,6 +6804,14 @@ def main() -> int:
         return 1
     if args.min_profit_factor < 0 or args.max_drawdown_pct < 0:
         print("ERROR: profit factor y drawdown deben ser mayores o iguales a 0")
+        return 1
+    if min(
+        args.robust_min_net_retention,
+        args.robust_min_pf_edge_retention,
+        args.robust_min_recovery_retention,
+        args.robust_max_dd_inflation,
+    ) < 0:
+        print("ERROR: los limites de degradacion robusta deben ser >= 0 (0 desactiva)")
         return 1
     if not 0 <= args.min_positive_month_ratio <= 1:
         print("ERROR: --min-positive-month-ratio debe estar entre 0 y 1")

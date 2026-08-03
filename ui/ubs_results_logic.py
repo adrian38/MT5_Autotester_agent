@@ -286,6 +286,7 @@ class UBSResultsLogicMixin:
                 score real,
                 accepted integer,
                 metrics_json text,
+                degradation_json text not null default '',
                 from_date text not null default '',
                 to_date text not null default '',
                 positive_bonus real not null default 70.0,
@@ -294,6 +295,9 @@ class UBSResultsLogicMixin:
             )
             """
         )
+        robust_columns = {str(row["name"]) for row in conn.execute("pragma table_info(candidate_robustness)")}
+        if "degradation_json" not in robust_columns:
+            conn.execute("alter table candidate_robustness add column degradation_json text not null default ''")
         conn.execute(
             """
             create table if not exists candidate_final_tick (

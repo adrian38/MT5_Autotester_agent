@@ -314,8 +314,17 @@ UI's "Continuar" action uses that flag; "Reprobar" intentionally omits it.
 `--from-date` / `--to-date` are robustness-only dates when provided; empty
 values use the tester template.
 
-Robustness has its own score thresholds and its own positive/negative weight
-bonus. The default bonus scale is `+70/-70`. The base candidate score in
+Robustness has its own absolute score thresholds plus degradation thresholds
+against the construction result. The default relative gates are annualized
+normalized-net retention `>= 0.50`, PF edge retention
+`(PF_OOS-1)/(PF_IS-1) >= 0.50`, Recovery retention `>= 0.50`, and DD inflation
+`DD_OOS/max(DD_IS, 2%) <= 2.0`. Final acceptance requires both groups. Missing
+comparison inputs are stored as unavailable and remain neutral; `0` disables
+an individual degradation gate. The full comparison is stored in
+`candidate_robustness.degradation_json`.
+
+Robustness also retains its positive/negative weight bonus for legacy audit.
+The default bonus scale is `+70/-70`. The base candidate score in
 `candidates` remains unchanged. OOS results are stored in
 `candidate_robustness`:
 
