@@ -147,6 +147,7 @@ class AgentMemory:
                 score real,
                 accepted integer,
                 metrics_json text,
+                degradation_json text not null default '',
                 from_date text not null default '',
                 to_date text not null default '',
                 positive_bonus real not null default 70.0,
@@ -235,6 +236,7 @@ class AgentMemory:
         self._ensure_column("runs", "config_json", "text not null default ''")
         self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
         self._ensure_column("candidates", "mutation_details_json", "text not null default ''")
+        self._ensure_column("candidate_robustness", "degradation_json", "text not null default ''")
         self._ensure_column("generation_seed_selection", "fitness_probability", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_weight", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_evidence", "real not null default 0.0")
@@ -1008,14 +1010,16 @@ class AgentMemory:
         to_date: str,
         positive_bonus: float,
         negative_bonus: float,
+        degradation: dict[str, object] | None = None,
     ) -> None:
         accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
         self.conn.execute(
             """
             insert into candidate_robustness (
                 candidate_id, run_id, status, report_path, score, accepted,
-                metrics_json, from_date, to_date, positive_bonus, negative_bonus, evaluated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                metrics_json, degradation_json, from_date, to_date,
+                positive_bonus, negative_bonus, evaluated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(candidate_id) do update set
                 run_id=excluded.run_id,
                 status=excluded.status,
@@ -1023,6 +1027,7 @@ class AgentMemory:
                 score=excluded.score,
                 accepted=excluded.accepted,
                 metrics_json=excluded.metrics_json,
+                degradation_json=excluded.degradation_json,
                 from_date=excluded.from_date,
                 to_date=excluded.to_date,
                 positive_bonus=excluded.positive_bonus,
@@ -1037,6 +1042,7 @@ class AgentMemory:
                 result.score if result else None,
                 accepted,
                 result.to_json() if result else None,
+                json.dumps(degradation or {}, ensure_ascii=True, sort_keys=True),
                 from_date.strip(),
                 to_date.strip(),
                 float(positive_bonus),

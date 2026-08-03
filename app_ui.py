@@ -789,6 +789,18 @@ class MT5AutotesterUI(
         self.ubs_robust_pass_min_recovery_factor = tk.StringVar(
             value=saved_general.get("ubs_robust_pass_min_recovery_factor", self.ubs_pass_min_recovery_factor.get())
         )
+        self.ubs_robust_min_net_retention = tk.StringVar(
+            value=saved_general.get("ubs_robust_min_net_retention", "0.50")
+        )
+        self.ubs_robust_min_pf_edge_retention = tk.StringVar(
+            value=saved_general.get("ubs_robust_min_pf_edge_retention", "0.50")
+        )
+        self.ubs_robust_min_recovery_retention = tk.StringVar(
+            value=saved_general.get("ubs_robust_min_recovery_retention", "0.50")
+        )
+        self.ubs_robust_max_dd_inflation = tk.StringVar(
+            value=saved_general.get("ubs_robust_max_dd_inflation", "2.0")
+        )
         saved_robust_positive_bonus = saved_general.get(
             "ubs_robust_positive_bonus", str(int(DEFAULT_ROBUST_POSITIVE_BONUS))
         )

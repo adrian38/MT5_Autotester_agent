@@ -453,6 +453,15 @@ class UBSAgentLogicMixin:
             context="Agente UBS",
         )
         args.extend(self._ubs_long_timeframe_score_args())
+        degradation_fields = (
+            ("--robust-min-net-retention", self.ubs_robust_min_net_retention, "Retencion net"),
+            ("--robust-min-pf-edge-retention", self.ubs_robust_min_pf_edge_retention, "Retencion edge PF"),
+            ("--robust-min-recovery-retention", self.ubs_robust_min_recovery_retention, "Retencion recovery"),
+            ("--robust-max-dd-inflation", self.ubs_robust_max_dd_inflation, "Inflacion DD"),
+        )
+        for option, variable, label in degradation_fields:
+            value = self._score_float(variable, label, minimum=0.0)
+            args.extend([option, str(value)])
         return args
 
     def _ubs_seed_score_args(self) -> list[str]:

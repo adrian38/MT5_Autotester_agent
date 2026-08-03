@@ -643,6 +643,16 @@ requirement changes or a debt item is opened/closed.
   no saved setting exists; positive bonus `+70`; negative bonus `-70`; dates
   empty = template dates. Bonus values are retained as legacy audit metadata;
   probability feedback uses stage outcomes rather than additive bonuses.
+- **FR-1.12.21a** Robustness acceptance MUST require both the absolute OOS score
+  gates and the degradation gates against the candidate's construction result.
+  The default degradation limits are annualized normalized-net retention
+  `>= 0.50`, profit-factor edge retention `(PF_OOS-1)/(PF_IS-1) >= 0.50`,
+  Recovery Factor retention `>= 0.50`, and drawdown inflation
+  `DD_OOS/max(DD_IS, 2%) <= 2.0`. A zero threshold disables that individual
+  gate. Missing or invalid comparison inputs MUST be persisted as unavailable
+  and remain neutral rather than causing a rejection. The full audit MUST be
+  stored separately in `candidate_robustness.degradation_json` and exposed in
+  the robustness UI.
 - **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
   for the latest visible run and must confirm the number of candidates before
   launching MT5. This action MUST be incremental: it passes
