@@ -153,6 +153,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
                 patch.object(run_tests, "finish_model4_history_preflight") as finish_preflight,
                 patch.object(run_tests, "log_ini_content"),
                 patch.object(run_tests.time, "sleep"),
+                patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
             ):
                 exit_code = run_tests.run_test(
                     root / "tester.ini",
@@ -167,6 +168,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
             self.assertEqual(popen.call_count, 2)
             self.assertEqual(preflight.call_count, 2)
             self.assertEqual(finish_preflight.call_count, 2)
+            retry_wait.assert_not_called()
             copy_reports.assert_called_once()
             self.assertEqual(copy_reports.call_args.args[0], [second_report])
             self.assertTrue(any("0 barras / 0 ticks" in message for message in logger.messages))
@@ -333,6 +335,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
                 patch.object(run_tests, "finish_model4_history_preflight"),
                 patch.object(run_tests, "log_ini_content"),
                 patch.object(run_tests.time, "sleep"),
+                patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
             ):
                 exit_code = run_tests.run_test(
                     root / "tester.ini",
@@ -349,6 +352,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
             self.assertEqual(wait_process.call_args_list[0].kwargs["kick_after_seconds"], 0)
             self.assertEqual(wait_process.call_args_list[0].kwargs["stall_after_seconds"], 20)
             self.assertEqual(wait_process.call_args_list[0].kwargs["max_runtime_seconds"], 100)
+            retry_wait.assert_called_once_with(logger, "Reinicio watchdog")
             snapshot.assert_called_once()
             self.assertTrue(any("Reintentando MT5 Model=1" in message for message in logger.messages))
 

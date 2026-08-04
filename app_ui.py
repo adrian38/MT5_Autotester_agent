@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import tkinter as tk
 from pathlib import Path
@@ -91,6 +92,12 @@ UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 TRUE_VALUES = {"1", "true", "yes", "on", "si"}
 LOCAL_FILE_FALLBACK_ROOTS = ("reports", "outputs", "sets", "configs", "logs")
+OUTPUT_QUEUE_MAX_ITEMS = 5_000
+OUTPUT_DRAIN_MAX_ITEMS = 200
+OUTPUT_DRAIN_TIME_BUDGET_SECONDS = 0.02
+OUTPUT_DRAIN_IDLE_INTERVAL_MS = 120
+OUTPUT_DRAIN_BUSY_INTERVAL_MS = 1
+CONSOLE_MAX_LINES = 10_000
 
 
 def _display_margin_profile(raw_profile: str | None, broker: str) -> str:
@@ -703,7 +710,9 @@ class MT5AutotesterUI(
 
         self.process: subprocess.Popen[str] | None = None
         self.reader_thread: threading.Thread | None = None
-        self.output_queue: queue.Queue[str | tuple[str, int]] = queue.Queue()
+        self.output_queue: queue.Queue[str | tuple[str, int]] = queue.Queue(
+            maxsize=OUTPUT_QUEUE_MAX_ITEMS
+        )
         self.stop_requested = False
 
         ui_settings = self._read_ui_settings()
@@ -1287,7 +1296,7 @@ class MT5AutotesterUI(
         self._manager_node.start()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(60, self._animate_progress)
-        self.after(120, self._drain_output_queue)
+        self.after(OUTPUT_DRAIN_IDLE_INTERVAL_MS, self._drain_output_queue)
 
     def _on_app_close(self) -> None:
         if self._manager_node.job_running:
@@ -2286,10 +2295,16 @@ class MT5AutotesterUI(
         self.output_queue.put(("DONE", code))
 
     def _drain_output_queue(self) -> None:
+        deadline = time.perf_counter() + OUTPUT_DRAIN_TIME_BUDGET_SECONDS
+        processed = 0
+        console_batch: list[tuple[str, str | None]] = []
         try:
-            while True:
+            while processed < OUTPUT_DRAIN_MAX_ITEMS and time.perf_counter() < deadline:
                 item = self.output_queue.get_nowait()
+                processed += 1
                 if isinstance(item, tuple) and item[0] == "DONE":
+                    self._append_console_batch(console_batch)
+                    console_batch = []
                     code = item[1]
                     finished_script_name = getattr(self, "_running_script_name", "")
                     finished_script_args = list(getattr(self, "_running_script_args", []))
@@ -2384,11 +2399,17 @@ class MT5AutotesterUI(
                         )
                 else:
                     line = str(item)
-                    self._append_console(line, tag=self._tag_for_line(line))
+                    console_batch.append((line, self._tag_for_line(line)))
                     self._update_progress_from_line(line)
         except queue.Empty:
             pass
-        self.after(120, self._drain_output_queue)
+        self._append_console_batch(console_batch)
+        interval = (
+            OUTPUT_DRAIN_BUSY_INTERVAL_MS
+            if not self.output_queue.empty()
+            else OUTPUT_DRAIN_IDLE_INTERVAL_MS
+        )
+        self.after(interval, self._drain_output_queue)
 
     def _stop_process(self) -> None:
         if not self.process or self.process.poll() is not None:
@@ -2419,10 +2440,30 @@ class MT5AutotesterUI(
         self.console.delete("1.0", "end")
 
     def _append_console(self, text: str, tag: str | None = None) -> None:
-        if tag:
-            self.console.insert("end", text, tag)
-        else:
-            self.console.insert("end", text)
+        self._append_console_batch([(text, tag)])
+
+    def _append_console_batch(self, entries: list[tuple[str, str | None]]) -> None:
+        if not entries:
+            return
+        segments: list[tuple[str, str | None]] = []
+        for text, tag in entries:
+            if segments and segments[-1][1] == tag:
+                previous_text, _previous_tag = segments[-1]
+                segments[-1] = (previous_text + text, tag)
+            else:
+                segments.append((text, tag))
+        for text, tag in segments:
+            if tag:
+                self.console.insert("end", text, tag)
+            else:
+                self.console.insert("end", text)
+        try:
+            line_count = int(self.console.index("end-1c").split(".", 1)[0])
+            excess_lines = line_count - CONSOLE_MAX_LINES
+            if excess_lines > 0:
+                self.console.delete("1.0", f"{excess_lines + 1}.0")
+        except (tk.TclError, ValueError):
+            pass
         self.console.see("end")
 
     def _update_progress_from_line(self, line: str) -> None:

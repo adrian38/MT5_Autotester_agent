@@ -5,11 +5,18 @@ from datetime import datetime
 from typing import Mapping
 
 
-DEGRADATION_FORMULA_VERSION = "robustness_degradation_v1"
+DEGRADATION_FORMULA_VERSION = "robustness_degradation_v2"
 DEFAULT_MIN_NET_RETENTION = 0.50
 DEFAULT_MIN_PF_EDGE_RETENTION = 0.50
 DEFAULT_MIN_RECOVERY_RETENTION = 0.50
 DEFAULT_MAX_DD_INFLATION = 2.0
+DEFAULT_MIN_TRADE_RATE_RETENTION = 0.50
+DEFAULT_MIN_RESIDUAL_PROFIT_RATIO = 0.20
+DEFAULT_MIN_OOS_POSITIVE_MONTH_RATIO = 0.50
+DEFAULT_MIN_TRADE_CURVE_STABILITY = 0.60
+DEFAULT_MIN_STABILITY_RETENTION = 0.75
+DEFAULT_MIN_BOOTSTRAP_NET_POSITIVE_PROBABILITY = 0.95
+DEFAULT_MIN_BOOTSTRAP_PF_P05 = 1.05
 PF_SENTINEL_CAP = 50.0
 RECOVERY_SENTINEL_CAP = 50.0
 DD_RATIO_FLOOR_PCT = 2.0
@@ -21,6 +28,13 @@ class RobustnessDegradationConfig:
     min_pf_edge_retention: float = DEFAULT_MIN_PF_EDGE_RETENTION
     min_recovery_retention: float = DEFAULT_MIN_RECOVERY_RETENTION
     max_dd_inflation: float = DEFAULT_MAX_DD_INFLATION
+    min_trade_rate_retention: float = DEFAULT_MIN_TRADE_RATE_RETENTION
+    min_residual_profit_ratio: float = DEFAULT_MIN_RESIDUAL_PROFIT_RATIO
+    min_oos_positive_month_ratio: float = DEFAULT_MIN_OOS_POSITIVE_MONTH_RATIO
+    min_trade_curve_stability: float = DEFAULT_MIN_TRADE_CURVE_STABILITY
+    min_stability_retention: float = DEFAULT_MIN_STABILITY_RETENTION
+    min_bootstrap_net_positive_probability: float = DEFAULT_MIN_BOOTSTRAP_NET_POSITIVE_PROBABILITY
+    min_bootstrap_pf_p05: float = DEFAULT_MIN_BOOTSTRAP_PF_P05
 
     def to_dict(self) -> dict[str, float]:
         return asdict(self)
@@ -140,12 +154,27 @@ def evaluate_robustness_degradation(
 
     base_recovery = _number(base.get("recovery_factor"))
     oos_recovery = _number(oos.get("recovery_factor"))
-    recovery_retention = (
-        oos_recovery / base_recovery
+    base_recovery_annual = (
+        base_recovery * 365.25 / base_days
         if base_recovery is not None
-        and oos_recovery is not None
         and 0 < base_recovery < RECOVERY_SENTINEL_CAP
+        and base_days is not None
+        and base_days > 0
+        else None
+    )
+    oos_recovery_annual = (
+        oos_recovery * 365.25 / oos_days
+        if oos_recovery is not None
         and oos_recovery < RECOVERY_SENTINEL_CAP
+        and oos_days is not None
+        and oos_days > 0
+        else None
+    )
+    recovery_retention = (
+        oos_recovery_annual / base_recovery_annual
+        if base_recovery_annual is not None
+        and base_recovery_annual > 0
+        and oos_recovery_annual is not None
         else None
     )
 
@@ -175,6 +204,18 @@ def evaluate_robustness_degradation(
     positive_month_delta = (
         oos_months - base_months if base_months is not None and oos_months is not None else None
     )
+    residual_profit_ratio = _number(oos.get("residual_profit_ratio"))
+    base_stability = _number(base.get("trade_curve_stability"))
+    oos_stability = _number(oos.get("trade_curve_stability"))
+    stability_retention = (
+        oos_stability / base_stability
+        if base_stability is not None
+        and base_stability > 0
+        and oos_stability is not None
+        else None
+    )
+    bootstrap_net_probability = _number(oos.get("bootstrap_net_positive_probability"))
+    bootstrap_pf_p05 = _number(oos.get("bootstrap_pf_p05"))
 
     checks = {
         "net_retention": _check(
@@ -196,7 +237,16 @@ def evaluate_robustness_degradation(
             recovery_retention,
             cfg.min_recovery_retention,
             comparison="minimum",
-            details={"base": base_recovery, "oos": oos_recovery},
+            details={
+                "base": base_recovery,
+                "oos": oos_recovery,
+                "base_annualized": (
+                    round(base_recovery_annual, 6) if base_recovery_annual is not None else None
+                ),
+                "oos_annualized": (
+                    round(oos_recovery_annual, 6) if oos_recovery_annual is not None else None
+                ),
+            },
         ),
         "dd_inflation": _check(
             dd_inflation,
@@ -204,12 +254,65 @@ def evaluate_robustness_degradation(
             comparison="maximum",
             details={"base": base_dd, "oos": oos_dd, "base_floor_pct": DD_RATIO_FLOOR_PCT},
         ),
+        "trade_rate_retention": _check(
+            trade_rate_retention,
+            cfg.min_trade_rate_retention,
+            comparison="minimum",
+            details={"base_trades": base_trades, "oos_trades": oos_trades},
+        ),
+        "residual_profit_ratio": _check(
+            residual_profit_ratio,
+            cfg.min_residual_profit_ratio,
+            comparison="minimum",
+            details={
+                "oos_net": _number(oos.get("net_profit")),
+                "top3_month_profit": _number(oos.get("top3_month_profit")),
+                "residual_profit_after_top3": _number(oos.get("residual_profit_after_top3")),
+            },
+        ),
+        "oos_positive_month_ratio": _check(
+            oos_months,
+            cfg.min_oos_positive_month_ratio,
+            comparison="minimum",
+            details={"oos_active_months": _number(oos.get("active_months"))},
+        ),
+        "trade_curve_stability": _check(
+            oos_stability,
+            cfg.min_trade_curve_stability,
+            comparison="minimum",
+            details={"oos": oos_stability},
+        ),
+        "stability_retention": _check(
+            stability_retention,
+            cfg.min_stability_retention,
+            comparison="minimum",
+            details={"base": base_stability, "oos": oos_stability},
+        ),
+        "bootstrap_net_positive_probability": _check(
+            bootstrap_net_probability,
+            cfg.min_bootstrap_net_positive_probability,
+            comparison="minimum",
+            details={"bootstrap_reps": _number(oos.get("bootstrap_reps"))},
+        ),
+        "bootstrap_pf_p05": _check(
+            bootstrap_pf_p05,
+            cfg.min_bootstrap_pf_p05,
+            comparison="minimum",
+            details={"bootstrap_reps": _number(oos.get("bootstrap_reps"))},
+        ),
     }
     reason_by_check = {
         "net_retention": "degradation_net",
         "pf_edge_retention": "degradation_profit_factor",
         "recovery_retention": "degradation_recovery",
         "dd_inflation": "degradation_drawdown",
+        "trade_rate_retention": "degradation_trade_rate",
+        "residual_profit_ratio": "generalization_residual_profit",
+        "oos_positive_month_ratio": "generalization_month_breadth",
+        "trade_curve_stability": "generalization_stability",
+        "stability_retention": "generalization_stability_retention",
+        "bootstrap_net_positive_probability": "generalization_bootstrap_net",
+        "bootstrap_pf_p05": "generalization_bootstrap_pf",
     }
     reasons = tuple(
         reason_by_check[name]
@@ -227,7 +330,6 @@ def evaluate_robustness_degradation(
         "oos_window": oos_window,
         "checks": checks,
         "diagnostics": {
-            "trade_rate_retention": round(trade_rate_retention, 6) if trade_rate_retention is not None else None,
             "positive_month_ratio_delta": round(positive_month_delta, 6) if positive_month_delta is not None else None,
             "enabled_checks": enabled_checks,
             "available_checks": available_checks,

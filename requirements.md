@@ -647,12 +647,18 @@ requirement changes or a debt item is opened/closed.
   gates and the degradation gates against the candidate's construction result.
   The default degradation limits are annualized normalized-net retention
   `>= 0.50`, profit-factor edge retention `(PF_OOS-1)/(PF_IS-1) >= 0.50`,
-  Recovery Factor retention `>= 0.50`, and drawdown inflation
-  `DD_OOS/max(DD_IS, 2%) <= 2.0`. A zero threshold disables that individual
-  gate. Missing or invalid comparison inputs MUST be persisted as unavailable
-  and remain neutral rather than causing a rejection. The full audit MUST be
-  stored separately in `candidate_robustness.degradation_json` and exposed in
-  the robustness UI.
+  duration-adjusted Recovery Factor retention `>= 0.50`, drawdown inflation
+  `DD_OOS/max(DD_IS, 2%) <= 2.0`, and trade-rate retention `>= 0.50`.
+  Robustness MUST also enforce temporal-generalization gates: residual OOS net
+  after removing the three best positive months `>= 20%` of OOS net, positive
+  active-month ratio `>= 50%`, cumulative trade-curve R-squared `>= 0.60`,
+  stability retention against construction `>= 0.75`, stationary-block
+  bootstrap `P(net>0) >= 95%`, and bootstrap PF fifth percentile `>= 1.05`.
+  The bootstrap MUST be deterministic for identical trade histories. A zero
+  threshold disables that individual gate. Missing or invalid comparison
+  inputs MUST be persisted as unavailable and remain neutral rather than
+  causing a rejection. The full audit MUST be stored separately in
+  `candidate_robustness.degradation_json` and exposed in the robustness UI.
 - **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
   for the latest visible run and must confirm the number of candidates before
   launching MT5. This action MUST be incremental: it passes
