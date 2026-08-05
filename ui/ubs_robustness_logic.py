@@ -203,24 +203,44 @@ class UBSRobustnessLogicMixin:
         parts: list[str] = []
         checks = degradation.get("checks", {}) if isinstance(degradation, dict) else {}
         degradation_labels = {
-            "degradation_net": ("net retenido", "net_retention", True),
-            "degradation_profit_factor": ("edge PF retenido", "pf_edge_retention", True),
-            "degradation_recovery": ("recovery retenido", "recovery_retention", True),
-            "degradation_drawdown": ("inflacion DD", "dd_inflation", False),
+            "degradation_net": ("net retenido", "net_retention", "percent"),
+            "degradation_profit_factor": ("edge PF retenido", "pf_edge_retention", "percent"),
+            "degradation_recovery": ("recovery anual retenido", "recovery_retention", "percent"),
+            "degradation_drawdown": ("inflacion DD", "dd_inflation", "ratio"),
+            "degradation_trade_rate": ("ritmo trades", "trade_rate_retention", "percent"),
+            "generalization_residual_profit": ("neto sin top3", "residual_profit_ratio", "percent"),
+            "generalization_month_breadth": ("meses OOS+", "oos_positive_month_ratio", "percent"),
+            "generalization_stability": ("estabilidad OOS", "trade_curve_stability", "decimal"),
+            "generalization_stability_retention": ("estabilidad retenida", "stability_retention", "percent"),
+            "generalization_bootstrap_net": (
+                "P(neto>0) bootstrap",
+                "bootstrap_net_positive_probability",
+                "percent",
+            ),
+            "generalization_bootstrap_pf": ("PF p05 bootstrap", "bootstrap_pf_p05", "decimal"),
         }
         for reason in reasons:
             degradation_format = degradation_labels.get(str(reason))
             if degradation_format is not None:
-                label, check_name, percentage = degradation_format
+                label, check_name, value_format = degradation_format
                 check = checks.get(check_name, {}) if isinstance(checks, dict) else {}
                 value = check.get("value") if isinstance(check, dict) else None
                 threshold = check.get("threshold") if isinstance(check, dict) else None
+                comparison = check.get("comparison") if isinstance(check, dict) else "minimum"
                 if value is None or threshold is None:
                     parts.append(label)
-                elif percentage:
-                    parts.append(f"{label}: {float(value):.0%} < {float(threshold):.0%}")
                 else:
-                    parts.append(f"{label}: {float(value):.2f}x > {float(threshold):.2f}x")
+                    operator = "<" if comparison == "minimum" else ">"
+                    if value_format == "percent":
+                        rendered_value = f"{float(value):.0%}"
+                        rendered_threshold = f"{float(threshold):.0%}"
+                    elif value_format == "ratio":
+                        rendered_value = f"{float(value):.2f}x"
+                        rendered_threshold = f"{float(threshold):.2f}x"
+                    else:
+                        rendered_value = f"{float(value):.2f}"
+                        rendered_threshold = f"{float(threshold):.2f}"
+                    parts.append(f"{label}: {rendered_value} {operator} {rendered_threshold}")
                 continue
             label, fmt, suffix = formats.get(str(reason), (str(reason), "", ""))
             value = metrics.get("normalized_net_profit") if str(reason) == "net_profit" else metrics.get(reason)

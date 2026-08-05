@@ -1006,6 +1006,11 @@ TESTER_STUCK_MARKERS = (
 - After `tester_stall_after` seconds without either signal, two consecutive
   checks are required before the MT5 process tree is killed and retried once.
   Default: `300` seconds.
+- Watchdog process actions are rate-limited across multiterminal workers:
+  process-tree closures reserve slots at least `0.75` seconds apart, and
+  watchdog retry launches reserve slots at least `3` seconds apart. This keeps
+  confirmed stalls from turning into simultaneous `taskkill`/`Popen` storms;
+  it does not change retry count or terminal-profile selection.
 - `tester_max_runtime` is an independent hard per-job ceiling even when the
   journal cannot be located. Default: `1800` seconds.
 - A watchdog termination writes
@@ -1043,6 +1048,16 @@ TESTER_STUCK_MARKERS = (
 - In multiterminal mode, `enabled` selects the profile used with one worker.
   With more than one worker, every configured profile for the active broker is
   eligible up to the `--max-workers` concurrency limit.
+
+**Runner/UI output backpressure**:
+- `RunLogger` uses one bounded asynchronous writer queue and keeps both log
+  files open for the run. Worker threads no longer perform stdout and two file
+  writes while holding a shared lock. `close()` drains the queue; process exit
+  registers it through `atexit` so early-return errors are flushed too.
+- The desktop stdout queue is bounded to 5,000 items. Tk drains at most 200
+  items or 20 ms per callback, batches adjacent console tags, and yields before
+  continuing when output remains. The visible console keeps the newest 10,000
+  lines.
 
 **New CLI arguments for `run_tests.py`**:
 

@@ -4,7 +4,14 @@ import unittest
 from pathlib import Path
 
 from ubs.normalization import net_profit_normalization
-from ubs.score import SCORE_FORMULA_VERSION, ScoreConfig, ScoreResult, rescore_result
+from ubs.score import (
+    SCORE_FORMULA_VERSION,
+    ScoreConfig,
+    ScoreResult,
+    _generalization_bootstrap,
+    _trade_curve_stability,
+    rescore_result,
+)
 
 
 class UBSScoreTests(unittest.TestCase):
@@ -85,6 +92,24 @@ class UBSScoreTests(unittest.TestCase):
 
         self.assertEqual(base.stable_hash(), same.stable_hash())
         self.assertNotEqual(base.stable_hash(), changed.stable_hash())
+
+    def test_trade_curve_stability_distinguishes_linear_and_choppy_curves(self) -> None:
+        linear = _trade_curve_stability([1.0] * 20)
+        choppy = _trade_curve_stability([10.0, -10.0] * 10)
+
+        self.assertAlmostEqual(linear or 0.0, 1.0, places=6)
+        self.assertLess(choppy or 0.0, 0.05)
+
+    def test_generalization_bootstrap_is_deterministic(self) -> None:
+        profits = [2.0, -1.0, 3.0, -1.0, 2.0] * 12
+
+        first = _generalization_bootstrap(profits, reps=300, mean_block=5.0)
+        second = _generalization_bootstrap(profits, reps=300, mean_block=5.0)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["reps"], 300)
+        self.assertGreater(first["net_positive_probability"], 0.95)
+        self.assertGreater(first["pf_p05"], 1.05)
 
     def test_net_profit_normalization_is_broker_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

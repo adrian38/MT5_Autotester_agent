@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import json
 import math
+import random
 import re
 import statistics
 
@@ -13,7 +14,9 @@ from ubs.account import DEFAULT_BROKER
 from ubs.normalization import net_profit_normalization
 
 
-SCORE_FORMULA_VERSION = "1"
+SCORE_FORMULA_VERSION = "2"
+GENERALIZATION_BOOTSTRAP_REPS = 2000
+GENERALIZATION_BOOTSTRAP_MEAN_BLOCK = 5.0
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,16 @@ class ScoreResult:
     avg_trade: float
     sqn: float
     reasons: tuple[str, ...]
+    active_months: int | None = None
+    top3_month_profit: float | None = None
+    residual_profit_after_top3: float | None = None
+    residual_profit_ratio: float | None = None
+    trade_curve_stability: float | None = None
+    bootstrap_reps: int | None = None
+    bootstrap_mean_block: float | None = None
+    bootstrap_net_positive_probability: float | None = None
+    bootstrap_net_p05: float | None = None
+    bootstrap_pf_p05: float | None = None
     score_formula_version: str = SCORE_FORMULA_VERSION
     score_config: dict[str, float | int] = field(default_factory=dict)
     score_config_hash: str = ""
@@ -76,8 +89,19 @@ class ScoreResult:
         return cls(**data)
 
 
-def score_report_file(path: Path, config: ScoreConfig | None = None, *, broker: object = DEFAULT_BROKER) -> ScoreResult:
-    return score_report(parse_report(path), config=config, broker=broker)
+def score_report_file(
+    path: Path,
+    config: ScoreConfig | None = None,
+    *,
+    broker: object = DEFAULT_BROKER,
+    include_generalization_bootstrap: bool = False,
+) -> ScoreResult:
+    return score_report(
+        parse_report(path),
+        config=config,
+        broker=broker,
+        include_generalization_bootstrap=include_generalization_bootstrap,
+    )
 
 
 def score_report(
@@ -85,6 +109,7 @@ def score_report(
     config: ScoreConfig | None = None,
     *,
     broker: object = DEFAULT_BROKER,
+    include_generalization_bootstrap: bool = False,
 ) -> ScoreResult:
     config = config or ScoreConfig()
     profits = [trade.profit_loss for trade in report.trades]
@@ -106,12 +131,29 @@ def score_report(
     total_positive_months = sum(value for value in monthly_values if value > 0)
     max_month = max((value for value in monthly_values if value > 0), default=0.0)
     max_month_concentration = max_month / total_positive_months if total_positive_months else 1.0
+    top3_month_profit = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:3])
+    residual_profit_after_top3 = net_profit - top3_month_profit
+    residual_profit_ratio = residual_profit_after_top3 / net_profit if net_profit > 0 else -1.0
+    trade_curve_stability = _trade_curve_stability(profits)
     avg_trade = net_profit / len(profits) if profits else 0.0
     deviation = statistics.pstdev(profits) if len(profits) > 1 else 0.0
     sqn = math.sqrt(len(profits)) * avg_trade / deviation if deviation else 0.0
     net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol, broker=broker)
     normalized_net_profit = round(net_profit * net_profit_factor, 2)
     history_quality = _history_quality(report)
+    absolute_gate_candidate = (
+        normalized_net_profit > config.min_net_profit
+        and profit_factor >= config.min_profit_factor
+        and len(profits) >= config.min_trades
+        and drawdown_pct <= config.max_drawdown_pct
+        and recovery_factor >= config.min_recovery_factor
+        and positive_month_ratio >= config.min_positive_month_ratio
+    )
+    bootstrap = (
+        _generalization_bootstrap(profits)
+        if include_generalization_bootstrap and profits and absolute_gate_candidate
+        else {}
+    )
 
     score = _score_formula(
         net_profit=normalized_net_profit,
@@ -122,6 +164,10 @@ def score_report(
         positive_month_ratio=positive_month_ratio,
         max_month_concentration=max_month_concentration,
         sqn=sqn,
+        residual_profit_ratio=residual_profit_ratio,
+        trade_curve_stability=trade_curve_stability,
+        bootstrap_net_positive_probability=bootstrap.get("net_positive_probability"),
+        bootstrap_pf_p05=bootstrap.get("pf_p05"),
     )
 
     reasons = []
@@ -162,6 +208,20 @@ def score_report(
         avg_trade=round(avg_trade, 4),
         sqn=round(sqn, 4),
         reasons=tuple(reasons),
+        active_months=len(monthly_values),
+        top3_month_profit=round(top3_month_profit, 4),
+        residual_profit_after_top3=round(residual_profit_after_top3, 4),
+        residual_profit_ratio=round(residual_profit_ratio, 6),
+        trade_curve_stability=(
+            round(trade_curve_stability, 6) if trade_curve_stability is not None else None
+        ),
+        bootstrap_reps=int(bootstrap["reps"]) if bootstrap else None,
+        bootstrap_mean_block=float(bootstrap["mean_block"]) if bootstrap else None,
+        bootstrap_net_positive_probability=(
+            round(float(bootstrap["net_positive_probability"]), 6) if bootstrap else None
+        ),
+        bootstrap_net_p05=round(float(bootstrap["net_p05"]), 4) if bootstrap else None,
+        bootstrap_pf_p05=round(float(bootstrap["pf_p05"]), 6) if bootstrap else None,
         score_formula_version=SCORE_FORMULA_VERSION,
         score_config=config.to_dict(),
         score_config_hash=config.stable_hash(),
@@ -185,6 +245,10 @@ def rescore_result(result: ScoreResult, config: ScoreConfig | None = None) -> Sc
         positive_month_ratio=result.positive_month_ratio,
         max_month_concentration=result.max_month_concentration,
         sqn=result.sqn,
+        residual_profit_ratio=result.residual_profit_ratio,
+        trade_curve_stability=result.trade_curve_stability,
+        bootstrap_net_positive_probability=result.bootstrap_net_positive_probability,
+        bootstrap_pf_p05=result.bootstrap_pf_p05,
     )
     reasons: list[str] = []
     if result.normalized_net_profit <= config.min_net_profit:
@@ -220,6 +284,10 @@ def _score_formula(
     positive_month_ratio: float,
     max_month_concentration: float,
     sqn: float,
+    residual_profit_ratio: float | None = None,
+    trade_curve_stability: float | None = None,
+    bootstrap_net_positive_probability: float | None = None,
+    bootstrap_pf_p05: float | None = None,
 ) -> float:
     profit_component = min(max(net_profit, -5000.0) / 100.0, 60.0)
     pf_component = min(max(profit_factor - 1.0, -1.0) * 35.0, 70.0)
@@ -229,6 +297,17 @@ def _score_formula(
     sqn_component = min(max(sqn, -5.0), 5.0) * 4.0
     dd_penalty = max(drawdown_pct, 0.0) * 1.8
     concentration_penalty = max_month_concentration * 20.0
+    generalization_component = 0.0
+    if residual_profit_ratio is not None:
+        generalization_component += min(max(residual_profit_ratio - 0.20, -1.0), 1.0) * 20.0
+    if trade_curve_stability is not None:
+        generalization_component += min(max(trade_curve_stability - 0.60, -1.0), 1.0) * 15.0
+    if bootstrap_net_positive_probability is not None:
+        generalization_component += min(
+            max(bootstrap_net_positive_probability - 0.95, -0.20), 0.05
+        ) * 100.0
+    if bootstrap_pf_p05 is not None:
+        generalization_component += min(max(bootstrap_pf_p05 - 1.05, -0.50), 0.50) * 20.0
     return (
         profit_component
         + pf_component
@@ -236,9 +315,103 @@ def _score_formula(
         + trades_component
         + monthly_component
         + sqn_component
+        + generalization_component
         - dd_penalty
         - concentration_penalty
     )
+
+
+def _trade_curve_stability(profits: list[float]) -> float | None:
+    """R-squared of cumulative trade P/L against trade order."""
+
+    if len(profits) < 2:
+        return None
+    cumulative: list[float] = []
+    running = 0.0
+    for profit in profits:
+        running += float(profit)
+        cumulative.append(running)
+    count = len(cumulative)
+    mean_x = (count - 1) / 2.0
+    mean_y = sum(cumulative) / count
+    variance_x = sum((index - mean_x) ** 2 for index in range(count))
+    variance_y = sum((value - mean_y) ** 2 for value in cumulative)
+    if variance_x <= 0 or variance_y <= 0:
+        return 0.0
+    covariance = sum(
+        (index - mean_x) * (value - mean_y)
+        for index, value in enumerate(cumulative)
+    )
+    return min(max((covariance * covariance) / (variance_x * variance_y), 0.0), 1.0)
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = min(max(float(quantile), 0.0), 1.0) * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def _generalization_bootstrap(
+    profits: list[float],
+    *,
+    reps: int = GENERALIZATION_BOOTSTRAP_REPS,
+    mean_block: float = GENERALIZATION_BOOTSTRAP_MEAN_BLOCK,
+) -> dict[str, float | int]:
+    """Deterministic circular stationary-block bootstrap over trade P/L."""
+
+    values = [float(value) for value in profits]
+    count = len(values)
+    if count <= 0 or reps <= 0 or mean_block <= 0:
+        return {}
+    positive = [max(value, 0.0) for value in values]
+    negative = [max(-value, 0.0) for value in values]
+    positive_prefix = [0.0]
+    negative_prefix = [0.0]
+    for value in positive * 2:
+        positive_prefix.append(positive_prefix[-1] + value)
+    for value in negative * 2:
+        negative_prefix.append(negative_prefix[-1] + value)
+    seed_payload = ",".join(f"{value:.10g}" for value in values).encode("ascii", "replace")
+    seed = int.from_bytes(hashlib.sha256(seed_payload).digest()[:8], "big")
+    rng = random.Random(seed)
+    restart_probability = min(max(1.0 / mean_block, 1e-9), 1.0)
+    log_continue = math.log1p(-restart_probability) if restart_probability < 1.0 else None
+    nets: list[float] = []
+    profit_factors: list[float] = []
+    positive_nets = 0
+    for _ in range(int(reps)):
+        sampled = 0
+        gross_profit = 0.0
+        gross_loss = 0.0
+        while sampled < count:
+            if log_continue is None:
+                block_length = 1
+            else:
+                block_length = int(math.log1p(-rng.random()) / log_continue) + 1
+            block_length = min(block_length, count - sampled)
+            start = rng.randrange(count)
+            gross_profit += positive_prefix[start + block_length] - positive_prefix[start]
+            gross_loss += negative_prefix[start + block_length] - negative_prefix[start]
+            sampled += block_length
+        net = gross_profit - gross_loss
+        nets.append(net)
+        if net > 0:
+            positive_nets += 1
+        profit_factors.append(gross_profit / gross_loss if gross_loss > 0 else 99.0)
+    return {
+        "reps": int(reps),
+        "mean_block": float(mean_block),
+        "net_positive_probability": positive_nets / float(reps),
+        "net_p05": _percentile(nets, 0.05),
+        "pf_p05": _percentile(profit_factors, 0.05),
+    }
 
 
 def _drawdown_amount(report: StrategyReport) -> float:
