@@ -77,29 +77,51 @@ def load_robust_thresholds() -> dict[str, str]:
 def database_summary(path: Path) -> dict[str, object]:
     conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
     try:
-        statuses = {
-            str(status): int(count)
-            for status, count in conn.execute(
-                "select status, count(1) from candidate_robustness group by status"
-            )
+        columns = {
+            str(row[1])
+            for row in conn.execute("pragma table_info(candidate_robustness)")
         }
-        formula_v2 = int(
-            conn.execute(
-                """
-                select count(1)
-                from candidate_robustness
-                where json_extract(metrics_json, '$.score_formula_version')='2'
-                """
-            ).fetchone()[0]
+        statuses = (
+            {
+                str(status): int(count)
+                for status, count in conn.execute(
+                    "select status, count(1) from candidate_robustness group by status"
+                )
+            }
+            if "status" in columns
+            else {}
         )
-        degradation_v2 = int(
-            conn.execute(
-                """
-                select count(1)
-                from candidate_robustness
-                where json_extract(degradation_json, '$.version')='robustness_degradation_v2'
-                """
-            ).fetchone()[0]
+        formula_v2 = (
+            int(
+                conn.execute(
+                    """
+                    select count(1)
+                    from candidate_robustness
+                    where json_extract(
+                        case when json_valid(metrics_json) then metrics_json else '{}' end,
+                        '$.score_formula_version'
+                    )='2'
+                    """
+                ).fetchone()[0]
+            )
+            if "metrics_json" in columns
+            else 0
+        )
+        degradation_v2 = (
+            int(
+                conn.execute(
+                    """
+                    select count(1)
+                    from candidate_robustness
+                    where json_extract(
+                        case when json_valid(degradation_json) then degradation_json else '{}' end,
+                        '$.version'
+                    )='robustness_degradation_v2'
+                    """
+                ).fetchone()[0]
+            )
+            if "degradation_json" in columns
+            else 0
         )
         integrity = str(conn.execute("pragma integrity_check").fetchone()[0])
         return {
