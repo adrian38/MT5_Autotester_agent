@@ -389,6 +389,34 @@ def _legacy_seed_path_to_broker_path(base_dir: Path, value: object, account_type
     return None
 
 
+def _may_need_seed_path_migration(
+    text: str, old_prefix: str, base_prefix: str, new_marker: str
+) -> bool:
+    """Descarta en memoria las filas que ninguna rama podria reescribir.
+
+    `_legacy_seed_path_to_broker_path` cuesta ~1 ms por fila (hasta cuatro
+    `Path.resolve()`), y la migracion recorre decenas de miles de filas en cada
+    arranque. Solo tres cosas pueden reescribir una ruta:
+
+    - Las dos ramas textuales exigen colgar de la raiz legacy.
+    - La rama de reubicacion exige que `resolve_workspace_path` devuelva algo
+      distinto y que el resultado caiga bajo la raiz nueva. Esa funcion devuelve
+      la ruta tal cual si ya existe, y reconstruye como `base_dir / partes`, asi
+      que la ruta original tiene que contener los componentes de la raiz nueva.
+
+    Todo lo demas es inerte y se puede saltar sin tocar el disco.
+    """
+
+    normalized = text.replace("\\", "/").lower()
+    if normalized.startswith(old_prefix):
+        return True
+    if normalized.startswith(base_prefix):
+        return False
+    # Fuera de este workspace: solo la reubicacion podria actuar, y sin los
+    # componentes de la raiz nueva el `relative_to` de esa rama siempre falla.
+    return not new_marker or new_marker in normalized
+
+
 def migrate_legacy_seed_paths_in_memory(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> int:
     broker_key = normalize_broker(broker)
     account = normalize_account_type(account_type, broker_key)
@@ -397,6 +425,15 @@ def migrate_legacy_seed_paths_in_memory(base_dir: Path, account_type: object, br
     memory_path = account_memory_path(base_dir, account, broker_key)
     if not memory_path.exists():
         return 0
+    workspace = Path(base_dir).expanduser()
+    old_prefix = legacy_account_seed_dir(base_dir, account).as_posix().lower().rstrip("/") + "/"
+    base_prefix = workspace.as_posix().lower().rstrip("/") + "/"
+    try:
+        relative_new_root = account_seed_dir(base_dir, account, broker_key).relative_to(workspace)
+        new_marker = "/" + relative_new_root.as_posix().lower().strip("/") + "/"
+    except ValueError:
+        # Raiz nueva fuera del workspace: sin marcador deducible no se filtra.
+        new_marker = ""
     changed = 0
     try:
         conn = sqlite3.connect(memory_path)
@@ -417,6 +454,11 @@ def migrate_legacy_seed_paths_in_memory(base_dir: Path, account_type: object, br
                     continue
                 rowid_column = "rowid"
                 for row in conn.execute(f"select rowid as _rowid, {column} from {table}"):
+                    stored = str(row[column] or "")
+                    if not stored or not _may_need_seed_path_migration(
+                        stored, old_prefix, base_prefix, new_marker
+                    ):
+                        continue
                     new_path = _legacy_seed_path_to_broker_path(base_dir, row[column], account, broker_key)
                     if not new_path or new_path == str(row[column]):
                         continue
