@@ -50,6 +50,7 @@ from ui.ubs_params_logic import UBSParamsLogicMixin
 from ui.ubs_params_view import UBSParamsViewMixin
 from ui.settings_logic import SettingsLogicMixin
 from ui.settings_view import SettingsViewMixin
+from ui.startup_progress import StartupProgress, current as startup_progress_current
 from ui.ubs_agent_logic import UBSAgentLogicMixin
 from ui.ubs_agent_view import UBSAgentViewMixin
 from ui.ubs_results_logic import UBSResultsLogicMixin
@@ -697,6 +698,16 @@ class MT5AutotesterUI(
 ):
     def __init__(self) -> None:
         super().__init__()
+        self._startup_progress = StartupProgress(
+            (
+                "Ajustes y rutas",
+                "Migracion legacy",
+                "Interfaz",
+                "Refresco inicial",
+                "Nodo manager",
+            )
+        )
+        self._startup_progress.advance("Ajustes y rutas")
         self.colors = COLORS
         self._rounded_button_cls = RoundedButton
         self._rounded_card_cls = RoundedCard
@@ -772,6 +783,7 @@ class MT5AutotesterUI(
         self.ubs_account_type = tk.StringVar(
             value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE), self.ubs_broker.get())
         )
+        self._startup_progress.advance("Migracion legacy")
         self._legacy_ubs_migrations = migrate_legacy_roboforex_storage(BASE_DIR)
         self.ubs_pass_min_net_profit = tk.StringVar(value=saved_general.get("ubs_pass_min_net_profit", "100"))
         self.ubs_pass_min_profit_factor = tk.StringVar(value=saved_general.get("ubs_pass_min_profit_factor", "1.20"))
@@ -1285,18 +1297,23 @@ class MT5AutotesterUI(
         self.ubs_continue_button: RoundedButton | None = None
         self.current_section = "panel"
 
+        self._startup_progress.advance("Interfaz")
         self._sync_ubs_account_paths()
         self._configure_style()
         self._build_ui()
         try:
             self._load_template()
-        except Exception:
+        except Exception as exc:
             self.status_text.set("Template tester no cargado")
+            self._startup_progress.note(f"AVISO: template tester no cargado ({exc})")
+        self._startup_progress.advance("Refresco inicial")
         self._refresh_all()
+        self._startup_progress.advance("Nodo manager")
         self._manager_node.start()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(60, self._animate_progress)
         self.after(OUTPUT_DRAIN_IDLE_INTERVAL_MS, self._drain_output_queue)
+        self._startup_progress.done()
 
     def _on_app_close(self) -> None:
         if self._manager_node.job_running:
@@ -2601,7 +2618,15 @@ class MT5AutotesterUI(
 
 
 def main() -> int:
-    app = MT5AutotesterUI()
+    try:
+        app = MT5AutotesterUI()
+    except BaseException as exc:
+        # Un fallo aqui deja la ventana a medias y sin traza visible: la barra
+        # marca en que fase murio antes de propagar el error completo.
+        progress = startup_progress_current()
+        if progress is not None:
+            progress.fail(exc)
+        raise
     try:
         app.mainloop()
     finally:
