@@ -114,6 +114,10 @@ class SymbolSpec:
     currency_profit: str = ""
     currency_base: str = ""
     digits: int | None = None
+    # Margin MT5 requires for ONE position at volume_min, with the leverage the
+    # account had when measured. The portfolio manager reads this from the spec
+    # dump as its best margin source, so the dump must never be written without it.
+    margin_min_lot: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,7 @@ class SymbolSpecExtractionResult:
     server: str
     account_currency: str
     missing_symbols: tuple[str, ...]
+    account_leverage: int | None = None
 
 
 @dataclass(frozen=True)
@@ -249,6 +254,30 @@ def _first_positive(*values: object) -> float:
     return 0.0
 
 
+def _margin_for_min_lot(mt5, name: str, volume: float, price: float) -> float:
+    """Margin MT5 requires for one position at ``volume``, in the deposit currency.
+
+    ``order_calc_margin`` already applies the product's margin tier and the
+    account leverage, so there is nothing to derive from it. Returns 0.0 when MT5
+    declines to answer (symbol not tradable, no price, older build without the
+    call): the caller keeps whatever the previous dump had.
+    """
+    if volume <= 0 or price <= 0:
+        return 0.0
+    order_type = getattr(mt5, "ORDER_TYPE_BUY", None)
+    calc = getattr(mt5, "order_calc_margin", None)
+    if order_type is None or calc is None:
+        return 0.0
+    try:
+        margin = calc(order_type, name, volume, price)
+    except Exception:
+        return 0.0
+    try:
+        return max(0.0, float(margin))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _last_historical_close(mt5, name: str) -> float:
     """Last daily close from history, used as a price fallback when quotes are empty.
 
@@ -337,11 +366,12 @@ def extract_symbol_specs_from_mt5(
                 # Live quotes are empty when the market is closed; the last daily
                 # close is available from history regardless of session state.
                 price = _last_historical_close(mt5, name)
+            volume_min = float(getattr(info, "volume_min", 0.0) or 0.0)
             specs.append(
                 SymbolSpec(
                     name=str(getattr(info, "name", name) or name),
                     path=str(getattr(info, "path", "") or ""),
-                    volume_min=float(getattr(info, "volume_min", 0.0) or 0.0),
+                    volume_min=volume_min,
                     volume_step=float(getattr(info, "volume_step", 0.0) or 0.0),
                     volume_max=float(getattr(info, "volume_max", 0.0) or 0.0),
                     contract_size=float(getattr(info, "trade_contract_size", 0.0) or 0.0),
@@ -351,9 +381,11 @@ def extract_symbol_specs_from_mt5(
                     currency_profit=str(getattr(info, "currency_profit", "") or ""),
                     currency_base=str(getattr(info, "currency_base", "") or ""),
                     digits=getattr(info, "digits", None),
+                    margin_min_lot=_margin_for_min_lot(mt5, name, volume_min, price),
                 )
             )
         specs.sort(key=lambda spec: spec.name.upper())
+        leverage = getattr(account, "leverage", None) if account is not None else None
         return SymbolSpecExtractionResult(
             specs=tuple(specs),
             terminal_path=terminal_path,
@@ -361,6 +393,7 @@ def extract_symbol_specs_from_mt5(
             server=str(getattr(account, "server", "") or server or ""),
             account_currency=account_currency,
             missing_symbols=tuple(missing),
+            account_leverage=int(leverage) if leverage else None,
         )
     finally:
         mt5.shutdown()

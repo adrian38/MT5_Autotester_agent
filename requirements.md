@@ -296,6 +296,28 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.7.6** After each MT5 batch, reports older than the batch start time MUST
   be ignored. History-cache failures or stale files MUST NOT be scored as if
   they belonged to the current backtest.
+- **FR-1.7.7** The per-symbol factor MUST be measured from the symbol's real
+  contract value: `reference_notional / (lot_MT5_executes × price × contract ×
+  fx_rate)`. When MT5 reports no `trade_tick_value` (every GBX-quoted LSE share,
+  and any pair whose conversion is not loaded at extraction time), the notional
+  MUST be rebuilt as `price × contract_size × rate`, with the rate implied by the
+  symbols MT5 did convert (`ubs/normalization_gen.implied_currency_rates`). Minor
+  currency units (`GBX`, `GBp`) MUST be kept distinct from their parent currency:
+  upper-casing `GBp` into `GBP` undervalues every LSE share by 100x.
+- **FR-1.7.8** A symbol a given extraction cannot measure MUST keep the factor of
+  the file being replaced (`carried_symbols`). Only symbols never measured land in
+  `skipped_symbols`, and the per-group fallback they receive MUST be the group's
+  **minimum** measured factor, never the median: an unmeasured symbol may be
+  understated (false reject) but MUST NOT be amplified (false accept). The median
+  is what turned 102 unmeasured LSE shares into a 10.0 factor, inflating their net
+  profit by up to 96x.
+- **FR-1.7.9** Re-applying a normalization change to stored results MUST go
+  through `tools/fast_rescore_from_metrics.py`, which reads its thresholds from
+  `ui_settings.ini`. `ubs_agent.py --rescore-*-only` deliberately preserves the
+  stored factor (`ubs.score.rescore_result`) and MUST NOT be relied on for this.
+  Stages whose verdict does not depend on the net gate (Final Tick, Final Tick 6M,
+  regression) and rows in non-scored states MUST have their normalization fields
+  refreshed without their status being re-judged.
 
 ### 1.8 UBS agent — candidate lifecycle
 
@@ -621,6 +643,22 @@ requirement changes or a debt item is opened/closed.
   no saved setting exists; positive bonus `+70`; negative bonus `-70`; dates
   empty = template dates. Bonus values are retained as legacy audit metadata;
   probability feedback uses stage outcomes rather than additive bonuses.
+- **FR-1.12.21a** Robustness acceptance MUST require both the absolute OOS score
+  gates and the degradation gates against the candidate's construction result.
+  The default degradation limits are annualized normalized-net retention
+  `>= 0.50`, profit-factor edge retention `(PF_OOS-1)/(PF_IS-1) >= 0.50`,
+  duration-adjusted Recovery Factor retention `>= 0.50`, drawdown inflation
+  `DD_OOS/max(DD_IS, 2%) <= 2.0`, and trade-rate retention `>= 0.50`.
+  Robustness MUST also enforce temporal-generalization gates: residual OOS net
+  after removing the three best positive months `>= 20%` of OOS net, positive
+  active-month ratio `>= 50%`, cumulative trade-curve R-squared `>= 0.60`,
+  stability retention against construction `>= 0.75`, stationary-block
+  bootstrap `P(net>0) >= 95%`, and bootstrap PF fifth percentile `>= 1.05`.
+  The bootstrap MUST be deterministic for identical trade histories. A zero
+  threshold disables that individual gate. Missing or invalid comparison
+  inputs MUST be persisted as unavailable and remain neutral rather than
+  causing a rejection. The full audit MUST be stored separately in
+  `candidate_robustness.degradation_json` and exposed in the robustness UI.
 - **FR-1.12.22** The `UBS Resultados` tab MUST expose `Continuar a robustez`
   for the latest visible run and must confirm the number of candidates before
   launching MT5. This action MUST be incremental: it passes
@@ -850,6 +888,70 @@ requirement changes or a debt item is opened/closed.
   MUST NOT depend on PyInstaller being installed.
 - **FR-1.14.4** `tkinter`, `sqlite3`, `winreg`, `urllib`, and other Windows/Python
   standard library modules MUST NOT be listed as pip dependencies.
+
+### 1.15 AI agent tooling — `codebase-memory-mcp`
+
+- **FR-1.15.1** Code discovery by AI agents MUST use the DeusData
+  **`codebase-memory-mcp`** server (project key
+  `F-TRADING-MT5_Autotester_agent_AXI`, root `F:/TRADING/MT5_Autotester_agent_AXI`)
+  as the primary tool, falling back to text search (grep/glob) only for
+  non-indexed material (`.set`, `.ini`, HTML reports, generated outputs) or when
+  the index is stale.
+- **FR-1.15.2** The server MUST be declared in the project `.mcp.json` under the
+  name `codebase-memory` (stdio transport, no args). Because the entry points to
+  a machine-specific binary
+  (`C:\Users\13199\.claude\tools\codebase-memory-mcp\codebase-memory-mcp.exe`),
+  `.mcp.json` stays in `.gitignore` and MUST be recreated on each machine.
+- **FR-1.15.3** The MCP server is a **development-time dependency only**. Runtime
+  code (`app_ui.py`, `ubs_agent.py`, `run_tests.py`, …) MUST NOT import, launch,
+  or depend on it, and it MUST NOT be added to packaging/installer inputs.
+- **FR-1.15.4** The graph index MUST be kept fresh: `index_status` /
+  `detect_changes` after substantial refactors, `index_repository` to re-index.
+  The index is git/branch-scoped, so branch switches (e.g. `AXI` ↔ `IC` ↔ `main`)
+  can require re-indexing.
+- **FR-1.15.5** Agent-facing entry documents ([CLAUDE.md](CLAUDE.md),
+  [AGENTS.md](AGENTS.md)) MUST document this workflow, including the preferred
+  tools (`search_graph`, `search_code`, `trace_path`, `get_code_snippet`,
+  `query_graph`, `get_architecture`) and the gitignored `.mcp.json` caveat.
+
+### 1.16 Interface with `MT5_Autotester_agent_manager`
+
+The manager (`I:\TRADING\MT5_Autotester_agent_manager`, node `axi` in its
+`manager.json`) reads this project directory. The dependency is one-way: this
+repository MUST NOT read anything from the manager.
+
+- **FR-1.16.1** These are the only files the manager consumes, and their
+  ownership MUST stay explicit:
+
+  | File | Produced by | Consumed by |
+  |------|-------------|-------------|
+  | `assets/<broker>_normalization.json` | this repo (`tools/gen_axi_normalization.py`) | both — the agent as a scoring factor, the manager inverted into notional per minimum position |
+  | `assets/<broker>_symbol_specs.json` | this repo (`tools/gen_axi_normalization.py --dump-specs`) | manager only (`margin_min_lot`, `volume_min`, `contract_size`, `account_leverage`) |
+  | `assets/<broker>_max_product_leverage.json` | broker schedule + terminal measurement | manager only (product leverage caps) |
+  | `assets/<broker>_assets.ini` | this repo | both |
+  | `outputs/ubs_memory_<BROKER>_<ACCOUNT>.sqlite` | this repo | both (manager read-only) |
+
+- **FR-1.16.2** Derived money fields in the spec dump (`notional_min_lot`,
+  `observed_leverage`) MUST be expressed in the account currency. Multiplying the
+  quoted price without converting makes a pence-quoted share read 74x its real
+  exposure and an AED share report 1:73.9 where the cap is 1:20.
+  `--dump-specs` writes them converted; `tools/fix_broker_specs_currency.py`
+  repairs a dump produced elsewhere. Both are idempotent and only touch
+  `origin: terminal*` leverage entries, never the ones taken from the broker's
+  published schedule. A measured leverage MUST NOT exceed the account leverage of
+  the snapshot: anything above it is timing noise between the price and margin
+  reads, and a cap that is too high asks for less margin than the broker will.
+- **FR-1.16.3** The `skipped_symbols` list is the contract for "the agent could
+  not measure this". Consumers MUST NOT infer a notional, a margin or a leverage
+  for those symbols from group aggregates.
+- **FR-1.16.4** Writing any of these files MUST preserve what the current run
+  could not measure: per-symbol factors, per-symbol margins, and whole symbols the
+  terminal failed to resolve are carried from the previous file and reported as
+  `carried_symbols`. A snapshot taken while a quote or a name was unavailable MUST
+  NOT delete a measurement.
+- **FR-1.16.5** Regenerating any of these files MUST be followed by
+  `tools/fast_rescore_from_metrics.py` (see FR-1.7.9) so stored results and the
+  active factors never disagree.
 
 ---
 

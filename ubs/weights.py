@@ -62,6 +62,17 @@ ROBUST_REASON_PENALTIES = {
     "drawdown_pct": 45.0,
     "recovery_factor": 35.0,
     "positive_month_ratio": 20.0,
+    "degradation_net": 30.0,
+    "degradation_profit_factor": 25.0,
+    "degradation_recovery": 20.0,
+    "degradation_drawdown": 30.0,
+    "degradation_trade_rate": 20.0,
+    "generalization_residual_profit": 55.0,
+    "generalization_month_breadth": 35.0,
+    "generalization_stability": 30.0,
+    "generalization_stability_retention": 25.0,
+    "generalization_bootstrap_net": 50.0,
+    "generalization_bootstrap_pf": 50.0,
 }
 
 FINAL_TICK_REASON_PENALTIES = {

@@ -178,7 +178,7 @@ class UBSRobustnessLogicMixin:
             return "0 ops/no aceptado"
         return self._format_ubs_status(status)
 
-    def _ubs_robust_reason(self, status: str, metrics: dict) -> str:
+    def _ubs_robust_reason(self, status: str, metrics: dict, degradation: dict | None = None) -> str:
         if status == "pending":
             return "pendiente"
         if status == "no_report":
@@ -201,7 +201,47 @@ class UBSRobustnessLogicMixin:
             "positive_month_ratio": ("meses+", ".0%", ""),
         }
         parts: list[str] = []
+        checks = degradation.get("checks", {}) if isinstance(degradation, dict) else {}
+        degradation_labels = {
+            "degradation_net": ("net retenido", "net_retention", "percent"),
+            "degradation_profit_factor": ("edge PF retenido", "pf_edge_retention", "percent"),
+            "degradation_recovery": ("recovery anual retenido", "recovery_retention", "percent"),
+            "degradation_drawdown": ("inflacion DD", "dd_inflation", "ratio"),
+            "degradation_trade_rate": ("ritmo trades", "trade_rate_retention", "percent"),
+            "generalization_residual_profit": ("neto sin top3", "residual_profit_ratio", "percent"),
+            "generalization_month_breadth": ("meses OOS+", "oos_positive_month_ratio", "percent"),
+            "generalization_stability": ("estabilidad OOS", "trade_curve_stability", "decimal"),
+            "generalization_stability_retention": ("estabilidad retenida", "stability_retention", "percent"),
+            "generalization_bootstrap_net": (
+                "P(neto>0) bootstrap",
+                "bootstrap_net_positive_probability",
+                "percent",
+            ),
+            "generalization_bootstrap_pf": ("PF p05 bootstrap", "bootstrap_pf_p05", "decimal"),
+        }
         for reason in reasons:
+            degradation_format = degradation_labels.get(str(reason))
+            if degradation_format is not None:
+                label, check_name, value_format = degradation_format
+                check = checks.get(check_name, {}) if isinstance(checks, dict) else {}
+                value = check.get("value") if isinstance(check, dict) else None
+                threshold = check.get("threshold") if isinstance(check, dict) else None
+                comparison = check.get("comparison") if isinstance(check, dict) else "minimum"
+                if value is None or threshold is None:
+                    parts.append(label)
+                else:
+                    operator = "<" if comparison == "minimum" else ">"
+                    if value_format == "percent":
+                        rendered_value = f"{float(value):.0%}"
+                        rendered_threshold = f"{float(threshold):.0%}"
+                    elif value_format == "ratio":
+                        rendered_value = f"{float(value):.2f}x"
+                        rendered_threshold = f"{float(threshold):.2f}x"
+                    else:
+                        rendered_value = f"{float(value):.2f}"
+                        rendered_threshold = f"{float(threshold):.2f}"
+                    parts.append(f"{label}: {rendered_value} {operator} {rendered_threshold}")
+                continue
             label, fmt, suffix = formats.get(str(reason), (str(reason), "", ""))
             value = metrics.get("normalized_net_profit") if str(reason) == "net_profit" else metrics.get(reason)
             if value is None:
@@ -212,6 +252,17 @@ class UBSRobustnessLogicMixin:
             except (TypeError, ValueError):
                 parts.append(f"{label}: {value}")
         return " | ".join(parts)
+
+    def _format_ubs_degradation_value(self, degradation: dict, check_name: str, *, percentage: bool) -> str:
+        checks = degradation.get("checks", {}) if isinstance(degradation, dict) else {}
+        check = checks.get(check_name, {}) if isinstance(checks, dict) else {}
+        value = check.get("value") if isinstance(check, dict) else None
+        if value is None:
+            return ""
+        try:
+            return f"{float(value):.0%}" if percentage else f"{float(value):.2f}x"
+        except (TypeError, ValueError):
+            return ""
 
     def _ubs_robust_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
         rows = conn.execute(
@@ -403,6 +454,7 @@ class UBSRobustnessLogicMixin:
             f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
             f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",
             f"Pass OOS: trades>={self.ubs_robust_pass_min_trades.get()} | recovery>={self.ubs_robust_pass_min_recovery_factor.get().strip()}",
+            f"Degradacion: ret. net>={self.ubs_robust_min_net_retention.get().strip()} | edge PF>={self.ubs_robust_min_pf_edge_retention.get().strip()} | recovery>={self.ubs_robust_min_recovery_retention.get().strip()} | DD<={self.ubs_robust_max_dd_inflation.get().strip()}x",
             f"Trades W1/MN OOS: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
             f"Bonus: accepted {positive_bonus:+.2f} | rejected {negative_bonus:+.2f}",
         ]
@@ -509,6 +561,7 @@ class UBSRobustnessLogicMixin:
                     cr.report_path as robust_report_path,
                     cr.score as robust_score,
                     cr.metrics_json as robust_metrics_json,
+                    cr.degradation_json as robust_degradation_json,
                     cr.from_date, cr.to_date,
                     cr.positive_bonus, cr.negative_bonus,
                     cr.evaluated_at
@@ -554,6 +607,7 @@ class UBSRobustnessLogicMixin:
         for index, row in enumerate(rows):
             status = str(row["robust_status"] or "pending")
             metrics = self._parse_ubs_metrics(row["robust_metrics_json"])
+            degradation = self._parse_ubs_metrics(row["robust_degradation_json"])
             bonus = self._robustness_bonus_for_status(status, row["positive_bonus"], row["negative_bonus"])
             date_range = ""
             if row["from_date"] or row["to_date"]:
@@ -569,7 +623,7 @@ class UBSRobustnessLogicMixin:
                     row["id"],
                     row["generation"],
                     self._format_ubs_robustness_status(status),
-                    self._ubs_robust_reason(status, metrics),
+                    self._ubs_robust_reason(status, metrics, degradation),
                     row["target_symbol"] or row["symbol"],
                     row["period"],
                     self._format_ubs_number(row["train_score"]),
@@ -580,6 +634,10 @@ class UBSRobustnessLogicMixin:
                     self._format_ubs_number(metrics.get("profit_factor")),
                     self._format_ubs_number(metrics.get("drawdown_pct")),
                     self._format_ubs_int(metrics.get("trades")),
+                    self._format_ubs_degradation_value(degradation, "net_retention", percentage=True),
+                    self._format_ubs_degradation_value(degradation, "pf_edge_retention", percentage=True),
+                    self._format_ubs_degradation_value(degradation, "recovery_retention", percentage=True),
+                    self._format_ubs_degradation_value(degradation, "dd_inflation", percentage=False),
                     date_range,
                     Path(str(row["set_path"] or "")).name,
                 ),

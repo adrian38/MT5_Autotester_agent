@@ -344,6 +344,10 @@ class UBSAgentViewMixin:
             ("Trades min", self.ubs_robust_pass_min_trades, "spin"),
             ("DD max %", self.ubs_robust_pass_max_drawdown_pct, "entry"),
             ("Recovery min", self.ubs_robust_pass_min_recovery_factor, "entry"),
+            ("Ret. net >=", self.ubs_robust_min_net_retention, "entry"),
+            ("Ret. edge PF >=", self.ubs_robust_min_pf_edge_retention, "entry"),
+            ("Ret. recovery >=", self.ubs_robust_min_recovery_retention, "entry"),
+            ("Inflacion DD <= x", self.ubs_robust_max_dd_inflation, "entry"),
             ("Bonus OK legacy", self.ubs_robust_positive_bonus, "entry"),
             ("Bonus FAIL legacy", self.ubs_robust_negative_bonus, "entry"),
         ]
@@ -365,15 +369,15 @@ class UBSAgentViewMixin:
 
         ttk.Label(
             robust,
-            text="Solo los candidatos accepted del agente pasan a OOS. Accepted suma bonus; rejected suma bonus negativo; sin reporte/mismatch queda neutro.",
+            text="Pasa si cumple los limites OOS absolutos y conserva el edge frente a Resultados. 0 desactiva cada limite relativo; datos no disponibles quedan neutros.",
             style="Muted.TLabel",
-        ).grid(row=5, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
+        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
         ttk.Button(
             robust,
             text="Guardar robustez",
             style="Primary.TButton",
             command=self._save_ubs_agent_clicked,
-        ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))
+        ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))
 
         final_tick = self._card(inner, "Final Tick (Every Tick)")
         final_tick.grid(row=4, column=0, sticky="ew", pady=(0, 24))
