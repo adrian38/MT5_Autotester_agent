@@ -190,6 +190,49 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(quarantine, ("same.set", portfolio_id))
 
+    def test_batch_exclusion_also_works_on_a_monthly_portfolio(self) -> None:
+        # Un mes guardado no es un bundle y aun así se borra completo al excluir,
+        # así que la exclusión múltiple vale igual. La fila se ajusta a mano en
+        # lugar de recorrer el guardado mensual: la exclusión solo lee el ámbito,
+        # el tipo, las métricas y las asignaciones del portafolio.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory = project / "outputs" / "ubs_memory_ICTRADING_STANDARD.sqlite"
+            memory.parent.mkdir()
+            memory.touch()
+            saved = save_portfolio_payload(memory, self._payload("request-monthly-exclude"))
+            portfolio_id = int(saved["portfolio_id"])
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                conn.execute(
+                    "update portfolios set portfolio_scope='monthly',portfolio_type='aggressive',"
+                    "type='aggressive',metrics_json='{}' where id=?",
+                    (portfolio_id,),
+                )
+                conn.commit()
+
+            result = exclude_portfolio_members_payload(
+                project,
+                "ICTRADING",
+                memory,
+                {
+                    "scope": "monthly",
+                    "portfolio_id": portfolio_id,
+                    "set_paths": ["same.set"],
+                },
+            )
+
+            self.assertTrue(result["deleted"])
+            self.assertEqual(result["portfolio_id"], portfolio_id)
+            self.assertEqual(result["scope"], "monthly")
+            self.assertEqual(len(result["quarantine_ids"]), 1)
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                self.assertEqual(
+                    conn.execute("select count(*) from portfolios where id=?", (portfolio_id,)).fetchone()[0],
+                    0,
+                )
+                reason = conn.execute("select reason from portfolio_quarantine").fetchone()[0]
+            self.assertIn("Portafolio UBS mensual", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

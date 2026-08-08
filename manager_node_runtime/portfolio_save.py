@@ -298,10 +298,12 @@ def exclude_portfolio_members_payload(
             metrics = {}
         portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
         is_bundle = portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
-        # Multiple exclusion stays reserved for full_history A/M/C bundles.
-        # Single exclusion works for any portfolio (monthly, bundle, or plain).
-        if multiple and not (scope == "full_history" and is_bundle):
-            raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C")
+        # Multiple exclusion is allowed wherever deleting the portfolio whole is
+        # the right semantics: A/M/C bundles and any saved month (excluding a
+        # member invalidates the month, see delete_whole below). A plain
+        # full_history portfolio is recalculated instead, one member at a time.
+        if multiple and not (is_bundle or scope == "monthly"):
+            raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C y mensuales")
         rows = [dict(row) for row in conn.execute(
             "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
             "where portfolio_id=?",
