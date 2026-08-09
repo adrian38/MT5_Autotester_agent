@@ -16,11 +16,119 @@ from portfolio_manager.ubs_portfolio import (
 )
 from ubs.db import connect_memory
 from ubs.account import account_memory_path
+from ubs.manual_status import mark_candidate_final_tick, mark_candidate_robustness
 from ui.ubs_portfolio_logic import UBSPortfolioLogicMixin
 
 
 class _PortfolioPersistence(UBSPortfolioLogicMixin):
     """Reuse the desktop portfolio persistence without constructing the UI."""
+
+
+# --- Motivo de exclusion (copia bifurcada de mt5_manager/candidate_verdict.py) ---
+#
+# El manager envia `reason_code` con la exclusion. Cuando no es `manual`, la
+# estrategia no se retira del portafolio: se declara que FALLO, y este proceso
+# escribe el veredicto que habria escrito el pipeline. Es lo mismo que hace el
+# FAIL manual de la aplicacion, asi que se llama a `ubs.manual_status`, que es la
+# autoridad de este lado; los pesos no se guardan en ninguna tabla y salen de
+# estos estados (`ubs/weights.py::feedback_weight`).
+#
+# REGLA DUPLICADA: el criterio vive tambien en el manager
+# (`mt5_manager/candidate_verdict.py`). El manager exige `verdict_applied` en la
+# respuesta: un nodo sin portar devolvia 200 sin escribir nada y el usuario daba
+# por hechos unos cambios que no existian.
+MANUAL_REASON = "manual"
+DEGRADATION_REASON = "degradation"
+OHLC_MISMATCH_REASON = "ohlc_mismatch"
+REASON_CODES = (MANUAL_REASON, DEGRADATION_REASON, OHLC_MISMATCH_REASON)
+
+REASON_TEXTS = {
+    MANUAL_REASON: "Excluida manualmente desde el manager",
+    DEGRADATION_REASON: "Excluida por degradación: rechazada en el test de robustez",
+    OHLC_MISMATCH_REASON: "Excluida porque el OHLC no se parece al every tick: rechazada en Final Tick 6M",
+}
+
+STAGE_TABLES = (
+    "candidate_robustness",
+    "candidate_final_tick",
+    "candidate_final_tick_6m",
+    "candidate_regression",
+)
+
+
+def normalize_reason_code(value: object) -> str:
+    """Lo desconocido es `manual`: un motivo inventado nunca borra etapas."""
+    code = str(value or "").strip().lower().replace("-", "_")
+    return code if code in REASON_CODES else MANUAL_REASON
+
+
+def reason_with_verdict(text: str, reason_code: str) -> str:
+    code = normalize_reason_code(reason_code)
+    if code == MANUAL_REASON:
+        return text
+    return f"{text} — {REASON_TEXTS[code]}"
+
+
+def _quarantine_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "select 1 from sqlite_master where type='table' and name=?", (table,)
+    ).fetchone() is not None
+
+
+def ensure_quarantine_reason_columns(conn: sqlite3.Connection) -> None:
+    """Migracion idempotente: las memorias en produccion no tienen estas columnas."""
+    columns = {str(row[1]) for row in conn.execute("pragma table_info(portfolio_quarantine)")}
+    if "reason_code" not in columns:
+        conn.execute(
+            f"alter table portfolio_quarantine add column reason_code text not null default '{MANUAL_REASON}'"
+        )
+    if "restore_json" not in columns:
+        conn.execute("alter table portfolio_quarantine add column restore_json text")
+
+
+def snapshot_candidate_stages(conn: sqlite3.Connection, candidate_id: object) -> str | None:
+    """Copia literal de las etapas antes del veredicto, para poder reintegrar.
+
+    El rechazo por degradacion BORRA Final Tick, Final Tick 6M y regresion, igual
+    que el del agente. Sin este respaldo, reintegrar la estrategia la dejaria
+    fuera del pool para siempre: el manager exige las cuatro etapas aceptadas.
+    """
+    try:
+        identifier = int(candidate_id)
+    except (TypeError, ValueError):
+        return None
+    if identifier < 1:
+        return None
+    snapshot: dict[str, list[dict[str, Any]]] = {}
+    for table in STAGE_TABLES:
+        if not _quarantine_table_exists(conn, table):
+            continue
+        cursor = conn.execute(f"select * from {table} where candidate_id=?", (identifier,))
+        names = [str(column[0]) for column in cursor.description]
+        rows = [dict(zip(names, row)) for row in cursor.fetchall()]
+        if rows:
+            snapshot[table] = rows
+    if not snapshot:
+        return None
+    return json.dumps(snapshot, ensure_ascii=True, sort_keys=True, default=str)
+
+
+def apply_candidate_verdict(conn: sqlite3.Connection, candidate_id: object, reason_code: str) -> bool:
+    """Marca la etapa que corresponde al motivo, con la primitiva del agente."""
+    code = normalize_reason_code(reason_code)
+    if code == MANUAL_REASON:
+        return False
+    try:
+        identifier = int(candidate_id)
+    except (TypeError, ValueError):
+        return False
+    if identifier < 1:
+        return False
+    if code == DEGRADATION_REASON:
+        return bool(mark_candidate_robustness(conn, [identifier], "rejected"))
+    return bool(
+        mark_candidate_final_tick(conn, [identifier], "rejected", final_tick_stage="six_month")
+    )
 
 
 def _deserialize_proposals(payload: object, scope: str) -> list[dict[str, Any]]:
@@ -298,10 +406,11 @@ def exclude_portfolio_members_payload(
             metrics = {}
         portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
         is_bundle = portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
-        # Multiple exclusion stays reserved for full_history A/M/C bundles.
-        # Single exclusion works for any portfolio (monthly, bundle, or plain).
-        if multiple and not (scope == "full_history" and is_bundle):
-            raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C")
+        # Multiple exclusion is allowed where the manager offers the checkboxes:
+        # A/M/C bundles and any saved month. Ya no hay ninguna asimetria de
+        # borrado detras: ningun ambito borra ni modifica el portafolio guardado.
+        if multiple and not (is_bundle or scope == "monthly"):
+            raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C y mensuales")
         rows = [dict(row) for row in conn.execute(
             "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
             "where portfolio_id=?",
@@ -328,10 +437,12 @@ def exclude_portfolio_members_payload(
         seen.add(key)
         selected.append(member)
 
-    reason = (
-        "Excluida manualmente de un portafolio A/M/C eliminado" if is_bundle
-        else "Excluida manualmente de un Portafolio UBS mensual eliminado" if scope == "monthly"
-        else "Retirada manualmente de un portafolio guardado"
+    reason_code = normalize_reason_code(payload.get("reason_code"))
+    reason = reason_with_verdict(
+        "Excluida manualmente desde un portafolio A/M/C guardado" if is_bundle
+        else "Excluida manualmente desde un Portafolio UBS mensual guardado" if scope == "monthly"
+        else "Retirada manualmente de un portafolio guardado",
+        reason_code,
     )
 
     grouped: dict[Path, list[tuple[str, int | None, dict[str, Any]]]] = {}
@@ -346,6 +457,7 @@ def exclude_portfolio_members_payload(
         grouped.setdefault(source_memory.resolve(), []).append((account_label, candidate_id, member))
 
     quarantine_ids: list[int] = []
+    verdict_applied = reason_code != MANUAL_REASON
     for source_memory, members in grouped.items():
         source_conn = connect_memory(source_memory, timeout=10.0)
         try:
@@ -359,17 +471,25 @@ def exclude_portfolio_members_payload(
                     quarantined_at text not null
                 )"""
             )
+            ensure_quarantine_reason_columns(source_conn)
             for account_label, candidate_id, member in members:
                 set_path = str(member.get("set_path") or member.get("set_id") or "")
+                # El respaldo se lee ANTES del veredicto y viaja con la fila de
+                # cuarentena: es lo unico que permite reintegrar despues.
+                restore_json = (
+                    snapshot_candidate_stages(source_conn, candidate_id)
+                    if reason_code != MANUAL_REASON else None
+                )
                 source_conn.execute(
                     """insert into portfolio_quarantine(
                         account_type,candidate_id,set_path,symbol,timeframe,reason,
-                        source_portfolio_id,quarantined_at
-                    ) values(?,?,?,?,?,?,?,?) on conflict(set_path) do update set
+                        source_portfolio_id,quarantined_at,reason_code,restore_json
+                    ) values(?,?,?,?,?,?,?,?,?,?) on conflict(set_path) do update set
                         account_type=excluded.account_type,candidate_id=excluded.candidate_id,
                         symbol=excluded.symbol,timeframe=excluded.timeframe,
                         reason=excluded.reason,source_portfolio_id=excluded.source_portfolio_id,
-                        quarantined_at=excluded.quarantined_at""",
+                        quarantined_at=excluded.quarantined_at,
+                        reason_code=excluded.reason_code,restore_json=excluded.restore_json""",
                     (
                         account_label,
                         candidate_id,
@@ -379,12 +499,15 @@ def exclude_portfolio_members_payload(
                         reason,
                         portfolio_id,
                         datetime.now().isoformat(timespec="seconds"),
+                        reason_code,
+                        restore_json,
                     ),
                 )
                 saved = source_conn.execute(
                     "select id from portfolio_quarantine where set_path=?", (set_path,)
                 ).fetchone()
                 quarantine_ids.append(int(saved[0]))
+                apply_candidate_verdict(source_conn, candidate_id, reason_code)
             source_conn.commit()
         except Exception:
             source_conn.rollback()
@@ -392,61 +515,29 @@ def exclude_portfolio_members_payload(
         finally:
             source_conn.close()
 
-    # Bundles and monthly portfolios are deleted whole; a single exclusion from a
-    # plain full_history portfolio drops the member and recalculates the rest.
-    delete_whole = multiple or is_bundle or scope == "monthly"
-    conn = connect_memory(active_memory, timeout=10.0)
-    try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("begin immediate")
-        if delete_whole:
-            for table in (
-                "portfolio_decision_log", "portfolio_allocations", "portfolio_members", "portfolio_versions"
-            ):
-                conn.execute(f"delete from {table} where portfolio_id=?", (portfolio_id,))
-            deleted = conn.execute("delete from portfolios where id=?", (portfolio_id,))
-            if deleted.rowcount != 1:
-                raise RuntimeError(f"No se pudo borrar el portafolio #{portfolio_id}")
-        else:
-            portfolio_row = conn.execute(
-                "select target_strategies,active_strategies from portfolios where id=?",
-                (portfolio_id,),
-            ).fetchone()
-            if portfolio_row is None:
-                raise ValueError("El portafolio ya no existe")
-            target = max(
-                int(portfolio_row["target_strategies"] or 0),
-                int(portfolio_row["active_strategies"] or 0),
-            )
-            conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
-            set_path_value = str(selected[0].get("set_path") or selected[0].get("set_id") or "")
-            allocation_delete = conn.execute(
-                "delete from portfolio_allocations where portfolio_id=? and set_path=?",
-                (portfolio_id, set_path_value),
-            )
-            conn.execute(
-                "delete from portfolio_members where portfolio_id=? and set_path=?",
-                (portfolio_id, set_path_value),
-            )
-            if allocation_delete.rowcount == 0:
-                raise ValueError("No se encontró la asignación dentro del portafolio")
-            _PortfolioPersistence()._recalculate_saved_portfolio(conn, portfolio_id)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    # EL PORTAFOLIO GUARDADO NO SE TOCA. Antes se borraba entero (bundle A/M/C,
+    # mes, o cualquier exclusion multiple) o se le quitaba la asignacion y se
+    # recalculaban sus metricas. Las dos cosas destruian un resultado guardado
+    # como efecto colateral de una decision sobre el pool. La exclusion afecta
+    # ahora a lo que decide: el pool y, si hay veredicto, los estados del agente.
+    # Misma regla en el manager: `PortfolioSource._quarantine_member`.
+    # `verdict_applied` es la confirmacion que exige el manager cuando el motivo
+    # no es manual: sin ella avisa en vez de dar por escrito un veredicto que
+    # este nodo no habria aplicado.
     if multiple:
         return {
             "quarantine_ids": quarantine_ids,
-            "deleted": True,
+            "deleted": False,
             "portfolio_id": portfolio_id,
             "scope": scope,
+            "reason_code": reason_code,
+            "verdict_applied": verdict_applied,
         }
     return {
         "quarantine_id": quarantine_ids[0] if quarantine_ids else 0,
-        "deleted": delete_whole,
+        "deleted": False,
         "portfolio_id": portfolio_id,
         "scope": scope,
+        "reason_code": reason_code,
+        "verdict_applied": verdict_applied,
     }

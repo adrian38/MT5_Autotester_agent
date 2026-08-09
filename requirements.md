@@ -892,23 +892,45 @@ requirement changes or a debt item is opened/closed.
 ### 1.15 AI agent tooling — `codebase-memory-mcp`
 
 - **FR-1.15.1** Code discovery by AI agents MUST use the DeusData
-  **`codebase-memory-mcp`** server (project key
-  `F-TRADING-MT5_Autotester_agent_AXI`, root `F:/TRADING/MT5_Autotester_agent_AXI`)
-  as the primary tool, falling back to text search (grep/glob) only for
-  non-indexed material (`.set`, `.ini`, HTML reports, generated outputs) or when
-  the index is stale.
+  **`codebase-memory-mcp`** server as the primary tool, falling back to text
+  search (grep/glob) only for non-indexed material (`.set`, `.ini`, HTML
+  reports, generated outputs) or when the index is stale.
+- **FR-1.15.1a** This repository is cloned once **per broker**, each clone
+  pinned to its own branch. The broker is NOT inferable from the source — the
+  code carries all three brokers at once — so agents MUST determine it from the
+  active checkout:
+
+  | Branch | Broker | Checkout root |
+  |--------|--------|---------------|
+  | `dev` | RoboForex | `G:\TRADING\MT5_Autotester_agent` |
+  | `AXI` | AXI | `F:\TRADING\MT5_Autotester_agent_AXI` |
+  | `IC` | ICTrading | `C:\Users\Adrian\Adrian\TRADING\MT5_Autotester_agent_IC\MT5_Autotester_agent` |
+
+  Broker branches (`AXI`, `IC`) merge into `dev`. Paths are per-workstation; the
+  IC checkout is normally worked on a different PC than `dev`/`AXI`.
+- **FR-1.15.1b** The project key is derived by the server from the checkout
+  root, so it differs per clone — e.g. `G-TRADING-MT5_Autotester_agent` for the
+  RoboForex checkout, `F-TRADING-MT5_Autotester_agent_AXI` for AXI. Agents MUST
+  resolve it with `list_projects` rather than hardcoding a key, and MUST pass the
+  key matching the checkout they are actually in.
 - **FR-1.15.2** The server MUST be declared in the project `.mcp.json` under the
   name `codebase-memory` (stdio transport, no args). Because the entry points to
-  a machine-specific binary
-  (`C:\Users\13199\.claude\tools\codebase-memory-mcp\codebase-memory-mcp.exe`),
+  a machine-specific binary path — it varies per workstation and per Windows
+  user (the default installer target is
+  `%LOCALAPPDATA%\Programs\codebase-memory-mcp\codebase-memory-mcp.exe`) —
   `.mcp.json` stays in `.gitignore` and MUST be recreated on each machine.
+  A binary living under another user's profile is unusable: `C:\Users\<other>`
+  is ACL-restricted and the MCP server will fail to start.
 - **FR-1.15.3** The MCP server is a **development-time dependency only**. Runtime
   code (`app_ui.py`, `ubs_agent.py`, `run_tests.py`, …) MUST NOT import, launch,
   or depend on it, and it MUST NOT be added to packaging/installer inputs.
 - **FR-1.15.4** The graph index MUST be kept fresh: `index_status` /
   `detect_changes` after substantial refactors, `index_repository` to re-index.
-  The index is git/branch-scoped, so branch switches (e.g. `AXI` ↔ `IC` ↔ `main`)
-  can require re-indexing.
+  The index is git/branch-scoped, so branch switches (e.g. `AXI` ↔ `IC` ↔ `dev`)
+  can require re-indexing. Note `detect_changes` diffs against a **git baseline**
+  (`base_branch`, default `main`), not against the graph — a long changed-files
+  list right after a clean `index_repository` is expected and does NOT mean the
+  index is stale. Use `index_status` (`status: ready`) to judge index health.
 - **FR-1.15.5** Agent-facing entry documents ([CLAUDE.md](CLAUDE.md),
   [AGENTS.md](AGENTS.md)) MUST document this workflow, including the preferred
   tools (`search_graph`, `search_code`, `trace_path`, `get_code_snippet`,
