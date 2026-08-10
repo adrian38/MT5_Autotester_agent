@@ -1324,6 +1324,8 @@ def infer_period_from_set(set_file: Path, params: dict[str, str]) -> str:
         strategy_timeframe_key = "ST1_Timeframe"
     elif run_strategy == "2":
         strategy_timeframe_key = "VolTimeframe"
+    elif run_strategy == "3":
+        strategy_timeframe_key = "RNG_Timeframe"
 
     if strategy_timeframe_key:
         period = TIMEFRAME_ENUM.get(params.get(strategy_timeframe_key, ""))
@@ -1341,7 +1343,13 @@ def infer_period_from_set(set_file: Path, params: dict[str, str]) -> str:
             return period
 
     # Low-confidence fallback, used only when names/comments give no clue.
-    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+    for key in (
+        "ST1_Timeframe",
+        "VolTimeframe",
+        "RNG_Timeframe",
+        "Entry_Timing",
+        "ATR_Timeframe",
+    ):
         value = params.get(key, "")
         period = TIMEFRAME_ENUM.get(value)
         if period:
