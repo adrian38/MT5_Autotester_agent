@@ -40,6 +40,8 @@ if str(BASE_DIR) not in sys.path:
 
 from ubs.account import account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory  # shared WAL connection helper (busy_timeout)
+from ubs.degradation import RobustnessDegradationConfig, evaluate_robustness_degradation
+from ubs.memory import AgentMemory
 from ubs.normalization import net_profit_normalization
 from ubs.score import _score_formula
 
@@ -188,6 +190,7 @@ def rescore_stage(conn, table: str, key_cols: list[str], gates: Gates, broker: s
         updated, normalized, score = result
         reasons = _reasons(updated, normalized, gates)
         updated["reasons"] = reasons
+        updated["accepted"] = not reasons
         status = "accepted" if not reasons else "rejected"
         if status != old_status:
             changed += 1
@@ -210,6 +213,129 @@ def rescore_stage(conn, table: str, key_cols: list[str], gates: Gates, broker: s
         conn.commit()
     print(
         f"[{table}] scored={len(rows)} skipped={skipped} changed={changed} "
+        f"(->accepted {to_accept}, ->rejected {to_reject}){' [DRY-RUN]' if dry else ''}"
+    )
+
+
+def _stored_degradation(
+    raw: object,
+    base_metrics: dict,
+    oos_metrics: dict,
+) -> dict:
+    """Refresh a stored OOS degradation audit without changing its configured rules."""
+    try:
+        stored = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(stored, dict) or not stored:
+        return {}
+
+    config_raw = stored.get("config")
+    base_window = stored.get("base_window")
+    oos_window = stored.get("oos_window")
+    if not isinstance(config_raw, dict) or not isinstance(base_window, dict) or not isinstance(oos_window, dict):
+        return stored
+    allowed = RobustnessDegradationConfig.__dataclass_fields__
+    try:
+        config = RobustnessDegradationConfig(
+            **{key: value for key, value in config_raw.items() if key in allowed}
+        )
+    except (TypeError, ValueError):
+        return stored
+    base_start = base_window.get("from_date")
+    base_end = base_window.get("to_date")
+    oos_start = oos_window.get("from_date")
+    oos_end = oos_window.get("to_date")
+    if not all((base_start, base_end, oos_start, oos_end)):
+        return stored
+    return evaluate_robustness_degradation(
+        base_metrics,
+        oos_metrics,
+        base_from_date=base_start,
+        base_to_date=base_end,
+        oos_from_date=oos_start,
+        oos_to_date=oos_end,
+        config=config,
+    )
+
+
+def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None:
+    """Re-score OOS absolute gates while retaining/recomputing its degradation gate."""
+    rows = conn.execute(
+        """
+        select
+            cr.candidate_id, cr.run_id, cr.status, cr.score, cr.metrics_json,
+            cr.degradation_json, c.metrics_json
+        from candidate_robustness cr
+        left join candidates c on c.id=cr.candidate_id
+        where cr.status in ('accepted','rejected')
+          and cr.metrics_json is not null and cr.metrics_json != ''
+        """
+    ).fetchall()
+    updates = []
+    changed = to_accept = to_reject = skipped = 0
+    for candidate_id, run_id, old_status, old_score, metrics_raw, degradation_raw, base_raw in rows:
+        try:
+            metrics = json.loads(metrics_raw)
+            base_metrics = json.loads(base_raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            skipped += 1
+            continue
+        if not isinstance(metrics, dict) or not isinstance(base_metrics, dict):
+            skipped += 1
+            continue
+        result = _renormalize(metrics, broker)
+        if result is None:
+            skipped += 1
+            continue
+        updated, normalized, score = result
+        base_result = _renormalize(base_metrics, broker)
+        if base_result is not None:
+            base_metrics = base_result[0]
+        absolute_reasons = _reasons(updated, normalized, gates)
+        degradation = _stored_degradation(degradation_raw, base_metrics, updated)
+        degradation_reasons = degradation.get("reasons", []) if degradation else []
+        if not isinstance(degradation_reasons, list):
+            degradation_reasons = []
+        degradation_accepted = bool(degradation.get("accepted", True)) if degradation else True
+        reasons = list(dict.fromkeys([*absolute_reasons, *degradation_reasons]))
+        accepted = not absolute_reasons and degradation_accepted
+        status = "accepted" if accepted else "rejected"
+        updated["reasons"] = reasons
+        updated["accepted"] = accepted
+        if degradation:
+            degradation["absolute_accepted"] = not absolute_reasons
+            degradation["final_accepted"] = accepted
+        if status != old_status:
+            changed += 1
+            if accepted:
+                to_accept += 1
+            else:
+                to_reject += 1
+        updates.append(
+            (
+                status,
+                int(accepted),
+                None if old_score is None else score,
+                _dump(updated),
+                _dump(degradation),
+                candidate_id,
+                run_id,
+            )
+        )
+
+    if not dry and updates:
+        conn.executemany(
+            """
+            update candidate_robustness
+            set status=?, accepted=?, score=?, metrics_json=?, degradation_json=?
+            where candidate_id=? and run_id=?
+            """,
+            updates,
+        )
+        conn.commit()
+    print(
+        f"[candidate_robustness] scored={len(rows)} skipped={skipped} changed={changed} "
         f"(->accepted {to_accept}, ->rejected {to_reject}){' [DRY-RUN]' if dry else ''}"
     )
 
@@ -318,9 +444,7 @@ def main() -> int:
     try:
         rescore_stage(conn, "candidates", ["id"], gates["candidates"], broker, args.dry_run)
         rescore_stage(conn, "seed_scores", ["id"], gates["seeds"], broker, args.dry_run)
-        rescore_stage(
-            conn, "candidate_robustness", ["candidate_id", "run_id"], gates["robustness"], broker, args.dry_run
-        )
+        rescore_robustness_stage(conn, gates["robustness"], broker, args.dry_run)
         # The gate pass only visits accepted/rejected rows. no_trades, no_history,
         # history_ok and the retryable states also carry metrics, and leaving them
         # on an old factor is what made half the base tables look stale after every
@@ -344,6 +468,16 @@ def main() -> int:
         refresh_stage(conn, "candidate_regression", ["candidate_id"], [("metrics_json", "score")], broker, args.dry_run)
     finally:
         conn.close()
+    if not args.dry_run:
+        memory = AgentMemory(db_path)
+        try:
+            removed = memory.cleanup_stale_stage_rows()
+        finally:
+            memory.close()
+        print(
+            "Downstream stale rows removed: "
+            + ", ".join(f"{stage}={count}" for stage, count in removed.items())
+        )
     return 0
 
 
