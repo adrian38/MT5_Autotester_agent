@@ -1033,9 +1033,12 @@ class UBSSeedsLogicMixin:
         win.transient(self)
         win.configure(bg=self.colors["panel"])
         win.geometry("1180x560")
+        win.minsize(900, 480)
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(1, weight=1)
 
         header = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
-        header.pack(fill="x")
+        header.grid(row=0, column=0, sticky="ew")
         tk.Label(
             header,
             text=f"{redundant_total} seeds redundantes en {len(groups)} grupos",
@@ -1051,8 +1054,18 @@ class UBSSeedsLogicMixin:
             font=("Segoe UI", 9), wraplength=1120, justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
+        table_frame = tk.Frame(win, bg=self.colors["panel"])
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=16)
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
         columns = ("retirar", "motivo", "score", "conservar")
-        tree = _ttk.Treeview(win, columns=columns, show="headings", selectmode="none")
+        tree = _ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            selectmode="none",
+            height=14,
+        )
         for key, title, width in (
             ("retirar", "Se retira", 430),
             ("motivo", "Motivo", 110),
@@ -1060,11 +1073,18 @@ class UBSSeedsLogicMixin:
             ("conservar", "Se conserva", 430),
         ):
             tree.heading(key, text=title)
-            tree.column(key, width=width, anchor="w")
-        scroll = _ttk.Scrollbar(win, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
-        tree.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=(0, 12))
-        scroll.pack(side="left", fill="y", padx=(0, 16), pady=(0, 12))
+            tree.column(key, width=width, minwidth=42, anchor="w", stretch=False)
+        tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
+        tree.tag_configure("rejected", foreground=self.colors["danger"])
+        tree.tag_configure("pending", foreground=self.colors["muted"])
+        self._make_tree_sortable(tree)
+        self._attach_tree_scrollbars(
+            table_frame,
+            tree,
+            0,
+            vertical=True,
+            horizontal=True,
+        )
 
         to_retire: list[Path] = []
         for group in sorted(groups, key=lambda g: str(g.keeper.path)):
@@ -1079,35 +1099,36 @@ class UBSSeedsLogicMixin:
                 ))
                 to_retire.append(fingerprint.path)
 
-        footer = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
-        footer.pack(side="bottom", fill="x")
+        footer = tk.Frame(win, bg=self.colors["panel_alt"], padx=16, pady=8)
+        footer.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        footer.columnconfigure(0, weight=1)
         evaluated = sum(1 for p in to_retire if scores.get(str(p).strip().lower()) is not None)
         tk.Label(
             footer,
             text=f"{evaluated} de las {len(to_retire)} redundantes ya están evaluadas: al "
                  "retirarlas se borran sus filas de seed_scores/seed_overrides y se recalculan "
                  "los pesos del Universo.",
-            bg=self.colors["panel"], fg=self.colors["muted"],
-            font=("Segoe UI", 9), wraplength=760, justify="left",
-        ).pack(side="left", anchor="w")
+            bg=self.colors["panel_alt"], fg=self.colors["muted"],
+            font=("Segoe UI", 9), wraplength=680, justify="left",
+        ).grid(row=0, column=0, sticky="w", padx=(10, 16), pady=6)
         tk.Button(
             footer, text="Cerrar", bg=self.colors["panel"], fg=self.colors["muted"],
             relief="solid", borderwidth=1, padx=10, pady=5,
             font=("Segoe UI", 9), cursor="hand2", command=win.destroy,
-        ).pack(side="right", padx=(6, 0))
+        ).grid(row=0, column=2, padx=(6, 10), pady=6)
         tk.Button(
-            footer, text=f"Retirar {len(to_retire)} duplicadas",
+            footer, text=f"Retirar redundantes ({len(to_retire)})",
             bg=self.colors["danger"], fg="#ffffff", relief="flat", borderwidth=0,
             padx=12, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=lambda: self._retire_ubs_seed_duplicates(win, seeds_dir, groups),
-        ).pack(side="right")
+        ).grid(row=0, column=1, pady=6)
 
         if errors:
             tk.Label(
                 footer, text=f"{len(errors)} ficheros ilegibles omitidos",
-                bg=self.colors["panel"], fg=self.colors["danger"],
+                bg=self.colors["panel_alt"], fg=self.colors["danger"],
                 font=("Segoe UI", 9),
-            ).pack(side="right", padx=(0, 12))
+            ).grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6))
 
     def _retire_ubs_seed_duplicates(self, window: tk.Toplevel, seeds_dir: Path, groups: list) -> None:
         import shutil
