@@ -42,6 +42,7 @@ class UBSSeedsViewMixin:
             ("Guardar Symbol/TF", self._save_ubs_seed_override),
             ("Reparar set",     self._repair_selected_ubs_seed_sets),
             ("Reparar todas",   self._repair_all_ubs_seed_sets),
+            ("Revisar duplicados", self._review_ubs_seed_duplicates),
             ("Actualizar",      self._refresh_ubs_seeds_panel),
             ("Manual OK",       self._manual_accept_selected_ubs_seeds),
             ("Manual FAIL",     self._manual_reject_selected_ubs_seeds),
