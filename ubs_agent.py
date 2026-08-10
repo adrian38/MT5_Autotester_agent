@@ -1739,6 +1739,8 @@ def replace_timeframe_keys(lines: list[str], run_strategy: str, target_period: s
         keys.append("ST1_Timeframe")
     elif run_strategy == "2":
         keys.append("VolTimeframe")
+    elif run_strategy == "3":
+        keys.extend(["RNG_Timeframe", "RNG_ATR_Timeframe"])
     keys.extend(["Entry_Timing", "ATR_Timeframe"])
     changed: list[str] = []
     for key in dict.fromkeys(keys):
@@ -1773,18 +1775,22 @@ def _set_param_active(params: dict[str, str], key: str) -> bool:
 
 def infer_missing_run_strategy_from_set(path: Path, params: dict[str, str]) -> str:
     current = str(params.get("Run_Strategy") or "").strip()
-    if current in {"1", "2"}:
+    if current in {"1", "2", "3"}:
         return current
 
     stem = path.stem.lower()
     has_st1 = "ST1_Timeframe" in params or "Entry_Timing" in params
     has_vol = "VolTimeframe" in params
+    has_rng = "RNG_Timeframe" in params
     st1_active = _set_param_active(params, "ST1_Timeframe") or _set_param_active(params, "Entry_Timing")
     vol_active = _set_param_active(params, "VolTimeframe")
+    rng_active = _set_param_active(params, "RNG_Timeframe")
 
-    if st1_active and not vol_active:
+    if rng_active and not st1_active and not vol_active:
+        return "3"
+    if st1_active and not vol_active and not rng_active:
         return "1"
-    if vol_active and not st1_active:
+    if vol_active and not st1_active and not rng_active:
         return "2"
     if any(token in stem for token in ("bitcoin_reaper", "scalp", "aggressive_sl")) and has_st1:
         return "1"
@@ -1841,9 +1847,32 @@ def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, 
             f"{enum_value}||0||0||49153||N",
         )
         changes.append("VolTimeframe")
+    elif enum_value and run_strategy == "3" and str(params.get("RNG_Timeframe") or "").strip() in {"", "0"}:
+        replace_or_add_current_value(
+            lines,
+            "RNG_Timeframe",
+            enum_value,
+            f"{enum_value}||0||0||49153||N",
+        )
+        changes.append("RNG_Timeframe")
+    if enum_value and run_strategy == "3" and str(params.get("RNG_ATR_Timeframe") or "").strip() in {"", "0"}:
+        replace_or_add_current_value(
+            lines,
+            "RNG_ATR_Timeframe",
+            enum_value,
+            f"{enum_value}||0||0||49153||N",
+        )
+        changes.append("RNG_ATR_Timeframe")
 
     valid_timeframe_values = set(TIMEFRAME_ENUM)
-    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+    for key in (
+        "ST1_Timeframe",
+        "VolTimeframe",
+        "RNG_Timeframe",
+        "RNG_ATR_Timeframe",
+        "Entry_Timing",
+        "ATR_Timeframe",
+    ):
         raw = str(params.get(key) or "").strip()
         if raw in {"", "0"} or raw in valid_timeframe_values:
             continue
@@ -1868,7 +1897,14 @@ def validate_seed_backtest_set(seed: Seed) -> list[str]:
     issues: list[str] = []
     force_symbol = normalize_set_symbol(params.get("ForceSymbol", ""))
     expected_symbol = normalize_set_symbol(seed.symbol)
-    strategy_keys = {"ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"}
+    strategy_keys = {
+        "ST1_Timeframe",
+        "VolTimeframe",
+        "RNG_Timeframe",
+        "RNG_ATR_Timeframe",
+        "Entry_Timing",
+        "ATR_Timeframe",
+    }
     has_strategy_keys = any(key in params for key in strategy_keys)
     if has_strategy_keys and not force_symbol:
         issues.append("sin ForceSymbol")
@@ -1876,11 +1912,18 @@ def validate_seed_backtest_set(seed: Seed) -> list[str]:
         issues.append(f"ForceSymbol={force_symbol} != {expected_symbol}")
 
     run_strategy = str(params.get("Run_Strategy") or seed.run_strategy or "").strip()
-    if has_strategy_keys and run_strategy not in {"1", "2"}:
+    if has_strategy_keys and run_strategy not in {"1", "2", "3"}:
         issues.append("sin Run_Strategy valido")
 
     valid_timeframes = set(TIMEFRAME_ENUM)
-    for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
+    for key in (
+        "ST1_Timeframe",
+        "VolTimeframe",
+        "RNG_Timeframe",
+        "RNG_ATR_Timeframe",
+        "Entry_Timing",
+        "ATR_Timeframe",
+    ):
         raw = str(params.get(key, "")).strip()
         if raw and raw != "0" and raw not in valid_timeframes:
             # El valor puede ser un timeframe MT5 real (p.ej. 16390 = H6) y aun

@@ -185,6 +185,7 @@ class UBSAccountTests(unittest.TestCase):
 
     def test_symbol_map_defaults_are_broker_scoped(self) -> None:
         self.assertIn("CRUDEOIL=WTI", default_symbol_map_for_broker("ROBOFOREX"))
+        self.assertIn("TSLA.NAS=TSLA", default_symbol_map_for_broker("ROBOFOREX"))
         self.assertIn("US100=USTEC", default_symbol_map_for_broker("ICTRADING"))
         self.assertIn("DAX=DE40", default_symbol_map_for_broker("ICTRADING"))
         self.assertIn("WTI=XTIUSD", default_symbol_map_for_broker("ICTRADING"))
