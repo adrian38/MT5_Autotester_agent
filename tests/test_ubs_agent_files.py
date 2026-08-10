@@ -27,6 +27,7 @@ from ubs_agent import (
     discovery_seed_pool,
     evaluate_candidate_final_tick,
     evaluate_history_probe,
+    evaluate_seed_report,
     evaluate_variant_report,
     find_report_for_set,
     find_watchdog_snapshot_for_set,
@@ -38,6 +39,7 @@ from ubs_agent import (
     _relative_delta_pct,
     _evaluate_final_tick_tick_report,
     reconcile_final_tick_reports,
+    reconcile_seed_eval_reports,
     recreate_work_dir,
     reconcile_final_tick_reports,
     related_timeframes,
@@ -542,9 +544,74 @@ class UBSSetsFileTests(unittest.TestCase):
 
                 self.assertEqual(empty_row["status"], "report_mismatch")
                 self.assertEqual(valid_row["status"], "no_trades")
-                self.assertEqual(seed_row["status"], "report_mismatch")
+                self.assertEqual(seed_row["status"], "pending_tester_context")
             finally:
                 memory.close()
+
+    def test_seed_empty_tester_context_remains_pending_for_retry(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+        report = Path("empty.htm")
+        result = score(-75.0, symbol="", timeframe="M0", trades=0, accepted=False)
+        memory = Mock()
+
+        status, parsed = evaluate_seed_report(
+            memory,
+            seed,
+            report,
+            ScoreConfig(),
+            {},
+            "ICTRADING",
+            parsed_result=result,
+        )
+
+        self.assertEqual(status, "pending_tester_context")
+        self.assertIs(parsed, result)
+        memory.record_seed_score.assert_called_once_with(
+            seed,
+            result,
+            "pending_tester_context",
+            report,
+        )
+
+    def test_seed_reconcile_does_not_consume_empty_tester_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_root = root / "output"
+            eval_dir = output_root / "seed_eval" / "eval_20260810_191052"
+            eval_dir.mkdir(parents=True)
+            source = root / "seed.set"
+            copied = eval_dir / "seed_0001_XAUUSD_H1_seed.set"
+            source.write_text("ForceSymbol=XAUUSD\n", encoding="utf-8")
+            copied.write_text("ForceSymbol=XAUUSD\n", encoding="utf-8")
+            report = root / "empty.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            seed = Seed(source, "XAUUSD", "H1", "family", "1")
+            memory = Mock()
+            memory.seed_score_row.return_value = {"status": "pending"}
+            empty_result = score(
+                -75.0,
+                symbol="",
+                timeframe="M0",
+                trades=0,
+                accepted=False,
+            )
+
+            with (
+                patch("ubs_agent.find_report_for_set", return_value=report),
+                patch("ubs_agent.score_report_file", return_value=empty_result),
+            ):
+                counts, processed = reconcile_seed_eval_reports(
+                    memory,
+                    [seed],
+                    output_root,
+                    ScoreConfig(),
+                    {},
+                    "ICTRADING",
+                )
+
+            self.assertEqual(counts, {})
+            self.assertEqual(processed, set())
+            memory.record_seed_score.assert_not_called()
 
     def test_run_backtests_forwards_model_override(self) -> None:
         args = SimpleNamespace(
@@ -798,7 +865,10 @@ class UBSSetsFileTests(unittest.TestCase):
 
             self.assertIn("sin ForceSymbol", issues)
             self.assertIn("sin Run_Strategy valido", issues)
-            self.assertIn("Entry_Timing=60 no es timeframe MT5 valido", issues)
+            self.assertTrue(
+                any(issue.startswith("Entry_Timing=60 fuera del universo soportado") for issue in issues),
+                issues,
+            )
 
     def test_seed_validation_accepts_bound_ubs_set(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

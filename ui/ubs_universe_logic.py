@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox
 
-from run_tests import apply_symbol_map, apply_symbol_suffix, load_symbol_suffix_universe, parse_symbol_map
+from run_tests import KNOWN_TIMEFRAMES, apply_symbol_map, apply_symbol_suffix, load_symbol_suffix_universe, parse_symbol_map
 from ubs.db import connect_memory
 from ubs.memory import AgentMemory
 from ubs.account import (
@@ -1174,7 +1174,7 @@ class UBSUniverseLogicMixin:
                                    "Los pesos de TF volverán a 0. ¿Continuar?"):
             return
         import sqlite3
-        periods = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"]
+        periods = list(KNOWN_TIMEFRAMES)
         conn = connect_memory(mem)
         n = self._clear_weights_sql(conn, periods=periods)
         conn.close()

@@ -1,3 +1,5 @@
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from ubs.seed_dedup import (
     parse_set_params,
     scan_duplicates,
 )
+from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 
 
 def _set_text(pairs: dict[str, str]) -> str:
@@ -190,6 +193,35 @@ class ScanDuplicatesTests(unittest.TestCase):
 
         self.assertEqual(len(groups), 2)
         self.assertEqual({g.size for g in groups}, {2})
+
+    def test_cleanup_removes_only_redundant_seed_memory_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            keeper = root / "keeper.set"
+            redundant = root / "redundant.set"
+            conn = sqlite3.connect(":memory:")
+            conn.executescript(
+                """
+                create table seed_scores (seed_path text primary key);
+                create table seed_overrides (seed_path text primary key);
+                """
+            )
+            for path in (keeper, redundant):
+                conn.execute("insert into seed_scores values (?)", (str(path),))
+                conn.execute("insert into seed_overrides values (?)", (str(path),))
+
+            logic = object.__new__(UBSSeedsLogicMixin)
+            logic._cleanup_seed_db(conn, [str(redundant)])
+
+            self.assertEqual(
+                conn.execute("select seed_path from seed_scores").fetchall(),
+                [(str(keeper),)],
+            )
+            self.assertEqual(
+                conn.execute("select seed_path from seed_overrides").fetchall(),
+                [(str(keeper),)],
+            )
+            conn.close()
 
 
 if __name__ == "__main__":

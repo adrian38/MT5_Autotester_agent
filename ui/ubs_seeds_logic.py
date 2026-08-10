@@ -14,9 +14,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk as _ttk
-from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
+from run_tests import KNOWN_TIMEFRAMES, apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
 from ubs.db import connect_memory
 from ubs.manual_status import mark_seed_scores
+from ubs.memory import metrics_have_empty_tester_context
 from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 
 
@@ -37,6 +38,8 @@ class UBSSeedsLogicMixin:
     def _ubs_seed_reason(self, row: object, status: str) -> str:
         if status == "report_mismatch":
             return "mismatch symbol/TF"
+        if status == "pending_tester_context":
+            return "reporte MT5 vacio (symbol/TF); reintento pendiente"
         if status == "invalid_seed":
             try:
                 metrics_json = row["metrics_json"] if row is not None else None
@@ -145,7 +148,7 @@ class UBSSeedsLogicMixin:
 
         stats: Counter[str] = Counter()
         disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected", "invalid_seed"}
+        ready_statuses = {"accepted", "rejected", "invalid_seed", "report_mismatch"}
         for path in seed_files:
             path_text = str(path)
             try:
@@ -177,6 +180,10 @@ class UBSSeedsLogicMixin:
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
                 or str(row["status"] or "") not in ready_statuses
+                or (
+                    str(row["status"] or "") == "report_mismatch"
+                    and metrics_have_empty_tester_context(row["metrics_json"])
+                )
                 or str(row["symbol"] or "").strip().upper() != symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != period.strip().upper()
             )
@@ -303,10 +310,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'disabled_symbol', 'invalid_seed') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'disabled_symbol', 'invalid_seed') then 1
+                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -1026,9 +1033,12 @@ class UBSSeedsLogicMixin:
         win.transient(self)
         win.configure(bg=self.colors["panel"])
         win.geometry("1180x560")
+        win.minsize(900, 480)
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(1, weight=1)
 
         header = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
-        header.pack(fill="x")
+        header.grid(row=0, column=0, sticky="ew")
         tk.Label(
             header,
             text=f"{redundant_total} seeds redundantes en {len(groups)} grupos",
@@ -1044,8 +1054,18 @@ class UBSSeedsLogicMixin:
             font=("Segoe UI", 9), wraplength=1120, justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
+        table_frame = tk.Frame(win, bg=self.colors["panel"])
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=16)
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
         columns = ("retirar", "motivo", "score", "conservar")
-        tree = _ttk.Treeview(win, columns=columns, show="headings", selectmode="none")
+        tree = _ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            selectmode="none",
+            height=14,
+        )
         for key, title, width in (
             ("retirar", "Se retira", 430),
             ("motivo", "Motivo", 110),
@@ -1053,11 +1073,18 @@ class UBSSeedsLogicMixin:
             ("conservar", "Se conserva", 430),
         ):
             tree.heading(key, text=title)
-            tree.column(key, width=width, anchor="w")
-        scroll = _ttk.Scrollbar(win, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
-        tree.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=(0, 12))
-        scroll.pack(side="left", fill="y", padx=(0, 16), pady=(0, 12))
+            tree.column(key, width=width, minwidth=42, anchor="w", stretch=False)
+        tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
+        tree.tag_configure("rejected", foreground=self.colors["danger"])
+        tree.tag_configure("pending", foreground=self.colors["muted"])
+        self._make_tree_sortable(tree)
+        self._attach_tree_scrollbars(
+            table_frame,
+            tree,
+            0,
+            vertical=True,
+            horizontal=True,
+        )
 
         to_retire: list[Path] = []
         for group in sorted(groups, key=lambda g: str(g.keeper.path)):
@@ -1072,35 +1099,36 @@ class UBSSeedsLogicMixin:
                 ))
                 to_retire.append(fingerprint.path)
 
-        footer = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
-        footer.pack(side="bottom", fill="x")
+        footer = tk.Frame(win, bg=self.colors["panel_alt"], padx=16, pady=8)
+        footer.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        footer.columnconfigure(0, weight=1)
         evaluated = sum(1 for p in to_retire if scores.get(str(p).strip().lower()) is not None)
         tk.Label(
             footer,
             text=f"{evaluated} de las {len(to_retire)} redundantes ya están evaluadas: al "
                  "retirarlas se borran sus filas de seed_scores/seed_overrides y se recalculan "
                  "los pesos del Universo.",
-            bg=self.colors["panel"], fg=self.colors["muted"],
-            font=("Segoe UI", 9), wraplength=760, justify="left",
-        ).pack(side="left", anchor="w")
+            bg=self.colors["panel_alt"], fg=self.colors["muted"],
+            font=("Segoe UI", 9), wraplength=680, justify="left",
+        ).grid(row=0, column=0, sticky="w", padx=(10, 16), pady=6)
         tk.Button(
             footer, text="Cerrar", bg=self.colors["panel"], fg=self.colors["muted"],
             relief="solid", borderwidth=1, padx=10, pady=5,
             font=("Segoe UI", 9), cursor="hand2", command=win.destroy,
-        ).pack(side="right", padx=(6, 0))
+        ).grid(row=0, column=2, padx=(6, 10), pady=6)
         tk.Button(
-            footer, text=f"Retirar {len(to_retire)} duplicadas",
+            footer, text=f"Retirar redundantes ({len(to_retire)})",
             bg=self.colors["danger"], fg="#ffffff", relief="flat", borderwidth=0,
             padx=12, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=lambda: self._retire_ubs_seed_duplicates(win, seeds_dir, groups),
-        ).pack(side="right")
+        ).grid(row=0, column=1, pady=6)
 
         if errors:
             tk.Label(
                 footer, text=f"{len(errors)} ficheros ilegibles omitidos",
-                bg=self.colors["panel"], fg=self.colors["danger"],
+                bg=self.colors["panel_alt"], fg=self.colors["danger"],
                 font=("Segoe UI", 9),
-            ).pack(side="right", padx=(0, 12))
+            ).grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6))
 
     def _retire_ubs_seed_duplicates(self, window: tk.Toplevel, seeds_dir: Path, groups: list) -> None:
         import shutil
@@ -1459,7 +1487,7 @@ class UBSSeedsLogicMixin:
                 from seed_scores
                 where active=1
                   and (
-                    status not in ('accepted','rejected','disabled_symbol','invalid_seed')
+                    status not in ('accepted','rejected','report_mismatch','disabled_symbol','invalid_seed')
                     or (status in ('accepted','rejected') and score is null)
                   )
                 """
@@ -1499,7 +1527,7 @@ class UBSSeedsLogicMixin:
             return
         symbol = self.ubs_seed_override_symbol.get().strip().upper()
         period = self.ubs_seed_override_period.get().strip().upper()
-        valid_periods = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"}
+        valid_periods = set(KNOWN_TIMEFRAMES)
         if not symbol:
             self._show_error("Symbol invalido", "Indica el symbol correcto.")
             return

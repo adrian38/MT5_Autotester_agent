@@ -143,7 +143,7 @@ Report=
 - BTCUSD.
 - US100/US30/US500/DAX indices.
 - XTIUSD/WTI/crude oil.
-- Timeframes such as M1, M5, M15, M30, H1, H4, D1, W1.
+- Timeframes such as M1, M5, M15, M30, H1, H2, H3, H4, D1, W1.
 
 Broker symbol rewriting can be configured through a `source=target` symbol map
 from the UI or `--symbol-map`.
@@ -220,7 +220,11 @@ weights.
 For pending/backtest counts, `report_mismatch` is considered ready/quarantined:
 do not re-run it unless the source seed changes or the user saves a different
 symbol/timeframe override. Retryable states are `pending`, `no_report`,
-`parse_error`, and `no_trades`.
+`parse_error`, `pending_tester_context`, and `no_trades`. The
+`pending_tester_context` state is reserved for MT5 HTML artifacts with no usable
+tester identity (`Symbol` empty and/or `Period=M0`). Reconciliation must ignore
+those artifacts and leave the seed queued for a fresh MT5 backtest; they are not
+genuine symbol/timeframe mismatches.
 
 If a seed report parses successfully but has zero closed trades, classify it as
 `no_trades` instead of ordinary `rejected`. This usually means an MT5/history or

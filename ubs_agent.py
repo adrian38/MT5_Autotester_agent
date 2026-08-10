@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import os
 import random
@@ -62,7 +63,12 @@ from ubs.degradation import (
     RobustnessDegradationConfig,
     evaluate_robustness_degradation,
 )
-from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_candidate_row
+from ubs.memory import (
+    AgentMemory,
+    final_tick_table_for_stage,
+    metrics_have_empty_tester_context,
+    variant_from_candidate_row,
+)
 from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.regression import (
@@ -127,12 +133,14 @@ FINAL_TICK_6M_MIN_DAYS = 180
 TIMEFRAME_TO_ENUM = {period: value for value, period in TIMEFRAME_ENUM.items()}
 LEGACY_TIMEFRAME_TO_ENUM = {
     "60": TIMEFRAME_TO_ENUM["H1"],
+    "120": TIMEFRAME_TO_ENUM["H2"],
+    "180": TIMEFRAME_TO_ENUM["H3"],
     "240": TIMEFRAME_TO_ENUM["H4"],
     "1440": TIMEFRAME_TO_ENUM["D1"],
     "10080": TIMEFRAME_TO_ENUM["W1"],
     "43200": TIMEFRAME_TO_ENUM["MN"],
 }
-BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "D1")
 
 
 def diag_log(message: str) -> None:
@@ -1394,11 +1402,15 @@ def related_timeframes(
     if period == "M15":
         related = ("M5", "M15", "M30", "H1")
     elif period == "M30":
-        related = ("M15", "M30", "H1", "H4")
+        related = ("M15", "M30", "H1", "H2", "H4")
     elif period == "H1":
-        related = ("M30", "H1", "H4", "D1")
+        related = ("M30", "H1", "H2", "H3", "H4", "D1")
+    elif period == "H2":
+        related = ("H1", "H2", "H3", "H4")
+    elif period == "H3":
+        related = ("H1", "H2", "H3", "H4")
     elif period == "H4":
-        related = ("H1", "H4", "D1")
+        related = ("H1", "H2", "H3", "H4", "D1")
     elif period == "D1":
         related = ("H4", "D1", "W1", "MN")
     elif period == "M1":
@@ -1871,7 +1883,11 @@ def validate_seed_backtest_set(seed: Seed) -> list[str]:
     for key in ("ST1_Timeframe", "VolTimeframe", "Entry_Timing", "ATR_Timeframe"):
         raw = str(params.get(key, "")).strip()
         if raw and raw != "0" and raw not in valid_timeframes:
-            issues.append(f"{key}={raw} no es timeframe MT5 valido")
+            # El valor puede ser un timeframe MT5 real (p.ej. 16390 = H6) y aun
+            # asi no estar soportado aqui: lo que se comprueba es TIMEFRAME_ENUM.
+            issues.append(
+                f"{key}={raw} fuera del universo soportado ({'/'.join(TIMEFRAME_ENUM.values())})"
+            )
     return issues
 
 
@@ -2138,6 +2154,18 @@ def reconcile_seed_eval_reports(
             seed = next((candidate for candidate in candidates if str(candidate.path) not in processed_paths), None)
             if seed is None:
                 continue
+            try:
+                parsed_result = score_report_file(report, config=score_config, broker=broker)
+            except Exception:
+                # A broken historical artifact is not a completed evaluation.
+                # Keep the seed pending so this batch launches MT5 again.
+                continue
+            if report_has_empty_tester_context(parsed_result):
+                print(
+                    f"AVISO: reporte previo sin contexto tester para {copied_set.name}; "
+                    "se ignora y la seed permanece pendiente para un backtest nuevo."
+                )
+                continue
             override_updated_at = _seed_override_updated_at(memory, seed.path)
             if override_updated_at is not None and eval_started <= override_updated_at:
                 # Override guardado despues de la evaluacion: el reporte solo es
@@ -2145,10 +2173,6 @@ def reconcile_seed_eval_reports(
                 # tipico: override que no cambia symbol/TF). Si no coincide, se
                 # deja pendiente para re-ejecutar en MT5.
                 if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
-                    continue
-                try:
-                    probe = score_report_file(report, config=score_config, broker=broker)
-                except Exception:
                     continue
                 probe_variant = Variant(
                     path=Path(copied_set.name),
@@ -2159,7 +2183,12 @@ def reconcile_seed_eval_reports(
                     missing_lot_keys=(),
                     policy="seed_eval",
                 )
-                matches, _ = report_matches_variant(probe_variant, probe, symbol_map, symbol_suffix)
+                matches, _ = report_matches_variant(
+                    probe_variant,
+                    parsed_result,
+                    symbol_map,
+                    symbol_suffix,
+                )
                 if not matches:
                     continue
             seed_path = str(seed.path)
@@ -2172,6 +2201,7 @@ def reconcile_seed_eval_reports(
                 broker,
                 label=copied_set.name,
                 symbol_suffix=symbol_suffix,
+                parsed_result=parsed_result,
             )
             status_counts[status] = status_counts.get(status, 0) + 1
             processed_paths.add(seed_path)
@@ -2987,17 +3017,83 @@ def _report_is_fresh(path: Path, min_mtime: float | None) -> bool:
         return False
 
 
+REPORT_SUFFIXES = (".htm", ".html", ".xml")
+WATCHDOG_SUFFIX = ".mt5log.txt"
+
+# `reports/` acumula cientos de miles de ficheros (los .png y .mt5log.txt de
+# cada backtest) y nunca se purga. Un `glob()` ahi enumera el directorio entero:
+# medido, 1.85 s por llamada con 470k ficheros, y la reconciliacion de seeds la
+# invoca una vez por cada .set copiado. Se indexan los nombres una sola vez y se
+# reindexan cuando cambia el mtime del directorio (Windows lo actualiza al
+# crear/borrar entradas), asi que los reportes recien generados se ven igual.
+_REPORTS_NAME_INDEX: dict[str, object] = {"signature": None, "reports": (), "watchdog": ()}
+
+
+def _reports_name_index(reports_dir: Path) -> tuple[tuple, tuple]:
+    """`(nombres de reporte, nombres de log watchdog)` como `(minuscula, real)`."""
+    try:
+        signature = reports_dir.stat().st_mtime_ns
+    except OSError:
+        return (), ()
+    if _REPORTS_NAME_INDEX["signature"] == signature:
+        return _REPORTS_NAME_INDEX["reports"], _REPORTS_NAME_INDEX["watchdog"]
+
+    reports: list[tuple[str, str]] = []
+    watchdog: list[tuple[str, str]] = []
+    try:
+        with os.scandir(reports_dir) as entries:
+            for entry in entries:
+                lowered = entry.name.lower()
+                if lowered.endswith(REPORT_SUFFIXES):
+                    bucket = reports
+                elif lowered.endswith(WATCHDOG_SUFFIX):
+                    bucket = watchdog
+                else:
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                bucket.append((lowered, entry.name))
+    except OSError:
+        return (), ()
+
+    reports.sort()
+    watchdog.sort()
+    _REPORTS_NAME_INDEX["signature"] = signature
+    _REPORTS_NAME_INDEX["reports"] = tuple(reports)
+    _REPORTS_NAME_INDEX["watchdog"] = tuple(watchdog)
+    return _REPORTS_NAME_INDEX["reports"], _REPORTS_NAME_INDEX["watchdog"]
+
+
+def _indexed_names_with_prefix(index: tuple, prefix: str) -> list[str]:
+    """Nombres reales cuyo nombre en minuscula empieza por `prefix` (ya minuscula)."""
+    start = bisect.bisect_left(index, prefix, key=lambda item: item[0])
+    matches: list[str] = []
+    for lowered, name in index[start:]:
+        if not lowered.startswith(prefix):
+            break
+        matches.append(name)
+    return matches
+
+
 def find_report_for_set(set_path: Path, *, min_mtime: float | None = None) -> Path | None:
-    report_suffixes = {".htm", ".html", ".xml"}
-    for suffix in (".htm", ".html", ".xml"):
-        candidate = BASE_DIR / "reports" / f"{set_path.stem}{suffix}"
+    reports_dir = BASE_DIR / "reports"
+    for suffix in REPORT_SUFFIXES:
+        candidate = reports_dir / f"{set_path.stem}{suffix}"
         if candidate.is_file() and _report_is_fresh(candidate, min_mtime):
             return candidate
+    reports_index, _watchdog_index = _reports_name_index(reports_dir)
     candidates = sorted(
-        path for path in (BASE_DIR / "reports").glob(f"{set_path.stem}.*")
-        if path.is_file()
-        and path.suffix.lower() in report_suffixes
-        and _report_is_fresh(path, min_mtime)
+        path
+        for path in (
+            reports_dir / name
+            for name in _indexed_names_with_prefix(
+                reports_index, f"{set_path.stem.lower()}."
+            )
+        )
+        if _report_is_fresh(path, min_mtime)
     )
     return candidates[0] if candidates else None
 
@@ -3007,12 +3103,17 @@ def find_watchdog_snapshot_for_set(
     *,
     min_mtime: float | None = None,
 ) -> Path | None:
+    reports_dir = BASE_DIR / "reports"
+    _reports_index, watchdog_index = _reports_name_index(reports_dir)
     candidates = [
         path
-        for path in (BASE_DIR / "reports").glob(
-            f"{set_path.stem}.watchdog_attempt_*.mt5log.txt"
+        for path in (
+            reports_dir / name
+            for name in _indexed_names_with_prefix(
+                watchdog_index, f"{set_path.stem.lower()}.watchdog_attempt_"
+            )
         )
-        if path.is_file() and _report_is_fresh(path, min_mtime)
+        if _report_is_fresh(path, min_mtime)
     ]
     if not candidates:
         return None
@@ -3309,14 +3410,17 @@ def evaluate_seed_report(
     *,
     label: str | None = None,
     symbol_suffix: str = "",
+    parsed_result: ScoreResult | None = None,
 ) -> tuple[str, ScoreResult | None]:
     display_name = label or seed.path.name
-    try:
-        result = score_report_file(report, config=score_config, broker=broker)
-    except Exception as exc:
-        print(f"AVISO: no pude parsear seed {display_name}: {exc}")
-        memory.record_seed_score(seed, None, "parse_error", report)
-        return "parse_error", None
+    result = parsed_result
+    if result is None:
+        try:
+            result = score_report_file(report, config=score_config, broker=broker)
+        except Exception as exc:
+            print(f"AVISO: no pude parsear seed {display_name}: {exc}")
+            memory.record_seed_score(seed, None, "parse_error", report)
+            return "parse_error", None
 
     if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
         print(
@@ -3325,6 +3429,14 @@ def evaluate_seed_report(
         )
         memory.record_seed_score(seed, result, "report_mismatch", report)
         return "report_mismatch", result
+
+    if report_has_empty_tester_context(result):
+        print(
+            f"AVISO: reporte seed sin contexto tester para {display_name}; "
+            "queda pendiente para un backtest nuevo."
+        )
+        memory.record_seed_score(seed, result, "pending_tester_context", report)
+        return "pending_tester_context", result
 
     expected_symbol = seed.symbol if seed.symbol and seed.symbol != "UNKNOWN" else str(result.symbol or "UNKNOWN")
     expected_period = seed.period if seed.period and seed.period != "UNKNOWN" else str(result.timeframe or "UNKNOWN").upper()

@@ -6,7 +6,9 @@ import math
 from typing import Iterable, Mapping
 
 
-FITNESS_TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN")
+from run_tests import KNOWN_TIMEFRAMES
+
+FITNESS_TIMEFRAMES = KNOWN_TIMEFRAMES
 MIN_TRAINING_ROWS = 300
 MIN_POSITIVE_ROWS = 30
 FITNESS_WEIGHT_SCALE = 10.0
