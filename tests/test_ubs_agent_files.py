@@ -66,7 +66,7 @@ from ubs_agent import (
     variant_as_next_seed,
     write_set_force_symbol,
 )
-from run_tests import normalize_set_symbol, parse_symbol_map
+from run_tests import infer_period_from_set, load_set_params, normalize_set_symbol, parse_symbol_map
 
 
 def score(
@@ -888,6 +888,49 @@ class UBSSetsFileTests(unittest.TestCase):
             seed = Seed(path, "XAUUSD", "H1", "family", "1")
 
             self.assertEqual(validate_seed_backtest_set(seed), [])
+
+    def test_seed_validation_accepts_range_strategy_and_uses_rng_timeframe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "DE40_range.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ForceSymbol=DE40",
+                        "Run_Strategy=3||1||0||3||N",
+                        "RNG_Timeframe=16385||0||0||49153||N",
+                        "RNG_ATR_Timeframe=16385||0||0||49153||N",
+                        "ATR_Timeframe=16408||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            params = load_set_params(path)
+            seed = Seed(path, "DE40", "H1", "family", "3")
+
+            self.assertEqual(infer_period_from_set(path, params), "H1")
+            self.assertEqual(validate_seed_backtest_set(seed), [])
+
+    def test_repair_seed_backtest_set_sets_range_strategy_timeframe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "DE40_range.set"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ForceSymbol=DE40",
+                        "Run_Strategy=3||1||0||3||N",
+                        "RNG_Timeframe=0||0||0||49153||N",
+                        "RNG_ATR_Timeframe=0||0||0||49153||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_seed_backtest_set(path, "DE40", "H1")
+
+            self.assertIn("RNG_Timeframe", result["changed"])
+            self.assertIn("RNG_ATR_Timeframe", result["changed"])
+            self.assertIn("RNG_Timeframe=16385||0||0||49153||N", path.read_text(encoding="utf-8"))
+            self.assertIn("RNG_ATR_Timeframe=16385||0||0||49153||N", path.read_text(encoding="utf-8"))
 
     def test_write_set_force_symbol_adds_missing_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
