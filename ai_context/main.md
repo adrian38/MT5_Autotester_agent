@@ -469,7 +469,42 @@ It is persisted as `ubs_generation_mode` and passed through
 `--generation-mode`. The legacy `ubs_force_unseeded_universe` setting/CLI flag
 maps to `discovery` for backwards compatibility.
 
-Normal generation targets M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN are
+### Timeframe support vs timeframe universe
+
+Two different things, often confused:
+
+- **Supported** = `run_tests.py:TIMEFRAME_ENUM`, the MT5 `ENUM_TIMEFRAMES`
+  values the app can decode. `KNOWN_TIMEFRAMES` is derived from it, in duration
+  order, and is **the canonical list**: `ubs/selection.py:FITNESS_TIMEFRAMES`,
+  the Symbol/TF override combobox and validation, and "Limpiar pesos TF" all
+  consume it. Adding a timeframe there enables it everywhere at once — do not
+  re-hardcode the list.
+- **Universe** = which timeframes generation *targets*
+  (`DEFAULT_TIMEFRAME_UNIVERSE`, `BASE_TIMEFRAME_UNIVERSE`, and the shared
+  `outputs/ubs_timeframes.json`). Supporting a timeframe does **not** add it to
+  the universe.
+
+H2 (`16386`) and H3 (`16387`) were added in Aug 2026 to **both**: they are
+supported (classified, validated, evaluated, weighted, selectable as a
+Symbol/TF override) **and** part of the default generation universe, so the
+agent creates variants on them. MT5 encodes hourly timeframes as
+`16384 + hours`, so H6/H8/H12 (`16390`/`16392`/`16396`) are equally valid MT5
+values that this app still rejects — the rejection message names the supported
+universe rather than claiming the value is not valid MT5.
+
+`related_timeframes()` filters through the active universe, so the H1/H2/H3/H4
+neighbour band only takes effect while those timeframes stay in it. The
+discovery-mode exploratory quotas (`FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS`) still
+cover only M1/M5/M15/M30; H2/H3 get coverage from the generic "reserve a slot
+for each allowed timeframe missing from the selected source seeds" rule.
+
+**Scope**: `TIMEFRAME_ENUM` / `TIMEFRAME_PATTERNS` live in `run_tests.py` and
+`ubs_timeframes.json` is a single shared file — timeframe support and universe
+are **broker-agnostic**, unlike asset universes and disabled-symbol policies.
+A timeframe change affects every broker/account in the clone, and reaches the
+other broker clones only through a branch merge.
+
+Normal generation targets M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / D1. W1 / MN are
 available only through the explicit **Experimentar W1/MN** toggle, persisted
 as `ubs_experimental_long_timeframes` and passed as
 `--experimental-long-timeframes`. MT5 supports W1/MN, but they are kept opt-in
@@ -922,6 +957,10 @@ A new UI tab "UBS Parámetros" provides a global view of all UBS EA parameters:
   for pending counts; `no_trades` contributes the fixed negative reliability
   weight, while `report_mismatch` contributes no weight. They are not re-run
   until the seed file or symbol/TF override changes, except via explicit retry.
+- Empty MT5 seed reports (`Symbol` empty and/or `Period=M0`) use the separate
+  retryable `pending_tester_context` state. Interrupted-run reconciliation must
+  ignore those artifacts so they cannot consume the pending job before MT5 is
+  launched again.
 - MT5 seed reports with zero closed trades are classified as `no_trades`; the
   Seeds tab exposes "Repetir backtest" to relaunch one selected seed directly.
 - Seeds and Universe tables have a SEL checkbox column. Seed actions use checked

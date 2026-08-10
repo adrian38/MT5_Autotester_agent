@@ -1218,23 +1218,35 @@ TIMEFRAME_PATTERNS = (
     ("M15", re.compile(r"(?:^|[^A-Z0-9])M15(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("M30", re.compile(r"(?:^|[^A-Z0-9])M30(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("H1", re.compile(r"(?:^|[^A-Z0-9])H1(?:[^A-Z0-9]|$)|SCALPH1", re.IGNORECASE)),
+    ("H2", re.compile(r"(?:^|[^A-Z0-9])H2(?:[^A-Z0-9]|$)", re.IGNORECASE)),
+    ("H3", re.compile(r"(?:^|[^A-Z0-9])H3(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("H4", re.compile(r"(?:^|[^A-Z0-9])H4(?:[^A-Z0-9]|$)", re.IGNORECASE)),
     ("D1", re.compile(r"(?:^|[^A-Z0-9])D1(?:[^A-Z0-9]|$)|\(D\)|\(DAILY\)|DAILY|DAYTRADE|LONGTERM", re.IGNORECASE)),
     ("W1",  re.compile(r"(?:^|[^A-Z0-9])W1(?:[^A-Z0-9]|$)|WEEKLY", re.IGNORECASE)),
     ("MN", re.compile(r"(?:^|[^A-Z0-9])MN?(?:[^A-Z0-9]|$)|MONTHLY", re.IGNORECASE)),
 )
 
+# Valores de ENUM_TIMEFRAMES de MT5 que el proyecto sabe decodificar.
+# MT5 codifica las horas como 16384 + horas (H1=16385 ... D1=16408).
+# Declarado en orden de duracion: KNOWN_TIMEFRAMES hereda ese orden y es la
+# lista canonica que consumen la UI, la seleccion y las validaciones. Anadir un
+# timeframe aqui lo habilita en toda la aplicacion; NO lo mete por si solo en el
+# universo de generacion (ver DEFAULT_TIMEFRAME_UNIVERSE / ubs_timeframes.json).
 TIMEFRAME_ENUM = {
     "1": "M1",
     "5": "M5",
     "15": "M15",
     "30": "M30",
     "16385": "H1",
+    "16386": "H2",
+    "16387": "H3",
     "16388": "H4",
     "16408": "D1",
     "32769": "W1",
     "49153": "MN",
 }
+
+KNOWN_TIMEFRAMES = tuple(dict.fromkeys(TIMEFRAME_ENUM.values()))
 
 
 def read_set_text(path: Path) -> str:
