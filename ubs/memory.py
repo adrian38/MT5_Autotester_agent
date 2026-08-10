@@ -34,6 +34,21 @@ FINAL_TICK_STAGE_TABLES = {
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
 
+def metrics_have_empty_tester_context(metrics_json: object) -> bool:
+    """Return whether stored score metrics came from an unusable MT5 report."""
+    try:
+        metrics = json.loads(str(metrics_json or "{}"))
+    except (TypeError, ValueError):
+        return False
+    symbol = str(metrics.get("symbol") or "").strip()
+    timeframe = str(metrics.get("timeframe") or "").strip().upper()
+    try:
+        trades = int(metrics.get("trades") or 0)
+    except (TypeError, ValueError):
+        trades = 0
+    return trades <= 0 and (not symbol or timeframe in {"", "M0"})
+
+
 def final_tick_table_for_stage(stage: str | None) -> str:
     key = str(stage or "probe").strip().lower().replace("-", "_")
     if key in {"6m", "sixmonth", "six_month"}:
@@ -249,7 +264,7 @@ class AgentMemory:
               and (upper(symbol)='UNKNOWN' or upper(period)='UNKNOWN')
             """
         )
-        self._reclassify_empty_context_no_trades()
+        self._reclassify_empty_tester_contexts()
         self._reclassify_legacy_real_tick_no_history()
         self.conn.commit()
 
@@ -277,34 +292,34 @@ class AgentMemory:
         )
         self.conn.execute(f"delete from runs where id in ({placeholders})", tuple(probe_run_ids))
 
-    def _reclassify_empty_context_no_trades(self) -> None:
-        for table in ("candidates", "seed_scores"):
+    def _reclassify_empty_tester_contexts(self) -> None:
+        migrations = (
+            ("candidates", ("no_trades",), "report_mismatch"),
+            (
+                "seed_scores",
+                ("no_trades", "report_mismatch", "pending_tester_context"),
+                "pending_tester_context",
+            ),
+        )
+        for table, statuses, target_status in migrations:
+            placeholders = ",".join("?" for _ in statuses)
             rows = self.conn.execute(
                 f"""
                 select id, metrics_json
                 from {table}
-                where status='no_trades' and coalesce(metrics_json, '') != ''
-                """
+                where status in ({placeholders}) and coalesce(metrics_json, '') != ''
+                """,
+                statuses,
             ).fetchall()
             ids: list[int] = []
             for row in rows:
-                try:
-                    metrics = json.loads(row["metrics_json"] or "{}")
-                except (TypeError, ValueError):
-                    continue
-                symbol = str(metrics.get("symbol") or "").strip()
-                timeframe = str(metrics.get("timeframe") or "").strip().upper()
-                try:
-                    trades = int(metrics.get("trades") or 0)
-                except (TypeError, ValueError):
-                    trades = 0
-                if trades <= 0 and (not symbol or timeframe in {"", "M0"}):
+                if metrics_have_empty_tester_context(row["metrics_json"]):
                     ids.append(int(row["id"]))
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 self.conn.execute(
-                    f"update {table} set status='report_mismatch', accepted=null where id in ({placeholders})",
-                    tuple(ids),
+                    f"update {table} set status=?, accepted=null where id in ({placeholders})",
+                    (target_status, *ids),
                 )
 
     def _reclassify_legacy_real_tick_no_history(self) -> int:
@@ -704,11 +719,19 @@ class AgentMemory:
             path_text = str(seed.path)
             row = existing.get(path_text)
             stored_path_text = str(row["seed_path"]) if row is not None else path_text
+            previous_status = str(row["status"] or "") if row is not None else ""
+            quarantined_mismatch = (
+                previous_status == "report_mismatch"
+                and not metrics_have_empty_tester_context(row["metrics_json"])
+            ) if row is not None else False
             changed = (
                 row is None
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in {"accepted", "rejected", "invalid_seed"}
+                or (
+                    previous_status not in {"accepted", "rejected", "invalid_seed"}
+                    and not quarantined_mismatch
+                )
                 or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != seed.period.strip().upper()
             )
@@ -735,7 +758,6 @@ class AgentMemory:
                     ),
                 )
             else:
-                previous_status = str(row["status"] or "")
                 if should_eval and previous_status == "no_trades":
                     self.conn.execute(
                         """

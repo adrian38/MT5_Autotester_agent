@@ -1476,6 +1476,7 @@ class UBSResultsLogicMixin:
             "disabled_symbol": "deshabilitado",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
+            "pending_tester_context": "pend. contexto",
             "invalid_seed": "set invalido",
             "pending": "pendiente",
             "missing_6m": "sin 6M",

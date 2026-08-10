@@ -14,9 +14,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk as _ttk
-from run_tests import apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
+from run_tests import KNOWN_TIMEFRAMES, apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
 from ubs.db import connect_memory
 from ubs.manual_status import mark_seed_scores
+from ubs.memory import metrics_have_empty_tester_context
 from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 
 
@@ -37,6 +38,8 @@ class UBSSeedsLogicMixin:
     def _ubs_seed_reason(self, row: object, status: str) -> str:
         if status == "report_mismatch":
             return "mismatch symbol/TF"
+        if status == "pending_tester_context":
+            return "reporte MT5 vacio (symbol/TF); reintento pendiente"
         if status == "invalid_seed":
             try:
                 metrics_json = row["metrics_json"] if row is not None else None
@@ -145,7 +148,7 @@ class UBSSeedsLogicMixin:
 
         stats: Counter[str] = Counter()
         disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected", "invalid_seed"}
+        ready_statuses = {"accepted", "rejected", "invalid_seed", "report_mismatch"}
         for path in seed_files:
             path_text = str(path)
             try:
@@ -177,6 +180,10 @@ class UBSSeedsLogicMixin:
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
                 or str(row["status"] or "") not in ready_statuses
+                or (
+                    str(row["status"] or "") == "report_mismatch"
+                    and metrics_have_empty_tester_context(row["metrics_json"])
+                )
                 or str(row["symbol"] or "").strip().upper() != symbol.strip().upper()
                 or str(row["period"] or "").strip().upper() != period.strip().upper()
             )
@@ -303,10 +310,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'disabled_symbol', 'invalid_seed') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'disabled_symbol', 'invalid_seed') then 1
+                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -1459,7 +1466,7 @@ class UBSSeedsLogicMixin:
                 from seed_scores
                 where active=1
                   and (
-                    status not in ('accepted','rejected','disabled_symbol','invalid_seed')
+                    status not in ('accepted','rejected','report_mismatch','disabled_symbol','invalid_seed')
                     or (status in ('accepted','rejected') and score is null)
                   )
                 """
@@ -1499,7 +1506,7 @@ class UBSSeedsLogicMixin:
             return
         symbol = self.ubs_seed_override_symbol.get().strip().upper()
         period = self.ubs_seed_override_period.get().strip().upper()
-        valid_periods = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"}
+        valid_periods = set(KNOWN_TIMEFRAMES)
         if not symbol:
             self._show_error("Symbol invalido", "Indica el symbol correcto.")
             return

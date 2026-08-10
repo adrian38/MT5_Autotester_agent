@@ -163,7 +163,7 @@ requirement changes or a debt item is opened/closed.
   `force_fixed_lot_text` before use.
 - **FR-1.6.4** Timeframe exploration MUST draw on SQLite feedback
   (`asset_feedback`, `timeframe_feedback`) and target the normal generation
-  universe M1 / M5 / M15 / M30 / H1 / H4 / D1. W1 / MN MUST remain opt-in
+  universe M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / D1. W1 / MN MUST remain opt-in
   experimental targets behind `--experimental-long-timeframes`.
 - **FR-1.6.4a** When W1/MN experimentation is enabled, accepted/rejected scoring
   in generation and robustness MUST use timeframe-specific minimum trade counts:
@@ -457,9 +457,11 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.9.1** `--evaluate-seeds` MUST run a dedicated backtest for each seed
   that is new, modified (different mtime/size), has a changed symbol/TF (via
   override), or has a retryable status (`pending`, `no_report`, `parse_error`,
-  `report_mismatch`, `no_trades`). Seeds already evaluated without changes MUST
-  be skipped. `invalid_seed` is a ready blocked state and MUST NOT be re-run
-  automatically unless the seed file or symbol/TF override changes.
+  `pending_tester_context`, `no_trades`). A genuine `report_mismatch` with a
+  usable report identity is quarantined and MUST NOT be re-run automatically.
+  Seeds already evaluated without changes MUST be skipped. `invalid_seed` is a
+  ready blocked state and MUST NOT be re-run automatically unless the seed file
+  or symbol/TF override changes.
 - **FR-1.9.1a** If `_manifest.csv` exists in the seed directory, it MAY provide
   metadata for listed seeds, but it MUST NOT hide additional `.set` files present
   under the source directory. Unlisted `.set` files MUST still be loaded,
@@ -469,7 +471,8 @@ requirement changes or a debt item is opened/closed.
   before launching any backtest. No backtest job MUST be created for it.
 - **FR-1.9.3** Seed statuses in `seed_scores` table MUST be one of:
   `pending` | `accepted` | `rejected` | `report_mismatch` | `no_report` |
-  `parse_error` | `no_trades` | `disabled_symbol` | `invalid_seed`.
+  `parse_error` | `pending_tester_context` | `no_trades` | `disabled_symbol` |
+  `invalid_seed`.
 - **FR-1.9.4** `accepted`, `rejected`, and `no_trades` seeds with stored reports
   MUST contribute evidence to the base stage of the shared probability model.
   They MUST NOT invent robustness/probe/6M trials; missing later-stage evidence
@@ -521,7 +524,10 @@ requirement changes or a debt item is opened/closed.
   `outputs/ubs_agent/{BROKER}/{ACCOUNT}/seed_eval/eval_*`
   batches. It MUST match copied `.set` files back to source seeds by file
   content, validate symbol/TF against the report, and update `seed_scores` so
-  completed jobs do not remain stuck as `pending`.
+  completed jobs do not remain stuck as `pending`. A report with empty `Symbol`
+  or `Period=M0` is not a completed job: it MUST be stored as
+  `pending_tester_context`, ignored by reconciliation, and left queued for a
+  fresh MT5 backtest.
 - **FR-1.9.13** `--evaluate-seeds --reconcile-seed-eval-only` MUST perform only
   that interrupted-batch reconciliation and MUST NOT require an MT5 expert path
   or launch MT5.

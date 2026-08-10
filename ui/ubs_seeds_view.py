@@ -4,7 +4,7 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk
 
-from run_tests import REPORT_DIR
+from run_tests import KNOWN_TIMEFRAMES, REPORT_DIR
 
 
 class UBSSeedsViewMixin:
@@ -191,7 +191,7 @@ class UBSSeedsViewMixin:
         ttk.Combobox(
             editor,
             textvariable=self.ubs_seed_override_period,
-            values=("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"),
+            values=KNOWN_TIMEFRAMES,
             width=10,
             state="readonly",
         ).grid(row=1, column=3, sticky="w", padx=(0, 16))
