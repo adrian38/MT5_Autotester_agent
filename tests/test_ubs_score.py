@@ -138,6 +138,31 @@ class UBSScoreTests(unittest.TestCase):
                 (1.0, "Stocks", "raw_net_profit"),
             )
 
+    def test_roboforex_profile_uses_contract_measured_symbol_factors(self) -> None:
+        base = Path(__file__).resolve().parent.parent
+        payload = json.loads(
+            (base / "assets" / "roboforex_normalization.json").read_text(encoding="utf-8-sig")
+        )
+        factors = payload["symbol_net_profit_factors"]
+
+        self.assertEqual(payload["basis"], "roboforex_notional_normalization_ref1000")
+        self.assertEqual(payload["measured_symbol_count"], 90)
+        self.assertEqual(payload["skipped_symbols"], [])
+        for symbol in ("EURUSD", "XAUUSD", ".US30CASH", "ETHUSD", "LLY", "BAC", "TSLA"):
+            self.assertIn(symbol, factors)
+        self.assertNotEqual(factors["LLY"], factors["BAC"])
+        self.assertLess(factors["XAUUSD"], 0.5)
+        self.assertGreater(factors["ETHUSD"], 2.0)
+
+        self.assertEqual(
+            net_profit_normalization("TSLA.NAS", broker="ROBOFOREX", base_dir=base),
+            net_profit_normalization("TSLA", broker="ROBOFOREX", base_dir=base),
+        )
+        self.assertEqual(
+            net_profit_normalization("US100", broker="ROBOFOREX", base_dir=base),
+            net_profit_normalization(".USTECHCash", broker="ROBOFOREX", base_dir=base),
+        )
+
     def test_ictrading_normalization_splits_indices_energies_and_stocks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
