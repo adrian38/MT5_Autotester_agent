@@ -9,7 +9,6 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
-import hashlib
 import queue
 import threading
 import tkinter as tk
@@ -708,7 +707,9 @@ class UBSSeedsLogicMixin:
             "Importar seeds",
             f"Importar {total} .set desde:\n{source_dir}\n\n"
             f"Destino: {output_dir}\n\n"
-            "Se normalizará el lotaje (lote fijo 0.01) y se eliminarán duplicados.\n\n"
+            "Se normalizará el lotaje (lote fijo 0.01) y se omitirán las seeds\n"
+            "que ya existan en el destino, tanto idénticas como equivalentes\n"
+            "(mismo símbolo/TF que solo difieren en parámetros nuevos del EA).\n\n"
             "¿Continuar?",
         ):
             return
@@ -717,15 +718,38 @@ class UBSSeedsLogicMixin:
 
         def _do_import() -> None:
             from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-            from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, safe_part, write_set_text
+            from ubs.seed_dedup import DUPLICATE_EXACT, SeedDuplicateIndex, SeedFingerprint
+            from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, write_set_text
             from ubs_prepare_sets import unique_target
 
-            seen_hashes: set[str] = set()
+            index = SeedDuplicateIndex()
             copied = 0
-            duplicates = 0
+            dup_exact = 0
+            dup_equivalent = 0
+            without_symbol: list[str] = []
             errors: list[str] = []
 
             output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Indexar las seeds ya presentes: sin esto el dedup solo compara los
+            # ficheros del propio lote y reimporta todo el pool existente.
+            existing = sorted(output_dir.rglob("*.set"))
+            for idx, current in enumerate(existing):
+                q.put(("index", idx, len(existing), current.name))
+                try:
+                    text, _encoding = read_set_with_encoding(current)
+                    normalized, _found, _missing = force_fixed_lot_text(text)
+                    params = load_set_params(current)
+                    index.add(
+                        SeedFingerprint.from_text(
+                            current,
+                            normalized,
+                            infer_symbol_from_set(current, params) or "UNKNOWN",
+                            infer_period_from_set(current, params) or "UNKNOWN",
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(f"[indexando] {current.name}: {exc}")
 
             for idx, source in enumerate(set_files):
                 q.put(("progress", idx, total, source.name))
@@ -733,30 +757,101 @@ class UBSSeedsLogicMixin:
                     text, encoding = read_set_with_encoding(source)
                     normalized, _found, _missing = force_fixed_lot_text(text)
 
-                    # Detectar duplicados por hash del contenido normalizado
-                    content_hash = hashlib.sha256(
-                        normalized.encode("utf-8", errors="replace")
-                    ).hexdigest()
-                    if content_hash in seen_hashes:
-                        duplicates += 1
-                        continue
-                    seen_hashes.add(content_hash)
-
                     params = load_set_params(source)
                     symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
                     period = infer_period_from_set(source, params) or "UNKNOWN"
+
+                    fingerprint = SeedFingerprint.from_text(
+                        source, normalized, symbol, period
+                    )
+                    match = index.find_duplicate(fingerprint)
+                    if match is not None:
+                        _existing, reason = match
+                        if reason == DUPLICATE_EXACT:
+                            dup_exact += 1
+                        else:
+                            dup_equivalent += 1
+                        continue
+
+                    if symbol == "UNKNOWN" or period == "UNKNOWN":
+                        # Se importa igualmente: el usuario puede rescatarla
+                        # con "Guardar Symbol/TF". Hasta entonces la pestana
+                        # Seeds la marca `invalid_seed` y no se evalua.
+                        without_symbol.append(source.name)
+
                     relative = source.relative_to(source_dir)
                     target = unique_target(output_dir, relative, symbol, period)
                     write_set_text(target, normalized, encoding)
+                    # Reindexar con la ruta final para que el resto del lote
+                    # compare tambien contra lo recien copiado.
+                    index.add(
+                        SeedFingerprint.from_text(target, normalized, symbol, period)
+                    )
                     copied += 1
                 except Exception as exc:
                     errors.append(f"{source.name}: {exc}")
 
-            q.put(("done", copied, duplicates, errors))
+            q.put(("done", copied, dup_exact, dup_equivalent, without_symbol, errors))
 
-        # ── Popup de progreso ──────────────────────────────────────────────
+        def _finish(
+            copied: int,
+            dup_exact: int,
+            dup_equivalent: int,
+            without_symbol: list[str],
+            errors: list[str],
+        ) -> None:
+            summary = (
+                f"Importación completada\n\n"
+                f"  Seeds copiadas:    {copied}\n"
+                f"  Duplicados idénticos omitidos:   {dup_exact}\n"
+                f"  Duplicados equivalentes omitidos: {dup_equivalent}\n"
+                f"    (mismo símbolo/TF e idénticos en todas las claves\n"
+                f"     comunes; solo difieren en parámetros nuevos del EA)\n"
+                f"  Destino: {output_dir}"
+            )
+            if without_symbol:
+                shown = "\n    ".join(without_symbol[:5])
+                summary += (
+                    f"\n\n  ⚠ {len(without_symbol)} sin símbolo/TF resoluble → carpeta UNKNOWN\\.\n"
+                    f"    Quedan como 'invalid_seed' y no se evalúan hasta que les\n"
+                    f"    asignes símbolo con «Guardar Symbol/TF».\n"
+                    f"    {shown}"
+                )
+                if len(without_symbol) > 5:
+                    summary += f"\n    ... y {len(without_symbol) - 5} más"
+            if errors:
+                summary += f"\n\n  Errores: {len(errors)}\n  " + "\n  ".join(errors[:5])
+            messagebox.showinfo("Importar seeds — completado", summary)
+            self._refresh_ubs_seeds_panel()
+
+        dlg, poll = self._ubs_seed_progress_dialog(
+            "Importando seeds...",
+            "Importando y normalizando seeds",
+            str(source_dir),
+            total,
+            q,
+            lambda payload: _finish(*payload),
+        )
+        threading.Thread(target=_do_import, daemon=True).start()
+        dlg.after(40, poll)
+
+    def _ubs_seed_progress_dialog(
+        self,
+        title: str,
+        heading: str,
+        subtitle: str,
+        total: int,
+        q: "queue.Queue",
+        on_done,
+    ):
+        """Popup modal de progreso + su `poll`. Devuelve `(dialogo, poll)`.
+
+        El worker publica en `q`: `("progress"|"index", idx, total, nombre)`,
+        `("done", *payload)` o `("failed", mensaje)`. Al terminar cierra el
+        dialogo y llama a `on_done(payload)`.
+        """
         dlg = tk.Toplevel(self)
-        dlg.title("Importando seeds...")
+        dlg.title(title)
         dlg.transient(self)
         dlg.grab_set()
         dlg.resizable(False, False)
@@ -765,17 +860,17 @@ class UBSSeedsLogicMixin:
 
         body = tk.Frame(dlg, bg=self.colors["panel"], padx=28, pady=22)
         body.pack()
-        tk.Label(body, text="Importando y normalizando seeds",
+        tk.Label(body, text=heading,
                  bg=self.colors["panel"], fg=self.colors["text"],
                  font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        tk.Label(body, text=f"{source_dir}",
+        tk.Label(body, text=subtitle,
                  bg=self.colors["panel"], fg=self.colors["muted"],
                  font=("Segoe UI", 9), wraplength=440).pack(anchor="w", pady=(2, 16))
 
         bar = _ttk.Progressbar(body, mode="determinate", maximum=100,
                                style="Horizontal.TProgressbar", length=440)
         bar.pack(fill="x")
-        count_var  = tk.StringVar(value=f"0 / {total}")
+        count_var = tk.StringVar(value=f"0 / {total}")
         status_var = tk.StringVar(value="Iniciando...")
         tk.Label(body, textvariable=count_var,
                  bg=self.colors["panel"], fg=self.colors["muted"],
@@ -785,47 +880,305 @@ class UBSSeedsLogicMixin:
                  font=("Segoe UI", 9), wraplength=440, anchor="w").pack(fill="x", pady=(3, 0))
 
         dlg.update_idletasks()
-        x = self.winfo_rootx() + max(0, (self.winfo_width()  - dlg.winfo_width())  // 2)
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - dlg.winfo_width()) // 2)
         y = self.winfo_rooty() + max(0, (self.winfo_height() - dlg.winfo_height()) // 2)
         dlg.geometry(f"+{x}+{y}")
 
-        threading.Thread(target=_do_import, daemon=True).start()
+        def _close() -> None:
+            dlg.grab_release()
+            dlg.destroy()
 
         def _poll() -> None:
             try:
                 while True:
                     msg = q.get_nowait()
-                    if msg[0] == "progress":
+                    if msg[0] in ("index", "progress"):
                         _, idx, tot, name = msg
                         bar["value"] = int((idx + 1) / max(tot, 1) * 100)
                         count_var.set(f"{idx + 1} / {tot}")
                         label = name[:55] + "..." if len(name) > 55 else name
-                        status_var.set(f"Procesando: {label}")
+                        prefix = "Indexando seeds existentes" if msg[0] == "index" else "Procesando"
+                        status_var.set(f"{prefix}: {label}")
+                    elif msg[0] == "failed":
+                        _close()
+                        self._show_error(title, msg[1])
+                        return
                     elif msg[0] == "done":
-                        _, copied, duplicates, errors = msg
+                        payload = tuple(msg[1:])
                         bar["value"] = 100
                         status_var.set("Completado.")
-                        dlg.after(400, lambda: _finish(copied, duplicates, errors))
+
+                        def _finish_now() -> None:
+                            _close()
+                            on_done(payload)
+
+                        dlg.after(400, _finish_now)
                         return
             except queue.Empty:
                 pass
             dlg.after(40, _poll)
 
-        def _finish(copied: int, duplicates: int, errors: list[str]) -> None:
-            dlg.grab_release()
-            dlg.destroy()
-            summary = (
-                f"Importación completada\n\n"
-                f"  Seeds copiadas:    {copied}\n"
-                f"  Duplicados omitidos: {duplicates}\n"
-                f"  Destino: {output_dir}"
-            )
-            if errors:
-                summary += f"\n\n  Errores: {len(errors)}\n  " + "\n  ".join(errors[:5])
-            messagebox.showinfo("Importar seeds — completado", summary)
-            self._refresh_ubs_seeds_panel()
+        return dlg, _poll
 
-        dlg.after(40, _poll)
+    # ── Revision de duplicados del pool ────────────────────────────────────
+    def _ubs_seed_score_index(self) -> dict[str, float | None]:
+        """`seed_path` normalizado -> score, para priorizar que seed se conserva."""
+        scores: dict[str, float | None] = {}
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return scores
+        try:
+            conn = connect_memory(memory_path)
+            try:
+                rows = conn.execute("SELECT seed_path, score FROM seed_scores").fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return scores
+        for seed_path, score in rows:
+            if seed_path:
+                scores[str(seed_path).strip().lower()] = score
+        return scores
+
+    def _review_ubs_seed_duplicates(self) -> None:
+        """Audita el pool de seeds y ofrece retirar las duplicadas."""
+        try:
+            seeds_dir = self._ubs_generator_source_dir()
+        except Exception:
+            seeds_dir = self._ubs_default_source_dir()
+        if not seeds_dir.exists():
+            self._show_error("Revisar duplicados", f"No existe la carpeta de seeds:\n{seeds_dir}")
+            return
+
+        set_files = sorted(seeds_dir.rglob("*.set"))
+        if not set_files:
+            messagebox.showinfo("Revisar duplicados", f"No hay seeds en:\n{seeds_dir}")
+            return
+
+        scores = self._ubs_seed_score_index()
+        q: queue.Queue = queue.Queue()
+
+        def _do_scan() -> None:
+            from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
+            from ubs.seed_dedup import SeedFingerprint, scan_duplicates
+            from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding
+
+            fingerprints = []
+            errors: list[str] = []
+            total = len(set_files)
+            for idx, path in enumerate(set_files):
+                q.put(("progress", idx, total, path.name))
+                try:
+                    text, _encoding = read_set_with_encoding(path)
+                    normalized, _found, _missing = force_fixed_lot_text(text)
+                    params = load_set_params(path)
+                    fingerprints.append(
+                        SeedFingerprint.from_text(
+                            path,
+                            normalized,
+                            infer_symbol_from_set(path, params) or "UNKNOWN",
+                            infer_period_from_set(path, params) or "UNKNOWN",
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(f"{path.name}: {exc}")
+
+            def _priority(fingerprint) -> tuple:
+                # Conserva la seed ya evaluada; luego la del esquema mas
+                # completo; luego la ruta mas corta (desempate determinista).
+                score = scores.get(str(fingerprint.path).strip().lower())
+                return (
+                    0 if score is not None else 1,
+                    -len(fingerprint.params),
+                    len(str(fingerprint.path)),
+                )
+
+            try:
+                groups = scan_duplicates(fingerprints, priority=_priority)
+            except Exception as exc:
+                q.put(("failed", str(exc)))
+                return
+            q.put(("done", groups, errors))
+
+        dlg, poll = self._ubs_seed_progress_dialog(
+            "Revisando duplicados...",
+            "Analizando el pool de seeds",
+            str(seeds_dir),
+            len(set_files),
+            q,
+            lambda payload: self._show_ubs_seed_duplicates(seeds_dir, scores, *payload),
+        )
+        threading.Thread(target=_do_scan, daemon=True).start()
+        dlg.after(40, poll)
+
+    def _show_ubs_seed_duplicates(self, seeds_dir: Path, scores: dict, groups: list, errors: list[str]) -> None:
+        redundant_total = sum(len(group.redundant) for group in groups)
+        if not groups:
+            messagebox.showinfo(
+                "Revisar duplicados",
+                f"Sin duplicados.\n\n{len(list(seeds_dir.rglob('*.set')))} seeds revisadas en:\n{seeds_dir}"
+                + (f"\n\nErrores de lectura: {len(errors)}" if errors else ""),
+            )
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Duplicados en el pool de seeds")
+        win.transient(self)
+        win.configure(bg=self.colors["panel"])
+        win.geometry("1180x560")
+
+        header = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text=f"{redundant_total} seeds redundantes en {len(groups)} grupos",
+            bg=self.colors["panel"], fg=self.colors["text"],
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Una seed es duplicada si tiene el mismo símbolo/TF y valores idénticos en todas "
+                 "las claves que comparte con otra (≥100 comunes). Se conserva la evaluada y, a "
+                 "igualdad, la del esquema más completo.",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            font=("Segoe UI", 9), wraplength=1120, justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        columns = ("retirar", "motivo", "score", "conservar")
+        tree = _ttk.Treeview(win, columns=columns, show="headings", selectmode="none")
+        for key, title, width in (
+            ("retirar", "Se retira", 430),
+            ("motivo", "Motivo", 110),
+            ("score", "Score", 80),
+            ("conservar", "Se conserva", 430),
+        ):
+            tree.heading(key, text=title)
+            tree.column(key, width=width, anchor="w")
+        scroll = _ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=(0, 12))
+        scroll.pack(side="left", fill="y", padx=(0, 16), pady=(0, 12))
+
+        to_retire: list[Path] = []
+        for group in sorted(groups, key=lambda g: str(g.keeper.path)):
+            keeper_rel = group.keeper.path.relative_to(seeds_dir)
+            for fingerprint, reason in group.redundant:
+                score = scores.get(str(fingerprint.path).strip().lower())
+                tree.insert("", "end", values=(
+                    str(fingerprint.path.relative_to(seeds_dir)),
+                    "idéntica" if reason == "exact" else "equivalente",
+                    "-" if score is None else f"{score:.2f}",
+                    str(keeper_rel),
+                ))
+                to_retire.append(fingerprint.path)
+
+        footer = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
+        footer.pack(side="bottom", fill="x")
+        evaluated = sum(1 for p in to_retire if scores.get(str(p).strip().lower()) is not None)
+        tk.Label(
+            footer,
+            text=f"{evaluated} de las {len(to_retire)} redundantes ya están evaluadas: al "
+                 "retirarlas se borran sus filas de seed_scores/seed_overrides y se recalculan "
+                 "los pesos del Universo.",
+            bg=self.colors["panel"], fg=self.colors["muted"],
+            font=("Segoe UI", 9), wraplength=760, justify="left",
+        ).pack(side="left", anchor="w")
+        tk.Button(
+            footer, text="Cerrar", bg=self.colors["panel"], fg=self.colors["muted"],
+            relief="solid", borderwidth=1, padx=10, pady=5,
+            font=("Segoe UI", 9), cursor="hand2", command=win.destroy,
+        ).pack(side="right", padx=(6, 0))
+        tk.Button(
+            footer, text=f"Retirar {len(to_retire)} duplicadas",
+            bg=self.colors["danger"], fg="#ffffff", relief="flat", borderwidth=0,
+            padx=12, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=lambda: self._retire_ubs_seed_duplicates(win, seeds_dir, groups),
+        ).pack(side="right")
+
+        if errors:
+            tk.Label(
+                footer, text=f"{len(errors)} ficheros ilegibles omitidos",
+                bg=self.colors["panel"], fg=self.colors["danger"],
+                font=("Segoe UI", 9),
+            ).pack(side="right", padx=(0, 12))
+
+    def _retire_ubs_seed_duplicates(self, window: tk.Toplevel, seeds_dir: Path, groups: list) -> None:
+        import shutil
+
+        from ubs.account import account_retired_seeds_dir
+
+        pairs = [
+            (fingerprint.path, group.keeper.path, reason)
+            for group in groups
+            for fingerprint, reason in group.redundant
+        ]
+        if not pairs:
+            return
+        if not messagebox.askyesno(
+            "Retirar duplicadas",
+            f"Se moverán {len(pairs)} seeds fuera del pool y se borrarán sus registros\n"
+            f"de seed_scores / seed_overrides. Los pesos del Universo se recalcularán.\n\n"
+            f"Los ficheros NO se borran: quedan en outputs/seeds_retiradas/.\n\n¿Continuar?",
+        ):
+            return
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        retired_dir = account_retired_seeds_dir(
+            BASE_DIR, self._ubs_account_type(), self._ubs_broker()
+        ) / stamp
+        retired_dir.mkdir(parents=True, exist_ok=True)
+
+        moved: list[str] = []
+        errors: list[str] = []
+        log_lines = [
+            f"# Seeds duplicadas retiradas del pool el {stamp}",
+            f"# origen: {seeds_dir}",
+            "# formato: <retirada>\t<motivo>\t<seed conservada>",
+            "",
+        ]
+        for source, keeper, reason in pairs:
+            try:
+                relative = source.relative_to(seeds_dir)
+                target = retired_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source), str(target))
+                moved.append(str(source))
+                self.ubs_seed_checked.discard(str(source))
+                log_lines.append(f"{relative}\t{reason}\t{keeper.relative_to(seeds_dir)}")
+            except Exception as exc:
+                errors.append(f"{source.name}: {exc}")
+
+        (retired_dir / "_motivo.txt").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+
+        memory_path = self._ubs_memory_path()
+        if moved and memory_path.exists():
+            try:
+                conn = connect_memory(memory_path)
+                try:
+                    self._cleanup_seed_db(conn, moved)  # ya hace commit
+                finally:
+                    conn.close()
+            except sqlite3.Error as exc:
+                errors.append(f"memoria: {exc}")
+
+        # Limpiar los directorios que hayan quedado vacios.
+        for path in sorted(seeds_dir.rglob("*"), key=lambda p: -len(p.parts)):
+            if path.is_dir() and not any(path.iterdir()):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+
+        window.destroy()
+        self._refresh_ubs_seeds_panel()
+        summary = (
+            f"Retiradas {len(moved)} seeds duplicadas.\n\n"
+            f"  Movidas a: {retired_dir}\n"
+            f"  Registros de memoria borrados y pesos del Universo recalculados."
+        )
+        if errors:
+            summary += f"\n\n  Errores: {len(errors)}\n  " + "\n  ".join(errors[:5])
+        messagebox.showinfo("Retirar duplicadas", summary)
 
     def _cleanup_seed_db(self, conn, seed_paths: list[str]) -> None:
         """Borra seed_scores y seed_overrides de esas seeds."""

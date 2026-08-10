@@ -24,7 +24,11 @@ from typing import Any
 import telegram_notify
 
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
-from .portfolio_save import exclude_portfolio_members_payload, save_portfolio_payload
+from .portfolio_save import (
+    exclude_portfolio_members_payload,
+    requalify_portfolio_member_payload,
+    save_portfolio_payload,
+)
 
 
 SCORE_OPTIONS = {
@@ -1747,6 +1751,25 @@ class JobController:
         self._persist()
         return result
 
+    def requalify_portfolio_member(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Cambia el estado de una estrategia ya excluida (los tres motivos y el pool).
+
+        Corre aqui por lo mismo que la exclusion individual: el manager solo lee
+        esta memoria por una copia, y escribirla por CIFS o por un bind mount de
+        Docker falla con "disk I/O error" (el modo WAL necesita un `-shm` que esos
+        sistemas de ficheros no respaldan). `requalified` es la confirmacion que
+        espera el manager.
+        """
+        _cfg, db_path = self._settings_and_memory()
+        result = requalify_portfolio_member_payload(
+            self.config["project_dir"],
+            str(self.config.get("broker") or ""),
+            db_path,
+            payload,
+        )
+        self._persist()
+        return result
+
     def runs(self, limit: int = 100) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
@@ -1850,6 +1873,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(200, self.server.controller.delete_portfolio(self._body()))
             elif self.path == "/api/v1/portfolios/exclude":
                 self._send(200, self.server.controller.exclude_portfolio_members(self._body()))
+            elif self.path == "/api/v1/portfolios/requalify":
+                self._send(200, self.server.controller.requalify_portfolio_member(self._body()))
             else:
                 self._send(404, {"error": "Ruta no encontrada"})
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:

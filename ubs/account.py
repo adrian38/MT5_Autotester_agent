@@ -139,6 +139,18 @@ def account_seed_dir(base_dir: Path, account_type: object, broker: object = DEFA
     return base_dir / "sets" / "ubs_ready" / broker_key / account
 
 
+def account_retired_seeds_dir(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> Path:
+    """Destino de las seeds retiradas del pool (duplicadas).
+
+    Vive bajo `outputs/` a proposito: ninguna de las rutas que escanean `.set`
+    recursivamente pasa por aqui, asi que una seed retirada no vuelve a entrar
+    en generacion ni en evaluacion.
+    """
+    broker_key = normalize_broker(broker)
+    account = normalize_account_type(account_type, broker_key)
+    return base_dir / "outputs" / "seeds_retiradas" / broker_key / account
+
+
 def account_disabled_symbols_path(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> Path:
     return base_dir / "outputs" / f"ubs_disabled_symbols_{account_scope_key(broker, account_type)}.json"
 
