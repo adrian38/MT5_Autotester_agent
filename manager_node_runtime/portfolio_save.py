@@ -131,6 +131,210 @@ def apply_candidate_verdict(conn: sqlite3.Connection, candidate_id: object, reas
     )
 
 
+def origin_of_reason(reason: object) -> str:
+    """Devuelve el origen de la exclusion, sin el veredicto que se le anadio.
+
+    Reclasificar cambia el veredicto pero no de donde salio la exclusion. Sin
+    quitar el sufijo anterior, mover una fila entre tablas iria acumulando
+    veredictos en el mismo texto. Copia de `candidate_verdict.origin_text`.
+    """
+    text = str(reason or "").strip()
+    for verdict in REASON_TEXTS.values():
+        suffix = f" — {verdict}"
+        if text.endswith(suffix):
+            return text[: -len(suffix)].strip()
+        if text == verdict:
+            return ""
+    return text
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"pragma table_info({table})")}
+
+
+def restore_candidate_stages(conn: sqlite3.Connection, snapshot: object) -> int:
+    """Devuelve las filas de etapa tal y como estaban antes del veredicto.
+
+    Copia de `mt5_manager/candidate_verdict.py::restore_candidate_stages`. Se
+    restaura por nombre de columna, nunca por posicion: dos memorias pueden tener
+    columnas distintas y restaurar por posicion escribiria el valor equivocado
+    sin fallar.
+    """
+    data = snapshot
+    if isinstance(data, (str, bytes)):
+        try:
+            data = json.loads(data)
+        except (TypeError, ValueError):
+            return 0
+    if not isinstance(data, dict) or not data:
+        return 0
+    restored = 0
+    for table in STAGE_TABLES:
+        rows = data.get(table)
+        if not isinstance(rows, list) or not rows:
+            continue
+        if not _quarantine_table_exists(conn, table):
+            continue
+        available = _table_columns(conn, table)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            columns = [name for name in row if name in available]
+            if not columns:
+                continue
+            identifier = row.get("candidate_id")
+            if identifier is not None:
+                conn.execute(f"delete from {table} where candidate_id=?", (identifier,))
+            placeholders = ",".join("?" for _ in columns)
+            conn.execute(
+                f"insert into {table} ({','.join(columns)}) values ({placeholders})",
+                tuple(row[name] for name in columns),
+            )
+            restored += 1
+    return restored
+
+
+def _requalify_memory(
+    project: Path, broker: str, active_memory: Path, account_label: object
+) -> Path:
+    """Memoria del broker que corresponde a una etiqueta `BROKER/CUENTA`."""
+    account_type = str(account_label or "").rsplit("/", 1)[-1].strip()
+    if not account_type:
+        return active_memory
+    candidate = account_memory_path(project, account_type, broker)
+    return candidate if candidate.is_file() else active_memory
+
+
+def requalify_portfolio_member_payload(
+    project_dir: str | Path,
+    broker: str,
+    memory_path: str | Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Mueve una estrategia excluida entre los tres motivos y el pool.
+
+    ESTO CORRE EN EL NODO A PROPOSITO. El manager solo lee esta memoria por una
+    copia de lectura: sobre CIFS o sobre un bind mount de Docker, abrirla para
+    escribir falla con "disk I/O error" porque el modo WAL necesita un `-shm` que
+    esos sistemas de ficheros no respaldan. Aqui la base es local.
+
+    REGLA DUPLICADA: el mismo orden vive en el manager
+    (`mt5_manager/portfolio_service.py::PortfolioSource.requalify_strategy`) y no
+    puede divergir. Reclasificar es **deshacer el veredicto vigente y aplicar el
+    nuevo**, nunca aplicar uno encima de otro:
+
+    1. deshacer el veredicto vigente restaurando `restore_json`;
+    2. fotografiar el estado ya restaurado, que es el respaldo de la proxima vez;
+    3. aplicar el veredicto nuevo, o borrar la fila si el destino es el pool.
+
+    Sin el paso 1, pasar de degradacion a OHLC guardaria como «estado anterior»
+    una memoria a la que ya le faltan Final Tick y 6M, y la estrategia no volveria
+    nunca al pool.
+    """
+    project = Path(project_dir).expanduser().resolve()
+    active_memory = Path(memory_path).expanduser().resolve()
+    raw_key = str(payload.get("quarantine_id") or "").strip()
+    if not raw_key:
+        raise ValueError("Falta la estrategia excluida que se quiere reclasificar")
+    requested = str(payload.get("reason_code") or "pool").strip().lower()
+    target = "pool" if requested == "pool" else normalize_reason_code(requested)
+
+    # La clave de cuarentena lleva la etiqueta de la memoria que guarda la fila.
+    if "|" in raw_key:
+        account_label, _separator, raw_id = raw_key.rpartition("|")
+        quarantine_memory = _requalify_memory(project, broker, active_memory, account_label)
+    else:
+        raw_id = raw_key
+        quarantine_memory = active_memory
+    quarantine_id = int(raw_id) if raw_id.strip().isdigit() else 0
+    if quarantine_id < 1:
+        raise ValueError("Identificador de cuarentena inválido")
+
+    conn = connect_memory(quarantine_memory, timeout=10.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        if not _quarantine_table_exists(conn, "portfolio_quarantine"):
+            raise ValueError("No existe la cuarentena")
+        ensure_quarantine_reason_columns(conn)
+        row = conn.execute(
+            "select account_type,candidate_id,reason,reason_code,restore_json "
+            "from portfolio_quarantine where id=?",
+            (quarantine_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("La estrategia excluida ya no existe")
+        current = normalize_reason_code(row["reason_code"])
+        candidate_account = row["account_type"]
+        candidate_id = row["candidate_id"]
+        previous_restore = row["restore_json"]
+        origin = origin_of_reason(row["reason"])
+        conn.commit()
+    finally:
+        conn.close()
+
+    if target == current:
+        return {
+            "requalified": True,
+            "quarantine_id": raw_key,
+            "reason_code": current,
+            "previous_reason_code": current,
+        }
+
+    candidate_memory = _requalify_memory(project, broker, quarantine_memory, candidate_account)
+    restore_json: str | None = None
+    candidate_conn = connect_memory(candidate_memory, timeout=10.0)
+    try:
+        candidate_conn.row_factory = sqlite3.Row
+        candidate_conn.execute("begin immediate")
+        restore_candidate_stages(candidate_conn, previous_restore)
+        snapshot = snapshot_candidate_stages(candidate_conn, candidate_id)
+        if target not in (MANUAL_REASON, "pool"):
+            if not snapshot:
+                raise ValueError(
+                    "El candidato ya no tiene etapas en la memoria del agente: "
+                    "no se puede aplicar el veredicto"
+                )
+            restore_json = snapshot
+            apply_candidate_verdict(candidate_conn, candidate_id, target)
+        candidate_conn.commit()
+    except Exception:
+        candidate_conn.rollback()
+        raise
+    finally:
+        candidate_conn.close()
+
+    conn = connect_memory(quarantine_memory, timeout=10.0)
+    try:
+        conn.execute("begin immediate")
+        if target == "pool":
+            conn.execute("delete from portfolio_quarantine where id=?", (quarantine_id,))
+        else:
+            conn.execute(
+                "update portfolio_quarantine set reason_code=?,reason=?,restore_json=?,"
+                "quarantined_at=? where id=?",
+                (
+                    target,
+                    reason_with_verdict(origin, target) if origin else REASON_TEXTS[target],
+                    restore_json,
+                    datetime.now().isoformat(timespec="seconds"),
+                    quarantine_id,
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "requalified": True,
+        "quarantine_id": raw_key,
+        "reason_code": target,
+        "previous_reason_code": current,
+    }
+
+
 def _deserialize_proposals(payload: object, scope: str) -> list[dict[str, Any]]:
     if not isinstance(payload, list) or not payload:
         raise ValueError("No se recibieron propuestas para guardar")

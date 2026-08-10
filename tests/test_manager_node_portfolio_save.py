@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from manager_node_runtime.node import JobController
 from manager_node_runtime.portfolio_save import (
     exclude_portfolio_members_payload,
+    requalify_portfolio_member_payload,
     save_portfolio_payload,
 )
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
@@ -378,6 +379,111 @@ class ManagerNodeExclusionVerdictTests(unittest.TestCase):
             self.assertFalse(result["verdict_applied"])
             self.assertEqual(result["reason_code"], "manual")
             self.assertEqual(self._stages(memory), before)
+
+
+class ManagerNodeRequalifyTests(unittest.TestCase):
+    """Cambiar el estado de una estrategia ya excluida corre en el nodo.
+
+    El manager solo lee esta memoria por una copia: escribirla por CIFS o por un
+    bind mount de Docker falla con "disk I/O error" porque el modo WAL necesita un
+    `-shm` que esos sistemas de ficheros no respaldan. Por eso el boton «Cambiar
+    estado» pasa por `/api/v1/portfolios/requalify`.
+
+    Reclasificar es deshacer el veredicto vigente y aplicar el nuevo, nunca
+    encadenarlos. La regla equivalente del manager esta en
+    `mt5_manager/portfolio_service.py::PortfolioSource.requalify_strategy`.
+    """
+
+    def _excluded(self, project: Path, reason_code: str = "degradation"):
+        verdict_tests = ManagerNodeExclusionVerdictTests()
+        memory, portfolio_id = verdict_tests._memory_with_candidate(project)
+        pristine = verdict_tests._stages(memory)
+        result = verdict_tests._exclude(project, memory, portfolio_id, reason_code)
+        quarantine_id = int(result["quarantine_ids"][0])
+        return memory, f"ICTRADING/STANDARD|{quarantine_id}", pristine, verdict_tests
+
+    @staticmethod
+    def _quarantine(memory: Path):
+        with contextlib.closing(sqlite3.connect(memory)) as conn:
+            return conn.execute(
+                "select id,reason_code,reason,restore_json from portfolio_quarantine"
+            ).fetchall()
+
+    def _requalify(self, project: Path, memory: Path, key: str, reason_code: str) -> dict:
+        return requalify_portfolio_member_payload(
+            project, "ICTRADING", memory, {"quarantine_id": key, "reason_code": reason_code}
+        )
+
+    def test_moving_from_degradation_to_ohlc_undoes_the_first_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, pristine, verdict_tests = self._excluded(project)
+
+            result = self._requalify(project, memory, key, "ohlc_mismatch")
+
+            self.assertTrue(result["requalified"])
+            self.assertEqual(result["reason_code"], "ohlc_mismatch")
+            self.assertEqual(result["previous_reason_code"], "degradation")
+            stages = verdict_tests._stages(memory)
+            # Robustez y el tick corto vuelven: solo fallo el 6M.
+            self.assertEqual(stages["candidate_robustness"], pristine["candidate_robustness"])
+            self.assertEqual(stages["candidate_final_tick"], pristine["candidate_final_tick"])
+            self.assertEqual(stages["candidate_final_tick_6m"], [("rejected",)])
+            row = self._quarantine(memory)[0]
+            self.assertEqual(row[1], "ohlc_mismatch")
+            # Un veredicto nuevo trae respaldo nuevo, del estado ya restaurado.
+            self.assertIn("candidate_final_tick_6m", row[3])
+            # El texto no acumula veredictos: conserva el origen y cambia el motivo.
+            self.assertIn("Final Tick 6M", row[2])
+            self.assertNotIn("test de robustez", row[2])
+
+    def test_going_back_to_the_pool_restores_every_stage_and_drops_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, pristine, verdict_tests = self._excluded(project)
+
+            self._requalify(project, memory, key, "ohlc_mismatch")
+            result = self._requalify(project, memory, key, "pool")
+
+            self.assertEqual(result["reason_code"], "pool")
+            self.assertEqual(verdict_tests._stages(memory), pristine)
+            self.assertEqual(self._quarantine(memory), [])
+
+    def test_moving_to_quarantine_keeps_the_row_without_a_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, pristine, verdict_tests = self._excluded(project)
+
+            self._requalify(project, memory, key, "manual")
+
+            self.assertEqual(verdict_tests._stages(memory), pristine)
+            row = self._quarantine(memory)[0]
+            self.assertEqual(row[1], "manual")
+            # Sin veredicto no hay nada que restaurar la proxima vez.
+            self.assertIsNone(row[3])
+
+    def test_the_same_state_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, _pristine, verdict_tests = self._excluded(project)
+            before = verdict_tests._stages(memory)
+            row_before = self._quarantine(memory)
+
+            result = self._requalify(project, memory, key, "degradation")
+
+            self.assertEqual(result["reason_code"], "degradation")
+            self.assertEqual(verdict_tests._stages(memory), before)
+            self.assertEqual(self._quarantine(memory), row_before)
+
+    def test_an_unknown_quarantine_row_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, _key, _pristine, _verdict_tests = self._excluded(project)
+
+            with self.assertRaises(ValueError):
+                self._requalify(project, memory, "ICTRADING/STANDARD|999", "pool")
+            with self.assertRaises(ValueError):
+                self._requalify(project, memory, "", "pool")
 
 
 if __name__ == "__main__":

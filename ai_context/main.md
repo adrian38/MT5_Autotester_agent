@@ -750,9 +750,46 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
 - **Fechas Seeds bar**: `ubs_seed_from_date` / `ubs_seed_to_date` override
   `FromDate`/`ToDate` for seed evaluation only.
 - **"⬆ Importar seeds"**: folder picker → normalises lot size (lote fijo 0.01
-  via `force_fixed_lot_text`) → deduplicates by SHA256 of normalised content →
-  copies to configured seeds folder. Modal progress popup + summary dialog.
-  Implemented in `ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+  via `force_fixed_lot_text`) → deduplicates → copies to configured seeds
+  folder. Modal progress popup + summary dialog. Implemented in
+  `ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+  - Dedup lives in `ubs/seed_dedup.py` (`SeedDuplicateIndex`). The import
+    **first indexes the `.set` files already in the destination**, then checks
+    every incoming file against that index and re-adds each copied file, so the
+    batch also dedupes against itself.
+  - Seed identity is `(symbol, timeframe, params)`. Two matches are reported
+    separately: `exact` (identical normalised content) and `equivalent` (same
+    symbol/TF and identical values on **every shared key**, with ≥100 shared
+    keys and ≥60% overlap).
+  - The `equivalent` pass exists because the EA keeps gaining parameters: the
+    same seed re-exported from a newer UBS build carries extra keys, so its
+    SHA256 differs and a hash-only dedup reimports the whole pool. This is not
+    hypothetical — the `UPDATED SETS UBS_V6.4` import (Aug 2026) copied 292
+    files of which 176 were already in the pool.
+  - Values are compared after stripping optimisation ranges (`value||min||…`),
+    so toggling a parameter's optimise flag does not create a false new seed.
+  - Sets whose symbol/TF cannot be inferred **are still imported** (they land in
+    `UNKNOWN/`), because "Guardar Symbol/TF" is the supported way to rescue
+    them: with an override saved they stop being `invalid_seed` and become
+    evaluable. The summary warns how many arrived that way and names the first
+    few, so they are a visible decision rather than silent pool noise.
+- **"Revisar duplicados"**: audits the seeds already in the pool with the same
+  rules and offers to retire the redundant ones. Independent of import, so a
+  pool polluted by an older import can be cleaned at any time.
+  `ubs/seed_dedup.py:scan_duplicates` groups them; the keeper is chosen by
+  `priority` — already evaluated first, then the richest parameter schema, then
+  the shortest path (deterministic tie-break).
+  - Retiring **moves** the `.set` to
+    `outputs/seeds_retiradas/<BROKER>/<ACCOUNT>/<timestamp>/` (never deletes)
+    with a `_motivo.txt` recording, per file, why it went and which seed it
+    duplicated. That tree is under `outputs/` on purpose: no `.set` scanner
+    walks it, so a retired seed cannot re-enter generation or evaluation.
+  - It then drops the `seed_scores` / `seed_overrides` rows via
+    `_cleanup_seed_db()` and refreshes the Universe. There is no persisted
+    weights table — weights derive from `seed_scores` on read — so removing the
+    rows is what actually undoes the double-counted weight.
+  - `ui/ubs_seeds_logic.py:_ubs_seed_progress_dialog` is the shared modal
+    progress popup used by both Importar seeds and Revisar duplicados.
 - **"Eliminar todas"**: deletes all `.set` files + their `seed_scores` /
   `seed_overrides` DB rows. `_cleanup_seed_db()` helper used by all three
   delete methods.
