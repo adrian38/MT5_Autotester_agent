@@ -103,6 +103,13 @@ class FeedbackSignal:
     stage_probabilities: dict[str, float]
     regression_trials: float = 0.0
 
+    @property
+    def effective_score(self) -> float:
+        """Selection score discounted by the amount of supporting evidence."""
+
+        confidence = min(max(float(self.confidence), 0.0), 1.0)
+        return round(float(self.score) * confidence, 6)
+
 
 def row_get(row: object, key: str, default: object = None) -> object:
     if isinstance(row, Mapping):
