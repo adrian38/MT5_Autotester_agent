@@ -1376,6 +1376,54 @@ class AgentMemory:
     def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
         return {key: signal.effective_score for key, signal in self.asset_feedback_signals(aliases).items()}
 
+    def asset_feedback_with_groups(
+        self,
+        aliases: dict[str, str] | None,
+        group_by_symbol: dict[str, str],
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Return instrument and asset-group lifecycle feedback from one scan."""
+        aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
+        normalized_groups = {
+            str(key).upper(): str(value)
+            for key, value in group_by_symbol.items()
+        }
+
+        def _canonical(symbol: object) -> str:
+            raw = str(symbol or "").upper()
+            return aliases.get(raw, raw)
+
+        rows = self._candidate_feedback_rows()
+        seed_rows = self._seed_feedback_rows()
+        global_groups: dict[object, list[object]] = {}
+        grouped_assets: dict[str, dict[object, list[object]]] = {}
+        grouped_asset_groups: dict[str, dict[object, list[object]]] = {}
+        for row in rows:
+            asset_key = _canonical(row["target_symbol"])
+            group_key = normalized_groups.get(asset_key, "")
+            cohort = candidate_group_key(row)
+            global_groups.setdefault(cohort, []).append(row)
+            grouped_assets.setdefault(asset_key, {}).setdefault(cohort, []).append(row)
+            if group_key:
+                grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
+        for row in seed_rows:
+            asset_key = _canonical(row["symbol"])
+            group_key = normalized_groups.get(asset_key, "")
+            cohort = seed_group_key(row)
+            global_groups.setdefault(cohort, []).append(row)
+            grouped_assets.setdefault(asset_key, {}).setdefault(cohort, []).append(row)
+            if group_key:
+                grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
+        asset_signals = probability_feedback_signals(grouped_assets, global_groups)
+        group_signals = probability_feedback_signals(
+            grouped_asset_groups,
+            global_groups,
+            normalize_keys=False,
+        )
+        return (
+            {key: signal.effective_score for key, signal in asset_signals.items()},
+            {key: signal.effective_score for key, signal in group_signals.items()},
+        )
+
     def timeframe_feedback_signals(self) -> dict[str, FeedbackSignal]:
         rows = self._candidate_feedback_rows()
         seed_rows = self._seed_feedback_rows()
