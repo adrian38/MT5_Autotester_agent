@@ -624,7 +624,12 @@ def parse_args() -> argparse.Namespace:
     if args.symbol_map is None:
         args.symbol_map = default_symbol_map_for_broker(args.broker)
     args.run_tests_symbol_map = args.symbol_map
-    migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
+    # Legacy migration only belongs to the checkout's persistent storage.
+    # Integration runs often point output and memory at a temporary directory;
+    # scanning/mutating the live legacy store in that case is surprising and
+    # can dominate the whole command on mature histories.
+    if paths_belong_to_workspace(args.output_dir, args.memory):
+        migrate_legacy_account_storage(BASE_DIR, args.account_type, args.broker)
     if Path(args.source_dir).expanduser() == DEFAULT_SOURCE:
         args.source_dir = str(account_seed_dir(BASE_DIR, args.account_type, args.broker))
     else:
@@ -644,6 +649,16 @@ def parse_args() -> argparse.Namespace:
         args.assets = str(resolve_workspace_path(args.assets))
     args.symbol_map = augment_symbol_map_with_suffix_targets(args.symbol_map, args)
     return args
+
+
+def paths_belong_to_workspace(*values: object) -> bool:
+    workspace = BASE_DIR.resolve()
+    for value in values:
+        try:
+            Path(str(value)).expanduser().resolve().relative_to(workspace)
+        except (OSError, ValueError):
+            return False
+    return True
 
 
 def augment_symbol_map_with_suffix_targets(symbol_map_text: str, args: argparse.Namespace) -> str:
