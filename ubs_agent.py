@@ -6273,6 +6273,7 @@ def build_run_config(
             "feedback_model": {
                 "model": "smoothed_stage_probability_v1",
                 "stages": ["base", "robust", "probe", "six_month"],
+                "selection_score": "relative_log_odds_x_confidence",
                 "mutation_sampling": "percentile_multiplier_0.5_1.5",
             },
         },
