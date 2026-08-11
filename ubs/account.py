@@ -368,6 +368,20 @@ def _copy_legacy_dir(source: Path, destination: Path) -> bool:
     return copied_any
 
 
+def _copy_legacy_output_dir(source: Path, destination: Path) -> bool:
+    """Migrate generated output only when the broker-scoped root is absent.
+
+    Generated runs are immutable historical artifacts.  Once the scoped output
+    root exists, recursively comparing it with the legacy root on every agent
+    startup is both unnecessary and very expensive (tens of thousands of
+    files in mature installations).  Seeds keep their merge behaviour because
+    they are a small, user-maintained input pool.
+    """
+    if destination.exists():
+        return False
+    return _copy_legacy_dir(source, destination)
+
+
 def _legacy_seed_path_to_broker_path(base_dir: Path, value: object, account_type: str, broker: str) -> str | None:
     text = str(value or "")
     if not text:
@@ -506,7 +520,12 @@ def migrate_legacy_account_storage(base_dir: Path, account_type: object, broker:
         ("memory", legacy_account_memory_path(base_dir, account), account_memory_path(base_dir, account, broker_key), _copy_legacy_file),
         ("disabled_symbols", legacy_account_disabled_symbols_path(base_dir, account), account_disabled_symbols_path(base_dir, account, broker_key), _copy_legacy_file),
         ("seeds", legacy_account_seed_dir(base_dir, account), account_seed_dir(base_dir, account, broker_key), _copy_legacy_dir),
-        ("outputs", legacy_account_output_dir(base_dir, account), account_output_dir(base_dir, account, broker_key), _copy_legacy_dir),
+        (
+            "outputs",
+            legacy_account_output_dir(base_dir, account),
+            account_output_dir(base_dir, account, broker_key),
+            _copy_legacy_output_dir,
+        ),
     )
     for label, source, destination, copier in migrations:
         if copier(source, destination):

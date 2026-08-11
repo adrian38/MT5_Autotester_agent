@@ -56,6 +56,7 @@ from ubs_agent import (
     target_symbol_disabled,
     target_timeframe_universe,
     min_trades_for_period,
+    paths_belong_to_workspace,
     probability_argument,
     production_viable_source_seeds,
     production_seed_pool,
@@ -118,6 +119,25 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_workspace_storage_detection_rejects_external_temp_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertFalse(
+                paths_belong_to_workspace(
+                    Path(temp_dir) / "out",
+                    Path(temp_dir) / "memory.sqlite",
+                )
+            )
+
+    def test_workspace_storage_detection_accepts_checkout_paths(self) -> None:
+        from ubs_agent import BASE_DIR
+
+        self.assertTrue(
+            paths_belong_to_workspace(
+                BASE_DIR / "outputs" / "ubs_agent",
+                BASE_DIR / "outputs" / "ubs_memory.sqlite",
+            )
+        )
+
     def test_report_discovery_excludes_watchdog_snapshots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

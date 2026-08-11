@@ -687,6 +687,21 @@ class UBSAccountTests(unittest.TestCase):
             self.assertNotIn("memory", "\n".join(copied))
             self.assertEqual(new_memory.read_text(encoding="utf-8"), "new")
 
+    def test_migration_does_not_rescan_existing_scoped_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            legacy_output = base / "outputs" / "ubs_agent" / "ECN" / "legacy_run" / "candidate.set"
+            scoped_output = account_output_dir(base, "ECN")
+            legacy_output.parent.mkdir(parents=True, exist_ok=True)
+            legacy_output.write_text("legacy", encoding="utf-8")
+            scoped_output.mkdir(parents=True, exist_ok=True)
+            (scoped_output / "current_run").mkdir()
+
+            copied = migrate_legacy_account_storage(base, "ECN")
+
+            self.assertNotIn("outputs", "\n".join(copied))
+            self.assertFalse((scoped_output / "legacy_run" / "candidate.set").exists())
+
     def test_migration_replaces_empty_new_sqlite_with_legacy_data_and_backup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
