@@ -163,6 +163,47 @@ class UBSScoreTests(unittest.TestCase):
             net_profit_normalization(".USTECHCash", broker="ROBOFOREX", base_dir=base),
         )
 
+    def test_ictrading_profile_uses_contract_measured_symbol_factors(self) -> None:
+        base = Path(__file__).resolve().parent.parent
+        payload = json.loads(
+            (base / "assets" / "ictrading_normalization.json").read_text(encoding="utf-8-sig")
+        )
+        factors = payload["symbol_net_profit_factors"]
+
+        self.assertEqual(payload["basis"], "ictrading_notional_normalization_ref1000")
+        self.assertEqual(payload["reference_notional"], 1000.0)
+        self.assertEqual(payload["requested_lot"], 0.01)
+        self.assertEqual(payload["min_notional"], 100.0)
+        self.assertEqual(payload["group_factor_policy"], "min_measured_factor")
+        self.assertGreater(payload["measured_symbol_count"], 3000)
+        self.assertEqual(payload["symbol_suffix_net_profit_factors"], {})
+        for symbol in (
+            "EURUSD",
+            "XAUUSD",
+            "US500",
+            "USTEC",
+            "XTIUSD",
+            "BTCUSD",
+            "AAPL.NAS",
+            "RIO.LSE",
+            "EURBND_U6",
+            "COFFEE_U6",
+        ):
+            self.assertIn(symbol, factors)
+        self.assertNotEqual(factors["US500"], factors["USTEC"])
+        self.assertLess(factors["XAUUSD"], 0.5)
+        self.assertGreater(factors["XTIUSD"], 0.1)
+        self.assertGreater(factors["AAPL.NAS"], 1.0)
+
+        self.assertEqual(
+            net_profit_normalization("US100", broker="ICTRADING", base_dir=base),
+            net_profit_normalization("USTEC", broker="ICTRADING", base_dir=base),
+        )
+        self.assertEqual(
+            net_profit_normalization("WTI", broker="ICTRADING", base_dir=base),
+            net_profit_normalization("XTIUSD", broker="ICTRADING", base_dir=base),
+        )
+
     def test_ictrading_normalization_splits_indices_energies_and_stocks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
