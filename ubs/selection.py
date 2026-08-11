@@ -13,6 +13,7 @@ MIN_TRAINING_ROWS = 300
 MIN_POSITIVE_ROWS = 30
 FITNESS_WEIGHT_SCALE = 10.0
 FITNESS_WEIGHT_LIMIT = 15.0
+_DENSE_FITNESS_FEATURES = 8
 
 
 def _row_get(row: object, key: str, default: object = None) -> object:
@@ -95,6 +96,54 @@ def fitness_features(score: object, metrics_json: object, period: object) -> tup
     return tuple(values)
 
 
+def _batch_logistic_gradients(
+    samples: list[tuple[tuple[float, ...], int]],
+    sparse_features: list[tuple[tuple[int, float], ...]],
+    means: list[float],
+    scales: list[float],
+    coefficients: list[float],
+) -> list[float]:
+    """Compute the exact full-batch gradient without materializing z-scores.
+
+    The first eight fitness features are dense metrics.  The remaining values
+    are timeframe one-hot columns.  Moving the centering term into the
+    intercept and accumulating gradients in raw-feature space avoids visiting
+    every zero timeframe column for every sample and iteration.  Algebraically
+    this is the same gradient used by the original standardized implementation.
+    """
+    feature_count = len(means)
+    dense_count = min(_DENSE_FITNESS_FEATURES, feature_count)
+    raw_coefficients = [
+        coefficients[index + 1] / scales[index]
+        for index in range(feature_count)
+    ]
+    raw_intercept = coefficients[0] - sum(
+        raw_coefficients[index] * means[index]
+        for index in range(feature_count)
+    )
+    intercept_gradient = 0.0
+    raw_gradients = [0.0] * feature_count
+    for (features, label), active_sparse in zip(samples, sparse_features):
+        linear = raw_intercept
+        for index in range(dense_count):
+            linear += raw_coefficients[index] * features[index]
+        for index, value in active_sparse:
+            linear += raw_coefficients[index] * value
+        error = label - _sigmoid(linear)
+        intercept_gradient += error
+        for index in range(dense_count):
+            raw_gradients[index] += error * features[index]
+        for index, value in active_sparse:
+            raw_gradients[index] += error * value
+    return [
+        intercept_gradient,
+        *(
+            (raw_gradients[index] - means[index] * intercept_gradient) / scales[index]
+            for index in range(feature_count)
+        ),
+    ]
+
+
 @dataclass(frozen=True)
 class SelectionPrediction:
     probability: float
@@ -135,24 +184,27 @@ class SelectionFitnessModel:
         for index, mean in enumerate(means):
             variance = sum((features[index] - mean) ** 2 for features, _label in samples) / len(samples)
             scales.append(max(math.sqrt(variance), 1e-6))
-        standardized = [
-            tuple((features[index] - means[index]) / scales[index] for index in range(feature_count))
+        sparse_features = [
+            tuple(
+                (index, features[index])
+                for index in range(_DENSE_FITNESS_FEATURES, feature_count)
+                if features[index] != 0.0
+            )
             for features, _label in samples
         ]
-        labels = [label for _features, label in samples]
         prior = positives / len(samples)
         coefficients = [_logit(prior), *([0.0] * feature_count)]
 
         learning_rate = 0.08
         l2 = 0.02
         for iteration in range(700):
-            gradients = [0.0] * len(coefficients)
-            for features, label in zip(standardized, labels):
-                prediction = _sigmoid(coefficients[0] + sum(c * value for c, value in zip(coefficients[1:], features)))
-                error = label - prediction
-                gradients[0] += error
-                for index, value in enumerate(features, start=1):
-                    gradients[index] += error * value
+            gradients = _batch_logistic_gradients(
+                samples,
+                sparse_features,
+                means,
+                scales,
+                coefficients,
+            )
             count = float(len(samples))
             max_step = 0.0
             for index in range(len(coefficients)):
@@ -188,4 +240,3 @@ class SelectionFitnessModel:
         weight = FITNESS_WEIGHT_SCALE * (_logit(probability) - _logit(self.prior_probability))
         weight = max(-FITNESS_WEIGHT_LIMIT, min(FITNESS_WEIGHT_LIMIT, weight))
         return SelectionPrediction(round(probability, 8), round(weight, 6), round(evidence, 6))
-
