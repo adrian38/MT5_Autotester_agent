@@ -14,18 +14,11 @@ from ubs.score import ScoreResult
 from ubs.selection import SelectionFitnessModel, SelectionPrediction
 from ubs.weights import (
     FeedbackSignal,
-    MUTATION_ACCEPTED_BONUS,
     TIMEFRAME_PATCH_KEYS,
     candidate_group_key,
-    feedback_weight,
-    grouped_shrunk_mean,
     probability_feedback_signals,
     seed_group_key,
 )
-
-
-def aggregate_feedback_value(groups: dict[object, list[float]]) -> float | None:
-    return grouped_shrunk_mean(groups)
 
 
 FINAL_TICK_STAGE_TABLES = {
@@ -1317,21 +1310,26 @@ class AgentMemory:
     def mutation_feedback(self) -> dict[str, float]:
         return {key: signal.effective_score for key, signal in self.mutation_feedback_signals().items()}
 
-    def mutation_direction_feedback(self) -> dict[str, float]:
+    def mutation_direction_feedback_signals(self) -> dict[str, dict[str, FeedbackSignal]]:
         rows = [row for row in self._candidate_feedback_rows() if str(row["mutation_details_json"] or "")]
-        totals: dict[str, dict[object, list[float]]] = {}
+        global_groups: dict[object, list[object]] = {}
+        grouped: dict[str, dict[object, list[object]]] = {}
+        separator = "\0"
         for row in rows:
-            value = feedback_weight(row, accepted_bonus=MUTATION_ACCEPTED_BONUS)
-            if value is None:
-                continue
             try:
                 details = json.loads(str(row["mutation_details_json"] or "[]"))
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if not isinstance(details, list):
                 continue
+            valid_details: list[tuple[str, str]] = []
             for detail in details:
                 if not isinstance(detail, dict):
+                    continue
+                # A legacy wrap replaced an out-of-range local step with a
+                # random value anywhere in the range.  Its resulting delta is
+                # not evidence about the requested direction.
+                if detail.get("wrapped") is True:
                     continue
                 key = str(detail.get("key") or "").strip()
                 if not key or key in TIMEFRAME_PATCH_KEYS:
@@ -1342,13 +1340,32 @@ class AgentMemory:
                     continue
                 if delta == 0.0:
                     continue
-                contribution = value if delta > 0 else -value
-                totals.setdefault(key, {}).setdefault(candidate_group_key(row, key, "direction"), []).append(contribution)
-        return {
-            key: value
-            for key, groups in totals.items()
-            if (value := aggregate_feedback_value(groups)) is not None
-        }
+                valid_details.append((key, "up" if delta > 0 else "down"))
+            if not valid_details:
+                continue
+            global_groups.setdefault(candidate_group_key(row), []).append(row)
+            for key, direction in valid_details:
+                composite = f"{key}{separator}{direction}"
+                grouped.setdefault(composite, {}).setdefault(
+                    candidate_group_key(row, key, direction), []
+                ).append(row)
+
+        composite_signals = probability_feedback_signals(grouped, global_groups, normalize_keys=False)
+        result: dict[str, dict[str, FeedbackSignal]] = {}
+        for composite, signal in composite_signals.items():
+            key, direction = composite.rsplit(separator, 1)
+            result.setdefault(key, {})[direction] = signal
+        return result
+
+    def mutation_direction_feedback(self) -> dict[str, float]:
+        result: dict[str, float] = {}
+        for key, directions in self.mutation_direction_feedback_signals().items():
+            up = directions.get("up")
+            down = directions.get("down")
+            value = (up.effective_score if up else 0.0) - (down.effective_score if down else 0.0)
+            if value:
+                result[key] = round(value, 6)
+        return result
 
     def asset_feedback_signals(self, aliases: dict[str, str] | None = None) -> dict[str, FeedbackSignal]:
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}

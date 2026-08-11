@@ -117,7 +117,8 @@ from ubs.universe import (
 from ubs.weights import (
     DEFAULT_ROBUST_NEGATIVE_BONUS,
     DEFAULT_ROBUST_POSITIVE_BONUS,
-    percentile_multipliers,
+    MUTATION_SCORE_FULL_STRENGTH,
+    score_aware_percentile_multipliers,
 )
 
 
@@ -1830,9 +1831,11 @@ def line_candidates(
             continue
         if step <= 0 or stop <= start:
             continue
+        if not any(start <= current + direction * step <= stop for direction in (-2, -1, 1, 2)):
+            continue
         base_weight = 4.0 if key in preferred else 1.0
         candidates[key] = (index, parts, base_weight)
-    multipliers = percentile_multipliers(mutation_feedback, candidates)
+    multipliers = score_aware_percentile_multipliers(mutation_feedback, candidates)
     for key, (index, parts, base_weight) in tuple(candidates.items()):
         candidates[key] = (index, parts, base_weight * multipliers[key])
     return candidates
@@ -2145,18 +2148,22 @@ def create_variant(
         step = float(parts[2])
         stop = float(parts[3])
         direction_bias = mutation_direction_feedback.get(key, 0.0)
-        if direction_bias > 0 and rng.random() < 0.70:
-            direction = rng.choice([1, 2])
-        elif direction_bias < 0 and rng.random() < 0.70:
-            direction = rng.choice([-2, -1])
+        valid_directions = [
+            direction
+            for direction in (-2, -1, 1, 2)
+            if start <= current + direction * step <= stop
+        ]
+        up_directions = [direction for direction in valid_directions if direction > 0]
+        down_directions = [direction for direction in valid_directions if direction < 0]
+        bias_strength = min(1.0, abs(float(direction_bias)) / MUTATION_SCORE_FULL_STRENGTH)
+        if direction_bias and up_directions and down_directions:
+            preferred = up_directions if direction_bias > 0 else down_directions
+            alternative = down_directions if direction_bias > 0 else up_directions
+            preferred_probability = 0.5 + 0.25 * bias_strength
+            direction = rng.choice(preferred if rng.random() < preferred_probability else alternative)
         else:
-            direction = rng.choice([-2, -1, 1, 2])
+            direction = rng.choice(valid_directions)
         value = current + direction * step
-        wrapped = False
-        if value < start or value > stop:
-            slots = int((stop - start) / step)
-            value = start + rng.randint(0, max(0, slots)) * step
-            wrapped = True
         new_value = max(start, min(stop, value))
         parts[0] = format_like(parts[0], new_value)
         lhs = lines[line_index].split("=", 1)[0]
@@ -2171,7 +2178,8 @@ def create_variant(
                 "step": step,
                 "direction": direction,
                 "direction_bias": round(float(direction_bias), 4),
-                "wrapped": wrapped,
+                "direction_bias_strength": round(bias_strength, 4),
+                "wrapped": False,
             }
         )
 

@@ -29,6 +29,7 @@ SEED_WEIGHT_SCALE = 1.0
 STAGE_PRIOR_STRENGTH = 20.0
 RELATIVE_SCORE_SCALE = 10.0
 RELATIVE_SCORE_LIMIT = 40.0
+MUTATION_SCORE_FULL_STRENGTH = 5.0
 DEFAULT_STAGE_PRIORS = {
     "base": 0.50,
     "robust": 0.50,
@@ -297,6 +298,37 @@ def percentile_multipliers(
             ranks[key] = multiplier
         index = end
     return {key: ranks.get(key, 1.0) for key in requested}
+
+
+def score_aware_percentile_multipliers(
+    feedback: Mapping[str, float],
+    keys: Iterable[str],
+    *,
+    minimum: float = 0.5,
+    maximum: float = 1.5,
+    full_strength: float = MUTATION_SCORE_FULL_STRENGTH,
+) -> dict[str, float]:
+    """Rank mutation keys without amplifying an effectively neutral signal.
+
+    ``FeedbackSignal.effective_score`` already discounts sparse evidence.  A
+    pure percentile would nevertheless turn a score close to zero into the
+    strongest possible reward or penalty.  Blend that rank back towards 1.0
+    until the effective score is large enough to justify the full effect.
+    """
+
+    requested = list(dict.fromkeys(str(key) for key in keys))
+    ranked = percentile_multipliers(feedback, requested, minimum=minimum, maximum=maximum)
+    scale = max(float(full_strength), 1e-9)
+    result: dict[str, float] = {}
+    for key in requested:
+        try:
+            score = abs(float(feedback[key]))
+        except (KeyError, TypeError, ValueError):
+            result[key] = 1.0
+            continue
+        strength = min(1.0, score / scale)
+        result[key] = 1.0 + (ranked[key] - 1.0) * strength
+    return result
 
 
 def reason_penalty(reasons: Iterable[str], penalties: Mapping[str, float]) -> float:
