@@ -106,6 +106,7 @@ from ubs.set_utils import (
     write_set_use_every_tick,
 )
 from ubs.universe import (
+    augment_aliases_with_symbol_map,
     canonical_symbol,
     load_asset_universe,
     load_disabled_symbols,
@@ -6035,8 +6036,9 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
         Path(args.assets).expanduser(),
         disabled_symbols=disabled_symbols,
     )
-    existing_statuses = history_probe_latest_statuses(memory, aliases)
     all_universe_symbols = tuple(dict.fromkeys(symbol for symbols in asset_groups.values() for symbol in symbols))
+    aliases = augment_aliases_with_symbol_map(aliases, symbol_map, all_universe_symbols)
+    existing_statuses = history_probe_latest_statuses(memory, aliases)
     universe_symbols = tuple(
         symbol
         for symbol in all_universe_symbols
@@ -6344,8 +6346,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         Path(args.assets).expanduser(),
         disabled_symbols=disabled_symbols,
     )
-    group_by_symbol = asset_group_map(asset_groups, aliases)
     universe_symbols = tuple(symbol for symbols in asset_groups.values() for symbol in symbols)
+    aliases = augment_aliases_with_symbol_map(aliases, symbol_map, universe_symbols)
+    group_by_symbol = asset_group_map(asset_groups, aliases)
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
@@ -6772,6 +6775,7 @@ def run_agent(args: argparse.Namespace) -> int:
     if not universe_symbols:
         print("ERROR: no hay simbolos activos en Universo para generar targets")
         return 1
+    aliases = augment_aliases_with_symbol_map(aliases, symbol_map, universe_symbols)
     group_by_symbol = asset_group_map(asset_groups, aliases)
     timeframe_universe = target_timeframe_universe(
         bool(args.experimental_long_timeframes),
