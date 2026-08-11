@@ -10,7 +10,13 @@ from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig, ScoreResult
 from ubs.account import account_disabled_symbols_path
 from ubs.memory import AgentMemory
-from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols, seed_symbol_disabled
+from ubs.universe import (
+    augment_aliases_with_symbol_map,
+    load_disabled_symbols,
+    load_seed_enabled_disabled_symbols,
+    save_disabled_symbols,
+    seed_symbol_disabled,
+)
 from ubs_agent import (
     DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
     PRODUCTION_SEED_SYMBOL_CAP_RATIO,
@@ -1289,6 +1295,28 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertFalse(limiter.allows("XAUUSD", "H1"))
         self.assertFalse(limiter.allows("XAGUSD", "H1"))
         self.assertTrue(limiter.allows("META", "H4"))
+
+    def test_symbol_map_aliases_share_feedback_identity_and_group_cap(self) -> None:
+        aliases = augment_aliases_with_symbol_map(
+            {"GOLD": "XAUUSD"},
+            {"XAUUSD": "XAUUSD.sa", "ORPHAN": "MISSING.sa"},
+            ("XAUUSD.sa", "XAGUSD.sa"),
+        )
+
+        self.assertEqual(aliases["XAUUSD"], "XAUUSD.SA")
+        self.assertEqual(aliases["GOLD"], "XAUUSD.SA")
+        self.assertNotIn("ORPHAN", aliases)
+
+        limiter = TargetDiversityLimiter(
+            5,
+            aliases,
+            group_by_symbol={"XAUUSD.SA": "Metals", "XAGUSD.SA": "Metals"},
+            group_cap_ratios={"Metals": 0.2},
+        )
+        self.assertTrue(limiter.allows("XAUUSD", "H1"))
+        limiter.record("XAUUSD", "H1")
+        self.assertFalse(limiter.allows("GOLD", "H4"))
+        self.assertFalse(limiter.allows("XAGUSD.sa", "M30"))
 
     def test_target_diversity_limiter_uses_group_specific_caps(self) -> None:
         limiter = TargetDiversityLimiter(

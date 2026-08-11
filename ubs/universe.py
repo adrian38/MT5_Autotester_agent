@@ -111,6 +111,57 @@ def canonical_symbol(symbol: str, aliases: dict[str, str]) -> str:
     return aliases.get(normalized, normalized).upper()
 
 
+def augment_aliases_with_symbol_map(
+    aliases: dict[str, str],
+    symbol_map: dict[str, str],
+    universe_symbols: tuple[str, ...],
+) -> dict[str, str]:
+    """Resolve logical aliases to actual broker symbols in the universe.
+
+    Generation stores logical seed symbols such as ``XAUUSD`` as well as
+    broker targets such as ``XAUUSD.sa``.  The execution symbol map knows that
+    relationship, while feedback and diversity historically only received the
+    aliases declared in the asset INI.  A broker universe without
+    ``CommonAliases`` could consequently split one instrument into separate
+    identities and skip group caps for the logical name.
+
+    Only mappings that terminate at an active universe symbol are admitted, so
+    unrelated compatibility mappings cannot create synthetic identities.
+    """
+
+    result = {str(key).upper(): str(value).upper() for key, value in aliases.items()}
+    universe_by_key = {
+        str(symbol).strip().upper(): str(symbol).strip().upper()
+        for symbol in universe_symbols
+        if str(symbol or "").strip()
+    }
+    normalized_map = {
+        str(key).strip().upper(): str(value).strip().upper()
+        for key, value in symbol_map.items()
+        if str(key or "").strip() and str(value or "").strip()
+    }
+
+    def resolve(value: str) -> str:
+        current = str(value or "").strip().upper()
+        seen: set[str] = set()
+        for _ in range(8):
+            if not current or current in seen:
+                break
+            seen.add(current)
+            next_value = result.get(current, current)
+            next_value = normalized_map.get(next_value, next_value)
+            if next_value == current:
+                break
+            current = next_value
+        return universe_by_key.get(current, "")
+
+    for source in set(result) | set(normalized_map):
+        target = resolve(source)
+        if target and source != target:
+            result[source] = target
+    return result
+
+
 def seed_symbol_disabled(
     seed: Seed,
     disabled_symbols: set[str],
