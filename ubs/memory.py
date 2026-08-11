@@ -5,6 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 from ubs.db import connect_memory
 from ubs.models import Seed, Variant
@@ -534,33 +535,59 @@ class AgentMemory:
         model = self.selection_fitness_model(exclude_run_id=exclude_run_id)
         if model is None:
             return {str(seed.path): SelectionPrediction(0.0, 0.0, 0.0) for seed in seeds}
+        feature_rows = self._selection_feature_rows(str(seed.path) for seed in seeds)
         result: dict[str, SelectionPrediction] = {}
         for seed in seeds:
             path = str(seed.path)
-            row = self.conn.execute(
-                """
-                select score, metrics_json, period
-                from candidates
-                where set_path=? and score is not null and coalesce(metrics_json, '') != ''
-                order by id desc limit 1
-                """,
-                (path,),
-            ).fetchone()
-            if row is None:
-                row = self.conn.execute(
-                    """
-                    select score, metrics_json, period
-                    from seed_scores
-                    where seed_path=? and active=1 and score is not null and coalesce(metrics_json, '') != ''
-                    limit 1
-                    """,
-                    (path,),
-                ).fetchone()
+            row = feature_rows.get(path)
             result[path] = (
                 model.predict(row["score"], row["metrics_json"], row["period"])
                 if row is not None
                 else SelectionPrediction(model.prior_probability, 0.0, 0.0)
             )
+        return result
+
+    def _selection_feature_rows(self, paths: Iterable[str]) -> dict[str, sqlite3.Row]:
+        """Load the latest candidate/seed features with bounded batch queries."""
+        unique_paths = list(dict.fromkeys(str(path) for path in paths))
+        result: dict[str, sqlite3.Row] = {}
+        chunk_size = 400  # Safely below SQLite's traditional 999-variable limit.
+        for start in range(0, len(unique_paths), chunk_size):
+            chunk = unique_paths[start : start + chunk_size]
+            placeholders = ",".join("?" for _path in chunk)
+            rows = self.conn.execute(
+                f"""
+                select c.set_path as feature_path, c.score, c.metrics_json, c.period
+                from candidates c
+                join (
+                    select set_path, max(id) as latest_id
+                    from candidates
+                    where set_path in ({placeholders})
+                      and score is not null
+                      and coalesce(metrics_json, '') != ''
+                    group by set_path
+                ) latest on latest.latest_id = c.id
+                """,
+                tuple(chunk),
+            ).fetchall()
+            result.update((str(row["feature_path"]), row) for row in rows)
+
+        missing = [path for path in unique_paths if path not in result]
+        for start in range(0, len(missing), chunk_size):
+            chunk = missing[start : start + chunk_size]
+            placeholders = ",".join("?" for _path in chunk)
+            rows = self.conn.execute(
+                f"""
+                select seed_path as feature_path, score, metrics_json, period
+                from seed_scores
+                where seed_path in ({placeholders})
+                  and active=1
+                  and score is not null
+                  and coalesce(metrics_json, '') != ''
+                """,
+                tuple(chunk),
+            ).fetchall()
+            result.update((str(row["feature_path"]), row) for row in rows)
         return result
 
     def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:

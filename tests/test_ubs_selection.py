@@ -1,9 +1,16 @@
 import json
+import math
+import sqlite3
 import unittest
 from unittest.mock import Mock
 
 from ubs.memory import AgentMemory
-from ubs.selection import SelectionFitnessModel, finalized_six_month_label
+from ubs.selection import (
+    SelectionFitnessModel,
+    _batch_logistic_gradients,
+    _sigmoid,
+    finalized_six_month_label,
+)
 
 
 def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: float = 5.0) -> str:
@@ -21,6 +28,105 @@ def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: floa
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
+    def test_selection_feature_rows_batch_latest_candidates_then_seed_scores(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            create table candidates (
+                id integer primary key,
+                set_path text,
+                score real,
+                metrics_json text,
+                period text
+            );
+            create table seed_scores (
+                seed_path text primary key,
+                active integer,
+                score real,
+                metrics_json text,
+                period text
+            );
+            """
+        )
+        connection.executemany(
+            "insert into candidates values (?, ?, ?, ?, ?)",
+            [
+                (1, "candidate.set", 10.0, metrics(), "H1"),
+                (2, "candidate.set", 20.0, metrics(), "H4"),
+                (3, "invalid_latest.set", 30.0, metrics(), "M30"),
+                (4, "invalid_latest.set", None, metrics(), "D1"),
+            ],
+        )
+        connection.executemany(
+            "insert into seed_scores values (?, ?, ?, ?, ?)",
+            [
+                ("seed.set", 1, 40.0, metrics(), "D1"),
+                ("inactive.set", 0, 50.0, metrics(), "M15"),
+            ],
+        )
+        memory = AgentMemory.__new__(AgentMemory)
+        memory.conn = connection
+
+        rows = memory._selection_feature_rows(
+            ["candidate.set", "invalid_latest.set", "seed.set", "inactive.set", "missing.set"]
+        )
+
+        self.assertEqual(rows["candidate.set"]["score"], 20.0)
+        self.assertEqual(rows["candidate.set"]["period"], "H4")
+        self.assertEqual(rows["invalid_latest.set"]["score"], 30.0)
+        self.assertEqual(rows["seed.set"]["score"], 40.0)
+        self.assertNotIn("inactive.set", rows)
+        self.assertNotIn("missing.set", rows)
+        connection.close()
+
+    def test_sparse_batch_gradient_matches_standardized_reference(self) -> None:
+        samples = [
+            ((1.0, 3.0, 0.0, 1.0, 2.0, 0.0, 4.0, 1.0, 0.0, 1.0), 1),
+            ((2.0, 1.0, 1.0, 0.0, 3.0, 2.0, 0.0, 2.0, 1.0, 0.0), 0),
+            ((4.0, 2.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0, 0.0, 0.0), 1),
+        ]
+        feature_count = len(samples[0][0])
+        means = [
+            sum(features[index] for features, _label in samples) / len(samples)
+            for index in range(feature_count)
+        ]
+        scales = [
+            max(
+                math.sqrt(
+                    sum((features[index] - means[index]) ** 2 for features, _label in samples)
+                    / len(samples)
+                ),
+                1e-6,
+            )
+            for index in range(feature_count)
+        ]
+        coefficients = [-0.4, 0.2, -0.1, 0.3, -0.25, 0.15, -0.05, 0.4, -0.2, 0.1, -0.3]
+        sparse = [
+            tuple((index, features[index]) for index in range(8, feature_count) if features[index])
+            for features, _label in samples
+        ]
+
+        optimized = _batch_logistic_gradients(samples, sparse, means, scales, coefficients)
+
+        reference = [0.0] * len(coefficients)
+        for features, label in samples:
+            standardized = [
+                (features[index] - means[index]) / scales[index]
+                for index in range(len(features))
+            ]
+            prediction = _sigmoid(
+                coefficients[0]
+                + sum(value * coefficient for value, coefficient in zip(standardized, coefficients[1:]))
+            )
+            error = label - prediction
+            reference[0] += error
+            for index, value in enumerate(standardized, start=1):
+                reference[index] += error * value
+
+        for actual, expected in zip(optimized, reference):
+            self.assertAlmostEqual(actual, expected, places=10)
+
     def test_fitness_model_uses_only_runs_strictly_before_excluded_run(self) -> None:
         connection = Mock()
         connection.execute.return_value.fetchall.return_value = []
