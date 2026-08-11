@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import math
 import os
 import random
 import re
@@ -198,6 +199,8 @@ TARGET_GROUP_CAP_RATIOS = {
     "Crypto": 0.25,
 }
 DIVERSITY_REROLL_ATTEMPTS = 24
+DISCOVERY_GROUP_FEEDBACK_TEMPERATURE = 12.0
+DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT = 2.0
 FINAL_TICK_RETRYABLE_STATUSES = {
     "pending",
     "no_report",
@@ -1354,6 +1357,7 @@ def choose_target_symbol(
     force_unseeded_probability: float = 0.65,
     production_mode: bool = False,
     group_by_symbol: dict[str, str] | None = None,
+    asset_group_feedback: dict[str, float] | None = None,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
@@ -1413,7 +1417,19 @@ def choose_target_symbol(
     )
     if force_unseeded_universe and unseeded_choices and rng.random() < force_unseeded_probability:
         unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
-        return rng.choice(unseen or list(unseeded_choices)), "asset_unseeded_force"
+        forced_pool = tuple(unseen or unseeded_choices)
+        if group_by_symbol:
+            return (
+                choose_group_guided_unseeded_symbol(
+                    forced_pool,
+                    rng,
+                    aliases,
+                    group_by_symbol,
+                    asset_group_feedback or {},
+                ),
+                "asset_unseeded_group_feedback",
+            )
+        return rng.choice(list(forced_pool)), "asset_unseeded_force"
 
     def asset_weight(symbol: str) -> float:
         canonical = canonical_symbol(symbol, aliases).upper()
@@ -1489,6 +1505,48 @@ def choose_target_symbol(
     if ranked and rng.random() < 0.50:
         return ranked[0], "asset_feedback"
     return rng.choice(choices), "asset_explore"
+
+
+def choose_group_guided_unseeded_symbol(
+    symbols: tuple[str, ...],
+    rng: random.Random,
+    aliases: dict[str, str],
+    group_by_symbol: dict[str, str],
+    asset_group_feedback: dict[str, float],
+) -> str:
+    """Sample an unseeded symbol using group capacity and lifecycle quality.
+
+    Square-root capacity prevents very large universes from monopolising all
+    discovery slots.  Bounded exponential feedback favours groups whose
+    candidates survive the complete validation pipeline while retaining a
+    non-zero probability for every group.
+    """
+    grouped: dict[str, list[str]] = {}
+    for symbol in symbols:
+        canonical = canonical_symbol(symbol, aliases).upper()
+        group = group_by_symbol.get(canonical, "")
+        grouped.setdefault(group, []).append(symbol)
+    if not grouped:
+        return rng.choice(list(symbols))
+    weighted_groups: list[tuple[str, float]] = []
+    for group, choices in grouped.items():
+        score = float(asset_group_feedback.get(group, 0.0))
+        exponent = max(
+            -DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT,
+            min(DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT, score / DISCOVERY_GROUP_FEEDBACK_TEMPERATURE),
+        )
+        weight = math.sqrt(float(len(choices))) * math.exp(exponent)
+        weighted_groups.append((group, weight))
+    total = sum(weight for _group, weight in weighted_groups)
+    cursor = rng.random() * total
+    selected_group = weighted_groups[-1][0]
+    upto = 0.0
+    for group, weight in weighted_groups:
+        upto += weight
+        if cursor <= upto:
+            selected_group = group
+            break
+    return rng.choice(grouped[selected_group])
 
 
 def filter_timeframe_universe(periods: tuple[str, ...], timeframe_universe: tuple[str, ...]) -> tuple[str, ...]:
@@ -1673,6 +1731,7 @@ def choose_diverse_target(
     timeframe_unseeded_probability: float = 0.0,
     production_mode: bool = False,
     group_by_symbol: dict[str, str] | None = None,
+    asset_group_feedback: dict[str, float] | None = None,
 ) -> tuple[str, str, str] | None:
     last_symbol = seed.symbol
     last_period = seed.period
@@ -1692,6 +1751,7 @@ def choose_diverse_target(
             force_unseeded_probability=asset_unseeded_probability,
             production_mode=production_mode,
             group_by_symbol=group_by_symbol,
+            asset_group_feedback=asset_group_feedback,
         )
         if symbol_choice is None:
             continue
@@ -6357,6 +6417,9 @@ def build_run_config(
                 "production_rejected_survivor_fallback": False,
                 "production_cross_group_feedback_fallback": False,
                 "discovery_forced_unseeded": bool(args.force_unseeded_universe),
+                "discovery_unseeded_asset_sampling": "sqrt_group_capacity_x_lifecycle_softmax",
+                "discovery_group_feedback_temperature": DISCOVERY_GROUP_FEEDBACK_TEMPERATURE,
+                "discovery_group_feedback_exp_limit": DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT,
             },
             "next_seed_diversity_caps": {
                 "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
@@ -6604,7 +6667,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         generation_dir = run_dir / f"gen_{generation:03d}"
         mutation_feedback = memory.mutation_feedback()
         mutation_direction_feedback = memory.mutation_direction_feedback()
-        asset_feedback = memory.asset_feedback(aliases)
+        asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(aliases, group_by_symbol)
         timeframe_feedback = memory.timeframe_feedback()
         fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
         fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
@@ -6700,6 +6763,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     timeframe_unseeded_probability=tf_unseeded_probability,
                     production_mode=not args.force_unseeded_universe,
                     group_by_symbol=group_by_symbol,
+                    asset_group_feedback=asset_group_feedback,
                 )
                 if target_choice is None:
                     diag_log(
@@ -6980,7 +7044,7 @@ def run_agent(args: argparse.Namespace) -> int:
             accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
             mutation_feedback = memory.mutation_feedback()
             mutation_direction_feedback = memory.mutation_direction_feedback()
-            asset_feedback = memory.asset_feedback(aliases)
+            asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(aliases, group_by_symbol)
             timeframe_feedback = memory.timeframe_feedback()
             fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
             fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
@@ -7081,6 +7145,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         timeframe_unseeded_probability=tf_unseeded_probability,
                         production_mode=not args.force_unseeded_universe,
                         group_by_symbol=group_by_symbol,
+                        asset_group_feedback=asset_group_feedback,
                     )
                     if target_choice is None:
                         diag_log(

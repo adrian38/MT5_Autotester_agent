@@ -1084,6 +1084,67 @@ class UBSSetsFileTests(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             probability_argument("1.1")
 
+    def test_unseeded_asset_selection_uses_group_lifecycle_feedback(self) -> None:
+        stocks = tuple(f"STOCK_{index}" for index in range(100))
+        metals = tuple(f"METAL_{index}" for index in range(4))
+        universe = (*stocks, *metals)
+        groups = {
+            **{symbol: "Stocks" for symbol in stocks},
+            **{symbol: "Metals" for symbol in metals},
+        }
+        rng = random.Random(20260812)
+
+        selected = [
+            choose_target_symbol(
+                Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1"),
+                {},
+                rng,
+                universe,
+                {},
+                force_unseeded_universe=True,
+                unseeded_universe_symbols=universe,
+                force_unseeded_probability=1.0,
+                group_by_symbol=groups,
+                asset_group_feedback={"Stocks": -24.0, "Metals": 24.0},
+            )
+            for _ in range(400)
+        ]
+
+        metal_count = sum(target.startswith("METAL_") for target, _policy in selected)
+        self.assertGreater(metal_count, 320)
+        self.assertTrue(all(policy == "asset_unseeded_group_feedback" for _target, policy in selected))
+
+    def test_asset_feedback_with_groups_separates_lifecycle_quality(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root, root / "output", 1, 1, 2, True, False)
+                seed = Seed(root / "seed.set", "XAUUSD", "H1", "family", "1")
+                for name, symbol, value, status in (
+                    ("metal.set", "XAUUSD", 120.0, "accepted"),
+                    ("stock.set", "AAPL", -80.0, "rejected"),
+                ):
+                    variant = Variant(root / name, seed, symbol, "H1", (), (), "test")
+                    memory.record_variant(run_id, 1, variant)
+                    memory.record_score(
+                        variant.path,
+                        score(value, symbol=symbol),
+                        status,
+                        root / f"{name}.htm",
+                    )
+
+                assets, groups = memory.asset_feedback_with_groups(
+                    {},
+                    {"XAUUSD": "Metals", "AAPL": "Stocks"},
+                )
+
+                self.assertIn("XAUUSD", assets)
+                self.assertIn("AAPL", assets)
+                self.assertGreater(groups["Metals"], groups["Stocks"])
+            finally:
+                memory.close()
+
     def test_resume_restores_persisted_unseeded_schedule(self) -> None:
         args = SimpleNamespace(
             asset_unseeded_prob_gen1=0.12,
