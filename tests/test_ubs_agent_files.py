@@ -1,3 +1,4 @@
+import argparse
 import json
 import random
 import tempfile
@@ -55,12 +56,14 @@ from ubs_agent import (
     target_symbol_disabled,
     target_timeframe_universe,
     min_trades_for_period,
+    probability_argument,
     production_viable_source_seeds,
     production_seed_pool,
     ranked_seed_selection,
     reserved_timeframe_plan,
     repair_seed_backtest_set,
     report_matches_variant,
+    restore_run_unseeded_probabilities,
     rescore_final_tick_only,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
@@ -1047,12 +1050,55 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(next_seed.run_strategy, seed.run_strategy)
 
     def test_unseeded_force_probabilities_drop_after_generation_one(self) -> None:
-        self.assertEqual(unseeded_asset_force_probability(1, 10), 0.35)
-        self.assertEqual(unseeded_asset_force_probability(2, 10), 0.25)
-        self.assertEqual(unseeded_asset_force_probability(3, 10), 0.15)
+        self.assertEqual(unseeded_asset_force_probability(1, 10), 0.12)
+        self.assertEqual(unseeded_asset_force_probability(2, 10), 0.08)
+        self.assertEqual(unseeded_asset_force_probability(3, 10), 0.05)
         self.assertEqual(unseeded_asset_force_probability(1, 0), 0.0)
         self.assertEqual(unseeded_timeframe_force_probability(1, 2), 0.20)
         self.assertEqual(unseeded_timeframe_force_probability(3, 2), 0.08)
+
+    def test_unseeded_force_probabilities_accept_run_specific_schedule(self) -> None:
+        self.assertEqual(unseeded_asset_force_probability(1, 10, {1: 0.3, 2: 0.2}, 0.1), 0.3)
+        self.assertEqual(unseeded_asset_force_probability(4, 10, {1: 0.3, 2: 0.2}, 0.1), 0.1)
+        self.assertEqual(probability_argument("0.25"), 0.25)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            probability_argument("1.1")
+
+    def test_resume_restores_persisted_unseeded_schedule(self) -> None:
+        args = SimpleNamespace(
+            asset_unseeded_prob_gen1=0.12,
+            asset_unseeded_prob_gen2=0.08,
+            asset_unseeded_prob_late=0.05,
+            timeframe_unseeded_prob_gen1=0.20,
+            timeframe_unseeded_prob_gen2=0.12,
+            timeframe_unseeded_prob_late=0.08,
+        )
+        restore_run_unseeded_probabilities(
+            args,
+            json.dumps(
+                {
+                    "generation": {
+                        "asset_unseeded_force_probability": {
+                            "generation_1": 0.35,
+                            "generation_2": 0.25,
+                            "late": 0.15,
+                        },
+                        "timeframe_unseeded_force_probability": {
+                            "generation_1": 0.18,
+                            "generation_2": 0.11,
+                            "late": 0.07,
+                        },
+                    }
+                }
+            ),
+        )
+
+        self.assertEqual(args.asset_unseeded_prob_gen1, 0.35)
+        self.assertEqual(args.asset_unseeded_prob_gen2, 0.25)
+        self.assertEqual(args.asset_unseeded_prob_late, 0.15)
+        self.assertEqual(args.timeframe_unseeded_prob_gen1, 0.18)
+        self.assertEqual(args.timeframe_unseeded_prob_gen2, 0.11)
+        self.assertEqual(args.timeframe_unseeded_prob_late, 0.07)
 
     def test_target_timeframe_universe_keeps_long_timeframes_experimental(self) -> None:
         normal = target_timeframe_universe(False)

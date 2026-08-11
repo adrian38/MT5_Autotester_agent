@@ -167,8 +167,8 @@ TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
 GENERATION_MODES = ("production", "discovery")
 SELECTION_FITNESS_MODE = "soft_weight"
 SELECTION_FITNESS_APPLIED_SCALE = 0.15
-ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.35, 2: 0.25}
-ASSET_UNSEEDED_FORCE_PROB_LATE = 0.15
+ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.12, 2: 0.08}
+ASSET_UNSEEDED_FORCE_PROB_LATE = 0.05
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
 TF_UNSEEDED_FORCE_PROB_LATE = 0.08
 FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS = {
@@ -384,6 +384,16 @@ def is_agent_mutable_key(key: str) -> bool:
     return key in ALLOWED_MUTATION_KEYS or any(key.startswith(p) for p in ALLOWED_MUTATION_PREFIXES)
 
 
+def probability_argument(value: str) -> float:
+    try:
+        probability = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("debe ser un numero entre 0 y 1") from exc
+    if not 0.0 <= probability <= 1.0:
+        raise argparse.ArgumentTypeError("debe estar entre 0 y 1")
+    return probability
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
     score_defaults = ScoreConfig()
@@ -409,6 +419,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-seeds", type=int, default=30)
     parser.add_argument("--mutations-per-variant", type=int, default=6)
     parser.add_argument("--top-percent", type=float, default=20.0)
+    parser.add_argument(
+        "--asset-unseeded-prob-gen1",
+        type=probability_argument,
+        default=ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
+        help="Probabilidad discovery de forzar un activo sin seed en generacion 1.",
+    )
+    parser.add_argument(
+        "--asset-unseeded-prob-gen2",
+        type=probability_argument,
+        default=ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
+        help="Probabilidad discovery de forzar un activo sin seed en generacion 2.",
+    )
+    parser.add_argument(
+        "--asset-unseeded-prob-late",
+        type=probability_argument,
+        default=ASSET_UNSEEDED_FORCE_PROB_LATE,
+        help="Probabilidad discovery de forzar un activo sin seed desde generacion 3.",
+    )
+    parser.add_argument(
+        "--timeframe-unseeded-prob-gen1",
+        type=probability_argument,
+        default=TF_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
+        help="Probabilidad discovery de forzar un timeframe sin seed en generacion 1.",
+    )
+    parser.add_argument(
+        "--timeframe-unseeded-prob-gen2",
+        type=probability_argument,
+        default=TF_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
+        help="Probabilidad discovery de forzar un timeframe sin seed en generacion 2.",
+    )
+    parser.add_argument(
+        "--timeframe-unseeded-prob-late",
+        type=probability_argument,
+        default=TF_UNSEEDED_FORCE_PROB_LATE,
+        help="Probabilidad discovery de forzar un timeframe sin seed desde generacion 3.",
+    )
     parser.add_argument(
         "--generation-mode",
         choices=GENERATION_MODES,
@@ -791,16 +837,57 @@ def choose_seeds(
     ]
 
 
-def unseeded_asset_force_probability(generation: int, unseeded_count: int) -> float:
+def unseeded_asset_force_probability(
+    generation: int,
+    unseeded_count: int,
+    generation_probabilities: dict[int, float] | None = None,
+    late_probability: float | None = None,
+) -> float:
     if unseeded_count <= 0:
         return 0.0
-    return ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION.get(generation, ASSET_UNSEEDED_FORCE_PROB_LATE)
+    probabilities = generation_probabilities or ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION
+    late = ASSET_UNSEEDED_FORCE_PROB_LATE if late_probability is None else float(late_probability)
+    return float(probabilities.get(generation, late))
 
 
-def unseeded_timeframe_force_probability(generation: int, unseeded_count: int) -> float:
+def unseeded_timeframe_force_probability(
+    generation: int,
+    unseeded_count: int,
+    generation_probabilities: dict[int, float] | None = None,
+    late_probability: float | None = None,
+) -> float:
     if unseeded_count <= 0:
         return 0.0
-    return TF_UNSEEDED_FORCE_PROB_BY_GENERATION.get(generation, TF_UNSEEDED_FORCE_PROB_LATE)
+    probabilities = generation_probabilities or TF_UNSEEDED_FORCE_PROB_BY_GENERATION
+    late = TF_UNSEEDED_FORCE_PROB_LATE if late_probability is None else float(late_probability)
+    return float(probabilities.get(generation, late))
+
+
+def configured_unseeded_force_probabilities(
+    args: argparse.Namespace,
+    generation: int,
+    asset_unseeded_count: int,
+    timeframe_unseeded_count: int,
+) -> tuple[float, float]:
+    asset_probability = unseeded_asset_force_probability(
+        generation,
+        asset_unseeded_count,
+        {
+            1: float(getattr(args, "asset_unseeded_prob_gen1", ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[1])),
+            2: float(getattr(args, "asset_unseeded_prob_gen2", ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[2])),
+        },
+        float(getattr(args, "asset_unseeded_prob_late", ASSET_UNSEEDED_FORCE_PROB_LATE)),
+    )
+    timeframe_probability = unseeded_timeframe_force_probability(
+        generation,
+        timeframe_unseeded_count,
+        {
+            1: float(getattr(args, "timeframe_unseeded_prob_gen1", TF_UNSEEDED_FORCE_PROB_BY_GENERATION[1])),
+            2: float(getattr(args, "timeframe_unseeded_prob_gen2", TF_UNSEEDED_FORCE_PROB_BY_GENERATION[2])),
+        },
+        float(getattr(args, "timeframe_unseeded_prob_late", TF_UNSEEDED_FORCE_PROB_LATE)),
+    )
+    return asset_probability, timeframe_probability
 
 
 def reserved_timeframe_plan(
@@ -6214,14 +6301,14 @@ def build_run_config(
                 "MN": int(args.min_trades_mn),
             },
             "asset_unseeded_force_probability": {
-                "generation_1": ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
-                "generation_2": ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
-                "late": ASSET_UNSEEDED_FORCE_PROB_LATE,
+                "generation_1": float(getattr(args, "asset_unseeded_prob_gen1", ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[1])),
+                "generation_2": float(getattr(args, "asset_unseeded_prob_gen2", ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION[2])),
+                "late": float(getattr(args, "asset_unseeded_prob_late", ASSET_UNSEEDED_FORCE_PROB_LATE)),
             },
             "timeframe_unseeded_force_probability": {
-                "generation_1": TF_UNSEEDED_FORCE_PROB_BY_GENERATION[1],
-                "generation_2": TF_UNSEEDED_FORCE_PROB_BY_GENERATION[2],
-                "late": TF_UNSEEDED_FORCE_PROB_LATE,
+                "generation_1": float(getattr(args, "timeframe_unseeded_prob_gen1", TF_UNSEEDED_FORCE_PROB_BY_GENERATION[1])),
+                "generation_2": float(getattr(args, "timeframe_unseeded_prob_gen2", TF_UNSEEDED_FORCE_PROB_BY_GENERATION[2])),
+                "late": float(getattr(args, "timeframe_unseeded_prob_late", TF_UNSEEDED_FORCE_PROB_LATE)),
             },
             "force_unseeded_timeframe_min_ratios": FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS,
             "target_diversity_caps": {
@@ -6318,12 +6405,52 @@ def build_run_config(
     }
 
 
+def restore_run_unseeded_probabilities(args: argparse.Namespace, config_json: object) -> None:
+    """Restore persisted discovery schedules when a run is resumed."""
+
+    try:
+        config = json.loads(str(config_json or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return
+    if not isinstance(config, dict):
+        return
+    generation_config = config.get("generation")
+    if not isinstance(generation_config, dict):
+        return
+    schedules = (
+        (
+            "asset_unseeded_force_probability",
+            "asset_unseeded_prob_gen1",
+            "asset_unseeded_prob_gen2",
+            "asset_unseeded_prob_late",
+        ),
+        (
+            "timeframe_unseeded_force_probability",
+            "timeframe_unseeded_prob_gen1",
+            "timeframe_unseeded_prob_gen2",
+            "timeframe_unseeded_prob_late",
+        ),
+    )
+    for config_key, gen1_attr, gen2_attr, late_attr in schedules:
+        values = generation_config.get(config_key)
+        if not isinstance(values, dict):
+            continue
+        for key, attr in (("generation_1", gen1_attr), ("generation_2", gen2_attr), ("late", late_attr)):
+            if key not in values:
+                continue
+            try:
+                setattr(args, attr, probability_argument(str(values[key])))
+            except argparse.ArgumentTypeError:
+                continue
+
+
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
         print("ERROR: no hay runs guardados para continuar")
         return 1
     run_id = int(run["id"])
+    restore_run_unseeded_probabilities(args, run["config_json"])
     run_dir = resolve_workspace_path(run["output_dir"])
     planned_generations = int(run["generations"])
     args.variants_per_seed = int(run["variants_per_seed"])
@@ -6505,8 +6632,12 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             aliases,
             timeframe_universe,
         )
-        asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
-        tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
+        asset_unseeded_probability, tf_unseeded_probability = configured_unseeded_force_probabilities(
+            args,
+            generation,
+            len(unseeded_symbols),
+            len(unseeded_timeframes),
+        )
         target_limiter = TargetDiversityLimiter(
             len(selected_seeds) * args.variants_per_seed,
             aliases,
@@ -6877,8 +7008,12 @@ def run_agent(args: argparse.Namespace) -> int:
                 aliases,
                 timeframe_universe,
             )
-            asset_unseeded_probability = unseeded_asset_force_probability(generation, len(unseeded_symbols))
-            tf_unseeded_probability = unseeded_timeframe_force_probability(generation, len(unseeded_timeframes))
+            asset_unseeded_probability, tf_unseeded_probability = configured_unseeded_force_probabilities(
+                args,
+                generation,
+                len(unseeded_symbols),
+                len(unseeded_timeframes),
+            )
             target_limiter = TargetDiversityLimiter(
                 len(selected_seeds) * args.variants_per_seed,
                 aliases,
