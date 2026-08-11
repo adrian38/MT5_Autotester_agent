@@ -12,6 +12,7 @@ from ubs.weights import (
     percentile_multipliers,
     probability_feedback_signals,
     row_stage_outcome,
+    score_aware_percentile_multipliers,
 )
 
 
@@ -100,6 +101,17 @@ class UBSWeightsTests(unittest.TestCase):
         self.assertEqual(ordered["new"], 1.0)
         tied = percentile_multipliers({"a": -40.0, "b": -40.0}, ("a", "b"))
         self.assertEqual(tied, {"a": 1.0, "b": 1.0})
+
+    def test_score_aware_mutation_multipliers_keep_weak_signal_near_neutral(self) -> None:
+        multipliers = score_aware_percentile_multipliers(
+            {"weak_bad": -0.1, "neutral": 0.0, "strong_good": 5.0},
+            ("weak_bad", "neutral", "strong_good", "new"),
+        )
+
+        self.assertAlmostEqual(multipliers["weak_bad"], 0.99)
+        self.assertEqual(multipliers["neutral"], 1.0)
+        self.assertEqual(multipliers["strong_good"], 1.5)
+        self.assertEqual(multipliers["new"], 1.0)
 
     def test_short_final_tick_accepted_is_neutral_until_six_month_passes(self) -> None:
         row = {

@@ -1850,6 +1850,108 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertEqual(len(variant.mutated_keys), 1)
             self.assertEqual(variant.mutation_details[0]["key"], variant.mutated_keys[0])
 
+    def test_create_variant_at_lower_bound_uses_local_valid_direction_without_wrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seed.set"
+            source.write_text(
+                "\n".join(
+                    [
+                        "ForceSymbol=XAUUSD",
+                        "Run_Strategy=1||1||0||2||N",
+                        "Exit_stop=50||50||10||150||Y",
+                        "Risk=2||2||0||10||N",
+                        "StartLots=0.01||0.01||0.01||1||N",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            seed = Seed(source, "XAUUSD", "H1", "family", "1")
+
+            variant = create_variant(
+                seed,
+                "XAUUSD",
+                "H1",
+                Path(temp_dir) / "out",
+                1,
+                1,
+                1,
+                1,
+                {"Exit_stop": 10.0},
+                {"Exit_stop": -10.0},
+                "test",
+                random.Random(2),
+            )
+
+            detail = variant.mutation_details[0]
+            self.assertEqual(detail["key"], "Exit_stop")
+            self.assertIn(detail["delta"], (10.0, 20.0))
+            self.assertFalse(detail["wrapped"])
+            self.assertEqual(detail["direction_bias_strength"], 1.0)
+
+    def test_mutation_direction_feedback_uses_lifecycle_probability(self) -> None:
+        good_rows = [
+            {
+                "run_id": index,
+                "seed_path": f"good_{index}.set",
+                "target_symbol": "XAUUSD",
+                "period": "H1",
+                "family": "family",
+                "mutated_keys": "Exit_stop",
+                "mutation_details_json": json.dumps([{"key": "Exit_stop", "delta": 10.0, "wrapped": False}]),
+                "status": "accepted",
+                "robust_status": "accepted",
+                "final_tick_status": "accepted",
+                "final_tick_6m_status": "accepted",
+                "regression_status": "accepted",
+            }
+            for index in range(20)
+        ]
+        bad_rows = [
+            {
+                "run_id": 100 + index,
+                "seed_path": f"bad_{index}.set",
+                "target_symbol": "XAUUSD",
+                "period": "H1",
+                "family": "family",
+                "mutated_keys": "Exit_stop",
+                "mutation_details_json": json.dumps([{"key": "Exit_stop", "delta": -10.0, "wrapped": False}]),
+                "status": "rejected",
+                "robust_status": "",
+                "final_tick_status": "",
+                "final_tick_6m_status": "",
+                "regression_status": "",
+            }
+            for index in range(20)
+        ]
+        wrapped_rows = [
+            {
+                "run_id": 200 + index,
+                "seed_path": f"wrapped_{index}.set",
+                "target_symbol": "XAUUSD",
+                "period": "H1",
+                "family": "family",
+                "mutated_keys": "Exit_stop",
+                "mutation_details_json": json.dumps(
+                    [{"key": "Exit_stop", "delta": 50.0, "wrapped": True}]
+                ),
+                "status": "rejected",
+                "robust_status": "",
+                "final_tick_status": "",
+                "final_tick_6m_status": "",
+                "regression_status": "",
+            }
+            for index in range(40)
+        ]
+        memory = object.__new__(AgentMemory)
+        memory._candidate_feedback_rows = lambda: good_rows + bad_rows + wrapped_rows
+
+        signals = memory.mutation_direction_feedback_signals()
+        feedback = memory.mutation_direction_feedback()
+
+        self.assertGreater(signals["Exit_stop"]["up"].effective_score, 0.0)
+        self.assertLess(signals["Exit_stop"]["down"].effective_score, 0.0)
+        self.assertGreater(feedback["Exit_stop"], 0.0)
+
     def test_recreate_work_dir_removes_previous_contents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "work"
