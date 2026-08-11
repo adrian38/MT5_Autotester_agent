@@ -1288,7 +1288,7 @@ class AgentMemory:
         return probability_feedback_signals(grouped, global_groups, normalize_keys=False)
 
     def mutation_feedback(self) -> dict[str, float]:
-        return {key: signal.score for key, signal in self.mutation_feedback_signals().items()}
+        return {key: signal.effective_score for key, signal in self.mutation_feedback_signals().items()}
 
     def mutation_direction_feedback(self) -> dict[str, float]:
         rows = [row for row in self._candidate_feedback_rows() if str(row["mutation_details_json"] or "")]
@@ -1347,7 +1347,7 @@ class AgentMemory:
         return probability_feedback_signals(grouped, global_groups)
 
     def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
-        return {key: signal.score for key, signal in self.asset_feedback_signals(aliases).items()}
+        return {key: signal.effective_score for key, signal in self.asset_feedback_signals(aliases).items()}
 
     def timeframe_feedback_signals(self) -> dict[str, FeedbackSignal]:
         rows = self._candidate_feedback_rows()
@@ -1367,7 +1367,7 @@ class AgentMemory:
         return probability_feedback_signals(grouped, global_groups)
 
     def timeframe_feedback(self) -> dict[str, float]:
-        return {key: signal.score for key, signal in self.timeframe_feedback_signals().items()}
+        return {key: signal.effective_score for key, signal in self.timeframe_feedback_signals().items()}
 
     def continuation_seeds(self, limit: int = 0) -> tuple[int, int, list[Seed]]:
         run = self.conn.execute("select id from runs order by id desc limit 1").fetchone()

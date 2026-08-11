@@ -6,6 +6,7 @@ from ubs.weights import (
     DEFAULT_FINAL_TICK_ACCEPTED_BONUS,
     DEFAULT_FINAL_TICK_REJECTED_PENALTY,
     FINAL_TICK_REASON_PENALTIES,
+    FeedbackSignal,
     NO_TRADES_WEIGHT,
     feedback_weight,
     percentile_multipliers,
@@ -15,6 +16,18 @@ from ubs.weights import (
 
 
 class UBSWeightsTests(unittest.TestCase):
+    def test_effective_feedback_score_discounts_low_confidence(self) -> None:
+        signal = FeedbackSignal(
+            score=20.0,
+            probability=0.15,
+            confidence=0.05,
+            groups=2,
+            final_trials=0.0,
+            stage_probabilities={},
+        )
+
+        self.assertEqual(signal.effective_score, 1.0)
+
     def test_pending_ohlc_trades_is_probe_success_but_technical_errors_are_not_trials(self) -> None:
         self.assertEqual(row_stage_outcome({"final_tick_status": "pending_ohlc_trades"}, "probe"), (True, 1.0))
         self.assertEqual(row_stage_outcome({"final_tick_status": "parse_error"}, "probe"), (False, 0.0))
