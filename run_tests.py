@@ -2252,21 +2252,21 @@ def run_test(
     kick_after_seconds = settings.tester_kick_after_seconds if real_tick_model else 0
     stall_after_seconds = settings.tester_stall_after_seconds
     max_runtime_seconds = settings.tester_max_runtime_seconds
-    # Model=4 can produce an empty report and exit successfully when the broker
-    # connection drops during the preliminary tick download.  Always reserve a
-    # second attempt for that false-success path. The general watchdog also gets
-    # one retry for every model after a confirmed stall or absolute timeout.
-    watchdog_enabled = stall_after_seconds > 0 or max_runtime_seconds > 0
-    max_attempts = 2 if real_tick_model or watchdog_enabled else 1
+    # MT5 can exit without producing a fresh report for every tester model.  It
+    # happens independently of the watchdog (for example when a terminal
+    # silently ignores /config after a previous job).  Reserve one retry for
+    # that false-success path as well as for Model=4 empty history and watchdog
+    # restarts.
+    max_attempts = 2
     last_exit_code = 1
-    retry_due_to_watchdog = False
+    retry_rate_limit_label = ""
 
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
             logger.write(f"Reintentando MT5 Model={tester_model or 'desconocido'} ({attempt}/{max_attempts}).")
-            if retry_due_to_watchdog:
-                _WATCHDOG_RESTART_LIMITER.wait_for_turn(logger, "Reinicio watchdog")
-        retry_due_to_watchdog = False
+            if retry_rate_limit_label:
+                _WATCHDOG_RESTART_LIMITER.wait_for_turn(logger, retry_rate_limit_label)
+        retry_rate_limit_label = ""
         delete_existing_report_files(
             report_path,
             terminal_data_dirs,
@@ -2320,7 +2320,7 @@ def run_test(
             time.sleep(settings.terminal_cooldown_seconds)
 
         if restarted and attempt < max_attempts:
-            retry_due_to_watchdog = True
+            retry_rate_limit_label = "Reinicio watchdog"
             continue
         if restarted:
             logger.write(
@@ -2365,8 +2365,12 @@ def run_test(
                 return MODEL4_NO_HISTORY_EXIT_CODE
             return exit_code
 
-        if real_tick_model and attempt < max_attempts:
-            logger.write("No se encontro reporte en Model=4; se reintentara una vez.")
+        if attempt < max_attempts:
+            logger.write(
+                f"No se encontro reporte en Model={tester_model or 'desconocido'}; "
+                "se reintentara una vez."
+            )
+            retry_rate_limit_label = "Reintento sin reporte"
             continue
 
         logger.write("ERROR: No se encontro ningun reporte generado para este backtest.")
