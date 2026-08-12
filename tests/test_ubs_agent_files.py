@@ -67,6 +67,7 @@ from ubs_agent import (
     repair_seed_backtest_set,
     report_matches_variant,
     restore_run_unseeded_probabilities,
+    restored_discovery_exploitable_ratio,
     rescore_final_tick_only,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
@@ -1217,6 +1218,20 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(args.timeframe_unseeded_prob_gen1, 0.18)
         self.assertEqual(args.timeframe_unseeded_prob_gen2, 0.11)
         self.assertEqual(args.timeframe_unseeded_prob_late, 0.07)
+
+    def test_resume_restores_persisted_discovery_source_ratio(self) -> None:
+        config = json.dumps(
+            {
+                "generation": {
+                    "seed_selection_diversity_caps": {
+                        "discovery_exploitable_seed_min_ratio": 0.74,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(restored_discovery_exploitable_ratio(config), 0.74)
+        self.assertEqual(restored_discovery_exploitable_ratio("{}"), 0.60)
 
     def test_target_timeframe_universe_keeps_long_timeframes_experimental(self) -> None:
         normal = target_timeframe_universe(False)
