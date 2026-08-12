@@ -1209,12 +1209,15 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   universe feedback is bounded to 55..85%, so every exploration route keeps a
   non-zero floor. Evidence and applied probabilities are persisted under
   `generation.target_policy.discovery_adaptive_policy` and restored on resume.
-- The probability of keeping the selected seed's current broker-resolved asset
-  is broker-adaptive too. Finalized `exploit` candidates are compared with all
-  cross-asset target policies over the same latest-10-run window and Beta(2,2)
-  smoothing. The applied probability stays within 70..85%, preserving at least
-  15% cross-asset routing; its evidence is persisted under
-  `discovery_adaptive_policy.current_target` and restored on resume.
+- In Discovery, the probability of keeping the selected seed's current
+  broker-resolved asset is broker-adaptive too. `exploit` candidates are
+  compared with all cross-asset target policies over the same latest-10-run
+  window using the smoothed end-to-end base/OOS/probe/6M/regression lifecycle
+  probability. It adapts only after both buckets have at least three grouped
+  6M trials; otherwise it keeps the 70% default. The applied probability is
+  bounded to 55..85%, preserving at least 15% cross-asset routing. Evidence is
+  persisted under `discovery_adaptive_policy.current_target` and restored on
+  resume. Production remains on its separate fixed `production_*` routing.
 
 ### Multiterminal support
 

@@ -1324,10 +1324,30 @@ class AgentMemory:
         placeholders = ",".join("?" for _run_id in run_ids)
         return self.conn.execute(
             f"""
-            select run_id, policy, status
-            from candidates
-            where run_id in ({placeholders})
-              and status in ('accepted', 'rejected', 'no_trades')
+            select
+                c.run_id, c.generation, c.seed_path, c.policy, c.status,
+                cr.status as robust_status,
+                ft.status as final_tick_status,
+                ft6.status as final_tick_6m_status,
+                rg.status as regression_status
+            from candidates c
+            left join candidate_robustness cr
+              on cr.candidate_id = c.id
+             and c.status = 'accepted'
+            left join candidate_final_tick ft
+              on ft.candidate_id = c.id
+             and c.status = 'accepted'
+             and cr.status = 'accepted'
+            left join candidate_final_tick_6m ft6
+              on ft6.candidate_id = c.id
+             and c.status = 'accepted'
+             and cr.status = 'accepted'
+             and ft.status in ('accepted', 'pending_ohlc_trades')
+            left join candidate_regression rg
+              on rg.candidate_id = c.id
+             and ft6.status = 'accepted'
+            where c.run_id in ({placeholders})
+              and c.status in ('accepted', 'rejected', 'no_trades')
             """,
             run_ids,
         ).fetchall()
