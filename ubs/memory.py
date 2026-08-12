@@ -1326,11 +1326,16 @@ class AgentMemory:
             f"""
             select
                 c.run_id, c.generation, c.seed_path, c.policy, c.status,
+                c.period as target_period, s.period as source_period,
                 cr.status as robust_status,
                 ft.status as final_tick_status,
                 ft6.status as final_tick_6m_status,
                 rg.status as regression_status
             from candidates c
+            left join generation_seed_selection s
+              on s.run_id = c.run_id
+             and s.generation = c.generation
+             and s.seed_path = c.seed_path
             left join candidate_robustness cr
               on cr.candidate_id = c.id
              and c.status = 'accepted'

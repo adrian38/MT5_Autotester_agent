@@ -32,6 +32,10 @@ DISCOVERY_CURRENT_TARGET_DEFAULT = 0.70
 DISCOVERY_CURRENT_TARGET_FLOOR = 0.55
 DISCOVERY_CURRENT_TARGET_CEILING = 0.85
 DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS = 3
+DISCOVERY_CURRENT_TIMEFRAME_DEFAULT = 0.60
+DISCOVERY_CURRENT_TIMEFRAME_FLOOR = 0.45
+DISCOVERY_CURRENT_TIMEFRAME_CEILING = 0.80
+DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS = 3
 DISCOVERY_TARGET_POLICY_MIN_TRIALS = 20
 DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS = 100
 _UNSEEDED_ASSET_POLICIES = {"asset_unseeded_force", "asset_unseeded_group_feedback"}
@@ -145,10 +149,18 @@ class DiscoveryTargetPolicyMix:
     cross_target_lifecycle_confidence: float
     current_target_final_trials: float
     cross_target_final_trials: float
+    current_timeframe_probability: float
+    current_timeframe_lifecycle_probability: float
+    changed_timeframe_lifecycle_probability: float
+    current_timeframe_lifecycle_confidence: float
+    changed_timeframe_lifecycle_confidence: float
+    current_timeframe_final_trials: float
+    changed_timeframe_final_trials: float
     recent_runs: tuple[int, ...]
     adaptive_unseeded: bool
     adaptive_universe_feedback: bool
     adaptive_current_target: bool
+    adaptive_current_timeframe: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -203,6 +215,24 @@ class DiscoveryTargetPolicyMix:
                     "final_trials": self.cross_target_final_trials,
                 },
             },
+            "current_timeframe": {
+                "probability": self.current_timeframe_probability,
+                "default": DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
+                "floor": DISCOVERY_CURRENT_TIMEFRAME_FLOOR,
+                "ceiling": DISCOVERY_CURRENT_TIMEFRAME_CEILING,
+                "adaptive": self.adaptive_current_timeframe,
+                "minimum_final_trials_per_bucket": DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS,
+                "current": {
+                    "lifecycle_probability": self.current_timeframe_lifecycle_probability,
+                    "lifecycle_confidence": self.current_timeframe_lifecycle_confidence,
+                    "final_trials": self.current_timeframe_final_trials,
+                },
+                "changed": {
+                    "lifecycle_probability": self.changed_timeframe_lifecycle_probability,
+                    "lifecycle_confidence": self.changed_timeframe_lifecycle_confidence,
+                    "final_trials": self.changed_timeframe_final_trials,
+                },
+            },
             "minimum_trials": DISCOVERY_TARGET_POLICY_MIN_TRIALS,
             "minimum_benchmark_trials": DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS,
             "prior": {
@@ -242,6 +272,11 @@ def estimate_discovery_target_policy_mix(
         "CROSS": defaultdict(list),
     }
     global_lifecycle_groups: dict[object, list[object]] = defaultdict(list)
+    timeframe_lifecycle_groups: dict[str, dict[object, list[object]]] = {
+        "CURRENT_TF": defaultdict(list),
+        "CHANGED_TF": defaultdict(list),
+    }
+    global_timeframe_groups: dict[object, list[object]] = defaultdict(list)
     for row_index, row in enumerate(materialized):
         if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
             continue
@@ -268,6 +303,12 @@ def estimate_discovery_target_policy_mix(
         )
         lifecycle_groups[route][group].append(row)
         global_lifecycle_groups[(route, *group)].append(row)
+        source_period = str(_row_get(row, "source_period", "") or "").upper()
+        target_period = str(_row_get(row, "target_period", "") or "").upper()
+        if source_period and target_period:
+            timeframe_route = "CURRENT_TF" if source_period == target_period else "CHANGED_TF"
+            timeframe_lifecycle_groups[timeframe_route][group].append(row)
+            global_timeframe_groups[(timeframe_route, *group)].append(row)
         if policy in {"asset_universe_feedback", "asset_universe_explore"}:
             buckets[policy.removeprefix("asset_")][0] += 1
             buckets[policy.removeprefix("asset_")][1] += success
@@ -332,6 +373,34 @@ def estimate_discovery_target_policy_mix(
         )
     else:
         current_target_probability = DISCOVERY_CURRENT_TARGET_DEFAULT
+    timeframe_signals = probability_feedback_signals(
+        timeframe_lifecycle_groups,
+        global_timeframe_groups,
+        normalize_keys=False,
+    )
+    current_timeframe_signal = timeframe_signals.get("CURRENT_TF", empty_signal)
+    changed_timeframe_signal = timeframe_signals.get("CHANGED_TF", empty_signal)
+    adaptive_current_timeframe = (
+        current_timeframe_signal.final_trials >= DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS
+        and changed_timeframe_signal.final_trials >= DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS
+    )
+    if (
+        adaptive_current_timeframe
+        and current_timeframe_signal.probability + changed_timeframe_signal.probability > 0.0
+    ):
+        current_timeframe_probability = min(
+            max(
+                current_timeframe_signal.probability
+                / (
+                    current_timeframe_signal.probability
+                    + changed_timeframe_signal.probability
+                ),
+                DISCOVERY_CURRENT_TIMEFRAME_FLOOR,
+            ),
+            DISCOVERY_CURRENT_TIMEFRAME_CEILING,
+        )
+    else:
+        current_timeframe_probability = DISCOVERY_CURRENT_TIMEFRAME_DEFAULT
     return DiscoveryTargetPolicyMix(
         unseeded_multiplier=round(unseeded_multiplier, 6),
         universe_feedback_probability=round(feedback_probability, 6),
@@ -360,10 +429,18 @@ def estimate_discovery_target_policy_mix(
         cross_target_lifecycle_confidence=cross_signal.confidence,
         current_target_final_trials=current_signal.final_trials,
         cross_target_final_trials=cross_signal.final_trials,
+        current_timeframe_probability=round(current_timeframe_probability, 6),
+        current_timeframe_lifecycle_probability=current_timeframe_signal.probability,
+        changed_timeframe_lifecycle_probability=changed_timeframe_signal.probability,
+        current_timeframe_lifecycle_confidence=current_timeframe_signal.confidence,
+        changed_timeframe_lifecycle_confidence=changed_timeframe_signal.confidence,
+        current_timeframe_final_trials=current_timeframe_signal.final_trials,
+        changed_timeframe_final_trials=changed_timeframe_signal.final_trials,
         recent_runs=tuple(run_ids),
         adaptive_unseeded=adaptive_unseeded,
         adaptive_universe_feedback=adaptive_feedback,
         adaptive_current_target=adaptive_current_target,
+        adaptive_current_timeframe=adaptive_current_timeframe,
     )
 
 
