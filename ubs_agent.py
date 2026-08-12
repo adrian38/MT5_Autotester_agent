@@ -96,9 +96,12 @@ from ubs.regression_rules import (
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.selection import (
+    DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
     DISCOVERY_SOURCE_MIX_FLOOR,
     DiscoverySourceMix,
+    DiscoveryTargetPolicyMix,
     estimate_discovery_source_mix,
+    estimate_discovery_target_policy_mix,
 )
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import (
@@ -1496,6 +1499,22 @@ def discovery_source_mix_feedback(
     return estimate_discovery_source_mix(observations)
 
 
+def discovery_target_policy_feedback(memory: AgentMemory) -> DiscoveryTargetPolicyMix:
+    return estimate_discovery_target_policy_mix(memory.candidate_policy_feedback_rows())
+
+
+def apply_discovery_target_policy_schedule(
+    args: argparse.Namespace,
+    mix: DiscoveryTargetPolicyMix,
+) -> None:
+    for attr in (
+        "asset_unseeded_prob_gen1",
+        "asset_unseeded_prob_gen2",
+        "asset_unseeded_prob_late",
+    ):
+        setattr(args, attr, float(getattr(args, attr)) * mix.unseeded_multiplier)
+
+
 def choose_target_symbol(
     seed: Seed,
     asset_feedback: dict[str, float],
@@ -1511,6 +1530,7 @@ def choose_target_symbol(
     production_mode: bool = False,
     group_by_symbol: dict[str, str] | None = None,
     asset_group_feedback: dict[str, float] | None = None,
+    universe_feedback_probability: float = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
     symbol_map = symbol_map or {}
@@ -1645,7 +1665,7 @@ def choose_target_symbol(
     if universe_choices and rng.random() < 0.65:
         ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
         ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
-        if ranked_with_feedback and rng.random() < 0.55:
+        if ranked_with_feedback and rng.random() < universe_feedback_probability:
             return ranked_with_feedback[0], "asset_universe_feedback"
         return rng.choice(universe_choices), "asset_universe_explore"
 
@@ -1885,6 +1905,7 @@ def choose_diverse_target(
     production_mode: bool = False,
     group_by_symbol: dict[str, str] | None = None,
     asset_group_feedback: dict[str, float] | None = None,
+    universe_feedback_probability: float = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
 ) -> tuple[str, str, str] | None:
     last_symbol = seed.symbol
     last_period = seed.period
@@ -1905,6 +1926,7 @@ def choose_diverse_target(
             production_mode=production_mode,
             group_by_symbol=group_by_symbol,
             asset_group_feedback=asset_group_feedback,
+            universe_feedback_probability=universe_feedback_probability,
         )
         if symbol_choice is None:
             continue
@@ -6502,6 +6524,7 @@ def build_run_config(
     disabled_symbol_count: int,
     seed_enabled_disabled_symbol_count: int,
     discovery_source_mix: DiscoverySourceMix,
+    discovery_target_policy_mix: DiscoveryTargetPolicyMix,
 ) -> dict[str, object]:
     timeframe_universe = target_timeframe_universe(
         bool(args.experimental_long_timeframes),
@@ -6583,6 +6606,7 @@ def build_run_config(
                 "discovery_unseeded_asset_sampling": "sqrt_group_capacity_x_lifecycle_softmax",
                 "discovery_group_feedback_temperature": DISCOVERY_GROUP_FEEDBACK_TEMPERATURE,
                 "discovery_group_feedback_exp_limit": DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT,
+                "discovery_adaptive_policy": discovery_target_policy_mix.to_dict(),
             },
             "next_seed_diversity_caps": {
                 "default_group_ratio": DEFAULT_TARGET_GROUP_CAP_RATIO,
@@ -6699,6 +6723,17 @@ def restored_discovery_exploitable_ratio(config_json: object) -> float:
         return DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO
 
 
+def restored_discovery_universe_feedback_probability(config_json: object) -> float:
+    try:
+        config = json.loads(str(config_json or "{}"))
+        value = config["generation"]["target_policy"]["discovery_adaptive_policy"][
+            "universe_feedback"
+        ]["probability"]
+        return min(max(float(value), 0.0), 1.0)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT
+
+
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
@@ -6707,6 +6742,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     run_id = int(run["id"])
     restore_run_unseeded_probabilities(args, run["config_json"])
     discovery_exploitable_ratio = restored_discovery_exploitable_ratio(run["config_json"])
+    universe_feedback_probability = restored_discovery_universe_feedback_probability(
+        run["config_json"]
+    )
     run_dir = resolve_workspace_path(run["output_dir"])
     planned_generations = int(run["generations"])
     args.variants_per_seed = int(run["variants_per_seed"])
@@ -6958,6 +6996,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     production_mode=not args.force_unseeded_universe,
                     group_by_symbol=group_by_symbol,
                     asset_group_feedback=asset_group_feedback,
+                    universe_feedback_probability=universe_feedback_probability,
                 )
                 if target_choice is None:
                     diag_log(
@@ -7208,11 +7247,18 @@ def run_agent(args: argparse.Namespace) -> int:
         disabled_symbols=disabled_symbols,
         group_by_symbol=group_by_symbol,
     )
+    discovery_target_policy_mix = discovery_target_policy_feedback(memory)
+    apply_discovery_target_policy_schedule(args, discovery_target_policy_mix)
     print(
         "Discovery source mix: "
         f"explotable={discovery_source_mix.exploitable_ratio:.1%}, "
         f"cross={1.0 - discovery_source_mix.exploitable_ratio:.1%}, "
         f"evidence={discovery_source_mix.reason}"
+    )
+    print(
+        "Discovery target mix: "
+        f"unseeded_scale={discovery_target_policy_mix.unseeded_multiplier:.1%}, "
+        f"universe_feedback={discovery_target_policy_mix.universe_feedback_probability:.1%}"
     )
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
@@ -7247,6 +7293,7 @@ def run_agent(args: argparse.Namespace) -> int:
             disabled_symbol_count=len(disabled_symbols),
             seed_enabled_disabled_symbol_count=len(seed_enabled_when_disabled),
             discovery_source_mix=discovery_source_mix,
+            discovery_target_policy_mix=discovery_target_policy_mix,
         ),
     )
 
@@ -7377,6 +7424,9 @@ def run_agent(args: argparse.Namespace) -> int:
                         production_mode=not args.force_unseeded_universe,
                         group_by_symbol=group_by_symbol,
                         asset_group_feedback=asset_group_feedback,
+                        universe_feedback_probability=(
+                            discovery_target_policy_mix.universe_feedback_probability
+                        ),
                     )
                     if target_choice is None:
                         diag_log(
