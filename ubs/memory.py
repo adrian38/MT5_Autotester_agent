@@ -1284,6 +1284,34 @@ class AgentMemory:
             """
         ).fetchall()
 
+    def candidate_source_feedback_rows(self) -> list[sqlite3.Row]:
+        """Return finalized base outcomes needed by discovery source allocation."""
+
+        run_ids = [
+            int(row["id"])
+            for row in self.conn.execute(
+                "select id from runs where hidden=0 order by id desc limit 10"
+            ).fetchall()
+        ]
+        if not run_ids:
+            return []
+        placeholders = ",".join("?" for _run_id in run_ids)
+        return self.conn.execute(
+            f"""
+            select
+                s.run_id, s.generation, s.seed_path,
+                s.symbol, s.period, s.family, c.status
+            from generation_seed_selection s
+            join candidates c
+              on c.run_id=s.run_id
+             and c.generation=s.generation
+             and c.seed_path=s.seed_path
+            where c.status in ('accepted', 'rejected', 'no_trades')
+              and s.run_id in ({placeholders})
+            """,
+            run_ids,
+        ).fetchall()
+
     def _seed_feedback_rows(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             """

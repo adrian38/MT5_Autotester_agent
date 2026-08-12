@@ -10,6 +10,7 @@ from ubs.selection import (
     _batch_logistic_gradients,
     _sigmoid,
     finalized_six_month_label,
+    estimate_discovery_source_mix,
 )
 
 
@@ -28,6 +29,75 @@ def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: floa
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
+    def test_discovery_source_mix_adapts_from_source_level_success(self) -> None:
+        rows = []
+        for run_id in range(1, 11):
+            for index in range(3):
+                for status in ("rejected", "accepted" if index < 2 else "rejected"):
+                    rows.append(
+                        {
+                            "run_id": run_id,
+                            "generation": 1,
+                            "seed_path": f"live_{run_id}_{index}.set",
+                            "exploitable": True,
+                            "status": status,
+                        }
+                    )
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "generation": 1,
+                        "seed_path": f"cross_{run_id}_{index}.set",
+                        "exploitable": False,
+                        "status": "accepted" if index == 0 else "rejected",
+                    }
+                )
+
+        mix = estimate_discovery_source_mix(rows)
+
+        self.assertTrue(mix.adaptive)
+        self.assertEqual(mix.exploitable_trials, 30)
+        self.assertEqual(mix.exploitable_successes, 20)
+        self.assertEqual(mix.cross_asset_trials, 30)
+        self.assertEqual(mix.cross_asset_successes, 10)
+        self.assertGreater(mix.exploitable_ratio, 0.60)
+        self.assertLessEqual(mix.exploitable_ratio, 0.85)
+
+    def test_discovery_source_mix_keeps_floor_without_enough_evidence(self) -> None:
+        mix = estimate_discovery_source_mix(
+            [
+                {
+                    "run_id": 1,
+                    "generation": 1,
+                    "seed_path": "live.set",
+                    "exploitable": True,
+                    "status": "accepted",
+                }
+            ]
+        )
+
+        self.assertFalse(mix.adaptive)
+        self.assertEqual(mix.reason, "insufficient_evidence")
+        self.assertEqual(mix.exploitable_ratio, 0.60)
+
+    def test_discovery_source_mix_excludes_technical_outcomes(self) -> None:
+        mix = estimate_discovery_source_mix(
+            [
+                {
+                    "run_id": 1,
+                    "generation": 1,
+                    "seed_path": f"technical_{index}.set",
+                    "exploitable": False,
+                    "status": "report_mismatch",
+                }
+                for index in range(30)
+            ],
+            minimum_trials=0,
+        )
+
+        self.assertEqual(mix.cross_asset_trials, 0)
+        self.assertEqual(mix.cross_asset_successes, 0)
+
     def test_selection_feature_rows_batch_latest_candidates_then_seed_scores(self) -> None:
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
