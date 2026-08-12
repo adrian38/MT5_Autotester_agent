@@ -202,6 +202,7 @@ TARGET_GROUP_CAP_RATIOS = {
 DIVERSITY_REROLL_ATTEMPTS = 24
 DISCOVERY_GROUP_FEEDBACK_TEMPERATURE = 12.0
 DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT = 2.0
+RANDOM_STREAM_VERSION = "generation-selection-mutation-v1"
 FINAL_TICK_RETRYABLE_STATUSES = {
     "pending",
     "no_report",
@@ -211,6 +212,27 @@ FINAL_TICK_RETRYABLE_STATUSES = {
 FINAL_TICK_DATE_RETRYABLE_STATUSES = {
     "pending_history_quality",
 }
+
+
+def generation_random_stream(
+    random_seed: int | None,
+    generation: int,
+    stream: str,
+    *coordinates: object,
+) -> random.Random:
+    """Return a deterministic RNG isolated from every other generation stream.
+
+    A mutation implementation may consume a different number of random values
+    after a code change.  Keeping that consumption away from seed/target
+    routing and from adjacent variants makes fixed-seed cohorts comparable and
+    also lets a resumed generation reconstruct its streams without replaying
+    earlier ones.
+    """
+
+    if random_seed is None:
+        return random.Random()
+    parts = (RANDOM_STREAM_VERSION, int(random_seed), int(generation), stream, *coordinates)
+    return random.Random(":".join(str(part) for part in parts))
 
 CORE_MUTATION_KEYS = {
     "1": (
@@ -6457,6 +6479,7 @@ def build_run_config(
             "max_workers": int(args.max_workers),
             "delay": int(args.delay),
             "random_seed": args.random_seed,
+            "random_stream_version": RANDOM_STREAM_VERSION,
             "from_date": str(args.from_date or ""),
             "to_date": str(args.to_date or ""),
             "symbol_map": str(args.symbol_map or ""),
@@ -6663,7 +6686,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         return 1
 
     all_generated = 0
-    rng = random.Random(args.random_seed)
     timeframe_universe = target_timeframe_universe(
         bool(args.experimental_long_timeframes),
         base_dir=BASE_DIR,
@@ -6672,6 +6694,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     )
     print(f"Universo TF target: {', '.join(timeframe_universe)}")
     for generation in range(next_generation, planned_generations + 1):
+        selection_rng = generation_random_stream(args.random_seed, generation, "selection")
         generation_dir = run_dir / f"gen_{generation:03d}"
         mutation_feedback = memory.mutation_feedback()
         mutation_direction_feedback = memory.mutation_direction_feedback()
@@ -6702,7 +6725,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
             args.max_seeds,
             asset_feedback,
             timeframe_feedback,
-            rng,
+            selection_rng,
             aliases,
             group_by_symbol,
             fitness_feedback,
@@ -6757,7 +6780,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     seed,
                     asset_feedback,
                     timeframe_feedback,
-                    rng,
+                    selection_rng,
                     target_limiter,
                     universe_symbols,
                     aliases,
@@ -6790,7 +6813,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     universe_symbols=universe_symbols,
                     disabled_symbols=disabled_symbols,
                     aliases=aliases,
-                    rng=rng,
+                    rng=selection_rng,
                 )
                 variant = create_variant(
                     seed,
@@ -6804,7 +6827,13 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     mutation_feedback,
                     mutation_direction_feedback,
                     policy,
-                    rng,
+                    generation_random_stream(
+                        args.random_seed,
+                        generation,
+                        "mutation",
+                        seed_index,
+                        variant_index,
+                    ),
                 )
                 memory.record_variant(run_id, generation, variant)
                 target_limiter.record(target_symbol, target_period)
@@ -6866,7 +6895,6 @@ def run_agent(args: argparse.Namespace) -> int:
     output_root = resolve_workspace_path(args.output_dir)
     run_dir = output_root / datetime.now().strftime("run_%Y%m%d_%H%M%S")
     memory = AgentMemory(resolve_workspace_path(args.memory))
-    rng = random.Random(args.random_seed)
     score_config = ScoreConfig(
         min_net_profit=args.min_net_profit,
         min_profit_factor=args.min_profit_factor,
@@ -7048,6 +7076,7 @@ def run_agent(args: argparse.Namespace) -> int:
     all_generated = 0
     try:
         for generation in range(1, args.generations + 1):
+            selection_rng = generation_random_stream(args.random_seed, generation, "selection")
             generation_dir = run_dir / f"gen_{generation:03d}"
             accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
             mutation_feedback = memory.mutation_feedback()
@@ -7079,7 +7108,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 args.max_seeds,
                 asset_feedback,
                 timeframe_feedback,
-                rng,
+                selection_rng,
                 aliases,
                 group_by_symbol,
                 fitness_feedback,
@@ -7139,7 +7168,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         seed,
                         asset_feedback,
                         timeframe_feedback,
-                        rng,
+                        selection_rng,
                         target_limiter,
                         universe_symbols,
                         aliases,
@@ -7172,7 +7201,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         universe_symbols=universe_symbols,
                         disabled_symbols=disabled_symbols,
                         aliases=aliases,
-                        rng=rng,
+                        rng=selection_rng,
                     )
                     variant = create_variant(
                         seed,
@@ -7186,7 +7215,13 @@ def run_agent(args: argparse.Namespace) -> int:
                         mutation_feedback,
                         mutation_direction_feedback,
                         policy,
-                        rng,
+                        generation_random_stream(
+                            args.random_seed,
+                            generation,
+                            "mutation",
+                            seed_index,
+                            variant_index,
+                        ),
                     )
                     memory.record_variant(run_id, generation, variant)
                     target_limiter.record(target_symbol, target_period)

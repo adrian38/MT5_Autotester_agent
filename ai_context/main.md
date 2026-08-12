@@ -1176,6 +1176,21 @@ before each job. The active `.set` file (`protected_set_name`) is always preserv
 This prevents a stale report from a previous crashed run from being picked up by
 the fresh-report filter if it happens to have a newer mtime than the batch start.
 
+### MT5 no-report retry and reproducible generation
+
+- Every tester model now retries once when MT5 exits without producing a fresh
+  report. The retry uses the shared restart rate limiter, so a multiterminal
+  batch does not turn a broker-wide false-success wave into simultaneous
+  relaunches. Model 4 empty-history and watchdog retries keep their existing
+  behaviour.
+- `--random-seed` is forwarded by `manager_node_runtime/node.py` and can be set
+  from the manager API/UI. A blank or `null` value preserves random execution.
+- Fixed-seed generation uses versioned, generation-scoped RNG streams. Routing
+  (seed/asset/timeframe selection) is isolated from mutation, and each
+  `(generation, seed_index, variant_index)` mutation has its own stream. A
+  mutation implementation changing its number of random draws therefore cannot
+  shift the targets or adjacent variants in a paired cohort.
+
 ### Multiterminal support
 
 - `run_tests.py` accepts `--multi-terminal`, `--terminals-config`, and

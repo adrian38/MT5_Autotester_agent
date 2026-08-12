@@ -43,6 +43,7 @@ from ubs_agent import (
     final_tick_ohlc_retry_exhausted_for_dates,
     final_tick_stage_prefixes,
     final_tick_similarity,
+    generation_random_stream,
     _relative_delta_pct,
     _evaluate_final_tick_tick_report,
     reconcile_final_tick_reports,
@@ -119,6 +120,41 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_generation_random_streams_isolate_routing_from_mutation_draws(self) -> None:
+        selection_a = generation_random_stream(20260812, 1, "selection")
+        mutation_a = generation_random_stream(20260812, 1, "mutation", 1, 1)
+        first_a = selection_a.random()
+        for _ in range(100):
+            mutation_a.random()
+        second_a = selection_a.random()
+
+        selection_b = generation_random_stream(20260812, 1, "selection")
+        self.assertEqual((first_a, second_a), (selection_b.random(), selection_b.random()))
+
+    def test_generation_random_streams_are_generation_scoped(self) -> None:
+        selection_1 = generation_random_stream(7, 1, "selection")
+        mutation_1 = generation_random_stream(7, 1, "mutation", 1, 1)
+        selection_1_again = generation_random_stream(7, 1, "selection")
+        mutation_1_again = generation_random_stream(7, 1, "mutation", 1, 1)
+        selection_2 = generation_random_stream(7, 2, "selection")
+        mutation_2 = generation_random_stream(7, 2, "mutation", 1, 1)
+
+        values_1 = (selection_1.random(), mutation_1.random())
+        self.assertEqual(values_1, (selection_1_again.random(), mutation_1_again.random()))
+        self.assertNotEqual(values_1, (selection_2.random(), mutation_2.random()))
+
+    def test_generation_random_streams_isolate_adjacent_variants(self) -> None:
+        first = generation_random_stream(11, 1, "mutation", 3, 1)
+        second = generation_random_stream(11, 1, "mutation", 3, 2)
+        expected_second = second.random()
+        for _ in range(100):
+            first.random()
+
+        self.assertEqual(
+            expected_second,
+            generation_random_stream(11, 1, "mutation", 3, 2).random(),
+        )
+
     def test_workspace_storage_detection_rejects_external_temp_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             self.assertFalse(
