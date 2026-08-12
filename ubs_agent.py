@@ -188,6 +188,7 @@ PRODUCTION_CURRENT_SYMBOL_PROBABILITY = 0.85
 PRODUCTION_NEXT_SEED_BACKFILL_MIN_RATIO = 0.60
 PRODUCTION_DIVERSITY_REROLL_ATTEMPTS = 4
 DISCOVERY_SEED_SYMBOL_RESERVE_RATIO = 0.40
+DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO = 0.60
 DISCOVERY_TARGET_SYMBOL_CAP_RATIO = 0.10
 DEFAULT_TARGET_GROUP_CAP_RATIO = 0.40
 TARGET_GROUP_CAP_RATIOS = {
@@ -1364,6 +1365,84 @@ def production_viable_source_seeds(
         if current_targets or related_targets or same_group_targets:
             viable.append(seed)
     return viable
+
+
+def discovery_ranked_seed_selection(
+    seeds: list[Seed],
+    max_seeds: int,
+    asset_feedback: dict[str, float],
+    timeframe_feedback: dict[str, float],
+    rng: random.Random,
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None = None,
+    *,
+    symbol_map: dict[str, str] | None = None,
+    disabled_symbols: set[str] | None = None,
+    group_by_symbol: dict[str, str] | None = None,
+    fitness_feedback: dict[str, float] | None = None,
+    exploitable_min_ratio: float = DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO,
+) -> list[tuple[float, Seed, float, float, float]]:
+    """Budget discovery seeds between direct exploitation and cross-asset search.
+
+    A source is directly exploitable only when its current symbol resolves to
+    an enabled broker target. Cross-asset sources remain represented, but can
+    no longer consume most of a bounded cohort merely because their historical
+    feedback score is high on a symbol that cannot be executed here.
+    """
+
+    if max_seeds <= 0 or len(seeds) <= max_seeds:
+        return ranked_seed_selection(
+            seeds,
+            max_seeds,
+            asset_feedback,
+            timeframe_feedback,
+            rng,
+            aliases,
+            group_by_symbol,
+            fitness_feedback,
+            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
+        )
+
+    exploitable: list[Seed] = []
+    cross_asset: list[Seed] = []
+    universe_keys = {symbol.upper() for symbol in universe_symbols}
+    for seed in seeds:
+        current_targets, _related_targets, _same_group_targets = target_symbol_options_for_seed(
+            seed,
+            universe_symbols,
+            aliases,
+            symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols,
+            group_by_symbol=group_by_symbol,
+        )
+        has_broker_target = any(target.upper() in universe_keys for target in current_targets)
+        (exploitable if has_broker_target else cross_asset).append(seed)
+
+    limit = min(max_seeds, len(seeds))
+    exploitable_quota = min(len(exploitable), capped_count(limit, exploitable_min_ratio))
+    cross_asset_quota = min(len(cross_asset), limit - exploitable_quota)
+
+    def select(pool: list[Seed], count: int) -> list[tuple[float, Seed, float, float, float]]:
+        if count <= 0:
+            return []
+        return ranked_seed_selection(
+            pool,
+            count,
+            asset_feedback,
+            timeframe_feedback,
+            rng,
+            aliases,
+            group_by_symbol,
+            fitness_feedback,
+            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
+        )
+
+    selected = select(exploitable, exploitable_quota)
+    selected.extend(select(cross_asset, cross_asset_quota))
+    selected_ids = {id(item[1]) for item in selected}
+    remaining = [seed for seed in seeds if id(seed) not in selected_ids]
+    selected.extend(select(remaining, limit - len(selected)))
+    return selected
 
 
 def choose_target_symbol(
@@ -6434,6 +6513,7 @@ def build_run_config(
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
                 "discovery_symbol_reserve_ratio": DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
+                "discovery_exploitable_seed_min_ratio": DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO,
                 "discovery_reinject_source_seeds": bool(args.force_unseeded_universe),
                 "production_backfill_min_ratio": PRODUCTION_NEXT_SEED_BACKFILL_MIN_RATIO,
                 "production_backfill_source_seeds": not bool(args.force_unseeded_universe),
@@ -6720,18 +6800,33 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 print(f"Production: gen {generation} sin seeds con target viable; se detiene")
                 diag_log(f"GENERATION_STOP_NO_VIABLE_SOURCE_SEEDS run_id={run_id} generation={generation}")
                 break
-        selected_seed_rankings = ranked_seed_selection(
-            selection_pool,
-            args.max_seeds,
-            asset_feedback,
-            timeframe_feedback,
-            selection_rng,
-            aliases,
-            group_by_symbol,
-            fitness_feedback,
-            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO if args.force_unseeded_universe else 0.0,
-            symbol_cap_ratio=seed_symbol_cap_ratio(args.force_unseeded_universe),
-            allow_overflow=bool(args.force_unseeded_universe),
+        selected_seed_rankings = (
+            discovery_ranked_seed_selection(
+                selection_pool,
+                args.max_seeds,
+                asset_feedback,
+                timeframe_feedback,
+                selection_rng,
+                universe_symbols,
+                aliases,
+                symbol_map=symbol_map,
+                disabled_symbols=disabled_symbols,
+                group_by_symbol=group_by_symbol,
+                fitness_feedback=fitness_feedback,
+            )
+            if args.force_unseeded_universe
+            else ranked_seed_selection(
+                selection_pool,
+                args.max_seeds,
+                asset_feedback,
+                timeframe_feedback,
+                selection_rng,
+                aliases,
+                group_by_symbol,
+                fitness_feedback,
+                symbol_cap_ratio=seed_symbol_cap_ratio(False),
+                allow_overflow=False,
+            )
         )
         selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
         memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
@@ -7103,18 +7198,33 @@ def run_agent(args: argparse.Namespace) -> int:
                     print(f"Production: gen {generation} sin seeds con target viable; se detiene")
                     diag_log(f"GENERATION_STOP_NO_VIABLE_SOURCE_SEEDS run_id={run_id} generation={generation}")
                     break
-            selected_seed_rankings = ranked_seed_selection(
-                selection_pool,
-                args.max_seeds,
-                asset_feedback,
-                timeframe_feedback,
-                selection_rng,
-                aliases,
-                group_by_symbol,
-                fitness_feedback,
-                DISCOVERY_SEED_SYMBOL_RESERVE_RATIO if args.force_unseeded_universe else 0.0,
-                symbol_cap_ratio=seed_symbol_cap_ratio(args.force_unseeded_universe),
-                allow_overflow=bool(args.force_unseeded_universe),
+            selected_seed_rankings = (
+                discovery_ranked_seed_selection(
+                    selection_pool,
+                    args.max_seeds,
+                    asset_feedback,
+                    timeframe_feedback,
+                    selection_rng,
+                    universe_symbols,
+                    aliases,
+                    symbol_map=symbol_map,
+                    disabled_symbols=disabled_symbols,
+                    group_by_symbol=group_by_symbol,
+                    fitness_feedback=fitness_feedback,
+                )
+                if args.force_unseeded_universe
+                else ranked_seed_selection(
+                    selection_pool,
+                    args.max_seeds,
+                    asset_feedback,
+                    timeframe_feedback,
+                    selection_rng,
+                    aliases,
+                    group_by_symbol,
+                    fitness_feedback,
+                    symbol_cap_ratio=seed_symbol_cap_ratio(False),
+                    allow_overflow=False,
+                )
             )
             selected_seeds = [seed for _, seed, _, _, _ in selected_seed_rankings]
             memory.record_seed_selection(run_id, generation, selected_seed_rankings, fitness_predictions)
