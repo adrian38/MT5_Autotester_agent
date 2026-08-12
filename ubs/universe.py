@@ -129,14 +129,14 @@ def augment_aliases_with_symbol_map(
     unrelated compatibility mappings cannot create synthetic identities.
     """
 
-    result = {str(key).upper(): str(value).upper() for key, value in aliases.items()}
+    result = {str(key).upper(): str(value).strip() for key, value in aliases.items()}
     universe_by_key = {
-        str(symbol).strip().upper(): str(symbol).strip().upper()
+        str(symbol).strip().upper(): str(symbol).strip()
         for symbol in universe_symbols
         if str(symbol or "").strip()
     }
     normalized_map = {
-        str(key).strip().upper(): str(value).strip().upper()
+        str(key).strip().upper(): str(value).strip()
         for key, value in symbol_map.items()
         if str(key or "").strip() and str(value or "").strip()
     }
@@ -149,10 +149,11 @@ def augment_aliases_with_symbol_map(
                 break
             seen.add(current)
             next_value = result.get(current, current)
-            next_value = normalized_map.get(next_value, next_value)
-            if next_value == current:
+            next_value = normalized_map.get(str(next_value).upper(), next_value)
+            next_key = str(next_value).strip().upper()
+            if next_key == current:
                 break
-            current = next_value
+            current = next_key
         return universe_by_key.get(current, "")
 
     for source in set(result) | set(normalized_map):
