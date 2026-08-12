@@ -95,6 +95,11 @@ from ubs.regression_rules import (
     validate_regression_date_range,
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
+from ubs.selection import (
+    DISCOVERY_SOURCE_MIX_FLOOR,
+    DiscoverySourceMix,
+    estimate_discovery_source_mix,
+)
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_utils import (
     compact_safe_part,
@@ -188,7 +193,7 @@ PRODUCTION_CURRENT_SYMBOL_PROBABILITY = 0.85
 PRODUCTION_NEXT_SEED_BACKFILL_MIN_RATIO = 0.60
 PRODUCTION_DIVERSITY_REROLL_ATTEMPTS = 4
 DISCOVERY_SEED_SYMBOL_RESERVE_RATIO = 0.40
-DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO = 0.60
+DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO = DISCOVERY_SOURCE_MIX_FLOOR
 DISCOVERY_TARGET_SYMBOL_CAP_RATIO = 0.10
 DEFAULT_TARGET_GROUP_CAP_RATIO = 0.40
 TARGET_GROUP_CAP_RATIOS = {
@@ -1443,6 +1448,52 @@ def discovery_ranked_seed_selection(
     remaining = [seed for seed in seeds if id(seed) not in selected_ids]
     selected.extend(select(remaining, limit - len(selected)))
     return selected
+
+
+def discovery_source_mix_feedback(
+    memory: AgentMemory,
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str],
+    *,
+    symbol_map: dict[str, str],
+    disabled_symbols: set[str],
+    group_by_symbol: dict[str, str],
+) -> DiscoverySourceMix:
+    universe_keys = {symbol.upper() for symbol in universe_symbols}
+    observations: list[dict[str, object]] = []
+    exploitable_by_symbol: dict[str, bool] = {}
+    for row in memory.candidate_source_feedback_rows():
+        source_symbol = str(row["symbol"] or "UNKNOWN")
+        source_key = source_symbol.upper()
+        if source_key not in exploitable_by_symbol:
+            seed = Seed(
+                Path(str(row["seed_path"])),
+                source_symbol,
+                str(row["period"] or "UNKNOWN"),
+                str(row["family"] or ""),
+                "1",
+            )
+            current_targets, _related_targets, _same_group_targets = target_symbol_options_for_seed(
+                seed,
+                universe_symbols,
+                aliases,
+                symbol_map=symbol_map,
+                disabled_symbols=disabled_symbols,
+                group_by_symbol=group_by_symbol,
+            )
+            exploitable_by_symbol[source_key] = any(
+                target.upper() in universe_keys for target in current_targets
+            )
+        observations.append(
+            {
+                "run_id": row["run_id"],
+                "generation": row["generation"],
+                "seed_path": row["seed_path"],
+                "status": row["status"],
+                "exploitable": exploitable_by_symbol[source_key],
+            }
+        )
+    return estimate_discovery_source_mix(observations)
 
 
 def choose_target_symbol(
@@ -6450,6 +6501,7 @@ def build_run_config(
     universe_alias_count: int,
     disabled_symbol_count: int,
     seed_enabled_disabled_symbol_count: int,
+    discovery_source_mix: DiscoverySourceMix,
 ) -> dict[str, object]:
     timeframe_universe = target_timeframe_universe(
         bool(args.experimental_long_timeframes),
@@ -6513,7 +6565,8 @@ def build_run_config(
                 "timeframe_ratio": TARGET_TIMEFRAME_CAP_RATIO,
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
                 "discovery_symbol_reserve_ratio": DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
-                "discovery_exploitable_seed_min_ratio": DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO,
+                "discovery_exploitable_seed_min_ratio": discovery_source_mix.exploitable_ratio,
+                "discovery_source_mix_feedback": discovery_source_mix.to_dict(),
                 "discovery_reinject_source_seeds": bool(args.force_unseeded_universe),
                 "production_backfill_min_ratio": PRODUCTION_NEXT_SEED_BACKFILL_MIN_RATIO,
                 "production_backfill_source_seeds": not bool(args.force_unseeded_universe),
@@ -6633,6 +6686,19 @@ def restore_run_unseeded_probabilities(args: argparse.Namespace, config_json: ob
                 continue
 
 
+def restored_discovery_exploitable_ratio(config_json: object) -> float:
+    """Keep a resumed run on the source budget persisted when it was created."""
+
+    try:
+        config = json.loads(str(config_json or "{}"))
+        value = config["generation"]["seed_selection_diversity_caps"][
+            "discovery_exploitable_seed_min_ratio"
+        ]
+        return min(max(float(value), 0.0), 1.0)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO
+
+
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
@@ -6640,6 +6706,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         return 1
     run_id = int(run["id"])
     restore_run_unseeded_probabilities(args, run["config_json"])
+    discovery_exploitable_ratio = restored_discovery_exploitable_ratio(run["config_json"])
     run_dir = resolve_workspace_path(run["output_dir"])
     planned_generations = int(run["generations"])
     args.variants_per_seed = int(run["variants_per_seed"])
@@ -6813,6 +6880,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 disabled_symbols=disabled_symbols,
                 group_by_symbol=group_by_symbol,
                 fitness_feedback=fitness_feedback,
+                exploitable_min_ratio=discovery_exploitable_ratio,
             )
             if args.force_unseeded_universe
             else ranked_seed_selection(
@@ -7132,6 +7200,20 @@ def run_agent(args: argparse.Namespace) -> int:
         print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
     print(f"Universo {args.broker} cargado: {len(universe_symbols)} simbolos, {len(aliases)} aliases")
     print(f"Universo TF target: {', '.join(timeframe_universe)}")
+    discovery_source_mix = discovery_source_mix_feedback(
+        memory,
+        universe_symbols,
+        aliases,
+        symbol_map=symbol_map,
+        disabled_symbols=disabled_symbols,
+        group_by_symbol=group_by_symbol,
+    )
+    print(
+        "Discovery source mix: "
+        f"explotable={discovery_source_mix.exploitable_ratio:.1%}, "
+        f"cross={1.0 - discovery_source_mix.exploitable_ratio:.1%}, "
+        f"evidence={discovery_source_mix.reason}"
+    )
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
         if score_config.min_positive_month_ratio > 0
@@ -7164,6 +7246,7 @@ def run_agent(args: argparse.Namespace) -> int:
             universe_alias_count=len(aliases),
             disabled_symbol_count=len(disabled_symbols),
             seed_enabled_disabled_symbol_count=len(seed_enabled_when_disabled),
+            discovery_source_mix=discovery_source_mix,
         ),
     )
 
@@ -7211,6 +7294,7 @@ def run_agent(args: argparse.Namespace) -> int:
                     disabled_symbols=disabled_symbols,
                     group_by_symbol=group_by_symbol,
                     fitness_feedback=fitness_feedback,
+                    exploitable_min_ratio=discovery_source_mix.exploitable_ratio,
                 )
                 if args.force_unseeded_universe
                 else ranked_seed_selection(

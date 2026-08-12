@@ -14,6 +14,14 @@ MIN_POSITIVE_ROWS = 30
 FITNESS_WEIGHT_SCALE = 10.0
 FITNESS_WEIGHT_LIMIT = 15.0
 _DENSE_FITNESS_FEATURES = 8
+DISCOVERY_SOURCE_MIX_MODEL = "beta_smoothed_source_success_v1"
+DISCOVERY_SOURCE_MIX_RECENT_RUNS = 10
+DISCOVERY_SOURCE_MIX_MIN_TRIALS = 20
+DISCOVERY_SOURCE_MIX_FLOOR = 0.60
+DISCOVERY_SOURCE_MIX_CEILING = 0.85
+DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS = 2.0
+DISCOVERY_SOURCE_MIX_PRIOR_FAILURE = 2.0
+_SOURCE_FINAL_STATUSES = {"accepted", "rejected", "no_trades"}
 
 
 def _row_get(row: object, key: str, default: object = None) -> object:
@@ -49,6 +57,129 @@ def _metrics(metrics_json: object) -> dict[str, object]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+@dataclass(frozen=True)
+class DiscoverySourceMix:
+    exploitable_ratio: float
+    exploitable_trials: int
+    exploitable_successes: int
+    exploitable_rate: float
+    cross_asset_trials: int
+    cross_asset_successes: int
+    cross_asset_rate: float
+    recent_runs: tuple[int, ...]
+    adaptive: bool
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model": DISCOVERY_SOURCE_MIX_MODEL,
+            "unit": "selected_source_any_base_accept",
+            "exploitable_ratio": self.exploitable_ratio,
+            "cross_asset_ratio": round(1.0 - self.exploitable_ratio, 6),
+            "floor": DISCOVERY_SOURCE_MIX_FLOOR,
+            "ceiling": DISCOVERY_SOURCE_MIX_CEILING,
+            "minimum_trials_per_bucket": DISCOVERY_SOURCE_MIX_MIN_TRIALS,
+            "prior": {
+                "success": DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS,
+                "failure": DISCOVERY_SOURCE_MIX_PRIOR_FAILURE,
+            },
+            "recent_run_limit": DISCOVERY_SOURCE_MIX_RECENT_RUNS,
+            "recent_runs": list(self.recent_runs),
+            "adaptive": self.adaptive,
+            "reason": self.reason,
+            "exploitable": {
+                "trials": self.exploitable_trials,
+                "successes": self.exploitable_successes,
+                "smoothed_rate": self.exploitable_rate,
+            },
+            "cross_asset": {
+                "trials": self.cross_asset_trials,
+                "successes": self.cross_asset_successes,
+                "smoothed_rate": self.cross_asset_rate,
+            },
+        }
+
+
+def estimate_discovery_source_mix(
+    rows: Iterable[object],
+    *,
+    recent_run_limit: int = DISCOVERY_SOURCE_MIX_RECENT_RUNS,
+    minimum_trials: int = DISCOVERY_SOURCE_MIX_MIN_TRIALS,
+    floor: float = DISCOVERY_SOURCE_MIX_FLOOR,
+    ceiling: float = DISCOVERY_SOURCE_MIX_CEILING,
+) -> DiscoverySourceMix:
+    """Allocate discovery sources from broker-local, source-level outcomes.
+
+    Three variants from one selected source are correlated, so they count as a
+    single trial.  A source succeeds when any finalized base variant is
+    accepted. Technical outcomes do not turn into negative evidence.
+    """
+
+    materialized = list(rows)
+    run_ids = sorted(
+        {
+            int(_row_get(row, "run_id", 0) or 0)
+            for row in materialized
+            if int(_row_get(row, "run_id", 0) or 0) > 0
+        },
+        reverse=True,
+    )[: max(int(recent_run_limit), 0)]
+    allowed_runs = set(run_ids)
+    grouped: dict[tuple[int, int, str, bool], set[str]] = {}
+    for row in materialized:
+        run_id = int(_row_get(row, "run_id", 0) or 0)
+        if run_id not in allowed_runs:
+            continue
+        status = str(_row_get(row, "status", "")).lower()
+        if status not in _SOURCE_FINAL_STATUSES:
+            continue
+        key = (
+            run_id,
+            int(_row_get(row, "generation", 0) or 0),
+            str(_row_get(row, "seed_path", "")),
+            bool(_row_get(row, "exploitable", False)),
+        )
+        grouped.setdefault(key, set()).add(status)
+
+    trials = {True: 0, False: 0}
+    successes = {True: 0, False: 0}
+    for (_run_id, _generation, _seed_path, exploitable), statuses in grouped.items():
+        trials[exploitable] += 1
+        successes[exploitable] += int("accepted" in statuses)
+
+    def smoothed_rate(bucket: bool) -> float:
+        numerator = successes[bucket] + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS
+        denominator = (
+            trials[bucket]
+            + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS
+            + DISCOVERY_SOURCE_MIX_PRIOR_FAILURE
+        )
+        return numerator / denominator
+
+    exploitable_rate = smoothed_rate(True)
+    cross_asset_rate = smoothed_rate(False)
+    enough_evidence = trials[True] >= minimum_trials and trials[False] >= minimum_trials
+    if enough_evidence and exploitable_rate + cross_asset_rate > 0.0:
+        raw_ratio = exploitable_rate / (exploitable_rate + cross_asset_rate)
+        ratio = min(max(raw_ratio, floor), ceiling)
+        reason = "adaptive"
+    else:
+        ratio = floor
+        reason = "insufficient_evidence"
+    return DiscoverySourceMix(
+        exploitable_ratio=round(ratio, 6),
+        exploitable_trials=trials[True],
+        exploitable_successes=successes[True],
+        exploitable_rate=round(exploitable_rate, 6),
+        cross_asset_trials=trials[False],
+        cross_asset_successes=successes[False],
+        cross_asset_rate=round(cross_asset_rate, 6),
+        recent_runs=tuple(run_ids),
+        adaptive=enough_evidence,
+        reason=reason,
+    )
 
 
 def finalized_six_month_label(row: object) -> int | None:
