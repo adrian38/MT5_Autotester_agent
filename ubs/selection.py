@@ -26,6 +26,8 @@ DISCOVERY_TARGET_POLICY_MODEL = "beta_smoothed_target_policy_v1"
 DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR = 0.25
 DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT = 0.55
 DISCOVERY_UNIVERSE_FEEDBACK_CEILING = 0.85
+DISCOVERY_CURRENT_TARGET_DEFAULT = 0.70
+DISCOVERY_CURRENT_TARGET_CEILING = 0.85
 DISCOVERY_TARGET_POLICY_MIN_TRIALS = 20
 DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS = 100
 _UNSEEDED_ASSET_POLICIES = {"asset_unseeded_force", "asset_unseeded_group_feedback"}
@@ -114,6 +116,7 @@ class DiscoverySourceMix:
 class DiscoveryTargetPolicyMix:
     unseeded_multiplier: float
     universe_feedback_probability: float
+    current_target_probability: float
     unseeded_trials: int
     unseeded_successes: int
     unseeded_rate: float
@@ -126,9 +129,16 @@ class DiscoveryTargetPolicyMix:
     universe_explore_trials: int
     universe_explore_successes: int
     universe_explore_rate: float
+    current_target_trials: int
+    current_target_successes: int
+    current_target_rate: float
+    cross_target_trials: int
+    cross_target_successes: int
+    cross_target_rate: float
     recent_runs: tuple[int, ...]
     adaptive_unseeded: bool
     adaptive_universe_feedback: bool
+    adaptive_current_target: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -158,6 +168,18 @@ class DiscoveryTargetPolicyMix:
                 "explore_trials": self.universe_explore_trials,
                 "explore_successes": self.universe_explore_successes,
                 "explore_smoothed_rate": self.universe_explore_rate,
+            },
+            "current_target": {
+                "probability": self.current_target_probability,
+                "floor": DISCOVERY_CURRENT_TARGET_DEFAULT,
+                "ceiling": DISCOVERY_CURRENT_TARGET_CEILING,
+                "adaptive": self.adaptive_current_target,
+                "current_trials": self.current_target_trials,
+                "current_successes": self.current_target_successes,
+                "current_smoothed_rate": self.current_target_rate,
+                "cross_trials": self.cross_target_trials,
+                "cross_successes": self.cross_target_successes,
+                "cross_smoothed_rate": self.cross_target_rate,
             },
             "minimum_trials": DISCOVERY_TARGET_POLICY_MIN_TRIALS,
             "minimum_benchmark_trials": DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS,
@@ -190,6 +212,8 @@ def estimate_discovery_target_policy_mix(
         "benchmark": [0, 0],
         "universe_feedback": [0, 0],
         "universe_explore": [0, 0],
+        "current_target": [0, 0],
+        "cross_target": [0, 0],
     }
     for row in materialized:
         if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
@@ -204,6 +228,9 @@ def estimate_discovery_target_policy_mix(
         primary = "unseeded" if policy in _UNSEEDED_ASSET_POLICIES else "benchmark"
         buckets[primary][0] += 1
         buckets[primary][1] += success
+        target_bucket = "current_target" if policy == "exploit" else "cross_target"
+        buckets[target_bucket][0] += 1
+        buckets[target_bucket][1] += success
         if policy in {"asset_universe_feedback", "asset_universe_explore"}:
             buckets[policy.removeprefix("asset_")][0] += 1
             buckets[policy.removeprefix("asset_")][1] += success
@@ -218,6 +245,8 @@ def estimate_discovery_target_policy_mix(
     benchmark_rate = rate("benchmark")
     feedback_rate = rate("universe_feedback")
     explore_rate = rate("universe_explore")
+    current_target_rate = rate("current_target")
+    cross_target_rate = rate("cross_target")
     adaptive_unseeded = (
         buckets["unseeded"][0] >= minimum_trials
         and buckets["benchmark"][0] >= minimum_benchmark_trials
@@ -243,9 +272,24 @@ def estimate_discovery_target_policy_mix(
         )
     else:
         feedback_probability = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT
+    adaptive_current_target = (
+        buckets["current_target"][0] >= minimum_trials
+        and buckets["cross_target"][0] >= minimum_benchmark_trials
+    )
+    if adaptive_current_target and current_target_rate + cross_target_rate > 0.0:
+        current_target_probability = min(
+            max(
+                current_target_rate / (current_target_rate + cross_target_rate),
+                DISCOVERY_CURRENT_TARGET_DEFAULT,
+            ),
+            DISCOVERY_CURRENT_TARGET_CEILING,
+        )
+    else:
+        current_target_probability = DISCOVERY_CURRENT_TARGET_DEFAULT
     return DiscoveryTargetPolicyMix(
         unseeded_multiplier=round(unseeded_multiplier, 6),
         universe_feedback_probability=round(feedback_probability, 6),
+        current_target_probability=round(current_target_probability, 6),
         unseeded_trials=buckets["unseeded"][0],
         unseeded_successes=buckets["unseeded"][1],
         unseeded_rate=round(unseeded_rate, 6),
@@ -258,9 +302,16 @@ def estimate_discovery_target_policy_mix(
         universe_explore_trials=buckets["universe_explore"][0],
         universe_explore_successes=buckets["universe_explore"][1],
         universe_explore_rate=round(explore_rate, 6),
+        current_target_trials=buckets["current_target"][0],
+        current_target_successes=buckets["current_target"][1],
+        current_target_rate=round(current_target_rate, 6),
+        cross_target_trials=buckets["cross_target"][0],
+        cross_target_successes=buckets["cross_target"][1],
+        cross_target_rate=round(cross_target_rate, 6),
         recent_runs=tuple(run_ids),
         adaptive_unseeded=adaptive_unseeded,
         adaptive_universe_feedback=adaptive_feedback,
+        adaptive_current_target=adaptive_current_target,
     )
 
 

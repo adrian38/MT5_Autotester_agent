@@ -37,7 +37,7 @@ class UBSSelectionFitnessTests(unittest.TestCase):
             for i in range(40)
         )
         rows.extend(
-            {"run_id": 1, "policy": "exploit", "status": "accepted" if i < 50 else "rejected"}
+            {"run_id": 1, "policy": "exploit", "status": "accepted" if i < 140 else "rejected"}
             for i in range(200)
         )
         rows.extend(
@@ -57,14 +57,19 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertTrue(mix.adaptive_universe_feedback)
         self.assertGreater(mix.universe_feedback_probability, 0.55)
         self.assertLessEqual(mix.universe_feedback_probability, 0.85)
+        self.assertTrue(mix.adaptive_current_target)
+        self.assertGreater(mix.current_target_probability, 0.70)
+        self.assertLessEqual(mix.current_target_probability, 0.85)
 
     def test_discovery_target_policy_keeps_defaults_without_evidence(self) -> None:
         mix = estimate_discovery_target_policy_mix([])
 
         self.assertFalse(mix.adaptive_unseeded)
         self.assertFalse(mix.adaptive_universe_feedback)
+        self.assertFalse(mix.adaptive_current_target)
         self.assertEqual(mix.unseeded_multiplier, 1.0)
         self.assertEqual(mix.universe_feedback_probability, 0.55)
+        self.assertEqual(mix.current_target_probability, 0.70)
 
     def test_discovery_source_mix_adapts_from_source_level_success(self) -> None:
         rows = []
