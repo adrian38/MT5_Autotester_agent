@@ -1218,6 +1218,13 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   bounded to 55..85%, preserving at least 15% cross-asset routing. Evidence is
   persisted under `discovery_adaptive_policy.current_target` and restored on
   resume. Production remains on its separate fixed `production_*` routing.
+- Discovery applies the same lifecycle model independently to retaining versus
+  changing the selected seed's timeframe. It compares the actual target period
+  with `generation_seed_selection.period`, groups correlated variants by seed,
+  requires at least three grouped 6M trials in both buckets, and otherwise
+  keeps the 60% default. The adaptive probability is bounded to 45..80% and is
+  persisted under `discovery_adaptive_policy.current_timeframe`. Production's
+  `tf_production_*` routing does not consume this probability.
 
 ### Multiterminal support
 

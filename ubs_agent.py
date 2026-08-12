@@ -96,6 +96,7 @@ from ubs.regression_rules import (
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.selection import (
+    DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
     DISCOVERY_CURRENT_TARGET_DEFAULT,
     DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
     DISCOVERY_SOURCE_MIX_FLOOR,
@@ -1772,6 +1773,7 @@ def choose_target_period(
     unseeded_timeframes: tuple[str, ...] = (),
     force_unseeded_probability: float = 0.50,
     production_mode: bool = False,
+    current_timeframe_probability: float = DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
 ) -> tuple[str, str]:
     current = seed.period.upper()
     choices = tuple(dict.fromkeys(related_timeframes(current, timeframe_universe)))
@@ -1791,7 +1793,7 @@ def choose_target_period(
         if current in choices:
             return current, "tf_production_exploit"
         return choices[0], "tf_production_related"
-    if current in choices and rng.random() < 0.60:
+    if current in choices and rng.random() < current_timeframe_probability:
         return current, "tf_exploit"
     ranked = sorted(choices, key=lambda item: timeframe_feedback.get(item.upper(), -999999.0), reverse=True)
     ranked_with_feedback = [period for period in ranked if period.upper() in timeframe_feedback]
@@ -1909,6 +1911,7 @@ def choose_diverse_target(
     asset_group_feedback: dict[str, float] | None = None,
     universe_feedback_probability: float = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
     current_target_probability: float = DISCOVERY_CURRENT_TARGET_DEFAULT,
+    current_timeframe_probability: float = DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
 ) -> tuple[str, str, str] | None:
     last_symbol = seed.symbol
     last_period = seed.period
@@ -1944,6 +1947,7 @@ def choose_diverse_target(
             unseeded_timeframes=unseeded_timeframes,
             force_unseeded_probability=timeframe_unseeded_probability,
             production_mode=production_mode,
+            current_timeframe_probability=current_timeframe_probability,
         )
         full_policy = f"{policy}+{period_policy}"
         last_symbol = target_symbol
@@ -6749,6 +6753,17 @@ def restored_discovery_current_target_probability(config_json: object) -> float:
         return DISCOVERY_CURRENT_TARGET_DEFAULT
 
 
+def restored_discovery_current_timeframe_probability(config_json: object) -> float:
+    try:
+        config = json.loads(str(config_json or "{}"))
+        value = config["generation"]["target_policy"]["discovery_adaptive_policy"][
+            "current_timeframe"
+        ]["probability"]
+        return min(max(float(value), 0.0), 1.0)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return DISCOVERY_CURRENT_TIMEFRAME_DEFAULT
+
+
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
@@ -6761,6 +6776,9 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         run["config_json"]
     )
     current_target_probability = restored_discovery_current_target_probability(
+        run["config_json"]
+    )
+    current_timeframe_probability = restored_discovery_current_timeframe_probability(
         run["config_json"]
     )
     run_dir = resolve_workspace_path(run["output_dir"])
@@ -7016,6 +7034,7 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                     asset_group_feedback=asset_group_feedback,
                     universe_feedback_probability=universe_feedback_probability,
                     current_target_probability=current_target_probability,
+                    current_timeframe_probability=current_timeframe_probability,
                 )
                 if target_choice is None:
                     diag_log(
@@ -7278,7 +7297,8 @@ def run_agent(args: argparse.Namespace) -> int:
         "Discovery target mix: "
         f"unseeded_scale={discovery_target_policy_mix.unseeded_multiplier:.1%}, "
         f"universe_feedback={discovery_target_policy_mix.universe_feedback_probability:.1%}, "
-        f"current_target={discovery_target_policy_mix.current_target_probability:.1%}"
+        f"current_target={discovery_target_policy_mix.current_target_probability:.1%}, "
+        f"current_tf={discovery_target_policy_mix.current_timeframe_probability:.1%}"
     )
     monthly_pass = (
         f"meses+>={score_config.min_positive_month_ratio}"
@@ -7449,6 +7469,9 @@ def run_agent(args: argparse.Namespace) -> int:
                         ),
                         current_target_probability=(
                             discovery_target_policy_mix.current_target_probability
+                        ),
+                        current_timeframe_probability=(
+                            discovery_target_policy_mix.current_timeframe_probability
                         ),
                     )
                     if target_choice is None:
