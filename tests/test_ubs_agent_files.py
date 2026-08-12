@@ -68,6 +68,7 @@ from ubs_agent import (
     report_matches_variant,
     restore_run_unseeded_probabilities,
     restored_discovery_exploitable_ratio,
+    restored_discovery_current_target_probability,
     restored_discovery_universe_feedback_probability,
     rescore_final_tick_only,
     unseeded_asset_force_probability,
@@ -1249,6 +1250,46 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(restored_discovery_universe_feedback_probability(config), 0.79)
         self.assertEqual(restored_discovery_universe_feedback_probability("{}"), 0.55)
+
+    def test_resume_restores_persisted_discovery_current_target_probability(self) -> None:
+        config = json.dumps(
+            {
+                "generation": {
+                    "target_policy": {
+                        "discovery_adaptive_policy": {
+                            "current_target": {"probability": 0.82}
+                        }
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(restored_discovery_current_target_probability(config), 0.82)
+        self.assertEqual(restored_discovery_current_target_probability("{}"), 0.70)
+
+    def test_current_target_probability_controls_discovery_exploit_branch(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        target, policy = choose_target_symbol(
+            seed,
+            {},
+            random.Random(1),
+            ("XAUUSD", "EURUSD"),
+            {},
+            current_target_probability=1.0,
+        )
+        _cross_target, cross_policy = choose_target_symbol(
+            seed,
+            {},
+            random.Random(1),
+            ("XAUUSD", "EURUSD"),
+            {},
+            current_target_probability=0.0,
+        )
+
+        self.assertEqual(target, "XAUUSD")
+        self.assertEqual(policy, "exploit")
+        self.assertNotEqual(cross_policy, "exploit")
 
     def test_target_timeframe_universe_keeps_long_timeframes_experimental(self) -> None:
         normal = target_timeframe_universe(False)
