@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 import json
 import math
@@ -7,6 +8,7 @@ from typing import Iterable, Mapping
 
 
 from run_tests import KNOWN_TIMEFRAMES
+from ubs.weights import FeedbackSignal, probability_feedback_signals
 
 FITNESS_TIMEFRAMES = KNOWN_TIMEFRAMES
 MIN_TRAINING_ROWS = 300
@@ -22,12 +24,14 @@ DISCOVERY_SOURCE_MIX_CEILING = 0.85
 DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS = 2.0
 DISCOVERY_SOURCE_MIX_PRIOR_FAILURE = 2.0
 _SOURCE_FINAL_STATUSES = {"accepted", "rejected", "no_trades"}
-DISCOVERY_TARGET_POLICY_MODEL = "beta_smoothed_target_policy_v1"
+DISCOVERY_TARGET_POLICY_MODEL = "lifecycle_smoothed_target_policy_v2"
 DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR = 0.25
 DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT = 0.55
 DISCOVERY_UNIVERSE_FEEDBACK_CEILING = 0.85
 DISCOVERY_CURRENT_TARGET_DEFAULT = 0.70
+DISCOVERY_CURRENT_TARGET_FLOOR = 0.55
 DISCOVERY_CURRENT_TARGET_CEILING = 0.85
+DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS = 3
 DISCOVERY_TARGET_POLICY_MIN_TRIALS = 20
 DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS = 100
 _UNSEEDED_ASSET_POLICIES = {"asset_unseeded_force", "asset_unseeded_group_feedback"}
@@ -135,6 +139,12 @@ class DiscoveryTargetPolicyMix:
     cross_target_trials: int
     cross_target_successes: int
     cross_target_rate: float
+    current_target_lifecycle_probability: float
+    cross_target_lifecycle_probability: float
+    current_target_lifecycle_confidence: float
+    cross_target_lifecycle_confidence: float
+    current_target_final_trials: float
+    cross_target_final_trials: float
     recent_runs: tuple[int, ...]
     adaptive_unseeded: bool
     adaptive_universe_feedback: bool
@@ -171,15 +181,27 @@ class DiscoveryTargetPolicyMix:
             },
             "current_target": {
                 "probability": self.current_target_probability,
-                "floor": DISCOVERY_CURRENT_TARGET_DEFAULT,
+                "default": DISCOVERY_CURRENT_TARGET_DEFAULT,
+                "floor": DISCOVERY_CURRENT_TARGET_FLOOR,
                 "ceiling": DISCOVERY_CURRENT_TARGET_CEILING,
                 "adaptive": self.adaptive_current_target,
-                "current_trials": self.current_target_trials,
-                "current_successes": self.current_target_successes,
-                "current_smoothed_rate": self.current_target_rate,
-                "cross_trials": self.cross_target_trials,
-                "cross_successes": self.cross_target_successes,
-                "cross_smoothed_rate": self.cross_target_rate,
+                "minimum_final_trials_per_bucket": DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS,
+                "current": {
+                    "base_trials": self.current_target_trials,
+                    "base_successes": self.current_target_successes,
+                    "base_smoothed_rate": self.current_target_rate,
+                    "lifecycle_probability": self.current_target_lifecycle_probability,
+                    "lifecycle_confidence": self.current_target_lifecycle_confidence,
+                    "final_trials": self.current_target_final_trials,
+                },
+                "cross": {
+                    "base_trials": self.cross_target_trials,
+                    "base_successes": self.cross_target_successes,
+                    "base_smoothed_rate": self.cross_target_rate,
+                    "lifecycle_probability": self.cross_target_lifecycle_probability,
+                    "lifecycle_confidence": self.cross_target_lifecycle_confidence,
+                    "final_trials": self.cross_target_final_trials,
+                },
             },
             "minimum_trials": DISCOVERY_TARGET_POLICY_MIN_TRIALS,
             "minimum_benchmark_trials": DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS,
@@ -215,7 +237,12 @@ def estimate_discovery_target_policy_mix(
         "current_target": [0, 0],
         "cross_target": [0, 0],
     }
-    for row in materialized:
+    lifecycle_groups: dict[str, dict[object, list[object]]] = {
+        "CURRENT": defaultdict(list),
+        "CROSS": defaultdict(list),
+    }
+    global_lifecycle_groups: dict[object, list[object]] = defaultdict(list)
+    for row_index, row in enumerate(materialized):
         if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
             continue
         status = str(_row_get(row, "status", "")).lower()
@@ -231,6 +258,16 @@ def estimate_discovery_target_policy_mix(
         target_bucket = "current_target" if policy == "exploit" else "cross_target"
         buckets[target_bucket][0] += 1
         buckets[target_bucket][1] += success
+        route = "CURRENT" if policy == "exploit" else "CROSS"
+        seed_path = str(_row_get(row, "seed_path", "") or "")
+        generation = int(_row_get(row, "generation", 0) or 0)
+        group = (
+            int(_row_get(row, "run_id", 0) or 0),
+            generation,
+            seed_path or f"row:{row_index}",
+        )
+        lifecycle_groups[route][group].append(row)
+        global_lifecycle_groups[(route, *group)].append(row)
         if policy in {"asset_universe_feedback", "asset_universe_explore"}:
             buckets[policy.removeprefix("asset_")][0] += 1
             buckets[policy.removeprefix("asset_")][1] += success
@@ -272,15 +309,24 @@ def estimate_discovery_target_policy_mix(
         )
     else:
         feedback_probability = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT
-    adaptive_current_target = (
-        buckets["current_target"][0] >= minimum_trials
-        and buckets["cross_target"][0] >= minimum_benchmark_trials
+    lifecycle_signals = probability_feedback_signals(
+        lifecycle_groups,
+        global_lifecycle_groups,
+        normalize_keys=False,
     )
-    if adaptive_current_target and current_target_rate + cross_target_rate > 0.0:
+    empty_signal = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
+    current_signal = lifecycle_signals.get("CURRENT", empty_signal)
+    cross_signal = lifecycle_signals.get("CROSS", empty_signal)
+    adaptive_current_target = (
+        current_signal.final_trials >= DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS
+        and cross_signal.final_trials >= DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS
+    )
+    if adaptive_current_target and current_signal.probability + cross_signal.probability > 0.0:
         current_target_probability = min(
             max(
-                current_target_rate / (current_target_rate + cross_target_rate),
-                DISCOVERY_CURRENT_TARGET_DEFAULT,
+                current_signal.probability
+                / (current_signal.probability + cross_signal.probability),
+                DISCOVERY_CURRENT_TARGET_FLOOR,
             ),
             DISCOVERY_CURRENT_TARGET_CEILING,
         )
@@ -308,6 +354,12 @@ def estimate_discovery_target_policy_mix(
         cross_target_trials=buckets["cross_target"][0],
         cross_target_successes=buckets["cross_target"][1],
         cross_target_rate=round(cross_target_rate, 6),
+        current_target_lifecycle_probability=current_signal.probability,
+        cross_target_lifecycle_probability=cross_signal.probability,
+        current_target_lifecycle_confidence=current_signal.confidence,
+        cross_target_lifecycle_confidence=cross_signal.confidence,
+        current_target_final_trials=current_signal.final_trials,
+        cross_target_final_trials=cross_signal.final_trials,
         recent_runs=tuple(run_ids),
         adaptive_unseeded=adaptive_unseeded,
         adaptive_universe_feedback=adaptive_feedback,
