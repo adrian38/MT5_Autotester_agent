@@ -1394,6 +1394,22 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertTrue(observed)
         self.assertTrue(observed <= allowed)
 
+    def test_discovery_current_target_probability_does_not_change_production(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        target, policy = choose_target_symbol(
+            seed,
+            {},
+            random.Random(1),
+            ("XAUUSD", "EURUSD"),
+            {},
+            production_mode=True,
+            current_target_probability=0.0,
+        )
+
+        self.assertEqual(target, "XAUUSD")
+        self.assertEqual(policy, "production_exploit")
+
     def test_production_symbol_selection_uses_positive_evidence_fallback(self) -> None:
         seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
 

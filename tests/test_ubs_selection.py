@@ -57,9 +57,48 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertTrue(mix.adaptive_universe_feedback)
         self.assertGreater(mix.universe_feedback_probability, 0.55)
         self.assertLessEqual(mix.universe_feedback_probability, 0.85)
+        self.assertFalse(mix.adaptive_current_target)
+        self.assertEqual(mix.current_target_probability, 0.70)
+
+    def test_current_target_routing_uses_lifecycle_not_base_acceptance(self) -> None:
+        rows = []
+        for index in range(6):
+            common = {
+                "run_id": 1,
+                "generation": 1,
+                "status": "accepted",
+                "robust_status": "accepted",
+                "final_tick_status": "accepted",
+            }
+            rows.append(
+                {
+                    **common,
+                    "seed_path": f"current_{index}.set",
+                    "policy": "exploit+tf_exploit",
+                    "final_tick_6m_status": "rejected",
+                }
+            )
+            rows.append(
+                {
+                    **common,
+                    "seed_path": f"cross_{index}.set",
+                    "policy": "asset_universe_explore+tf_exploit",
+                    "final_tick_6m_status": "accepted",
+                }
+            )
+
+        mix = estimate_discovery_target_policy_mix(
+            rows,
+            minimum_trials=1,
+            minimum_benchmark_trials=1,
+        )
+
         self.assertTrue(mix.adaptive_current_target)
-        self.assertGreater(mix.current_target_probability, 0.70)
-        self.assertLessEqual(mix.current_target_probability, 0.85)
+        self.assertGreater(
+            mix.cross_target_lifecycle_probability,
+            mix.current_target_lifecycle_probability,
+        )
+        self.assertEqual(mix.current_target_probability, 0.55)
 
     def test_discovery_target_policy_keeps_defaults_without_evidence(self) -> None:
         mix = estimate_discovery_target_policy_mix([])
