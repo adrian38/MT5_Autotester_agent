@@ -22,6 +22,14 @@ DISCOVERY_SOURCE_MIX_CEILING = 0.85
 DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS = 2.0
 DISCOVERY_SOURCE_MIX_PRIOR_FAILURE = 2.0
 _SOURCE_FINAL_STATUSES = {"accepted", "rejected", "no_trades"}
+DISCOVERY_TARGET_POLICY_MODEL = "beta_smoothed_target_policy_v1"
+DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR = 0.25
+DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT = 0.55
+DISCOVERY_UNIVERSE_FEEDBACK_CEILING = 0.85
+DISCOVERY_TARGET_POLICY_MIN_TRIALS = 20
+DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS = 100
+_UNSEEDED_ASSET_POLICIES = {"asset_unseeded_force", "asset_unseeded_group_feedback"}
+_PRODUCTION_ASSET_POLICY_PREFIX = "production_"
 
 
 def _row_get(row: object, key: str, default: object = None) -> object:
@@ -100,6 +108,160 @@ class DiscoverySourceMix:
                 "smoothed_rate": self.cross_asset_rate,
             },
         }
+
+
+@dataclass(frozen=True)
+class DiscoveryTargetPolicyMix:
+    unseeded_multiplier: float
+    universe_feedback_probability: float
+    unseeded_trials: int
+    unseeded_successes: int
+    unseeded_rate: float
+    benchmark_trials: int
+    benchmark_successes: int
+    benchmark_rate: float
+    universe_feedback_trials: int
+    universe_feedback_successes: int
+    universe_feedback_rate: float
+    universe_explore_trials: int
+    universe_explore_successes: int
+    universe_explore_rate: float
+    recent_runs: tuple[int, ...]
+    adaptive_unseeded: bool
+    adaptive_universe_feedback: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model": DISCOVERY_TARGET_POLICY_MODEL,
+            "unit": "finalized_base_candidate",
+            "recent_run_limit": DISCOVERY_SOURCE_MIX_RECENT_RUNS,
+            "recent_runs": list(self.recent_runs),
+            "unseeded": {
+                "multiplier": self.unseeded_multiplier,
+                "multiplier_floor": DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR,
+                "adaptive": self.adaptive_unseeded,
+                "trials": self.unseeded_trials,
+                "successes": self.unseeded_successes,
+                "smoothed_rate": self.unseeded_rate,
+                "benchmark_trials": self.benchmark_trials,
+                "benchmark_successes": self.benchmark_successes,
+                "benchmark_smoothed_rate": self.benchmark_rate,
+            },
+            "universe_feedback": {
+                "probability": self.universe_feedback_probability,
+                "floor": DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
+                "ceiling": DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
+                "adaptive": self.adaptive_universe_feedback,
+                "feedback_trials": self.universe_feedback_trials,
+                "feedback_successes": self.universe_feedback_successes,
+                "feedback_smoothed_rate": self.universe_feedback_rate,
+                "explore_trials": self.universe_explore_trials,
+                "explore_successes": self.universe_explore_successes,
+                "explore_smoothed_rate": self.universe_explore_rate,
+            },
+            "minimum_trials": DISCOVERY_TARGET_POLICY_MIN_TRIALS,
+            "minimum_benchmark_trials": DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS,
+            "prior": {
+                "success": DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS,
+                "failure": DISCOVERY_SOURCE_MIX_PRIOR_FAILURE,
+            },
+        }
+
+
+def estimate_discovery_target_policy_mix(
+    rows: Iterable[object],
+    *,
+    recent_run_limit: int = DISCOVERY_SOURCE_MIX_RECENT_RUNS,
+    minimum_trials: int = DISCOVERY_TARGET_POLICY_MIN_TRIALS,
+    minimum_benchmark_trials: int = DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS,
+) -> DiscoveryTargetPolicyMix:
+    materialized = list(rows)
+    run_ids = sorted(
+        {
+            int(_row_get(row, "run_id", 0) or 0)
+            for row in materialized
+            if int(_row_get(row, "run_id", 0) or 0) > 0
+        },
+        reverse=True,
+    )[: max(int(recent_run_limit), 0)]
+    allowed_runs = set(run_ids)
+    buckets = {
+        "unseeded": [0, 0],
+        "benchmark": [0, 0],
+        "universe_feedback": [0, 0],
+        "universe_explore": [0, 0],
+    }
+    for row in materialized:
+        if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
+            continue
+        status = str(_row_get(row, "status", "")).lower()
+        if status not in _SOURCE_FINAL_STATUSES:
+            continue
+        policy = str(_row_get(row, "policy", "")).split("+", 1)[0]
+        if not policy or policy.startswith(_PRODUCTION_ASSET_POLICY_PREFIX):
+            continue
+        success = int(status == "accepted")
+        primary = "unseeded" if policy in _UNSEEDED_ASSET_POLICIES else "benchmark"
+        buckets[primary][0] += 1
+        buckets[primary][1] += success
+        if policy in {"asset_universe_feedback", "asset_universe_explore"}:
+            buckets[policy.removeprefix("asset_")][0] += 1
+            buckets[policy.removeprefix("asset_")][1] += success
+
+    def rate(bucket: str) -> float:
+        trials, successes = buckets[bucket]
+        return (successes + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS) / (
+            trials + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS + DISCOVERY_SOURCE_MIX_PRIOR_FAILURE
+        )
+
+    unseeded_rate = rate("unseeded")
+    benchmark_rate = rate("benchmark")
+    feedback_rate = rate("universe_feedback")
+    explore_rate = rate("universe_explore")
+    adaptive_unseeded = (
+        buckets["unseeded"][0] >= minimum_trials
+        and buckets["benchmark"][0] >= minimum_benchmark_trials
+    )
+    if adaptive_unseeded and benchmark_rate > 0.0:
+        unseeded_multiplier = min(
+            max(unseeded_rate / benchmark_rate, DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR),
+            1.0,
+        )
+    else:
+        unseeded_multiplier = 1.0
+    adaptive_feedback = (
+        buckets["universe_feedback"][0] >= minimum_trials
+        and buckets["universe_explore"][0] >= minimum_trials
+    )
+    if adaptive_feedback and feedback_rate + explore_rate > 0.0:
+        feedback_probability = min(
+            max(
+                feedback_rate / (feedback_rate + explore_rate),
+                DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
+            ),
+            DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
+        )
+    else:
+        feedback_probability = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT
+    return DiscoveryTargetPolicyMix(
+        unseeded_multiplier=round(unseeded_multiplier, 6),
+        universe_feedback_probability=round(feedback_probability, 6),
+        unseeded_trials=buckets["unseeded"][0],
+        unseeded_successes=buckets["unseeded"][1],
+        unseeded_rate=round(unseeded_rate, 6),
+        benchmark_trials=buckets["benchmark"][0],
+        benchmark_successes=buckets["benchmark"][1],
+        benchmark_rate=round(benchmark_rate, 6),
+        universe_feedback_trials=buckets["universe_feedback"][0],
+        universe_feedback_successes=buckets["universe_feedback"][1],
+        universe_feedback_rate=round(feedback_rate, 6),
+        universe_explore_trials=buckets["universe_explore"][0],
+        universe_explore_successes=buckets["universe_explore"][1],
+        universe_explore_rate=round(explore_rate, 6),
+        recent_runs=tuple(run_ids),
+        adaptive_unseeded=adaptive_unseeded,
+        adaptive_universe_feedback=adaptive_feedback,
+    )
 
 
 def estimate_discovery_source_mix(

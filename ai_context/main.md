@@ -1202,6 +1202,13 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   exploitable share to 60..85%. The full evidence and applied ratio are stored
   in `generation.seed_selection_diversity_caps.discovery_source_mix_feedback`;
   resumed runs reuse their persisted ratio.
+- Discovery target routing also adapts from the latest 10 broker-local runs.
+  Finalized base candidates estimate the relative yield of never-tested symbols
+  and of lifecycle-feedback versus random-universe targets with a Beta(2,2)
+  prior. The unseeded schedule can shrink to 25% of its configured budget, and
+  universe feedback is bounded to 55..85%, so every exploration route keeps a
+  non-zero floor. Evidence and applied probabilities are persisted under
+  `generation.target_policy.discovery_adaptive_policy` and restored on resume.
 
 ### Multiterminal support
 
