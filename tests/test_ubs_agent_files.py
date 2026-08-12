@@ -1466,8 +1466,8 @@ class UBSSetsFileTests(unittest.TestCase):
             ("XAUUSD.sa", "XAGUSD.sa"),
         )
 
-        self.assertEqual(aliases["XAUUSD"], "XAUUSD.SA")
-        self.assertEqual(aliases["GOLD"], "XAUUSD.SA")
+        self.assertEqual(aliases["XAUUSD"], "XAUUSD.sa")
+        self.assertEqual(aliases["GOLD"], "XAUUSD.sa")
         self.assertNotIn("ORPHAN", aliases)
 
         limiter = TargetDiversityLimiter(
