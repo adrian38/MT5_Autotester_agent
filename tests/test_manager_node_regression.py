@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from manager_node_runtime.node import JobController
+from manager_node_runtime.node import JobController, build_generation_command
 
 
 class ManagerNodeRegressionTests(unittest.TestCase):
@@ -132,6 +132,31 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 controller._normalize_regression({"run_ids": [7], "max_workers": 0})["max_workers"],
                 1,
             )
+
+    def test_generation_forwards_and_normalizes_random_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            (project / "ubs_agent.py").write_text('parser.add_argument("--random-seed")\n', encoding="utf-8")
+            (project / "tester_template.ini").write_text("[Tester]\n", encoding="utf-8")
+            (project / "ui_settings.ini").write_text(
+                "\n".join([
+                    "[Paths]", f"set_files_root={project / 'sets'}",
+                    f"ubs_generation_output={project / 'outputs'}",
+                    f"template_path={project / 'tester_template.ini'}",
+                    "[General]", "ubs_generation_mode=discovery", "ubs_broker=ICTRADING",
+                    "ubs_account_type=STANDARD", "[Multiterminal]", "enabled=0",
+                ]), encoding="utf-8",
+            )
+            config = {"node_id": "ic", "project_dir": str(project), "broker": "ICTRADING", "account_type": "STANDARD"}
+            controller = JobController(config, project / "manager_node.json")
+            normalized = controller._normalize_generation({"random_seed": "20260812", "execute_backtests": False})
+            command, _cwd = build_generation_command(config, normalized)
+
+            self.assertEqual(normalized["random_seed"], 20260812)
+            self.assertEqual(command[command.index("--random-seed") + 1], "20260812")
+            self.assertIsNone(controller._normalize_generation({"random_seed": None})["random_seed"])
+            with self.assertRaisesRegex(ValueError, "random_seed"):
+                controller._normalize_generation({"random_seed": "invalid"})
 
     def test_auto_repair_uses_its_own_worker_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
