@@ -31,6 +31,7 @@ from ubs_agent import (
     copy_accepted,
     create_history_probe_variant,
     create_variant,
+    discovery_ranked_seed_selection,
     discovery_seed_pool,
     evaluate_candidate_final_tick,
     evaluate_history_probe,
@@ -1550,6 +1551,35 @@ class UBSSetsFileTests(unittest.TestCase):
         selected_symbols = {seed.symbol for _score, seed, _asset, _tf, _div in selected}
         self.assertGreaterEqual(len(selected_symbols), 4)
         self.assertIn("XTIUSD", selected_symbols)
+
+    def test_discovery_seed_selection_budgets_exploitation_and_cross_asset_search(self) -> None:
+        live_symbols = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF", "NZDUSD")
+        exploitable = [
+            Seed(Path(f"live_{idx}.set"), symbol, "H1", "family", "1")
+            for idx, symbol in enumerate(live_symbols)
+        ]
+        cross_asset = [
+            Seed(Path(f"legacy_{idx}.set"), f"LEGACY{idx}", "H1", "family", "1")
+            for idx in range(6)
+        ]
+        feedback = {
+            **{seed.symbol: 1.0 for seed in exploitable},
+            **{seed.symbol: 100.0 for seed in cross_asset},
+        }
+
+        selected = discovery_ranked_seed_selection(
+            exploitable + cross_asset,
+            5,
+            feedback,
+            {},
+            random.Random(17),
+            tuple(seed.symbol for seed in exploitable),
+        )
+        selected_symbols = [seed.symbol for _score, seed, _asset, _tf, _div in selected]
+
+        self.assertEqual(len(selected_symbols), 5)
+        self.assertEqual(sum(symbol in live_symbols for symbol in selected_symbols), 3)
+        self.assertEqual(sum(symbol.startswith("LEGACY") for symbol in selected_symbols), 2)
 
     def test_ranked_seed_selection_applies_final_fitness_softly(self) -> None:
         ordinary = Seed(Path("ordinary.set"), "XAUUSD", "H4", "family", "1")

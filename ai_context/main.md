@@ -1192,6 +1192,9 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   shift the targets or adjacent variants in a paired cohort.
 - Alias resolution preserves the exact broker casing from the active universe;
   canonical upper-case keys are only for identity, never for `ForceSymbol`.
+- Discovery reserves at least 60% of a bounded seed cohort for sources whose
+  current symbol resolves to an enabled broker target. The remaining budget is
+  retained for cross-asset exploration; shortages on either side are backfilled.
 
 ### Multiterminal support
 
