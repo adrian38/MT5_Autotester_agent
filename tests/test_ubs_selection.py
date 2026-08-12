@@ -11,6 +11,7 @@ from ubs.selection import (
     _sigmoid,
     finalized_six_month_label,
     estimate_discovery_source_mix,
+    estimate_discovery_target_policy_mix,
 )
 
 
@@ -29,6 +30,42 @@ def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: floa
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
+    def test_discovery_target_policy_favors_feedback_and_scales_weak_unseeded(self) -> None:
+        rows = []
+        rows.extend(
+            {"run_id": 1, "policy": "asset_unseeded_group_feedback", "status": "accepted" if i < 2 else "rejected"}
+            for i in range(40)
+        )
+        rows.extend(
+            {"run_id": 1, "policy": "exploit", "status": "accepted" if i < 50 else "rejected"}
+            for i in range(200)
+        )
+        rows.extend(
+            {"run_id": 1, "policy": "asset_universe_feedback", "status": "accepted" if i < 30 else "rejected"}
+            for i in range(50)
+        )
+        rows.extend(
+            {"run_id": 1, "policy": "asset_universe_explore", "status": "accepted" if i < 5 else "rejected"}
+            for i in range(50)
+        )
+
+        mix = estimate_discovery_target_policy_mix(rows)
+
+        self.assertTrue(mix.adaptive_unseeded)
+        self.assertGreaterEqual(mix.unseeded_multiplier, 0.25)
+        self.assertLess(mix.unseeded_multiplier, 0.50)
+        self.assertTrue(mix.adaptive_universe_feedback)
+        self.assertGreater(mix.universe_feedback_probability, 0.55)
+        self.assertLessEqual(mix.universe_feedback_probability, 0.85)
+
+    def test_discovery_target_policy_keeps_defaults_without_evidence(self) -> None:
+        mix = estimate_discovery_target_policy_mix([])
+
+        self.assertFalse(mix.adaptive_unseeded)
+        self.assertFalse(mix.adaptive_universe_feedback)
+        self.assertEqual(mix.unseeded_multiplier, 1.0)
+        self.assertEqual(mix.universe_feedback_probability, 0.55)
+
     def test_discovery_source_mix_adapts_from_source_level_success(self) -> None:
         rows = []
         for run_id in range(1, 11):

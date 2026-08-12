@@ -1312,6 +1312,26 @@ class AgentMemory:
             run_ids,
         ).fetchall()
 
+    def candidate_policy_feedback_rows(self) -> list[sqlite3.Row]:
+        run_ids = [
+            int(row["id"])
+            for row in self.conn.execute(
+                "select id from runs where hidden=0 order by id desc limit 10"
+            ).fetchall()
+        ]
+        if not run_ids:
+            return []
+        placeholders = ",".join("?" for _run_id in run_ids)
+        return self.conn.execute(
+            f"""
+            select run_id, policy, status
+            from candidates
+            where run_id in ({placeholders})
+              and status in ('accepted', 'rejected', 'no_trades')
+            """,
+            run_ids,
+        ).fetchall()
+
     def _seed_feedback_rows(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
