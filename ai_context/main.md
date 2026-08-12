@@ -1190,6 +1190,8 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   `(generation, seed_index, variant_index)` mutation has its own stream. A
   mutation implementation changing its number of random draws therefore cannot
   shift the targets or adjacent variants in a paired cohort.
+- Alias resolution preserves the exact broker casing from the active universe;
+  canonical upper-case keys are only for identity, never for `ForceSymbol`.
 
 ### Multiterminal support
 
