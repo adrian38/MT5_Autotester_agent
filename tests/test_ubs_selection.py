@@ -59,6 +59,8 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertLessEqual(mix.universe_feedback_probability, 0.85)
         self.assertFalse(mix.adaptive_current_target)
         self.assertEqual(mix.current_target_probability, 0.70)
+        self.assertFalse(mix.adaptive_current_timeframe)
+        self.assertEqual(mix.current_timeframe_probability, 0.60)
 
     def test_current_target_routing_uses_lifecycle_not_base_acceptance(self) -> None:
         rows = []
@@ -100,6 +102,46 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         )
         self.assertEqual(mix.current_target_probability, 0.55)
 
+    def test_current_timeframe_routing_uses_lifecycle_evidence(self) -> None:
+        rows = []
+        for index in range(6):
+            common = {
+                "run_id": 1,
+                "generation": 1,
+                "status": "accepted",
+                "robust_status": "accepted",
+                "final_tick_status": "accepted",
+                "source_period": "H1",
+            }
+            rows.append(
+                {
+                    **common,
+                    "seed_path": f"current_tf_{index}.set",
+                    "policy": "exploit+tf_exploit",
+                    "target_period": "H1",
+                    "final_tick_6m_status": "accepted",
+                }
+            )
+            rows.append(
+                {
+                    **common,
+                    "seed_path": f"changed_tf_{index}.set",
+                    "policy": "exploit+tf_explore",
+                    "target_period": "M30",
+                    "final_tick_6m_status": "rejected",
+                }
+            )
+
+        mix = estimate_discovery_target_policy_mix(rows)
+
+        self.assertTrue(mix.adaptive_current_timeframe)
+        self.assertGreater(
+            mix.current_timeframe_lifecycle_probability,
+            mix.changed_timeframe_lifecycle_probability,
+        )
+        self.assertGreater(mix.current_timeframe_probability, 0.60)
+        self.assertLessEqual(mix.current_timeframe_probability, 0.80)
+
     def test_discovery_target_policy_keeps_defaults_without_evidence(self) -> None:
         mix = estimate_discovery_target_policy_mix([])
 
@@ -109,6 +151,7 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertEqual(mix.unseeded_multiplier, 1.0)
         self.assertEqual(mix.universe_feedback_probability, 0.55)
         self.assertEqual(mix.current_target_probability, 0.70)
+        self.assertEqual(mix.current_timeframe_probability, 0.60)
 
     def test_discovery_source_mix_adapts_from_source_level_success(self) -> None:
         rows = []

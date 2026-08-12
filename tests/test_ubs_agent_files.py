@@ -69,6 +69,7 @@ from ubs_agent import (
     restore_run_unseeded_probabilities,
     restored_discovery_exploitable_ratio,
     restored_discovery_current_target_probability,
+    restored_discovery_current_timeframe_probability,
     restored_discovery_universe_feedback_probability,
     rescore_final_tick_only,
     unseeded_asset_force_probability,
@@ -1267,6 +1268,42 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(restored_discovery_current_target_probability(config), 0.82)
         self.assertEqual(restored_discovery_current_target_probability("{}"), 0.70)
 
+    def test_resume_restores_persisted_discovery_current_timeframe_probability(self) -> None:
+        config = json.dumps(
+            {
+                "generation": {
+                    "target_policy": {
+                        "discovery_adaptive_policy": {
+                            "current_timeframe": {"probability": 0.73}
+                        }
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(restored_discovery_current_timeframe_probability(config), 0.73)
+        self.assertEqual(restored_discovery_current_timeframe_probability("{}"), 0.60)
+
+    def test_current_timeframe_probability_controls_discovery_branch(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        target, policy = choose_target_period(
+            seed,
+            {},
+            random.Random(1),
+            current_timeframe_probability=1.0,
+        )
+        _changed_target, changed_policy = choose_target_period(
+            seed,
+            {},
+            random.Random(1),
+            current_timeframe_probability=0.0,
+        )
+
+        self.assertEqual(target, "H1")
+        self.assertEqual(policy, "tf_exploit")
+        self.assertNotEqual(changed_policy, "tf_exploit")
+
     def test_current_target_probability_controls_discovery_exploit_branch(self) -> None:
         seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
 
@@ -1409,6 +1446,20 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertEqual(target, "XAUUSD")
         self.assertEqual(policy, "production_exploit")
+
+    def test_discovery_current_timeframe_probability_does_not_change_production(self) -> None:
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
+
+        target, policy = choose_target_period(
+            seed,
+            {},
+            random.Random(1),
+            production_mode=True,
+            current_timeframe_probability=0.0,
+        )
+
+        self.assertEqual(target, "H1")
+        self.assertEqual(policy, "tf_production_exploit")
 
     def test_production_symbol_selection_uses_positive_evidence_fallback(self) -> None:
         seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
