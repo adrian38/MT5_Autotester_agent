@@ -3594,6 +3594,7 @@ def tester_log_no_history_metadata(
     found_matches = list(found_pattern.finditer(text))
     missing_matches = list(missing_pattern.finditer(text))
     failure_positions = [
+        *(match.start() for match in found_matches),
         *(match.start() for match in missing_matches),
         *(match.start() for match in cannot_get_pattern.finditer(text)),
         *(match.start() for match in no_sync_pattern.finditer(text)),
