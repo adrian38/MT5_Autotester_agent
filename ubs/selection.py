@@ -16,6 +16,9 @@ MIN_POSITIVE_ROWS = 30
 FITNESS_WEIGHT_SCALE = 10.0
 FITNESS_WEIGHT_LIMIT = 15.0
 _DENSE_FITNESS_FEATURES = 8
+FITNESS_TARGET_FINAL_TICK_6M = "final_tick_6m"
+FITNESS_TARGET_ROBUSTNESS = "robustness"
+FITNESS_TARGETS = {FITNESS_TARGET_FINAL_TICK_6M, FITNESS_TARGET_ROBUSTNESS}
 DISCOVERY_SOURCE_MIX_MODEL = "beta_smoothed_source_success_v1"
 DISCOVERY_SOURCE_MIX_RECENT_RUNS = 10
 DISCOVERY_SOURCE_MIX_MIN_TRIALS = 20
@@ -547,6 +550,27 @@ def finalized_six_month_label(row: object) -> int | None:
     return None
 
 
+def finalized_robustness_label(row: object) -> int | None:
+    """Return the statistical OOS label without poisoning it with technical failures."""
+
+    if str(_row_get(row, "status", "")).lower() != "accepted":
+        return None
+    robust = str(_row_get(row, "robust_status", "")).lower()
+    if robust == "accepted":
+        return 1
+    if robust in {"rejected", "no_trades"}:
+        return 0
+    return None
+
+
+def finalized_fitness_label(row: object, target: str) -> int | None:
+    if target == FITNESS_TARGET_ROBUSTNESS:
+        return finalized_robustness_label(row)
+    if target == FITNESS_TARGET_FINAL_TICK_6M:
+        return finalized_six_month_label(row)
+    raise ValueError(f"Objetivo de fitness desconocido: {target}")
+
+
 def fitness_features(score: object, metrics_json: object, period: object) -> tuple[float, ...] | None:
     data = _metrics(metrics_json)
     if not data:
@@ -632,12 +656,20 @@ class SelectionFitnessModel:
     prior_probability: float
     training_rows: int
     positive_rows: int
+    target: str
 
     @classmethod
-    def train(cls, rows: Iterable[object]) -> SelectionFitnessModel | None:
+    def train(
+        cls,
+        rows: Iterable[object],
+        *,
+        target: str = FITNESS_TARGET_FINAL_TICK_6M,
+    ) -> SelectionFitnessModel | None:
+        if target not in FITNESS_TARGETS:
+            raise ValueError(f"Objetivo de fitness desconocido: {target}")
         samples: list[tuple[tuple[float, ...], int]] = []
         for row in rows:
-            label = finalized_six_month_label(row)
+            label = finalized_fitness_label(row, target)
             if label is None:
                 continue
             features = fitness_features(
@@ -695,6 +727,7 @@ class SelectionFitnessModel:
             prior_probability=prior,
             training_rows=len(samples),
             positive_rows=positives,
+            target=target,
         )
 
     def predict(self, score: object, metrics_json: object, period: object) -> SelectionPrediction:

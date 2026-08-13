@@ -245,10 +245,13 @@ generation scoring:
   probability, confidence and effective 6M trials separately. Mutations use
   relative percentile multipliers `0.5..1.5`; timeframe patch keys are excluded.
 - Report score and evolutionary fitness are separate. `ubs/selection.py`
-  trains only on finalized prior runs, targets Final Tick 6M acceptance, and
-  persists probability/weight/evidence in `generation_seed_selection`. Fitness
-  now runs in `soft_weight` mode with applied scale `0.15`, so it can nudge
-  source-seed and survivor ranking without replacing the report score.
+  trains only on finalized prior runs. Discovery targets statistical OOS
+  robustness acceptance and excludes technical outcomes; Production retains the
+  Final Tick 6M acceptance target. The mode-specific model is recorded in run
+  metadata, and probability/weight/evidence are persisted in
+  `generation_seed_selection`. Fitness runs in `soft_weight` mode with applied
+  scale `0.15`, so it can nudge source-seed and survivor ranking without replacing
+  the report score.
 - The following additive row utility is retained only for legacy audit detail;
   it is no longer used by asset/TF/mutation selection:
   - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).
