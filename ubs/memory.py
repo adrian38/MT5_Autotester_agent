@@ -57,7 +57,9 @@ class AgentMemory:
         self.path = path
         self.active_final_tick_stage = "probe"
         self._defer_commits = 0
-        self._selection_fitness_models: dict[int | None, SelectionFitnessModel | None] = {}
+        self._selection_fitness_models: dict[
+            tuple[int | None, str], SelectionFitnessModel | None
+        ] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = connect_memory(self.path, enable_wal=True)
         self._init()
@@ -489,9 +491,15 @@ class AgentMemory:
         )
         self.conn.commit()
 
-    def selection_fitness_model(self, *, exclude_run_id: int | None = None) -> SelectionFitnessModel | None:
-        if exclude_run_id in self._selection_fitness_models:
-            return self._selection_fitness_models[exclude_run_id]
+    def selection_fitness_model(
+        self,
+        *,
+        exclude_run_id: int | None = None,
+        target: str = "final_tick_6m",
+    ) -> SelectionFitnessModel | None:
+        cache_key = (exclude_run_id, target)
+        if cache_key in self._selection_fitness_models:
+            return self._selection_fitness_models[cache_key]
         params: tuple[object, ...] = ()
         run_filter = ""
         if exclude_run_id is not None:
@@ -515,8 +523,8 @@ class AgentMemory:
             """,
             params,
         ).fetchall()
-        model = SelectionFitnessModel.train(rows)
-        self._selection_fitness_models[exclude_run_id] = model
+        model = SelectionFitnessModel.train(rows, target=target)
+        self._selection_fitness_models[cache_key] = model
         return model
 
     def seed_selection_predictions(
@@ -524,8 +532,9 @@ class AgentMemory:
         seeds: list[Seed],
         *,
         exclude_run_id: int | None = None,
+        target: str = "final_tick_6m",
     ) -> dict[str, SelectionPrediction]:
-        model = self.selection_fitness_model(exclude_run_id=exclude_run_id)
+        model = self.selection_fitness_model(exclude_run_id=exclude_run_id, target=target)
         if model is None:
             return {str(seed.path): SelectionPrediction(0.0, 0.0, 0.0) for seed in seeds}
         feature_rows = self._selection_feature_rows(str(seed.path) for seed in seeds)

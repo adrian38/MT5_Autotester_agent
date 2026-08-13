@@ -96,6 +96,8 @@ from ubs.regression_rules import (
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.selection import (
+    FITNESS_TARGET_FINAL_TICK_6M,
+    FITNESS_TARGET_ROBUSTNESS,
     DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
     DISCOVERY_CURRENT_TARGET_DEFAULT,
     DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
@@ -6624,8 +6626,16 @@ def build_run_config(
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
             },
             "selection_fitness": {
-                "model": "regularized_logistic_final_tick_6m_v1",
-                "target": "final_tick_6m_accepted",
+                "model": (
+                    "regularized_logistic_robustness_v1"
+                    if args.force_unseeded_universe
+                    else "regularized_logistic_final_tick_6m_v1"
+                ),
+                "target": (
+                    "robustness_accepted"
+                    if args.force_unseeded_universe
+                    else "final_tick_6m_accepted"
+                ),
                 "exclude_current_run": True,
                 "mode": SELECTION_FITNESS_MODE,
                 "applied_weight_scale": SELECTION_FITNESS_APPLIED_SCALE,
@@ -6921,7 +6931,15 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         mutation_direction_feedback = memory.mutation_direction_feedback()
         asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(aliases, group_by_symbol)
         timeframe_feedback = memory.timeframe_feedback()
-        fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
+        fitness_predictions = memory.seed_selection_predictions(
+            current_seeds,
+            exclude_run_id=run_id,
+            target=(
+                FITNESS_TARGET_ROBUSTNESS
+                if args.force_unseeded_universe
+                else FITNESS_TARGET_FINAL_TICK_6M
+            ),
+        )
         fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
         selection_pool = current_seeds
         if not args.force_unseeded_universe:
@@ -7348,7 +7366,15 @@ def run_agent(args: argparse.Namespace) -> int:
             mutation_direction_feedback = memory.mutation_direction_feedback()
             asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(aliases, group_by_symbol)
             timeframe_feedback = memory.timeframe_feedback()
-            fitness_predictions = memory.seed_selection_predictions(current_seeds, exclude_run_id=run_id)
+            fitness_predictions = memory.seed_selection_predictions(
+                current_seeds,
+                exclude_run_id=run_id,
+                target=(
+                    FITNESS_TARGET_ROBUSTNESS
+                    if args.force_unseeded_universe
+                    else FITNESS_TARGET_FINAL_TICK_6M
+                ),
+            )
             fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
             selection_pool = current_seeds
             if not args.force_unseeded_universe:
