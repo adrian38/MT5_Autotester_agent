@@ -238,21 +238,25 @@ generation scoring:
   thresholds, values, availability, pass/fail flags, and final acceptance.
 - Selection feedback lives in `ubs/weights.py` and is shared by
   `AgentMemory.asset_feedback()`, `timeframe_feedback()`, `mutation_feedback()`,
-  and `UBS Universo`. It estimates the smoothed five-stage probability
+  and `UBS Universo`. Discovery estimates the smoothed four-stage probability
   `P(base) * P(OOS|base) * P(probe eligible|OOS) * P(6M accepted|probe)`,
   grouped by correlated source. Its bounded relative log-odds score is centred
   on the global probability, so unknown evidence is neutral. The UI exposes
   probability, confidence and effective 6M trials separately. Mutations use
   relative percentile multipliers `0.5..1.5`; timeframe patch keys are excluded.
-- Report score and evolutionary fitness are separate. `ubs/selection.py`
-  trains only on finalized prior runs. Discovery and Production both target
-  Final Tick 6M acceptance and exclude technical outcomes. The selected model is recorded in run
-  metadata, and probability/weight/evidence are persisted in
-  `generation_seed_selection`. Fitness runs in `soft_weight` mode with applied
-  scale `0.15`, so it can nudge source-seed and survivor ranking without replacing
-  the report score. The same 6M target must be forwarded while selecting
-  survivors between generations so the next seed pool remains aligned with the
-  usable-strategy objective.
+  Regression is a Production-only fifth stage and cannot change Discovery
+  generation feedback.
+- Report score and evolutionary fitness are separate. In Discovery, source
+  seeds are ranked by a Beta-smoothed prior-run estimate of whether their child
+  variants produced any accepted Final Tick 6M result; each `(run, generation,
+  seed)` is one correlated trial and unseen seeds remain neutral. Survivors
+  between generations use the regularized candidate-metric model. Production
+  retains that metric model for both decisions. All models target Final Tick 6M
+  acceptance, exclude technical outcomes and exclude the current run. The
+  source and survivor models are recorded in run metadata, and
+  probability/weight/evidence are persisted in `generation_seed_selection`.
+  Fitness remains a soft weight with applied scale `0.15`, so it cannot replace
+  the base report score or the diversity budget.
 - The following additive row utility is retained only for legacy audit detail;
   it is no longer used by asset/TF/mutation selection:
   - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).
@@ -1201,25 +1205,24 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   retained for cross-asset exploration; shortages on either side are backfilled.
 - That discovery source budget is broker-adaptive once both source buckets have
   at least 20 trials. It uses the latest 10 broker-local runs, counts one trial
-  per selected source (success when any finalized base variant is accepted),
+  per selected source (success only when any child reaches accepted Final Tick 6M),
   ignores technical outcomes, applies a Beta(2,2) prior, and clamps the
   exploitable share to 60..85%. The full evidence and applied ratio are stored
   in `generation.seed_selection_diversity_caps.discovery_source_mix_feedback`;
   resumed runs reuse their persisted ratio.
 - Discovery target routing also adapts from the latest 10 broker-local runs.
-  Finalized base candidates estimate the relative yield of never-tested symbols
-  and of lifecycle-feedback versus random-universe targets with a Beta(2,2)
-  prior. The unseeded schedule can shrink to 25% of its configured budget, and
-  universe feedback is bounded to 55..85%, so every exploration route keeps a
-  non-zero floor. Once feedback and random exploration both have Final Tick 6M
-  evidence (at least one effective trial each and four combined), their
-  smoothed full-lifecycle probabilities replace base acceptance for this split.
+  The unseeded schedule compares its smoothed base/OOS/probe/6M lifecycle yield
+  with the benchmark and can shrink to 25% of its configured budget. Universe
+  feedback is bounded to 55..85%, so every exploration route keeps a non-zero
+  floor. Feedback versus random exploration adapts only after both have Final
+  Tick 6M evidence (at least one effective trial each and four combined);
+  otherwise it keeps the 55% default rather than substituting base acceptance.
   Evidence, routing basis and applied probabilities are persisted under
   `generation.target_policy.discovery_adaptive_policy` and restored on resume.
 - In Discovery, the probability of keeping the selected seed's current
   broker-resolved asset is broker-adaptive too. `exploit` candidates are
   compared with all cross-asset target policies over the same latest-10-run
-  window using the smoothed end-to-end base/OOS/probe/6M/regression lifecycle
+  window using the smoothed end-to-end base/OOS/probe/6M lifecycle
   probability. It adapts only after both buckets have at least three grouped
   6M trials; otherwise it keeps the 70% default. The applied probability is
   bounded to 55..85%, preserving at least 15% cross-asset routing. Evidence is

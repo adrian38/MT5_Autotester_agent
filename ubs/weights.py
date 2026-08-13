@@ -185,10 +185,26 @@ def row_stage_outcome(row: object, stage: str) -> tuple[bool, float]:
     raise ValueError(f"Etapa de feedback desconocida: {stage}")
 
 
-def grouped_stage_evidence(grouped_rows: Mapping[object, Iterable[object]]) -> dict[str, StageEvidence]:
+def _feedback_stages(terminal_stage: str | None = None) -> tuple[str, ...]:
+    stages = tuple(DEFAULT_STAGE_PRIORS)
+    if terminal_stage is None:
+        return stages
+    try:
+        terminal_index = stages.index(str(terminal_stage))
+    except ValueError as exc:
+        raise ValueError(f"Etapa terminal de feedback desconocida: {terminal_stage}") from exc
+    return stages[: terminal_index + 1]
+
+
+def grouped_stage_evidence(
+    grouped_rows: Mapping[object, Iterable[object]],
+    *,
+    stages: Iterable[str] | None = None,
+) -> dict[str, StageEvidence]:
     """Give every correlated source group at most one trial per stage."""
 
-    totals = {stage: [0.0, 0.0] for stage in DEFAULT_STAGE_PRIORS}
+    selected_stages = tuple(stages or DEFAULT_STAGE_PRIORS)
+    totals = {stage: [0.0, 0.0] for stage in selected_stages}
     for rows in grouped_rows.values():
         items = list(rows)
         for stage in totals:
@@ -218,12 +234,15 @@ def probability_feedback_signals(
     *,
     prior_strength: float = STAGE_PRIOR_STRENGTH,
     normalize_keys: bool = True,
+    terminal_stage: str | None = None,
 ) -> dict[str, FeedbackSignal]:
     """Build bounded, neutral-centred feedback from lifecycle probabilities."""
 
-    global_evidence = grouped_stage_evidence(global_groups)
+    stages = _feedback_stages(terminal_stage)
+    global_evidence = grouped_stage_evidence(global_groups, stages=stages)
     priors: dict[str, float] = {}
-    for stage, fallback in DEFAULT_STAGE_PRIORS.items():
+    for stage in stages:
+        fallback = DEFAULT_STAGE_PRIORS[stage]
         evidence = global_evidence[stage]
         observed = evidence.successes / evidence.trials if evidence.trials else fallback
         if stage == "regression" and evidence.trials:
@@ -238,7 +257,7 @@ def probability_feedback_signals(
             key = key.upper()
         if not key or not groups:
             continue
-        evidence = grouped_stage_evidence(groups)
+        evidence = grouped_stage_evidence(groups, stages=stages)
         stage_probabilities = {
             stage: _posterior_probability(evidence[stage], priors[stage], prior_strength)
             for stage in priors
@@ -246,23 +265,23 @@ def probability_feedback_signals(
         probability = math.prod(stage_probabilities.values())
         score = RELATIVE_SCORE_SCALE * (_logit(probability) - _logit(global_probability))
         score = max(-RELATIVE_SCORE_LIMIT, min(RELATIVE_SCORE_LIMIT, score))
-        weighted_trials = (
-            evidence["base"].trials
-            + 2.0 * evidence["robust"].trials
-            + 3.0 * evidence["probe"].trials
-            + 4.0 * evidence["six_month"].trials
-            + 5.0 * evidence["regression"].trials
+        weighted_trials = sum(
+            float(index) * evidence[stage].trials
+            for index, stage in enumerate(stages, start=1)
         )
-        confidence_stages = 5.0 if global_evidence["regression"].trials else 4.0
+        confidence_stages = float(
+            len(stages)
+            - int("regression" in stages and not global_evidence["regression"].trials)
+        )
         confidence = weighted_trials / (weighted_trials + prior_strength * confidence_stages)
         result[key] = FeedbackSignal(
             score=round(score, 6),
             probability=round(probability, 8),
             confidence=round(confidence, 6),
             groups=len(groups),
-            final_trials=evidence["six_month"].trials,
+            final_trials=evidence.get("six_month", StageEvidence()).trials,
             stage_probabilities={stage: round(value, 8) for stage, value in stage_probabilities.items()},
-            regression_trials=evidence["regression"].trials,
+            regression_trials=evidence.get("regression", StageEvidence()).trials,
         )
     return result
 
