@@ -76,6 +76,7 @@ from ubs_agent import (
     unseeded_timeframe_force_probability,
     run_backtests,
     select_next_seed_survivors,
+    select_next_generation_survivors,
     select_survivors,
     validate_final_tick_stage_dates,
     validate_seed_backtest_set,
@@ -125,6 +126,28 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_next_generation_survivors_forward_mode_specific_fitness_target(self) -> None:
+        memory = Mock()
+        memory.seed_selection_predictions.return_value = {}
+        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "generic", "generic")
+        variant = Variant(Path("candidate.set"), seed, "XAUUSD", "H1", (), (), "exploit")
+
+        selected = select_next_generation_survivors(
+            memory,
+            17,
+            [(variant, score(150.0))],
+            20.0,
+            1,
+            fitness_target="robustness",
+        )
+
+        self.assertEqual(len(selected), 1)
+        memory.seed_selection_predictions.assert_called_once()
+        self.assertEqual(
+            memory.seed_selection_predictions.call_args.kwargs,
+            {"exclude_run_id": 17, "target": "robustness"},
+        )
+
     def test_generation_random_streams_isolate_routing_from_mutation_draws(self) -> None:
         selection_a = generation_random_stream(20260812, 1, "selection")
         mutation_a = generation_random_stream(20260812, 1, "mutation", 1, 1)
