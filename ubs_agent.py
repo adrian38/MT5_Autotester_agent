@@ -4053,11 +4053,13 @@ def select_next_generation_survivors(
     aliases: dict[str, str] | None = None,
     group_by_symbol: dict[str, str] | None = None,
     allow_rejected_fallback: bool = True,
+    fitness_target: str = FITNESS_TARGET_FINAL_TICK_6M,
 ) -> list[tuple[Variant, ScoreResult]]:
     accepted = select_survivors(scored, top_percent, allow_rejected_fallback=allow_rejected_fallback)
     predictions = memory.seed_selection_predictions(
         seeds_from_survivors(accepted),
         exclude_run_id=run_id,
+        target=fitness_target,
     )
     fitness_feedback = {path: prediction.weight for path, prediction in predictions.items()}
     return select_next_seed_survivors(
@@ -6859,6 +6861,11 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 aliases,
                 group_by_symbol,
                 allow_rejected_fallback=bool(args.force_unseeded_universe),
+                fitness_target=(
+                    FITNESS_TARGET_ROBUSTNESS
+                    if args.force_unseeded_universe
+                    else FITNESS_TARGET_FINAL_TICK_6M
+                ),
             )
             if not args.force_unseeded_universe and not next_survivors:
                 print(
@@ -7121,6 +7128,11 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 aliases,
                 group_by_symbol,
                 allow_rejected_fallback=bool(args.force_unseeded_universe),
+                fitness_target=(
+                    FITNESS_TARGET_ROBUSTNESS
+                    if args.force_unseeded_universe
+                    else FITNESS_TARGET_FINAL_TICK_6M
+                ),
             )
             if not args.force_unseeded_universe and not next_survivors:
                 print(
@@ -7609,6 +7621,11 @@ def run_agent(args: argparse.Namespace) -> int:
                     aliases,
                     group_by_symbol,
                     allow_rejected_fallback=bool(args.force_unseeded_universe),
+                    fitness_target=(
+                        FITNESS_TARGET_ROBUSTNESS
+                        if args.force_unseeded_universe
+                        else FITNESS_TARGET_FINAL_TICK_6M
+                    ),
                 )
                 if not args.force_unseeded_universe and not next_survivors:
                     print(
