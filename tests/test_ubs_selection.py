@@ -99,6 +99,121 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertEqual(predictions["unknown.set"].weight, 0.0)
         self.assertEqual(predictions["unknown.set"].evidence, 0.0)
 
+    def test_descendant_fitness_credits_multigeneration_success_to_root_seed(self) -> None:
+        rows = []
+        for run_id in range(1, 6):
+            child = f"run_{run_id}_generation_1.set"
+            rows.extend(
+                [
+                    {
+                        "run_id": run_id,
+                        "generation": 1,
+                        "seed_path": "root_winner.set",
+                        "set_path": child,
+                        "status": "accepted",
+                        "robust_status": "rejected",
+                    },
+                    {
+                        "run_id": run_id,
+                        "generation": 2,
+                        "seed_path": child,
+                        "set_path": f"run_{run_id}_generation_2.set",
+                        "status": "accepted",
+                        "robust_status": "accepted",
+                        "final_tick_status": "accepted",
+                        "final_tick_6m_status": "accepted",
+                    },
+                    {
+                        "run_id": run_id,
+                        "generation": 1,
+                        "seed_path": "root_loser.set",
+                        "set_path": f"run_{run_id}_loser.set",
+                        "status": "accepted",
+                        "robust_status": "accepted",
+                        "final_tick_status": "accepted",
+                        "final_tick_6m_status": "rejected",
+                    },
+                ]
+            )
+
+        predictions = descendant_fitness_predictions(
+            rows,
+            ["root_winner.set", "root_loser.set", "run_1_generation_1.set"],
+        )
+
+        self.assertGreater(predictions["root_winner.set"].weight, 0.0)
+        self.assertLess(predictions["root_loser.set"].weight, 0.0)
+        self.assertGreater(predictions["root_winner.set"].evidence, 0.0)
+        self.assertEqual(predictions["run_1_generation_1.set"].evidence, 0.0)
+
+    def test_source_feedback_propagates_6m_success_to_selected_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = AgentMemory(Path(tmp) / "memory.sqlite")
+            try:
+                run_id = memory.create_run(
+                    Path("seeds"),
+                    Path("output"),
+                    2,
+                    1,
+                    1,
+                    False,
+                    True,
+                    config={"args": {"generation_mode": "discovery"}},
+                )
+                memory.conn.execute(
+                    """
+                    insert into generation_seed_selection (
+                        run_id, generation, rank, seed_path, symbol, period,
+                        family, run_strategy, selection_score, asset_weight,
+                        timeframe_weight, diversity, created_at
+                    ) values (?, 1, 1, 'root.set', 'XAUUSD', 'H1',
+                              'test', '1', 1, 0, 0, 0, 'now')
+                    """,
+                    (run_id,),
+                )
+
+                def candidate(generation: int, seed_path: str, set_path: str) -> int:
+                    cursor = memory.conn.execute(
+                        """
+                        insert into candidates (
+                            run_id, generation, seed_path, set_path, symbol,
+                            target_symbol, period, family, run_strategy,
+                            mutated_keys, missing_lot_keys, policy, status, created_at
+                        ) values (?, ?, ?, ?, 'XAUUSD', 'XAUUSD', 'H1',
+                                  'test', '1', '', '', 'exploit', 'accepted', 'now')
+                        """,
+                        (run_id, generation, seed_path, set_path),
+                    )
+                    return int(cursor.lastrowid)
+
+                parent_id = candidate(1, "root.set", "generation_1.set")
+                child_id = candidate(2, "generation_1.set", "generation_2.set")
+                memory.conn.execute(
+                    "insert into candidate_robustness (candidate_id, run_id, status, evaluated_at) values (?, ?, 'rejected', 'now')",
+                    (parent_id, run_id),
+                )
+                memory.conn.execute(
+                    "insert into candidate_robustness (candidate_id, run_id, status, evaluated_at) values (?, ?, 'accepted', 'now')",
+                    (child_id, run_id),
+                )
+                memory.conn.execute(
+                    "insert into candidate_final_tick (candidate_id, run_id, status, evaluated_at) values (?, ?, 'accepted', 'now')",
+                    (child_id, run_id),
+                )
+                memory.conn.execute(
+                    "insert into candidate_final_tick_6m (candidate_id, run_id, status, evaluated_at) values (?, ?, 'accepted', 'now')",
+                    (child_id, run_id),
+                )
+                memory.conn.commit()
+
+                feedback = memory.candidate_source_feedback_rows()
+
+                self.assertEqual(len(feedback), 2)
+                self.assertTrue(all(row["seed_path"] == "root.set" for row in feedback))
+                self.assertIn("accepted", {row["final_tick_6m_status"] for row in feedback})
+            finally:
+                memory.close()
+
     def test_discovery_target_policy_favors_feedback_and_scales_weak_unseeded(self) -> None:
         def outcome_row(policy: str, accepted: bool) -> dict[str, object]:
             return {

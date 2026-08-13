@@ -6666,12 +6666,12 @@ def build_run_config(
             },
             "selection_fitness": {
                 "model": (
-                    "beta_smoothed_descendant_final_tick_6m_v1"
+                    "beta_smoothed_root_descendant_final_tick_6m_v2"
                     if args.force_unseeded_universe
                     else "regularized_logistic_final_tick_6m_v1"
                 ),
                 "source_seed_model": (
-                    "beta_smoothed_descendant_final_tick_6m_v1"
+                    "beta_smoothed_root_descendant_final_tick_6m_v2"
                     if args.force_unseeded_universe
                     else "regularized_logistic_final_tick_6m_v1"
                 ),
