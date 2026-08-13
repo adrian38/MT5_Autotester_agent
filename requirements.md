@@ -247,9 +247,9 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.19** Report score and evolutionary selection fitness MUST remain
   separate. The score continues to classify/report base quality. A regularized
   model trained only on finalized candidates from prior runs MUST estimate the
-  mode-specific target, excluding the current run: Discovery uses statistical
-  OOS robustness acceptance (technical states are neutral) while Production
-  retains `candidate_final_tick_6m.status='accepted'`. The selected model and
+  usable-strategy target, excluding the current run: Discovery and Production
+  both use `candidate_final_tick_6m.status='accepted'`, while unresolved technical
+  states remain neutral. The selected model and
   target, probability, raw weight and evidence MUST be persisted for prospective
   audit. The model MUST operate in `soft_weight` mode with applied weight scale `0.15`:
   source-seed ranking and next-generation survivor selection MAY use the
@@ -1301,11 +1301,11 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   and generation exposes explicit `production` / `discovery` modes while
   retaining the old force-unseeded flag as a compatibility alias.
 
-- **2026-08** — Discovery selection fitness now learns statistical OOS
-  robustness acceptance from prior runs, excluding report mismatches and other
-  technical states. This supplies a dense, prospectively testable signal while
-  Production keeps the prior Final Tick 6M target unchanged. Run metadata records
-  the mode-specific model and target.
+- **2026-08** — Discovery selection fitness is aligned again with the explicit
+  usable-strategy objective: Final Tick 6M acceptance from prior runs. A
+  chronological holdout across IC, AXI, and RoboForex showed that the temporary
+  robustness proxy ranked later 6M outcomes in the wrong direction. Technical
+  states remain neutral and Production keeps its existing Final Tick 6M target.
 
 - **2026-06** — UBS Final Tick implemented end-to-end: `candidate_final_tick`
   DB table, `ubs_agent.py --evaluate-final-tick` with flags
