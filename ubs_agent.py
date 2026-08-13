@@ -103,6 +103,7 @@ from ubs.selection import (
     DISCOVERY_SOURCE_MIX_FLOOR,
     DiscoverySourceMix,
     DiscoveryTargetPolicyMix,
+    SelectionPrediction,
     estimate_discovery_source_mix,
     estimate_discovery_target_policy_mix,
 )
@@ -1496,6 +1497,9 @@ def discovery_source_mix_feedback(
                 "generation": row["generation"],
                 "seed_path": row["seed_path"],
                 "status": row["status"],
+                "robust_status": row["robust_status"],
+                "final_tick_status": row["final_tick_status"],
+                "final_tick_6m_status": row["final_tick_6m_status"],
                 "exploitable": exploitable_by_symbol[source_key],
             }
         )
@@ -4079,6 +4083,33 @@ def generation_fitness_target(force_unseeded_universe: bool) -> str:
     return FITNESS_TARGET_FINAL_TICK_6M
 
 
+def generation_feedback_terminal_stage(force_unseeded_universe: bool) -> str | None:
+    """Keep Discovery feedback bounded at FT 6M; Production may use regression."""
+
+    return "six_month" if force_unseeded_universe else None
+
+
+def generation_seed_fitness_predictions(
+    memory: AgentMemory,
+    seeds: list[Seed],
+    *,
+    run_id: int,
+    force_unseeded_universe: bool,
+) -> dict[str, SelectionPrediction]:
+    """Use child 6M yield for Discovery sources and metric fitness in Production."""
+
+    if force_unseeded_universe:
+        return memory.discovery_seed_descendant_predictions(
+            seeds,
+            exclude_run_id=run_id,
+        )
+    return memory.seed_selection_predictions(
+        seeds,
+        exclude_run_id=run_id,
+        target=FITNESS_TARGET_FINAL_TICK_6M,
+    )
+
+
 def copy_accepted(survivors: list[tuple[Variant, ScoreResult]], accepted_dir: Path) -> list[Path]:
     if not survivors:
         return []
@@ -6634,7 +6665,17 @@ def build_run_config(
                 "symbol_timeframe_ratio": TARGET_PAIR_CAP_RATIO,
             },
             "selection_fitness": {
-                "model": "regularized_logistic_final_tick_6m_v1",
+                "model": (
+                    "beta_smoothed_descendant_final_tick_6m_v1"
+                    if args.force_unseeded_universe
+                    else "regularized_logistic_final_tick_6m_v1"
+                ),
+                "source_seed_model": (
+                    "beta_smoothed_descendant_final_tick_6m_v1"
+                    if args.force_unseeded_universe
+                    else "regularized_logistic_final_tick_6m_v1"
+                ),
+                "survivor_model": "regularized_logistic_final_tick_6m_v1",
                 "target": "final_tick_6m_accepted",
                 "exclude_current_run": True,
                 "mode": SELECTION_FITNESS_MODE,
@@ -6928,14 +6969,24 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     for generation in range(next_generation, planned_generations + 1):
         selection_rng = generation_random_stream(args.random_seed, generation, "selection")
         generation_dir = run_dir / f"gen_{generation:03d}"
-        mutation_feedback = memory.mutation_feedback()
-        mutation_direction_feedback = memory.mutation_direction_feedback()
-        asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(aliases, group_by_symbol)
-        timeframe_feedback = memory.timeframe_feedback()
-        fitness_predictions = memory.seed_selection_predictions(
+        feedback_terminal_stage = generation_feedback_terminal_stage(
+            bool(args.force_unseeded_universe)
+        )
+        mutation_feedback = memory.mutation_feedback(terminal_stage=feedback_terminal_stage)
+        mutation_direction_feedback = memory.mutation_direction_feedback(
+            terminal_stage=feedback_terminal_stage
+        )
+        asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(
+            aliases,
+            group_by_symbol,
+            terminal_stage=feedback_terminal_stage,
+        )
+        timeframe_feedback = memory.timeframe_feedback(terminal_stage=feedback_terminal_stage)
+        fitness_predictions = generation_seed_fitness_predictions(
+            memory,
             current_seeds,
-            exclude_run_id=run_id,
-            target=generation_fitness_target(bool(args.force_unseeded_universe)),
+            run_id=run_id,
+            force_unseeded_universe=bool(args.force_unseeded_universe),
         )
         fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
         selection_pool = current_seeds
@@ -7360,14 +7411,24 @@ def run_agent(args: argparse.Namespace) -> int:
             selection_rng = generation_random_stream(args.random_seed, generation, "selection")
             generation_dir = run_dir / f"gen_{generation:03d}"
             accepted_dir = run_dir / f"accepted_gen_{generation:03d}"
-            mutation_feedback = memory.mutation_feedback()
-            mutation_direction_feedback = memory.mutation_direction_feedback()
-            asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(aliases, group_by_symbol)
-            timeframe_feedback = memory.timeframe_feedback()
-            fitness_predictions = memory.seed_selection_predictions(
+            feedback_terminal_stage = generation_feedback_terminal_stage(
+                bool(args.force_unseeded_universe)
+            )
+            mutation_feedback = memory.mutation_feedback(terminal_stage=feedback_terminal_stage)
+            mutation_direction_feedback = memory.mutation_direction_feedback(
+                terminal_stage=feedback_terminal_stage
+            )
+            asset_feedback, asset_group_feedback = memory.asset_feedback_with_groups(
+                aliases,
+                group_by_symbol,
+                terminal_stage=feedback_terminal_stage,
+            )
+            timeframe_feedback = memory.timeframe_feedback(terminal_stage=feedback_terminal_stage)
+            fitness_predictions = generation_seed_fitness_predictions(
+                memory,
                 current_seeds,
-                exclude_run_id=run_id,
-                target=generation_fitness_target(bool(args.force_unseeded_universe)),
+                run_id=run_id,
+                force_unseeded_universe=bool(args.force_unseeded_universe),
             )
             fitness_feedback = {path: prediction.weight for path, prediction in fitness_predictions.items()}
             selection_pool = current_seeds

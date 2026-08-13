@@ -45,7 +45,9 @@ from ubs_agent import (
     final_tick_stage_prefixes,
     final_tick_similarity,
     generation_random_stream,
+    generation_feedback_terminal_stage,
     generation_fitness_target,
+    generation_seed_fitness_predictions,
     _relative_delta_pct,
     _evaluate_final_tick_tick_report,
     reconcile_final_tick_reports,
@@ -131,6 +133,41 @@ class UBSSetsFileTests(unittest.TestCase):
     def test_generation_fitness_targets_six_month_in_discovery_and_production(self) -> None:
         self.assertEqual(generation_fitness_target(True), "final_tick_6m")
         self.assertEqual(generation_fitness_target(False), "final_tick_6m")
+
+    def test_discovery_feedback_stops_at_six_month_but_production_can_use_regression(self) -> None:
+        self.assertEqual(generation_feedback_terminal_stage(True), "six_month")
+        self.assertIsNone(generation_feedback_terminal_stage(False))
+
+    def test_discovery_seed_fitness_uses_descendant_yield_but_production_uses_metrics(self) -> None:
+        memory = Mock()
+        memory.discovery_seed_descendant_predictions.return_value = {"discovery": Mock()}
+        memory.seed_selection_predictions.return_value = {"production": Mock()}
+        seeds = [Seed(Path("seed.set"), "XAUUSD", "H1", "generic", "1")]
+
+        discovery = generation_seed_fitness_predictions(
+            memory,
+            seeds,
+            run_id=7,
+            force_unseeded_universe=True,
+        )
+        production = generation_seed_fitness_predictions(
+            memory,
+            seeds,
+            run_id=7,
+            force_unseeded_universe=False,
+        )
+
+        self.assertIn("discovery", discovery)
+        self.assertIn("production", production)
+        memory.discovery_seed_descendant_predictions.assert_called_once_with(
+            seeds,
+            exclude_run_id=7,
+        )
+        memory.seed_selection_predictions.assert_called_once_with(
+            seeds,
+            exclude_run_id=7,
+            target="final_tick_6m",
+        )
 
     def test_next_generation_survivors_forward_mode_specific_fitness_target(self) -> None:
         memory = Mock()

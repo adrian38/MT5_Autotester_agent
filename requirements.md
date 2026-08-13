@@ -245,11 +245,14 @@ requirement changes or a debt item is opened/closed.
   timeframe missing from the selected source seed set, subject to normal target
   diversity caps and enabled universe symbols.
 - **FR-1.6.19** Report score and evolutionary selection fitness MUST remain
-  separate. The score continues to classify/report base quality. A regularized
-  model trained only on finalized candidates from prior runs MUST estimate the
-  usable-strategy target, excluding the current run: Discovery and Production
-  both use `candidate_final_tick_6m.status='accepted'`, while unresolved technical
-  states remain neutral. The selected model and
+  separate. The score continues to classify/report base quality. Discovery
+  source-seed ranking MUST estimate whether each source produced any accepted
+  Final Tick 6M child in a prior `(run, generation, seed)` cohort, using
+  shrinkage to the global prior; unseen sources are neutral. Survivor selection
+  between generations and Production source selection use the regularized
+  candidate-metric model. Every model excludes the current run and targets
+  `candidate_final_tick_6m.status='accepted'`; unresolved technical states remain
+  neutral. The selected source and survivor models and their
   target, probability, raw weight and evidence MUST be persisted for prospective
   audit. The model MUST operate in `soft_weight` mode with applied weight scale `0.15`:
   source-seed ranking and next-generation survivor selection MAY use the
@@ -263,7 +266,8 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.21** Discovery routing between lifecycle-feedback and random-universe
   asset targets MUST prefer the smoothed full-lifecycle probability once both
   routes have Final Tick 6M evidence (at least one effective trial each and four
-  combined). Until then it MUST retain the base-acceptance fallback. The applied
+  combined). Until then it MUST retain the neutral configured default and MUST
+  NOT substitute base acceptance for the terminal objective. The applied
   basis, probability, confidence and effective 6M trials MUST be persisted in
   run metadata. Production routing remains independent.
 
@@ -332,11 +336,12 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.8.1** Candidate statuses in SQLite `candidates` table MUST be one of:
   `generated` → `accepted` | `rejected` | `no_report` | `parse_error` |
   `report_mismatch` | `no_trades`.
-- **FR-1.8.2** Universe and mutation feedback MUST estimate the smoothed
-  end-to-end probability of the five-stage chain: base accepted, robustness
-  accepted, probe eligible (`accepted` or `pending_ohlc_trades`), and Final Tick
-  6M accepted, followed by backward regression accepted when that evidence
-  exists. Each correlated candidate source group contributes at most one
+- **FR-1.8.2** In Discovery, universe and mutation feedback MUST estimate the
+  smoothed end-to-end probability through Final Tick 6M: base accepted,
+  robustness accepted, probe eligible (`accepted` or `pending_ohlc_trades`),
+  and Final Tick 6M accepted. Regression MUST NOT alter Discovery generation
+  feedback; Production MAY append it as an independent fifth stage. Each
+  correlated candidate source group contributes at most one
   effective trial per stage. Technical/retryable states (`report_mismatch`,
   `no_report`, `parse_error`, `pending_history_quality`) MUST NOT become
   statistical failures. Stage probabilities MUST use an empirical global prior

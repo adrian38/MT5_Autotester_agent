@@ -1,7 +1,9 @@
 import json
 import math
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
 from ubs.memory import AgentMemory
@@ -9,6 +11,7 @@ from ubs.selection import (
     SelectionFitnessModel,
     _batch_logistic_gradients,
     _sigmoid,
+    descendant_fitness_predictions,
     finalized_six_month_label,
     finalized_robustness_label,
     estimate_discovery_source_mix,
@@ -31,22 +34,97 @@ def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: floa
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
+    def test_discovery_history_excludes_production_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = AgentMemory(Path(tmp) / "memory.sqlite")
+            try:
+                discovery_id = memory.create_run(
+                    Path("seeds"),
+                    Path("output"),
+                    1,
+                    1,
+                    1,
+                    False,
+                    True,
+                    config={"args": {"generation_mode": "discovery"}},
+                )
+                memory.create_run(
+                    Path("seeds"),
+                    Path("output"),
+                    1,
+                    1,
+                    1,
+                    False,
+                    True,
+                    config={"args": {"generation_mode": "production"}},
+                )
+
+                self.assertEqual(memory._discovery_run_ids(limit=10), [discovery_id])
+            finally:
+                memory.close()
+
+    def test_descendant_fitness_ranks_sources_by_accepted_6m_children(self) -> None:
+        rows = []
+        for run_id in range(1, 6):
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "generation": 1,
+                    "seed_path": "winner.set",
+                    "status": "accepted",
+                    "robust_status": "accepted",
+                    "final_tick_status": "accepted",
+                    "final_tick_6m_status": "accepted",
+                }
+            )
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "generation": 1,
+                    "seed_path": "loser.set",
+                    "status": "accepted",
+                    "robust_status": "accepted",
+                    "final_tick_status": "accepted",
+                    "final_tick_6m_status": "rejected",
+                }
+            )
+
+        predictions = descendant_fitness_predictions(
+            rows,
+            ["winner.set", "loser.set", "unknown.set"],
+        )
+
+        self.assertGreater(predictions["winner.set"].weight, 0.0)
+        self.assertLess(predictions["loser.set"].weight, 0.0)
+        self.assertEqual(predictions["unknown.set"].weight, 0.0)
+        self.assertEqual(predictions["unknown.set"].evidence, 0.0)
+
     def test_discovery_target_policy_favors_feedback_and_scales_weak_unseeded(self) -> None:
+        def outcome_row(policy: str, accepted: bool) -> dict[str, object]:
+            return {
+                "run_id": 1,
+                "policy": policy,
+                "status": "accepted" if accepted else "rejected",
+                "robust_status": "accepted" if accepted else "",
+                "final_tick_status": "accepted" if accepted else "",
+                "final_tick_6m_status": "accepted" if accepted else "",
+            }
+
         rows = []
         rows.extend(
-            {"run_id": 1, "policy": "asset_unseeded_group_feedback", "status": "accepted" if i < 2 else "rejected"}
+            outcome_row("asset_unseeded_group_feedback", i < 2)
             for i in range(40)
         )
         rows.extend(
-            {"run_id": 1, "policy": "exploit", "status": "accepted" if i < 140 else "rejected"}
+            outcome_row("exploit", i < 140)
             for i in range(200)
         )
         rows.extend(
-            {"run_id": 1, "policy": "asset_universe_feedback", "status": "accepted" if i < 30 else "rejected"}
+            outcome_row("asset_universe_feedback", i < 30)
             for i in range(50)
         )
         rows.extend(
-            {"run_id": 1, "policy": "asset_universe_explore", "status": "accepted" if i < 5 else "rejected"}
+            outcome_row("asset_universe_explore", i < 5)
             for i in range(50)
         )
 
@@ -58,8 +136,8 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertTrue(mix.adaptive_universe_feedback)
         self.assertGreater(mix.universe_feedback_probability, 0.55)
         self.assertLessEqual(mix.universe_feedback_probability, 0.85)
-        self.assertFalse(mix.adaptive_current_target)
-        self.assertEqual(mix.current_target_probability, 0.70)
+        self.assertTrue(mix.adaptive_current_target)
+        self.assertGreater(mix.current_target_probability, 0.55)
         self.assertFalse(mix.adaptive_current_timeframe)
         self.assertEqual(mix.current_timeframe_probability, 0.60)
 
@@ -213,6 +291,9 @@ class UBSSelectionFitnessTests(unittest.TestCase):
                             "seed_path": f"live_{run_id}_{index}.set",
                             "exploitable": True,
                             "status": status,
+                            "robust_status": "accepted" if status == "accepted" else "",
+                            "final_tick_status": "accepted" if status == "accepted" else "",
+                            "final_tick_6m_status": "accepted" if status == "accepted" else "",
                         }
                     )
                 rows.append(
@@ -222,6 +303,9 @@ class UBSSelectionFitnessTests(unittest.TestCase):
                         "seed_path": f"cross_{run_id}_{index}.set",
                         "exploitable": False,
                         "status": "accepted" if index == 0 else "rejected",
+                        "robust_status": "accepted" if index == 0 else "",
+                        "final_tick_status": "accepted" if index == 0 else "",
+                        "final_tick_6m_status": "accepted" if index == 0 else "",
                     }
                 )
 
@@ -234,6 +318,41 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertEqual(mix.cross_asset_successes, 10)
         self.assertGreater(mix.exploitable_ratio, 0.60)
         self.assertLessEqual(mix.exploitable_ratio, 0.85)
+
+    def test_discovery_source_mix_does_not_count_base_accept_without_6m_accept(self) -> None:
+        rows = []
+        for run_id in range(1, 11):
+            for index in range(3):
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "generation": 1,
+                        "seed_path": f"live_{run_id}_{index}.set",
+                        "exploitable": True,
+                        "status": "accepted",
+                        "robust_status": "accepted",
+                        "final_tick_status": "accepted",
+                        "final_tick_6m_status": "rejected",
+                    }
+                )
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "generation": 1,
+                        "seed_path": f"cross_{run_id}_{index}.set",
+                        "exploitable": False,
+                        "status": "accepted",
+                        "robust_status": "accepted",
+                        "final_tick_status": "accepted",
+                        "final_tick_6m_status": "accepted" if index == 0 else "rejected",
+                    }
+                )
+
+        mix = estimate_discovery_source_mix(rows)
+
+        self.assertEqual(mix.exploitable_successes, 0)
+        self.assertEqual(mix.cross_asset_successes, 10)
+        self.assertEqual(mix.exploitable_ratio, 0.60)
 
     def test_discovery_source_mix_keeps_floor_without_enough_evidence(self) -> None:
         mix = estimate_discovery_source_mix(

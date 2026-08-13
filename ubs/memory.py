@@ -11,7 +11,11 @@ from ubs.db import connect_memory
 from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 from ubs.score import ScoreResult
-from ubs.selection import SelectionFitnessModel, SelectionPrediction
+from ubs.selection import (
+    SelectionFitnessModel,
+    SelectionPrediction,
+    descendant_fitness_predictions,
+)
 from ubs.weights import (
     FeedbackSignal,
     TIMEFRAME_PATCH_KEYS,
@@ -547,6 +551,79 @@ class AgentMemory:
                 if row is not None
                 else SelectionPrediction(model.prior_probability, 0.0, 0.0)
             )
+        return result
+
+    def discovery_seed_descendant_predictions(
+        self,
+        seeds: list[Seed],
+        *,
+        exclude_run_id: int,
+    ) -> dict[str, SelectionPrediction]:
+        """Predict source usefulness from finalized FT 6M outcomes of prior children."""
+
+        discovery_run_ids = self._discovery_run_ids(before_run_id=exclude_run_id)
+        paths = [str(seed.path) for seed in seeds]
+        if not discovery_run_ids:
+            return {path: SelectionPrediction(0.0, 0.0, 0.0) for path in paths}
+        placeholders = ",".join("?" for _run_id in discovery_run_ids)
+        rows = self.conn.execute(
+            f"""
+            select
+                c.run_id, c.generation, c.seed_path, c.status,
+                cr.status as robust_status,
+                ft.status as final_tick_status,
+                ft6.status as final_tick_6m_status
+            from candidates c
+            left join candidate_robustness cr
+              on cr.candidate_id=c.id
+             and c.status='accepted'
+            left join candidate_final_tick ft
+              on ft.candidate_id=c.id
+             and c.status='accepted'
+             and cr.status='accepted'
+            left join candidate_final_tick_6m ft6
+              on ft6.candidate_id=c.id
+             and c.status='accepted'
+             and cr.status='accepted'
+             and ft.status in ('accepted', 'pending_ohlc_trades')
+            where c.run_id in ({placeholders})
+              and c.status in ('accepted', 'rejected', 'no_trades')
+            """,
+            discovery_run_ids,
+        ).fetchall()
+        return descendant_fitness_predictions(rows, paths)
+
+    def _discovery_run_ids(
+        self,
+        *,
+        limit: int = 0,
+        before_run_id: int | None = None,
+    ) -> list[int]:
+        params: tuple[object, ...] = ()
+        before_clause = ""
+        if before_run_id is not None:
+            before_clause = "and id < ?"
+            params = (int(before_run_id),)
+        result: list[int] = []
+        for row in self.conn.execute(
+            f"select id, config_json from runs where hidden=0 {before_clause} order by id desc",
+            params,
+        ).fetchall():
+            try:
+                config = json.loads(str(row["config_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            args = config.get("args") if isinstance(config, dict) else {}
+            generation = config.get("generation") if isinstance(config, dict) else {}
+            args = args if isinstance(args, dict) else {}
+            generation = generation if isinstance(generation, dict) else {}
+            is_discovery = bool(args.get("force_unseeded_universe")) or str(
+                args.get("generation_mode") or generation.get("mode") or ""
+            ).lower() == "discovery"
+            if is_discovery:
+                result.append(int(row["id"]))
+                if limit > 0 and len(result) >= limit:
+                    break
         return result
 
     def _selection_feature_rows(self, paths: Iterable[str]) -> dict[str, sqlite3.Row]:
@@ -1294,14 +1371,9 @@ class AgentMemory:
         ).fetchall()
 
     def candidate_source_feedback_rows(self) -> list[sqlite3.Row]:
-        """Return finalized base outcomes needed by discovery source allocation."""
+        """Return full FT 6M funnel outcomes for discovery source allocation."""
 
-        run_ids = [
-            int(row["id"])
-            for row in self.conn.execute(
-                "select id from runs where hidden=0 order by id desc limit 10"
-            ).fetchall()
-        ]
+        run_ids = self._discovery_run_ids(limit=10)
         if not run_ids:
             return []
         placeholders = ",".join("?" for _run_id in run_ids)
@@ -1309,12 +1381,27 @@ class AgentMemory:
             f"""
             select
                 s.run_id, s.generation, s.seed_path,
-                s.symbol, s.period, s.family, c.status
+                s.symbol, s.period, s.family, c.status,
+                cr.status as robust_status,
+                ft.status as final_tick_status,
+                ft6.status as final_tick_6m_status
             from generation_seed_selection s
             join candidates c
               on c.run_id=s.run_id
              and c.generation=s.generation
              and c.seed_path=s.seed_path
+            left join candidate_robustness cr
+              on cr.candidate_id=c.id
+             and c.status='accepted'
+            left join candidate_final_tick ft
+              on ft.candidate_id=c.id
+             and c.status='accepted'
+             and cr.status='accepted'
+            left join candidate_final_tick_6m ft6
+              on ft6.candidate_id=c.id
+             and c.status='accepted'
+             and cr.status='accepted'
+             and ft.status in ('accepted', 'pending_ohlc_trades')
             where c.status in ('accepted', 'rejected', 'no_trades')
               and s.run_id in ({placeholders})
             """,
@@ -1322,12 +1409,7 @@ class AgentMemory:
         ).fetchall()
 
     def candidate_policy_feedback_rows(self) -> list[sqlite3.Row]:
-        run_ids = [
-            int(row["id"])
-            for row in self.conn.execute(
-                "select id from runs where hidden=0 order by id desc limit 10"
-            ).fetchall()
-        ]
+        run_ids = self._discovery_run_ids(limit=10)
         if not run_ids:
             return []
         placeholders = ",".join("?" for _run_id in run_ids)
@@ -1377,7 +1459,7 @@ class AgentMemory:
             """
         ).fetchall()
 
-    def mutation_feedback_signals(self) -> dict[str, FeedbackSignal]:
+    def mutation_feedback_signals(self, *, terminal_stage: str | None = None) -> dict[str, FeedbackSignal]:
         rows = [row for row in self._candidate_feedback_rows() if str(row["mutated_keys"] or "")]
         global_groups: dict[object, list[object]] = {}
         grouped: dict[str, dict[object, list[object]]] = {}
@@ -1387,12 +1469,24 @@ class AgentMemory:
                 key = key.strip()
                 if key and key not in TIMEFRAME_PATCH_KEYS:
                     grouped.setdefault(key, {}).setdefault(candidate_group_key(row, key), []).append(row)
-        return probability_feedback_signals(grouped, global_groups, normalize_keys=False)
+        return probability_feedback_signals(
+            grouped,
+            global_groups,
+            normalize_keys=False,
+            terminal_stage=terminal_stage,
+        )
 
-    def mutation_feedback(self) -> dict[str, float]:
-        return {key: signal.effective_score for key, signal in self.mutation_feedback_signals().items()}
+    def mutation_feedback(self, *, terminal_stage: str | None = None) -> dict[str, float]:
+        return {
+            key: signal.effective_score
+            for key, signal in self.mutation_feedback_signals(terminal_stage=terminal_stage).items()
+        }
 
-    def mutation_direction_feedback_signals(self) -> dict[str, dict[str, FeedbackSignal]]:
+    def mutation_direction_feedback_signals(
+        self,
+        *,
+        terminal_stage: str | None = None,
+    ) -> dict[str, dict[str, FeedbackSignal]]:
         rows = [row for row in self._candidate_feedback_rows() if str(row["mutation_details_json"] or "")]
         global_groups: dict[object, list[object]] = {}
         grouped: dict[str, dict[object, list[object]]] = {}
@@ -1432,16 +1526,23 @@ class AgentMemory:
                     candidate_group_key(row, key, direction), []
                 ).append(row)
 
-        composite_signals = probability_feedback_signals(grouped, global_groups, normalize_keys=False)
+        composite_signals = probability_feedback_signals(
+            grouped,
+            global_groups,
+            normalize_keys=False,
+            terminal_stage=terminal_stage,
+        )
         result: dict[str, dict[str, FeedbackSignal]] = {}
         for composite, signal in composite_signals.items():
             key, direction = composite.rsplit(separator, 1)
             result.setdefault(key, {})[direction] = signal
         return result
 
-    def mutation_direction_feedback(self) -> dict[str, float]:
+    def mutation_direction_feedback(self, *, terminal_stage: str | None = None) -> dict[str, float]:
         result: dict[str, float] = {}
-        for key, directions in self.mutation_direction_feedback_signals().items():
+        for key, directions in self.mutation_direction_feedback_signals(
+            terminal_stage=terminal_stage
+        ).items():
             up = directions.get("up")
             down = directions.get("down")
             value = (up.effective_score if up else 0.0) - (down.effective_score if down else 0.0)
@@ -1449,7 +1550,12 @@ class AgentMemory:
                 result[key] = round(value, 6)
         return result
 
-    def asset_feedback_signals(self, aliases: dict[str, str] | None = None) -> dict[str, FeedbackSignal]:
+    def asset_feedback_signals(
+        self,
+        aliases: dict[str, str] | None = None,
+        *,
+        terminal_stage: str | None = None,
+    ) -> dict[str, FeedbackSignal]:
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
 
         def _canonical(symbol: object) -> str:
@@ -1470,15 +1576,32 @@ class AgentMemory:
             group = seed_group_key(row)
             global_groups.setdefault(group, []).append(row)
             grouped.setdefault(key, {}).setdefault(group, []).append(row)
-        return probability_feedback_signals(grouped, global_groups)
+        return probability_feedback_signals(
+            grouped,
+            global_groups,
+            terminal_stage=terminal_stage,
+        )
 
-    def asset_feedback(self, aliases: dict[str, str] | None = None) -> dict[str, float]:
-        return {key: signal.effective_score for key, signal in self.asset_feedback_signals(aliases).items()}
+    def asset_feedback(
+        self,
+        aliases: dict[str, str] | None = None,
+        *,
+        terminal_stage: str | None = None,
+    ) -> dict[str, float]:
+        return {
+            key: signal.effective_score
+            for key, signal in self.asset_feedback_signals(
+                aliases,
+                terminal_stage=terminal_stage,
+            ).items()
+        }
 
     def asset_feedback_with_groups(
         self,
         aliases: dict[str, str] | None,
         group_by_symbol: dict[str, str],
+        *,
+        terminal_stage: str | None = None,
     ) -> tuple[dict[str, float], dict[str, float]]:
         """Return instrument and asset-group lifecycle feedback from one scan."""
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
@@ -1512,18 +1635,23 @@ class AgentMemory:
             grouped_assets.setdefault(asset_key, {}).setdefault(cohort, []).append(row)
             if group_key:
                 grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
-        asset_signals = probability_feedback_signals(grouped_assets, global_groups)
+        asset_signals = probability_feedback_signals(
+            grouped_assets,
+            global_groups,
+            terminal_stage=terminal_stage,
+        )
         group_signals = probability_feedback_signals(
             grouped_asset_groups,
             global_groups,
             normalize_keys=False,
+            terminal_stage=terminal_stage,
         )
         return (
             {key: signal.effective_score for key, signal in asset_signals.items()},
             {key: signal.effective_score for key, signal in group_signals.items()},
         )
 
-    def timeframe_feedback_signals(self) -> dict[str, FeedbackSignal]:
+    def timeframe_feedback_signals(self, *, terminal_stage: str | None = None) -> dict[str, FeedbackSignal]:
         rows = self._candidate_feedback_rows()
         seed_rows = self._seed_feedback_rows()
         global_groups: dict[object, list[object]] = {}
@@ -1538,10 +1666,19 @@ class AgentMemory:
             group = seed_group_key(row)
             global_groups.setdefault(group, []).append(row)
             grouped.setdefault(key, {}).setdefault(group, []).append(row)
-        return probability_feedback_signals(grouped, global_groups)
+        return probability_feedback_signals(
+            grouped,
+            global_groups,
+            terminal_stage=terminal_stage,
+        )
 
-    def timeframe_feedback(self) -> dict[str, float]:
-        return {key: signal.effective_score for key, signal in self.timeframe_feedback_signals().items()}
+    def timeframe_feedback(self, *, terminal_stage: str | None = None) -> dict[str, float]:
+        return {
+            key: signal.effective_score
+            for key, signal in self.timeframe_feedback_signals(
+                terminal_stage=terminal_stage
+            ).items()
+        }
 
     def continuation_seeds(self, limit: int = 0) -> tuple[int, int, list[Seed]]:
         run = self.conn.execute("select id from runs order by id desc limit 1").fetchone()
