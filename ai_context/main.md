@@ -1212,7 +1212,10 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   and of lifecycle-feedback versus random-universe targets with a Beta(2,2)
   prior. The unseeded schedule can shrink to 25% of its configured budget, and
   universe feedback is bounded to 55..85%, so every exploration route keeps a
-  non-zero floor. Evidence and applied probabilities are persisted under
+  non-zero floor. Once feedback and random exploration both have Final Tick 6M
+  evidence (at least one effective trial each and four combined), their
+  smoothed full-lifecycle probabilities replace base acceptance for this split.
+  Evidence, routing basis and applied probabilities are persisted under
   `generation.target_policy.discovery_adaptive_policy` and restored on resume.
 - In Discovery, the probability of keeping the selected seed's current
   broker-resolved asset is broker-adaptive too. `exploit` candidates are

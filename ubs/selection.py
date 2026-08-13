@@ -31,6 +31,8 @@ DISCOVERY_TARGET_POLICY_MODEL = "lifecycle_smoothed_target_policy_v2"
 DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR = 0.25
 DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT = 0.55
 DISCOVERY_UNIVERSE_FEEDBACK_CEILING = 0.85
+DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS = 1.0
+DISCOVERY_UNIVERSE_FEEDBACK_MIN_TOTAL_FINAL_TRIALS = 4.0
 DISCOVERY_CURRENT_TARGET_DEFAULT = 0.70
 DISCOVERY_CURRENT_TARGET_FLOOR = 0.55
 DISCOVERY_CURRENT_TARGET_CEILING = 0.85
@@ -140,6 +142,13 @@ class DiscoveryTargetPolicyMix:
     universe_explore_trials: int
     universe_explore_successes: int
     universe_explore_rate: float
+    universe_feedback_lifecycle_probability: float
+    universe_explore_lifecycle_probability: float
+    universe_feedback_lifecycle_confidence: float
+    universe_explore_lifecycle_confidence: float
+    universe_feedback_final_trials: float
+    universe_explore_final_trials: float
+    universe_feedback_lifecycle_adaptive: bool
     current_target_trials: int
     current_target_successes: int
     current_target_rate: float
@@ -193,6 +202,23 @@ class DiscoveryTargetPolicyMix:
                 "explore_trials": self.universe_explore_trials,
                 "explore_successes": self.universe_explore_successes,
                 "explore_smoothed_rate": self.universe_explore_rate,
+                "routing_basis": (
+                    "lifecycle"
+                    if self.universe_feedback_lifecycle_adaptive
+                    else "base_acceptance"
+                ),
+                "minimum_final_trials_per_bucket": DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS,
+                "minimum_total_final_trials": DISCOVERY_UNIVERSE_FEEDBACK_MIN_TOTAL_FINAL_TRIALS,
+                "feedback_lifecycle": {
+                    "probability": self.universe_feedback_lifecycle_probability,
+                    "confidence": self.universe_feedback_lifecycle_confidence,
+                    "final_trials": self.universe_feedback_final_trials,
+                },
+                "explore_lifecycle": {
+                    "probability": self.universe_explore_lifecycle_probability,
+                    "confidence": self.universe_explore_lifecycle_confidence,
+                    "final_trials": self.universe_explore_final_trials,
+                },
             },
             "current_target": {
                 "probability": self.current_target_probability,
@@ -280,6 +306,11 @@ def estimate_discovery_target_policy_mix(
         "CHANGED_TF": defaultdict(list),
     }
     global_timeframe_groups: dict[object, list[object]] = defaultdict(list)
+    universe_lifecycle_groups: dict[str, dict[object, list[object]]] = {
+        "UNIVERSE_FEEDBACK": defaultdict(list),
+        "UNIVERSE_EXPLORE": defaultdict(list),
+    }
+    global_universe_groups: dict[object, list[object]] = defaultdict(list)
     for row_index, row in enumerate(materialized):
         if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
             continue
@@ -315,6 +346,13 @@ def estimate_discovery_target_policy_mix(
         if policy in {"asset_universe_feedback", "asset_universe_explore"}:
             buckets[policy.removeprefix("asset_")][0] += 1
             buckets[policy.removeprefix("asset_")][1] += success
+            universe_route = (
+                "UNIVERSE_FEEDBACK"
+                if policy == "asset_universe_feedback"
+                else "UNIVERSE_EXPLORE"
+            )
+            universe_lifecycle_groups[universe_route][group].append(row)
+            global_universe_groups[(universe_route, *group)].append(row)
 
     def rate(bucket: str) -> float:
         trials, successes = buckets[bucket]
@@ -339,11 +377,42 @@ def estimate_discovery_target_policy_mix(
         )
     else:
         unseeded_multiplier = 1.0
-    adaptive_feedback = (
+    adaptive_feedback_base = (
         buckets["universe_feedback"][0] >= minimum_trials
         and buckets["universe_explore"][0] >= minimum_trials
     )
-    if adaptive_feedback and feedback_rate + explore_rate > 0.0:
+    universe_signals = probability_feedback_signals(
+        universe_lifecycle_groups,
+        global_universe_groups,
+        normalize_keys=False,
+    )
+    empty_signal = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
+    universe_feedback_signal = universe_signals.get("UNIVERSE_FEEDBACK", empty_signal)
+    universe_explore_signal = universe_signals.get("UNIVERSE_EXPLORE", empty_signal)
+    adaptive_feedback_lifecycle = (
+        universe_feedback_signal.final_trials >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS
+        and universe_explore_signal.final_trials >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS
+        and (
+            universe_feedback_signal.final_trials + universe_explore_signal.final_trials
+            >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_TOTAL_FINAL_TRIALS
+        )
+    )
+    if (
+        adaptive_feedback_lifecycle
+        and universe_feedback_signal.probability + universe_explore_signal.probability > 0.0
+    ):
+        feedback_probability = min(
+            max(
+                universe_feedback_signal.probability
+                / (
+                    universe_feedback_signal.probability
+                    + universe_explore_signal.probability
+                ),
+                DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
+            ),
+            DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
+        )
+    elif adaptive_feedback_base and feedback_rate + explore_rate > 0.0:
         feedback_probability = min(
             max(
                 feedback_rate / (feedback_rate + explore_rate),
@@ -358,7 +427,6 @@ def estimate_discovery_target_policy_mix(
         global_lifecycle_groups,
         normalize_keys=False,
     )
-    empty_signal = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
     current_signal = lifecycle_signals.get("CURRENT", empty_signal)
     cross_signal = lifecycle_signals.get("CROSS", empty_signal)
     adaptive_current_target = (
@@ -420,6 +488,13 @@ def estimate_discovery_target_policy_mix(
         universe_explore_trials=buckets["universe_explore"][0],
         universe_explore_successes=buckets["universe_explore"][1],
         universe_explore_rate=round(explore_rate, 6),
+        universe_feedback_lifecycle_probability=universe_feedback_signal.probability,
+        universe_explore_lifecycle_probability=universe_explore_signal.probability,
+        universe_feedback_lifecycle_confidence=universe_feedback_signal.confidence,
+        universe_explore_lifecycle_confidence=universe_explore_signal.confidence,
+        universe_feedback_final_trials=universe_feedback_signal.final_trials,
+        universe_explore_final_trials=universe_explore_signal.final_trials,
+        universe_feedback_lifecycle_adaptive=adaptive_feedback_lifecycle,
         current_target_trials=buckets["current_target"][0],
         current_target_successes=buckets["current_target"][1],
         current_target_rate=round(current_target_rate, 6),
@@ -441,7 +516,7 @@ def estimate_discovery_target_policy_mix(
         changed_timeframe_final_trials=changed_timeframe_signal.final_trials,
         recent_runs=tuple(run_ids),
         adaptive_unseeded=adaptive_unseeded,
-        adaptive_universe_feedback=adaptive_feedback,
+        adaptive_universe_feedback=(adaptive_feedback_lifecycle or adaptive_feedback_base),
         adaptive_current_target=adaptive_current_target,
         adaptive_current_timeframe=adaptive_current_timeframe,
     )

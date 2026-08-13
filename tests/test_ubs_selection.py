@@ -152,6 +152,53 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertEqual(mix.unseeded_multiplier, 1.0)
         self.assertEqual(mix.universe_feedback_probability, 0.55)
         self.assertEqual(mix.current_target_probability, 0.70)
+
+    def test_universe_feedback_routing_uses_lifecycle_when_final_evidence_exists(self) -> None:
+        rows = []
+        for index in range(3):
+            rows.append(
+                {
+                    "run_id": index + 1,
+                    "generation": 1,
+                    "seed_path": f"feedback-{index}",
+                    "policy": "asset_universe_feedback+tf_exploit",
+                    "status": "accepted",
+                    "robust_status": "accepted",
+                    "final_tick_status": "accepted",
+                    "final_tick_6m_status": "accepted",
+                    "regression_status": "accepted",
+                }
+            )
+        for index in range(3):
+            rows.append(
+                {
+                    "run_id": index + 1,
+                    "generation": 1,
+                    "seed_path": f"explore-{index}",
+                    "policy": "asset_universe_explore+tf_exploit",
+                    "status": "accepted",
+                    "robust_status": "accepted",
+                    "final_tick_status": "accepted",
+                    "final_tick_6m_status": "rejected",
+                    "regression_status": "",
+                }
+            )
+
+        mix = estimate_discovery_target_policy_mix(rows, minimum_trials=100)
+
+        self.assertTrue(mix.universe_feedback_lifecycle_adaptive)
+        self.assertGreater(
+            mix.universe_feedback_probability,
+            0.55,
+        )
+        self.assertGreater(
+            mix.universe_feedback_lifecycle_probability,
+            mix.universe_explore_lifecycle_probability,
+        )
+        self.assertEqual(
+            mix.to_dict()["universe_feedback"]["routing_basis"],
+            "lifecycle",
+        )
         self.assertEqual(mix.current_timeframe_probability, 0.60)
 
     def test_discovery_source_mix_adapts_from_source_level_success(self) -> None:
