@@ -15,11 +15,12 @@ MIN_TRAINING_ROWS = 300
 MIN_POSITIVE_ROWS = 30
 FITNESS_WEIGHT_SCALE = 10.0
 FITNESS_WEIGHT_LIMIT = 15.0
+DESCENDANT_FITNESS_PRIOR_STRENGTH = 10.0
 _DENSE_FITNESS_FEATURES = 8
 FITNESS_TARGET_FINAL_TICK_6M = "final_tick_6m"
 FITNESS_TARGET_ROBUSTNESS = "robustness"
 FITNESS_TARGETS = {FITNESS_TARGET_FINAL_TICK_6M, FITNESS_TARGET_ROBUSTNESS}
-DISCOVERY_SOURCE_MIX_MODEL = "beta_smoothed_source_success_v1"
+DISCOVERY_SOURCE_MIX_MODEL = "beta_smoothed_source_6m_success_v2"
 DISCOVERY_SOURCE_MIX_RECENT_RUNS = 10
 DISCOVERY_SOURCE_MIX_MIN_TRIALS = 20
 DISCOVERY_SOURCE_MIX_FLOOR = 0.60
@@ -27,7 +28,7 @@ DISCOVERY_SOURCE_MIX_CEILING = 0.85
 DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS = 2.0
 DISCOVERY_SOURCE_MIX_PRIOR_FAILURE = 2.0
 _SOURCE_FINAL_STATUSES = {"accepted", "rejected", "no_trades"}
-DISCOVERY_TARGET_POLICY_MODEL = "lifecycle_smoothed_target_policy_v2"
+DISCOVERY_TARGET_POLICY_MODEL = "lifecycle_smoothed_target_policy_v3"
 DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR = 0.25
 DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT = 0.55
 DISCOVERY_UNIVERSE_FEEDBACK_CEILING = 0.85
@@ -98,7 +99,7 @@ class DiscoverySourceMix:
     def to_dict(self) -> dict[str, object]:
         return {
             "model": DISCOVERY_SOURCE_MIX_MODEL,
-            "unit": "selected_source_any_base_accept",
+            "unit": "selected_source_any_final_tick_6m_accept",
             "exploitable_ratio": self.exploitable_ratio,
             "cross_asset_ratio": round(1.0 - self.exploitable_ratio, 6),
             "floor": DISCOVERY_SOURCE_MIX_FLOOR,
@@ -136,6 +137,12 @@ class DiscoveryTargetPolicyMix:
     benchmark_trials: int
     benchmark_successes: int
     benchmark_rate: float
+    unseeded_lifecycle_probability: float
+    benchmark_lifecycle_probability: float
+    unseeded_lifecycle_confidence: float
+    benchmark_lifecycle_confidence: float
+    unseeded_final_trials: float
+    benchmark_final_trials: float
     universe_feedback_trials: int
     universe_feedback_successes: int
     universe_feedback_rate: float
@@ -190,6 +197,17 @@ class DiscoveryTargetPolicyMix:
                 "benchmark_trials": self.benchmark_trials,
                 "benchmark_successes": self.benchmark_successes,
                 "benchmark_smoothed_rate": self.benchmark_rate,
+                "routing_basis": "lifecycle_through_six_month",
+                "unseeded_lifecycle": {
+                    "probability": self.unseeded_lifecycle_probability,
+                    "confidence": self.unseeded_lifecycle_confidence,
+                    "final_trials": self.unseeded_final_trials,
+                },
+                "benchmark_lifecycle": {
+                    "probability": self.benchmark_lifecycle_probability,
+                    "confidence": self.benchmark_lifecycle_confidence,
+                    "final_trials": self.benchmark_final_trials,
+                },
             },
             "universe_feedback": {
                 "probability": self.universe_feedback_probability,
@@ -205,7 +223,7 @@ class DiscoveryTargetPolicyMix:
                 "routing_basis": (
                     "lifecycle"
                     if self.universe_feedback_lifecycle_adaptive
-                    else "base_acceptance"
+                    else "default"
                 ),
                 "minimum_final_trials_per_bucket": DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS,
                 "minimum_total_final_trials": DISCOVERY_UNIVERSE_FEEDBACK_MIN_TOTAL_FINAL_TRIALS,
@@ -301,6 +319,11 @@ def estimate_discovery_target_policy_mix(
         "CROSS": defaultdict(list),
     }
     global_lifecycle_groups: dict[object, list[object]] = defaultdict(list)
+    allocation_lifecycle_groups: dict[str, dict[object, list[object]]] = {
+        "UNSEEDED": defaultdict(list),
+        "BENCHMARK": defaultdict(list),
+    }
+    global_allocation_groups: dict[object, list[object]] = defaultdict(list)
     timeframe_lifecycle_groups: dict[str, dict[object, list[object]]] = {
         "CURRENT_TF": defaultdict(list),
         "CHANGED_TF": defaultdict(list),
@@ -335,6 +358,9 @@ def estimate_discovery_target_policy_mix(
             generation,
             seed_path or f"row:{row_index}",
         )
+        allocation_route = "UNSEEDED" if primary == "unseeded" else "BENCHMARK"
+        allocation_lifecycle_groups[allocation_route][group].append(row)
+        global_allocation_groups[(allocation_route, *group)].append(row)
         lifecycle_groups[route][group].append(row)
         global_lifecycle_groups[(route, *group)].append(row)
         source_period = str(_row_get(row, "source_period", "") or "").upper()
@@ -366,27 +392,36 @@ def estimate_discovery_target_policy_mix(
     explore_rate = rate("universe_explore")
     current_target_rate = rate("current_target")
     cross_target_rate = rate("cross_target")
+    empty_signal = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
+    allocation_signals = probability_feedback_signals(
+        allocation_lifecycle_groups,
+        global_allocation_groups,
+        normalize_keys=False,
+        terminal_stage="six_month",
+    )
+    unseeded_signal = allocation_signals.get("UNSEEDED", empty_signal)
+    benchmark_signal = allocation_signals.get("BENCHMARK", empty_signal)
     adaptive_unseeded = (
         buckets["unseeded"][0] >= minimum_trials
         and buckets["benchmark"][0] >= minimum_benchmark_trials
+        and unseeded_signal.probability + benchmark_signal.probability > 0.0
     )
-    if adaptive_unseeded and benchmark_rate > 0.0:
+    if adaptive_unseeded and benchmark_signal.probability > 0.0:
         unseeded_multiplier = min(
-            max(unseeded_rate / benchmark_rate, DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR),
+            max(
+                unseeded_signal.probability / benchmark_signal.probability,
+                DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR,
+            ),
             1.0,
         )
     else:
         unseeded_multiplier = 1.0
-    adaptive_feedback_base = (
-        buckets["universe_feedback"][0] >= minimum_trials
-        and buckets["universe_explore"][0] >= minimum_trials
-    )
     universe_signals = probability_feedback_signals(
         universe_lifecycle_groups,
         global_universe_groups,
         normalize_keys=False,
+        terminal_stage="six_month",
     )
-    empty_signal = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
     universe_feedback_signal = universe_signals.get("UNIVERSE_FEEDBACK", empty_signal)
     universe_explore_signal = universe_signals.get("UNIVERSE_EXPLORE", empty_signal)
     adaptive_feedback_lifecycle = (
@@ -412,20 +447,13 @@ def estimate_discovery_target_policy_mix(
             ),
             DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
         )
-    elif adaptive_feedback_base and feedback_rate + explore_rate > 0.0:
-        feedback_probability = min(
-            max(
-                feedback_rate / (feedback_rate + explore_rate),
-                DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
-            ),
-            DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
-        )
     else:
         feedback_probability = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT
     lifecycle_signals = probability_feedback_signals(
         lifecycle_groups,
         global_lifecycle_groups,
         normalize_keys=False,
+        terminal_stage="six_month",
     )
     current_signal = lifecycle_signals.get("CURRENT", empty_signal)
     cross_signal = lifecycle_signals.get("CROSS", empty_signal)
@@ -448,6 +476,7 @@ def estimate_discovery_target_policy_mix(
         timeframe_lifecycle_groups,
         global_timeframe_groups,
         normalize_keys=False,
+        terminal_stage="six_month",
     )
     current_timeframe_signal = timeframe_signals.get("CURRENT_TF", empty_signal)
     changed_timeframe_signal = timeframe_signals.get("CHANGED_TF", empty_signal)
@@ -482,6 +511,12 @@ def estimate_discovery_target_policy_mix(
         benchmark_trials=buckets["benchmark"][0],
         benchmark_successes=buckets["benchmark"][1],
         benchmark_rate=round(benchmark_rate, 6),
+        unseeded_lifecycle_probability=unseeded_signal.probability,
+        benchmark_lifecycle_probability=benchmark_signal.probability,
+        unseeded_lifecycle_confidence=unseeded_signal.confidence,
+        benchmark_lifecycle_confidence=benchmark_signal.confidence,
+        unseeded_final_trials=unseeded_signal.final_trials,
+        benchmark_final_trials=benchmark_signal.final_trials,
         universe_feedback_trials=buckets["universe_feedback"][0],
         universe_feedback_successes=buckets["universe_feedback"][1],
         universe_feedback_rate=round(feedback_rate, 6),
@@ -516,7 +551,7 @@ def estimate_discovery_target_policy_mix(
         changed_timeframe_final_trials=changed_timeframe_signal.final_trials,
         recent_runs=tuple(run_ids),
         adaptive_unseeded=adaptive_unseeded,
-        adaptive_universe_feedback=(adaptive_feedback_lifecycle or adaptive_feedback_base),
+        adaptive_universe_feedback=adaptive_feedback_lifecycle,
         adaptive_current_target=adaptive_current_target,
         adaptive_current_timeframe=adaptive_current_timeframe,
     )
@@ -533,8 +568,9 @@ def estimate_discovery_source_mix(
     """Allocate discovery sources from broker-local, source-level outcomes.
 
     Three variants from one selected source are correlated, so they count as a
-    single trial.  A source succeeds when any finalized base variant is
-    accepted. Technical outcomes do not turn into negative evidence.
+    single trial. A source succeeds only when any child reaches accepted FT 6M.
+    Valid failures at an earlier funnel stage count as failures; unresolved
+    technical outcomes do not turn into negative evidence.
     """
 
     materialized = list(rows)
@@ -547,13 +583,13 @@ def estimate_discovery_source_mix(
         reverse=True,
     )[: max(int(recent_run_limit), 0)]
     allowed_runs = set(run_ids)
-    grouped: dict[tuple[int, int, str, bool], set[str]] = {}
+    grouped: dict[tuple[int, int, str, bool], list[int]] = {}
     for row in materialized:
         run_id = int(_row_get(row, "run_id", 0) or 0)
         if run_id not in allowed_runs:
             continue
-        status = str(_row_get(row, "status", "")).lower()
-        if status not in _SOURCE_FINAL_STATUSES:
+        outcome = finalized_generation_six_month_label(row)
+        if outcome is None:
             continue
         key = (
             run_id,
@@ -561,13 +597,13 @@ def estimate_discovery_source_mix(
             str(_row_get(row, "seed_path", "")),
             bool(_row_get(row, "exploitable", False)),
         )
-        grouped.setdefault(key, set()).add(status)
+        grouped.setdefault(key, []).append(outcome)
 
     trials = {True: 0, False: 0}
     successes = {True: 0, False: 0}
-    for (_run_id, _generation, _seed_path, exploitable), statuses in grouped.items():
+    for (_run_id, _generation, _seed_path, exploitable), outcomes in grouped.items():
         trials[exploitable] += 1
-        successes[exploitable] += int("accepted" in statuses)
+        successes[exploitable] += int(1 in outcomes)
 
     def smoothed_rate(bucket: bool) -> float:
         numerator = successes[bucket] + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS
@@ -600,6 +636,17 @@ def estimate_discovery_source_mix(
         adaptive=enough_evidence,
         reason=reason,
     )
+
+
+def finalized_generation_six_month_label(row: object) -> int | None:
+    """Label the whole generation funnel, including valid base-stage failures."""
+
+    status = str(_row_get(row, "status", "")).lower()
+    if status in {"rejected", "no_trades"}:
+        return 0
+    if status != "accepted":
+        return None
+    return finalized_six_month_label(row)
 
 
 def finalized_six_month_label(row: object) -> int | None:
@@ -644,6 +691,57 @@ def finalized_fitness_label(row: object, target: str) -> int | None:
     if target == FITNESS_TARGET_FINAL_TICK_6M:
         return finalized_six_month_label(row)
     raise ValueError(f"Objetivo de fitness desconocido: {target}")
+
+
+def descendant_fitness_predictions(
+    rows: Iterable[object],
+    paths: Iterable[str],
+    *,
+    prior_strength: float = DESCENDANT_FITNESS_PRIOR_STRENGTH,
+) -> dict[str, SelectionPrediction]:
+    """Estimate whether each source seed produces any accepted FT 6M child."""
+
+    requested = list(dict.fromkeys(str(path) for path in paths))
+    grouped: dict[tuple[int, int, str], list[int]] = defaultdict(list)
+    for row in rows:
+        outcome = finalized_generation_six_month_label(row)
+        if outcome is None:
+            continue
+        key = (
+            int(_row_get(row, "run_id", 0) or 0),
+            int(_row_get(row, "generation", 0) or 0),
+            str(_row_get(row, "seed_path", "") or ""),
+        )
+        if key[2]:
+            grouped[key].append(outcome)
+
+    source_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    total_trials = 0
+    total_successes = 0
+    for (_run_id, _generation, path), outcomes in grouped.items():
+        success = int(1 in outcomes)
+        source_counts[path][0] += 1
+        source_counts[path][1] += success
+        total_trials += 1
+        total_successes += success
+
+    if total_trials <= 0:
+        return {path: SelectionPrediction(0.0, 0.0, 0.0) for path in requested}
+    prior = total_successes / total_trials
+    strength = max(float(prior_strength), 1e-9)
+    result: dict[str, SelectionPrediction] = {}
+    for path in requested:
+        trials, successes = source_counts.get(path, (0, 0))
+        probability = (successes + prior * strength) / (trials + strength)
+        evidence = trials / (trials + strength)
+        weight = FITNESS_WEIGHT_SCALE * (_logit(probability) - _logit(prior)) * evidence
+        weight = max(-FITNESS_WEIGHT_LIMIT, min(FITNESS_WEIGHT_LIMIT, weight))
+        result[path] = SelectionPrediction(
+            round(probability, 8),
+            round(weight, 6),
+            round(evidence, 6),
+        )
+    return result
 
 
 def fitness_features(score: object, metrics_json: object, period: object) -> tuple[float, ...] | None:

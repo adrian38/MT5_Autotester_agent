@@ -93,6 +93,39 @@ class UBSWeightsTests(unittest.TestCase):
         self.assertGreater(signals["TERMINAL"].stage_probabilities["six_month"], 0.0)
         self.assertGreater(signals["GOOD"].score, signals["TERMINAL"].score)
 
+    def test_six_month_terminal_feedback_ignores_regression(self) -> None:
+        accepted_6m = {
+            "status": "accepted",
+            "robust_status": "accepted",
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "accepted",
+            "regression_status": "rejected",
+        }
+        rejected_6m = {
+            "status": "accepted",
+            "robust_status": "accepted",
+            "final_tick_status": "accepted",
+            "final_tick_6m_status": "rejected",
+            "regression_status": "accepted",
+        }
+
+        signals = probability_feedback_signals(
+            {
+                "ACCEPTED_6M": {("accepted",): [accepted_6m]},
+                "REJECTED_6M": {("rejected",): [rejected_6m]},
+            },
+            {("accepted",): [accepted_6m], ("rejected",): [rejected_6m]},
+            prior_strength=2.0,
+            terminal_stage="six_month",
+        )
+
+        self.assertGreater(
+            signals["ACCEPTED_6M"].probability,
+            signals["REJECTED_6M"].probability,
+        )
+        self.assertNotIn("regression", signals["ACCEPTED_6M"].stage_probabilities)
+        self.assertEqual(signals["ACCEPTED_6M"].regression_trials, 0.0)
+
     def test_percentile_mutation_multipliers_preserve_order_and_ties(self) -> None:
         ordered = percentile_multipliers({"a": -100.0, "b": -50.0, "c": 10.0}, ("a", "b", "c", "new"))
         self.assertEqual(ordered["a"], 0.5)
