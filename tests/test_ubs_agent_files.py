@@ -45,6 +45,7 @@ from ubs_agent import (
     final_tick_stage_prefixes,
     final_tick_similarity,
     generation_random_stream,
+    generation_fitness_target,
     _relative_delta_pct,
     _evaluate_final_tick_tick_report,
     reconcile_final_tick_reports,
@@ -127,6 +128,10 @@ def score(
 
 
 class UBSSetsFileTests(unittest.TestCase):
+    def test_generation_fitness_targets_six_month_in_discovery_and_production(self) -> None:
+        self.assertEqual(generation_fitness_target(True), "final_tick_6m")
+        self.assertEqual(generation_fitness_target(False), "final_tick_6m")
+
     def test_next_generation_survivors_forward_mode_specific_fitness_target(self) -> None:
         memory = Mock()
         memory.seed_selection_predictions.return_value = {}
