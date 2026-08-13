@@ -57,6 +57,7 @@ from ubs_agent import (
     score_config_for_period,
     target_symbol_disabled,
     target_timeframe_universe,
+    tester_log_no_history_metadata,
     min_trades_for_period,
     paths_belong_to_workspace,
     probability_argument,
@@ -450,6 +451,34 @@ class UBSSetsFileTests(unittest.TestCase):
                 self.assertEqual(data["history_requested_from"], "2020.01.01 00:00")
             finally:
                 memory.close()
+
+    def test_out_of_range_history_signal_is_no_history_without_generic_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "SPRY.NAS_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "Tester\tSPRY.NAS: found history data from 2026.02.23 00:00 "
+                "to 2026.06.30 00:00, specified period is out of this range",
+                encoding="utf-8",
+            )
+            variant = Variant(
+                root / "candidate.set",
+                Seed(root / "seed.set", "BTCUSD", "H1", "family", "1"),
+                "SPRY.NAS",
+                "H1",
+                (),
+                (),
+                "test",
+            )
+
+            metadata = tester_log_no_history_metadata(report, variant)
+
+            self.assertIsNotNone(metadata)
+            self.assertTrue(metadata["no_score"])
+            self.assertEqual(metadata["reasons"], ["no_history_data"])
+            self.assertEqual(metadata["history_available_from"], "2026.02.23 00:00")
+            self.assertEqual(metadata["history_available_to"], "2026.06.30 00:00")
 
     def test_generation_current_no_history_overrides_history_probe_ok(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
