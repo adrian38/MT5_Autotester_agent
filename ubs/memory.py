@@ -569,7 +569,7 @@ class AgentMemory:
         rows = self.conn.execute(
             f"""
             select
-                c.run_id, c.generation, c.seed_path, c.status,
+                c.run_id, c.generation, c.seed_path, c.set_path, c.status,
                 cr.status as robust_status,
                 ft.status as final_tick_status,
                 ft6.status as final_tick_6m_status
@@ -1371,7 +1371,7 @@ class AgentMemory:
         ).fetchall()
 
     def candidate_source_feedback_rows(self) -> list[sqlite3.Row]:
-        """Return full FT 6M funnel outcomes for discovery source allocation."""
+        """Return FT 6M outcomes credited to every selected source ancestor."""
 
         run_ids = self._discovery_run_ids(limit=10)
         if not run_ids:
@@ -1379,31 +1379,57 @@ class AgentMemory:
         placeholders = ",".join("?" for _run_id in run_ids)
         return self.conn.execute(
             f"""
+            with recursive selected_sources as (
+                select
+                    s.run_id, s.generation as source_generation, s.seed_path,
+                    s.symbol, s.period, s.family
+                from generation_seed_selection s
+                where s.run_id in ({placeholders})
+            ), source_descendants as (
+                select
+                    s.run_id, s.source_generation, s.seed_path,
+                    s.symbol, s.period, s.family,
+                    c.id as candidate_id, c.generation as candidate_generation,
+                    c.set_path, c.status
+                from selected_sources s
+                join candidates c
+                  on c.run_id=s.run_id
+                 and c.generation=s.source_generation
+                 and c.seed_path=s.seed_path
+
+                union all
+
+                select
+                    d.run_id, d.source_generation, d.seed_path,
+                    d.symbol, d.period, d.family,
+                    c.id as candidate_id, c.generation as candidate_generation,
+                    c.set_path, c.status
+                from source_descendants d
+                join candidates c
+                  on c.run_id=d.run_id
+                 and c.generation>d.candidate_generation
+                 and c.seed_path=d.set_path
+            )
             select
-                s.run_id, s.generation, s.seed_path,
-                s.symbol, s.period, s.family, c.status,
+                d.run_id, d.source_generation as generation, d.seed_path,
+                d.symbol, d.period, d.family, d.status,
                 cr.status as robust_status,
                 ft.status as final_tick_status,
                 ft6.status as final_tick_6m_status
-            from generation_seed_selection s
-            join candidates c
-              on c.run_id=s.run_id
-             and c.generation=s.generation
-             and c.seed_path=s.seed_path
+            from source_descendants d
             left join candidate_robustness cr
-              on cr.candidate_id=c.id
-             and c.status='accepted'
+              on cr.candidate_id=d.candidate_id
+             and d.status='accepted'
             left join candidate_final_tick ft
-              on ft.candidate_id=c.id
-             and c.status='accepted'
+              on ft.candidate_id=d.candidate_id
+             and d.status='accepted'
              and cr.status='accepted'
             left join candidate_final_tick_6m ft6
-              on ft6.candidate_id=c.id
-             and c.status='accepted'
+              on ft6.candidate_id=d.candidate_id
+             and d.status='accepted'
              and cr.status='accepted'
              and ft.status in ('accepted', 'pending_ohlc_trades')
-            where c.status in ('accepted', 'rejected', 'no_trades')
-              and s.run_id in ({placeholders})
+            where d.status in ('accepted', 'rejected', 'no_trades')
             """,
             run_ids,
         ).fetchall()

@@ -20,7 +20,7 @@ _DENSE_FITNESS_FEATURES = 8
 FITNESS_TARGET_FINAL_TICK_6M = "final_tick_6m"
 FITNESS_TARGET_ROBUSTNESS = "robustness"
 FITNESS_TARGETS = {FITNESS_TARGET_FINAL_TICK_6M, FITNESS_TARGET_ROBUSTNESS}
-DISCOVERY_SOURCE_MIX_MODEL = "beta_smoothed_source_6m_success_v2"
+DISCOVERY_SOURCE_MIX_MODEL = "beta_smoothed_source_descendant_6m_success_v3"
 DISCOVERY_SOURCE_MIX_RECENT_RUNS = 10
 DISCOVERY_SOURCE_MIX_MIN_TRIALS = 20
 DISCOVERY_SOURCE_MIX_FLOOR = 0.60
@@ -99,7 +99,7 @@ class DiscoverySourceMix:
     def to_dict(self) -> dict[str, object]:
         return {
             "model": DISCOVERY_SOURCE_MIX_MODEL,
-            "unit": "selected_source_any_final_tick_6m_accept",
+            "unit": "selected_source_any_descendant_final_tick_6m_accept",
             "exploitable_ratio": self.exploitable_ratio,
             "cross_asset_ratio": round(1.0 - self.exploitable_ratio, 6),
             "floor": DISCOVERY_SOURCE_MIX_FLOOR,
@@ -699,26 +699,53 @@ def descendant_fitness_predictions(
     *,
     prior_strength: float = DESCENDANT_FITNESS_PRIOR_STRENGTH,
 ) -> dict[str, SelectionPrediction]:
-    """Estimate whether each source seed produces any accepted FT 6M child."""
+    """Estimate whether each root source produces an accepted FT 6M descendant.
 
+    A later generation uses the previous candidate ``set_path`` as its
+    ``seed_path``. Follow that chain back to the original source so a terminal
+    success teaches the reusable seed instead of a run-local generated path.
+    """
+
+    materialized = list(rows)
     requested = list(dict.fromkeys(str(path) for path in paths))
-    grouped: dict[tuple[int, int, str], list[int]] = defaultdict(list)
-    for row in rows:
+    parent_paths = {
+        (
+            int(_row_get(row, "run_id", 0) or 0),
+            str(_row_get(row, "set_path", "") or ""),
+        ): str(_row_get(row, "seed_path", "") or "")
+        for row in materialized
+        if str(_row_get(row, "set_path", "") or "")
+        and str(_row_get(row, "seed_path", "") or "")
+    }
+
+    def root_path(run_id: int, seed_path: str) -> str:
+        current = seed_path
+        seen: set[str] = set()
+        while current and current not in seen:
+            seen.add(current)
+            parent = parent_paths.get((run_id, current))
+            if not parent:
+                break
+            current = parent
+        return current
+
+    grouped: dict[tuple[int, str], list[int]] = defaultdict(list)
+    for row in materialized:
         outcome = finalized_generation_six_month_label(row)
         if outcome is None:
             continue
+        run_id = int(_row_get(row, "run_id", 0) or 0)
         key = (
-            int(_row_get(row, "run_id", 0) or 0),
-            int(_row_get(row, "generation", 0) or 0),
-            str(_row_get(row, "seed_path", "") or ""),
+            run_id,
+            root_path(run_id, str(_row_get(row, "seed_path", "") or "")),
         )
-        if key[2]:
+        if key[1]:
             grouped[key].append(outcome)
 
     source_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     total_trials = 0
     total_successes = 0
-    for (_run_id, _generation, path), outcomes in grouped.items():
+    for (_run_id, path), outcomes in grouped.items():
         success = int(1 in outcomes)
         source_counts[path][0] += 1
         source_counts[path][1] += success

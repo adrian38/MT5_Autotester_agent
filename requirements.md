@@ -246,9 +246,12 @@ requirement changes or a debt item is opened/closed.
   diversity caps and enabled universe symbols.
 - **FR-1.6.19** Report score and evolutionary selection fitness MUST remain
   separate. The score continues to classify/report base quality. Discovery
-  source-seed ranking MUST estimate whether each source produced any accepted
-  Final Tick 6M child in a prior `(run, generation, seed)` cohort, using
-  shrinkage to the global prior; unseen sources are neutral. Survivor selection
+  source-seed ranking MUST estimate whether each reusable root source produced
+  any accepted Final Tick 6M descendant in a prior run, using shrinkage to the
+  global prior; unseen sources are neutral. For generation 2+, candidate
+  `seed_path -> set_path` lineage MUST propagate the terminal outcome back to
+  every selected source ancestor; a run-local generated path MUST NOT absorb
+  credit that belongs to its reusable generation-1 source. Survivor selection
   between generations and Production source selection use the regularized
   candidate-metric model. Every model excludes the current run and targets
   `candidate_final_tick_6m.status='accepted'`; unresolved technical states remain

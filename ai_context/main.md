@@ -1205,7 +1205,9 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   retained for cross-asset exploration; shortages on either side are backfilled.
 - That discovery source budget is broker-adaptive once both source buckets have
   at least 20 trials. It uses the latest 10 broker-local runs, counts one trial
-  per selected source (success only when any child reaches accepted Final Tick 6M),
+  per selected source (success only when any descendant reaches accepted Final
+  Tick 6M), propagates later-generation outcomes through candidate
+  `seed_path -> set_path` lineage to every selected source ancestor,
   ignores technical outcomes, applies a Beta(2,2) prior, and clamps the
   exploitable share to 60..85%. The full evidence and applied ratio are stored
   in `generation.seed_selection_diversity_caps.discovery_source_mix_feedback`;
