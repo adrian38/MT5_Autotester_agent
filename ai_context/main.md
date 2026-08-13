@@ -251,7 +251,9 @@ generation scoring:
   metadata, and probability/weight/evidence are persisted in
   `generation_seed_selection`. Fitness runs in `soft_weight` mode with applied
   scale `0.15`, so it can nudge source-seed and survivor ranking without replacing
-  the report score.
+  the report score. The same mode-specific target must be forwarded while
+  selecting survivors between generations; otherwise Discovery would silently
+  fall back to the Production 6M target before the next seed pool is built.
 - The following additive row utility is retained only for legacy audit detail;
   it is no longer used by asset/TF/mutation selection:
   - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).
