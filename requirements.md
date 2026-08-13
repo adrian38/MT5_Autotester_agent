@@ -260,6 +260,12 @@ requirement changes or a debt item is opened/closed.
   (`1.0`) and tied values receive the same multiplier. Core parameters retain
   their separate 4x base preference. Legacy timeframe patch keys MUST be
   excluded from mutation and direction feedback.
+- **FR-1.6.21** Discovery routing between lifecycle-feedback and random-universe
+  asset targets MUST prefer the smoothed full-lifecycle probability once both
+  routes have Final Tick 6M evidence (at least one effective trial each and four
+  combined). Until then it MUST retain the base-acceptance fallback. The applied
+  basis, probability, confidence and effective 6M trials MUST be persisted in
+  run metadata. Production routing remains independent.
 
 ### 1.7 UBS agent — scoring
 
