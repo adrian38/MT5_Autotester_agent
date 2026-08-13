@@ -10,6 +10,7 @@ from ubs.selection import (
     _batch_logistic_gradients,
     _sigmoid,
     finalized_six_month_label,
+    finalized_robustness_label,
     estimate_discovery_source_mix,
     estimate_discovery_target_policy_mix,
 )
@@ -353,6 +354,54 @@ class UBSSelectionFitnessTests(unittest.TestCase):
             "final_tick_6m_status": "",
         }
         self.assertIsNone(finalized_six_month_label(row))
+
+    def test_robustness_label_uses_only_statistical_terminal_rows(self) -> None:
+        accepted = {"status": "accepted", "robust_status": "accepted"}
+        rejected = {"status": "accepted", "robust_status": "rejected"}
+        technical = {"status": "accepted", "robust_status": "report_mismatch"}
+
+        self.assertEqual(finalized_robustness_label(accepted), 1)
+        self.assertEqual(finalized_robustness_label(rejected), 0)
+        self.assertIsNone(finalized_robustness_label(technical))
+
+    def test_robustness_model_trains_without_waiting_for_six_month_positives(self) -> None:
+        rows = []
+        for index in range(80):
+            rows.append(
+                {
+                    "status": "accepted",
+                    "robust_status": "accepted",
+                    "final_tick_status": "",
+                    "final_tick_6m_status": "",
+                    "score": 150.0 + index % 10,
+                    "metrics_json": metrics(recovery=12.0),
+                    "period": "H4",
+                }
+            )
+        for index in range(240):
+            rows.append(
+                {
+                    "status": "accepted",
+                    "robust_status": "rejected",
+                    "final_tick_status": "",
+                    "final_tick_6m_status": "",
+                    "score": 90.0 + index % 10,
+                    "metrics_json": metrics(recovery=3.0),
+                    "period": "H4",
+                }
+            )
+
+        model = SelectionFitnessModel.train(rows, target="robustness")
+
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertEqual(model.target, "robustness")
+        self.assertEqual(model.training_rows, 320)
+        self.assertEqual(model.positive_rows, 80)
+        self.assertGreater(
+            model.predict(155.0, metrics(recovery=12.0), "H4").probability,
+            model.predict(95.0, metrics(recovery=3.0), "H4").probability,
+        )
 
     def test_model_learns_final_fitness_separately_from_raw_score(self) -> None:
         rows = []
