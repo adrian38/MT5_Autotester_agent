@@ -245,8 +245,10 @@ UBS support code lives in the `ubs/` package:
 - `ubs/selection.py`: regularized evolutionary fitness observer. It trains only
   on finalized prior runs, predicts Final Tick 6M acceptance from report metrics
   and timeframe, and keeps this fitness separate from the report score. Its
-  predictions are persisted and applied as a bounded soft ranking nudge with
-  selection scale `0.15`.
+  predictions are persisted and applied as a bounded soft ranking nudge.
+  Production keeps selection scale `0.15`; Discovery applies `0.40` after
+  prospective 6M evidence demonstrated separation between positive and
+  negative source fitness. Diversity caps remain authoritative in both modes.
 - `ubs/regression.py` owns the backward OHLC validation runner and report
   classification. `ubs/regression_rules.py` owns its independent default date
   range, thresholds, retryable states, and point schedule. `ubs_agent.py` only
