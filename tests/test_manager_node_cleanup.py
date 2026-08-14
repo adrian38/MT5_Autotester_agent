@@ -68,7 +68,10 @@ class ManagerNodeCleanupTests(unittest.TestCase):
             self._project(project)
             controller = self._controller(project)
 
-            with patch.object(controller, "_launch_next_runnable", return_value=True):
+            with patch(
+                "manager_node_runtime.node.stored_run_generation_mode",
+                return_value="production",
+            ), patch.object(controller, "_launch_next_runnable", return_value=True):
                 repair = controller.start_repair({
                     "run_ids": [7, 9],
                     "repair_attempts": 1,
@@ -82,6 +85,10 @@ class ManagerNodeCleanupTests(unittest.TestCase):
                     *((7, action) for action in (*repair_actions, *CLEANUP_STAGES)),
                     *((9, action) for action in (*repair_actions, *CLEANUP_STAGES)),
                 ],
+            )
+            self.assertEqual(
+                repair["request"]["run_generation_modes"],
+                {"7": "production", "9": "production"},
             )
 
             controller.state["status"] = "completed"
