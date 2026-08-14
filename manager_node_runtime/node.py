@@ -256,6 +256,54 @@ def memory_path(config: dict[str, Any], parser: configparser.ConfigParser) -> Pa
     return scoped if supports_broker else legacy
 
 
+def resolve_generation_mode(
+    config: dict[str, Any],
+    payload: dict[str, Any],
+    parser: configparser.ConfigParser | None = None,
+) -> str:
+    if parser is None:
+        project = Path(str(config["project_dir"])).expanduser().resolve()
+        settings_path = Path(str(config.get("settings_file") or "ui_settings.ini"))
+        if not settings_path.is_absolute():
+            settings_path = project / settings_path
+        parser = read_settings(settings_path)
+    defaults = config.get("defaults") if isinstance(config.get("defaults"), dict) else {}
+    raw_mode = payload.get(
+        "generation_mode",
+        defaults.get("generation_mode", setting(parser, "General", "ubs_generation_mode", "production")),
+    )
+    mode = str(raw_mode).strip().lower()
+    if mode not in {"production", "discovery"}:
+        raise ValueError("generation_mode debe ser production o discovery")
+    return mode
+
+
+def stored_run_generation_mode(config: dict[str, Any], run_id: int) -> str | None:
+    project = Path(str(config["project_dir"])).expanduser().resolve()
+    settings_path = Path(str(config.get("settings_file") or "ui_settings.ini"))
+    if not settings_path.is_absolute():
+        settings_path = project / settings_path
+    db_path = memory_path(config, read_settings(settings_path))
+    if not db_path.is_file():
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(str(db_path), timeout=2)) as conn:
+            if not _table_exists(conn, "runs"):
+                return None
+            row = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        run_config = json.loads(str(row[0] or "{}"))
+    except (OSError, sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(run_config, dict):
+        return None
+    generation = run_config.get("generation") if isinstance(run_config.get("generation"), dict) else {}
+    run_args = run_config.get("args") if isinstance(run_config.get("args"), dict) else {}
+    mode = str(generation.get("mode") or run_args.get("generation_mode") or "").strip().lower()
+    return mode if mode in {"production", "discovery"} else None
+
+
 def _add(args: list[str], option: str, value: Any) -> None:
     text = str(value).strip()
     if text:
@@ -314,9 +362,7 @@ def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) ->
     generations = safe_int(pick("generations", "ubs_generation_count", 1), 1, minimum=1, maximum=1000)
     variants = safe_int(pick("variants_per_seed", "ubs_variants_per_seed", 10), 10, minimum=1, maximum=10000)
     max_seeds = safe_int(pick("max_seeds", "ubs_max_seeds", 30), 30, minimum=0, maximum=100000)
-    generation_mode = str(pick("generation_mode", "ubs_generation_mode", "production")).lower()
-    if generation_mode not in {"production", "discovery"}:
-        raise ValueError("generation_mode debe ser production o discovery")
+    generation_mode = resolve_generation_mode(config, payload, cfg)
     execute = payload.get("execute_backtests", defaults.get("execute_backtests", setting_bool(cfg, "General", "ubs_agent_execute", True)))
 
     args = [python, "-u", str(script)]
@@ -1064,6 +1110,7 @@ class JobController:
 
     def _normalize_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload = dict(payload)
+        payload["generation_mode"] = resolve_generation_mode(self.config, payload)
         random_seed = payload.get("random_seed")
         if random_seed is None or str(random_seed).strip() == "":
             payload["random_seed"] = None
@@ -1077,7 +1124,10 @@ class JobController:
         run_robustness = bool(payload.get("run_robustness", False))
         run_final_tick = bool(payload.get("run_final_tick", False))
         run_final_tick_6m = bool(payload.get("run_final_tick_6m", False))
-        run_regression = bool(payload.get("run_regression", False))
+        run_regression = (
+            bool(payload.get("run_regression", False))
+            and payload["generation_mode"] == "production"
+        )
         if run_regression:
             run_final_tick_6m = True
             run_final_tick = True
@@ -1206,13 +1256,22 @@ class JobController:
         actions.append("final_tick_6m")
         if retry_low_quality:
             actions.append("final_tick_6m_quality")
-        actions.append("regression")
+        run_modes = {
+            run_id: stored_run_generation_mode(self.config, run_id)
+            for run_id in run_ids
+        }
+        payload["run_generation_modes"] = {
+            str(run_id): mode or "unknown" for run_id, mode in run_modes.items()
+        }
         pipeline: list[dict[str, Any]] = []
         for run_id in run_ids:
+            run_actions = [*actions]
+            if run_modes[run_id] == "production":
+                run_actions.append("regression")
             pipeline.extend(
                 {"action": action, "cycle": None, "run_id": run_id, "attempt": attempt}
                 for attempt in range(1, repair_attempts + 1)
-                for action in actions
+                for action in run_actions
             )
             if payload["cleanup_after_run"]:
                 pipeline.extend(

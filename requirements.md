@@ -884,6 +884,12 @@ requirement changes or a debt item is opened/closed.
   not consume the generation `max_workers` value when the independent value is
   supplied; clients that omit it remain backward compatible by inheriting
   `max_workers`.
+- **FR-1.12.49** Manager generation and Repair pipelines MUST keep Discovery
+  separate from Production. Discovery pipelines MUST stop at Final Tick 6M
+  even if a client requests automatic regression. Manual Repair MUST read each
+  selected run's persisted generation mode and append regression only for
+  Production runs. An unknown or legacy mode MUST NOT opt a run into regression;
+  the dedicated manual Regression action remains independent.
 
 ### 1.13 Packaging & runtime
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 import tempfile
 import time
@@ -132,6 +134,125 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 controller._normalize_regression({"run_ids": [7], "max_workers": 0})["max_workers"],
                 1,
             )
+
+    def test_manual_repair_appends_regression_only_for_production_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = self._controller(project)
+
+            def mode_for_run(_config: dict, run_id: int) -> str | None:
+                if run_id == 7:
+                    return "discovery"
+                if run_id == 9:
+                    return "production"
+                return None
+
+            with patch(
+                "manager_node_runtime.node.stored_run_generation_mode",
+                side_effect=mode_for_run,
+            ), patch.object(controller, "_launch_next_runnable", return_value=True):
+                result = controller.start_repair({
+                    "run_ids": [7, 9, 11],
+                    "repair_attempts": 1,
+                    "retry_low_quality": False,
+                    "cleanup_after_run": False,
+                })
+
+            discovery_actions = [
+                step["action"] for step in result["pipeline"] if step["run_id"] == 7
+            ]
+            production_actions = [
+                step["action"] for step in result["pipeline"] if step["run_id"] == 9
+            ]
+            unknown_actions = [
+                step["action"] for step in result["pipeline"] if step["run_id"] == 11
+            ]
+            self.assertEqual(
+                discovery_actions,
+                ["result", "robustness", "final_tick", "final_tick_6m"],
+            )
+            self.assertEqual(production_actions, [*discovery_actions, "regression"])
+            self.assertEqual(unknown_actions, discovery_actions)
+            self.assertEqual(
+                result["request"]["run_generation_modes"],
+                {"7": "discovery", "9": "production", "11": "unknown"},
+            )
+
+    def test_manual_repair_reads_the_persisted_run_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory = project / "memory.sqlite"
+            conn = sqlite3.connect(memory)
+            try:
+                conn.execute("create table runs (id integer primary key, config_json text)")
+                conn.executemany(
+                    "insert into runs(id, config_json) values (?, ?)",
+                    [
+                        (7, json.dumps({"generation": {"mode": "discovery"}})),
+                        (9, json.dumps({"args": {"generation_mode": "production"}})),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            controller = JobController(
+                {
+                    "node_id": "ic",
+                    "project_dir": str(project),
+                    "memory_path": str(memory),
+                },
+                project / "manager_node.json",
+            )
+
+            with patch.object(controller, "_launch_next_runnable", return_value=True):
+                result = controller.start_repair({
+                    "run_ids": [7, 9],
+                    "repair_attempts": 1,
+                    "retry_low_quality": False,
+                    "cleanup_after_run": False,
+                })
+
+            regression_runs = [
+                step["run_id"] for step in result["pipeline"]
+                if step["action"] == "regression"
+            ]
+            self.assertEqual(regression_runs, [9])
+
+    def test_discovery_generation_never_schedules_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = self._controller(project)
+            command = [sys.executable, str(project / "worker.py")]
+            with patch(
+                "manager_node_runtime.node.build_generation_command",
+                return_value=(command, project),
+            ), patch.object(controller, "_launch_step"):
+                result = controller.start({
+                    "cycles": 1,
+                    "generation_mode": "discovery",
+                    "run_regression": True,
+                })
+
+            self.assertFalse(result["request"]["run_regression"])
+            self.assertNotIn("regression", [step["action"] for step in result["pipeline"]])
+
+    def test_production_generation_can_schedule_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = self._controller(project)
+            command = [sys.executable, str(project / "worker.py")]
+            with patch(
+                "manager_node_runtime.node.build_generation_command",
+                return_value=(command, project),
+            ), patch.object(controller, "_launch_step"):
+                result = controller.start({
+                    "cycles": 1,
+                    "generation_mode": "production",
+                    "run_regression": True,
+                })
+
+            self.assertTrue(result["request"]["run_regression"])
+            self.assertIn("regression", [step["action"] for step in result["pipeline"]])
 
     def test_generation_forwards_and_normalizes_random_seed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
