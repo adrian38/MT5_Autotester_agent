@@ -1329,6 +1329,12 @@ run. `max_workers` sigue perteneciendo exclusivamente a la generación. Si un
 cliente antiguo omite `repair_max_workers`, el nodo hereda `max_workers` para
 mantener compatibilidad.
 
+Discovery y Production permanecen separados en el nodo: una generación
+Discovery termina en Final Tick 6M aunque el cliente envíe `run_regression`, y
+Repair consulta el modo persistido de cada run para añadir regresión únicamente
+a runs Production. Modos antiguos o desconocidos no habilitan regresión de
+forma implícita; la acción manual Regression continúa siendo independiente.
+
 ### Final Tick similarity — `profit_factor_floor` check (6M only)
 
 `final_tick_similarity()` in `ubs_agent.py` accepts an optional `min_model_profit_factor` parameter. When set (only for `six_month` stage), it adds a **symmetric floor check**: both OHLC PF and real-tick PF must be ≥ the minimum. This is separate from the delta check and fires even when the two values are close to each other but both below the threshold. The check appears as `"profit_factor_floor"` in `similarity_json.checks` and in UI `CAUSA` columns.
