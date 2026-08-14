@@ -255,8 +255,12 @@ generation scoring:
   acceptance, exclude technical outcomes and exclude the current run. The
   source and survivor models are recorded in run metadata, and
   probability/weight/evidence are persisted in `generation_seed_selection`.
-  Fitness remains a soft weight with applied scale `0.15`, so it cannot replace
-  the base report score or the diversity budget.
+  Fitness remains a soft weight, so it cannot replace the base report score or
+  the diversity budget. Production keeps applied scale `0.15`; Discovery uses
+  `0.40` for source and survivor ranking. The Discovery scale was raised only
+  after three prospective broker cohorts produced 7 accepted 6M candidates
+  from 327 positive-fitness variants and none from 378 negative-fitness
+  variants; target routing and acceptance thresholds were left unchanged.
 - The following additive row utility is retained only for legacy audit detail;
   it is no longer used by asset/TF/mutation selection:
   - base `accepted`: score plus accepted bonus (`+20` asset, `+15` TF/mutation).
