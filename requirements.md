@@ -262,13 +262,10 @@ requirement changes or a debt item is opened/closed.
   scaled weight, but the raw report score MUST remain the base-quality
   classifier and the fitness contribution MUST be visible in run metadata.
 - **FR-1.6.20** Mutation sampling MUST convert mutation feedback to relative
-  score-aware percentile multipliers. Production MUST retain the range
-  `0.5..1.5`; Discovery MAY reward the strongest broker-local evidence up to
-  `1.75` while retaining the same `0.5` minimum. Missing feedback is neutral
-  (`1.0`), tied values receive the same multiplier, and weak scores MUST remain
-  blended toward neutral. The applied maximum MUST be persisted and restored
-  on resume. Core parameters retain their separate 4x base preference. Legacy
-  timeframe patch keys MUST be excluded from mutation and direction feedback.
+  percentile multipliers in the range `0.5..1.5`; missing feedback is neutral
+  (`1.0`) and tied values receive the same multiplier. Core parameters retain
+  their separate 4x base preference. Legacy timeframe patch keys MUST be
+  excluded from mutation and direction feedback.
 - **FR-1.6.21** Discovery routing between lifecycle-feedback and random-universe
   asset targets MUST prefer the smoothed full-lifecycle probability once both
   routes have Final Tick 6M evidence (at least one effective trial each and four

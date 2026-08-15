@@ -287,20 +287,6 @@ CORE_MUTATION_KEYS = {
         "Exit_TrailSL_step",
     ),
 }
-PRODUCTION_MUTATION_FEEDBACK_MAXIMUM = 1.5
-DISCOVERY_MUTATION_FEEDBACK_MAXIMUM = 1.75
-
-
-def generation_mutation_feedback_maximum(discovery_mode: bool) -> float:
-    """Return the mode-specific ceiling for broker-local mutation feedback."""
-
-    return (
-        DISCOVERY_MUTATION_FEEDBACK_MAXIMUM
-        if discovery_mode
-        else PRODUCTION_MUTATION_FEEDBACK_MAXIMUM
-    )
-
-
 FROZEN_KEYS = {
     "PrintLogs",
     "PrintSetLoadingInfo",
@@ -2005,7 +1991,6 @@ def line_candidates(
     mutation_feedback: dict[str, float],
     *,
     excluded_keys: Iterable[str] = (),
-    mutation_feedback_maximum: float = PRODUCTION_MUTATION_FEEDBACK_MAXIMUM,
 ) -> dict[str, tuple[int, list[str], float]]:
     lines = text.splitlines()
     preferred = set(CORE_MUTATION_KEYS.get(run_strategy, CORE_MUTATION_KEYS[""]))
@@ -2037,11 +2022,7 @@ def line_candidates(
             continue
         base_weight = 4.0 if key in preferred else 1.0
         candidates[key] = (index, parts, base_weight)
-    multipliers = score_aware_percentile_multipliers(
-        mutation_feedback,
-        candidates,
-        maximum=mutation_feedback_maximum,
-    )
+    multipliers = score_aware_percentile_multipliers(mutation_feedback, candidates)
     for key, (index, parts, base_weight) in tuple(candidates.items()):
         candidates[key] = (index, parts, base_weight * multipliers[key])
     return candidates
@@ -2328,8 +2309,6 @@ def create_variant(
     mutation_direction_feedback: dict[str, float],
     policy: str,
     rng: random.Random,
-    *,
-    mutation_feedback_maximum: float = PRODUCTION_MUTATION_FEEDBACK_MAXIMUM,
 ) -> Variant:
     text, encoding = read_set_with_encoding(seed.path)
     lines = text.splitlines()
@@ -2344,13 +2323,7 @@ def create_variant(
             if fvalue:
                 replace_existing_current_value(lines, fkey, fvalue)
     text = "\n".join(lines)
-    candidates = line_candidates(
-        text,
-        seed.run_strategy,
-        mutation_feedback,
-        excluded_keys=timeframe_keys,
-        mutation_feedback_maximum=mutation_feedback_maximum,
-    )
+    candidates = line_candidates(text, seed.run_strategy, mutation_feedback, excluded_keys=timeframe_keys)
     selected = weighted_sample(candidates, mutations_per_variant, rng)
     lines = text.splitlines()
     changed: list[str] = []
@@ -6712,13 +6685,7 @@ def build_run_config(
                 "model": "smoothed_stage_probability_v1",
                 "stages": ["base", "robust", "probe", "six_month"],
                 "selection_score": "relative_log_odds_x_confidence",
-                "mutation_sampling": "score_aware_percentile_multiplier_v2",
-                "mutation_feedback_minimum": 0.5,
-                "mutation_feedback_maximum": generation_mutation_feedback_maximum(
-                    bool(args.force_unseeded_universe)
-                ),
-                "discovery_mutation_feedback_maximum": DISCOVERY_MUTATION_FEEDBACK_MAXIMUM,
-                "production_mutation_feedback_maximum": PRODUCTION_MUTATION_FEEDBACK_MAXIMUM,
+                "mutation_sampling": "percentile_multiplier_0.5_1.5",
             },
         },
         "execution": {
@@ -6848,23 +6815,6 @@ def restored_discovery_current_timeframe_probability(config_json: object) -> flo
         return DISCOVERY_CURRENT_TIMEFRAME_DEFAULT
 
 
-def restored_mutation_feedback_maximum(config_json: object) -> float:
-    """Restore the exact broker-local feedback ceiling used by a run.
-
-    Historical configurations used the Production-compatible 1.5 ceiling in
-    every mode, so missing metadata must retain that behaviour on resume.
-    """
-
-    try:
-        config = json.loads(str(config_json or "{}"))
-        value = float(config["generation"]["feedback_model"]["mutation_feedback_maximum"])
-        if not math.isfinite(value):
-            raise ValueError("non-finite mutation feedback maximum")
-        return min(max(value, 1.0), 3.0)
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return PRODUCTION_MUTATION_FEEDBACK_MAXIMUM
-
-
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
@@ -6880,9 +6830,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
         run["config_json"]
     )
     current_timeframe_probability = restored_discovery_current_timeframe_probability(
-        run["config_json"]
-    )
-    applied_mutation_feedback_maximum = restored_mutation_feedback_maximum(
         run["config_json"]
     )
     run_dir = resolve_workspace_path(run["output_dir"])
@@ -7193,7 +7140,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                         seed_index,
                         variant_index,
                     ),
-                    mutation_feedback_maximum=applied_mutation_feedback_maximum,
                 )
                 memory.record_variant(run_id, generation, variant)
                 target_limiter.record(target_symbol, target_period)
@@ -7646,9 +7592,6 @@ def run_agent(args: argparse.Namespace) -> int:
                             "mutation",
                             seed_index,
                             variant_index,
-                        ),
-                        mutation_feedback_maximum=generation_mutation_feedback_maximum(
-                            bool(args.force_unseeded_universe)
                         ),
                     )
                     memory.record_variant(run_id, generation, variant)
