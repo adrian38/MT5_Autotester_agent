@@ -287,16 +287,6 @@ CORE_MUTATION_KEYS = {
         "Exit_TrailSL_step",
     ),
 }
-PRODUCTION_CORE_MUTATION_WEIGHT = 4.0
-DISCOVERY_CORE_MUTATION_WEIGHT = 6.0
-
-
-def generation_core_mutation_weight(discovery_mode: bool) -> float:
-    """Return the mode-specific base preference for core mutation keys."""
-
-    return DISCOVERY_CORE_MUTATION_WEIGHT if discovery_mode else PRODUCTION_CORE_MUTATION_WEIGHT
-
-
 FROZEN_KEYS = {
     "PrintLogs",
     "PrintSetLoadingInfo",
@@ -2001,7 +1991,6 @@ def line_candidates(
     mutation_feedback: dict[str, float],
     *,
     excluded_keys: Iterable[str] = (),
-    core_mutation_weight: float = PRODUCTION_CORE_MUTATION_WEIGHT,
 ) -> dict[str, tuple[int, list[str], float]]:
     lines = text.splitlines()
     preferred = set(CORE_MUTATION_KEYS.get(run_strategy, CORE_MUTATION_KEYS[""]))
@@ -2031,7 +2020,7 @@ def line_candidates(
             continue
         if not any(start <= current + direction * step <= stop for direction in (-2, -1, 1, 2)):
             continue
-        base_weight = float(core_mutation_weight) if key in preferred else 1.0
+        base_weight = 4.0 if key in preferred else 1.0
         candidates[key] = (index, parts, base_weight)
     multipliers = score_aware_percentile_multipliers(mutation_feedback, candidates)
     for key, (index, parts, base_weight) in tuple(candidates.items()):
@@ -2320,8 +2309,6 @@ def create_variant(
     mutation_direction_feedback: dict[str, float],
     policy: str,
     rng: random.Random,
-    *,
-    core_mutation_weight: float = PRODUCTION_CORE_MUTATION_WEIGHT,
 ) -> Variant:
     text, encoding = read_set_with_encoding(seed.path)
     lines = text.splitlines()
@@ -2336,13 +2323,7 @@ def create_variant(
             if fvalue:
                 replace_existing_current_value(lines, fkey, fvalue)
     text = "\n".join(lines)
-    candidates = line_candidates(
-        text,
-        seed.run_strategy,
-        mutation_feedback,
-        excluded_keys=timeframe_keys,
-        core_mutation_weight=core_mutation_weight,
-    )
+    candidates = line_candidates(text, seed.run_strategy, mutation_feedback, excluded_keys=timeframe_keys)
     selected = weighted_sample(candidates, mutations_per_variant, rng)
     lines = text.splitlines()
     changed: list[str] = []
@@ -6705,12 +6686,6 @@ def build_run_config(
                 "stages": ["base", "robust", "probe", "six_month"],
                 "selection_score": "relative_log_odds_x_confidence",
                 "mutation_sampling": "percentile_multiplier_0.5_1.5",
-                "core_mutation_weight_model": "mode_specific_core_enrichment_v1",
-                "core_mutation_weight": generation_core_mutation_weight(
-                    bool(args.force_unseeded_universe)
-                ),
-                "discovery_core_mutation_weight": DISCOVERY_CORE_MUTATION_WEIGHT,
-                "production_core_mutation_weight": PRODUCTION_CORE_MUTATION_WEIGHT,
             },
         },
         "execution": {
@@ -6840,23 +6815,6 @@ def restored_discovery_current_timeframe_probability(config_json: object) -> flo
         return DISCOVERY_CURRENT_TIMEFRAME_DEFAULT
 
 
-def restored_core_mutation_weight(config_json: object) -> float:
-    """Restore the exact core preference used by a run.
-
-    Configurations created before this field existed used the historical 4x
-    preference in every mode, so that is the compatibility fallback.
-    """
-
-    try:
-        config = json.loads(str(config_json or "{}"))
-        value = float(config["generation"]["feedback_model"]["core_mutation_weight"])
-        if not math.isfinite(value):
-            raise ValueError("non-finite core mutation weight")
-        return min(max(value, 0.1), 20.0)
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return PRODUCTION_CORE_MUTATION_WEIGHT
-
-
 def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     run = memory.latest_run()
     if run is None:
@@ -6874,7 +6832,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
     current_timeframe_probability = restored_discovery_current_timeframe_probability(
         run["config_json"]
     )
-    applied_core_mutation_weight = restored_core_mutation_weight(run["config_json"])
     run_dir = resolve_workspace_path(run["output_dir"])
     planned_generations = int(run["generations"])
     args.variants_per_seed = int(run["variants_per_seed"])
@@ -7183,7 +7140,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                         seed_index,
                         variant_index,
                     ),
-                    core_mutation_weight=applied_core_mutation_weight,
                 )
                 memory.record_variant(run_id, generation, variant)
                 target_limiter.record(target_symbol, target_period)
@@ -7636,9 +7592,6 @@ def run_agent(args: argparse.Namespace) -> int:
                             "mutation",
                             seed_index,
                             variant_index,
-                        ),
-                        core_mutation_weight=generation_core_mutation_weight(
-                            bool(args.force_unseeded_universe)
                         ),
                     )
                     memory.record_variant(run_id, generation, variant)
