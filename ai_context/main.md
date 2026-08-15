@@ -1215,10 +1215,10 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
 - Discovery target routing also adapts from the latest 10 broker-local runs.
   The unseeded schedule compares its smoothed base/OOS/probe/6M lifecycle yield
   with the benchmark and can shrink to 25% of its configured budget. Universe
-  feedback is bounded to 75..95%, so every exploration route keeps a non-zero
-  random quota. Feedback versus random exploration adapts only after both have
-  Final Tick 6M evidence (at least one effective trial each and four combined);
-  otherwise it keeps the 75% default rather than substituting base acceptance.
+  feedback is bounded to 55..85%, so every exploration route keeps a non-zero
+  floor. Feedback versus random exploration adapts only after both have Final
+  Tick 6M evidence (at least one effective trial each and four combined);
+  otherwise it keeps the 55% default rather than substituting base acceptance.
   Evidence, routing basis and applied probabilities are persisted under
   `generation.target_policy.discovery_adaptive_policy` and restored on resume.
 - In Discovery, the probability of keeping the selected seed's current
