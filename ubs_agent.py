@@ -181,7 +181,6 @@ TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE
 GENERATION_MODES = ("production", "discovery")
 SELECTION_FITNESS_MODE = "soft_weight"
 SELECTION_FITNESS_APPLIED_SCALE = 0.15
-DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE = 0.40
 ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.12, 2: 0.08}
 ASSET_UNSEEDED_FORCE_PROB_LATE = 0.05
 TF_UNSEEDED_FORCE_PROB_BY_GENERATION = {1: 0.20, 2: 0.12}
@@ -806,7 +805,6 @@ def ranked_seed_selection(
     symbol_reserve_ratio: float = 0.0,
     symbol_cap_ratio: float = TARGET_SYMBOL_CAP_RATIO,
     allow_overflow: bool = True,
-    fitness_scale: float = SELECTION_FITNESS_APPLIED_SCALE,
 ) -> list[tuple[float, Seed, float, float, float]]:
     aliases = aliases or {}
     fitness_feedback = fitness_feedback or {}
@@ -821,7 +819,7 @@ def ranked_seed_selection(
         diversity = rng.random() * 5.0
         fitness_weight = (
             fitness_feedback.get(str(seed.path), 0.0)
-            * fitness_scale
+            * SELECTION_FITNESS_APPLIED_SCALE
         )
         scored.append((asset_weight + timeframe_weight + fitness_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -1415,7 +1413,6 @@ def discovery_ranked_seed_selection(
             group_by_symbol,
             fitness_feedback,
             DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
-            fitness_scale=DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE,
         )
 
     exploitable: list[Seed] = []
@@ -1450,7 +1447,6 @@ def discovery_ranked_seed_selection(
             group_by_symbol,
             fitness_feedback,
             DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
-            fitness_scale=DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE,
         )
 
     selected = select(exploitable, exploitable_quota)
@@ -4016,16 +4012,15 @@ def select_next_seed_survivors(
     group_by_symbol: dict[str, str] | None = None,
     fitness_feedback: dict[str, float] | None = None,
     allow_rejected_fallback: bool = True,
-    fitness_scale: float = SELECTION_FITNESS_APPLIED_SCALE,
 ) -> list[tuple[Variant, ScoreResult]]:
     survivors = select_survivors(scored, top_percent, allow_rejected_fallback=allow_rejected_fallback)
     if not survivors:
         return []
-    if fitness_feedback and fitness_scale:
+    if fitness_feedback and SELECTION_FITNESS_APPLIED_SCALE:
         survivors.sort(
             key=lambda item: item[1].score + (
                 fitness_feedback.get(str(item[0].path), 0.0)
-                * fitness_scale
+                * SELECTION_FITNESS_APPLIED_SCALE
             ),
             reverse=True,
         )
@@ -4063,7 +4058,6 @@ def select_next_generation_survivors(
     group_by_symbol: dict[str, str] | None = None,
     allow_rejected_fallback: bool = True,
     fitness_target: str = FITNESS_TARGET_FINAL_TICK_6M,
-    fitness_scale: float = SELECTION_FITNESS_APPLIED_SCALE,
 ) -> list[tuple[Variant, ScoreResult]]:
     accepted = select_survivors(scored, top_percent, allow_rejected_fallback=allow_rejected_fallback)
     predictions = memory.seed_selection_predictions(
@@ -4080,7 +4074,6 @@ def select_next_generation_survivors(
         group_by_symbol,
         fitness_feedback,
         allow_rejected_fallback,
-        fitness_scale,
     )
 
 
@@ -6686,13 +6679,7 @@ def build_run_config(
                 "target": "final_tick_6m_accepted",
                 "exclude_current_run": True,
                 "mode": SELECTION_FITNESS_MODE,
-                "applied_weight_scale": (
-                    DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE
-                    if args.force_unseeded_universe
-                    else SELECTION_FITNESS_APPLIED_SCALE
-                ),
-                "discovery_applied_weight_scale": DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE,
-                "production_applied_weight_scale": SELECTION_FITNESS_APPLIED_SCALE,
+                "applied_weight_scale": SELECTION_FITNESS_APPLIED_SCALE,
             },
             "feedback_model": {
                 "model": "smoothed_stage_probability_v1",
@@ -6914,11 +6901,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 group_by_symbol,
                 allow_rejected_fallback=bool(args.force_unseeded_universe),
                 fitness_target=generation_fitness_target(bool(args.force_unseeded_universe)),
-                fitness_scale=(
-                    DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE
-                    if args.force_unseeded_universe
-                    else SELECTION_FITNESS_APPLIED_SCALE
-                ),
             )
             if not args.force_unseeded_universe and not next_survivors:
                 print(
@@ -7188,11 +7170,6 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
                 group_by_symbol,
                 allow_rejected_fallback=bool(args.force_unseeded_universe),
                 fitness_target=generation_fitness_target(bool(args.force_unseeded_universe)),
-                fitness_scale=(
-                    DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE
-                    if args.force_unseeded_universe
-                    else SELECTION_FITNESS_APPLIED_SCALE
-                ),
             )
             if not args.force_unseeded_universe and not next_survivors:
                 print(
@@ -7688,11 +7665,6 @@ def run_agent(args: argparse.Namespace) -> int:
                     group_by_symbol,
                     allow_rejected_fallback=bool(args.force_unseeded_universe),
                     fitness_target=generation_fitness_target(bool(args.force_unseeded_universe)),
-                    fitness_scale=(
-                        DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE
-                        if args.force_unseeded_universe
-                        else SELECTION_FITNESS_APPLIED_SCALE
-                    ),
                 )
                 if not args.force_unseeded_universe and not next_survivors:
                     print(
