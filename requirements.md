@@ -272,7 +272,10 @@ requirement changes or a debt item is opened/closed.
   combined). Until then it MUST retain the neutral configured default and MUST
   NOT substitute base acceptance for the terminal objective. The applied
   basis, probability, confidence and effective 6M trials MUST be persisted in
-  run metadata. Production routing remains independent.
+  run metadata. The configured default MUST be 75% lifecycle feedback and its
+  adaptive ceiling MUST be 95%, preserving at least a 5% random-universe quota
+  whenever feedback-eligible universe targets exist. Production routing remains
+  independent.
 
 ### 1.7 UBS agent — scoring
 

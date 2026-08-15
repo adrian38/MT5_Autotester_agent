@@ -241,8 +241,8 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertGreaterEqual(mix.unseeded_multiplier, 0.25)
         self.assertLess(mix.unseeded_multiplier, 0.50)
         self.assertTrue(mix.adaptive_universe_feedback)
-        self.assertGreater(mix.universe_feedback_probability, 0.55)
-        self.assertLessEqual(mix.universe_feedback_probability, 0.85)
+        self.assertGreater(mix.universe_feedback_probability, 0.75)
+        self.assertLessEqual(mix.universe_feedback_probability, 0.95)
         self.assertTrue(mix.adaptive_current_target)
         self.assertGreater(mix.current_target_probability, 0.55)
         self.assertFalse(mix.adaptive_current_timeframe)
@@ -335,8 +335,12 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         self.assertFalse(mix.adaptive_universe_feedback)
         self.assertFalse(mix.adaptive_current_target)
         self.assertEqual(mix.unseeded_multiplier, 1.0)
-        self.assertEqual(mix.universe_feedback_probability, 0.55)
+        self.assertEqual(mix.universe_feedback_probability, 0.75)
         self.assertEqual(mix.current_target_probability, 0.70)
+        self.assertEqual(
+            mix.to_dict()["model"],
+            "lifecycle_smoothed_target_policy_v4",
+        )
 
     def test_universe_feedback_routing_uses_lifecycle_when_final_evidence_exists(self) -> None:
         rows = []
@@ -372,9 +376,9 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         mix = estimate_discovery_target_policy_mix(rows, minimum_trials=100)
 
         self.assertTrue(mix.universe_feedback_lifecycle_adaptive)
-        self.assertGreater(
+        self.assertGreaterEqual(
             mix.universe_feedback_probability,
-            0.55,
+            0.75,
         )
         self.assertGreater(
             mix.universe_feedback_lifecycle_probability,

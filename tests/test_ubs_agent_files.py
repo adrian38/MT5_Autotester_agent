@@ -1344,7 +1344,7 @@ class UBSSetsFileTests(unittest.TestCase):
         )
 
         self.assertEqual(restored_discovery_universe_feedback_probability(config), 0.79)
-        self.assertEqual(restored_discovery_universe_feedback_probability("{}"), 0.55)
+        self.assertEqual(restored_discovery_universe_feedback_probability("{}"), 0.75)
 
     def test_resume_restores_persisted_discovery_current_target_probability(self) -> None:
         config = json.dumps(
