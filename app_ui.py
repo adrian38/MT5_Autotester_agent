@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from compile_mq5 import find_metaeditor_path, load_compile_root
 from mt5_env import ENV_FILE, env_value, metaeditor_path_from_env, terminal_path_from_env
-from manager_node_lifecycle import EmbeddedManagerNode
+from manager_node_lifecycle import EmbeddedManagerNode, relaunch_application
 import telegram_notify
 from run_tests import (
     EXPERTS_ROOT_FILE,
@@ -725,6 +725,7 @@ class MT5AutotesterUI(
             maxsize=OUTPUT_QUEUE_MAX_ITEMS
         )
         self.stop_requested = False
+        self._restart_requested = False
 
         ui_settings = self._read_ui_settings()
         self._manager_node = EmbeddedManagerNode(BASE_DIR, ui_settings)
@@ -1313,7 +1314,16 @@ class MT5AutotesterUI(
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(60, self._animate_progress)
         self.after(OUTPUT_DRAIN_IDLE_INTERVAL_MS, self._drain_output_queue)
+        self.after(100, self._poll_manager_restart)
         self._startup_progress.done()
+
+    def _poll_manager_restart(self) -> None:
+        if self._manager_node.consume_restart_request():
+            self._restart_requested = True
+            self._manager_node.stop(stop_job=False)
+            self.destroy()
+            return
+        self.after(100, self._poll_manager_restart)
 
     def _on_app_close(self) -> None:
         if self._manager_node.job_running:
@@ -2631,6 +2641,8 @@ def main() -> int:
         app.mainloop()
     finally:
         app._manager_node.stop(stop_job=True)
+    if app._restart_requested:
+        relaunch_application(Path(__file__).resolve(), BASE_DIR)
     return 0
 
 

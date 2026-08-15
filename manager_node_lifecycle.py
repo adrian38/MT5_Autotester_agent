@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import configparser
 import os
+import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any
 
 
 TRUE_VALUES = {"1", "true", "yes", "on", "si"}
+GIT_SYNC_TIMEOUT_SECONDS = 300
 
 
 class EmbeddedManagerNode:
@@ -38,6 +41,7 @@ class EmbeddedManagerNode:
         self.server: Any = None
         self.controller: Any = None
         self.thread: threading.Thread | None = None
+        self._restart_requested = threading.Event()
         self.last_error = ""
 
     @property
@@ -48,6 +52,16 @@ class EmbeddedManagerNode:
     def job_running(self) -> bool:
         process = getattr(self.controller, "process", None)
         return bool(process is not None and process.poll() is None)
+
+    @property
+    def restart_requested(self) -> bool:
+        return self._restart_requested.is_set()
+
+    def consume_restart_request(self) -> bool:
+        if not self._restart_requested.is_set():
+            return False
+        self._restart_requested.clear()
+        return True
 
     def start(self) -> bool:
         if not self.enabled:
@@ -68,7 +82,9 @@ class EmbeddedManagerNode:
             host = str(config.get("host") or "0.0.0.0")
             port = safe_int(config.get("port"), 8761, minimum=1, maximum=65535)
             self.controller = JobController(config, self.config_path)
-            self.server = NodeServer((host, port), self.controller)
+            self.server = NodeServer(
+                (host, port), self.controller, restart_callback=self._restart_requested.set
+            )
             self.thread = threading.Thread(
                 target=self.server.serve_forever,
                 kwargs={"poll_interval": 0.5},
@@ -119,3 +135,93 @@ class EmbeddedManagerNode:
                 handle.write(f"[{timestamp}] {message}\n")
         except OSError:
             pass
+
+
+def _write_restart_log(project_dir: Path, message: str) -> None:
+    try:
+        log_path = project_dir / "logs" / "manager_node_restart.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
+    except OSError:
+        pass
+
+
+def _git_result_detail(result: subprocess.CompletedProcess[str]) -> str:
+    detail = "\n".join(
+        part.strip() for part in (result.stdout or "", result.stderr or "") if part.strip()
+    )
+    if len(detail) > 4000:
+        detail = detail[-4000:]
+    return detail
+
+
+def sync_origin_before_relaunch(project_dir: Path) -> bool:
+    """Fast-forward from origin and publish existing commits before relaunching."""
+    project_dir = project_dir.resolve()
+    environment = dict(os.environ)
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    run_options = {
+        "cwd": project_dir,
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "check": False,
+        "timeout": GIT_SYNC_TIMEOUT_SECONDS,
+        "env": environment,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+
+    def run_git(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *arguments], **run_options)
+
+    try:
+        branch_result = run_git(["branch", "--show-current"])
+        branch = (branch_result.stdout or "").strip()
+        if branch_result.returncode != 0 or not branch:
+            detail = _git_result_detail(branch_result)
+            _write_restart_log(
+                project_dir,
+                "No se pudo determinar la rama actual; se omiten pull y push"
+                + (f": {detail}" if detail else "."),
+            )
+            return False
+
+        _write_restart_log(project_dir, f"Sincronizando rama {branch} con origin antes del reinicio")
+        pull_result = run_git(["pull", "--ff-only", "origin", branch])
+        pull_detail = _git_result_detail(pull_result)
+        _write_restart_log(
+            project_dir,
+            f"git pull --ff-only origin {branch}: exit {pull_result.returncode}"
+            + (f" | {pull_detail}" if pull_detail else ""),
+        )
+        if pull_result.returncode != 0:
+            _write_restart_log(project_dir, "El pull fallo; no se ejecuta git push")
+            return False
+
+        push_result = run_git(["push", "origin", branch])
+        push_detail = _git_result_detail(push_result)
+        _write_restart_log(
+            project_dir,
+            f"git push origin {branch}: exit {push_result.returncode}"
+            + (f" | {push_detail}" if push_detail else ""),
+        )
+        return push_result.returncode == 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        _write_restart_log(project_dir, f"ERROR al sincronizar con origin: {exc}")
+        return False
+
+
+def relaunch_application(entrypoint: Path, project_dir: Path | None = None) -> None:
+    """Synchronize origin and replace the app process after a clean shutdown."""
+    if getattr(sys, "frozen", False):
+        arguments = [sys.executable, *sys.argv[1:]]
+    else:
+        arguments = [sys.executable, str(entrypoint.resolve()), *sys.argv[1:]]
+    restart_dir = (project_dir or entrypoint.resolve().parent).resolve()
+    try:
+        sync_origin_before_relaunch(restart_dir)
+    finally:
+        os.execv(sys.executable, arguments)
