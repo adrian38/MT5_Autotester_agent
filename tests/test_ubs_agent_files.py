@@ -19,7 +19,9 @@ from ubs.universe import (
     seed_symbol_disabled,
 )
 from ubs_agent import (
+    DISCOVERY_MUTATION_FEEDBACK_MAXIMUM,
     DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
+    PRODUCTION_MUTATION_FEEDBACK_MAXIMUM,
     PRODUCTION_SEED_SYMBOL_CAP_RATIO,
     PRODUCTION_TARGET_SYMBOL_CAP_RATIO,
     TargetDiversityLimiter,
@@ -45,6 +47,7 @@ from ubs_agent import (
     final_tick_stage_prefixes,
     final_tick_similarity,
     generation_random_stream,
+    generation_mutation_feedback_maximum,
     generation_feedback_terminal_stage,
     generation_fitness_target,
     generation_seed_fitness_predictions,
@@ -62,6 +65,7 @@ from ubs_agent import (
     target_timeframe_universe,
     tester_log_no_history_metadata,
     min_trades_for_period,
+    line_candidates,
     paths_belong_to_workspace,
     probability_argument,
     production_viable_source_seeds,
@@ -75,6 +79,7 @@ from ubs_agent import (
     restored_discovery_current_target_probability,
     restored_discovery_current_timeframe_probability,
     restored_discovery_universe_feedback_probability,
+    restored_mutation_feedback_maximum,
     rescore_final_tick_only,
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
@@ -1330,6 +1335,33 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(restored_discovery_exploitable_ratio(config), 0.74)
         self.assertEqual(restored_discovery_exploitable_ratio("{}"), 0.60)
 
+    def test_resume_restores_persisted_mutation_feedback_maximum(self) -> None:
+        config = json.dumps(
+            {
+                "generation": {
+                    "feedback_model": {
+                        "mutation_feedback_maximum": 1.75,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(restored_mutation_feedback_maximum(config), 1.75)
+        self.assertEqual(
+            restored_mutation_feedback_maximum("{}"),
+            PRODUCTION_MUTATION_FEEDBACK_MAXIMUM,
+        )
+
+    def test_mutation_feedback_ceiling_is_discovery_only(self) -> None:
+        self.assertEqual(
+            generation_mutation_feedback_maximum(True),
+            DISCOVERY_MUTATION_FEEDBACK_MAXIMUM,
+        )
+        self.assertEqual(
+            generation_mutation_feedback_maximum(False),
+            PRODUCTION_MUTATION_FEEDBACK_MAXIMUM,
+        )
+
     def test_resume_restores_persisted_discovery_feedback_probability(self) -> None:
         config = json.dumps(
             {
@@ -2149,6 +2181,28 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertNotIn("ST1_Timeframe", variant.mutated_keys)
             self.assertEqual(len(variant.mutated_keys), 1)
             self.assertEqual(variant.mutation_details[0]["key"], variant.mutated_keys[0])
+
+    def test_line_candidates_strengthens_only_discovery_feedback_reward(self) -> None:
+        text = "\n".join(
+            [
+                "Exit_stop=100||50||10||150||Y",
+                "SpreadFilter=20||10||5||40||Y",
+            ]
+        )
+        feedback = {"Exit_stop": 5.0, "SpreadFilter": -5.0}
+
+        production = line_candidates(text, "1", feedback)
+        discovery = line_candidates(
+            text,
+            "1",
+            feedback,
+            mutation_feedback_maximum=DISCOVERY_MUTATION_FEEDBACK_MAXIMUM,
+        )
+
+        self.assertEqual(production["Exit_stop"][2], 6.0)
+        self.assertEqual(discovery["Exit_stop"][2], 7.0)
+        self.assertEqual(production["SpreadFilter"][2], 0.5)
+        self.assertEqual(discovery["SpreadFilter"][2], 0.5)
 
     def test_create_variant_at_lower_bound_uses_local_valid_direction_without_wrap(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
