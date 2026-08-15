@@ -243,7 +243,11 @@ generation scoring:
   grouped by correlated source. Its bounded relative log-odds score is centred
   on the global probability, so unknown evidence is neutral. The UI exposes
   probability, confidence and effective 6M trials separately. Mutations use
-  relative percentile multipliers `0.5..1.5`; timeframe patch keys are excluded.
+  score-aware relative percentile multipliers: Production remains `0.5..1.5`,
+  while Discovery can reward the strongest broker-local evidence up to `1.75`
+  with the same `0.5` minimum. Weak scores remain blended toward `1.0`; the
+  applied maximum is stored in run metadata and restored on resume. Timeframe
+  patch keys are excluded.
   Regression is a Production-only fifth stage and cannot change Discovery
   generation feedback.
 - Report score and evolutionary fitness are separate. In Discovery, source
