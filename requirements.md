@@ -264,10 +264,8 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.6.20** Mutation sampling MUST convert mutation feedback to relative
   percentile multipliers in the range `0.5..1.5`; missing feedback is neutral
   (`1.0`) and tied values receive the same multiplier. Core parameters retain
-  a separate mode-specific base preference: `4x` in Production and `6x` in
-  Discovery. The applied value MUST be persisted and restored when a run is
-  resumed. Legacy timeframe patch keys MUST be excluded from mutation and
-  direction feedback.
+  their separate 4x base preference. Legacy timeframe patch keys MUST be
+  excluded from mutation and direction feedback.
 - **FR-1.6.21** Discovery routing between lifecycle-feedback and random-universe
   asset targets MUST prefer the smoothed full-lifecycle probability once both
   routes have Final Tick 6M evidence (at least one effective trial each and four
