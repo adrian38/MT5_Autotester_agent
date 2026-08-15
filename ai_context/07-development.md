@@ -8,6 +8,12 @@ Run the desktop UI:
 python .\app_ui.py
 ```
 
+The manager's `Reiniciar app` action performs a clean shutdown and then runs
+`git pull --ff-only origin <current-branch>` followed by
+`git push origin <current-branch>` before starting the UI again. A failed pull
+skips the push, but any Git failure still allows the application to relaunch.
+The command results are recorded in `logs/manager_node_restart.log`.
+
 Compile sources:
 
 ```powershell
