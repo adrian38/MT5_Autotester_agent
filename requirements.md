@@ -257,11 +257,7 @@ requirement changes or a debt item is opened/closed.
   `candidate_final_tick_6m.status='accepted'`; unresolved technical states remain
   neutral. The selected source and survivor models and their
   target, probability, raw weight and evidence MUST be persisted for prospective
-  audit. The model MUST operate in `soft_weight` mode. Production retains an
-  applied weight scale of `0.15`; Discovery uses `0.40` after prospective
-  three-cohort evidence showed 7 accepted 6M candidates from 327 variants whose
-  selected source had positive fitness, versus 0 from 378 variants whose source
-  had negative fitness. Both scales MUST be persisted in run metadata:
+  audit. The model MUST operate in `soft_weight` mode with applied weight scale `0.15`:
   source-seed ranking and next-generation survivor selection MAY use the
   scaled weight, but the raw report score MUST remain the base-quality
   classifier and the fitness contribution MUST be visible in run metadata.
