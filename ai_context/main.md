@@ -244,6 +244,10 @@ generation scoring:
   on the global probability, so unknown evidence is neutral. The UI exposes
   probability, confidence and effective 6M trials separately. Mutations use
   relative percentile multipliers `0.5..1.5`; timeframe patch keys are excluded.
+  Core mutation keys keep a separate base preference: Production remains at
+  `4x`, while Discovery uses `6x`. The applied value is stored in run metadata
+  and restored on resume; mutation count, routing, thresholds, and Production
+  behaviour are unchanged.
   Regression is a Production-only fifth stage and cannot change Discovery
   generation feedback.
 - Report score and evolutionary fitness are separate. In Discovery, source
