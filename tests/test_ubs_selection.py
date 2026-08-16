@@ -151,7 +151,13 @@ class UBSSelectionFitnessTests(unittest.TestCase):
             memory = AgentMemory(Path(tmp) / "memory.sqlite")
             try:
                 run_id = memory.create_run(
-                    Path("seeds"), Path("output"), 2, 1, 1, False, True,
+                    Path("seeds"),
+                    Path("output"),
+                    2,
+                    1,
+                    1,
+                    False,
+                    True,
                     config={"args": {"generation_mode": "discovery"}},
                 )
                 memory.conn.execute(
@@ -162,7 +168,8 @@ class UBSSelectionFitnessTests(unittest.TestCase):
                         timeframe_weight, diversity, created_at
                     ) values (?, 1, 1, 'root.set', 'XAUUSD', 'H1',
                               'test', '1', 1, 0, 0, 0, 'now')
-                    """, (run_id,),
+                    """,
+                    (run_id,),
                 )
 
                 def candidate(generation: int, seed_path: str, set_path: str) -> int:
@@ -174,7 +181,8 @@ class UBSSelectionFitnessTests(unittest.TestCase):
                             mutated_keys, missing_lot_keys, policy, status, created_at
                         ) values (?, ?, ?, ?, 'XAUUSD', 'XAUUSD', 'H1',
                                   'test', '1', '', '', 'exploit', 'accepted', 'now')
-                        """, (run_id, generation, seed_path, set_path),
+                        """,
+                        (run_id, generation, seed_path, set_path),
                     )
                     return int(cursor.lastrowid)
 

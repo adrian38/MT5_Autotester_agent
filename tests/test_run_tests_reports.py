@@ -178,9 +178,14 @@ class CopyReportsToProjectTests(unittest.TestCase):
             root = run_tests.Path(temp_dir)
             logger = ListLogger()
             settings = run_tests.TesterSettings(
-                mt5_path=root / "terminal64.exe", delay_seconds=0, portable=False, data_dir=None,
-                tester_kick_after_seconds=0, tester_stall_after_seconds=0,
-                tester_max_runtime_seconds=0, terminal_cooldown_seconds=0,
+                mt5_path=root / "terminal64.exe",
+                delay_seconds=0,
+                portable=False,
+                data_dir=None,
+                tester_kick_after_seconds=0,
+                tester_stall_after_seconds=0,
+                tester_max_runtime_seconds=0,
+                terminal_cooldown_seconds=0,
             )
             report = root / "attempt2.htm"
             report.write_text("valid", encoding="utf-8")
@@ -190,7 +195,11 @@ class CopyReportsToProjectTests(unittest.TestCase):
             with (
                 patch.object(run_tests, "tester_model_from_ini", return_value="1"),
                 patch.object(run_tests.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
-                patch.object(run_tests, "wait_for_mt5_process", side_effect=[(0, False, 1.0), (0, False, 2.0)]),
+                patch.object(
+                    run_tests,
+                    "wait_for_mt5_process",
+                    side_effect=[(0, False, 1.0), (0, False, 2.0)],
+                ),
                 patch.object(run_tests, "delete_existing_report_files") as delete_reports,
                 patch.object(run_tests, "find_report_files", side_effect=[[], [report]]),
                 patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
@@ -202,7 +211,12 @@ class CopyReportsToProjectTests(unittest.TestCase):
                 patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
             ):
                 exit_code = run_tests.run_test(
-                    root / "tester.ini", root / "report", settings, False, logger, [],
+                    root / "tester.ini",
+                    root / "report",
+                    settings,
+                    False,
+                    logger,
+                    [],
                     protected_set_name="candidate.set",
                 )
 
