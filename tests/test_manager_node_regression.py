@@ -257,20 +257,38 @@ class ManagerNodeRegressionTests(unittest.TestCase):
     def test_generation_forwards_and_normalizes_random_seed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)
-            (project / "ubs_agent.py").write_text('parser.add_argument("--random-seed")\n', encoding="utf-8")
+            (project / "ubs_agent.py").write_text(
+                'parser.add_argument("--random-seed")\n',
+                encoding="utf-8",
+            )
             (project / "tester_template.ini").write_text("[Tester]\n", encoding="utf-8")
             (project / "ui_settings.ini").write_text(
                 "\n".join([
-                    "[Paths]", f"set_files_root={project / 'sets'}",
+                    "[Paths]",
+                    f"set_files_root={project / 'sets'}",
                     f"ubs_generation_output={project / 'outputs'}",
                     f"template_path={project / 'tester_template.ini'}",
-                    "[General]", "ubs_generation_mode=discovery", "ubs_broker=ICTRADING",
-                    "ubs_account_type=STANDARD", "[Multiterminal]", "enabled=0",
-                ]), encoding="utf-8",
+                    "[General]",
+                    "ubs_generation_mode=discovery",
+                    "ubs_broker=ICTRADING",
+                    "ubs_account_type=STANDARD",
+                    "[Multiterminal]",
+                    "enabled=0",
+                ]),
+                encoding="utf-8",
             )
-            config = {"node_id": "ic", "project_dir": str(project), "broker": "ICTRADING", "account_type": "STANDARD"}
+            config = {
+                "node_id": "ic",
+                "project_dir": str(project),
+                "broker": "ICTRADING",
+                "account_type": "STANDARD",
+            }
             controller = JobController(config, project / "manager_node.json")
-            normalized = controller._normalize_generation({"random_seed": "20260812", "execute_backtests": False})
+
+            normalized = controller._normalize_generation({
+                "random_seed": "20260812",
+                "execute_backtests": False,
+            })
             command, _cwd = build_generation_command(config, normalized)
 
             self.assertEqual(normalized["random_seed"], 20260812)
