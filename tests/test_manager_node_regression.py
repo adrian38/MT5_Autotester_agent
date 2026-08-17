@@ -178,6 +178,40 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 {"7": "discovery", "9": "production", "11": "unknown"},
             )
 
+    def test_manual_repair_can_skip_the_regression_stage(self) -> None:
+        # La casilla «Prueba regresiva» del diálogo de Reparar envía
+        # `run_regression`. Omitirlo mantiene el flujo anterior a la casilla.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = self._controller(project)
+
+            def actions_for(payload: dict) -> list[str]:
+                with patch(
+                    "manager_node_runtime.node.stored_run_generation_mode",
+                    return_value="production",
+                ), patch.object(controller, "_launch_next_runnable", return_value=True):
+                    result = controller.start_repair({
+                        "run_ids": [9],
+                        "repair_attempts": 1,
+                        "retry_low_quality": False,
+                        "cleanup_after_run": False,
+                        **payload,
+                    })
+                return [step["action"] for step in result["pipeline"]]
+
+            base = ["result", "robustness", "final_tick", "final_tick_6m"]
+            self.assertEqual(actions_for({"run_regression": False}), base)
+            self.assertEqual(actions_for({"run_regression": True}), [*base, "regression"])
+            self.assertEqual(actions_for({}), [*base, "regression"])
+            self.assertFalse(
+                controller._normalize_repair({
+                    "run_ids": [9], "run_regression": False,
+                })["run_regression"],
+            )
+            self.assertTrue(
+                controller._normalize_repair({"run_ids": [9]})["run_regression"],
+            )
+
     def test_manual_repair_reads_the_persisted_run_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)
