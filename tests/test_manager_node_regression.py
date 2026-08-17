@@ -327,9 +327,20 @@ class ManagerNodeRegressionTests(unittest.TestCase):
 
             self.assertEqual(normalized["random_seed"], 20260812)
             self.assertEqual(command[command.index("--random-seed") + 1], "20260812")
-            self.assertIsNone(controller._normalize_generation({"random_seed": None})["random_seed"])
             with self.assertRaisesRegex(ValueError, "random_seed"):
                 controller._normalize_generation({"random_seed": "invalid"})
+
+            # Semilla vacía = aleatoria. Normalizarla a None no bastaba: la orden
+            # llevaba `--random-seed None` y ubs_agent.py salía con código 2
+            # (`invalid int value: 'None'`) sin generar nada (run #124, 2026-08-17).
+            random_seed = controller._normalize_generation({
+                "random_seed": None,
+                "execute_backtests": False,
+            })
+            self.assertIsNone(random_seed["random_seed"])
+            command, _cwd = build_generation_command(config, random_seed)
+            self.assertNotIn("--random-seed", command)
+            self.assertNotIn("None", command)
 
     def test_auto_repair_uses_its_own_worker_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
