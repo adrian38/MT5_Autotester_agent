@@ -305,6 +305,10 @@ def stored_run_generation_mode(config: dict[str, Any], run_id: int) -> str | Non
 
 
 def _add(args: list[str], option: str, value: Any) -> None:
+    # None es «sin valor», no el texto "None": `--random-seed None` mataba
+    # ubs_agent.py con `invalid int value` en cuanto la semilla quedaba vacía.
+    if value is None:
+        return
     text = str(value).strip()
     if text:
         args.extend([option, text])
