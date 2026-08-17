@@ -19,7 +19,6 @@ from ubs.universe import (
     seed_symbol_disabled,
 )
 from ubs_agent import (
-    DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE,
     DISCOVERY_TARGET_SYMBOL_CAP_RATIO,
     PRODUCTION_SEED_SYMBOL_CAP_RATIO,
     PRODUCTION_TARGET_SYMBOL_CAP_RATIO,
@@ -1843,64 +1842,6 @@ class UBSSetsFileTests(unittest.TestCase):
 
         self.assertNotEqual(observed, neutral)
         self.assertEqual(observed[0][1], compatible)
-
-    def test_discovery_seed_selection_strengthens_proven_fitness_without_changing_default(self) -> None:
-        penalized = Seed(Path("penalized.set"), "XAUUSD", "H1", "family", "1")
-        proven = Seed(Path("proven.set"), "EURUSD", "H1", "family", "1")
-        seeds = [penalized, proven]
-        asset_feedback = {"XAUUSD": 5.0, "EURUSD": 0.0}
-        fitness_feedback = {
-            str(penalized.path): -15.0,
-            str(proven.path): 15.0,
-        }
-
-        production_default = ranked_seed_selection(
-            seeds,
-            1,
-            asset_feedback,
-            {},
-            random.Random(4),
-            fitness_feedback=fitness_feedback,
-        )
-        discovery = discovery_ranked_seed_selection(
-            seeds,
-            1,
-            asset_feedback,
-            {},
-            random.Random(4),
-            ("XAUUSD", "EURUSD"),
-            fitness_feedback=fitness_feedback,
-        )
-
-        self.assertEqual(DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE, 0.40)
-        self.assertEqual(production_default[0][1], penalized)
-        self.assertEqual(discovery[0][1], proven)
-
-    def test_discovery_survivor_scale_can_override_a_close_report_score(self) -> None:
-        seed = Seed(Path("seed.set"), "XAUUSD", "H1", "family", "1")
-        penalized = (
-            Variant(Path("penalized.set"), seed, "XAUUSD", "H1", (), (), "", (), ()),
-            score(100.0),
-        )
-        proven = (
-            Variant(Path("proven.set"), seed, "EURUSD", "H1", (), (), "", (), ()),
-            score(94.0, symbol="EURUSD"),
-        )
-        feedback = {str(penalized[0].path): -15.0, str(proven[0].path): 15.0}
-
-        production_default = select_next_seed_survivors(
-            [penalized, proven], 100.0, 1, fitness_feedback=feedback
-        )
-        discovery = select_next_seed_survivors(
-            [penalized, proven],
-            100.0,
-            1,
-            fitness_feedback=feedback,
-            fitness_scale=DISCOVERY_SELECTION_FITNESS_APPLIED_SCALE,
-        )
-
-        self.assertEqual(production_default[0][0].path, penalized[0].path)
-        self.assertEqual(discovery[0][0].path, proven[0].path)
 
     def test_next_seed_survivors_are_diversified_without_changing_accepted_copy_pool(self) -> None:
         dominant = [

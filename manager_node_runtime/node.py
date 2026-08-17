@@ -1242,6 +1242,12 @@ class JobController:
         payload["execute_backtests"] = True
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         payload["retry_low_quality"] = bool(payload.get("retry_low_quality", True))
+        # La etapa regresiva del flujo de Reparar es opcional: la elige la casilla
+        # «Prueba regresiva» del diálogo del manager. Sin el campo se conserva el
+        # comportamiento anterior a la casilla, que era ejecutarla siempre en los
+        # runs de producción, para no cambiarle el flujo a un cliente antiguo ni a
+        # una tarea que ya estaba en la cola.
+        payload["run_regression"] = bool(payload.get("run_regression", True))
         payload["cleanup_after_run"] = cleanup_after_run_enabled(self.config, payload)
         return payload
 
@@ -1250,6 +1256,7 @@ class JobController:
         run_ids = payload["run_ids"]
         repair_attempts = payload["repair_attempts"]
         retry_low_quality = payload["retry_low_quality"]
+        run_regression = payload["run_regression"]
         actions = ["result", "robustness", "final_tick"]
         if retry_low_quality:
             actions.append("final_tick_quality")
@@ -1266,7 +1273,7 @@ class JobController:
         pipeline: list[dict[str, Any]] = []
         for run_id in run_ids:
             run_actions = [*actions]
-            if run_modes[run_id] == "production":
+            if run_regression and run_modes[run_id] == "production":
                 run_actions.append("regression")
             pipeline.extend(
                 {"action": action, "cycle": None, "run_id": run_id, "attempt": attempt}
