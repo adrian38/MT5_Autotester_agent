@@ -54,6 +54,16 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             )
             with urllib.request.urlopen(request, timeout=3) as response:
                 self.assertEqual(response.status, 200)
+            with lifecycle.controller.lock:
+                lifecycle.controller.state.update(
+                    {
+                        "status": "paused",
+                        "pipeline": [{"action": "generation"}],
+                        "current_step_index": 0,
+                        "paused_at": "2026-08-20T20:36:39+02:00",
+                    }
+                )
+                lifecycle.controller._persist()
             restart_request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/v1/application/restart",
                 data=b"{}",
@@ -67,6 +77,8 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read())["status"], "restarting")
             self.assertTrue(lifecycle.restart_requested)
+            self.assertEqual(lifecycle.controller.state["status"], "paused")
+            self.assertEqual(lifecycle.controller.state["current_step_index"], 0)
             self.assertTrue(lifecycle.consume_restart_request())
             self.assertFalse(lifecycle.restart_requested)
             lifecycle.stop()
