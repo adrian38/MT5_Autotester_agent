@@ -68,10 +68,28 @@ filenames, trade count, History Quality, and the MT5 report filename. The
 manager result page shows an explicit match/mismatch status and opens each
 original MT5 report in a separate tab.
 
-The runtime also writes `real_account_period_report.html`, containing every
-reconstructed account closure in the audited interval and marking whether its
-`(symbol, magic)` belongs to the selected variant. Run
-`20260821_000733_052028` (audit use 9, aggressive) produced nine account
+The real-account artifact is now the original HTML saved by the MT5 terminal,
+not a Python reconstruction. The runtime activates Toolbox/History, invokes
+the native Custom Period command, explicitly selects its custom mode (internal
+index 0), writes both dates, and runs Report/HTML. It publishes
+`real_account_mt5_report.html` plus MT5's companion PNG only after validating
+the `client terminal` generator marker, the native title (`Trade History
+Report` or the official Spanish localization `Informe del historial de
+trading`), and the audited login. Export or signature failure fails the audit
+instead of falling back to an invented table. Reconstructed deals remain
+internal comparison diagnostics.
+
+The node may run in an RDP session different from the console terminal used by
+the MT5 Python API. Cross-session windows cannot be automated. The runtime then
+opens another configured IC terminal in its own session, connects the same
+account, exports the native report, and closes only the PID it launched. The
+Save As edit and button are driven with direct control messages because RDP can
+reject `SetForegroundWindow`. Production run `20260821_021042_643587` proved
+this path through `MT5_IC_2`: 82,696 UTF-16 bytes, the `client terminal`
+signature, login 52958158, custom dates 2026-08-14 through 2026-08-21, and the
+native companion PNG.
+
+Run `20260821_000733_052028` (audit use 9, aggressive) produced nine account
 closures: five selected and four foreign. Its six reread lot checks matched:
 BTCUSD 0.06, XAUUSD 0.03, USDJPY 0.04, XAGUSD 0.04, EURUSD 0.06, and USTEC
 0.01; every MT5 report had 100% History Quality.
