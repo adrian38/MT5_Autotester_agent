@@ -103,6 +103,46 @@ behind a successful set rewrite.
 current run's `reports` directory. The authenticated node endpoint serves the
 bytes and the manager proxies them. Never broaden it to `.set`, INI, logs, or
 arbitrary runtime paths; those can contain implementation details or secrets.
+## Cerrar el terminal sin matarlo
+
+El auditor abre terminales MT5 con `initialize(login=...)`. Cerrarlos después
+con `taskkill /F` mata el proceso antes de que MT5 escriba su configuración y le
+**borra la sesión guardada**. El terminal vuelve a abrirse sin cuenta, y el
+Strategy Tester del pipeline —que no inyecta credenciales— se queda esperando
+hasta registrar `not synchronized with trade server`, no genera informe y
+reintenta en bucle cada ~16 minutos.
+
+Ocurrió el 2026-08-21. Cronología, para reconocerlo si vuelve:
+
+| Momento | Hecho |
+| --- | --- |
+| 08-20 20:36 | Último informe generado con éxito (`reports/`). |
+| 08-21 02:10-02:13 | Auditoría 9 sobre `MT5_IC_1`; termina matando `tester_pids` con `/T /F`. |
+| 08-21 16:04 en adelante | `Tester/logs`: `not synchronized with trade server` cada ~16 min. |
+| 08-22 18:33-18:53 | Discovery: 45/45 backtests sin informe, `scored=0 survivors=0`. |
+| 08-23 02:48 | Los terminales colgados nunca llegan a `ShutdownTerminal=1`; la reparación aborta con `MT5_IC_1 ya esta abierta`. |
+
+El síntoma no se parece a la causa: parece que falla el generador o MT5, y lo
+que falla es la cuenta del terminal. La pista fiable es el journal del tester en
+`<data_dir>\Tester\logs\<fecha>.log`, no el log del runner.
+
+Por qué la auditoría no se notaba a sí misma: su propio `tester.ini` escribe
+`[Common] Login/Password/Server` (`live_audit.py`, preparación del Strategy
+Tester), así que sus backtests autorizan aunque el terminal haya perdido la
+cuenta. `tester_template.ini` —el del pipeline— no tiene esa sección y depende
+por completo de la cuenta recordada. Mientras siga así, cualquier cosa que
+deslogee un terminal deja el pipeline a cero sin previo aviso.
+
+Reglas:
+
+- Todo cierre de terminal pasa por `_close_terminal_pids_gracefully`
+  (WM_CLOSE, y `/F` solo para los que no obedecen tras 30 s).
+- `_close_terminal_pids` es únicamente el último recurso de esa función.
+  `test_no_terminal_is_ever_force_killed_outside_the_graceful_close` falla si
+  vuelve a llamarse desde otro sitio.
+- Recuperar un terminal ya desconectado exige loguearlo a mano: la restauración
+  del auditor solo cubre los terminales que él tocó durante una ejecución.
+
 ## Normalización del lote en portfolios antiguos
 
 Desde 2026-08-21 el runtime ejecutado lee `assets/<broker>_symbol_specs.json` y

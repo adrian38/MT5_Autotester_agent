@@ -455,6 +455,38 @@ class LiveAuditEngineTests(unittest.TestCase):
 
         self.assertEqual([row["section"] for row in touched], ["Terminal.2", "Terminal.3"])
 
+    def test_no_terminal_is_ever_force_killed_outside_the_graceful_close(self) -> None:
+        # `taskkill /F` mata MT5 antes de que guarde su configuración y le borra
+        # la cuenta. El terminal vuelve a abrirse sin sesión, el Strategy Tester
+        # se queda en «not synchronized with trade server» y NINGÚN backtest
+        # genera informe: el 2026-08-21 el auditor mató así el terminal del
+        # pipeline (`tester_pids`) y dejó dos días de discovery puntuando 0
+        # supervivientes. El único uso legítimo es el último recurso dentro de
+        # `_close_terminal_pids_gracefully`, para los que ignoran WM_CLOSE.
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "manager_node_runtime" / "live_audit.py"
+        ).read_text(encoding="utf-8")
+        # El único uso permitido es el último recurso del cierre ordenado, para
+        # los terminales que ignoran WM_CLOSE.
+        fallback = "self._close_terminal_pids(pids & self._terminal_pids())"
+        calls = [
+            f"{number}: {line.strip()}"
+            for number, line in enumerate(source.splitlines(), start=1)
+            if "self._close_terminal_pids(" in line and fallback not in line
+        ]
+        self.assertEqual(
+            calls, [],
+            msg=(
+                "Estas llamadas fuerzan el cierre del terminal fuera de "
+                "`_close_terminal_pids_gracefully` y le borran la cuenta "
+                f"guardada; usar el cierre ordenado: {calls}"
+            ),
+        )
+        # Y el último recurso sigue existiendo: sin él, un terminal colgado
+        # bloquearía la auditoría para siempre.
+        self.assertIn(fallback, source)
+
     def test_missing_tick_quality_makes_the_result_not_comparable(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             owner, controller = self._controller(Path(temp), "running", quality=None)

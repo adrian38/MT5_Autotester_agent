@@ -608,6 +608,16 @@ class LiveAuditController:
 
     @staticmethod
     def _close_terminal_pids(pids: set[int]) -> None:
+        """Mata el terminal sin darle tiempo a guardar. NO usar directamente.
+
+        Es el último recurso de `_close_terminal_pids_gracefully`, para los que
+        no obedecen a WM_CLOSE. Cerrar así un terminal en el que se acaba de
+        activar una cuenta le borra la sesión guardada: al volver a abrirlo el
+        Strategy Tester se queda en «not synchronized with trade server», no
+        genera informe y el pipeline entero puntúa 0. Ocurrió el 2026-08-21 y
+        dejó dos días de backtests a cero: ver «Cerrar el terminal sin matarlo»
+        en `ai_context/11-live-audit.md`.
+        """
         for pid in sorted(pids):
             subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -725,7 +735,7 @@ class LiveAuditController:
             if not mt5.initialize(path=path, login=int(login), password=password, server=server, timeout=60000):
                 errors.append(f"{Path(path).parent.name}: {mt5.last_error()}")
                 mt5.shutdown()
-                self._close_terminal_pids(self._terminal_pids() - before)
+                self._close_terminal_pids_gracefully(self._terminal_pids() - before)
                 continue
             # El terminal aceptó las credenciales: desde aquí su cuenta guardada
             # ya cambió, tanto si el login se confirma como si no.
@@ -736,7 +746,7 @@ class LiveAuditController:
                 return mt5, section, profile, self._terminal_pids() - before
             errors.append(f"{Path(path).parent.name}: el terminal no confirmó el login")
             mt5.shutdown()
-            self._close_terminal_pids(self._terminal_pids() - before)
+            self._close_terminal_pids_gracefully(self._terminal_pids() - before)
         raise RuntimeError("No se pudo iniciar sesión en ninguna terminal configurada: " + " | ".join(errors))
 
     def _extract_real(
@@ -828,7 +838,7 @@ class LiveAuditController:
             return trades, points, account
         finally:
             mt5.shutdown()
-            self._close_terminal_pids(launched_pids)
+            self._close_terminal_pids_gracefully(launched_pids)
 
     def _export_native_account_report(
         self, *, mt5: Any, request: dict[str, Any], profile_name: str,
@@ -887,7 +897,9 @@ class LiveAuditController:
                     errors.append(f"{profile.get('name') or section}: {exc}")
                 finally:
                     mt5.shutdown()
-                    self._close_terminal_pids(launched or (self._terminal_pids() - before))
+                    self._close_terminal_pids_gracefully(
+                        launched or (self._terminal_pids() - before)
+                    )
             raise NativeHistoryReportError(
                 "No se pudo obtener el HTML nativo en ninguna terminal IC accesible: "
                 + " | ".join(errors)
@@ -1149,7 +1161,11 @@ class LiveAuditController:
             request["tester_login"], request["tester_password"], request["tester_server"]
         )
         tester_mt5.shutdown()
-        self._close_terminal_pids(tester_pids)
+        # Cierre ordenado, no `taskkill /F`: este terminal es el que el pipeline
+        # reutiliza para cada backtest. Matarlo antes de que MT5 guarde su
+        # configuración le borra la cuenta y el Strategy Tester se queda en
+        # «not synchronized with trade server» para siempre.
+        self._close_terminal_pids_gracefully(tester_pids)
         terminal_config = configparser.ConfigParser(interpolation=None)
         terminal_config.optionxform = str
         terminal_config["Multiterminal"] = {
