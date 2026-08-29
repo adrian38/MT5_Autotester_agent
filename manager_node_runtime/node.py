@@ -674,7 +674,7 @@ def stage_notification_message(
     )
 
 
-def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]]:
+def completed_runs_snapshot(path: Path, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     uri = path.resolve().as_uri() + "?mode=ro"
@@ -684,8 +684,8 @@ def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]
             if not _table_exists(conn, "runs") or not _table_exists(conn, "candidates"):
                 return []
             rows = conn.execute(
-                "select * from runs where coalesce(hidden,0)=0 order by id desc limit ?",
-                (max(1, min(int(limit), 500)),),
+                "select * from runs where coalesce(hidden,0)=0 order by id desc limit ? offset ?",
+                (max(1, int(limit)), max(0, int(offset))),
             ).fetchall()
             result: list[dict[str, Any]] = []
             non_terminal = {"generated", "pending", "running"}
@@ -1855,15 +1855,29 @@ class JobController:
         self._persist()
         return result
 
-    def runs(self, limit: int = 100) -> dict[str, Any]:
+    def runs(self, limit: int = 100, offset: int = 0) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
         if not settings_path.is_absolute():
             settings_path = project / settings_path
         cfg = read_settings(settings_path)
         path = memory_path(self.config, cfg)
-        runs = completed_runs_snapshot(path, limit)
-        return {"runs": runs, "memory_path": str(path), "observed_at": utc_now()}
+        page_limit = max(1, min(int(limit), 100))
+        page_offset = max(0, int(offset))
+        page = completed_runs_snapshot(path, page_limit + 1, page_offset)
+        has_more = len(page) > page_limit
+        runs = page[:page_limit]
+        return {
+            "runs": runs,
+            "pagination": {
+                "limit": page_limit,
+                "offset": page_offset,
+                "has_more": has_more,
+                "next_offset": page_offset + len(runs) if has_more else None,
+            },
+            "memory_path": str(path),
+            "observed_at": utc_now(),
+        }
 
     def log_tail(self, lines: int = 200) -> dict[str, Any]:
         with self.lock:
@@ -1930,7 +1944,9 @@ class NodeHandler(BaseHTTPRequestHandler):
             self._send(200, self.server.controller.log_tail(safe_int(query.get("lines", [200])[0], 200)))
         elif parsed.path == "/api/v1/runs":
             query = urllib.parse.parse_qs(parsed.query)
-            self._send(200, self.server.controller.runs(safe_int(query.get("limit", [100])[0], 100)))
+            limit = safe_int(query.get("limit", [100])[0], 100, minimum=1, maximum=100)
+            offset = safe_int(query.get("offset", [0])[0], 0, minimum=0)
+            self._send(200, self.server.controller.runs(limit, offset))
         elif parsed.path == "/api/v1/universe":
             self._send(200, self.server.controller.universe())
         elif parsed.path == "/api/v1/live-audits":

@@ -1324,6 +1324,12 @@ A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It 
 
 ### Manager node — terminales de reparación automática
 
+El historial que consume el manager se pagina de extremo a extremo mediante
+`GET /api/v1/runs?limit=100&offset=N`. `completed_runs_snapshot` aplica
+`LIMIT/OFFSET` directamente en SQLite y la respuesta incluye
+`pagination.has_more` y `pagination.next_offset`; no existe un máximo global de
+runs visibles.
+
 Las ejecuciones de generación aceptan `repair_max_workers` como límite
 independiente para todas las etapas de la reparación automática posterior al
 run. `max_workers` sigue perteneciendo exclusivamente a la generación. Si un
