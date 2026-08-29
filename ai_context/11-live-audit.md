@@ -150,8 +150,8 @@ desde el manager. No debe volver a usar `tester_*`: la cuenta del tester
 pertenece a la prueba y puede no ser la cuenta que el operador quiere conservar
 en los terminales al finalizar.
 
-`_remember_real_account_terminal` registra todas las rutas donde la auditoría
-activó la cuenta real y deduplica la misma ruta. El `finally` recorre la lista
+`_remember_real_account_terminal` registra todas las rutas utilizadas por la
+auditoría (extracción, reporte y Strategy Tester) y deduplica la misma ruta. El `finally` recorre la lista
 completa, conecta la cuenta `restore_*`, confirma login y servidor con
 `account_info()`, registra una fila `terminal_restore` por ruta y solo después
 reanuda el pipeline. El flujo aplica igual si falla la extracción, el reporte,
@@ -162,6 +162,21 @@ Este runtime anuncia `capabilities.live_audit_restore_account=true`. El manager
 debe rechazar la auditoría si el proceso aún cargado no publica esa capacidad;
 es la barrera de compatibilidad durante un despliegue con el agente ocupado.
 
+## Variante exacta, cinco terminales y reporte real (2026-08-29)
+
+La variante se filtra por igualdad estricta de `variant_key`; `aggressive` no
+incluye miembros balanced ni conservative. `_run_tester` registra en
+`tester_execution` el modo, los sets y el pool efectivo. Con más de un worker,
+el pool aplica la regla existente del multiterminal: usa hasta un perfil del
+broker por set aunque su casilla individual esté desactivada. Seis sets y cinco
+perfiles IC producen cinco workers; todos quedan incluidos en la restauración final.
+
+El historial real se extrae una sola vez porque es global a la cuenta. Los
+deals de la API alimentan la comparación y el HTML nativo del terminal aporta la
+evidencia firmada. El fallback de exportación prueba secuencialmente otros
+perfiles configurados del mismo broker; paralelizarlo duplicaría el mismo
+informe sin mejorar la cobertura.
+
 ## Normalización del lote en portfolios antiguos
 
 Desde 2026-08-21 el runtime ejecutado lee `assets/<broker>_symbol_specs.json` y
@@ -169,3 +184,40 @@ normaliza `StartLots` a `max(lot_guardado, units * volume_min)`, redondeado a
 `volume_step`. Así USTEC con una unidad guardada históricamente como `0.01` se
 audita a `0.10`, que es el mínimo real publicado por ICTrading. La evidencia de
 la auditoría conserva ambos lotes y la regla aplicada.
+
+## Validar cada login tester y conservar el Journal principal
+
+El INI del runner no prueba que MT5 aceptase la cuenta en cada instalación. El
+runtime valida secuencialmente todas las terminales del pool con la API MT5 y
+exige login, servidor y conexión exactos antes de lanzar ningún backtest. El
+resultado lo registra en `tester_execution.terminal_validations`.
+
+El proceso embebido corre como el usuario Windows que sí puede leer los data
+dirs. Toma offsets de `<data_dir>/logs/*.log` antes de validar, copia solamente
+lo añadido durante la auditoría a `logs/main_journal_<terminal>.txt` al terminar
+el runner y lo hace antes de la restauración final. Los secretos se redactan y
+estos ficheros permanecen como diagnóstico local: `artifact_path` no debe
+ampliarse para exponer logs.
+
+## Persistencia comprobada de la cuenta final (2026-08-30)
+
+`MetaTrader5.initialize(login=..., password=..., server=...)` solo demostraba
+que la sesión en memoria estaba conectada. Una captura posterior mostró el login
+correcto en el título, pero también el diálogo «Inicio de sesión» con contraseña
+vacía y «Guardar contraseña» desmarcado. Por tanto, `account_info()` antes del
+cierre era un falso positivo respecto de la próxima apertura.
+
+`_persist_terminal_account` aplica ahora el contrato oficial de MT5. Cierra de
+forma limpia solo los PID de la instalación afectada, la arranca con un INI
+temporal `[Common]` que contiene `KeepPrivate=1`, confirma la cuenta y vuelve a
+cerrarla limpiamente para que se escriba la base cifrada de cuentas. El INI se
+elimina al salir. A continuación abre la instalación normalmente y llama a
+`initialize(path=..., timeout=...)` sin login, servidor ni contraseña. Solo si
+esa reapertura confirma login, servidor y `terminal_info.connected` se registra
+`restored=true`, `password_persisted=true` y
+`reopened_without_password=true`.
+
+Si la instalación estaba abierta antes de auditar, la reapertura verificada se
+deja abierta. Si la lanzó únicamente el auditor, vuelve a cerrarse limpiamente.
+Un fallo en la reapertura se publica como restauración fallida y ocurre antes de
+reanudar el pipeline.
