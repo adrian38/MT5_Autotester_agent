@@ -1580,6 +1580,7 @@ class AgentMemory:
         self,
         aliases: dict[str, str] | None = None,
         *,
+        allowed_symbols: Iterable[str] | None = None,
         terminal_stage: str | None = None,
     ) -> dict[str, FeedbackSignal]:
         aliases = {str(key).upper(): str(value).upper() for key, value in (aliases or {}).items()}
@@ -1588,17 +1589,27 @@ class AgentMemory:
             raw = str(symbol or "").upper()
             return aliases.get(raw, raw)
 
+        allowed = (
+            {_canonical(symbol) for symbol in allowed_symbols if str(symbol or "").strip()}
+            if allowed_symbols is not None
+            else None
+        )
+
         rows = self._candidate_feedback_rows()
         seed_rows = self._seed_feedback_rows()
         global_groups: dict[object, list[object]] = {}
         grouped: dict[str, dict[object, list[object]]] = {}
         for row in rows:
             key = _canonical(row["target_symbol"])
+            if allowed is not None and key not in allowed:
+                continue
             group = candidate_group_key(row)
             global_groups.setdefault(group, []).append(row)
             grouped.setdefault(key, {}).setdefault(group, []).append(row)
         for row in seed_rows:
             key = _canonical(row["symbol"])
+            if allowed is not None and key not in allowed:
+                continue
             group = seed_group_key(row)
             global_groups.setdefault(group, []).append(row)
             grouped.setdefault(key, {}).setdefault(group, []).append(row)
@@ -1612,12 +1623,14 @@ class AgentMemory:
         self,
         aliases: dict[str, str] | None = None,
         *,
+        allowed_symbols: Iterable[str] | None = None,
         terminal_stage: str | None = None,
     ) -> dict[str, float]:
         return {
             key: signal.effective_score
             for key, signal in self.asset_feedback_signals(
                 aliases,
+                allowed_symbols=allowed_symbols,
                 terminal_stage=terminal_stage,
             ).items()
         }
@@ -1648,19 +1661,23 @@ class AgentMemory:
         for row in rows:
             asset_key = _canonical(row["target_symbol"])
             group_key = normalized_groups.get(asset_key, "")
+            # group_by_symbol is the active target universe. Unknown historical
+            # assets must not shift its relative asset/group probability baseline.
+            if not group_key:
+                continue
             cohort = candidate_group_key(row)
             global_groups.setdefault(cohort, []).append(row)
             grouped_assets.setdefault(asset_key, {}).setdefault(cohort, []).append(row)
-            if group_key:
-                grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
+            grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
         for row in seed_rows:
             asset_key = _canonical(row["symbol"])
             group_key = normalized_groups.get(asset_key, "")
+            if not group_key:
+                continue
             cohort = seed_group_key(row)
             global_groups.setdefault(cohort, []).append(row)
             grouped_assets.setdefault(asset_key, {}).setdefault(cohort, []).append(row)
-            if group_key:
-                grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
+            grouped_asset_groups.setdefault(group_key, {}).setdefault(cohort, []).append(row)
         asset_signals = probability_feedback_signals(
             grouped_assets,
             global_groups,

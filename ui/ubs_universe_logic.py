@@ -704,6 +704,7 @@ class UBSUniverseLogicMixin:
         assets, aliases = self._load_ubs_asset_universe()
         asset_universe_path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
         universe_symbols_tuple = tuple(symbol for _group, symbol, _symbol_aliases in assets)
+        universe_symbols = {symbol.upper() for symbol in universe_symbols_tuple}
         symbol_suffix, futures_suffix, shares_suffix = self._ubs_universe_suffix_config()
         suffix_universe = load_symbol_suffix_universe(
             asset_universe_path,
@@ -731,6 +732,8 @@ class UBSUniverseLogicMixin:
         total_seed_scored = 0
         total_seed_pending = 0
         total_seed_mismatch = 0
+        total_outside_universe = 0
+        total_seed_outside_universe = 0
         total_robust_accepted = 0
         total_robust_rejected = 0
         asset_signals = {}
@@ -779,7 +782,10 @@ class UBSUniverseLogicMixin:
                 conn.close()
                 memory = AgentMemory(memory_path)
                 try:
-                    asset_signals = memory.asset_feedback_signals(signal_aliases)
+                    asset_signals = memory.asset_feedback_signals(
+                        signal_aliases,
+                        allowed_symbols=universe_symbols,
+                    )
                     timeframe_signals = memory.timeframe_feedback_signals()
                 finally:
                     memory.close()
@@ -804,6 +810,11 @@ class UBSUniverseLogicMixin:
                     futures_suffix=futures_suffix,
                     shares_suffix=shares_suffix,
                 )
+                # Historical rows stay in SQLite for audit, but only the live
+                # broker universe may create selectable rows or asset weights.
+                if canonical.upper() not in universe_symbols:
+                    total_outside_universe += 1
+                    continue
                 if canonical.upper() in disabled_symbols:
                     continue
                 period = str(row["period"] or "UNKNOWN").upper()
@@ -856,11 +867,21 @@ class UBSUniverseLogicMixin:
                     futures_suffix,
                     shares_suffix,
                 )
-                eligible_canonicals = tuple(
+                current_canonicals = tuple(
                     canonical
                     for canonical in canonicals
-                    if canonical.upper() not in disabled_symbols
-                    or canonical.upper() in seed_enabled_when_disabled
+                    if canonical.upper() in universe_symbols
+                )
+                if not current_canonicals:
+                    total_seed_outside_universe += 1
+                    continue
+                eligible_canonicals = tuple(
+                    canonical
+                    for canonical in current_canonicals
+                    if (
+                        canonical.upper() not in disabled_symbols
+                        or canonical.upper() in seed_enabled_when_disabled
+                    )
                 )
                 if not eligible_canonicals:
                     continue
@@ -910,11 +931,8 @@ class UBSUniverseLogicMixin:
                     stat["best"] = score if stat["best"] is None else max(float(stat["best"]), score)
                 total_seed_scored += 1
 
-        universe_symbols = {symbol.upper() for symbol in universe_symbols_tuple}
-        observed_only = sorted(symbol for symbol in asset_stats if symbol.upper() not in universe_symbols)
-        all_assets = assets + [("Memoria", symbol, []) for symbol in observed_only]
         ranked_assets = []
-        for group, symbol, symbol_aliases in all_assets:
+        for group, symbol, symbol_aliases in assets:
             stat = asset_stats.get(symbol.upper(), self._empty_ubs_stat())
             scores = stat["scores"]
             signal = asset_signals.get(symbol.upper())
@@ -1035,6 +1053,7 @@ class UBSUniverseLogicMixin:
             f"Universo: {len(assets)} activos | puntuados validos: {total_scored} | "
             f"semillas puntuadas: {total_seed_scored} | pendientes/neutros: {total_pending + total_seed_pending} | "
             f"mismatch ignorados: {total_mismatch + total_seed_mismatch} | robust +/{total_robust_accepted} -/{total_robust_rejected} | "
+            f"fuera de universo ignorados: {total_outside_universe + total_seed_outside_universe} | "
             f"deshabilitados: {len(disabled_symbols)} | seeds en deshab.: {len(seed_enabled_when_disabled)}{asset_filter_text}{tf_filter_text}"
         )
         self.ubs_timeframe_summary.set(

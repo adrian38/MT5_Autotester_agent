@@ -3,6 +3,9 @@ from pathlib import Path
 import tempfile
 import sqlite3
 
+from ubs.memory import AgentMemory
+from ubs.models import Seed, Variant
+
 from ubs.account import (
     account_disabled_symbols_path,
     account_memory_path,
@@ -137,7 +140,98 @@ class _FakeTree:
         raise AssertionError("focus should not be called for missing tree items")
 
 
+class _CollectingTree:
+    def __init__(self) -> None:
+        self.rows: dict[str, tuple[object, ...]] = {}
+
+    def get_children(self) -> tuple[str, ...]:
+        return tuple(self.rows)
+
+    def delete(self, iid: str) -> None:
+        self.rows.pop(iid, None)
+
+    def insert(self, _parent: str, _index: str, *, values, tags=()) -> str:
+        iid = f"row-{len(self.rows) + 1}"
+        self.rows[iid] = tuple(values)
+        return iid
+
+
+class _RefreshUniverse(UBSUniverseLogicMixin):
+    def __init__(self, memory_path: Path) -> None:
+        self._memory_path = memory_path
+        self.ubs_broker = _FakeVar("AXI")
+        self.ubs_universe_checked: set[str] = set()
+        self.ubs_timeframe_checked: set[str] = set()
+        self.ubs_universe_paths: dict[str, dict[str, str]] = {}
+        self.ubs_universe_assets_tree = _CollectingTree()
+        self.ubs_timeframes_tree = _CollectingTree()
+        self.ubs_universe_summary = _FakeVar("")
+        self.ubs_timeframe_summary = _FakeVar("")
+        self.symbol_suffix_enabled = _FakeVar(False)
+        self.symbol_suffix = _FakeVar("")
+        self.symbol_futures_suffix = _FakeVar("")
+        self.symbol_shares_suffix = _FakeVar("")
+        self.symbol_map_enabled = _FakeVar(False)
+        self.symbol_map = _FakeVar("")
+
+    def _ubs_broker(self) -> str:
+        return "AXI"
+
+    def _ubs_account_type(self) -> str:
+        return "STANDARD"
+
+    def _ubs_memory_path(self) -> Path:
+        return self._memory_path
+
+    def _load_ubs_asset_universe(self):
+        return [("Stocks", "ACTIVE+", [])], {}
+
+    def _load_disabled_ubs_symbols(self) -> set[str]:
+        return set()
+
+    def _load_seed_enabled_disabled_ubs_symbols(self) -> set[str]:
+        return set()
+
+    @staticmethod
+    def _checkbox_text(checked: bool) -> str:
+        return "[x]" if checked else "[ ]"
+
+    @staticmethod
+    def _format_ubs_number(value, decimals: int = 2) -> str:
+        return "" if value is None else f"{float(value):.{decimals}f}"
+
+
 class UBSAccountTests(unittest.TestCase):
+    def test_universe_refresh_does_not_render_memory_only_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            memory_path = root / "memory.sqlite"
+            memory = AgentMemory(memory_path)
+            try:
+                run_id = memory.create_run(root, root / "output", 1, 2, 1, False, True)
+                seed = Seed(root / "seed.set", "ACTIVE+", "H1", "family", "1")
+                memory.record_variant(
+                    run_id,
+                    1,
+                    Variant(root / "active.set", seed, "ACTIVE+", "H1", (), (), "test"),
+                )
+                memory.record_variant(
+                    run_id,
+                    1,
+                    Variant(root / "removed.set", seed, "REMOVED+", "H1", (), (), "test"),
+                )
+            finally:
+                memory.close()
+
+            universe = _RefreshUniverse(memory_path)
+            universe._refresh_ubs_universe()
+
+            rows = tuple(universe.ubs_universe_assets_tree.rows.values())
+            self.assertEqual([row[4] for row in rows], ["ACTIVE+"])
+            self.assertEqual([row[3] for row in rows], ["Stocks"])
+            self.assertNotIn("Memoria", universe.ubs_universe_summary.get())
+            self.assertIn("fuera de universo ignorados: 1", universe.ubs_universe_summary.get())
+
     def test_normalize_account_type_defaults_to_ecn(self) -> None:
         self.assertEqual(normalize_account_type("pro"), "PRO")
         self.assertEqual(normalize_account_type("ECN"), "ECN")
