@@ -24,6 +24,7 @@ from typing import Any, Callable
 import telegram_notify
 
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
+from .live_audit import LiveAuditController
 from .portfolio_save import (
     exclude_portfolio_members_payload,
     requalify_portfolio_member_payload,
@@ -861,11 +862,10 @@ def pipeline_stage_pending_count(
         return sum(1 for row in rows if pending(row))
 
 
-#: Estados desde los que un pipeline puede continuar donde lo dejo. ``paused`` es
-#: una pausa pedida por el usuario; ``interrupted`` es lo que queda cuando el
-#: agente se cerro con un trabajo en marcha. Los dos conservan ``pipeline`` y
-#: ``current_step_index``, que es cuanto hace falta para retomarlo.
-RESUMABLE_STATUSES = frozenset({"paused", "interrupted"})
+#: Estados desde los que un pipeline puede continuar donde lo dejo. ``failed``
+#: tambien es retomable cuando la etapa relanzada fallo antes de avanzar el
+#: pipeline; ``_is_resumable`` exige que conserve posicion y log validos.
+RESUMABLE_STATUSES = frozenset({"paused", "interrupted", "failed"})
 
 
 class JobController:
@@ -910,6 +910,7 @@ class JobController:
                     self.queue = [dict(item) for item in stored_queue if isinstance(item, dict)]
             except ValueError:
                 pass
+        self.live_audits = LiveAuditController(self, self.runtime_dir)
         if self.queue:
             self._schedule_queue_drain()
 
@@ -938,12 +939,15 @@ class JobController:
         # Un pipeline en pausa tambien reserva el nodo: si no, la cola arrancaria
         # el siguiente trabajo encima del que el usuario dejo a medias y ya no
         # habria forma de reanudarlo.
-        return self.process is not None or self._is_resumable()
+        return self.process is not None or self._is_resumable() or self.live_audits.is_running()
 
     def _is_resumable(self) -> bool:
+        pipeline = list(self.state.get("pipeline") or [])
+        step_index = safe_int(self.state.get("current_step_index"), -1)
         return (
             str(self.state.get("status") or "") in RESUMABLE_STATUSES
-            and bool(self.state.get("pipeline"))
+            and 0 <= step_index < len(pipeline)
+            and bool(str(self.state.get("log_path") or "").strip())
         )
 
     def _enqueue(self, task_type: str, payload: dict[str, Any], summary: str) -> dict[str, Any]:
@@ -1627,7 +1631,7 @@ class JobController:
             if self.process is not None and self.process.poll() is None:
                 raise RuntimeError("Ya hay una etapa en marcha")
             if not self._is_resumable():
-                raise RuntimeError("No hay ningun pipeline pausado o interrumpido")
+                raise RuntimeError("No hay ningun pipeline pausado, interrumpido o fallido que reanudar")
             step_index = safe_int(self.state.get("current_step_index"), -1)
             pipeline = list(self.state.get("pipeline") or [])
             if not 0 <= step_index < len(pipeline):
@@ -1698,6 +1702,7 @@ class JobController:
             "capabilities": {
                 "worker_override": True,
                 "pipeline_controls": True,
+                "failed_resume": True,
                 "cycles": True,
                 "repair_runs": True,
                 "universe_management": True,
@@ -1705,6 +1710,7 @@ class JobController:
                 "task_queue": True,
                 "application_restart": bool(getattr(self, "application_restart_available", False)),
                 "historical_cleanup": bool(historical_cleanup_scripts(self.config, required=False)),
+                "live_account_audit": True,
             },
             "observed_at": utc_now(),
         }
@@ -1918,6 +1924,11 @@ class NodeHandler(BaseHTTPRequestHandler):
             self._send(200, self.server.controller.runs(safe_int(query.get("limit", [100])[0], 100)))
         elif parsed.path == "/api/v1/universe":
             self._send(200, self.server.controller.universe())
+        elif parsed.path == "/api/v1/live-audits":
+            self._send(200, {"audits": self.server.controller.live_audits.all_states(), "observed_at": utc_now()})
+        elif parsed.path.startswith("/api/v1/live-audits/"):
+            portfolio_id = safe_int(parsed.path.rsplit("/", 1)[-1], 0, minimum=1)
+            self._send(200, {"audit": self.server.controller.live_audits.state(portfolio_id), "observed_at": utc_now()})
         elif parsed.path == "/api/v1/portfolios":
             query=urllib.parse.parse_qs(parsed.query); self._send(200,self.server.controller.portfolios(query.get("scope",["full_history"])[0]))
         elif parsed.path.startswith("/api/v1/portfolios/"):
@@ -1948,6 +1959,11 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.resume())
             elif self.path == "/api/v1/jobs/queue/cancel":
                 self._send(200, self.server.controller.cancel_queued(str(self._body().get("task_id") or "")))
+            elif self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/run"):
+                portfolio_id = safe_int(self.path.strip("/").split("/")[-2], 0, minimum=1)
+                body = self._body()
+                body["portfolio_id"] = portfolio_id
+                self._send(202, {"audit": self.server.controller.live_audits.start(body)})
             elif self.path == "/api/v1/universe/symbols":
                 self._send(200, self.server.controller.update_universe(self._body()))
             elif self.path == "/api/v1/portfolios/save":
@@ -1986,7 +2002,11 @@ class NodeServer(ThreadingHTTPServer):
         if callback is None:
             raise RuntimeError("El reinicio remoto solo esta disponible en la aplicacion integrada")
         with self.controller.lock:
-            if self.controller._busy() or self.controller.queue:
+            process = self.controller.process
+            process_running = process is not None and process.poll() is None
+            status = str(self.controller.state.get("status") or "")
+            restartable = status in {"idle", "completed", "failed", "stopped", "paused", "interrupted"}
+            if process_running or self.controller.live_audits.is_running() or self.controller.queue or not restartable:
                 raise RuntimeError(
                     "No se puede reiniciar la aplicacion con una ejecucion activa o tareas pendientes"
                 )

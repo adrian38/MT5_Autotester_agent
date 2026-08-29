@@ -1259,6 +1259,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 for name, symbol, value, status in (
                     ("metal.set", "XAUUSD", 120.0, "accepted"),
                     ("stock.set", "AAPL", -80.0, "rejected"),
+                    ("obsolete.set", "OLD+", 5000.0, "accepted"),
                 ):
                     variant = Variant(root / name, seed, symbol, "H1", (), (), "test")
                     memory.record_variant(run_id, 1, variant)
@@ -1276,7 +1277,13 @@ class UBSSetsFileTests(unittest.TestCase):
 
                 self.assertIn("XAUUSD", assets)
                 self.assertIn("AAPL", assets)
+                self.assertNotIn("OLD+", assets)
                 self.assertGreater(groups["Metals"], groups["Stocks"])
+                filtered_signals = memory.asset_feedback_signals(
+                    {},
+                    allowed_symbols={"XAUUSD", "AAPL"},
+                )
+                self.assertEqual(set(filtered_signals), {"XAUUSD", "AAPL"})
             finally:
                 memory.close()
 
