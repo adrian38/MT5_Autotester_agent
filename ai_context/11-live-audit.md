@@ -143,6 +143,25 @@ Reglas:
 - Recuperar un terminal ya desconectado exige loguearlo a mano: la restauración
   del auditor solo cubre los terminales que él tocó durante una ejecución.
 
+## Cuenta final independiente del tester (2026-08-29)
+
+La restauración recibe `restore_login`, `restore_server` y `restore_password`
+desde el manager. No debe volver a usar `tester_*`: la cuenta del tester
+pertenece a la prueba y puede no ser la cuenta que el operador quiere conservar
+en los terminales al finalizar.
+
+`_remember_real_account_terminal` registra todas las rutas donde la auditoría
+activó la cuenta real y deduplica la misma ruta. El `finally` recorre la lista
+completa, conecta la cuenta `restore_*`, confirma login y servidor con
+`account_info()`, registra una fila `terminal_restore` por ruta y solo después
+reanuda el pipeline. El flujo aplica igual si falla la extracción, el reporte,
+el tester o la comparación. El secreto de restauración participa en la
+redacción de excepciones y nunca entra en el estado persistente del nodo.
+
+Este runtime anuncia `capabilities.live_audit_restore_account=true`. El manager
+debe rechazar la auditoría si el proceso aún cargado no publica esa capacidad;
+es la barrera de compatibilidad durante un despliegue con el agente ocupado.
+
 ## Normalización del lote en portfolios antiguos
 
 Desde 2026-08-21 el runtime ejecutado lee `assets/<broker>_symbol_specs.json` y
