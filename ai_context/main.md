@@ -153,6 +153,19 @@ batch wrappers.
 
 ## Recent Important Changes
 
+### Manager node — retry a failed resumed stage
+
+`manager_node_runtime/node.py` treats `failed` as resumable only when the saved
+job still has a valid `current_step_index` inside a non-empty `pipeline` and a
+non-empty `log_path`. This covers a resumed `run_tests.py` stage that exits with
+code 1 (for example because an MT5 terminal was still open): the watcher keeps
+the pipeline position, so the operator can close the terminal and retry the
+same stage. Failures without complete resume context remain non-resumable. The
+manager UI must carry the matching `failed` predicate; changing only one side
+either hides the button or makes the node reject `/api/v1/jobs/resume`. Ported
+nodes advertise `capabilities.failed_resume`, which lets the manager hide the
+failed-state action for older broker runtimes during a rolling deployment.
+
 ### Manager card historical cleanup
 
 The IC manager node advertises `historical_cleanup` when both
