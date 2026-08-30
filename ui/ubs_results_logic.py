@@ -722,6 +722,7 @@ class UBSResultsLogicMixin:
                     sum(case when status = 'no_report' then 1 else 0 end) as no_report,
                     sum(case when status = 'no_trades' then 1 else 0 end) as no_trades,
                     sum(case when status = 'no_history' then 1 else 0 end) as no_history,
+                    sum(case when status = 'symbol_not_exist' then 1 else 0 end) as symbol_not_exist,
                     sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
                 from candidates
                 where run_id = ?
@@ -761,6 +762,7 @@ class UBSResultsLogicMixin:
         no_report = int(counts["no_report"] or 0)
         no_trades = int(counts["no_trades"] or 0)
         no_history = int(counts["no_history"] or 0)
+        symbol_not_exist = int(counts["symbol_not_exist"] or 0)
         report_mismatch = int(counts["report_mismatch"] or 0)
         self.ubs_results_summary.set(
             f"Run #{latest_run['id']} | {latest_run['created_at']} | "
@@ -775,6 +777,8 @@ class UBSResultsLogicMixin:
             extra.append(f"sin operaciones {no_trades}")
         if no_history:
             extra.append(f"sin historico {no_history}")
+        if symbol_not_exist:
+            extra.append(f"simbolo inexistente {symbol_not_exist}")
         if report_mismatch:
             extra.append(f"mismatch reporte {report_mismatch}")
         extra_text = f" | {', '.join(extra)}" if extra else ""
@@ -1474,6 +1478,7 @@ class UBSResultsLogicMixin:
             "no_history": "sin historico",
             "history_ok": "historico OK",
             "disabled_symbol": "deshabilitado",
+            "symbol_not_exist": "simbolo inexistente",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
             "pending_tester_context": "pend. contexto",
@@ -1496,6 +1501,7 @@ class UBSResultsLogicMixin:
             "no_report": "pend. reporte",
             "parse_error": "pend. parse",
             "report_mismatch": "pend. mismatch",
+            "symbol_not_exist": "simbolo inexistente",
         }
         label = labels.get(status, status)
         bonus = None
@@ -1514,7 +1520,8 @@ class UBSResultsLogicMixin:
     def _ubs_result_tag(self, status: str) -> str:
         if status == "accepted":
             return "accepted"
-        if status in {"rejected", "no_history"}:
+        # symbol_not_exist es terminal como no_history: no queda nada que reintentar.
+        if status in {"rejected", "no_history", "symbol_not_exist"}:
             return "rejected"
         return "pending"
 

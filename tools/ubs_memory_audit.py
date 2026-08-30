@@ -287,7 +287,7 @@ def audit_seeds(conn, audit: Audit) -> None:
         select count(*)
         from seed_scores
         where active=1
-          and status not in ('accepted','rejected','no_trades','report_mismatch','disabled_symbol','invalid_seed')
+          and status not in ('accepted','rejected','no_trades','report_mismatch','disabled_symbol','invalid_seed','symbol_not_exist')
         """,
     )
     if not_ready:

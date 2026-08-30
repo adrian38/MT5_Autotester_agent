@@ -44,6 +44,10 @@ class RegressionRuntime:
     read_report_dates: Callable[[Path], tuple[str, str] | None]
     tester_log_no_history_metadata: Callable[[Path, Variant], dict[str, object] | None]
     find_watchdog_snapshot_for_set: Callable[..., Path | None] | None = None
+    # Devuelve "no_report" o el estado terminal cuando el broker ya no ofrece el
+    # simbolo: no_report esta en REGRESSION_RETRYABLE_STATUSES y el manager lo
+    # reencolaria para siempre. Opcional para no romper runtimes existentes.
+    missing_report_status: Callable[[str], str] | None = None
 
 
 def _score_config_for_period(config: ScoreConfig, period: str, args: Any) -> ScoreConfig:
@@ -192,14 +196,19 @@ def evaluate_regression_report(
                 reasons=("watchdog_timeout",),
                 metadata=_watchdog_snapshot_metadata(watchdog_snapshot, variant),
             )
+        status = (
+            runtime.missing_report_status(variant.target_symbol)
+            if runtime.missing_report_status is not None
+            else "no_report"
+        )
         return _record_technical(
             memory,
             args,
             candidate_id=candidate_id,
             run_id=run_id,
-            status="no_report",
+            status=status,
             report=None,
-            reasons=("no_report",),
+            reasons=(status,),
         )
 
     period_config = _score_config_for_period(score_config, variant.target_period, args)
@@ -361,6 +370,37 @@ def evaluate_candidate_regression(
             if not str(row["regression_status"] or "").strip()
             or str(row["regression_status"] or "").strip().lower() in REGRESSION_RETRYABLE_STATUSES
         ]
+    # Un simbolo que el broker retiro no puede producir reporte: MT5 no abre el
+    # tester. Se aparta antes de copiar sets y lanzar backtests, pero hay que
+    # grabar el estado terminal o la seleccion (sin fila O retryable) lo volveria
+    # a encolar en cada pasada.
+    if runtime.missing_report_status is not None:
+        kept: list[tuple[sqlite3.Row, Path]] = []
+        retired: list[tuple[sqlite3.Row, str]] = []
+        for row, path in rows_with_paths:
+            status = runtime.missing_report_status(str(row["target_symbol"] or ""))
+            if status == "no_report":
+                kept.append((row, path))
+            else:
+                retired.append((row, status))
+        rows_with_paths = kept
+        for row, status in retired:
+            _record_technical(
+                memory,
+                args,
+                candidate_id=int(row["id"]),
+                run_id=run_id,
+                status=status,
+                report=None,
+                reasons=(status,),
+            )
+        if retired:
+            symbols = sorted({str(row["target_symbol"] or "") for row, _status in retired})
+            print(
+                f"Regresiva: {len(retired)} candidato(s) omitidos sin abrir MT5 por simbolo "
+                f"retirado del broker ({', '.join(symbols)})."
+            )
+
     if not rows_with_paths:
         mode = "pendientes/retryables" if args.regression_pending_only else "Final Tick 6M accepted"
         print(f"Regresiva run #{run_id}: no hay candidatos {mode} con .set existente.")

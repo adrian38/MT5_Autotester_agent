@@ -91,7 +91,7 @@ STAGE_TABLES = {
 
 STATUS_NOTIFICATION_ORDER = (
     "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history", "date_mismatch",
-    "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
+    "symbol_not_exist", "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
     "pending", "generated", "running",
 )
 

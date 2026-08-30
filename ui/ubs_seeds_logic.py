@@ -310,10 +310,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed') then 1
+                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -1487,7 +1487,7 @@ class UBSSeedsLogicMixin:
                 from seed_scores
                 where active=1
                   and (
-                    status not in ('accepted','rejected','report_mismatch','disabled_symbol','invalid_seed')
+                    status not in ('accepted','rejected','report_mismatch','disabled_symbol','invalid_seed','symbol_not_exist')
                     or (status in ('accepted','rejected') and score is null)
                   )
                 """
