@@ -1,6 +1,7 @@
 import argparse
 import atexit
 import configparser
+import json
 import os
 import queue
 import re
@@ -31,6 +32,17 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RUNNING_TERMINAL_EXIT_CODE = 3
 MODEL4_NO_HISTORY_EXIT_CODE = 4
 MODEL4_NO_HISTORY_RETRY_DELAY_SECONDS = 5
+SKIPPED_SYMBOL_EXIT_CODE = 5
+
+# MT5 aborta el arranque del Strategy Tester con codigos propios y sin generar
+# reporte.  El journal los escribe con signo ("shutdown with -1000012358") pero
+# Popen los entrega sin signo en Windows (3294954938), asi que se normalizan.
+# transient=False significa que reintentar el mismo .ini no puede cambiar el
+# resultado: el reintento solo gasta un arranque de terminal.
+MT5_TESTER_ABORT_CODES: dict[int, tuple[str, bool]] = {
+    -1000012358: ("el Symbol del tester no existe en el servidor del broker", False),
+    -1000012362: ("el terminal no estaba sincronizado con el servidor de trading", True),
+}
 RUN_LOG_QUEUE_MAX_BATCHES = 20_000
 WATCHDOG_TERMINATE_MIN_INTERVAL_SECONDS = 0.75
 WATCHDOG_RESTART_MIN_INTERVAL_SECONDS = 3.0
@@ -1630,6 +1642,75 @@ def tester_model_from_ini(ini_path: Path) -> str:
     return parser["Tester"].get("Model", "").strip()
 
 
+def tester_symbol_from_ini(ini_path: Path) -> str:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(ini_path, encoding="utf-8-sig")
+    if not parser.has_section("Tester"):
+        return ""
+    return parser["Tester"].get("Symbol", "").strip()
+
+
+def signed_exit_code(exit_code: int | None) -> int | None:
+    """Windows entrega los codigos de MT5 sin signo; el journal los escribe con signo."""
+    if exit_code is None:
+        return None
+    code = int(exit_code)
+    if code > 0x7FFFFFFF:
+        code -= 0x100000000
+    return code
+
+
+def mt5_tester_abort(exit_code: int | None) -> tuple[str, bool] | None:
+    """Motivo y reintentabilidad cuando MT5 no llego a arrancar el tester.
+
+    Devuelve None para cualquier otro codigo (incluido 0), asi que el flujo
+    normal no cambia."""
+    return MT5_TESTER_ABORT_CODES.get(signed_exit_code(exit_code))
+
+
+def load_universe_symbols(path: Path | None) -> set[str]:
+    """Todos los simbolos que el broker ofrece, segun ``assets/<broker>_assets.ini``.
+
+    Este fichero lo genera ``tools/sync_broker_universe.py`` desde el arbol de
+    simbolos del servidor, asi que "no esta aqui" equivale a "el broker ya no lo
+    ofrece".  Es una señal distinta de ``ubs_disabled_symbols_*.json``: ahi hay
+    simbolos deshabilitados a mano o por veredicto ``no_history`` que SI existen
+    y cuyos candidatos deben poder repararse."""
+    if not path or not Path(path).exists():
+        return set()
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read(path, encoding="utf-8-sig")
+    except (OSError, configparser.Error):
+        return set()
+    symbols: set[str] = set()
+    for section in parser.sections():
+        if section == "CommonAliases":
+            continue
+        for item in parser[section].get("symbols", "").split(","):
+            value = item.strip()
+            if value:
+                symbols.add(value.upper())
+    return symbols
+
+
+def ini_symbol_missing_from_universe(ini_path: Path, universe_symbols: set[str]) -> str:
+    """Devuelve el Symbol del .ini cuando el broker ya no lo ofrece, o "".
+
+    Con el universo vacio (sin ``--symbol-universe`` o fichero ilegible) no se
+    omite nada: es preferible gastar un arranque de MT5 que saltarse un backtest
+    valido por un inventario ausente."""
+    if not universe_symbols:
+        return ""
+    symbol = tester_symbol_from_ini(ini_path)
+    if not symbol:
+        return ""
+    candidates = {symbol.upper(), normalize_set_symbol(symbol)}
+    return "" if candidates & universe_symbols else symbol
+
+
 def model4_history_cache_files(ini_path: Path, terminal_data_dirs: list[Path]) -> list[Path]:
     """Return all target-symbol HCC files whose refresh delays Model=4 safely.
 
@@ -2306,6 +2387,38 @@ def run_test(
         last_exit_code = exit_code
         logger.write(f"MT5 termino con codigo: {exit_code}")
         logger.write(f"Duracion: {elapsed:.1f} segundos")
+
+        # MT5 puede cerrarse sin reporte porque ni siquiera arranco el tester.  El
+        # motivo esta en su codigo de salida y en el journal; sin traducirlo el
+        # fallo se confunde con "no se genero reporte" y se reintenta a ciegas.
+        abort = mt5_tester_abort(exit_code)
+        if abort is not None:
+            reason, transient = abort
+            symbol = tester_symbol_from_ini(ini_path)
+            logger.write(
+                f"MT5 no arranco el tester: {reason} "
+                f"(Symbol={symbol or '(sin dato)'}, codigo {signed_exit_code(exit_code)})."
+            )
+            write_tester_journal_snapshot(
+                report_path,
+                terminal_data_dirs,
+                before,
+                logger,
+                label=f"tester_abort_attempt_{attempt}",
+            )
+            if not transient:
+                logger.write(
+                    f"DIAG TESTER_ABORT symbol={symbol} code={signed_exit_code(exit_code)} retry=no"
+                )
+                logger.write(
+                    "ERROR: backtest abortado por MT5 sin reintento: "
+                    f"{reason}. Revisa el universo del broker para {symbol or 'este simbolo'}."
+                )
+                return 1
+            logger.write(
+                f"DIAG TESTER_ABORT symbol={symbol} code={signed_exit_code(exit_code)} retry=si"
+            )
+
         if restarted:
             write_tester_journal_snapshot(
                 report_path,
@@ -2374,7 +2487,10 @@ def run_test(
             continue
 
         logger.write("ERROR: No se encontro ningun reporte generado para este backtest.")
-        logger.write("Revisa que el EA exista dentro de la carpeta MQL5 del terminal RoboForex y que el simbolo/fechas tengan datos.")
+        logger.write(
+            "Revisa que el EA exista dentro de la carpeta MQL5 del terminal "
+            f"({settings.mt5_path}) y que el simbolo/fechas tengan datos."
+        )
         return 1
 
     return last_exit_code
@@ -2428,6 +2544,16 @@ def run_backtest_job(
     except ValueError as exc:
         logger.write(f"[{profile.name}] ERROR: {exc}")
         return 1
+    retired_symbol = ini_symbol_missing_from_universe(
+        ini_path, getattr(args, "universe_symbols", set())
+    )
+    if retired_symbol:
+        logger.write(
+            f"[{profile.name}] OMITIDO: Symbol={retired_symbol} ya no esta en el universo "
+            "del broker; no se abre MT5."
+        )
+        delete_test_artifacts(ini_path, report_path, logger)
+        return SKIPPED_SYMBOL_EXIT_CODE
     if job.set_file and not args.dry_run:
         copy_set_file_to_tester_profiles(
             job.set_file,
@@ -2494,7 +2620,8 @@ def run_jobs_parallel(
             except Exception as exc:
                 logger.write(f"[{profile.name}] ERROR inesperado: {exc}")
                 exit_code = 1
-            if exit_code != 0:
+            # Un simbolo omitido por politica no es un fallo tecnico del runner.
+            if exit_code not in (0, SKIPPED_SYMBOL_EXIT_CODE):
                 failures += 1
             logger.write(
                 f"DIAG WORKER_JOB_DONE profile={profile.name} thread={threading.current_thread().name} "
@@ -2548,6 +2675,7 @@ def main() -> int:
         args.symbol_futures_suffix,
         args.symbol_shares_suffix,
     )
+    args.universe_symbols = load_universe_symbols(symbol_universe_path)
     (
         tester_kick_after_seconds,
         tester_stall_after_seconds,
@@ -2801,6 +2929,17 @@ def main() -> int:
                 logger.write("")
                 logger.write(f"ERROR: {exc}")
                 failures += 1
+                continue
+            retired_symbol = ini_symbol_missing_from_universe(
+                ini_path, getattr(args, "universe_symbols", set())
+            )
+            if retired_symbol:
+                logger.write("")
+                logger.write(
+                    f"OMITIDO: Symbol={retired_symbol} ya no esta en el universo del "
+                    "broker; no se abre MT5."
+                )
+                delete_test_artifacts(ini_path, report_path, logger)
                 continue
             if job.set_file and not args.dry_run:
                 copy_set_file_to_tester_profiles(

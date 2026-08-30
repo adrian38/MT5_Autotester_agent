@@ -169,6 +169,102 @@ symbols such as `.JP225Cash` keep their exact casing.
 adds it via `replace_or_add_plain_key()`; this makes future tester inference
 depend on the intended target, not on inherited seed names.
 
+## Symbols the Broker No Longer Offers
+
+A broker's symbol tree changes constantly (delistings, expiry rotation). When the
+tester `Symbol` is not on the server, MT5 starts, logs in and then refuses to
+open the Strategy Tester at all — the tab shows no symbol and the terminal exits
+in ~6s. The journal is explicit:
+
+```
+Tester    symbol EEX.NYSE not exist
+Terminal  tester didn't start
+Terminal  shutdown with -1000012358 (tester symbol does not exist)
+```
+
+Three pieces cover this:
+
+- **`MT5_TESTER_ABORT_CODES`** (`run_tests.py`) translates those exit codes.
+  Windows hands them to `Popen` unsigned (`-1000012358` → `3294954938`), so
+  `signed_exit_code()` normalizes first. A missing symbol is flagged
+  `transient=False`: the attempt is **not** retried (retrying a nonexistent
+  symbol only burns another terminal launch) and the journal tail is written as
+  evidence. `-1000012362` (terminal not synchronized) *is* transient and keeps
+  the normal retry.
+- **The broker universe is the skip signal**, not the disabled policy.
+  `run_tests.py` loads every symbol of `--symbol-universe`
+  (`assets/<broker>_assets.ini`, already passed by `ubs_agent.run_backtests()`)
+  and skips a job only when the ini `Symbol` is **absent** from it
+  (`SKIPPED_SYMBOL_EXIT_CODE`, not counted as a runner failure). An empty or
+  missing universe file never skips anything — burning one terminal launch beats
+  silently dropping a valid backtest.
+
+  Do **not** use `outputs/ubs_disabled_symbols_<BROKER>_<ACCOUNT>.json` for
+  this. That policy gates *seed generation* and holds mostly symbols the broker
+  still offers — disabled by hand or by a `no_history` verdict (1,429 of 1,464
+  on ICTrading at the time of writing, vs 35 actually retired). Those symbols
+  have history and their already-generated candidates **must stay repairable**.
+  Disabling a symbol writes only the JSON; it never removes it from the assets
+  ini, which is what makes the universe a clean "does the broker offer this"
+  signal.
+- **`tools/sync_broker_universe.py`** refreshes
+  `assets/<broker>_assets.ini` from the live symbol tree (CLI equivalent of the
+  UI's "Extraer simbolos MT5"), with `--dry-run` to inspect the diff and
+  `--disable-removed` to add the vanished symbols to the account policy. Without
+  a refresh the universe keeps generating `.set` files for dead tickers.
+
+Note the file the tool writes uses the extractor's group names, so agricultural
+symbols land in `[Commodities]`; the portfolio layer maps that section to
+`Softs` (`_normalized_universe_group`).
+
+### Candidate status `symbol_not_exist`
+
+Skipping the launch is not enough on its own: a candidate with no report was
+recorded as `no_report`, which **is** retryable
+(`retryable_problem_candidates_for_run` selects `report_mismatch` + `no_report`),
+so every repair pass re-queued it forever. `evaluate_variant()` now checks the
+candidate's `target_symbol` (a real column in `candidates`) against the broker
+universe when there is no report, and records the terminal status
+`SYMBOL_NOT_EXIST_STATUS = "symbol_not_exist"` instead. A manually disabled
+symbol is still in the universe, so its candidate keeps the retryable
+`no_report` and the repair runs it again — which is the point.
+
+Do not add it to any retry set. `no_history` was the closest existing state but
+means something different — the broker *has* the symbol and lacks bars/ticks for
+the range — it always carries a report plus `metrics_json`, and it counts as
+retryable in the regression/manager-node sets (`ubs/regression_rules.py`,
+`node.py`). The universe set comes from `broker_universe_symbols(args)`, cached
+by path+mtime because the evaluation call sites sit inside loops; with no
+universe loaded it returns empty and nothing is marked terminal.
+
+**`[CommonAliases]` keys belong in that set.** A candidate can carry the alias as
+its `target_symbol` (`US100`, `CRUDEOIL`, `DAX`…) while the ini is generated with
+the canonical name, and the account's symbol map may be empty (ICTrading:
+`symbol_map_enabled=0`). Without the alias keys those 14 targets look retired —
+31 candidates on ICTrading — and an unrelated transient failure would hand them
+an irreversible status. Every decision here fails toward `no_report`.
+
+Every stage that can end without a report goes through
+`missing_report_status(symbol, args)`: candidate evaluation, history probe,
+robustness, Final Tick (OHLC and Real Tick), the 6M rescore, the three seed
+paths, and the regression — the latter via the optional
+`RegressionRuntime.missing_report_status` hook, since `ubs/regression.py` must
+not import the CLI module. Seeds reaching this status also had to be added to the
+seed "ready" aggregates (`ui/ubs_seeds_logic.py`, `tools/ubs_memory_audit.py`)
+or they would sit as pending forever.
+
+On top of that, the stages no longer *enqueue* retired symbols at all:
+`split_retired_symbols(items, args, row_of=…)` partitions the batch before any
+`.set` is copied or `run_tests.py` is spawned (robustness, Final Tick, and the
+regression's own equivalent inside `evaluate_candidate_regression`).
+
+**Filtering without recording would be a new infinite loop.** Stage selection is
+"no row OR retryable status" (`robust_status_pending_for_retry`,
+`ubs/regression.py`), so a candidate that is silently dropped keeps no row and
+gets re-selected on every pass. Each filter therefore records the terminal status
+for what it drops, and prints how many and which symbols — a bounded stage must
+never look like a fully covered one.
+
 ## UBS Agent Report Validation
 
 The UBS agent does not trust filenames as proof that MT5 executed the intended

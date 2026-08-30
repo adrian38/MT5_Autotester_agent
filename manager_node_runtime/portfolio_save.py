@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -335,6 +335,26 @@ def requalify_portfolio_member_payload(
     }
 
 
+def _supported_dataclass_values(dataclass_type: type, raw: dict[str, Any]) -> dict[str, Any]:
+    """Ignorar los campos que el manager ya envia y esta copia todavia no tiene.
+
+    REGLA DUPLICADA: es el mismo filtro que
+    `mt5_manager/portfolio_service.py::_supported_dataclass_values`. El manager
+    manda la tanda de riesgo por equity (`max_balance_dd_001`, `max_equity_dd_001`,
+    el DD flotante, el rendimiento reciente y las rutas de informe) y los campos
+    de auditoria del resultado; el `portfolio_manager/ubs_portfolio.py` de este
+    agente es de antes y no los declara. Sin este filtro, construir la dataclass
+    con el diccionario crudo moria con `unexpected keyword argument` y el nodo
+    devolvia un 500 con su traza en la consola en **cada** guardado: el manager
+    reintentaba con
+    `legacy_compatible_portfolio_save_payload` y el 201 llegaba en el segundo
+    POST. Descartarlos aqui deja exactamente los mismos datos guardados, en un
+    solo POST y sin traza.
+    """
+    supported = {item.name for item in fields(dataclass_type)}
+    return {key: value for key, value in raw.items() if key in supported}
+
+
 def _deserialize_proposals(payload: object, scope: str) -> list[dict[str, Any]]:
     if not isinstance(payload, list) or not payload:
         raise ValueError("No se recibieron propuestas para guardar")
@@ -348,26 +368,31 @@ def _deserialize_proposals(payload: object, scope: str) -> list[dict[str, Any]]:
             raise ValueError("La propuesta remota no contiene inputs y resultado")
         result_values = dict(raw_result)
         result_values["allocations"] = [
-            StrategyAllocation(**item)
+            StrategyAllocation(**_supported_dataclass_values(StrategyAllocation, item))
             for item in result_values.get("allocations") or []
             if isinstance(item, dict)
         ]
         result_values["decision_log"] = [
-            OptimizationDecision(**item)
+            OptimizationDecision(**_supported_dataclass_values(OptimizationDecision, item))
             for item in result_values.get("decision_log") or []
             if isinstance(item, dict)
         ]
         result_values["unused_sets"] = [
-            UnusedSetInfo(**item)
+            UnusedSetInfo(**_supported_dataclass_values(UnusedSetInfo, item))
             for item in result_values.get("unused_sets") or []
             if isinstance(item, dict)
         ]
         stress = result_values.get("stress_bootstrap")
         result_values["stress_bootstrap"] = (
-            BootstrapDrawdownAnalysis(**stress) if isinstance(stress, dict) else None
+            BootstrapDrawdownAnalysis(
+                **_supported_dataclass_values(BootstrapDrawdownAnalysis, stress)
+            )
+            if isinstance(stress, dict) else None
         )
         try:
-            result = PortfolioResult(**result_values)
+            result = PortfolioResult(
+                **_supported_dataclass_values(PortfolioResult, result_values)
+            )
         except TypeError as exc:
             raise ValueError(f"Resultado de propuesta incompatible: {exc}") from exc
         inputs = dict(raw_inputs)

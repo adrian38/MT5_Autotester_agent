@@ -115,6 +115,7 @@ batch wrappers.
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
 | [10-regression-validation.md](10-regression-validation.md) | Backward 2017-2019 OHLC validation: rationale, scoring, statuses, CLI, and official MT5 sources. |
+| [11-live-audit.md](11-live-audit.md) | Embedded manager-node live-account audit, A/M/C variants, MT5 history synchronization, and diagnostics. |
 
 ## Common Entry Points
 
@@ -1335,6 +1336,12 @@ A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It 
 - Implemented via `build_tester_cleanup_plan()` + `execute_tester_cleanup()` in `ui/multiterminal_logic.py`.
 
 ### Manager node — terminales de reparación automática
+
+El historial que consume el manager se pagina de extremo a extremo mediante
+`GET /api/v1/runs?limit=100&offset=N`. `completed_runs_snapshot` aplica
+`LIMIT/OFFSET` directamente en SQLite y la respuesta incluye
+`pagination.has_more` y `pagination.next_offset`; no existe un máximo global de
+runs visibles.
 
 Las ejecuciones de generación aceptan `repair_max_workers` como límite
 independiente para todas las etapas de la reparación automática posterior al
