@@ -216,6 +216,13 @@ DIVERSITY_REROLL_ATTEMPTS = 24
 DISCOVERY_GROUP_FEEDBACK_TEMPERATURE = 12.0
 DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT = 2.0
 RANDOM_STREAM_VERSION = "generation-selection-mutation-v1"
+# Cuando el Symbol no existe en el servidor del broker, MT5 no llega a abrir el
+# Strategy Tester: cierra el terminal sin reporte ("shutdown with -1000012358").
+# Sin un estado propio el candidato queda como no_report, que SI es retryable, y
+# cada reparacion vuelve a encolarlo aunque reintentar no pueda cambiar nada.
+# Este estado es terminal a proposito: no aparece en ningun set de retry.
+SYMBOL_NOT_EXIST_STATUS = "symbol_not_exist"
+
 FINAL_TICK_RETRYABLE_STATUSES = {
     "pending",
     "no_report",
@@ -1117,6 +1124,157 @@ def disabled_symbols_file_for_account(account_type: object, broker: object = DEF
     return account_disabled_symbols_path(BASE_DIR, account_type, broker)
 
 
+_BROKER_UNIVERSE_SYMBOLS_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
+
+
+def broker_universe_symbols(args: argparse.Namespace) -> set[str]:
+    """Simbolos que el broker ofrece, leidos de ``assets/<broker>_assets.ini``.
+
+    NO se usa aqui la politica ``ubs_disabled_symbols_*.json``: ahi conviven
+    simbolos deshabilitados a mano o por veredicto ``no_history``, que existen
+    en el broker y cuyos candidatos deben poder repararse. Solo la ausencia del
+    universo (que ``tools/sync_broker_universe.py`` sincroniza con el servidor)
+    significa "retirado".
+
+    Incluye las claves de ``[CommonAliases]`` ademas de los simbolos del broker.
+    Un candidato puede llevar el alias como ``target_symbol`` (US100, CRUDEOIL,
+    DAX...) mientras el .ini se genera con el nombre canonico, y el mapa de
+    simbolos puede estar vacio para la cuenta activa: sin los alias, esos
+    objetivos parecerian retirados y acabarian con un estado terminal
+    irreversible. Fallar hacia el lado retryable es preferible.
+
+    Se cachea por ruta y mtime porque las llamadas estan dentro de bucles de
+    evaluacion; si el universo cambia en disco, el mtime invalida la entrada."""
+    raw_path = str(getattr(args, "assets", "") or "").strip()
+    if not raw_path:
+        return set()
+    path = Path(raw_path).expanduser()
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return set()
+    cached = _BROKER_UNIVERSE_SYMBOLS_CACHE.get(key)
+    if cached is not None and cached[0] == mtime:
+        return set(cached[1])
+    groups, aliases = load_asset_universe(path, include_disabled=True)
+    symbols = {
+        str(symbol).strip().upper()
+        for group_symbols in groups.values()
+        for symbol in group_symbols
+        if str(symbol).strip()
+    }
+    symbols |= {str(alias).strip().upper() for alias in aliases if str(alias).strip()}
+    _BROKER_UNIVERSE_SYMBOLS_CACHE[key] = (mtime, frozenset(symbols))
+    return symbols
+
+
+def symbol_not_offered(
+    symbol: str,
+    universe_symbols: set[str] | None,
+    symbol_map: dict[str, str] | None = None,
+) -> bool:
+    """True cuando el broker ya no ofrece ``symbol``.
+
+    Con universo vacio devuelve False: sin inventario no se puede afirmar que un
+    simbolo este retirado, y el estado que deriva de esto es irreversible."""
+    if not universe_symbols:
+        return False
+    target = str(symbol or "")
+    if not target.strip():
+        return False
+    mapped = apply_symbol_map(target, symbol_map or {})
+    keys = {
+        target.strip().upper(),
+        normalize_set_symbol(target),
+        str(mapped).strip().upper(),
+        normalize_set_symbol(mapped),
+    }
+    return keys.isdisjoint({str(value).strip().upper() for value in universe_symbols})
+
+
+def variant_symbol_not_offered(
+    variant: Variant,
+    universe_symbols: set[str] | None,
+    symbol_map: dict[str, str],
+) -> bool:
+    """True cuando el simbolo objetivo del candidato ya no esta en el universo."""
+    return symbol_not_offered(getattr(variant, "target_symbol", ""), universe_symbols, symbol_map)
+
+
+def _row_target_symbol(row: sqlite3.Row) -> str:
+    try:
+        return str(row["target_symbol"] or "")
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def split_retired_symbols(
+    items: list,
+    args: argparse.Namespace,
+    *,
+    row_of=None,
+    symbol_map: dict[str, str] | None = None,
+) -> tuple[list, list]:
+    """Aparta los elementos cuyo ``target_symbol`` ya no ofrece el broker.
+
+    Ahorra copiar el .set y lanzar run_tests para un backtest cuyo resultado ya
+    se conoce: MT5 no abriria el tester. El llamador DEBE grabar el estado
+    terminal de su etapa para los apartados, porque la seleccion de etapa es
+    "sin fila O estado retryable": sin fila volverian a elegirse en cada pasada.
+
+    ``items`` pueden ser filas o tuplas ``(fila, path)``; en ese caso pasa
+    ``row_of=lambda item: item[0]``. Devuelve ``(los que siguen, las filas
+    apartadas)`` y con universo vacio no aparta nada."""
+    universe = broker_universe_symbols(args)
+    if not universe:
+        return items, []
+    if symbol_map is None:
+        try:
+            symbol_map = parse_symbol_map(getattr(args, "symbol_map", "") or "")
+        except ValueError:
+            symbol_map = {}
+    extract = row_of or (lambda item: item)
+    kept: list = []
+    retired: list = []
+    for item in items:
+        row = extract(item)
+        if symbol_not_offered(_row_target_symbol(row), universe, symbol_map):
+            retired.append(row)
+        else:
+            kept.append(item)
+    return kept, retired
+
+
+def format_retired_symbol_rows(retired: list) -> str:
+    symbols: dict[str, int] = {}
+    for row in retired:
+        symbol = _row_target_symbol(row).strip() or "(sin dato)"
+        symbols[symbol] = symbols.get(symbol, 0) + 1
+    return ", ".join(f"{symbol} x{count}" for symbol, count in sorted(symbols.items()))
+
+
+def missing_report_status(
+    symbol: str,
+    args: argparse.Namespace,
+    symbol_map: dict[str, str] | None = None,
+) -> str:
+    """Estado a grabar cuando una etapa no encuentra reporte.
+
+    ``no_report`` es retryable y lo reencolan tanto las rutas de retry como el
+    manager; para un simbolo que el broker retiro eso es un bucle infinito,
+    porque MT5 no llega a abrir el tester. Devuelve el estado terminal solo en
+    ese caso, asi que un fallo tecnico transitorio sigue siendo reparable."""
+    if symbol_map is None:
+        try:
+            symbol_map = parse_symbol_map(getattr(args, "symbol_map", "") or "")
+        except ValueError:
+            symbol_map = {}
+    if symbol_not_offered(symbol, broker_universe_symbols(args), symbol_map):
+        return SYMBOL_NOT_EXIST_STATUS
+    return "no_report"
+
+
 def target_timeframe_universe(
     include_experimental_long: bool = False,
     *,
@@ -1188,10 +1346,13 @@ def regression_score_config(args: argparse.Namespace) -> ScoreConfig:
     )
 
 
-def regression_runtime() -> RegressionRuntime:
+def regression_runtime(args: argparse.Namespace | None = None) -> RegressionRuntime:
     """Inject MT5/report helpers without coupling the regression domain module to this CLI."""
 
     return RegressionRuntime(
+        missing_report_status=(
+            (lambda symbol: missing_report_status(symbol, args)) if args is not None else None
+        ),
         running_terminal_exit_code=RUNNING_TERMINAL_EXIT_CODE,
         recreate_work_dir=recreate_work_dir,
         remove_report_artifacts=remove_report_artifacts,
@@ -2468,6 +2629,9 @@ def run_backtests(
         command.extend(["--symbol-shares-suffix", args.symbol_shares_suffix.strip()])
     if getattr(args, "assets", "").strip():
         command.extend(["--symbol-universe", str(Path(args.assets).expanduser())])
+    # ``--symbol-universe`` ya es la señal de que el broker ofrece el simbolo:
+    # run_tests.py omite ahi los .set cuyo Symbol no este en el universo, sin
+    # mirar la politica de deshabilitados (que incluye simbolos vigentes).
     if args.dry_run:
         command.append("--dry-run")
     effective_from_date = getattr(args, "from_date", "") if from_date is None else from_date
@@ -2816,8 +2980,9 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     for seed, copied_set in copied:
         report = find_report_for_set(copied_set, min_mtime=batch_started_at - 1.0)
         if not report:
-            memory.record_seed_score(seed, None, "no_report", None)
-            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            status = missing_report_status(seed.symbol, args, symbol_map)
+            memory.record_seed_score(seed, None, status, None)
+            status_counts[status] = status_counts.get(status, 0) + 1
             handled_issues += 1
             continue
         status, result = evaluate_seed_report(
@@ -3728,18 +3893,26 @@ def evaluate_history_probe(
     min_report_mtime: float | None = None,
     report_path: Path | None = None,
     symbol_suffix: str = "",
+    universe_symbols: set[str] | None = None,
 ) -> tuple[str, ScoreResult | None]:
     report = report_path or find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
+        # Las filas del probe viven en candidates, asi que un no_report aqui
+        # tambien entra en el pool de retry.
+        status = (
+            SYMBOL_NOT_EXIST_STATUS
+            if variant_symbol_not_offered(variant, universe_symbols, symbol_map)
+            else "no_report"
+        )
         record_history_probe_status(
             memory,
             variant,
             None,
-            "no_report",
+            status,
             None,
-            {"reasons": ["no_report"], "history_probe": True},
+            {"reasons": [status], "history_probe": True},
         )
-        return "no_report", None
+        return status, None
     try:
         result = score_report_file(report, config=score_config, broker=broker)
     except Exception as exc:
@@ -3885,6 +4058,7 @@ def evaluate_variants(
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
     symbol_suffix: str = "",
+    universe_symbols: set[str] | None = None,
 ) -> list[tuple[Variant, ScoreResult]]:
     scored: list[tuple[Variant, ScoreResult]] = []
     for variant in variants:
@@ -3898,6 +4072,7 @@ def evaluate_variants(
             min_trades_w1=min_trades_w1,
             min_trades_mn=min_trades_mn,
             symbol_suffix=symbol_suffix,
+            universe_symbols=universe_symbols,
         )
         if status not in {"accepted", "rejected"} or result is None:
             continue
@@ -3916,9 +4091,21 @@ def evaluate_variant(
     min_trades_w1: int = 12,
     min_trades_mn: int = 4,
     symbol_suffix: str = "",
+    universe_symbols: set[str] | None = None,
 ) -> tuple[str, ScoreResult | None]:
     report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
+        # Sin reporte hay dos causas distintas: un fallo tecnico (retryable) o
+        # que el broker ya no ofrezca el simbolo, en cuyo caso MT5 ni abre el
+        # tester.  Un simbolo deshabilitado a mano no entra aqui: sigue en el
+        # universo, asi que su candidato se repara con normalidad.
+        if variant_symbol_not_offered(variant, universe_symbols, symbol_map):
+            print(
+                f"AVISO: {variant.target_symbol} no esta en el universo del broker; "
+                f"marcado como {SYMBOL_NOT_EXIST_STATUS} sin reintento."
+            )
+            memory.record_score(variant.path, None, SYMBOL_NOT_EXIST_STATUS, None)
+            return SYMBOL_NOT_EXIST_STATUS, None
         memory.record_score(variant.path, None, "no_report", None)
         return "no_report", None
     return evaluate_variant_report(
@@ -4228,6 +4415,27 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             (row, set_path) for row, set_path in rows_with_paths
             if robust_status_pending_for_retry(row["robust_status"])
         ]
+    rows_with_paths, retired_rows = split_retired_symbols(
+        rows_with_paths, args, row_of=lambda item: item[0]
+    )
+    for row in retired_rows:
+        memory.record_candidate_robustness(
+            int(row["id"]),
+            run_id,
+            None,
+            SYMBOL_NOT_EXIST_STATUS,
+            None,
+            args.from_date,
+            args.to_date,
+            args.robust_positive_bonus,
+            args.robust_negative_bonus,
+        )
+    if retired_rows:
+        print(
+            f"Robustez: {len(retired_rows)} candidato(s) omitidos sin abrir MT5 por simbolo "
+            f"retirado del broker ({format_retired_symbol_rows(retired_rows)}); "
+            f"marcados {SYMBOL_NOT_EXIST_STATUS}."
+        )
     if not rows_with_paths:
         if args.robust_pending_only:
             print(f"Robustez run #{run_id}: no hay candidatos accepted pendientes ni retryables de OOS.")
@@ -4299,18 +4507,19 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
         candidate_id = int(row["id"])
         report = find_report_for_set(variant.path, min_mtime=batch_started_at - 1.0)
         if not report:
+            status = missing_report_status(variant.target_symbol, args)
             memory.record_candidate_robustness(
                 candidate_id,
                 run_id,
                 None,
-                "no_report",
+                status,
                 None,
                 args.from_date,
                 args.to_date,
                 args.robust_positive_bonus,
                 args.robust_negative_bonus,
             )
-            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
             continue
         period_score_config = score_config_for_variant(
             score_config,
@@ -4730,6 +4939,32 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         for row in memory.accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
         if resolve_workspace_path(row["set_path"]).exists()
     ]
+    rows, retired_rows = split_retired_symbols(rows, args)
+    for row in retired_rows:
+        memory.record_candidate_final_tick(
+            int(row["id"]),
+            run_id,
+            SYMBOL_NOT_EXIST_STATUS,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            args.final_tick_min_history_quality,
+            args.from_date,
+            args.to_date,
+            args.final_tick_max_net_delta_pct,
+            args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct,
+            args.final_tick_max_trades_delta_pct,
+        )
+    if retired_rows:
+        print(
+            f"{final_tick_label}: {len(retired_rows)} candidato(s) omitidos sin abrir MT5 por "
+            f"simbolo retirado del broker ({format_retired_symbol_rows(retired_rows)}); "
+            f"marcados {SYMBOL_NOT_EXIST_STATUS}."
+        )
     main_from_date = str(args.from_date or "").strip()
     main_to_date = str(args.to_date or "").strip()
     ohlc_retry_from = str(getattr(args, "final_tick_ohlc_from_date", "") or "").strip()
@@ -5050,10 +5285,11 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             candidate_id = int(row["id"])
             ohlc_report = find_report_for_set(ohlc_variant.path, min_mtime=ohlc_min_report_mtime)
             if not ohlc_report:
+                status = missing_report_status(ohlc_variant.target_symbol, args)
                 memory.record_candidate_final_tick(
                     candidate_id,
                     run_id,
-                    "no_report",
+                    status,
                     None,
                     None,
                     ohlc_report,
@@ -5068,7 +5304,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                     args.final_tick_max_dd_delta_pct,
                     args.final_tick_max_trades_delta_pct,
                 )
-                status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+                status_counts[status] = status_counts.get(status, 0) + 1
                 continue
 
             ohlc_score_config = score_config_for_variant(
@@ -5222,10 +5458,11 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
         ohlc_report, ohlc_result = ohlc_results[candidate_id]
         real_tick_report = find_report_for_set(real_tick_variant.path, min_mtime=real_tick_min_report_mtime)
         if not real_tick_report:
+            status = missing_report_status(real_tick_variant.target_symbol, args)
             memory.record_candidate_final_tick(
                 candidate_id,
                 run_id,
-                "no_report",
+                status,
                 ohlc_result,
                 None,
                 ohlc_report,
@@ -5240,7 +5477,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 args.final_tick_max_dd_delta_pct,
                 args.final_tick_max_trades_delta_pct,
             )
-            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
             continue
 
         _evaluate_final_tick_tick_report(
@@ -5797,15 +6034,16 @@ def _rescore_final_tick_from_reports(
             status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
             continue
         if real_tick_report is None or not real_tick_report.exists():
+            status = missing_report_status(ohlc_variant.target_symbol, args, symbol_map)
             memory.record_candidate_final_tick(
-                candidate_id, run_id, "no_report", ohlc_result, None,
+                candidate_id, run_id, status, ohlc_result, None,
                 ohlc_report, real_tick_report,
                 None, None,
                 thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
                 thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
                 thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
             )
-            status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
             continue
         real_tick_variant = Variant(
             path=real_tick_report,
@@ -5917,6 +6155,7 @@ def _retry_single_candidate(
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
         symbol_suffix=args.symbol_suffix,
+        universe_symbols=broker_universe_symbols(args),
     )
     if status == "accepted" and result is not None:
         copied = copy_accepted(
@@ -5998,8 +6237,9 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
         for seed, retry_set in copied:
             report = find_report_for_set(retry_set, min_mtime=batch_started_at - 1.0)
             if not report:
-                memory.record_seed_score(seed, None, "no_report", None)
-                statuses["no_report"] = statuses.get("no_report", 0) + 1
+                status = missing_report_status(seed.symbol, args)
+                memory.record_seed_score(seed, None, status, None)
+                statuses[status] = statuses.get(status, 0) + 1
                 continue
             status, _ = evaluate_seed_report(
                 memory,
@@ -6066,7 +6306,7 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
 
     report = find_report_for_set(retry_set, min_mtime=batch_started_at - 1.0)
     if not report:
-        memory.record_seed_score(seed, None, "no_report", None)
+        memory.record_seed_score(seed, None, missing_report_status(seed.symbol, args), None)
         print("Retry seed terminado sin reporte fresco.")
         return 1
     status, result = evaluate_seed_report(
@@ -6158,6 +6398,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
             symbol_suffix=args.symbol_suffix,
+            universe_symbols=broker_universe_symbols(args),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -6239,6 +6480,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
             symbol_suffix=args.symbol_suffix,
+            universe_symbols=broker_universe_symbols(args),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -6343,6 +6585,7 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
             min_trades_w1=args.min_trades_w1,
             min_trades_mn=args.min_trades_mn,
             symbol_suffix=args.symbol_suffix,
+            universe_symbols=broker_universe_symbols(args),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "accepted" and result is not None:
@@ -6490,6 +6733,7 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
             args.broker,
             min_report_mtime=batch_started_at - 1.0,
             symbol_suffix=args.symbol_suffix,
+            universe_symbols=broker_universe_symbols(args),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
 
@@ -6536,6 +6780,7 @@ def evaluate_generation(
         min_trades_w1=args.min_trades_w1,
         min_trades_mn=args.min_trades_mn,
         symbol_suffix=args.symbol_suffix,
+        universe_symbols=broker_universe_symbols(args),
     )
     survivors = select_survivors(
         scored,
@@ -7237,7 +7482,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 args,
                 memory,
                 regression_score_config(args),
-                regression_runtime(),
+                regression_runtime(args),
             )
         finally:
             memory.close()
@@ -7267,7 +7512,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 args,
                 memory,
                 regression_score_config(args),
-                regression_runtime(),
+                regression_runtime(args),
             )
         finally:
             memory.close()
@@ -7638,6 +7883,7 @@ def run_agent(args: argparse.Namespace) -> int:
                         min_trades_w1=args.min_trades_w1,
                         min_trades_mn=args.min_trades_mn,
                         symbol_suffix=args.symbol_suffix,
+                        universe_symbols=broker_universe_symbols(args),
                     )
                     survivors = select_survivors(
                         scored,

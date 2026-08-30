@@ -5,6 +5,7 @@ import configparser
 import contextlib
 import hmac
 import json
+import mimetypes
 import os
 import platform
 import re
@@ -90,7 +91,7 @@ STAGE_TABLES = {
 
 STATUS_NOTIFICATION_ORDER = (
     "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history", "date_mismatch",
-    "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
+    "symbol_not_exist", "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
     "pending", "generated", "running",
 )
 
@@ -673,7 +674,7 @@ def stage_notification_message(
     )
 
 
-def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]]:
+def completed_runs_snapshot(path: Path, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     uri = path.resolve().as_uri() + "?mode=ro"
@@ -683,8 +684,8 @@ def completed_runs_snapshot(path: Path, limit: int = 100) -> list[dict[str, Any]
             if not _table_exists(conn, "runs") or not _table_exists(conn, "candidates"):
                 return []
             rows = conn.execute(
-                "select * from runs where coalesce(hidden,0)=0 order by id desc limit ?",
-                (max(1, min(int(limit), 500)),),
+                "select * from runs where coalesce(hidden,0)=0 order by id desc limit ? offset ?",
+                (max(1, int(limit)), max(0, int(offset))),
             ).fetchall()
             result: list[dict[str, Any]] = []
             non_terminal = {"generated", "pending", "running"}
@@ -1711,6 +1712,7 @@ class JobController:
                 "application_restart": bool(getattr(self, "application_restart_available", False)),
                 "historical_cleanup": bool(historical_cleanup_scripts(self.config, required=False)),
                 "live_account_audit": True,
+                "live_audit_restore_account": True,
             },
             "observed_at": utc_now(),
         }
@@ -1857,15 +1859,29 @@ class JobController:
         self._persist()
         return result
 
-    def runs(self, limit: int = 100) -> dict[str, Any]:
+    def runs(self, limit: int = 100, offset: int = 0) -> dict[str, Any]:
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
         if not settings_path.is_absolute():
             settings_path = project / settings_path
         cfg = read_settings(settings_path)
         path = memory_path(self.config, cfg)
-        runs = completed_runs_snapshot(path, limit)
-        return {"runs": runs, "memory_path": str(path), "observed_at": utc_now()}
+        page_limit = max(1, min(int(limit), 100))
+        page_offset = max(0, int(offset))
+        page = completed_runs_snapshot(path, page_limit + 1, page_offset)
+        has_more = len(page) > page_limit
+        runs = page[:page_limit]
+        return {
+            "runs": runs,
+            "pagination": {
+                "limit": page_limit,
+                "offset": page_offset,
+                "has_more": has_more,
+                "next_offset": page_offset + len(runs) if has_more else None,
+            },
+            "memory_path": str(path),
+            "observed_at": utc_now(),
+        }
 
     def log_tail(self, lines: int = 200) -> dict[str, Any]:
         with self.lock:
@@ -1898,6 +1914,17 @@ class NodeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_artifact(self, path: Path) -> None:
+        body = path.read_bytes()
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _body(self, maximum: int = 1_000_000) -> dict[str, Any]:
         length = safe_int(self.headers.get("Content-Length"), 0, minimum=0, maximum=maximum)
         if length == 0:
@@ -1921,14 +1948,31 @@ class NodeHandler(BaseHTTPRequestHandler):
             self._send(200, self.server.controller.log_tail(safe_int(query.get("lines", [200])[0], 200)))
         elif parsed.path == "/api/v1/runs":
             query = urllib.parse.parse_qs(parsed.query)
-            self._send(200, self.server.controller.runs(safe_int(query.get("limit", [100])[0], 100)))
+            limit = safe_int(query.get("limit", [100])[0], 100, minimum=1, maximum=100)
+            offset = safe_int(query.get("offset", [0])[0], 0, minimum=0)
+            self._send(200, self.server.controller.runs(limit, offset))
         elif parsed.path == "/api/v1/universe":
             self._send(200, self.server.controller.universe())
         elif parsed.path == "/api/v1/live-audits":
             self._send(200, {"audits": self.server.controller.live_audits.all_states(), "observed_at": utc_now()})
+        elif (
+            len(parsed.path.strip("/").split("/")) == 7
+            and parsed.path.strip("/").split("/")[:3] == ["api", "v1", "live-audits"]
+            and parsed.path.strip("/").split("/")[4] == "artifacts"
+        ):
+            parts = parsed.path.strip("/").split("/")
+            try:
+                path = self.server.controller.live_audits.artifact_path(
+                    urllib.parse.unquote(parts[3]),
+                    urllib.parse.unquote(parts[5]),
+                    urllib.parse.unquote(parts[6]),
+                )
+                self._send_artifact(path)
+            except (ValueError, FileNotFoundError):
+                self._send(404, {"error": "Reporte de auditoría no encontrado"})
         elif parsed.path.startswith("/api/v1/live-audits/"):
-            portfolio_id = safe_int(parsed.path.rsplit("/", 1)[-1], 0, minimum=1)
-            self._send(200, {"audit": self.server.controller.live_audits.state(portfolio_id), "observed_at": utc_now()})
+            audit_key = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+            self._send(200, {"audit": self.server.controller.live_audits.state(audit_key), "observed_at": utc_now()})
         elif parsed.path == "/api/v1/portfolios":
             query=urllib.parse.parse_qs(parsed.query); self._send(200,self.server.controller.portfolios(query.get("scope",["full_history"])[0]))
         elif parsed.path.startswith("/api/v1/portfolios/"):

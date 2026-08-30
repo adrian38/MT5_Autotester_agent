@@ -836,15 +836,22 @@ class UBSPortfolioOptimizerTests(unittest.TestCase):
         )
         expected_groups = {
             "Forex", "Metals", "Indices", "Energies",
-            "Crypto", "Stocks", "Bonds", "Softs",
+            "Crypto", "Stocks", "Bonds", "Commodities",
         }
 
         self.assertEqual(set(groups), expected_groups)
-        for expected_group, symbols in groups.items():
-            with self.subTest(group=expected_group):
+        for source_group, symbols in groups.items():
+            expected_group = "Softs" if source_group == "Commodities" else source_group
+            with self.subTest(group=source_group):
                 self.assertTrue(symbols)
                 self.assertTrue(
-                    all(portfolio_group_key(symbol) == expected_group for symbol in symbols)
+                    all(
+                        portfolio_group_key(
+                            symbol,
+                            universe_files=[Path("assets/ictrading_assets.ini")],
+                        ) == expected_group
+                        for symbol in symbols
+                    )
                 )
 
     def test_axi_universe_groups_are_available_to_portfolio(self) -> None:

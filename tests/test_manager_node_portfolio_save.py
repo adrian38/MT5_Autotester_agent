@@ -132,6 +132,45 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
             self.assertEqual(version_count, 1)
             self.assertEqual(portfolio_count, 1)
 
+    def test_a_payload_from_a_newer_manager_saves_at_the_first_attempt(self) -> None:
+        # El manager envia la tanda de riesgo por equity y los campos de auditoria
+        # que este `portfolio_manager/ubs_portfolio.py` todavia no declara. Antes
+        # el nodo moria con `unexpected keyword argument`, devolvia un 500 con la
+        # traza en la consola y solo guardaba en el segundo POST, el que el manager
+        # reintenta con `legacy_compatible_portfolio_save_payload`.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Path(temp_dir) / "ubs_memory_ICTRADING_STANDARD.sqlite"
+            memory.touch()
+
+            payload = self._payload("request-newer-manager")
+            for proposal in payload["proposals"]:
+                result = proposal["result"]
+                result["actual_closed_valley_dd"] = 50.0
+                result["floating_dd_buffer"] = 30.0
+                result["floating_overlap_audit"] = {"pairs": 0}
+                for allocation in result["allocations"]:
+                    allocation["max_balance_dd_001"] = 10.0
+                    allocation["max_equity_dd_001"] = 25.0
+                    allocation["floating_dd_source"] = "2020-2024"
+                    allocation["standalone_floating_dd"] = 30.0
+                    allocation["recent_net_profit_001"] = 12.0
+                    allocation["recent_equity_dd_001"] = 8.0
+                    allocation["has_recent_performance"] = True
+                    allocation["final_tick_report_path"] = "final.html"
+                    allocation["full_history_report_path"] = "full.html"
+
+            saved = save_portfolio_payload(memory, payload)
+            portfolio_id = int(saved["portfolio_id"])
+
+            self.assertFalse(saved["deduplicated"])
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                units = conn.execute(
+                    "select units from portfolio_allocations "
+                    "where portfolio_id=? and variant_key='balanced'",
+                    (portfolio_id,),
+                ).fetchone()[0]
+            self.assertEqual(units, 2)
+
     def test_delete_runs_locally_and_removes_parent_and_children(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = Path(temp_dir) / "ubs_memory_ICTRADING_STANDARD.sqlite"
