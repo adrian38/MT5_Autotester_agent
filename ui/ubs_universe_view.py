@@ -8,6 +8,20 @@ from run_tests import REPORT_DIR
 
 
 class UBSUniverseViewMixin:
+    def _fit_ubs_universe_summary(self, event) -> None:
+        """Ajusta el wraplength del resumen al ancho disponible de la barra.
+
+        Cambiar wraplength puede cambiar el alto de la etiqueta y disparar otro
+        <Configure>, asi que solo se reescribe cuando el ancho se mueve de forma
+        apreciable."""
+        width = max(200, int(event.width) - 20)
+        if abs(width - getattr(self, "_ubs_universe_summary_wrap", 0)) < 8:
+            return
+        self._ubs_universe_summary_wrap = width
+        label = getattr(self, "_ubs_universe_summary_label", None)
+        if label is not None:
+            label.configure(wraplength=width)
+
     def _build_ubs_universe(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -20,40 +34,68 @@ class UBSUniverseViewMixin:
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
         bar.columnconfigure(0, weight=1)
-        tk.Label(
+        # El resumen ocupa su propia fila: son ~1400px de texto y no cabe junto a
+        # los botones en ninguna ventana. Compartiendo fila la etiqueta se
+        # encogia y, con anchor centrado, el texto se recortaba por los dos
+        # lados. anchor="w" ademas garantiza que si alguna vez falta sitio se
+        # corte solo por la derecha.
+        self._ubs_universe_summary_label = tk.Label(
             bar,
             textvariable=self.ubs_universe_summary,
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
-        for col, (label, fg, bold, cmd) in enumerate([
+            anchor="w",
+            justify="left",
+        )
+        self._ubs_universe_summary_label.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 2))
+        self._ubs_universe_summary_wrap = 0
+        bar.bind("<Configure>", self._fit_ubs_universe_summary)
+        # Dos filas de botones: arriba el flujo de sincronizacion en orden de uso
+        # (Sincronizacion -> Probar history GEN -> Deshabilitar sin history) y
+        # abajo las acciones sobre marcados y pesos. En una sola fila median
+        # 1651px y recortaban el ultimo boton.
+        flow_buttons = [
             ("Actualizar",          self.colors["muted"],          False, self._refresh_ubs_universe_panel),
-            ("Deshabilitar marcados", self.colors["danger"],        True,  lambda: self._set_checked_universe_symbols_enabled(False)),
-            ("Deshabilitar simbolos sin history", self.colors["danger"], True, self._disable_no_history_universe_symbols),
+            ("Sincronizacion de simbolos", self.colors["accent_soft_text"], True, self._sync_mt5_universe_symbols),
             ("Probar history GEN",  self.colors["accent_soft_text"], True,  self._run_ubs_universe_history_probe),
+            ("Deshabilitar simbolos sin history", self.colors["danger"], True, self._disable_no_history_universe_symbols),
+            ("Extraer MT5",         self.colors["accent_soft_text"], True,  self._extract_mt5_universe_symbols),
+        ]
+        selection_buttons = [
+            ("Deshabilitar marcados", self.colors["danger"],        True,  lambda: self._set_checked_universe_symbols_enabled(False)),
             ("Habilitar marcados",  self.colors["accent_soft_text"], True, lambda: self._set_checked_universe_symbols_enabled(True)),
             ("Permitir seeds",      self.colors["accent_soft_text"], False, lambda: self._set_checked_universe_symbols_seed_enabled(True)),
             ("Bloquear seeds",      self.colors["muted"],          False, lambda: self._set_checked_universe_symbols_seed_enabled(False)),
-            ("Extraer MT5",         self.colors["accent_soft_text"], True,  self._extract_mt5_universe_symbols),
             ("Limpiar marcados",    self.colors["muted"],          False, self._clear_selected_weights),
             ("Reset pesos activos", self.colors["muted"],          False, self._clear_all_asset_weights),
             ("Reset pesos TF",      self.colors["muted"],          False, self._clear_all_tf_weights),
-        ], start=1):
-            padx = (0, 10) if col == 11 else (0, 6)
-            font = ("Segoe UI", 9, "bold") if bold else ("Segoe UI", 9)
-            tk.Button(bar, text=label, bg=self.colors["panel"], fg=fg,
-                      relief="solid", borderwidth=1, padx=8, pady=5,
-                      font=font, cursor="hand2", command=cmd,
-                      ).grid(row=0, column=col, sticky="e", padx=padx, pady=5)
+        ]
+
+        # Un frame por fila: con una sola rejilla compartida cada columna se
+        # ensancha con el boton mas largo de esa columna y las dos filas quedan
+        # desalineadas.
+        def build_button_row(row: int, buttons: list, top_pad: int) -> tk.Frame:
+            holder = tk.Frame(bar, bg=self.colors["panel_alt"])
+            holder.grid(row=row, column=0, sticky="e", padx=(0, 10), pady=(top_pad, 5))
+            for col, (label, fg, bold, cmd) in enumerate(buttons):
+                font = ("Segoe UI", 9, "bold") if bold else ("Segoe UI", 9)
+                tk.Button(holder, text=label, bg=self.colors["panel"], fg=fg,
+                          relief="solid", borderwidth=1, padx=8, pady=5,
+                          font=font, cursor="hand2", command=cmd,
+                          ).grid(row=0, column=col, sticky="e", padx=(0, 6))
+            return holder
+
+        build_button_row(1, flow_buttons, top_pad=2)
+        selection_holder = build_button_row(2, selection_buttons, top_pad=0)
         self._ubs_calc_weights_btn = tk.Button(
-            bar, text="Calcular pesos",
+            selection_holder, text="Calcular pesos",
             bg=self.colors["accent"], fg="#ffffff",
             relief="flat", borderwidth=0, padx=10, pady=5,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
             command=self._ubs_apply_weights,
         )
-        self._ubs_calc_weights_btn.grid(row=0, column=12, sticky="e", padx=(0, 10), pady=5)
+        self._ubs_calc_weights_btn.grid(row=0, column=len(selection_buttons), sticky="e")
 
         filter_bar = ttk.Frame(panel, style="Panel.TFrame")
         filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
