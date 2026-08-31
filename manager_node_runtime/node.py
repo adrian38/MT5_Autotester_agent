@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import contextlib
+import copy
 import hmac
 import json
 import mimetypes
@@ -912,15 +913,39 @@ class JobController(UniverseControllerMixin):
                     self.queue = [dict(item) for item in stored_queue if isinstance(item, dict)]
             except ValueError:
                 pass
+        self._publish_status_snapshot()
         self.live_audits = LiveAuditController(self, self.runtime_dir)
         if self.queue:
             self._schedule_queue_drain()
 
     def _persist(self) -> None:
         save_json(self.state_path, self.state)
+        self._publish_status_snapshot()
+
+    def _publish_status_snapshot(self) -> None:
+        # Writers own self.lock. Publish a detached tuple in one assignment so
+        # HTTP readers never wait for a bulk repair's database preflight.
+        self._status_snapshot = (
+            copy.deepcopy(self.state), self._queue_snapshot(), utc_now(),
+        )
+
+    def _read_status_snapshot(self) -> tuple[dict[str, Any], dict[str, Any], str, bool]:
+        if self.lock.acquire(blocking=False):
+            try:
+                self._publish_status_snapshot()
+                snapshot = self._status_snapshot
+                busy = False
+            finally:
+                self.lock.release()
+        else:
+            snapshot = self._status_snapshot
+            busy = True
+        job, queue, observed_at = copy.deepcopy(snapshot)
+        return job, queue, observed_at, busy
 
     def _persist_queue(self) -> None:
         save_json(self.queue_path, self.queue)
+        self._publish_status_snapshot()
 
     def _queue_snapshot(self) -> dict[str, Any]:
         return {
@@ -1661,9 +1686,7 @@ class JobController(UniverseControllerMixin):
             return dict(self.state)
 
     def status(self) -> dict[str, Any]:
-        with self.lock:
-            result = dict(self.state)
-            task_queue = self._queue_snapshot()
+        result, task_queue, job_observed_at, job_snapshot_stale = self._read_status_snapshot()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         if not settings_path.is_absolute():
@@ -1700,6 +1723,8 @@ class JobController(UniverseControllerMixin):
                 "project_dir": str(project),
             },
             "job": result,
+            "job_observed_at": job_observed_at,
+            "job_snapshot_stale": job_snapshot_stale,
             "task_queue": task_queue,
             "database": db,
             "launch_defaults": launch_defaults,
@@ -1888,8 +1913,8 @@ class JobController(UniverseControllerMixin):
         }
 
     def log_tail(self, lines: int = 200) -> dict[str, Any]:
-        with self.lock:
-            path_text = self.state.get("log_path")
+        job, _, _, _ = self._read_status_snapshot()
+        path_text = job.get("log_path")
         if not path_text or not Path(path_text).is_file():
             return {"lines": [], "log_path": path_text}
         content = Path(path_text).read_text(encoding="utf-8", errors="replace").splitlines()
