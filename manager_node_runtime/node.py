@@ -26,6 +26,7 @@ import telegram_notify
 
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
 from .live_audit import LiveAuditController
+from .universe_service import UniverseControllerMixin, build_history_command
 from .portfolio_save import (
     exclude_portfolio_members_payload,
     requalify_portfolio_member_payload,
@@ -869,7 +870,7 @@ def pipeline_stage_pending_count(
 RESUMABLE_STATUSES = frozenset({"paused", "interrupted", "failed"})
 
 
-class JobController:
+class JobController(UniverseControllerMixin):
     def __init__(self, config: dict[str, Any], config_path: Path) -> None:
         self.config = config
         self.config_path = config_path
@@ -1444,6 +1445,8 @@ class JobController:
                 step_request["max_workers"] = step["max_workers"]
             if stage == "generation":
                 command, cwd = build_generation_command(self.config, step_request)
+            elif stage == "universe_history":
+                command, cwd = build_history_command(self.config, step_request)
             elif stage in CLEANUP_STAGES:
                 command, cwd = build_historical_cleanup_command(self.config, stage)
             else:
@@ -1707,6 +1710,7 @@ class JobController:
                 "cycles": True,
                 "repair_runs": True,
                 "universe_management": True,
+                "universe_sync": True,
                 "portfolio_views": True,
                 "task_queue": True,
                 "application_restart": bool(getattr(self, "application_restart_available", False)),
@@ -2010,6 +2014,13 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, {"audit": self.server.controller.live_audits.start(body)})
             elif self.path == "/api/v1/universe/symbols":
                 self._send(200, self.server.controller.update_universe(self._body()))
+            elif self.path in {
+                "/api/v1/universe/sync", "/api/v1/universe/history-preview",
+                "/api/v1/universe/disable-preview", "/api/v1/universe/disable-no-history",
+            }:
+                self._send(200, self.server.controller.universe_action(self.path.rsplit("/", 1)[1], self._body()))
+            elif self.path == "/api/v1/jobs/universe-history":
+                self._send(202, self.server.controller.start_universe_history())
             elif self.path == "/api/v1/portfolios/save":
                 self._send(201, self.server.controller.save_portfolio(self._body(50_000_000)))
             elif self.path == "/api/v1/portfolios/delete":
