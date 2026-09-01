@@ -294,7 +294,11 @@ class AgentMemory:
 
     def _reclassify_empty_tester_contexts(self) -> None:
         migrations = (
-            ("candidates", ("no_trades",), "report_mismatch"),
+            (
+                "candidates",
+                ("no_trades", "report_mismatch", "pending_tester_context"),
+                "pending_tester_context",
+            ),
             (
                 "seed_scores",
                 ("no_trades", "report_mismatch", "pending_tester_context"),
@@ -1829,7 +1833,8 @@ class AgentMemory:
             """
             select *
             from candidates
-            where run_id=? and generation=? and status in ('report_mismatch', 'no_report')
+            where run_id=? and generation=?
+              and status in ('report_mismatch', 'no_report', 'pending_tester_context')
             order by id
             """,
             (run_id, generation),
@@ -1840,7 +1845,7 @@ class AgentMemory:
             """
             select *
             from candidates
-            where run_id=? and status in ('report_mismatch', 'no_report')
+            where run_id=? and status in ('report_mismatch', 'no_report', 'pending_tester_context')
             order by generation, id
             """,
             (run_id,),
