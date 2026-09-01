@@ -11,7 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from manager_node_runtime.live_audit import (
-    LiveAuditController, _read_set_text, _redact_log_files, _redact_runner_output, normalize_request,
+    LiveAuditController, _audit_period, _read_set_text, _redact_log_files, _redact_runner_output,
+    normalize_request,
 )
 from manager_node_runtime.mt5_native_history_report import (
     NativeHistoryReportError, validate_native_history_report,
@@ -34,7 +35,7 @@ def request() -> dict:
         "restore_password": "restore-secret",
         "period_days": 7,
         "min_tick_history_quality_pct": 80,
-        "trade_time_tolerance_seconds": 60,
+        "trade_time_tolerance_seconds": 120,
         "price_tolerance_points": 10,
         "volume_tolerance_pct": 1,
         "pnl_deviation_warning_pct": 10,
@@ -134,6 +135,20 @@ class LiveAuditEngineTests(unittest.TestCase):
             self.assertNotIn("password", str(state).casefold())
             self.assertNotIn("secret", (Path(temp) / "live_audits" / "state.json").read_text(encoding="utf-8"))
 
+    def test_rolling_and_fixed_periods_use_complete_calendar_days(self) -> None:
+        rolling = normalize_request(request())
+        start, end = _audit_period(rolling, datetime(2026, 8, 30, 16, 45, tzinfo=timezone.utc))
+        self.assertEqual(start.isoformat(), "2026-08-23T00:00:00+00:00")
+        self.assertEqual(end.date().isoformat(), "2026-08-30")
+
+        fixed = normalize_request({
+            **request(), "period_mode": "fixed_dates",
+            "period_start_date": "2026-08-23", "period_end_date": "2026-08-30",
+        })
+        start, end = _audit_period(fixed)
+        self.assertEqual(start.isoformat(), "2026-08-23T00:00:00+00:00")
+        self.assertEqual(end.date().isoformat(), "2026-08-30")
+
     def test_runner_output_redacts_ini_and_incidental_secret_copies(self) -> None:
         text = "[Common]\nPassword=tester-secret\nerror tester-secret\nPassword=another-value\n"
         redacted = _redact_runner_output(text, "tester-secret")
@@ -189,6 +204,12 @@ class LiveAuditEngineTests(unittest.TestCase):
             )
 
         self.assertEqual(result, (0.01, 0.1, 0.1, 0.1, 1))
+
+    def test_portfolio_units_do_not_multiply_the_broker_minimum(self) -> None:
+        result = LiveAuditController._tester_lot(
+            {"symbol": "DE40", "units": 3, "lot": 0.03}, {"de40": (0.1, 0.1)},
+        )
+        self.assertEqual(result, (0.03, 0.1, 0.1, 0.1, 3))
 
     def test_real_account_report_must_be_the_native_terminal_html(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -422,6 +443,30 @@ class LiveAuditEngineTests(unittest.TestCase):
         self.assertEqual(state["last_result"]["real_trades"], 1)
         self.assertEqual(state["last_result"]["real_history_detail"]["portfolio_closures"], 1)
         self.assertEqual(state["last_result"]["real_history_detail"]["foreign_closures_ignored"], 1)
+
+    def test_real_account_filter_uses_effective_broker_lot_not_invalid_saved_lot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            owner, controller = self._controller(Path(temp), "idle")
+            owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
+                "variant_key": "balanced", "candidate_id": "de40", "symbol": "DE40",
+                "lot": .03, "units": 3,
+            }]}}
+            controller._broker_volume_rules = lambda: {"de40": (.1, .1)}
+            now = datetime.now(timezone.utc)
+            base = {
+                "strategy": "real", "symbol": "DE40", "side": "buy", "open_time": now,
+                "close_time": now, "open_price": 100.0, "close_price": 100.0, "profit": 1.0,
+            }
+            controller._extract_real = lambda *_args: (
+                [{**base, "volume": .1}, {**base, "volume": .3}], {"DE40": 1.0},
+                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
+                 "history_detail": {}},
+            )
+            controller.start(request())
+            state = self._wait(controller)
+
+        self.assertEqual(state["last_result"]["real_trades"], 1)
+        self.assertEqual(state["last_result"]["real_history_detail"]["portfolio_closures"], 1)
 
     def test_pipeline_already_paused_by_user_stays_paused(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
