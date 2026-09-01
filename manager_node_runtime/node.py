@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import contextlib
+import copy
 import hmac
 import json
 import mimetypes
@@ -24,8 +25,12 @@ from typing import Any, Callable
 
 import telegram_notify
 
+from .guided_controller import GuidedControllerMixin
+from . import guided_batches
+
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
 from .live_audit import LiveAuditController
+from .universe_service import UniverseControllerMixin, build_history_command
 from .portfolio_save import (
     exclude_portfolio_members_payload,
     requalify_portfolio_member_payload,
@@ -384,6 +389,9 @@ def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) ->
     _add(args, "--delay", pick("delay", "delay", 5))
     _add(args, "--generation-mode", generation_mode)
     _add(args, "--random-seed", payload.get("random_seed", defaults.get("random_seed")))
+    if payload.get("guided_batch_id"):
+        prepared = guided_batches.batch_dir(project, payload["guided_batch_id"]) / "batch.json"
+        _add(args, "--prepared-manifest", prepared)
     _add(args, "--from-date", payload.get("from_date", defaults.get("from_date", setting(cfg, "General", "ubs_agent_from_date"))))
     _add(args, "--to-date", payload.get("to_date", defaults.get("to_date", setting(cfg, "General", "ubs_agent_to_date"))))
 
@@ -869,7 +877,7 @@ def pipeline_stage_pending_count(
 RESUMABLE_STATUSES = frozenset({"paused", "interrupted", "failed"})
 
 
-class JobController:
+class JobController(GuidedControllerMixin, UniverseControllerMixin):
     def __init__(self, config: dict[str, Any], config_path: Path) -> None:
         self.config = config
         self.config_path = config_path
@@ -911,15 +919,39 @@ class JobController:
                     self.queue = [dict(item) for item in stored_queue if isinstance(item, dict)]
             except ValueError:
                 pass
+        self._publish_status_snapshot()
         self.live_audits = LiveAuditController(self, self.runtime_dir)
         if self.queue:
             self._schedule_queue_drain()
 
     def _persist(self) -> None:
         save_json(self.state_path, self.state)
+        self._publish_status_snapshot()
+
+    def _publish_status_snapshot(self) -> None:
+        # Writers own self.lock. Publish a detached tuple in one assignment so
+        # HTTP readers never wait for a bulk repair's database preflight.
+        self._status_snapshot = (
+            copy.deepcopy(self.state), self._queue_snapshot(), utc_now(),
+        )
+
+    def _read_status_snapshot(self) -> tuple[dict[str, Any], dict[str, Any], str, bool]:
+        if self.lock.acquire(blocking=False):
+            try:
+                self._publish_status_snapshot()
+                snapshot = self._status_snapshot
+                busy = False
+            finally:
+                self.lock.release()
+        else:
+            snapshot = self._status_snapshot
+            busy = True
+        job, queue, observed_at = copy.deepcopy(snapshot)
+        return job, queue, observed_at, busy
 
     def _persist_queue(self) -> None:
         save_json(self.queue_path, self.queue)
+        self._publish_status_snapshot()
 
     def _queue_snapshot(self) -> dict[str, Any]:
         return {
@@ -1108,6 +1140,8 @@ class JobController:
         self._send_telegram(f"job_{self.state.get('job_id')}_no_work", message)
 
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "guided_batch_id" in payload or "prepared_manifest" in payload:
+            raise ValueError("Usar la entrada autenticada de lotes preparados")
         with self.lock:
             normalized = self._normalize_generation(payload)
             build_generation_command(self.config, normalized)
@@ -1444,6 +1478,8 @@ class JobController:
                 step_request["max_workers"] = step["max_workers"]
             if stage == "generation":
                 command, cwd = build_generation_command(self.config, step_request)
+            elif stage == "universe_history":
+                command, cwd = build_history_command(self.config, step_request)
             elif stage in CLEANUP_STAGES:
                 command, cwd = build_historical_cleanup_command(self.config, stage)
             else:
@@ -1470,6 +1506,7 @@ class JobController:
         self.state["return_code"] = return_code
         self.state["finished_at"] = utc_now()
         self.state["status"] = "completed" if return_code == 0 else "failed"
+        self.guided_completed()
         self.state["pid"] = None
         self.process = None
         self._notify_no_work_completion(return_code)
@@ -1490,6 +1527,7 @@ class JobController:
             text=True, encoding="utf-8", errors="replace", creationflags=creationflags,
         )
         self.process = process
+        self.guided_stage_started()
         self.state["pid"] = process.pid
         # Sin esto la posicion del pipeline solo vivia en los argumentos del hilo
         # vigilante, asi que un cierre del agente la perdia y no habia por donde
@@ -1512,6 +1550,7 @@ class JobController:
             if self.log_handle:
                 self.log_handle.close()
                 self.log_handle = None
+            self.guided_stage_finished(str((self.state.get("pipeline") or [])[step_index]["action"]))
             if self.pause_requested:
                 # La etapa se corto a peticion del usuario, no fallo. Se conserva
                 # ``current_step_index`` para relanzar esta misma etapa: al volver,
@@ -1547,7 +1586,11 @@ class JobController:
                         settings_path = project / settings_path
                     cfg = read_settings(settings_path)
                     snapshot = database_snapshot(memory_path(self.config, cfg))
-                    generated_run = safe_int((snapshot.get("latest_run") or {}).get("id"), 0, minimum=0)
+                    prepared_id = (self.state.get("request") or {}).get("guided_batch_id")
+                    prepared_run = guided_batches.read_run(project, prepared_id) if prepared_id else None
+                    if prepared_id and not prepared_run:
+                        raise ValueError("El lote preparado no publicó su run exacto")
+                    generated_run = safe_int((prepared_run or snapshot.get("latest_run") or {}).get("run_id" if prepared_id else "id"), 0, minimum=0)
                     if generated_run <= 0:
                         raise ValueError("No se encontro el run generado")
                     self.state.setdefault("cycle_run_ids", {})[str(cycle)] = generated_run
@@ -1658,9 +1701,7 @@ class JobController:
             return dict(self.state)
 
     def status(self) -> dict[str, Any]:
-        with self.lock:
-            result = dict(self.state)
-            task_queue = self._queue_snapshot()
+        result, task_queue, job_observed_at, job_snapshot_stale = self._read_status_snapshot()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
         project = Path(str(self.config["project_dir"])).expanduser().resolve()
         if not settings_path.is_absolute():
@@ -1697,16 +1738,20 @@ class JobController:
                 "project_dir": str(project),
             },
             "job": result,
+            "job_observed_at": job_observed_at,
+            "job_snapshot_stale": job_snapshot_stale,
             "task_queue": task_queue,
             "database": db,
             "launch_defaults": launch_defaults,
             "capabilities": {
+                "guided_batches_v1": True,
                 "worker_override": True,
                 "pipeline_controls": True,
                 "failed_resume": True,
                 "cycles": True,
                 "repair_runs": True,
                 "universe_management": True,
+                "universe_sync": True,
                 "portfolio_views": True,
                 "task_queue": True,
                 "application_restart": bool(getattr(self, "application_restart_available", False)),
@@ -1884,8 +1929,8 @@ class JobController:
         }
 
     def log_tail(self, lines: int = 200) -> dict[str, Any]:
-        with self.lock:
-            path_text = self.state.get("log_path")
+        job, _, _, _ = self._read_status_snapshot()
+        path_text = job.get("log_path")
         if not path_text or not Path(path_text).is_file():
             return {"lines": [], "log_path": path_text}
         content = Path(path_text).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -1941,6 +1986,11 @@ class NodeHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/v1/health":
             self._send(200, {"ok": True, "node_id": self.server.controller.config.get("node_id"), "time": utc_now()})
+        elif parsed.path.startswith("/api/v1/guided-batches/"):
+            try:
+                self._send(200, self.server.controller.guided_status(parsed.path.rsplit("/", 1)[-1]))
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                self._send(400, {"error": str(exc)})
         elif parsed.path == "/api/v1/status":
             self._send(200, self.server.controller.status())
         elif parsed.path == "/api/v1/logs":
@@ -1987,6 +2037,11 @@ class NodeHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/v1/application/restart":
                 self._send(202, self.server.request_application_restart())
+            elif self.path == "/api/v1/guided-batches":
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= guided_batches.MAX_BODY:
+                    raise ValueError("Lote demasiado grande o vacío")
+                self._send(202, self.server.controller.submit_guided(self._body(guided_batches.MAX_BODY)))
             elif self.path == "/api/v1/jobs/generation":
                 self._send(202, self.server.controller.start(self._body()))
             elif self.path == "/api/v1/jobs/repair":
@@ -2010,6 +2065,13 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, {"audit": self.server.controller.live_audits.start(body)})
             elif self.path == "/api/v1/universe/symbols":
                 self._send(200, self.server.controller.update_universe(self._body()))
+            elif self.path in {
+                "/api/v1/universe/sync", "/api/v1/universe/history-preview",
+                "/api/v1/universe/disable-preview", "/api/v1/universe/disable-no-history",
+            }:
+                self._send(200, self.server.controller.universe_action(self.path.rsplit("/", 1)[1], self._body()))
+            elif self.path == "/api/v1/jobs/universe-history":
+                self._send(202, self.server.controller.start_universe_history())
             elif self.path == "/api/v1/portfolios/save":
                 self._send(201, self.server.controller.save_portfolio(self._body(50_000_000)))
             elif self.path == "/api/v1/portfolios/delete":

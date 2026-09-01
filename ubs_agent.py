@@ -464,6 +464,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variants-per-seed", type=int, default=3)
     parser.add_argument("--max-seeds", type=int, default=30)
     parser.add_argument("--mutations-per-variant", type=int, default=6)
+    parser.add_argument("--prepared-manifest", type=Path, help="Lote recibido por el nodo; se evalúa sin volver a mutar")
     parser.add_argument("--top-percent", type=float, default=20.0)
     parser.add_argument(
         "--asset-unseeded-prob-gen1",
@@ -7456,6 +7457,12 @@ def run_agent(args: argparse.Namespace) -> int:
         min_positive_month_ratio=args.min_positive_month_ratio,
     )
 
+    if getattr(args, "prepared_manifest", None):
+        try:
+            from ubs.prepared import run_prepared
+            return run_prepared(args, memory, score_config, sys.modules[__name__])
+        finally:
+            memory.close()
     if args.probe_universe_history:
         try:
             return probe_universe_history(args, memory, score_config)

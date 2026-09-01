@@ -1311,6 +1311,9 @@ class MT5AutotesterUI(
         self._refresh_all()
         self._startup_progress.advance("Nodo manager")
         self._manager_node.start()
+        if self._manager_node.controller is not None:
+            # Reads only the subprocess handle, never Tk variables from HTTP.
+            self._manager_node.controller.ui_busy = lambda: bool(self.process and self.process.poll() is None)
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(60, self._animate_progress)
         self.after(OUTPUT_DRAIN_IDLE_INTERVAL_MS, self._drain_output_queue)
@@ -2197,6 +2200,9 @@ class MT5AutotesterUI(
             subprocess.Popen(["explorer", "/select,", str(path)])
 
     def _run_script(self, script_name: str, args: list[str]) -> None:
+        if self._manager_node.job_running:
+            messagebox.showwarning("Proceso remoto activo", "El manager esta utilizando el agente. Espera a que termine.")
+            return
         if self.process and self.process.poll() is None:
             messagebox.showwarning("Proceso activo", "Ya hay un proceso en ejecucion.")
             return
