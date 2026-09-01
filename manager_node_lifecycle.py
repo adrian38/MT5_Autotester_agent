@@ -51,7 +51,10 @@ class EmbeddedManagerNode:
     @property
     def job_running(self) -> bool:
         process = getattr(self.controller, "process", None)
-        return bool(process is not None and process.poll() is None)
+        return bool(
+            getattr(self.controller, "universe_operation_running", False)
+            or (process is not None and process.poll() is None)
+        )
 
     @property
     def restart_requested(self) -> bool:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import sys
+import time
 import tkinter as tk
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -380,21 +382,24 @@ class UBSUniverseLogicMixin:
         dialog.wait_window()
         return result
 
-    def _extract_mt5_universe_symbols(self) -> None:
+    def _extract_mt5_universe_into_asset_file(self, title: str, confirm_message: str):
+        """Lee los simbolos del servidor y reescribe el universo del broker activo.
+
+        Nucleo compartido por "Extraer MT5" y "Sincronizacion de simbolos": el
+        segundo solo añade la parte de politica, para no duplicar el dialogo de
+        credenciales ni la escritura del assets.ini. Devuelve
+        ``(extraction, sync_result)`` o None si el usuario cancela o algo falla
+        (en ese caso ya se ha informado)."""
         credentials = self._ask_mt5_symbol_extract_credentials()
         if credentials is None:
-            return
+            return None
         raw_path = str(credentials.get("mt5_path") or "").strip()
         terminal_path = Path(raw_path).expanduser() if raw_path else None
         if terminal_path is not None and not terminal_path.exists():
-            messagebox.showerror("Extraer simbolos MT5", f"No existe el terminal:\n{terminal_path}")
-            return
-        if not messagebox.askyesno(
-            "Extraer simbolos MT5",
-            "Se leera la lista de simbolos del servidor MT5 y se sincronizara el universo del broker activo.\n\n"
-            "Se eliminaran los simbolos que ya no existan, se agregaran los nuevos y se creara un backup antes de escribir.",
-        ):
-            return
+            messagebox.showerror(title, f"No existe el terminal:\n{terminal_path}")
+            return None
+        if not messagebox.askyesno(title, confirm_message):
+            return None
         self.status_text.set("Extrayendo simbolos MT5...")
         self.update_idletasks()
         try:
@@ -411,13 +416,97 @@ class UBSUniverseLogicMixin:
                 preserve_existing_groups=False,
             )
         except MT5SymbolExtractionError as exc:
-            messagebox.showerror("Extraer simbolos MT5", str(exc))
+            messagebox.showerror(title, str(exc))
             self.status_text.set("Extraccion MT5 fallida")
-            return
+            return None
         except Exception as exc:
-            messagebox.showerror("Extraer simbolos MT5", f"Error inesperado:\n{exc}")
+            messagebox.showerror(title, f"Error inesperado:\n{exc}")
             self.status_text.set("Extraccion MT5 fallida")
+            return None
+        return extraction, sync_result
+
+    def _sync_mt5_universe_symbols(self) -> None:
+        """Extrae del servidor y deja el universo listo para el probe historico.
+
+        Es la parte previa al probe del proceso completo: sincronizar el
+        inventario y deshabilitar en GEN lo que el broker retiro. Los retirados
+        se deshabilitan porque ya no pueden generar seeds; deshabilitarlos NO los
+        marca como terminales para los candidatos existentes (eso lo decide su
+        ausencia del universo)."""
+        title = "Sincronizacion de simbolos"
+        result = self._extract_mt5_universe_into_asset_file(
+            title,
+            "Paso 1 del proceso de sincronizacion (previo al probe historico).\n\n"
+            "1) Lee la lista de simbolos del servidor MT5.\n"
+            "2) Reescribe el universo del broker activo: agrega los nuevos y "
+            "elimina los que el broker ya no ofrece (con backup).\n"
+            "3) Deshabilita en GEN los eliminados, para que no generen seeds.\n\n"
+            "No lanza backtests. Despues usa 'Probar history GEN'.",
+        )
+        if result is None:
             return
+        extraction, sync_result = result
+
+        removed = tuple(sync_result.removed_symbols)
+        newly_disabled: set[str] = set()
+        dropped_seed_exceptions: set[str] = set()
+        policy_backup = None
+        if removed:
+            _assets, aliases = self._load_ubs_asset_universe()
+            disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
+            retired = self._canonical_ubs_symbol_set(set(removed), aliases)
+            newly_disabled = retired - disabled
+            # La excepcion seed_enabled se retira de TODOS los retirados, no solo
+            # de los recien deshabilitados: si el broker ya no ofrece el simbolo,
+            # sus seeds no pueden ejecutarse aunque la excepcion sea antigua.
+            dropped_seed_exceptions = seed_enabled & retired
+            if newly_disabled or dropped_seed_exceptions:
+                disabled.update(newly_disabled)
+                seed_enabled.difference_update(retired)
+                policy_backup = self._save_disabled_ubs_symbols(disabled, seed_enabled)
+
+        total = sum(sync_result.counts.values())
+        removed_preview = ", ".join(removed[:12])
+        if len(removed) > 12:
+            removed_preview += f", ... (+{len(removed) - 12})"
+        universe_backup = f"\nBackup universo: {sync_result.backup_path}" if sync_result.backup_path else ""
+        policy_backup_text = f"\nBackup politica: {policy_backup}" if policy_backup else ""
+        messagebox.showinfo(
+            title,
+            f"Universo sincronizado: {total} simbolos\n"
+            f"Agregados: {len(sync_result.added_symbols)}\n"
+            f"Retirados por el broker: {len(removed)}"
+            + (f" ({removed_preview})" if removed_preview else "")
+            + f"\nDeshabilitados en GEN ahora: {len(newly_disabled)}\n"
+            + (
+                f"Excepciones de seeds retiradas: {len(dropped_seed_exceptions)}\n"
+                if dropped_seed_exceptions
+                else ""
+            )
+            + f"Cuenta: {extraction.account_login or '(sesion actual)'}\n"
+            f"Servidor: {extraction.server or '(sin dato)'}"
+            f"{universe_backup}{policy_backup_text}\n\n"
+            "Siguiente paso: 'Probar history GEN' y, cuando termine, "
+            "'Deshabilitar simbolos sin history'.",
+        )
+        self.ubs_universe_checked.clear()
+        self.status_text.set(
+            f"Sincronizacion de simbolos: {total} en universo, "
+            f"+{len(sync_result.added_symbols)} / -{len(removed)}, "
+            f"{len(newly_disabled)} deshabilitados en GEN"
+        )
+        self._refresh_ubs_universe()
+
+    def _extract_mt5_universe_symbols(self) -> None:
+        result = self._extract_mt5_universe_into_asset_file(
+            "Extraer simbolos MT5",
+            "Se leera la lista de simbolos del servidor MT5 y se sincronizara el universo del broker activo.\n\n"
+            "Se eliminaran los simbolos que ya no existan, se agregaran los nuevos y se creara un backup antes de escribir.\n\n"
+            "No toca la politica de deshabilitados: para eso usa 'Sincronizacion de simbolos'.",
+        )
+        if result is None:
+            return
+        extraction, sync_result = result
 
         total = sum(sync_result.counts.values())
         details = ", ".join(f"{group}: {count}" for group, count in sync_result.counts.items())
@@ -1073,9 +1162,39 @@ class UBSUniverseLogicMixin:
         from ubs.universe import load_seed_enabled_disabled_symbols
         return load_seed_enabled_disabled_symbols(self._disabled_symbols_path())
 
-    def _save_disabled_ubs_symbols(self, symbols: set, seed_enabled_when_disabled: set | None = None) -> None:
+    def _save_disabled_ubs_symbols(self, symbols: set, seed_enabled_when_disabled: set | None = None):
+        """Escribe la politica de deshabilitados dejando antes una copia.
+
+        ``save_disabled_symbols`` sobreescribe el fichero, y estas acciones
+        pueden cambiar miles de entradas de golpe. Devuelve la ruta del backup
+        (o None si no habia fichero previo)."""
         from ubs.universe import save_disabled_symbols
-        save_disabled_symbols(self._disabled_symbols_path(), symbols, seed_enabled_when_disabled)
+
+        path = self._disabled_symbols_path()
+        backup = None
+        if path.exists():
+            backup = path.with_suffix(path.suffix + f".bak_{time.strftime('%Y%m%d_%H%M%S')}")
+            try:
+                shutil.copy2(path, backup)
+            except OSError:
+                backup = None
+            else:
+                self._prune_disabled_symbols_backups(path)
+        save_disabled_symbols(path, symbols, seed_enabled_when_disabled)
+        return backup
+
+    def _prune_disabled_symbols_backups(self, path: Path, keep: int = 10) -> None:
+        """Conserva solo los ``keep`` backups mas recientes de la politica."""
+        backups = sorted(
+            path.parent.glob(f"{path.name}.bak_*"),
+            key=lambda item: item.name,
+            reverse=True,
+        )
+        for stale in backups[keep:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
     # ── SEL en Timeframes ────────────────────────────────────────────────────
 
