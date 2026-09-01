@@ -48,6 +48,7 @@ from ubs.account import (
     migrate_legacy_account_storage,
     normalize_account_type,
     normalize_broker,
+    strip_broker_identity_suffix,
 )
 from ubs.degradation import (
     DEFAULT_MAX_DD_INFLATION,
@@ -645,9 +646,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--retry-seed-path", action="append", help="Relanza una semilla concreta y actualiza seed_scores. Puede repetirse.")
     parser.add_argument("--retry-run-id", type=int, help="Run SQLite para retry de mismatches. Si se omite usa el ultimo run.")
-    parser.add_argument("--retry-mismatch-run", action="store_true", help="Relanza todos los report_mismatch de un run.")
+    parser.add_argument(
+        "--retry-mismatch-run",
+        action="store_true",
+        help="Relanza los problemas tecnicos reintentables de un run.",
+    )
     parser.add_argument("--retry-full-run", action="store_true", help="Relanza todos los candidatos de un run y reemplaza sus resultados.")
-    parser.add_argument("--retry-mismatch-generation", type=int, help="Relanza todos los report_mismatch de una generacion.")
+    parser.add_argument(
+        "--retry-mismatch-generation",
+        type=int,
+        help="Relanza los problemas tecnicos reintentables de una generacion.",
+    )
     parser.add_argument("--min-net-profit", type=float, default=score_defaults.min_net_profit)
     parser.add_argument("--min-profit-factor", type=float, default=score_defaults.min_profit_factor)
     parser.add_argument("--min-trades", type=int, default=score_defaults.min_trades)
@@ -2754,6 +2763,7 @@ def reconcile_seed_eval_reports(
                     parsed_result,
                     symbol_map,
                     symbol_suffix,
+                    broker,
                 )
                 if not matches:
                     continue
@@ -3502,7 +3512,9 @@ def _rescore_robustness_from_reports(
             )
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
-        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, args.symbol_suffix)
+        matches, mismatch_reason = report_matches_variant(
+            variant, result, symbol_map, args.symbol_suffix, args.broker
+        )
         base_metrics_raw: object = row["metrics_json"]
         if matches and result.trades > 0 and result.accepted:
             base_report = _stored_or_discovered_report(row)
@@ -3692,10 +3704,14 @@ def report_matches_variant(
     result: ScoreResult,
     symbol_map: dict[str, str],
     symbol_suffix: str = "",
+    broker: object = DEFAULT_BROKER,
 ) -> tuple[bool, str]:
-    report_symbol = normalize_set_symbol(result.symbol)
+    report_symbol = normalize_set_symbol(strip_broker_identity_suffix(result.symbol, broker))
     target_symbol = normalize_set_symbol(
-        apply_symbol_suffix(apply_symbol_map(variant.target_symbol, symbol_map), symbol_suffix)
+        strip_broker_identity_suffix(
+            apply_symbol_suffix(apply_symbol_map(variant.target_symbol, symbol_map), symbol_suffix),
+            broker,
+        )
     )
     report_timeframe = str(result.timeframe or "").upper()
     target_timeframe = str(variant.target_period or "").upper()
@@ -3946,13 +3962,15 @@ def evaluate_history_probe(
             memory,
             variant,
             result,
-            "report_mismatch",
+            "pending_tester_context",
             report,
             {"reasons": ["empty_tester_context"], "history_probe": True},
         )
-        return "report_mismatch", result
+        return "pending_tester_context", result
 
-    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, symbol_suffix)
+    matches, mismatch_reason = report_matches_variant(
+        variant, result, symbol_map, symbol_suffix, broker
+    )
     if not matches:
         print(f"AVISO: probe historico no coincide para {variant.path.name}: {mismatch_reason}")
         record_history_probe_status(
@@ -4032,7 +4050,9 @@ def evaluate_seed_report(
         missing_lot_keys=(),
         policy="seed_eval",
     )
-    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, symbol_suffix)
+    matches, mismatch_reason = report_matches_variant(
+        variant, result, symbol_map, symbol_suffix, broker
+    )
     if not matches:
         print(f"AVISO: reporte seed no coincide para {seed.path.name}: {mismatch_reason}")
         memory.record_seed_score(evaluated_seed, result, "report_mismatch", report)
@@ -4160,10 +4180,15 @@ def evaluate_variant_report(
         record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
         return "no_history", result
     if report_has_empty_tester_context(result):
-        print(f"AVISO: reporte sin contexto tester para {variant.path.name}; marcado como report_mismatch.")
-        memory.record_score(variant.path, result, "report_mismatch", report)
-        return "report_mismatch", result
-    matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, symbol_suffix)
+        print(
+            f"AVISO: reporte sin contexto tester para {variant.path.name}; "
+            "queda pendiente para un backtest nuevo."
+        )
+        memory.record_score(variant.path, result, "pending_tester_context", report)
+        return "pending_tester_context", result
+    matches, mismatch_reason = report_matches_variant(
+        variant, result, symbol_map, symbol_suffix, broker
+    )
     if not matches:
         print(f"AVISO: reporte no coincide para {variant.path.name}: {mismatch_reason}")
         memory.record_score(variant.path, result, "report_mismatch", report)
@@ -4367,7 +4392,9 @@ def count_valid_existing_reports(
             )
         except Exception:
             continue
-        matches, _ = report_matches_variant(variant, result, symbol_map, symbol_suffix)
+        matches, _ = report_matches_variant(
+            variant, result, symbol_map, symbol_suffix, broker
+        )
         if matches:
             valid += 1
     return valid
@@ -4550,7 +4577,9 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             )
             status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
             continue
-        matches, mismatch_reason = report_matches_variant(variant, result, symbol_map, args.symbol_suffix)
+        matches, mismatch_reason = report_matches_variant(
+            variant, result, symbol_map, args.symbol_suffix, args.broker
+        )
         if not matches:
             print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
             memory.record_candidate_robustness(
@@ -5344,6 +5373,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                 ohlc_result,
                 symbol_map,
                 args.symbol_suffix,
+                args.broker,
             )
             if not ohlc_matches:
                 print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
@@ -5587,6 +5617,7 @@ def _evaluate_final_tick_tick_report(
         real_tick_result,
         symbol_map,
         getattr(args, "symbol_suffix", ""),
+        getattr(args, "broker", DEFAULT_BROKER),
     )
     if not real_matches:
         # MT5 can emit an empty Real Tick result (symbol="", timeframe="M0")
@@ -5738,7 +5769,9 @@ def reconcile_final_tick_reports(
                 f"candidate #{candidate_id}: {exc}"
             )
             continue
-        ohlc_matches, _ = report_matches_variant(ohlc_variant, ohlc_result, symbol_map, symbol_suffix)
+        ohlc_matches, _ = report_matches_variant(
+            ohlc_variant, ohlc_result, symbol_map, symbol_suffix, broker
+        )
         if not ohlc_matches:
             continue
         thresholds = argparse.Namespace(
@@ -6003,6 +6036,7 @@ def _rescore_final_tick_from_reports(
             ohlc_result,
             symbol_map,
             args.symbol_suffix,
+            args.broker,
         )
         if not ohlc_matches:
             print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
@@ -6350,7 +6384,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     ]
     rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
     if not rows_with_paths:
-        print(f"ERROR: run #{run_id} gen {generation} no tiene report_mismatch/no_report con .set existente")
+        print(f"ERROR: run #{run_id} gen {generation} no tiene problemas reintentables con .set existente")
         return 1
 
     run_dir = resolve_workspace_path(run["output_dir"])
@@ -6358,7 +6392,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     rows = [row for row, _set_path in rows_with_paths]
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry report_mismatch/no_report run #{run_id} gen {generation}: {len(rows)} candidato(s)")
+    print(f"Retry problemas tecnicos run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:
@@ -6388,7 +6422,7 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     accepted: list[tuple[Variant, ScoreResult]] = []
     status_counts: dict[str, int] = {}
     symbol_map = parse_symbol_map(args.symbol_map)
-    for variant in variants:
+    for row, variant in zip(rows, variants):
         status, result = evaluate_variant(
             memory,
             variant,
@@ -6431,7 +6465,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     ]
     rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
     if not rows_with_paths:
-        print(f"ERROR: run #{run_id} no tiene report_mismatch/no_report con .set existente")
+        print(f"ERROR: run #{run_id} no tiene problemas reintentables con .set existente")
         return 1
 
     run_dir = resolve_workspace_path(run["output_dir"])
@@ -6439,7 +6473,7 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     rows = [row for row, _set_path in rows_with_paths]
     variants = [variant_from_candidate_row(row) for row in rows]
 
-    print(f"Retry report_mismatch/no_report run #{run_id}: {len(rows)} candidato(s)")
+    print(f"Retry problemas tecnicos run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     retry_sets_by_id: dict[int, Path] = {}
     for row, set_path in rows_with_paths:

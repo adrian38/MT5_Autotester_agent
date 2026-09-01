@@ -62,6 +62,13 @@ DEFAULT_SYMBOL_MAPS_BY_BROKER = {
     "AXI": AXI_DEFAULT_SYMBOL_MAP,
 }
 
+# Suffixes that are presentation details rather than part of symbol identity.
+# Keep this policy broker-scoped: another broker may legitimately use the same
+# text as an exchange/product qualifier with different semantics.
+BROKER_IDENTITY_SUFFIXES = {
+    "AXI": (".sa", ".fs", "+"),
+}
+
 
 def normalize_broker(value: object) -> str:
     broker = str(value or DEFAULT_BROKER).strip().upper().replace(" ", "")
@@ -74,6 +81,15 @@ def normalize_broker(value: object) -> str:
         "AXI": "AXI",
     }
     return aliases.get(broker, DEFAULT_BROKER)
+
+
+def strip_broker_identity_suffix(symbol: object, broker: object) -> str:
+    value = str(symbol or "").strip()
+    folded = value.casefold()
+    for suffix in BROKER_IDENTITY_SUFFIXES.get(normalize_broker(broker), ()):
+        if folded.endswith(suffix.casefold()):
+            return value[: -len(suffix)]
+    return value
 
 
 def account_types_for_broker(broker: object) -> tuple[str, ...]:
