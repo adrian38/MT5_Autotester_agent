@@ -25,6 +25,9 @@ from typing import Any, Callable
 
 import telegram_notify
 
+from .guided_controller import GuidedControllerMixin
+from . import guided_batches
+
 from .common import json_bytes, load_json, safe_int, save_json, utc_now
 from .live_audit import LiveAuditController
 from .universe_service import UniverseControllerMixin, build_history_command
@@ -386,6 +389,9 @@ def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) ->
     _add(args, "--delay", pick("delay", "delay", 5))
     _add(args, "--generation-mode", generation_mode)
     _add(args, "--random-seed", payload.get("random_seed", defaults.get("random_seed")))
+    if payload.get("guided_batch_id"):
+        prepared = guided_batches.batch_dir(project, payload["guided_batch_id"]) / "batch.json"
+        _add(args, "--prepared-manifest", prepared)
     _add(args, "--from-date", payload.get("from_date", defaults.get("from_date", setting(cfg, "General", "ubs_agent_from_date"))))
     _add(args, "--to-date", payload.get("to_date", defaults.get("to_date", setting(cfg, "General", "ubs_agent_to_date"))))
 
@@ -871,7 +877,7 @@ def pipeline_stage_pending_count(
 RESUMABLE_STATUSES = frozenset({"paused", "interrupted", "failed"})
 
 
-class JobController(UniverseControllerMixin):
+class JobController(GuidedControllerMixin, UniverseControllerMixin):
     def __init__(self, config: dict[str, Any], config_path: Path) -> None:
         self.config = config
         self.config_path = config_path
@@ -1134,6 +1140,8 @@ class JobController(UniverseControllerMixin):
         self._send_telegram(f"job_{self.state.get('job_id')}_no_work", message)
 
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "guided_batch_id" in payload or "prepared_manifest" in payload:
+            raise ValueError("Usar la entrada autenticada de lotes preparados")
         with self.lock:
             normalized = self._normalize_generation(payload)
             build_generation_command(self.config, normalized)
@@ -1498,6 +1506,7 @@ class JobController(UniverseControllerMixin):
         self.state["return_code"] = return_code
         self.state["finished_at"] = utc_now()
         self.state["status"] = "completed" if return_code == 0 else "failed"
+        self.guided_completed()
         self.state["pid"] = None
         self.process = None
         self._notify_no_work_completion(return_code)
@@ -1518,6 +1527,7 @@ class JobController(UniverseControllerMixin):
             text=True, encoding="utf-8", errors="replace", creationflags=creationflags,
         )
         self.process = process
+        self.guided_stage_started()
         self.state["pid"] = process.pid
         # Sin esto la posicion del pipeline solo vivia en los argumentos del hilo
         # vigilante, asi que un cierre del agente la perdia y no habia por donde
@@ -1540,6 +1550,7 @@ class JobController(UniverseControllerMixin):
             if self.log_handle:
                 self.log_handle.close()
                 self.log_handle = None
+            self.guided_stage_finished(str((self.state.get("pipeline") or [])[step_index]["action"]))
             if self.pause_requested:
                 # La etapa se corto a peticion del usuario, no fallo. Se conserva
                 # ``current_step_index`` para relanzar esta misma etapa: al volver,
@@ -1575,7 +1586,11 @@ class JobController(UniverseControllerMixin):
                         settings_path = project / settings_path
                     cfg = read_settings(settings_path)
                     snapshot = database_snapshot(memory_path(self.config, cfg))
-                    generated_run = safe_int((snapshot.get("latest_run") or {}).get("id"), 0, minimum=0)
+                    prepared_id = (self.state.get("request") or {}).get("guided_batch_id")
+                    prepared_run = guided_batches.read_run(project, prepared_id) if prepared_id else None
+                    if prepared_id and not prepared_run:
+                        raise ValueError("El lote preparado no publicó su run exacto")
+                    generated_run = safe_int((prepared_run or snapshot.get("latest_run") or {}).get("run_id" if prepared_id else "id"), 0, minimum=0)
                     if generated_run <= 0:
                         raise ValueError("No se encontro el run generado")
                     self.state.setdefault("cycle_run_ids", {})[str(cycle)] = generated_run
@@ -1729,6 +1744,7 @@ class JobController(UniverseControllerMixin):
             "database": db,
             "launch_defaults": launch_defaults,
             "capabilities": {
+                "guided_batches_v1": True,
                 "worker_override": True,
                 "pipeline_controls": True,
                 "failed_resume": True,
@@ -1970,6 +1986,11 @@ class NodeHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/v1/health":
             self._send(200, {"ok": True, "node_id": self.server.controller.config.get("node_id"), "time": utc_now()})
+        elif parsed.path.startswith("/api/v1/guided-batches/"):
+            try:
+                self._send(200, self.server.controller.guided_status(parsed.path.rsplit("/", 1)[-1]))
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                self._send(400, {"error": str(exc)})
         elif parsed.path == "/api/v1/status":
             self._send(200, self.server.controller.status())
         elif parsed.path == "/api/v1/logs":
@@ -2016,6 +2037,11 @@ class NodeHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/v1/application/restart":
                 self._send(202, self.server.request_application_restart())
+            elif self.path == "/api/v1/guided-batches":
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= guided_batches.MAX_BODY:
+                    raise ValueError("Lote demasiado grande o vacío")
+                self._send(202, self.server.controller.submit_guided(self._body(guided_batches.MAX_BODY)))
             elif self.path == "/api/v1/jobs/generation":
                 self._send(202, self.server.controller.start(self._body()))
             elif self.path == "/api/v1/jobs/repair":
