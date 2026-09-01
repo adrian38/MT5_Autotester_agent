@@ -770,7 +770,8 @@ def pipeline_stage_pending_count(
         if stage == "result":
             rows = conn.execute(
                 "select set_path from candidates "
-                "where run_id=? and status in ('report_mismatch','no_report')",
+                "where run_id=? and status in "
+                "('report_mismatch','no_report','pending_tester_context')",
                 (run_id,),
             ).fetchall()
             return sum(1 for row in rows if _workspace_path_exists(row["set_path"], project))

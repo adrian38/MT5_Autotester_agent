@@ -9,7 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from manager_node_runtime.node import JobController, build_generation_command
+from manager_node_runtime.node import (
+    JobController,
+    build_generation_command,
+    pipeline_stage_pending_count,
+)
 
 
 class ManagerNodeRegressionTests(unittest.TestCase):
@@ -18,6 +22,39 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             {"node_id": "ic", "project_dir": str(project)},
             project / "manager_node.json",
         )
+
+    def test_result_repair_counts_pending_tester_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            set_path = project / "candidate.set"
+            set_path.write_text("Run_Strategy=1\n", encoding="utf-8")
+            db_path = project / "memory.sqlite"
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    "create table candidates "
+                    "(run_id integer, status text, set_path text)"
+                )
+                conn.executemany(
+                    "insert into candidates values (?,?,?)",
+                    [
+                        (348, "pending_tester_context", str(set_path)),
+                        (348, "accepted", str(set_path)),
+                        (347, "pending_tester_context", str(set_path)),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with patch("manager_node_runtime.node.read_settings", return_value={}), patch(
+                "manager_node_runtime.node.memory_path", return_value=db_path
+            ):
+                count = pipeline_stage_pending_count(
+                    {"project_dir": str(project)}, {}, "result", 348
+                )
+
+            self.assertEqual(count, 1)
 
     def test_regression_job_runs_only_regression_stage_per_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
