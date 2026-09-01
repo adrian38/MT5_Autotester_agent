@@ -338,6 +338,36 @@ class UBSSetsFileTests(unittest.TestCase):
         self.assertEqual(normalize_set_symbol("DPZ.NAS"), "DPZ.NAS")
         self.assertEqual(normalize_set_symbol("UBER.NYSE"), "UBER.NYSE")
         self.assertEqual(normalize_set_symbol("EURUSD.a"), "EURUSD")
+        self.assertEqual(normalize_set_symbol("COCOA.fs"), "COCOA")
+        self.assertEqual(normalize_set_symbol("COCOA.FS"), "COCOA.FS")
+
+    def test_uppercase_broker_suffix_matches_report_and_symbol_map(self) -> None:
+        variant = Variant(
+            path=Path("candidate.set"),
+            seed=Seed(Path("seed.set"), "COCOA", "H3", "family", "1"),
+            target_symbol="COCOA.FS",
+            target_period="H3",
+            mutated_keys=(),
+            missing_lot_keys=(),
+            policy="test",
+        )
+
+        matches, reason = report_matches_variant(
+            variant,
+            score(0.0, symbol="COCOA.fs", timeframe="H3"),
+            parse_symbol_map("COCOA=COCOA.fs"),
+            broker="AXI",
+        )
+
+        self.assertTrue(matches, reason)
+
+        other_broker_matches, _ = report_matches_variant(
+            variant,
+            score(0.0, symbol="COCOA.fs", timeframe="H3"),
+            parse_symbol_map("COCOA=COCOA.fs"),
+            broker="ICTRADING",
+        )
+        self.assertFalse(other_broker_matches)
 
     def test_report_match_preserves_ictrading_stock_symbol(self) -> None:
         variant = Variant(
@@ -417,7 +447,7 @@ class UBSSetsFileTests(unittest.TestCase):
 
             self.assertIn("ForceSymbol=XAUUSD.sa", destination.read_text(encoding="utf-8"))
 
-    def test_empty_tester_report_is_report_mismatch_not_no_trades(self) -> None:
+    def test_empty_tester_report_is_pending_tester_context_not_no_trades(self) -> None:
         class Memory:
             def __init__(self) -> None:
                 self.calls = []
@@ -446,8 +476,8 @@ class UBSSetsFileTests(unittest.TestCase):
                 "ICTRADING",
             )
 
-        self.assertEqual(status, "report_mismatch")
-        self.assertEqual(memory.calls[0][2], "report_mismatch")
+        self.assertEqual(status, "pending_tester_context")
+        self.assertEqual(memory.calls[0][2], "pending_tester_context")
 
     def test_empty_tester_report_with_no_history_log_is_no_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -667,7 +697,7 @@ class UBSSetsFileTests(unittest.TestCase):
             finally:
                 memory.close()
 
-    def test_existing_empty_context_no_trades_are_migrated_to_report_mismatch(self) -> None:
+    def test_existing_empty_context_no_trades_are_migrated_to_pending_tester_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "memory.sqlite"
@@ -706,9 +736,11 @@ class UBSSetsFileTests(unittest.TestCase):
                 valid_row = memory.conn.execute("select status from candidates where set_path=?", (str(valid_zero_variant.path),)).fetchone()
                 seed_row = memory.conn.execute("select status from seed_scores where seed_path=?", (str(seed.path),)).fetchone()
 
-                self.assertEqual(empty_row["status"], "report_mismatch")
+                self.assertEqual(empty_row["status"], "pending_tester_context")
                 self.assertEqual(valid_row["status"], "no_trades")
                 self.assertEqual(seed_row["status"], "pending_tester_context")
+                retryable = memory.retryable_problem_candidates_for_run(run_id)
+                self.assertEqual([row["set_path"] for row in retryable], [str(empty_variant.path)])
             finally:
                 memory.close()
 
