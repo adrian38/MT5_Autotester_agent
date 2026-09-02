@@ -3772,6 +3772,10 @@ def tester_log_no_history_metadata(
         rf"{escaped}:\s+no data synchronized",
         re.IGNORECASE,
     )
+    trade_server_sync_pattern = re.compile(
+        r"not synchronized with trade server",
+        re.IGNORECASE,
+    )
     success_pattern = re.compile(
         rf"{escaped},[^:]+:.*\btest passed\b",
         re.IGNORECASE,
@@ -3811,6 +3815,30 @@ def tester_log_no_history_metadata(
     success_matches = list(success_pattern.finditer(text))
     if success_matches and success_matches[-1].start() > last_failure_position:
         return None
+    # ``no data synchronized`` / ``cannot get history`` are also emitted when
+    # the terminal itself has lost synchronization with the trade server.  In
+    # that case they are weak transport evidence, not proof that the broker has
+    # no history for the symbol.  Keep explicit date-range evidence authoritative
+    # and let empty-report handling classify the transport failure as a retryable
+    # ``pending_tester_context``.
+    trade_server_sync_matches = [
+        match
+        for match in trade_server_sync_pattern.finditer(text)
+        if match.start() < last_failure_position
+    ]
+    if trade_server_sync_matches and not tick_download_failed:
+        latest_trade_server_sync = trade_server_sync_matches[-1].start()
+        sync_warning_in_current_attempt = (
+            last_failure_position - latest_trade_server_sync <= 20_000
+        )
+        explicit_history_positions = [
+            *(match.start() for match in found_matches),
+            *(match.start() for match in missing_matches),
+        ]
+        if sync_warning_in_current_attempt and not any(
+            position > latest_trade_server_sync for position in explicit_history_positions
+        ):
+            return None
     found = found_matches[-1] if found_matches else None
     missing = missing_matches[-1] if missing_matches else None
     recommendation = "desactivar simbolo y revisar historico del broker"

@@ -496,12 +496,17 @@ class UBSSetsFileTests(unittest.TestCase):
             )
             memory = AgentMemory(root / "memory.sqlite")
             try:
-                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                run_id = memory.create_run(
+                    root / "source", root / "output", 1, 1, 10, True, False
+                )
                 seed = Seed(root / "seed.set", "BTCUSD", "H1", "family", "1")
                 variant = Variant(root / "candidate.set", seed, "SPRY.NAS", "H1", (), (), "test")
                 memory.record_variant(run_id, 1, variant)
 
-                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                with patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(-55.0, symbol="", timeframe="M0", trades=0),
+                ):
                     status, _result = evaluate_variant_report(
                         memory,
                         variant,
@@ -523,6 +528,83 @@ class UBSSetsFileTests(unittest.TestCase):
                 self.assertEqual(data["history_requested_from"], "2020.01.01 00:00")
             finally:
                 memory.close()
+
+    def test_trade_server_sync_failure_is_retryable_not_no_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "AUDJPY_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tnot synchronized with trade server",
+                        "Tester\tAUDJPY,H1 (Broker-Demo): testing of Experts\\EA.ex5",
+                        "Core 01\tAUDJPY: no data synchronized, 504 bytes read",
+                        "Core 01\tcannot get history AUDJPY,H1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "BTCUSD", "H1", "family", "1")
+                variant = Variant(root / "candidate.set", seed, "AUDJPY", "H1", (), (), "test")
+                memory.record_variant(run_id, 1, variant)
+
+                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                    status, _result = evaluate_variant_report(
+                        memory,
+                        variant,
+                        report,
+                        ScoreConfig(),
+                        {},
+                        "ICTRADING",
+                    )
+
+                row = memory.conn.execute(
+                    "select status, score, accepted from candidates where set_path=?",
+                    (str(variant.path),),
+                ).fetchone()
+                self.assertEqual(status, "pending_tester_context")
+                self.assertEqual(row["status"], "pending_tester_context")
+                self.assertEqual(row["score"], -55.0)
+                self.assertEqual(row["accepted"], 0)
+            finally:
+                memory.close()
+
+    def test_explicit_no_history_remains_authoritative_after_trade_server_sync_warning(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "SPRY.NAS_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tnot synchronized with trade server",
+                        "Tester\tSPRY.NAS: no history data from 2020.01.01 00:00 to 2024.12.31 00:00",
+                        "Tester\tno history data, stop testing",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            variant = Variant(
+                root / "candidate.set",
+                Seed(root / "seed.set", "BTCUSD", "H1", "family", "1"),
+                "SPRY.NAS",
+                "H1",
+                (),
+                (),
+                "test",
+            )
+
+            metadata = tester_log_no_history_metadata(report, variant)
+
+            self.assertIsNotNone(metadata)
+            self.assertEqual(metadata["reasons"], ["no_history_data"])
+            self.assertEqual(metadata["history_requested_from"], "2020.01.01 00:00")
 
     def test_out_of_range_history_signal_is_no_history_without_generic_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
