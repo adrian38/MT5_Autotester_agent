@@ -56,9 +56,20 @@ def load_prepared(args, memory, api):
         key = item['mutation']['key']
         lines = protocol.set_text(raw).splitlines()
         timeframe_keys = api.replace_timeframe_keys(lines,strategy,item['period'])
-        # The existing function identifies every strategy-specific timeframe key.
+        # This verifies every strategy-specific timeframe before either kind
+        # of prepared candidate can enter the evaluator.
         if protocol.set_params('\n'.join(lines).encode()) != values:
             raise ValueError('Los timeframes del set no coinciden con el destino')
+        if item['mode']=='symbol_exploration':
+            existing = memory.conn.execute('''select 1 from candidates c join candidate_final_tick_6m f
+                on f.candidate_id=c.id where upper(c.target_symbol)=upper(?) and f.status='accepted' limit 1''',
+                (item['target_symbol'],)).fetchone()
+            if existing:
+                raise ValueError('El símbolo de exploración ya tiene un positivo final')
+            if key!='ForceSymbol':
+                raise ValueError('La exploración de símbolo debe cambiar solo ForceSymbol')
+            validated.append((item,raw,parent,strategy,timeframe_keys))
+            continue
         choices = api.line_candidates(protocol.set_text(parent),strategy,{},excluded_keys=timeframe_keys)
         if key not in choices:
             raise ValueError('Mutación no permitida por las reglas actuales del agente')
@@ -107,9 +118,13 @@ def run_prepared(args, memory, score_config, api):
             target.write_bytes(raw)
         seed = Seed(directory/(item['fingerprint']+'.parent.set'),item['target_symbol'],item['period'],item['family'],strategy)
         change = item['mutation']
-        detail = {'key':change['key'],'old':float(change['old']),'new':float(change['new']),
-                  'step':float(change['step']),'delta':float(change['new'])-float(change['old']),
-                  'direction':int(change['direction']),'wrapped':False}
+        if item['mode']=='symbol_exploration':
+            detail = {'kind':'symbol_exploration','key':'ForceSymbol','old':change['old'],
+                      'new':change['new'],'wrapped':False}
+        else:
+            detail = {'key':change['key'],'old':float(change['old']),'new':float(change['new']),
+                      'step':float(change['step']),'delta':float(change['new'])-float(change['old']),
+                      'direction':int(change['direction']),'wrapped':False}
         variant = Variant(target,seed,item['target_symbol'],item['period'],(change['key'],),(),
                           'guided_prepared:'+item['mode'],tuple(timeframe_keys),(detail,))
         row = memory.conn.execute('select id from candidates where run_id=? and set_path=?',(run_id,str(target))).fetchone()
