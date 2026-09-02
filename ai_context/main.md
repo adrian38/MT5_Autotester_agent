@@ -388,6 +388,13 @@ enter this queue.
   - `--final-tick-min-ohlc-trades` — minimum OHLC trades required before attempting real tick (default `5`).
   - `--final-tick-ohlc-from-date` / `--final-tick-ohlc-to-date` — alternative date range to
     retry the OHLC batch when the primary range yielded too few trades.
+    A single pass can only serve one date range (it mutates `args.from_date` /
+    `args.to_date` for the whole run), so the OHLC-retry rows go first and the rows
+    still pending on the primary range are picked up by an automatic second pass in
+    the same invocation. Without that continuation the stage exits `0` having left
+    them unevaluated and the manager pipeline advances to `final_tick_*_quality`
+    treating them as done — which then aborts, because `--final-tick-skip-ohlc`
+    cannot serve rows that never ran their OHLC leg.
   - `--final-tick-max-net-delta-pct`, `--final-tick-max-pf-delta-pct`,
     `--final-tick-max-dd-delta-pct`, `--final-tick-max-trades-delta-pct` — tolerances for
     comparing real-tick metrics against OHLC control metrics (all default `35.0`).
