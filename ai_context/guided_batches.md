@@ -3,8 +3,11 @@
 Lab sends immutable candidates through manager to `manager_node_runtime/node.py`,
 embedded in the app. The manager reference node is not the live broker process.
 
-`guided_batches.py` validates hashes, broker/account, full parameter identity and
-one numeric step with unchanged optimizer metadata. `guided_controller.py` uses
+`guided_batches.py` validates hashes, broker/account and full parameter identity.
+Ordinary candidates require one numeric step with unchanged optimizer metadata;
+the explicit `symbol_exploration` mode permits only a `ForceSymbol` retarget to
+an enabled symbol that has no Final Tick 6M positive in current memory.
+`guided_controller.py` uses
 the existing persistent FIFO and forces base, robustness, Final Tick and Final Tick
 6M. Paused work retains ownership; duplicate batches never enqueue twice.
 

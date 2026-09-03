@@ -25,6 +25,17 @@ def package():
     return value
 
 
+def symbol_package():
+    value=package();item=value['candidates'][0]
+    parent=base64.b64decode(item['parent_b64']);raw=parent.replace(b'ForceSymbol=US30',b'ForceSymbol=EURUSD')
+    item.update(target_symbol='EURUSD',mode='symbol_exploration',
+                mutation={'kind':'symbol_exploration','key':'ForceSymbol','old':'US30','new':'EURUSD'},
+                fingerprint=protocol.fingerprint('ICTRADING','STANDARD','EURUSD','M15',protocol.set_params(raw)),
+                set_sha256=protocol.digest(raw),set_b64=base64.b64encode(raw).decode())
+    value['batch_id']=protocol.batch_identity(value)
+    return value
+
+
 class GuidedNodeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -49,6 +60,11 @@ class GuidedNodeTests(unittest.TestCase):
         item['set_b64']=base64.b64encode(raw).decode();item['set_sha256']=protocol.digest(raw)
         p['batch_id']=protocol.batch_identity(p)
         with self.assertRaisesRegex(ValueError,'rangos'):protocol.validate_package(p,'ICTRADING','STANDARD')
+
+    def test_explicit_symbol_exploration_changes_only_force_symbol(self):
+        p=symbol_package();protocol.validate_package(p,'ICTRADING','STANDARD')
+        p['candidates'][0]['mutation']['key']='ATR_Period';p['batch_id']=protocol.batch_identity(p)
+        with self.assertRaisesRegex(ValueError,'Retargeting'):protocol.validate_package(p,'ICTRADING','STANDARD')
 
     def test_persistent_queue_retry_and_forced_pipeline(self):
         p=package()
