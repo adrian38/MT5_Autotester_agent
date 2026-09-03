@@ -673,6 +673,13 @@ def stage_notification_message(
     if attempt > 0:
         attempts = safe_int(request.get("repair_attempts"), attempt, minimum=attempt)
         details.append(f"reparacion {attempt}/{attempts}")
+    # Las dos fases del intento solo se distinguen por cuantos terminales usan a la
+    # vez, asi que sin decirlo el aviso parece repetido.
+    phase = safe_int(step.get("phase"), 0, minimum=0)
+    if phase > 0:
+        workers = safe_int(step.get("max_workers"), 0, minimum=0)
+        suffix = f" ({workers} terminal{'es' if workers != 1 else ''})" if workers > 0 else ""
+        details.append(f"fase {phase}/2{suffix}")
     context = " | ".join(details) if details else "sin run asociado"
     return (
         f"MT5 Autotester Manager: {stage_label} finalizada ({outcome}).\n"
@@ -876,6 +883,12 @@ def pipeline_stage_pending_count(
 #: tambien es retomable cuando la etapa relanzada fallo antes de avanzar el
 #: pipeline; ``_is_resumable`` exige que conserve posicion y log validos.
 RESUMABLE_STATUSES = frozenset({"paused", "interrupted", "failed"})
+# Estados en los que el pipeline sigue avanzando aunque no haya proceso vivo: se
+# esta descartando etapas sin pendientes entre una y la siguiente.
+ACTIVE_STATUSES = frozenset({"running", "stopping", "pausing"})
+# Lo que detener o pausar esperan por el bloqueo antes de limitarse a dejar la
+# peticion puesta. El bucle del pipeline la atiende entre etapa y etapa.
+CONTROL_LOCK_TIMEOUT = 3
 
 
 class JobController(GuidedControllerMixin, UniverseControllerMixin):
@@ -897,6 +910,11 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             "completed_stages": [], "stage_return_codes": {}, "current_step_index": None,
         }
         self.pause_requested = False
+        # Se leen y escriben FUERA de `self.lock` a proposito: durante una
+        # reparacion masiva el bloqueo se queda retenido minutos enteros en
+        # `_launch_next_runnable` descartando etapas sin pendientes, y detener o
+        # pausar no puede depender de conseguirlo.
+        self.stop_requested = False
         if self.state_path.is_file():
             try:
                 old = load_json(self.state_path)
@@ -1192,6 +1210,9 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             minimum=1,
             maximum=64,
         )
+        payload["repair_phase2_max_workers"] = safe_int(
+            payload.get("repair_phase2_max_workers"), 1, minimum=1, maximum=64
+        )
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         payload["cleanup_after_run"] = cleanup_after_run_enabled(self.config, payload)
         return payload
@@ -1204,7 +1225,9 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
         run_final_tick_6m = payload["run_final_tick_6m"]
         run_regression = payload["run_regression"]
         repair_after_generation = payload["repair_after_generation"]
-        repair_max_workers = payload["repair_max_workers"]
+        repair_phase_workers = (
+            payload["repair_max_workers"], payload["repair_phase2_max_workers"],
+        )
         repair_attempts = payload["repair_attempts"]
         cleanup_after_run = payload["cleanup_after_run"]
         pipeline: list[dict[str, Any]] = []
@@ -1220,12 +1243,18 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
                     repair_actions.extend(["final_tick_6m", "final_tick_6m_quality"])
                 if run_regression:
                     repair_actions.append("regression")
+                # Cada intento se parte en dos fases sobre las mismas etapas: la
+                # primera con los terminales de reparacion y la segunda con los
+                # suyos. Todas las etapas son «pending-only», asi que la segunda
+                # solo trabaja lo que la primera dejo pendiente y se omite sin
+                # lanzar proceso cuando no queda nada.
                 pipeline.extend(
                     {
                         "action": action, "cycle": cycle, "run_id": None,
-                        "attempt": attempt, "max_workers": repair_max_workers,
+                        "attempt": attempt, "phase": phase, "max_workers": workers,
                     }
                     for attempt in range(1, repair_attempts + 1)
+                    for phase, workers in enumerate(repair_phase_workers, start=1)
                     for action in repair_actions
                 )
             else:
@@ -1284,6 +1313,11 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             payload.get("max_workers"), 1, minimum=1, maximum=64
         )
         payload["execute_backtests"] = True
+        # `max_workers` son los terminales de la primera fase; la segunda tiene los
+        # suyos y por omision es secuencial, que es el sentido de partir el intento.
+        payload["repair_phase2_max_workers"] = safe_int(
+            payload.get("repair_phase2_max_workers"), 1, minimum=1, maximum=64
+        )
         payload["repair_attempts"] = safe_int(payload.get("repair_attempts"), 1, minimum=1, maximum=20)
         payload["retry_low_quality"] = bool(payload.get("retry_low_quality", True))
         # La etapa regresiva del flujo de Reparar es opcional: la elige la casilla
@@ -1314,14 +1348,24 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
         payload["run_generation_modes"] = {
             str(run_id): mode or "unknown" for run_id, mode in run_modes.items()
         }
+        # El reintento pertenece a un run seleccionado: se termina con ese run
+        # antes de pasar al siguiente. Dentro de cada reintento hay dos fases,
+        # distinguidas solo por cuantos terminales usan a la vez: la fase 1 recorre
+        # todas sus etapas en paralelo y la fase 2 vuelve a recorrerlas sobre lo
+        # que la primera dejo pendiente.
+        phase_workers = (payload["max_workers"], payload["repair_phase2_max_workers"])
         pipeline: list[dict[str, Any]] = []
         for run_id in run_ids:
             run_actions = [*actions]
             if run_regression and run_modes[run_id] == "production":
                 run_actions.append("regression")
             pipeline.extend(
-                {"action": action, "cycle": None, "run_id": run_id, "attempt": attempt}
+                {
+                    "action": action, "cycle": None, "run_id": run_id,
+                    "attempt": attempt, "phase": phase, "max_workers": workers,
+                }
                 for attempt in range(1, repair_attempts + 1)
+                for phase, workers in enumerate(phase_workers, start=1)
                 for action in run_actions
             )
             if payload["cleanup_after_run"]:
@@ -1336,7 +1380,7 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             "started_at": utc_now(), "finished_at": None, "return_code": None,
             "request": payload, "command": None, "log_path": str(log_path), "error": None,
             "pipeline": pipeline, "current_stage": None, "current_cycle": None,
-            "current_run_id": None, "current_attempt": None,
+            "current_run_id": None, "current_attempt": None, "current_phase": None,
             "completed_stages": [], "skipped_stages": [],
             "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
             "telegram_notifications": [], "cleanup_failed": False,
@@ -1401,7 +1445,7 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             "started_at": utc_now(), "finished_at": None, "return_code": None,
             "request": payload, "command": None, "log_path": str(log_path), "error": None,
             "pipeline": pipeline, "current_stage": None, "current_cycle": None,
-            "current_run_id": None, "current_attempt": None,
+            "current_run_id": None, "current_attempt": None, "current_phase": None,
             "completed_stages": [], "skipped_stages": [],
             "stage_return_codes": {}, "stage_pending_counts": {}, "commands": {}, "cycle_run_ids": {},
             "telegram_notifications": [], "cleanup_failed": False,
@@ -1441,7 +1485,8 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             "started_at": utc_now(), "finished_at": None, "return_code": None,
             "request": {}, "command": None, "log_path": str(log_path), "error": None,
             "pipeline": pipeline, "current_stage": "cleanup_tester", "current_cycle": None,
-            "current_run_id": None, "current_attempt": None, "completed_stages": [],
+            "current_run_id": None, "current_attempt": None, "current_phase": None,
+            "completed_stages": [],
             "skipped_stages": [], "stage_return_codes": {}, "stage_pending_counts": {},
             "commands": {}, "cycle_run_ids": {}, "telegram_notifications": [],
             "cleanup_failed": False,
@@ -1456,21 +1501,65 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
         if cycle is None and stage in CLEANUP_STAGES:
             run_id = safe_int(step.get("run_id"), 0, minimum=0)
             return f"run_{run_id}_{stage}" if run_id > 0 else stage
+        # La reparacion recorre las mismas etapas una vez por fase. Sin la fase en
+        # la clave, la segunda pasada pisaria el codigo de retorno, el comando y el
+        # recuento de pendientes de la primera.
+        phase = step.get("phase")
+        phase_part = f"phase_{phase}_" if phase is not None else ""
         if cycle is not None:
             if step.get("attempt") is not None:
-                return f"cycle_{cycle}_attempt_{step.get('attempt')}_{stage}"
+                return f"cycle_{cycle}_attempt_{step.get('attempt')}_{phase_part}{stage}"
             return f"cycle_{cycle}_{stage}"
         attempt = step.get("attempt")
-        return f"run_{step.get('run_id')}_attempt_{attempt}_{stage}"
+        return f"run_{step.get('run_id')}_attempt_{attempt}_{phase_part}{stage}"
 
     def _append_skip_log(self, log_path: Path, label: str) -> None:
         with log_path.open("a", encoding="utf-8", errors="replace") as handle:
             handle.write(f"[manager-node] Etapa omitida: {label}; no hay candidatos pendientes.\n")
 
+    def _honour_stop_request(self, step_index: int, log_path: Path) -> bool:
+        """Cierra el pipeline porque el usuario lo pidio, no porque fallara.
+
+        Devuelve True para que quien llama no lo de por terminado con
+        `_complete`, que lo marcaria como completado o fallido.
+        """
+        paused = self.pause_requested and not self.stop_requested
+        self.pause_requested = False
+        self.stop_requested = False
+        self.state["status"] = "paused" if paused else "stopped"
+        # En pausa se conserva la posicion para reanudar en esta misma etapa; al
+        # detener no queda nada que retomar.
+        self.state["current_step_index"] = step_index if paused else None
+        self.state["pid"] = None
+        self.state["return_code"] = None
+        if paused:
+            self.state["paused_at"] = utc_now()
+        else:
+            self.state["finished_at"] = utc_now()
+        self.process = None
+        with contextlib.suppress(OSError):
+            with log_path.open("a", encoding="utf-8", errors="replace") as handle:
+                handle.write(
+                    "[manager-node] "
+                    + ("Pipeline pausado" if paused else "Pipeline detenido")
+                    + " a peticion del usuario.\n"
+                )
+        self._persist()
+        if not paused and self.queue:
+            self._schedule_queue_drain()
+        return True
+
     def _launch_next_runnable(self, step_index: int, log_path: Path, *, first: bool = False) -> bool:
         pipeline = list(self.state.get("pipeline") or [])
         request = dict(self.state.get("request") or {})
         while step_index < len(pipeline):
+            # Descartar una etapa vacia cuesta una consulta a SQLite y este bucle
+            # retiene `self.lock`: en una reparacion de cien runs encadena miles de
+            # descartes y `stop()`/`pause()` se quedaban esperando el bloqueo hasta
+            # que expiraba el POST del manager. Por eso la peticion se atiende aqui,
+            # entre etapa y etapa, en vez de exigir el bloqueo al que la pide.
+            if self.stop_requested or self.pause_requested:
+                return self._honour_stop_request(step_index, log_path)
             step = pipeline[step_index]
             stage = str(step["action"])
             label = self._step_label(step)
@@ -1504,6 +1593,10 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
         return False
 
     def _complete(self, return_code: int) -> None:
+        # Una peticion de parada que llego cuando ya no quedaba nada que parar no
+        # puede sobrevivir al trabajo: mataria el siguiente nada mas lanzarlo.
+        self.stop_requested = False
+        self.pause_requested = False
         self.state["return_code"] = return_code
         self.state["finished_at"] = utc_now()
         self.state["status"] = "completed" if return_code == 0 else "failed"
@@ -1539,6 +1632,7 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
         self.state["current_cycle"] = step.get("cycle")
         self.state["current_run_id"] = step.get("run_id")
         self.state["current_attempt"] = step.get("attempt")
+        self.state["current_phase"] = step.get("phase")
         self.state["command"] = command
         self._persist()
         threading.Thread(target=self._watch, args=(process, step_index), daemon=True).start()
@@ -1563,6 +1657,13 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
                 self.state["paused_at"] = utc_now()
                 self.process = None
                 self._persist()
+                return
+            if self.stop_requested:
+                # Detener no es un fallo de la etapa: si se dejara caer al camino
+                # normal, el trabajo acabaria como «failed» cuando el usuario
+                # cortase una etapa en marcha y como «stopped» cuando cortase
+                # entre etapas. Mismo boton, mismo resultado.
+                self._honour_stop_request(step_index, Path(str(self.state["log_path"])))
                 return
             pipeline = list(self.state.get("pipeline") or [])
             step = pipeline[step_index]
@@ -1634,12 +1735,23 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             process.terminate()
 
     def stop(self) -> dict[str, Any]:
-        with self.lock:
+        # La bandera se pone ANTES de pedir el bloqueo. Si el pipeline lo tiene
+        # retenido descartando etapas vacias -minutos enteros en una reparacion de
+        # cien runs-, `_launch_next_runnable` atiende la peticion por su cuenta y
+        # esta llamada devuelve enseguida, en vez de agotar el POST del manager y
+        # dejar el trabajo corriendo como si nadie hubiera pulsado nada.
+        self.stop_requested = True
+        if not self.lock.acquire(timeout=CONTROL_LOCK_TIMEOUT):
+            job, _queue, _observed_at, _busy = self._read_status_snapshot()
+            job["status"] = "stopping"
+            return job
+        try:
             process = self.process
             if process is None or process.poll() is not None:
                 # Un pipeline en pausa o interrumpido no tiene proceso vivo, pero
                 # si reserva el nodo: pararlo es descartarlo para liberar la cola.
                 if self._is_resumable():
+                    self.stop_requested = False
                     self.state["status"] = "stopped"
                     self.state["current_step_index"] = None
                     self.state["finished_at"] = utc_now()
@@ -1647,28 +1759,50 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
                     if self.queue:
                         self._schedule_queue_drain()
                     return dict(self.state)
-                raise RuntimeError("No hay ninguna generacion activa")
+                if str(self.state.get("status") or "") not in ACTIVE_STATUSES:
+                    self.stop_requested = False
+                    raise RuntimeError("No hay ninguna generacion activa")
+                # En marcha y sin proceso: esta entre etapas. La bandera ya esta
+                # puesta y el pipeline la atendera en la siguiente.
+                self.state["status"] = "stopping"
+                self._persist()
+                return dict(self.state)
             self.pause_requested = False
             self._terminate_current(process)
             self.state["status"] = "stopping"
             self._persist()
             return dict(self.state)
+        finally:
+            self.lock.release()
 
     def pause(self) -> dict[str, Any]:
         """Corta la etapa en curso conservando la posicion del pipeline."""
-        with self.lock:
+        self.pause_requested = True
+        if not self.lock.acquire(timeout=CONTROL_LOCK_TIMEOUT):
+            job, _queue, _observed_at, _busy = self._read_status_snapshot()
+            job["status"] = "pausing"
+            return job
+        try:
             process = self.process
             if process is None or process.poll() is not None:
                 if self._is_resumable():
+                    self.pause_requested = False
                     raise RuntimeError("El pipeline ya esta pausado")
-                raise RuntimeError("No hay ninguna generacion activa que pausar")
+                if str(self.state.get("status") or "") not in ACTIVE_STATUSES:
+                    self.pause_requested = False
+                    raise RuntimeError("No hay ninguna generacion activa que pausar")
+                self.state["status"] = "pausing"
+                self._persist()
+                return dict(self.state)
             if self.state.get("current_step_index") is None:
+                self.pause_requested = False
                 raise RuntimeError("Este trabajo no registra su posicion; no se puede pausar")
-            self.pause_requested = True
             self.state["status"] = "pausing"
             self._persist()
             self._terminate_current(process)
             return dict(self.state)
+        finally:
+            self.lock.release()
 
     def resume(self) -> dict[str, Any]:
         """Relanza el pipeline desde la etapa en la que se quedo."""
