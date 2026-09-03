@@ -187,6 +187,10 @@ class UBSRobustnessLogicMixin:
             return "error al parsear reporte OOS"
         if status == "report_mismatch":
             return "mismatch symbol/TF OOS"
+        if isinstance(degradation, dict) and degradation.get("failure_type") == "invalid_stops":
+            count = int(degradation.get("invalid_order_count") or 0)
+            prefix = f"{count} orden(es) rechazada(s)" if count else "ordenes rechazadas"
+            return f"{prefix} por stops invalidos; no pasa robustez"
         if status == "no_trades":
             return "reporte correcto, 0 operaciones; no pasa robustez"
         reasons = metrics.get("reasons") or []

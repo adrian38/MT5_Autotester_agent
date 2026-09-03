@@ -16,6 +16,7 @@ from ubs.selection import (
     SelectionPrediction,
     descendant_fitness_predictions,
 )
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata
 from ubs.weights import (
     FeedbackSignal,
     TIMEFRAME_PATCH_KEYS,
@@ -266,6 +267,7 @@ class AgentMemory:
         )
         self._reclassify_empty_tester_contexts()
         self._reclassify_legacy_real_tick_no_history()
+        self._reclassify_trade_disabled_no_trades()
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -325,6 +327,47 @@ class AgentMemory:
                     f"update {table} set status=?, accepted=null where id in ({placeholders})",
                     (target_status, *ids),
                 )
+
+    def _reclassify_trade_disabled_no_trades(self) -> int:
+        """Migrate the latest run's zero-trade rows with broker-block evidence."""
+
+        migrated = 0
+        rows = self.conn.execute(
+            """
+            select id, report_path, metrics_json
+            from candidates
+            where status='no_trades'
+              and coalesce(report_path, '') != ''
+              and run_id=(select max(id) from runs)
+            """
+        ).fetchall()
+        for row in rows:
+            metadata = trade_disabled_metadata(resolve_workspace_path(row["report_path"]))
+            if metadata is None:
+                continue
+            try:
+                payload = json.loads(str(row["metrics_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.update(metadata)
+            payload["score"] = None
+            payload["accepted"] = False
+            self.conn.execute(
+                """
+                update candidates
+                set status=?, score=null, accepted=null, metrics_json=?
+                where id=?
+                """,
+                (
+                    TRADE_DISABLED_STATUS,
+                    json.dumps(payload, ensure_ascii=True, sort_keys=True),
+                    int(row["id"]),
+                ),
+            )
+            migrated += 1
+        return migrated
 
     def _reclassify_legacy_real_tick_no_history(self) -> int:
         """Migrate transient Model=4 sync failures stored as final rejections."""
@@ -839,7 +882,7 @@ class AgentMemory:
                 or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
                 or int(row["seed_size"] or -1) != int(stat.st_size)
                 or (
-                    previous_status not in {"accepted", "rejected", "invalid_seed"}
+                    previous_status not in {"accepted", "rejected", "invalid_seed", "trade_disabled"}
                     and not quarantined_mismatch
                 )
                 or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()

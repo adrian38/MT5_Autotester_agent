@@ -54,6 +54,8 @@ class UBSResultsLogicMixin:
             return "sin reporte"
         if status == "no_trades":
             return "reporte sin operaciones"
+        if status == "trade_disabled":
+            return "el broker no permite abrir nuevas posiciones"
         if status == "history_ok":
             return "historico disponible para el rango pedido"
         if status == "no_history":
@@ -722,6 +724,7 @@ class UBSResultsLogicMixin:
                     sum(case when status = 'no_report' then 1 else 0 end) as no_report,
                     sum(case when status = 'no_trades' then 1 else 0 end) as no_trades,
                     sum(case when status = 'no_history' then 1 else 0 end) as no_history,
+                    sum(case when status = 'trade_disabled' then 1 else 0 end) as trade_disabled,
                     sum(case when status = 'symbol_not_exist' then 1 else 0 end) as symbol_not_exist,
                     sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
                 from candidates
@@ -762,6 +765,7 @@ class UBSResultsLogicMixin:
         no_report = int(counts["no_report"] or 0)
         no_trades = int(counts["no_trades"] or 0)
         no_history = int(counts["no_history"] or 0)
+        trade_disabled = int(counts["trade_disabled"] or 0)
         symbol_not_exist = int(counts["symbol_not_exist"] or 0)
         report_mismatch = int(counts["report_mismatch"] or 0)
         self.ubs_results_summary.set(
@@ -777,6 +781,8 @@ class UBSResultsLogicMixin:
             extra.append(f"sin operaciones {no_trades}")
         if no_history:
             extra.append(f"sin historico {no_history}")
+        if trade_disabled:
+            extra.append(f"trading bloqueado {trade_disabled}")
         if symbol_not_exist:
             extra.append(f"simbolo inexistente {symbol_not_exist}")
         if report_mismatch:
@@ -1476,6 +1482,7 @@ class UBSResultsLogicMixin:
             "no_report": "pend. reporte",
             "no_trades": "0 ops/no aceptado",
             "no_history": "sin historico",
+            "trade_disabled": "trading bloqueado",
             "history_ok": "historico OK",
             "disabled_symbol": "deshabilitado",
             "symbol_not_exist": "simbolo inexistente",

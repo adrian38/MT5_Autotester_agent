@@ -119,6 +119,7 @@ from ubs.set_utils import (
     write_set_text,
     write_set_use_every_tick,
 )
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata
 from ubs.universe import (
     augment_aliases_with_symbol_map,
     canonical_symbol,
@@ -3349,6 +3350,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
         select
             c.*,
             cr.metrics_json as robust_metrics_json,
+            cr.degradation_json as robust_degradation_json,
             cr.report_path as robust_report_path,
             cr.from_date as robust_from_date,
             cr.to_date as robust_to_date,
@@ -3382,6 +3384,12 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             invalid_metrics += 1
             print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
             continue
+        try:
+            stored_degradation = json.loads(str(row["robust_degradation_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            stored_degradation = {}
+        if not isinstance(stored_degradation, dict):
+            stored_degradation = {}
         degradation: dict[str, object] = {}
         if result.trades > 0:
             result, degradation = apply_robustness_degradation(
@@ -3392,7 +3400,17 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
                 oos_to_date=row["robust_to_date"],
                 config=degradation_config,
             )
-        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        elif stored_degradation.get("failure_type") == "invalid_stops":
+            degradation = stored_degradation
+        status = (
+            "rejected"
+            if result.trades <= 0 and degradation.get("failure_type") == "invalid_stops"
+            else "no_trades"
+            if result.trades <= 0
+            else "accepted"
+            if result.accepted
+            else "rejected"
+        )
         updates.append(
             (
                 status,
@@ -3538,7 +3556,7 @@ def _rescore_robustness_from_reports(
             print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
             status = "report_mismatch"
         elif result.trades <= 0:
-            status = "no_trades"
+            status, degradation = classify_zero_trade_robustness(report, variant)
         else:
             result, degradation = apply_robustness_degradation(
                 result,
@@ -3780,6 +3798,46 @@ def tester_log_no_history_metadata(
         rf"{escaped},[^:]+:.*\btest passed\b",
         re.IGNORECASE,
     )
+    # Shares quoted in a sub-unit (for example AXI's NationGrid+ in GBX) can
+    # require a separate conversion symbol.  MT5 reports the failure against
+    # that dependency, not against the tested symbol, so limiting detection to
+    # ``variant.target_symbol`` incorrectly turns an empty technical report
+    # into a scored ``no_trades`` result.
+    attempt_pattern = re.compile(
+        rf"{escaped},[^\r\n]*testing of Experts",
+        re.IGNORECASE,
+    )
+    attempt_matches = list(attempt_pattern.finditer(text))
+    dependent_failures: list[tuple[int, str]] = []
+    if attempt_matches:
+        attempt_start = attempt_matches[-1].start()
+        attempt_text = text[attempt_start:]
+        dependency_patterns = (
+            re.compile(
+                r"symbol\s+(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*)\s+history synchronization error",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"cannot get history\s+(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*),[^\s]+",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*):\s+no data synchronized",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"no prices for symbol\s+(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*)",
+                re.IGNORECASE,
+            ),
+        )
+        target_symbols = {symbol.casefold() for symbol in symbols}
+        for pattern in dependency_patterns:
+            for match in pattern.finditer(attempt_text):
+                failed_symbol = match.group("symbol")
+                if failed_symbol.casefold() not in target_symbols:
+                    dependent_failures.append(
+                        (attempt_start + match.start(), failed_symbol)
+                    )
     found_matches = list(found_pattern.finditer(text))
     missing_matches = list(missing_pattern.finditer(text))
     failure_positions = [
@@ -3787,6 +3845,7 @@ def tester_log_no_history_metadata(
         *(match.start() for match in missing_matches),
         *(match.start() for match in cannot_get_pattern.finditer(text)),
         *(match.start() for match in no_sync_pattern.finditer(text)),
+        *(position for position, _symbol in dependent_failures),
     ]
     tick_download_failed = False
     download_matches = list(
@@ -3857,11 +3916,78 @@ def tester_log_no_history_metadata(
         "history_requested_from": missing.group(1).strip() if missing else "",
         "history_requested_to": missing.group(2).strip().rstrip(".") if missing else "",
     }
+    if dependent_failures:
+        failed_history_symbols = sorted(
+            {symbol for _position, symbol in dependent_failures},
+            key=str.casefold,
+        )
+        metadata["reasons"] = ["no_history_data", "dependent_symbol_history"]
+        metadata["failed_history_symbols"] = failed_history_symbols
+        metadata["failure_type"] = "dependent_symbol_history"
+        metadata["recommendation"] = (
+            "revisar o descargar el historico del simbolo de conversion: "
+            + ", ".join(failed_history_symbols)
+        )
     if tick_download_failed:
         metadata["tick_download_failed"] = True
         metadata["retryable"] = True
         metadata["failure_type"] = "tick_history_sync"
     return metadata
+
+
+def tester_log_invalid_stops_metadata(
+    report: Path,
+    variant: Variant,
+) -> dict[str, object] | None:
+    """Describe OOS orders rejected for invalid stops in the latest test attempt."""
+    sidecar = tester_journal_sidecar_path(report)
+    if not sidecar.exists():
+        return None
+    try:
+        text = sidecar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    symbol = str(variant.target_symbol or "").strip()
+    if not symbol:
+        return None
+    escaped = re.escape(symbol)
+    attempt_matches = list(
+        re.finditer(
+            rf"{escaped},[^\r\n]*testing of Experts",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if not attempt_matches:
+        return None
+    attempt_text = text[attempt_matches[-1].start():]
+    invalid_matches = list(
+        re.finditer(
+            rf"failed\s+(?:buy|sell)[^\r\n]*{escaped}[^\r\n]*\[Invalid stops\]",
+            attempt_text,
+            re.IGNORECASE,
+        )
+    )
+    if not invalid_matches:
+        return None
+    return {
+        "failure_type": "invalid_stops",
+        "reasons": ["invalid_stops"],
+        "invalid_order_count": len(invalid_matches),
+        "invalid_order_sample": invalid_matches[0].group(0).strip(),
+        "log_source": str(sidecar),
+        "retryable": False,
+    }
+
+
+def classify_zero_trade_robustness(
+    report: Path,
+    variant: Variant,
+) -> tuple[str, dict[str, object]]:
+    invalid_stops = tester_log_invalid_stops_metadata(report, variant)
+    if invalid_stops:
+        return "rejected", invalid_stops
+    return "no_trades", {}
 
 
 def record_score_with_metadata(
@@ -3883,6 +4009,29 @@ def record_score_with_metadata(
     memory.conn.execute(
         "update candidates set metrics_json=?, score=null, accepted=null where set_path=?",
         (json.dumps(payload, ensure_ascii=True, sort_keys=True), str(set_path)),
+    )
+    memory.conn.commit()
+
+
+def record_seed_score_with_metadata(
+    memory: AgentMemory,
+    seed: Seed,
+    result: ScoreResult,
+    status: str,
+    report_path: Path,
+    metadata: dict[str, object],
+) -> None:
+    memory.record_seed_score(seed, result, status, report_path)
+    try:
+        payload = json.loads(result.to_json())
+    except (TypeError, ValueError):
+        payload = {}
+    payload.update(metadata)
+    payload["score"] = None
+    payload["accepted"] = False
+    memory.conn.execute(
+        "update seed_scores set metrics_json=?, score=null, accepted=null where seed_path=?",
+        (json.dumps(payload, ensure_ascii=True, sort_keys=True), str(seed.path)),
     )
     memory.conn.commit()
 
@@ -4087,6 +4236,21 @@ def evaluate_seed_report(
         return "report_mismatch", result
 
     if result.trades <= 0:
+        trade_disabled = trade_disabled_metadata(report)
+        if trade_disabled:
+            print(
+                f"AVISO: el broker no permite abrir posiciones en {expected_symbol}; "
+                f"marcado como {TRADE_DISABLED_STATUS}."
+            )
+            record_seed_score_with_metadata(
+                memory,
+                evaluated_seed,
+                result,
+                TRADE_DISABLED_STATUS,
+                report,
+                trade_disabled,
+            )
+            return TRADE_DISABLED_STATUS, result
         print(f"AVISO: reporte seed sin operaciones para {seed.path.name}; marcado como no_trades.")
         memory.record_seed_score(evaluated_seed, result, "no_trades", report)
         return "no_trades", result
@@ -4201,9 +4365,20 @@ def evaluate_variant_report(
         symbol_suffix,
     )
     if no_history:
+        failed_symbols = no_history.get("failed_history_symbols") or []
+        dependency_detail = (
+            f"; falta historial dependiente de {', '.join(str(value) for value in failed_symbols)}"
+            if failed_symbols
+            else ""
+        )
+        recommendation = str(
+            no_history.get("recommendation")
+            or "desactivar simbolo y revisar historico del broker"
+        )
         print(
-            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
-            "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
+            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido"
+            f"{dependency_detail}; "
+            f"marcado como no_history. Recomendacion: {recommendation}."
         )
         record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
         return "no_history", result
@@ -4222,6 +4397,21 @@ def evaluate_variant_report(
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
     if result.trades <= 0:
+        trade_disabled = trade_disabled_metadata(report)
+        if trade_disabled:
+            print(
+                f"AVISO: el broker no permite abrir posiciones en {variant.target_symbol}; "
+                f"marcado como {TRADE_DISABLED_STATUS}."
+            )
+            record_score_with_metadata(
+                memory,
+                variant.path,
+                result,
+                TRADE_DISABLED_STATUS,
+                report,
+                trade_disabled,
+            )
+            return TRADE_DISABLED_STATUS, result
         memory.record_score(variant.path, result, "no_trades", report)
         return "no_trades", result
     status = "accepted" if result.accepted else "rejected"
@@ -4624,18 +4814,20 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
             continue
         if result.trades <= 0:
+            status, failure_metadata = classify_zero_trade_robustness(report, variant)
             memory.record_candidate_robustness(
                 candidate_id,
                 run_id,
                 result,
-                "no_trades",
+                status,
                 report,
                 args.from_date,
                 args.to_date,
                 args.robust_positive_bonus,
                 args.robust_negative_bonus,
+                degradation=failure_metadata,
             )
-            status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
             continue
         result, degradation = apply_robustness_degradation(
             result,

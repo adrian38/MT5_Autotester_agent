@@ -95,7 +95,7 @@ STAGE_TABLES = {
 }
 
 STATUS_NOTIFICATION_ORDER = (
-    "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history", "date_mismatch",
+    "accepted", "pending_history_quality", "pending_ohlc_trades", "no_history", "trade_disabled", "date_mismatch",
     "symbol_not_exist", "no_trades", "report_mismatch", "no_report", "parse_error", "rejected",
     "pending", "generated", "running",
 )
@@ -2069,6 +2069,8 @@ class NodeHandler(BaseHTTPRequestHandler):
             elif self.path in {
                 "/api/v1/universe/sync", "/api/v1/universe/history-preview",
                 "/api/v1/universe/disable-preview", "/api/v1/universe/disable-no-history",
+                "/api/v1/universe/trade-disabled-preview",
+                "/api/v1/universe/disable-trade-disabled",
             }:
                 self._send(200, self.server.controller.universe_action(self.path.rsplit("/", 1)[1], self._body()))
             elif self.path == "/api/v1/jobs/universe-history":

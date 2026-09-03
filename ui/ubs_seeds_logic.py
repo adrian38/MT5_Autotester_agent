@@ -148,7 +148,7 @@ class UBSSeedsLogicMixin:
 
         stats: Counter[str] = Counter()
         disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected", "invalid_seed", "report_mismatch"}
+        ready_statuses = {"accepted", "rejected", "invalid_seed", "report_mismatch", "trade_disabled"}
         for path in seed_files:
             path_text = str(path)
             try:
@@ -310,10 +310,10 @@ class UBSSeedsLogicMixin:
                 """
                 select
                     count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist') then 1 else 0 end) as ready,
+                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist', 'trade_disabled') then 1 else 0 end) as ready,
                     sum(case
                         when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist') then 1
+                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist', 'trade_disabled') then 1
                         else 0
                     end) as pending
                 from seed_scores
@@ -1487,7 +1487,7 @@ class UBSSeedsLogicMixin:
                 from seed_scores
                 where active=1
                   and (
-                    status not in ('accepted','rejected','report_mismatch','disabled_symbol','invalid_seed','symbol_not_exist')
+                    status not in ('accepted','rejected','report_mismatch','disabled_symbol','invalid_seed','symbol_not_exist','trade_disabled')
                     or (status in ('accepted','rejected') and score is null)
                   )
                 """
