@@ -79,5 +79,30 @@ class PreparedTests(unittest.TestCase):
         variants=self.api.evaluate_generation.call_args.args[4]
         self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',('ForceSymbol',)))
 
+    def test_axi_prepared_symbol_uses_exact_universe_casing(self):
+        value = symbol_package()
+        item = value['candidates'][0]
+        parent = base64.b64decode(item['parent_b64'])
+        raw = parent.replace(b'ForceSymbol=US30', b'ForceSymbol=APPLE+')
+        item.update(
+            target_symbol='APPLE+',
+            mutation={'kind':'symbol_exploration','key':'ForceSymbol','old':'US30','new':'APPLE+'},
+            fingerprint=protocol.fingerprint('AXI','STANDARD','APPLE+','M15',protocol.set_params(raw)),
+            set_sha256=protocol.digest(raw),
+            set_b64=base64.b64encode(raw).decode(),
+        )
+        value['broker'] = 'AXI'
+        value['batch_id'] = protocol.batch_identity(value)
+        directory = protocol.store_batch(self.root,value,'AXI','STANDARD')
+        self.args.prepared_manifest = directory/'batch.json'
+        self.args.broker = 'AXI'
+        self.api.broker_universe_symbols = lambda args:{'Apple+'}
+
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+
+        variants = self.api.evaluate_generation.call_args.args[4]
+        self.assertEqual(variants[0].target_symbol,'Apple+')
+        self.assertEqual(variants[0].mutation_details[0]['new'],'Apple+')
+
 
 if __name__=='__main__':unittest.main()
