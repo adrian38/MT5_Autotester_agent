@@ -29,6 +29,7 @@ from ubs_agent import (
     choose_diverse_target,
     choose_target_period,
     choose_target_symbol,
+    classify_zero_trade_robustness,
     copy_seed_for_backtest,
     copy_accepted,
     create_history_probe_variant,
@@ -632,6 +633,93 @@ class UBSSetsFileTests(unittest.TestCase):
                 self.assertEqual(json.loads(row["metrics_json"])["trade_mode"], "close_only")
             finally:
                 migrated.close()
+    def test_empty_axi_share_report_with_missing_conversion_history_is_no_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "NATIONGRID_M30_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tNationGrid+,M30 (Axi-US51-Live): testing of Experts\\Advisors\\EA.ex5",
+                        "Core 01\tNationGrid+,M30: testing of Experts\\Advisors\\EA.ex5 started with inputs:",
+                        "Core 01\tGBXUSD.sa: no data synchronized, 42 bytes read",
+                        "Core 01\tsymbol GBXUSD.sa history synchronization error",
+                        "Core 01\t2024.01.02 12:30:00 no prices for symbol GBXUSD.sa",
+                        "Tester\tautomatic testing finished",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "EURUSD", "M30", "family", "1")
+                variant = Variant(root / "candidate.set", seed, "NationGrid+", "M30", (), (), "test")
+                memory.record_variant(run_id, 1, variant)
+
+                with patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(-75.0, symbol="NationGrid+", timeframe="M30", trades=0),
+                ):
+                    status, _result = evaluate_variant_report(
+                        memory,
+                        variant,
+                        report,
+                        ScoreConfig(),
+                        {},
+                        "AXI",
+                    )
+
+                row = memory.conn.execute(
+                    "select status, score, accepted, metrics_json from candidates where set_path=?",
+                    (str(variant.path),),
+                ).fetchone()
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "no_history")
+                self.assertEqual(row["status"], "no_history")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertEqual(data["reasons"], ["no_history_data", "dependent_symbol_history"])
+                self.assertEqual(data["failed_history_symbols"], ["GBXUSD.sa"])
+                self.assertEqual(data["failure_type"], "dependent_symbol_history")
+            finally:
+                memory.close()
+
+    def test_robust_zero_trades_with_invalid_stops_is_rejected_with_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "robust_PLUGPOWER_H1.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tPlugPower+,H1: testing of Experts\\Advisors\\EA.ex5",
+                        "Core 01\tPlugPower+,H1: testing of Experts\\Advisors\\EA.ex5 started with inputs:",
+                        "Core 01\tfailed sell stop 1 PlugPower+ at 4.02 sl: 23.02 tp: -7.98 [Invalid stops]",
+                        "Core 01\tfailed sell stop 1 PlugPower+ at 4.02 sl: 23.02 tp: -7.98 [Invalid stops]",
+                        "Core 01\tPlugPower+,H1: 184444 ticks, 2454 bars generated. Test passed",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            variant = Variant(
+                root / "candidate.set",
+                Seed(root / "seed.set", "EURUSD", "H1", "family", "1"),
+                "PlugPower+",
+                "H1",
+                (),
+                (),
+                "test+robustness",
+            )
+
+            status, metadata = classify_zero_trade_robustness(report, variant)
+
+            self.assertEqual(status, "rejected")
+            self.assertEqual(metadata["failure_type"], "invalid_stops")
+            self.assertEqual(metadata["reasons"], ["invalid_stops"])
+            self.assertEqual(metadata["invalid_order_count"], 2)
+        self.assertFalse(metadata["retryable"])
 
     def test_trade_server_sync_failure_is_retryable_not_no_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -211,6 +211,83 @@ class UBSAgentRescoreTests(unittest.TestCase):
             finally:
                 memory.close()
 
+    def test_rescore_robustness_preserves_invalid_stops_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = AgentMemory(Path(temp_dir) / "memory.sqlite")
+            try:
+                base = self._stored_result()
+                oos = replace(
+                    self._stored_result(),
+                    score=-75.0,
+                    accepted=False,
+                    trades=0,
+                )
+                memory.conn.execute(
+                    """
+                    insert into runs (
+                        id, created_at, source_dir, output_dir, generations,
+                        variants_per_seed, max_seeds, execute_backtests, dry_run, config_json
+                    ) values (1, 'now', 'src', 'out', 1, 1, 1, 1, 0, '{}')
+                    """
+                )
+                memory.conn.execute(
+                    """
+                    insert into candidates (
+                        id, run_id, generation, seed_path, set_path, symbol, target_symbol,
+                        period, family, run_strategy, mutated_keys, missing_lot_keys, policy,
+                        score, accepted, metrics_json, status, created_at
+                    ) values (
+                        1, 1, 1, 'seed.set', 'candidate.set', 'PlugPower+', 'PlugPower+',
+                        'H1', 'fam', 'strat', '', '', 'test', 50, 1, ?, 'accepted', 'now'
+                    )
+                    """,
+                    (base.to_json(),),
+                )
+                invalid_stops = {
+                    "failure_type": "invalid_stops",
+                    "reasons": ["invalid_stops"],
+                    "invalid_order_count": 5,
+                    "retryable": False,
+                }
+                memory.record_candidate_robustness(
+                    1,
+                    1,
+                    oos,
+                    "rejected",
+                    None,
+                    "2025.01.01",
+                    "2026.06.01",
+                    70.0,
+                    -70.0,
+                    degradation=invalid_stops,
+                )
+                args = argparse.Namespace(
+                    min_trades_w1=12,
+                    min_trades_mn=4,
+                    rescore_from_reports=False,
+                    robust_min_net_retention=0.5,
+                    robust_min_pf_edge_retention=0.5,
+                    robust_min_recovery_retention=0.5,
+                    robust_max_dd_inflation=2.0,
+                )
+
+                self.assertEqual(
+                    rescore_robustness_only(args, memory, ScoreConfig()),
+                    0,
+                )
+
+                row = memory.conn.execute(
+                    "select status, accepted, degradation_json from candidate_robustness where candidate_id=1"
+                ).fetchone()
+                self.assertEqual(row["status"], "rejected")
+                self.assertEqual(row["accepted"], 0)
+                audit = json.loads(row["degradation_json"])
+                self.assertEqual(audit["failure_type"], "invalid_stops")
+                self.assertEqual(audit["invalid_order_count"], 5)
+                self.assertFalse(audit["retryable"])
+            finally:
+                memory.close()
+
 
 if __name__ == "__main__":
     unittest.main()

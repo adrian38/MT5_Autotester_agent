@@ -10,6 +10,26 @@ from manager_node_runtime import guided_batches as protocol
 from .models import Seed, Variant
 
 
+def _axi_execution_item(item, universe, symbol_map, api):
+    """Return broker-exact AXI symbol spelling without changing batch identity."""
+    mapped = api.apply_symbol_map(item['target_symbol'], symbol_map)
+    normalized = api.normalize_set_symbol(mapped)
+    exact = next(
+        (
+            symbol
+            for symbol in sorted(universe)
+            if api.normalize_set_symbol(symbol) == normalized
+        ),
+        item['target_symbol'],
+    )
+    if exact == item['target_symbol']:
+        return item
+    mutation = dict(item['mutation'])
+    if item['mode'] == 'symbol_exploration':
+        mutation['new'] = exact
+    return {**item, 'target_symbol': exact, 'mutation': mutation}
+
+
 def load_prepared(args, memory, api):
     path = Path(args.prepared_manifest).resolve()
     data = json.loads(path.read_text(encoding='utf-8'))
@@ -49,6 +69,11 @@ def load_prepared(args, memory, api):
         mapped = api.apply_symbol_map(item['target_symbol'],symbol_map)
         if not any(api.normalize_set_symbol(s)==api.normalize_set_symbol(mapped) for s in universe):
             raise ValueError('Instrumento fuera del universo del broker')
+        execution_item = (
+            _axi_execution_item(item, universe, symbol_map, api)
+            if str(args.broker).strip().upper() == 'AXI'
+            else item
+        )
         for key,value in frozen.items():
             forced = globals_.get(key,value)
             if forced and key in values and protocol.normalized(values[key])!=protocol.normalized(forced):
@@ -68,7 +93,7 @@ def load_prepared(args, memory, api):
                 raise ValueError('El símbolo de exploración ya tiene un positivo final')
             if key!='ForceSymbol':
                 raise ValueError('La exploración de símbolo debe cambiar solo ForceSymbol')
-            validated.append((item,raw,parent,strategy,timeframe_keys))
+            validated.append((execution_item,raw,parent,strategy,timeframe_keys))
             continue
         choices = api.line_candidates(protocol.set_text(parent),strategy,{},excluded_keys=timeframe_keys)
         if key not in choices:
@@ -78,7 +103,7 @@ def load_prepared(args, memory, api):
         old,new,step = Decimal(parts[0]),Decimal(str(item['mutation']['new'])),Decimal(parts[2])
         if abs(new-old)!=step or not Decimal(parts[1])<=new<=Decimal(parts[3]):
             raise ValueError('Mutación fuera del paso/rango permitido')
-        validated.append((item,raw,parent,strategy,timeframe_keys))
+        validated.append((execution_item,raw,parent,strategy,timeframe_keys))
     return data,directory,validated
 
 
