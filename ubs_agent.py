@@ -3780,6 +3780,46 @@ def tester_log_no_history_metadata(
         rf"{escaped},[^:]+:.*\btest passed\b",
         re.IGNORECASE,
     )
+    # Shares quoted in a sub-unit (for example AXI's NationGrid+ in GBX) can
+    # require a separate conversion symbol.  MT5 reports the failure against
+    # that dependency, not against the tested symbol, so limiting detection to
+    # ``variant.target_symbol`` incorrectly turns an empty technical report
+    # into a scored ``no_trades`` result.
+    attempt_pattern = re.compile(
+        rf"{escaped},[^\r\n]*testing of Experts",
+        re.IGNORECASE,
+    )
+    attempt_matches = list(attempt_pattern.finditer(text))
+    dependent_failures: list[tuple[int, str]] = []
+    if attempt_matches:
+        attempt_start = attempt_matches[-1].start()
+        attempt_text = text[attempt_start:]
+        dependency_patterns = (
+            re.compile(
+                r"symbol\s+(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*)\s+history synchronization error",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"cannot get history\s+(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*),[^\s]+",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*):\s+no data synchronized",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"no prices for symbol\s+(?P<symbol>[A-Za-z0-9][A-Za-z0-9&+_.-]*)",
+                re.IGNORECASE,
+            ),
+        )
+        target_symbols = {symbol.casefold() for symbol in symbols}
+        for pattern in dependency_patterns:
+            for match in pattern.finditer(attempt_text):
+                failed_symbol = match.group("symbol")
+                if failed_symbol.casefold() not in target_symbols:
+                    dependent_failures.append(
+                        (attempt_start + match.start(), failed_symbol)
+                    )
     found_matches = list(found_pattern.finditer(text))
     missing_matches = list(missing_pattern.finditer(text))
     failure_positions = [
@@ -3787,6 +3827,7 @@ def tester_log_no_history_metadata(
         *(match.start() for match in missing_matches),
         *(match.start() for match in cannot_get_pattern.finditer(text)),
         *(match.start() for match in no_sync_pattern.finditer(text)),
+        *(position for position, _symbol in dependent_failures),
     ]
     tick_download_failed = False
     download_matches = list(
@@ -3857,6 +3898,18 @@ def tester_log_no_history_metadata(
         "history_requested_from": missing.group(1).strip() if missing else "",
         "history_requested_to": missing.group(2).strip().rstrip(".") if missing else "",
     }
+    if dependent_failures:
+        failed_history_symbols = sorted(
+            {symbol for _position, symbol in dependent_failures},
+            key=str.casefold,
+        )
+        metadata["reasons"] = ["no_history_data", "dependent_symbol_history"]
+        metadata["failed_history_symbols"] = failed_history_symbols
+        metadata["failure_type"] = "dependent_symbol_history"
+        metadata["recommendation"] = (
+            "revisar o descargar el historico del simbolo de conversion: "
+            + ", ".join(failed_history_symbols)
+        )
     if tick_download_failed:
         metadata["tick_download_failed"] = True
         metadata["retryable"] = True
@@ -4201,9 +4254,20 @@ def evaluate_variant_report(
         symbol_suffix,
     )
     if no_history:
+        failed_symbols = no_history.get("failed_history_symbols") or []
+        dependency_detail = (
+            f"; falta historial dependiente de {', '.join(str(value) for value in failed_symbols)}"
+            if failed_symbols
+            else ""
+        )
+        recommendation = str(
+            no_history.get("recommendation")
+            or "desactivar simbolo y revisar historico del broker"
+        )
         print(
-            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido; "
-            "marcado como no_history. Recomendacion: desactivar simbolo y revisar."
+            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido"
+            f"{dependency_detail}; "
+            f"marcado como no_history. Recomendacion: {recommendation}."
         )
         record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
         return "no_history", result
