@@ -29,6 +29,7 @@ from ubs_agent import (
     choose_diverse_target,
     choose_target_period,
     choose_target_symbol,
+    classify_zero_trade_robustness,
     copy_seed_for_backtest,
     copy_accepted,
     create_history_probe_variant,
@@ -583,6 +584,41 @@ class UBSSetsFileTests(unittest.TestCase):
                 self.assertEqual(data["failure_type"], "dependent_symbol_history")
             finally:
                 memory.close()
+
+    def test_robust_zero_trades_with_invalid_stops_is_rejected_with_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "robust_PLUGPOWER_H1.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "\n".join(
+                    [
+                        "Tester\tPlugPower+,H1: testing of Experts\\Advisors\\EA.ex5",
+                        "Core 01\tPlugPower+,H1: testing of Experts\\Advisors\\EA.ex5 started with inputs:",
+                        "Core 01\tfailed sell stop 1 PlugPower+ at 4.02 sl: 23.02 tp: -7.98 [Invalid stops]",
+                        "Core 01\tfailed sell stop 1 PlugPower+ at 4.02 sl: 23.02 tp: -7.98 [Invalid stops]",
+                        "Core 01\tPlugPower+,H1: 184444 ticks, 2454 bars generated. Test passed",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            variant = Variant(
+                root / "candidate.set",
+                Seed(root / "seed.set", "EURUSD", "H1", "family", "1"),
+                "PlugPower+",
+                "H1",
+                (),
+                (),
+                "test+robustness",
+            )
+
+            status, metadata = classify_zero_trade_robustness(report, variant)
+
+            self.assertEqual(status, "rejected")
+            self.assertEqual(metadata["failure_type"], "invalid_stops")
+            self.assertEqual(metadata["reasons"], ["invalid_stops"])
+            self.assertEqual(metadata["invalid_order_count"], 2)
+            self.assertFalse(metadata["retryable"])
 
     def test_trade_server_sync_failure_is_retryable_not_no_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

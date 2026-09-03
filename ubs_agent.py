@@ -3349,6 +3349,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
         select
             c.*,
             cr.metrics_json as robust_metrics_json,
+            cr.degradation_json as robust_degradation_json,
             cr.report_path as robust_report_path,
             cr.from_date as robust_from_date,
             cr.to_date as robust_to_date,
@@ -3382,6 +3383,12 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             invalid_metrics += 1
             print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
             continue
+        try:
+            stored_degradation = json.loads(str(row["robust_degradation_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            stored_degradation = {}
+        if not isinstance(stored_degradation, dict):
+            stored_degradation = {}
         degradation: dict[str, object] = {}
         if result.trades > 0:
             result, degradation = apply_robustness_degradation(
@@ -3392,7 +3399,17 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
                 oos_to_date=row["robust_to_date"],
                 config=degradation_config,
             )
-        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        elif stored_degradation.get("failure_type") == "invalid_stops":
+            degradation = stored_degradation
+        status = (
+            "rejected"
+            if result.trades <= 0 and degradation.get("failure_type") == "invalid_stops"
+            else "no_trades"
+            if result.trades <= 0
+            else "accepted"
+            if result.accepted
+            else "rejected"
+        )
         updates.append(
             (
                 status,
@@ -3538,7 +3555,7 @@ def _rescore_robustness_from_reports(
             print(f"AVISO: reporte robustez no coincide para candidate #{candidate_id}: {mismatch_reason}")
             status = "report_mismatch"
         elif result.trades <= 0:
-            status = "no_trades"
+            status, degradation = classify_zero_trade_robustness(report, variant)
         else:
             result, degradation = apply_robustness_degradation(
                 result,
@@ -3915,6 +3932,61 @@ def tester_log_no_history_metadata(
         metadata["retryable"] = True
         metadata["failure_type"] = "tick_history_sync"
     return metadata
+
+
+def tester_log_invalid_stops_metadata(
+    report: Path,
+    variant: Variant,
+) -> dict[str, object] | None:
+    """Describe OOS orders rejected for invalid stops in the latest test attempt."""
+    sidecar = tester_journal_sidecar_path(report)
+    if not sidecar.exists():
+        return None
+    try:
+        text = sidecar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    symbol = str(variant.target_symbol or "").strip()
+    if not symbol:
+        return None
+    escaped = re.escape(symbol)
+    attempt_matches = list(
+        re.finditer(
+            rf"{escaped},[^\r\n]*testing of Experts",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if not attempt_matches:
+        return None
+    attempt_text = text[attempt_matches[-1].start():]
+    invalid_matches = list(
+        re.finditer(
+            rf"failed\s+(?:buy|sell)[^\r\n]*{escaped}[^\r\n]*\[Invalid stops\]",
+            attempt_text,
+            re.IGNORECASE,
+        )
+    )
+    if not invalid_matches:
+        return None
+    return {
+        "failure_type": "invalid_stops",
+        "reasons": ["invalid_stops"],
+        "invalid_order_count": len(invalid_matches),
+        "invalid_order_sample": invalid_matches[0].group(0).strip(),
+        "log_source": str(sidecar),
+        "retryable": False,
+    }
+
+
+def classify_zero_trade_robustness(
+    report: Path,
+    variant: Variant,
+) -> tuple[str, dict[str, object]]:
+    invalid_stops = tester_log_invalid_stops_metadata(report, variant)
+    if invalid_stops:
+        return "rejected", invalid_stops
+    return "no_trades", {}
 
 
 def record_score_with_metadata(
@@ -4688,18 +4760,20 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
             continue
         if result.trades <= 0:
+            status, failure_metadata = classify_zero_trade_robustness(report, variant)
             memory.record_candidate_robustness(
                 candidate_id,
                 run_id,
                 result,
-                "no_trades",
+                status,
                 report,
                 args.from_date,
                 args.to_date,
                 args.robust_positive_bonus,
                 args.robust_negative_bonus,
+                degradation=failure_metadata,
             )
-            status_counts["no_trades"] = status_counts.get("no_trades", 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
             continue
         result, degradation = apply_robustness_degradation(
             result,
