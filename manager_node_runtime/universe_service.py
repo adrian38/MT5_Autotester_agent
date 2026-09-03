@@ -11,6 +11,14 @@ from pathlib import Path
 
 from ubs.account import account_disabled_symbols_path, broker_asset_universe_path_with_fallback
 from ubs.mt5_symbol_extract import extract_symbols_from_mt5, write_asset_universe_from_symbols
+from ubs.tester_diagnostics import (
+    BROKER_BLOCKED_TRADE_MODES,
+    load_trade_mode_snapshot,
+    save_trade_mode_snapshot,
+    snapshot_symbol_trade_modes,
+    snapshot_trade_blocked_symbols,
+    trade_mode_snapshot_path,
+)
 from ubs.universe import (
     canonical_symbol, load_asset_universe, load_disabled_symbols,
     load_seed_enabled_disabled_symbols, save_disabled_symbols,
@@ -35,6 +43,7 @@ class UniverseService:
         self.account = config.get("account_type") or settings.get("General", "ubs_account_type", fallback="ECN")
         self.assets = broker_asset_universe_path_with_fallback(self.project, self.broker)
         self.policy = account_disabled_symbols_path(self.project, self.account, self.broker)
+        self.trade_modes = trade_mode_snapshot_path(self.project, self.broker, self.account)
 
     def policy_state(self):
         # Fail closed: damaged policy must not silently re-enable thousands of symbols.
@@ -68,10 +77,8 @@ class UniverseService:
                 return row["mt5_path"]
         return self.settings.get("Paths", "mt5_path", fallback="")
 
-    def sync(self, payload):
-        _, aliases, disabled, seeds = self.policy_state()
-        assert_writable(self.assets, self.project)
-        assert_writable(self.policy, self.project)
+    def _extract_live_symbols(self, payload):
+        """Read the current symbol inventory directly from the configured MT5 terminal."""
         login_text = str(payload.get("login") or "").strip()
         if login_text and (not login_text.isascii() or not login_text.isdecimal() or int(login_text) <= 0):
             raise ValueError("Login debe ser numerico y positivo")
@@ -90,7 +97,34 @@ class UniverseService:
             raise ValueError(detail) from None
         if not extraction.symbols:
             raise ValueError("MT5 devolvio un universo vacio; se conserva el universo anterior")
+        return extraction
+
+    def refresh_trade_modes(self, payload):
+        assert_writable(self.trade_modes, self.project)
+        extraction = self._extract_live_symbols(payload)
+        save_trade_mode_snapshot(
+            self.trade_modes,
+            extraction.symbols,
+            account_login=extraction.account_login,
+            server=extraction.server,
+            terminal_path=extraction.terminal_path,
+        )
+        return extraction
+
+    def sync(self, payload):
+        _, aliases, disabled, seeds = self.policy_state()
+        assert_writable(self.assets, self.project)
+        assert_writable(self.policy, self.project)
+        assert_writable(self.trade_modes, self.project)
+        extraction = self._extract_live_symbols(payload)
         result = write_asset_universe_from_symbols(self.assets, extraction.symbols, preserve_existing_groups=False)
+        save_trade_mode_snapshot(
+            self.trade_modes,
+            extraction.symbols,
+            account_login=extraction.account_login,
+            server=extraction.server,
+            terminal_path=extraction.terminal_path,
+        )
         retired = {canonical_symbol(symbol, aliases) for symbol in result.removed_symbols}
         newly_disabled = retired - disabled
         dropped_seeds = seeds & retired
@@ -99,6 +133,8 @@ class UniverseService:
             "total": sum(result.counts.values()), "added": len(result.added_symbols),
             "removed": len(result.removed_symbols), "newly_disabled": len(newly_disabled),
             "dropped_seed_exceptions": len(dropped_seeds),
+            "trade_blocked": len(snapshot_trade_blocked_symbols(self.trade_modes)),
+            "trade_mode_snapshot": str(self.trade_modes),
             "universe_backup": str(result.backup_path) if result.backup_path else None,
             "policy_backup": backup,
         }
@@ -109,7 +145,9 @@ class UniverseService:
         with contextlib.closing(sqlite3.connect(self.memory.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             if not conn.execute("select 1 from sqlite_master where type='table' and name='candidates'").fetchone():
                 return {}
-            rows = conn.execute("select target_symbol,status from candidates where policy='history_probe' order by id")
+            rows = conn.execute(
+                "select target_symbol,status from candidates where policy='history_probe' order by id"
+            )
             return {canonical_symbol(symbol, aliases): status for symbol, status in rows if symbol}
 
     def history_dates(self):
@@ -134,13 +172,37 @@ class UniverseService:
         return {"total": len(symbols), "already_disabled": len(symbols & disabled),
                 "newly_disabled": len(symbols - disabled), "symbols": sorted(symbols - disabled)}
 
+    def trade_disabled_preview(self, payload=None):
+        if payload is not None:
+            self.refresh_trade_modes(payload)
+        _, aliases, disabled, _ = self.policy_state()
+        terminal_modes = snapshot_symbol_trade_modes(self.trade_modes)
+        symbols = {
+            canonical_symbol(symbol, aliases)
+            for symbol, mode in terminal_modes.items()
+            if mode in BROKER_BLOCKED_TRADE_MODES
+        }
+        snapshot = load_trade_mode_snapshot(self.trade_modes)
+        return {"total": len(symbols), "already_disabled": len(symbols & disabled),
+                "newly_disabled": len(symbols - disabled), "symbols": sorted(symbols - disabled),
+                "terminal_total": len(symbols),
+                "terminal_captured_at": str(snapshot.get("captured_at") or ""),
+                "account_login": snapshot.get("account_login"),
+                "server": str(snapshot.get("server") or "")}
+
     def disable(self, payload):
+        return self._disable_confirmed(payload, self.disable_preview)
+
+    def disable_trade_disabled(self, payload):
+        return self._disable_confirmed(payload, self.trade_disabled_preview)
+
+    def _disable_confirmed(self, payload, preview):
         values = payload.get("symbols")
         if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
             raise ValueError("symbols debe contener la lista de simbolos confirmados")
         _, aliases, disabled, seeds = self.policy_state()
         approved = {canonical_symbol(symbol, aliases) for symbol in values}
-        current = set(self.disable_preview()["symbols"])
+        current = set(preview()["symbols"])
         selected = current & approved
         backup = self.save_policy(disabled | selected, seeds - selected) if selected else None
         return {"newly_disabled": len(selected), "policy_backup": backup}
@@ -191,6 +253,10 @@ class UniverseControllerMixin:
                 return service.disable_preview()
             if action == "disable-no-history":
                 return service.disable(payload)
+            if action == "trade-disabled-preview":
+                return service.trade_disabled_preview(payload)
+            if action == "disable-trade-disabled":
+                return service.disable_trade_disabled(payload)
             raise ValueError("Accion de universo desconocida")
 
     def start_universe_history(self):

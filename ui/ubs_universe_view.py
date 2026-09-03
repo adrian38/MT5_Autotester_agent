@@ -53,6 +53,7 @@ class UBSUniverseViewMixin:
             ("Sincronizacion de simbolos", "standard", self._sync_mt5_universe_symbols),
             ("Probar history GEN", "standard", self._run_ubs_universe_history_probe),
             ("Deshabilitar simbolos sin history", "danger", self._disable_no_history_universe_symbols),
+            ("Deshabilitar trading bloqueado", "danger", self._disable_trade_disabled_universe_symbols),
         ]
         selection_buttons = [
             ("Limpiar marcados", "standard", self._clear_selected_weights),

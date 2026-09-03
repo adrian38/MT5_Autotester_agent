@@ -24,6 +24,11 @@ from ubs.mt5_symbol_extract import (
     extract_symbols_from_mt5,
     write_asset_universe_from_symbols,
 )
+from ubs.tester_diagnostics import (
+    BROKER_BLOCKED_TRADE_MODES,
+    save_trade_mode_snapshot,
+    trade_mode_snapshot_path,
+)
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -42,6 +47,9 @@ if getattr(sys, "frozen", False):
 
 
 class UBSUniverseLogicMixin:
+    def _ubs_trade_mode_snapshot_path(self) -> Path:
+        return trade_mode_snapshot_path(BASE_DIR, self._ubs_broker(), self._ubs_account_type())
+
     def _refresh_ubs_universe_panel(self) -> None:
         for label, callback in (
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
@@ -382,14 +390,8 @@ class UBSUniverseLogicMixin:
         dialog.wait_window()
         return result
 
-    def _extract_mt5_universe_into_asset_file(self, title: str, confirm_message: str):
-        """Lee los simbolos del servidor y reescribe el universo del broker activo.
-
-        Nucleo compartido por "Extraer MT5" y "Sincronizacion de simbolos": el
-        segundo solo añade la parte de politica, para no duplicar el dialogo de
-        credenciales ni la escritura del assets.ini. Devuelve
-        ``(extraction, sync_result)`` o None si el usuario cancela o algo falla
-        (en ese caso ya se ha informado)."""
+    def _extract_live_mt5_symbols(self, title: str, confirm_message: str):
+        """Consulta el inventario y ``trade_mode`` actuales del terminal MT5."""
         credentials = self._ask_mt5_symbol_extract_credentials()
         if credentials is None:
             return None
@@ -400,7 +402,7 @@ class UBSUniverseLogicMixin:
             return None
         if not messagebox.askyesno(title, confirm_message):
             return None
-        self.status_text.set("Extrayendo simbolos MT5...")
+        self.status_text.set("Consultando simbolos y trade_mode en MT5...")
         self.update_idletasks()
         try:
             extraction = extract_symbols_from_mt5(
@@ -409,21 +411,80 @@ class UBSUniverseLogicMixin:
                 password=str(credentials.get("password") or ""),
                 server=str(credentials.get("server") or ""),
             )
+            if not extraction.symbols:
+                messagebox.showerror(title, "MT5 devolvio un inventario vacio.")
+                self.status_text.set("Consulta MT5 fallida")
+                return None
+            save_trade_mode_snapshot(
+                self._ubs_trade_mode_snapshot_path(),
+                extraction.symbols,
+                account_login=extraction.account_login,
+                server=extraction.server,
+                terminal_path=extraction.terminal_path,
+            )
+        except MT5SymbolExtractionError as exc:
+            messagebox.showerror(title, str(exc))
+            self.status_text.set("Consulta MT5 fallida")
+            return None
+        except Exception as exc:
+            messagebox.showerror(title, f"Error inesperado:\n{exc}")
+            self.status_text.set("Consulta MT5 fallida")
+            return None
+        return extraction
+
+    def _extract_mt5_universe_into_asset_file(self, title: str, confirm_message: str):
+        """Lee los simbolos del servidor y reescribe el universo del broker activo.
+
+        Nucleo compartido por "Extraer MT5" y "Sincronizacion de simbolos": el
+        segundo solo añade la parte de politica, para no duplicar el dialogo de
+        credenciales ni la escritura del assets.ini. Devuelve
+        ``(extraction, sync_result)`` o None si el usuario cancela o algo falla
+        (en ese caso ya se ha informado)."""
+        extraction = self._extract_live_mt5_symbols(title, confirm_message)
+        if extraction is None:
+            return None
+        try:
             universe_path = broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker())
             sync_result = write_asset_universe_from_symbols(
                 universe_path,
                 extraction.symbols,
                 preserve_existing_groups=False,
             )
-        except MT5SymbolExtractionError as exc:
-            messagebox.showerror(title, str(exc))
-            self.status_text.set("Extraccion MT5 fallida")
-            return None
         except Exception as exc:
-            messagebox.showerror(title, f"Error inesperado:\n{exc}")
-            self.status_text.set("Extraccion MT5 fallida")
+            messagebox.showerror(title, f"No se pudo escribir el universo:\n{exc}")
+            self.status_text.set("Sincronizacion MT5 fallida")
             return None
         return extraction, sync_result
+
+    def _query_mt5_trade_modes_from_saved_session(self, title: str):
+        """Consulta MT5 usando el perfil configurado y la sesion ya iniciada."""
+        profile = self._default_mt5_symbol_extract_profile()
+        raw_path = str(profile.get("mt5_path") or "").strip()
+        terminal_path = Path(raw_path).expanduser() if raw_path else None
+        if terminal_path is not None and not terminal_path.is_file():
+            messagebox.showerror(title, f"No existe el terminal:\n{terminal_path}")
+            return None
+        self.status_text.set("Consultando trade_mode en la sesion MT5 activa...")
+        self.update_idletasks()
+        try:
+            extraction = extract_symbols_from_mt5(terminal_path=terminal_path)
+            if not extraction.symbols:
+                messagebox.showerror(title, "MT5 devolvio un inventario vacio.")
+                return None
+            save_trade_mode_snapshot(
+                self._ubs_trade_mode_snapshot_path(),
+                extraction.symbols,
+                account_login=extraction.account_login,
+                server=extraction.server,
+                terminal_path=extraction.terminal_path,
+            )
+            return extraction
+        except MT5SymbolExtractionError as exc:
+            messagebox.showerror(title, str(exc))
+        except Exception as exc:
+            messagebox.showerror(title, f"Error inesperado:\n{exc}")
+        self.status_text.set("Consulta MT5 fallida")
+        return None
 
     def _sync_mt5_universe_symbols(self) -> None:
         """Extrae del servidor y deja el universo listo para el probe historico.
@@ -671,6 +732,66 @@ class UBSUniverseLogicMixin:
         )
         self._refresh_ubs_universe()
 
+    def _disable_trade_disabled_universe_symbols(self) -> None:
+        extraction = self._query_mt5_trade_modes_from_saved_session(
+            "Deshabilitar trading bloqueado"
+        )
+        if extraction is None:
+            return
+        _, aliases = self._load_ubs_asset_universe()
+        symbols = self._canonical_ubs_symbol_set(
+            {
+                symbol.name
+                for symbol in extraction.symbols
+                if symbol.trade_mode in BROKER_BLOCKED_TRADE_MODES
+            },
+            aliases,
+        )
+        if not symbols:
+            messagebox.showinfo(
+                "Deshabilitar trading bloqueado",
+                "La consulta actual de MT5 no devolvio simbolos DISABLED o CLOSEONLY.",
+            )
+            return
+        disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
+        new_symbols = symbols - disabled
+        already_disabled = symbols & disabled
+        if not new_symbols:
+            messagebox.showinfo(
+                "Deshabilitar trading bloqueado",
+                "No hay simbolos nuevos para deshabilitar.\n\n"
+                f"Simbolos consultados en MT5: {len(extraction.symbols)}\n"
+                f"DISABLED/CLOSEONLY actuales: {len(symbols)}\n"
+                f"Ya deshabilitados: {len(already_disabled)}",
+            )
+            return
+        detail = ", ".join(sorted(new_symbols)[:20])
+        if len(new_symbols) > 20:
+            detail += f", ... (+{len(new_symbols) - 20})"
+        if not messagebox.askyesno(
+            "Deshabilitar trading bloqueado",
+            "Se deshabilitaran en GEN solo los simbolos que la consulta actual de MT5 devuelve "
+            "como DISABLED o CLOSEONLY.\n\n"
+            f"Simbolos consultados en MT5: {len(extraction.symbols)}\n"
+            f"DISABLED/CLOSEONLY actuales: {len(symbols)}\n"
+            f"Cuenta: {extraction.account_login or 'sesion guardada'}\n"
+            f"Servidor: {extraction.server or 'sesion guardada'}\n"
+            f"Nuevos a deshabilitar: {len(new_symbols)}\n"
+            f"Ya deshabilitados: {len(already_disabled)}\n\n"
+            f"{detail}\n\n"
+            "Revisa luego el universo si quieres volver a habilitar alguno.",
+        ):
+            return
+        disabled.update(new_symbols)
+        seed_enabled.difference_update(new_symbols)
+        self._save_disabled_ubs_symbols(disabled, seed_enabled)
+        self.ubs_universe_checked.clear()
+        self.status_text.set(
+            f"Simbolos con trading bloqueado deshabilitados: {len(new_symbols)} nuevos / "
+            f"{len(symbols)} DISABLED/CLOSEONLY en MT5"
+        )
+        self._refresh_ubs_universe()
+
     def _count_ubs_history_probe_symbols(self) -> int:
         assets, aliases = self._load_ubs_asset_universe()
         disabled, _seed_enabled = self._active_ubs_symbol_policy(aliases)
@@ -909,6 +1030,8 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
+                if status == "trade_disabled":
+                    continue
                 if status not in {"accepted", "rejected", "no_trades"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
@@ -976,6 +1099,8 @@ class UBSUniverseLogicMixin:
                     continue
                 period = str(row["period"] or "UNKNOWN").upper()
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
+                if status == "trade_disabled":
+                    continue
                 if status not in {"accepted", "rejected", "no_trades"}:
                     for canonical in eligible_canonicals:
                         asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())

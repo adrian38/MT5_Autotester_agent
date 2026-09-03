@@ -969,7 +969,7 @@ def mapped_set_text_for_tester(
             shares_suffix,
             suffix_universe,
         ).strip()
-        if not current or mapped.upper() == current.upper():
+        if not current or mapped == current:
             continue
         lhs = line.split("=", 1)[0]
         if "||" in raw_value:
@@ -1078,6 +1078,14 @@ def _symbol_has_explicit_suffix(symbol: str, suffixes: tuple[str, ...]) -> bool:
     return bool(re.search(r"(?<=[A-Za-z0-9])\.[A-Za-z0-9-]+$", symbol))
 
 
+class SymbolSuffixUniverse(dict[str, str]):
+    """Suffix lookup with broker-exact symbol spellings for MT5 execution."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.exact_targets: dict[str, str] = {}
+
+
 def load_symbol_suffix_universe(
     path: Path | None,
     symbol_suffix: str = "",
@@ -1089,11 +1097,16 @@ def load_symbol_suffix_universe(
         for suffix in (shares_suffix, futures_suffix, symbol_suffix)
         if suffix and suffix.strip()
     )
-    universe: dict[str, str] = {}
+    # Existing callers consume the dict values as suffixes.  Keep that contract
+    # and attach the broker's complete spelling separately so MT5 execution can
+    # also repair casing drift such as AXI ``APPLE+`` -> ``Apple+``.
+    universe = SymbolSuffixUniverse()
     for source, target in load_symbol_suffix_target_map(path, symbol_suffix, futures_suffix, shares_suffix).items():
         for suffix in suffixes:
             if _symbol_endswith(target, suffix):
                 universe[source] = target[-len(suffix):]
+                universe.exact_targets[source] = target
+                universe.exact_targets.setdefault(normalize_set_symbol(target), target)
                 break
     return universe
 
@@ -1149,9 +1162,21 @@ def apply_symbol_suffix(
     suffixes = (suffix, futures_suffix, shares_suffix)
     if not symbol:
         return symbol
+    universe = suffix_universe or {}
+    exact_targets = getattr(suffix_universe, "exact_targets", {})
+    universe_target = exact_targets.get(normalize_set_symbol(symbol), "")
+    if not universe_target:
+        for configured_suffix in suffixes:
+            if _symbol_endswith(symbol, configured_suffix):
+                base_symbol = symbol[: -len(configured_suffix)]
+                universe_target = exact_targets.get(normalize_set_symbol(base_symbol), "")
+                if universe_target:
+                    break
+    if universe_target:
+        return universe_target
     if any(_symbol_endswith(symbol, configured_suffix) for configured_suffix in suffixes if configured_suffix):
         return symbol
-    universe_suffix = (suffix_universe or {}).get(normalize_set_symbol(symbol), "")
+    universe_suffix = universe.get(normalize_set_symbol(symbol), "")
     if universe_suffix:
         return f"{symbol}{universe_suffix}"
     if _symbol_has_explicit_suffix(symbol, suffixes):

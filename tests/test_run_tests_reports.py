@@ -618,6 +618,40 @@ class CopyReportsToProjectTests(unittest.TestCase):
             self.assertIn("ForceSymbol: DAX40 -> DAX40.fs", changes)
             self.assertIn("Symbol: Apple -> Apple+", changes)
 
+    def test_axi_universe_repairs_case_of_explicit_share_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            assets = root / "axi_assets.ini"
+            assets.write_text(
+                "[Stocks]\nsymbols=Apple+,MongoDB+,NationGrid+,PlugPower+\n",
+                encoding="utf-8",
+            )
+            set_file = root / "seed.set"
+            set_file.write_text("ForceSymbol=APPLE+||1||0||2||N\n", encoding="utf-8")
+            suffix_universe = run_tests.load_symbol_suffix_universe(
+                assets,
+                ".sa",
+                ".fs",
+                "+",
+            )
+
+            text, changes = run_tests.mapped_set_text_for_tester(
+                set_file,
+                {},
+                ".sa",
+                ".fs",
+                "+",
+                suffix_universe,
+            )
+
+            self.assertIsNotNone(text)
+            self.assertIn("ForceSymbol=Apple+||1||0||2||N", text)
+            self.assertIn("ForceSymbol: APPLE+ -> Apple+", changes)
+            self.assertEqual(
+                run_tests.apply_symbol_suffix("MONGODB+", ".sa", ".fs", "+", suffix_universe),
+                "MongoDB+",
+            )
+
     def test_symbol_map_preserves_explicit_broker_suffix(self) -> None:
         symbol_map = run_tests.parse_symbol_map("NAS100=USTECH,WTI=USOIL")
 
