@@ -79,8 +79,8 @@ class ManagerNodeCleanupTests(unittest.TestCase):
                 })
 
             repair_actions = ["result", "robustness", "final_tick", "final_tick_6m", "regression"]
-            # El intento recorre las etapas una vez por fase; la limpieza cierra el
-            # run una sola vez, cuando las dos fases han terminado.
+            # El reintento es por run: sus dos fases y su limpieza se terminan
+            # antes de empezar el siguiente run.
             self.assertEqual(
                 [(step["run_id"], step["action"]) for step in repair["pipeline"]],
                 [

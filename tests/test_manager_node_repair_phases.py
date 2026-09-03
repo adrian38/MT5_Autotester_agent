@@ -66,6 +66,30 @@ class ManagerNodeRepairPhasesTests(unittest.TestCase):
             ],
         )
 
+    def test_the_attempt_belongs_to_the_selected_run(self) -> None:
+        # El reintento es por run seleccionado: cada run agota sus reintentos y sus
+        # dos fases antes de que empiece el siguiente.
+        result = self._repair({
+            "run_ids": [7, 9, 11],
+            "max_workers": 5,
+            "repair_phase2_max_workers": 1,
+            "repair_attempts": 2,
+            "retry_low_quality": False,
+        })
+
+        self.assertEqual(
+            [
+                (step["run_id"], step["attempt"], step["phase"], step["max_workers"])
+                for step in result["pipeline"] if step["action"] == "result"
+            ],
+            [
+                (run_id, attempt, phase, workers)
+                for run_id in (7, 9, 11)
+                for attempt in (1, 2)
+                for phase, workers in ((1, 5), (2, 1))
+            ],
+        )
+
     def test_the_phase_belongs_to_the_stage_key(self) -> None:
         # Sin la fase en la clave, la segunda pasada pisaría el código de retorno,
         # el comando y el recuento de pendientes de la primera.
