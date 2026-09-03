@@ -560,7 +560,7 @@ def parse_args() -> argparse.Namespace:
         help="Etapa Final Tick: probe=filtro corto; six_month=validacion 6M para uso en portafolio.",
     )
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
-    parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, incluye filas pending_history_quality aunque las fechas no hayan cambiado.")
+    parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, reintenta exclusivamente las filas pending_history_quality, coincidan o no las fechas guardadas.")
     parser.add_argument("--final-tick-reconcile-only", action="store_true", help="Con --evaluate-final-tick, concilia reportes OHLC/Every Tick ya existentes en disco sin abrir MT5.")
     parser.add_argument("--final-tick-skip-ohlc", action="store_true", help="Salta el backtest OHLC y reutiliza ohlc_metrics_json guardado en DB; solo ejecuta Every Tick.")
     parser.add_argument("--final-tick-min-history-quality", type=float, default=80.0, help="Calidad minima History Quality del reporte real tick.")
@@ -3772,6 +3772,10 @@ def tester_log_no_history_metadata(
         rf"{escaped}:\s+no data synchronized",
         re.IGNORECASE,
     )
+    trade_server_sync_pattern = re.compile(
+        r"not synchronized with trade server",
+        re.IGNORECASE,
+    )
     success_pattern = re.compile(
         rf"{escaped},[^:]+:.*\btest passed\b",
         re.IGNORECASE,
@@ -3811,6 +3815,30 @@ def tester_log_no_history_metadata(
     success_matches = list(success_pattern.finditer(text))
     if success_matches and success_matches[-1].start() > last_failure_position:
         return None
+    # ``no data synchronized`` / ``cannot get history`` are also emitted when
+    # the terminal itself has lost synchronization with the trade server.  In
+    # that case they are weak transport evidence, not proof that the broker has
+    # no history for the symbol.  Keep explicit date-range evidence authoritative
+    # and let empty-report handling classify the transport failure as a retryable
+    # ``pending_tester_context``.
+    trade_server_sync_matches = [
+        match
+        for match in trade_server_sync_pattern.finditer(text)
+        if match.start() < last_failure_position
+    ]
+    if trade_server_sync_matches and not tick_download_failed:
+        latest_trade_server_sync = trade_server_sync_matches[-1].start()
+        sync_warning_in_current_attempt = (
+            last_failure_position - latest_trade_server_sync <= 20_000
+        )
+        explicit_history_positions = [
+            *(match.start() for match in found_matches),
+            *(match.start() for match in missing_matches),
+        ]
+        if sync_warning_in_current_attempt and not any(
+            position > latest_trade_server_sync for position in explicit_history_positions
+        ):
+            return None
     found = found_matches[-1] if found_matches else None
     missing = missing_matches[-1] if missing_matches else None
     recommendation = "desactivar simbolo y revisar historico del broker"
@@ -4912,6 +4940,49 @@ def validate_final_tick_stage_dates(stage: str, from_date: str, to_date: str) ->
 
 
 def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    """Ejecuta Final Tick y continua con las fechas principales si hizo falta.
+
+    Una pasada solo puede servir un rango de fechas: ``args.from_date`` y
+    ``args.to_date`` se mutan para toda la ejecucion. Con rango OHLC alternativo
+    configurado, la pasada corre las filas en scope de retry y aparta el resto.
+    El flujo de UI cuenta con que el usuario vuelva a pulsar el boton, pero el
+    pipeline del manager avanza a ``final_tick_*_quality`` acto seguido, asi que
+    la continuacion tiene que ocurrir aqui: si no, esas filas se quedan sin
+    evaluar y la etapa se da por terminada con codigo 0.
+    """
+    final_tick_label = final_tick_stage_label(
+        normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    )
+    deferred: list[sqlite3.Row] = []
+    main_from_date = getattr(args, "from_date", None)
+    main_to_date = getattr(args, "to_date", None)
+    code = _evaluate_candidate_final_tick_pass(
+        args, memory, score_config, deferred_out=deferred
+    )
+    if code != 0 or not deferred:
+        return code
+    args.from_date = main_from_date
+    args.to_date = main_to_date
+    print(
+        f"{final_tick_label} continuacion: {len(deferred)} fila(s) pendientes con "
+        f"fechas principales {main_from_date} -> {main_to_date}."
+    )
+    # ``allow_ohlc_retry=False`` fuerza la rama de fechas principales sin borrar
+    # el rango alternativo, que sigue haciendo falta para no reencolar las filas
+    # cuyo retry OHLC ya se agoto.
+    return _evaluate_candidate_final_tick_pass(
+        args, memory, score_config, allow_ohlc_retry=False
+    )
+
+
+def _evaluate_candidate_final_tick_pass(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+    *,
+    allow_ohlc_retry: bool = True,
+    deferred_out: list[sqlite3.Row] | None = None,
+) -> int:
     final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
     memory.active_final_tick_stage = final_tick_stage
     final_tick_label = final_tick_stage_label(final_tick_stage)
@@ -4995,6 +5066,18 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             f"simbolo retirado del broker ({format_retired_symbol_rows(retired_rows)}); "
             f"marcados {SYMBOL_NOT_EXIST_STATUS}."
         )
+    retry_pending_quality = bool(getattr(args, "final_tick_retry_pending_quality", False))
+    if args.final_tick_pending_only and retry_pending_quality:
+        # La etapa de calidad va siempre con ``--final-tick-skip-ohlc``, que solo
+        # puede servir filas con su pata OHLC ya guardada en DB. El manager
+        # decide si la lanza contando exactamente eso
+        # (``pipeline_stage_pending_count``, rama ``quality_only``), asi que la
+        # seleccion se restringe al mismo conjunto en vez de ampliarlo: el resto
+        # de pendientes son trabajo de la etapa normal, que corre justo antes.
+        rows = [
+            row for row in rows
+            if str(row["final_tick_status"] or "").strip() == "pending_history_quality"
+        ]
     main_from_date = str(args.from_date or "").strip()
     main_to_date = str(args.to_date or "").strip()
     ohlc_retry_from = str(getattr(args, "final_tick_ohlc_from_date", "") or "").strip()
@@ -5023,7 +5106,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             ohlc_retry_from,
             ohlc_retry_to,
             final_tick_stage=final_tick_stage,
-            force_quality_retry=bool(getattr(args, "final_tick_retry_pending_quality", False)),
+            force_quality_retry=retry_pending_quality,
         )
     else:
         has_ohlc_trades_pending = any(
@@ -5031,7 +5114,7 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             for row in rows
         )
     using_ohlc_retry_dates = False
-    if final_tick_stage == "six_month" and args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
+    if allow_ohlc_retry and final_tick_stage == "six_month" and args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
             print(f"ERROR: {final_tick_label} OHLC retry requiere ambas fechas alternativas Desde y Hasta.")
             return 1
@@ -5043,7 +5126,6 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
             return 1
         using_ohlc_retry_dates = True
         print(f"{final_tick_label} OHLC retry: usando fechas alternativas {args.from_date} -> {args.to_date}.")
-    retry_pending_quality = bool(getattr(args, "final_tick_retry_pending_quality", False))
     if args.final_tick_pending_only:
         if using_ohlc_retry_dates:
             deferred_main_rows = [
@@ -5074,6 +5156,8 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
                     f"{len(deferred_main_rows)} fila(s) pendientes de fechas principales "
                     f"{main_from_date} -> {main_to_date} se dejan para la siguiente continuacion."
                 )
+                if deferred_out is not None:
+                    deferred_out.extend(deferred_main_rows)
         else:
             rows = [
                 row for row in rows

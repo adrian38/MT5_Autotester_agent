@@ -9,6 +9,27 @@ from ubs.score import _extract_drawdown, _to_float as score_to_float
 
 
 class MT5ReportParserTests(unittest.TestCase):
+    def test_out_of_order_html_deals_do_not_cross_two_closures(self) -> None:
+        def deal(ticket: str, moment: datetime, trade_type: str, direction: str, price: float) -> RawDeal:
+            return RawDeal(
+                timestamp=moment, ticket=ticket, symbol="XAUUSD", trade_type=trade_type,
+                direction=direction, volume=0.03, price=price, order=ticket,
+                commission=0.0, swap=0.0, profit=0.0, balance=5000.0, comment="",
+            )
+
+        early_open = deal("6", datetime(2026, 9, 1, 11, 9, 50), "sell", "in", 4399.18)
+        early_close = deal("7", datetime(2026, 9, 1, 11, 12, 58), "buy", "out", 4399.21)
+        late_open = deal("8", datetime(2026, 9, 1, 16, 12, 4), "sell", "in", 4327.25)
+        late_close = deal("9", datetime(2026, 9, 1, 16, 13, 0), "buy", "out", 4331.56)
+
+        trades = _build_trades([late_open, early_open, early_close, late_close])
+
+        self.assertEqual([(trade.ticket, trade.open_time, trade.close_time) for trade in trades], [
+            ("6", early_open.timestamp, early_close.timestamp),
+            ("8", late_open.timestamp, late_close.timestamp),
+        ])
+        self.assertTrue(all(trade.close_time >= trade.open_time for trade in trades))
+
     def test_build_trades_includes_entry_and_exit_commission(self) -> None:
         opened = RawDeal(
             timestamp=datetime(2020, 1, 1, 10, 0),

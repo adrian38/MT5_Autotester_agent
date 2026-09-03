@@ -9,7 +9,7 @@ from unittest import mock
 
 import ubs_agent as agent
 from manager_node_runtime import guided_batches as protocol
-from tests.test_guided_node import package
+from tests.test_guided_node import package, symbol_package
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.prepared import run_prepared
@@ -34,7 +34,7 @@ class PreparedTests(unittest.TestCase):
         self.args.symbol_map=''
         self.args.output_dir=self.root/'outputs';self.args.execute_backtests=True;self.args.dry_run=False
         self.api=SimpleNamespace(**vars(agent));self.api.BASE_DIR=self.root
-        self.api.broker_universe_symbols=lambda args:{'US30'}
+        self.api.broker_universe_symbols=lambda args:{'US30','EURUSD'}
         self.api.load_disabled_symbols=lambda path:set()
         self.api.target_timeframe_universe=lambda *args,**kwargs:['M15']
         self.api.load_mutation_overrides=lambda:({},set());self.api.load_global_params=lambda:{}
@@ -71,6 +71,13 @@ class PreparedTests(unittest.TestCase):
         p=self.root/'accepted_parent.set';p.write_bytes(p.read_bytes().replace(b'ATR_Period=10',b'ATR_Period=12'))
         with self.assertRaisesRegex(ValueError,'no coincide'):
             run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+
+    def test_unseen_enabled_symbol_enters_evaluator_without_numeric_remutation(self):
+        self.package=symbol_package();directory=protocol.store_batch(self.root,self.package,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        variants=self.api.evaluate_generation.call_args.args[4]
+        self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',('ForceSymbol',)))
 
 
 if __name__=='__main__':unittest.main()
