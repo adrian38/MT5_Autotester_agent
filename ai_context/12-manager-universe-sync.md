@@ -20,12 +20,14 @@ the complete API implemented by `UniverseControllerMixin` in
   already-disabled count and newly-disabled symbols for user confirmation.
 - POST `/api/v1/universe/disable-no-history`: accepts the confirmed `symbols`
   list, intersects it with current verdicts and never expands the approval.
-- POST `/api/v1/universe/trade-disabled-preview`: uses the latest MT5 snapshot
-  (`DISABLED=0`, `CLOSEONLY=3`) as authoritative and explicit journal verdicts
-  only as fallback for symbols absent from that snapshot. Returns per-source
-  totals and capture time.
+- POST `/api/v1/universe/trade-disabled-preview`: connects to the terminal for
+  every preview and reads the current `symbol_info.trade_mode` values directly
+  (`DISABLED=0`, `CLOSEONLY=3`). It stores that exact preview without
+  credentials and returns its terminal count, account/server and capture time.
+  Journals never contribute symbols to this universe action; they are used only
+  to diagnose a `trade_disabled` candidate while its run is being generated.
 - POST `/api/v1/universe/disable-trade-disabled`: applies only the previewed,
-  still-current set and removes seed exceptions for those symbols.
+  still-approved snapshot set and removes seed exceptions for those symbols.
 
 Writes stay inside the configured agent project (`assert_writable`). Empty MT5
 inventory and corrupt policy fail before overwriting. Extraction errors redact

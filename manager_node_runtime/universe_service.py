@@ -77,11 +77,8 @@ class UniverseService:
                 return row["mt5_path"]
         return self.settings.get("Paths", "mt5_path", fallback="")
 
-    def sync(self, payload):
-        _, aliases, disabled, seeds = self.policy_state()
-        assert_writable(self.assets, self.project)
-        assert_writable(self.policy, self.project)
-        assert_writable(self.trade_modes, self.project)
+    def _extract_live_symbols(self, payload):
+        """Read the current symbol inventory directly from the configured MT5 terminal."""
         login_text = str(payload.get("login") or "").strip()
         if login_text and (not login_text.isascii() or not login_text.isdecimal() or int(login_text) <= 0):
             raise ValueError("Login debe ser numerico y positivo")
@@ -100,6 +97,26 @@ class UniverseService:
             raise ValueError(detail) from None
         if not extraction.symbols:
             raise ValueError("MT5 devolvio un universo vacio; se conserva el universo anterior")
+        return extraction
+
+    def refresh_trade_modes(self, payload):
+        assert_writable(self.trade_modes, self.project)
+        extraction = self._extract_live_symbols(payload)
+        save_trade_mode_snapshot(
+            self.trade_modes,
+            extraction.symbols,
+            account_login=extraction.account_login,
+            server=extraction.server,
+            terminal_path=extraction.terminal_path,
+        )
+        return extraction
+
+    def sync(self, payload):
+        _, aliases, disabled, seeds = self.policy_state()
+        assert_writable(self.assets, self.project)
+        assert_writable(self.policy, self.project)
+        assert_writable(self.trade_modes, self.project)
+        extraction = self._extract_live_symbols(payload)
         result = write_asset_universe_from_symbols(self.assets, extraction.symbols, preserve_existing_groups=False)
         save_trade_mode_snapshot(
             self.trade_modes,
@@ -122,15 +139,14 @@ class UniverseService:
             "policy_backup": backup,
         }
 
-    def latest_statuses(self, aliases, *, history_probe=True):
+    def latest_statuses(self, aliases):
         if not self.memory.exists():
             return {}
         with contextlib.closing(sqlite3.connect(self.memory.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             if not conn.execute("select 1 from sqlite_master where type='table' and name='candidates'").fetchone():
                 return {}
-            policy_filter = "policy='history_probe'" if history_probe else "coalesce(policy, '')!='history_probe'"
             rows = conn.execute(
-                f"select target_symbol,status from candidates where {policy_filter} order by id"
+                "select target_symbol,status from candidates where policy='history_probe' order by id"
             )
             return {canonical_symbol(symbol, aliases): status for symbol, status in rows if symbol}
 
@@ -156,28 +172,23 @@ class UniverseService:
         return {"total": len(symbols), "already_disabled": len(symbols & disabled),
                 "newly_disabled": len(symbols - disabled), "symbols": sorted(symbols - disabled)}
 
-    def trade_disabled_preview(self):
+    def trade_disabled_preview(self, payload=None):
+        if payload is not None:
+            self.refresh_trade_modes(payload)
         _, aliases, disabled, _ = self.policy_state()
-        journal_symbols = {
-            symbol
-            for symbol, status in self.latest_statuses(aliases, history_probe=False).items()
-            if status == "trade_disabled"
-        }
         terminal_modes = snapshot_symbol_trade_modes(self.trade_modes)
-        terminal_known = {canonical_symbol(symbol, aliases) for symbol in terminal_modes}
-        terminal_symbols = {
+        symbols = {
             canonical_symbol(symbol, aliases)
             for symbol, mode in terminal_modes.items()
             if mode in BROKER_BLOCKED_TRADE_MODES
         }
-        journal_fallback = journal_symbols - terminal_known
-        symbols = journal_fallback | terminal_symbols
         snapshot = load_trade_mode_snapshot(self.trade_modes)
         return {"total": len(symbols), "already_disabled": len(symbols & disabled),
                 "newly_disabled": len(symbols - disabled), "symbols": sorted(symbols - disabled),
-                "journal_total": len(journal_symbols), "terminal_total": len(terminal_symbols),
-                "journal_fallback_total": len(journal_fallback),
-                "terminal_captured_at": str(snapshot.get("captured_at") or "")}
+                "terminal_total": len(symbols),
+                "terminal_captured_at": str(snapshot.get("captured_at") or ""),
+                "account_login": snapshot.get("account_login"),
+                "server": str(snapshot.get("server") or "")}
 
     def disable(self, payload):
         return self._disable_confirmed(payload, self.disable_preview)
@@ -243,7 +254,7 @@ class UniverseControllerMixin:
             if action == "disable-no-history":
                 return service.disable(payload)
             if action == "trade-disabled-preview":
-                return service.trade_disabled_preview()
+                return service.trade_disabled_preview(payload)
             if action == "disable-trade-disabled":
                 return service.disable_trade_disabled(payload)
             raise ValueError("Accion de universo desconocida")

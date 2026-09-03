@@ -1,11 +1,10 @@
 import json
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ubs.mt5_symbol_extract import AssetUniverseSyncResult, SymbolExtractionResult
+from ubs.mt5_symbol_extract import AssetUniverseSyncResult, ExtractedSymbol, SymbolExtractionResult
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
 
@@ -172,36 +171,35 @@ class DisabledPolicyBackupPruneTests(unittest.TestCase):
 
 
 class TradeDisabledPolicyTests(unittest.TestCase):
-    def test_button_disables_only_latest_trade_disabled_symbols(self) -> None:
+    def test_button_queries_live_trade_modes_and_ignores_journals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             policy = Path(temp_dir) / "policy.json"
             write_policy(policy, ["OLD"])
             harness = UniverseSyncHarness(policy, ())
-            conn = sqlite3.connect(harness._memory)
-            try:
-                conn.execute(
-                    "create table candidates (id integer primary key, target_symbol text, status text, policy text)"
-                )
-                conn.executemany(
-                    "insert into candidates(target_symbol,status,policy) values(?,?,?)",
-                    [
-                        ("US100", "trade_disabled", "generation"),
-                        ("EURUSD", "trade_disabled", "generation"),
-                        ("EURUSD", "accepted", "generation"),
-                        ("GBPUSD", "trade_disabled", "history_probe"),
-                    ],
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            extraction = SymbolExtractionResult(
+                symbols=(
+                    ExtractedSymbol("US100", trade_mode=3),
+                    ExtractedSymbol("EURUSD", trade_mode=4),
+                ),
+                terminal_path=None,
+                account_login=11637157,
+                server="Broker-MT5",
+            )
 
-            with patch("ui.ubs_universe_logic.messagebox.askyesno", return_value=True):
+            with (
+                patch("ui.ubs_universe_logic.extract_symbols_from_mt5", return_value=extraction) as extract,
+                patch("ui.ubs_universe_logic.messagebox.askyesno", return_value=True) as confirm,
+            ):
                 harness._disable_trade_disabled_universe_symbols()
 
+            extract.assert_called_once()
             saved = json.loads(policy.read_text(encoding="utf-8"))
             self.assertEqual(saved["disabled"], ["OLD", "USTEC"])
             self.assertEqual(harness.refreshed, 1)
             self.assertIn("1 nuevos", harness.status_text.value)
+            self.assertEqual(confirm.call_count, 2)
+            self.assertIn("no usa journals", confirm.call_args_list[0].args[1])
+            self.assertIn("DISABLED o CLOSEONLY", confirm.call_args_list[1].args[1])
 
 
 if __name__ == "__main__":

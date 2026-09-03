@@ -115,27 +115,36 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         self.verdict("GBPUSD", "history_ok")
         self.assertEqual(self.service.disable({"symbols": ["GBPUSD"]})["newly_disabled"], 0)
 
-    def test_trade_disabled_preview_uses_latest_non_probe_verdict_and_safe_confirmation(self):
+    def test_trade_disabled_preview_refreshes_mt5_and_safe_confirmation_does_not_expand(self):
+        self.verdict("OLD", "trade_disabled")
+        self.assertEqual(self.service.trade_disabled_preview()["symbols"], [])
+
+        extraction = SymbolExtractionResult(
+            (
+                ExtractedSymbol("GBPUSD", trade_mode=3),
+                ExtractedSymbol("EURUSD", trade_mode=4),
+            ),
+            None,
+            11637157,
+            "Broker-MT5",
+        )
+        with patch("manager_node_runtime.universe_service.extract_symbols_from_mt5", return_value=extraction) as extract:
+            preview = self.service.trade_disabled_preview({})
+
+        extract.assert_called_once_with(terminal_path=None, login=None, password="", server="")
+        self.assertEqual(preview["symbols"], ["GBPUSD"])
+        self.assertEqual(preview["terminal_total"], 1)
+        self.assertNotIn("journal_total", preview)
         save_trade_mode_snapshot(
             self.service.trade_modes,
             (
                 ExtractedSymbol("GBPUSD", trade_mode=3),
-                ExtractedSymbol("EURUSD", trade_mode=4),
+                ExtractedSymbol("EURUSD", trade_mode=0),
             ),
             account_login=11637157,
             server="Broker-MT5",
             terminal_path=None,
         )
-        self.verdict("GBPUSD", "trade_disabled", policy="generation")
-        self.verdict("EURUSD", "trade_disabled", policy="generation")
-        self.verdict("EURUSD", "accepted", policy="generation")
-        self.verdict("OLD", "trade_disabled")
-
-        preview = self.service.trade_disabled_preview()
-        self.assertEqual(preview["symbols"], ["GBPUSD"])
-        self.assertEqual((preview["terminal_total"], preview["journal_total"]), (1, 1))
-        self.assertEqual(preview["journal_fallback_total"], 0)
-        self.verdict("EURUSD", "trade_disabled", policy="generation")
         result = self.service.disable_trade_disabled({"symbols": preview["symbols"]})
 
         self.assertEqual(result["newly_disabled"], 1)
@@ -184,8 +193,11 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         status, preview = post("/api/v1/universe/history-preview")
         self.assertEqual(status, 200)
         self.assertEqual(preview["pending"], 3)
-        self.verdict("GBPUSD", "trade_disabled", policy="generation")
-        status, trade_preview = post("/api/v1/universe/trade-disabled-preview")
+        extraction = SymbolExtractionResult(
+            (ExtractedSymbol("GBPUSD", trade_mode=3),), None, 11637157, "Broker-MT5"
+        )
+        with patch("manager_node_runtime.universe_service.extract_symbols_from_mt5", return_value=extraction):
+            status, trade_preview = post("/api/v1/universe/trade-disabled-preview")
         self.assertEqual((status, trade_preview["symbols"]), (200, ["GBPUSD"]))
         status, job = post("/api/v1/jobs/universe-history")
         self.assertEqual(status, 202)
