@@ -195,15 +195,18 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                     "cleanup_after_run": False,
                 })
 
-            discovery_actions = [
-                step["action"] for step in result["pipeline"] if step["run_id"] == 7
-            ]
-            production_actions = [
-                step["action"] for step in result["pipeline"] if step["run_id"] == 9
-            ]
-            unknown_actions = [
-                step["action"] for step in result["pipeline"] if step["run_id"] == 11
-            ]
+            # Cada intento recorre las etapas dos veces, una por fase; la regresiva
+            # se decide por run, no por fase, así que basta mirar la primera.
+            def actions_of(run_id: int, phase: int = 1) -> list[str]:
+                return [
+                    step["action"] for step in result["pipeline"]
+                    if step["run_id"] == run_id and step["phase"] == phase
+                ]
+
+            discovery_actions = actions_of(7)
+            production_actions = actions_of(9)
+            unknown_actions = actions_of(11)
+            self.assertEqual(actions_of(9, phase=2), production_actions)
             self.assertEqual(
                 discovery_actions,
                 ["result", "robustness", "final_tick", "final_tick_6m"],
@@ -234,7 +237,10 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                         "cleanup_after_run": False,
                         **payload,
                     })
-                return [step["action"] for step in result["pipeline"]]
+                # Las dos fases del intento programan las mismas etapas.
+                return [
+                    step["action"] for step in result["pipeline"] if step["phase"] == 1
+                ]
 
             base = ["result", "robustness", "final_tick", "final_tick_6m"]
             self.assertEqual(actions_for({"run_regression": False}), base)
@@ -285,7 +291,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
 
             regression_runs = [
                 step["run_id"] for step in result["pipeline"]
-                if step["action"] == "regression"
+                if step["action"] == "regression" and step["phase"] == 1
             ]
             self.assertEqual(regression_runs, [9])
 
@@ -404,7 +410,12 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 if step["action"] != "generation"
             ]
             self.assertTrue(repair_steps)
-            self.assertTrue(all(step["max_workers"] == 3 for step in repair_steps))
+            # La fase 1 usa el límite de reparación; la 2, el suyo. Detalle en
+            # tests/test_manager_node_repair_phases.py.
+            self.assertTrue(all(
+                step["max_workers"] == 3 for step in repair_steps if step["phase"] == 1
+            ))
+            self.assertTrue(any(step["phase"] == 2 for step in repair_steps))
 
     def test_auto_repair_defaults_to_the_generation_worker_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
