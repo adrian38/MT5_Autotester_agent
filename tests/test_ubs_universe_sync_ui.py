@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,11 +26,24 @@ class UniverseSyncHarness(UBSUniverseLogicMixin):
         self.refreshed = 0
         self._policy_path = policy_path
         self._removed = removed
+        self._memory = policy_path.with_suffix(".sqlite")
         self.info_messages: list[str] = []
 
     # --- ganchos del mixin ---
     def _disabled_symbols_path(self) -> Path:
         return self._policy_path
+
+    def _ubs_memory_path(self) -> Path:
+        return self._memory
+
+    def _ubs_broker(self) -> str:
+        return "ICTRADING"
+
+    def _ubs_account_type(self) -> str:
+        return "STANDARD"
+
+    def _ubs_trade_mode_snapshot_path(self) -> Path:
+        return self._policy_path.parent / "trade_modes.json"
 
     def _load_ubs_asset_universe(self):
         return [], {"US100": "USTEC"}
@@ -155,6 +169,39 @@ class DisabledPolicyBackupPruneTests(unittest.TestCase):
             self.assertEqual(len(remaining), 10)
             # Se conservan los mas recientes por nombre (timestamp).
             self.assertEqual(remaining[0], f"{policy.name}.bak_20260805_000000")
+
+
+class TradeDisabledPolicyTests(unittest.TestCase):
+    def test_button_disables_only_latest_trade_disabled_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            policy = Path(temp_dir) / "policy.json"
+            write_policy(policy, ["OLD"])
+            harness = UniverseSyncHarness(policy, ())
+            conn = sqlite3.connect(harness._memory)
+            try:
+                conn.execute(
+                    "create table candidates (id integer primary key, target_symbol text, status text, policy text)"
+                )
+                conn.executemany(
+                    "insert into candidates(target_symbol,status,policy) values(?,?,?)",
+                    [
+                        ("US100", "trade_disabled", "generation"),
+                        ("EURUSD", "trade_disabled", "generation"),
+                        ("EURUSD", "accepted", "generation"),
+                        ("GBPUSD", "trade_disabled", "history_probe"),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with patch("ui.ubs_universe_logic.messagebox.askyesno", return_value=True):
+                harness._disable_trade_disabled_universe_symbols()
+
+            saved = json.loads(policy.read_text(encoding="utf-8"))
+            self.assertEqual(saved["disabled"], ["OLD", "USTEC"])
+            self.assertEqual(harness.refreshed, 1)
+            self.assertIn("1 nuevos", harness.status_text.value)
 
 
 if __name__ == "__main__":

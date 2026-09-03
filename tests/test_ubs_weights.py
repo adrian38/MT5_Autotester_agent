@@ -33,6 +33,12 @@ class UBSWeightsTests(unittest.TestCase):
         self.assertEqual(row_stage_outcome({"final_tick_status": "pending_ohlc_trades"}, "probe"), (True, 1.0))
         self.assertEqual(row_stage_outcome({"final_tick_status": "parse_error"}, "probe"), (False, 0.0))
 
+    def test_trade_disabled_is_neutral_and_not_a_strategy_failure(self) -> None:
+        row = {"status": "trade_disabled", "report_path": "report.htm"}
+
+        self.assertIsNone(feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS))
+        self.assertEqual(row_stage_outcome(row, "base"), (False, 0.0))
+
     def test_probability_feedback_is_relative_and_smoothed(self) -> None:
         good = {
             "status": "accepted",

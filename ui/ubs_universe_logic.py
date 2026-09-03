@@ -24,6 +24,13 @@ from ubs.mt5_symbol_extract import (
     extract_symbols_from_mt5,
     write_asset_universe_from_symbols,
 )
+from ubs.tester_diagnostics import (
+    load_trade_mode_snapshot,
+    save_trade_mode_snapshot,
+    snapshot_symbol_trade_modes,
+    snapshot_trade_blocked_symbols,
+    trade_mode_snapshot_path,
+)
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
@@ -42,6 +49,9 @@ if getattr(sys, "frozen", False):
 
 
 class UBSUniverseLogicMixin:
+    def _ubs_trade_mode_snapshot_path(self) -> Path:
+        return trade_mode_snapshot_path(BASE_DIR, self._ubs_broker(), self._ubs_account_type())
+
     def _refresh_ubs_universe_panel(self) -> None:
         for label, callback in (
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
@@ -415,6 +425,13 @@ class UBSUniverseLogicMixin:
                 extraction.symbols,
                 preserve_existing_groups=False,
             )
+            save_trade_mode_snapshot(
+                self._ubs_trade_mode_snapshot_path(),
+                extraction.symbols,
+                account_login=extraction.account_login,
+                server=extraction.server,
+                terminal_path=extraction.terminal_path,
+            )
         except MT5SymbolExtractionError as exc:
             messagebox.showerror(title, str(exc))
             self.status_text.set("Extraccion MT5 fallida")
@@ -671,6 +688,103 @@ class UBSUniverseLogicMixin:
         )
         self._refresh_ubs_universe()
 
+    def _trade_disabled_universe_symbols(self, aliases: dict[str, str]) -> set[str]:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            return set()
+        conn = None
+        try:
+            conn = connect_memory(memory_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select target_symbol, status
+                from candidates
+                where coalesce(policy, '') != 'history_probe'
+                  and coalesce(target_symbol, '') != ''
+                order by id
+                """
+            ).fetchall()
+        except sqlite3.Error as exc:
+            messagebox.showerror("Universo UBS", f"No se pudo leer memoria UBS:\n{exc}")
+            return set()
+        finally:
+            if conn is not None:
+                conn.close()
+        latest: dict[str, str] = {}
+        for row in rows:
+            symbol = self._canonical_ubs_symbol(str(row["target_symbol"] or ""), aliases).upper()
+            if symbol:
+                latest[symbol] = str(row["status"] or "")
+        return {symbol for symbol, status in latest.items() if status == "trade_disabled"}
+
+    def _terminal_trade_disabled_universe_symbols(self, aliases: dict[str, str]) -> set[str]:
+        return self._canonical_ubs_symbol_set(
+            snapshot_trade_blocked_symbols(self._ubs_trade_mode_snapshot_path()),
+            aliases,
+        )
+
+    def _disable_trade_disabled_universe_symbols(self) -> None:
+        _, aliases = self._load_ubs_asset_universe()
+        journal_symbols = self._trade_disabled_universe_symbols(aliases)
+        terminal_symbols = self._terminal_trade_disabled_universe_symbols(aliases)
+        snapshot = load_trade_mode_snapshot(self._ubs_trade_mode_snapshot_path())
+        terminal_known = self._canonical_ubs_symbol_set(
+            set(snapshot_symbol_trade_modes(self._ubs_trade_mode_snapshot_path())),
+            aliases,
+        )
+        journal_fallback = journal_symbols - terminal_known
+        captured_at = str(snapshot.get("captured_at") or "sin sincronizacion guardada")
+        symbols = journal_fallback | terminal_symbols
+        if not symbols:
+            messagebox.showinfo(
+                "Universo UBS",
+                "No hay simbolos bloqueados en la ultima sincronizacion MT5 ni confirmados por journal.",
+            )
+            return
+        disabled, seed_enabled = self._active_ubs_symbol_policy(aliases)
+        new_symbols = symbols - disabled
+        already_disabled = symbols & disabled
+        if not new_symbols:
+            messagebox.showinfo(
+                "Deshabilitar trading bloqueado",
+                "No hay simbolos nuevos para deshabilitar.\n\n"
+                f"Clasificados trade_disabled: {len(symbols)}\n"
+                f"Detectados en ultima sincronizacion MT5: {len(terminal_symbols)}\n"
+                f"Captura MT5: {captured_at}\n"
+                f"Confirmados por journal: {len(journal_symbols)}\n"
+                f"Journal usado como fallback: {len(journal_fallback)}\n"
+                f"Ya deshabilitados: {len(already_disabled)}",
+            )
+            return
+        detail = ", ".join(sorted(new_symbols)[:20])
+        if len(new_symbols) > 20:
+            detail += f", ... (+{len(new_symbols) - 20})"
+        if not messagebox.askyesno(
+            "Deshabilitar trading bloqueado",
+            "Se deshabilitaran en GEN solo los simbolos cuyo journal confirma que el broker "
+            "no permite abrir posiciones.\n\n"
+            f"Simbolos trade_disabled: {len(symbols)}\n"
+            f"Detectados en ultima sincronizacion MT5: {len(terminal_symbols)}\n"
+            f"Captura MT5: {captured_at}\n"
+            f"Confirmados por journal: {len(journal_symbols)}\n"
+            f"Journal usado como fallback: {len(journal_fallback)}\n"
+            f"Nuevos a deshabilitar: {len(new_symbols)}\n"
+            f"Ya deshabilitados: {len(already_disabled)}\n\n"
+            f"{detail}\n\n"
+            "Revisa luego el universo si quieres volver a habilitar alguno.",
+        ):
+            return
+        disabled.update(new_symbols)
+        seed_enabled.difference_update(new_symbols)
+        self._save_disabled_ubs_symbols(disabled, seed_enabled)
+        self.ubs_universe_checked.clear()
+        self.status_text.set(
+            f"Simbolos con trading bloqueado deshabilitados: {len(new_symbols)} nuevos / "
+            f"{len(symbols)} trade_disabled"
+        )
+        self._refresh_ubs_universe()
+
     def _count_ubs_history_probe_symbols(self) -> int:
         assets, aliases = self._load_ubs_asset_universe()
         disabled, _seed_enabled = self._active_ubs_symbol_policy(aliases)
@@ -909,6 +1023,8 @@ class UBSUniverseLogicMixin:
                 period = str(row["period"] or "UNKNOWN").upper()
                 asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
+                if status == "trade_disabled":
+                    continue
                 if status not in {"accepted", "rejected", "no_trades"}:
                     asset_stat["pending"] = int(asset_stat["pending"]) + 1
                     tf_stat["pending"] = int(tf_stat["pending"]) + 1
@@ -976,6 +1092,8 @@ class UBSUniverseLogicMixin:
                     continue
                 period = str(row["period"] or "UNKNOWN").upper()
                 tf_stat = timeframe_stats.setdefault(period, self._empty_ubs_stat())
+                if status == "trade_disabled":
+                    continue
                 if status not in {"accepted", "rejected", "no_trades"}:
                     for canonical in eligible_canonicals:
                         asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())

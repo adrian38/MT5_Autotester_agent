@@ -14,6 +14,7 @@ from unittest.mock import patch
 from manager_node_runtime.node import JobController, NodeServer
 from manager_node_runtime.universe_service import build_history_command
 from ubs.mt5_symbol_extract import ExtractedSymbol, SymbolExtractionResult
+from ubs.tester_diagnostics import save_trade_mode_snapshot
 from ubs.universe import load_disabled_symbols, load_seed_enabled_disabled_symbols, save_disabled_symbols
 
 
@@ -52,7 +53,12 @@ class ManagerNodeUniverseTests(unittest.TestCase):
             conn.commit()
 
     def test_sync_uses_saved_session_and_retires_symbols_with_backups(self):
-        extraction = SymbolExtractionResult((ExtractedSymbol("EURUSD"), ExtractedSymbol("NEW")), None, None, "")
+        extraction = SymbolExtractionResult(
+            (ExtractedSymbol("EURUSD", trade_mode=4), ExtractedSymbol("NEW", trade_mode=3)),
+            None,
+            None,
+            "",
+        )
         with patch("manager_node_runtime.universe_service.extract_symbols_from_mt5", return_value=extraction) as extract:
             result = self.controller.universe_action("sync", {})
         extract.assert_called_once_with(terminal_path=None, login=None, password="", server="")
@@ -61,6 +67,9 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         self.assertEqual(load_seed_enabled_disabled_symbols(self.policy), set())
         self.assertTrue(Path(result["universe_backup"]).is_file())
         self.assertTrue(Path(result["policy_backup"]).is_file())
+        self.assertEqual(result["trade_blocked"], 1)
+        self.assertTrue(Path(result["trade_mode_snapshot"]).is_file())
+        self.assertEqual(self.service.trade_disabled_preview()["symbols"], ["NEW"])
         self.assertIsNone(self.controller.process)
         self.assertNotIn("password", json.dumps(self.controller.state))
 
@@ -106,6 +115,33 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         self.verdict("GBPUSD", "history_ok")
         self.assertEqual(self.service.disable({"symbols": ["GBPUSD"]})["newly_disabled"], 0)
 
+    def test_trade_disabled_preview_uses_latest_non_probe_verdict_and_safe_confirmation(self):
+        save_trade_mode_snapshot(
+            self.service.trade_modes,
+            (
+                ExtractedSymbol("GBPUSD", trade_mode=3),
+                ExtractedSymbol("EURUSD", trade_mode=4),
+            ),
+            account_login=11637157,
+            server="Broker-MT5",
+            terminal_path=None,
+        )
+        self.verdict("GBPUSD", "trade_disabled", policy="generation")
+        self.verdict("EURUSD", "trade_disabled", policy="generation")
+        self.verdict("EURUSD", "accepted", policy="generation")
+        self.verdict("OLD", "trade_disabled")
+
+        preview = self.service.trade_disabled_preview()
+        self.assertEqual(preview["symbols"], ["GBPUSD"])
+        self.assertEqual((preview["terminal_total"], preview["journal_total"]), (1, 1))
+        self.assertEqual(preview["journal_fallback_total"], 0)
+        self.verdict("EURUSD", "trade_disabled", policy="generation")
+        result = self.service.disable_trade_disabled({"symbols": preview["symbols"]})
+
+        self.assertEqual(result["newly_disabled"], 1)
+        self.assertIn("GBPUSD", load_disabled_symbols(self.policy))
+        self.assertNotIn("EURUSD", load_disabled_symbols(self.policy))
+
     def test_busy_and_paused_nodes_do_not_mutate_or_start_probe(self):
         for busy in ("process", "queue", "paused", "ui", "audit"):
             with self.subTest(busy=busy):
@@ -148,6 +184,9 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         status, preview = post("/api/v1/universe/history-preview")
         self.assertEqual(status, 200)
         self.assertEqual(preview["pending"], 3)
+        self.verdict("GBPUSD", "trade_disabled", policy="generation")
+        status, trade_preview = post("/api/v1/universe/trade-disabled-preview")
+        self.assertEqual((status, trade_preview["symbols"]), (200, ["GBPUSD"]))
         status, job = post("/api/v1/jobs/universe-history")
         self.assertEqual(status, 202)
         self.assertEqual(job["current_stage"], "universe_history")

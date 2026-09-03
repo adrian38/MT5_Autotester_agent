@@ -1,6 +1,6 @@
-# Remote Universo controls (2026-08-31)
+# Remote Universo controls (2026-09-03)
 
-The manager card opens a four-step dialog. `capabilities.universe_sync` advertises
+The manager card opens a five-step dialog. `capabilities.universe_sync` advertises
 the complete API implemented by `UniverseControllerMixin` in
 `manager_node_runtime/universe_service.py`, inherited by the embedded
 `manager_node_runtime.node.JobController`.
@@ -8,7 +8,9 @@ the complete API implemented by `UniverseControllerMixin` in
 - POST `/api/v1/universe/sync`: optional `mt5_path`, `login`, `server`, `password`.
   Empty credentials use the configured terminal/session. Uses existing MT5
   extraction and universe writer, backs up files, retires missing symbols in GEN
-  and removes their seed exceptions. Returns total/added/removed/newly_disabled.
+  and removes their seed exceptions. It also persists the live MT5 `trade_mode`
+  snapshot without credentials. Returns total/added/removed/newly_disabled and
+  the current trade-blocked count.
 - POST `/api/v1/universe/history-preview`: enabled pending count and H1 dates.
 - POST `/api/v1/jobs/universe-history`: starts existing `ubs_agent.py` with
   `--probe-universe-history --probe-history-timeframe H1 --execute-backtests`.
@@ -18,6 +20,12 @@ the complete API implemented by `UniverseControllerMixin` in
   already-disabled count and newly-disabled symbols for user confirmation.
 - POST `/api/v1/universe/disable-no-history`: accepts the confirmed `symbols`
   list, intersects it with current verdicts and never expands the approval.
+- POST `/api/v1/universe/trade-disabled-preview`: uses the latest MT5 snapshot
+  (`DISABLED=0`, `CLOSEONLY=3`) as authoritative and explicit journal verdicts
+  only as fallback for symbols absent from that snapshot. Returns per-source
+  totals and capture time.
+- POST `/api/v1/universe/disable-trade-disabled`: applies only the previewed,
+  still-current set and removes seed exceptions for those symbols.
 
 Writes stay inside the configured agent project (`assert_writable`). Empty MT5
 inventory and corrupt policy fail before overwriting. Extraction errors redact

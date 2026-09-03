@@ -119,6 +119,7 @@ from ubs.set_utils import (
     write_set_text,
     write_set_use_every_tick,
 )
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata
 from ubs.universe import (
     augment_aliases_with_symbol_map,
     canonical_symbol,
@@ -3887,6 +3888,29 @@ def record_score_with_metadata(
     memory.conn.commit()
 
 
+def record_seed_score_with_metadata(
+    memory: AgentMemory,
+    seed: Seed,
+    result: ScoreResult,
+    status: str,
+    report_path: Path,
+    metadata: dict[str, object],
+) -> None:
+    memory.record_seed_score(seed, result, status, report_path)
+    try:
+        payload = json.loads(result.to_json())
+    except (TypeError, ValueError):
+        payload = {}
+    payload.update(metadata)
+    payload["score"] = None
+    payload["accepted"] = False
+    memory.conn.execute(
+        "update seed_scores set metrics_json=?, score=null, accepted=null where seed_path=?",
+        (json.dumps(payload, ensure_ascii=True, sort_keys=True), str(seed.path)),
+    )
+    memory.conn.commit()
+
+
 def record_history_probe_status(
     memory: AgentMemory,
     variant: Variant,
@@ -4087,6 +4111,21 @@ def evaluate_seed_report(
         return "report_mismatch", result
 
     if result.trades <= 0:
+        trade_disabled = trade_disabled_metadata(report)
+        if trade_disabled:
+            print(
+                f"AVISO: el broker no permite abrir posiciones en {expected_symbol}; "
+                f"marcado como {TRADE_DISABLED_STATUS}."
+            )
+            record_seed_score_with_metadata(
+                memory,
+                evaluated_seed,
+                result,
+                TRADE_DISABLED_STATUS,
+                report,
+                trade_disabled,
+            )
+            return TRADE_DISABLED_STATUS, result
         print(f"AVISO: reporte seed sin operaciones para {seed.path.name}; marcado como no_trades.")
         memory.record_seed_score(evaluated_seed, result, "no_trades", report)
         return "no_trades", result
@@ -4222,6 +4261,21 @@ def evaluate_variant_report(
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
     if result.trades <= 0:
+        trade_disabled = trade_disabled_metadata(report)
+        if trade_disabled:
+            print(
+                f"AVISO: el broker no permite abrir posiciones en {variant.target_symbol}; "
+                f"marcado como {TRADE_DISABLED_STATUS}."
+            )
+            record_score_with_metadata(
+                memory,
+                variant.path,
+                result,
+                TRADE_DISABLED_STATUS,
+                report,
+                trade_disabled,
+            )
+            return TRADE_DISABLED_STATUS, result
         memory.record_score(variant.path, result, "no_trades", report)
         return "no_trades", result
     status = "accepted" if result.accepted else "rejected"

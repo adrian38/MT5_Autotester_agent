@@ -531,6 +531,108 @@ class UBSSetsFileTests(unittest.TestCase):
             finally:
                 memory.close()
 
+    def test_zero_trade_report_with_close_only_journal_is_trade_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "GBPTRY_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "failed sell stop 0.01 GBPTRY [Only position closing is allowed]\n"
+                "CTrade::OrderSend [unknown retcode 10044]",
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "GBPTRY", "H1", "family", "1")
+                variant = Variant(root / "candidate.set", seed, "GBPTRY", "H1", (), (), "test")
+                memory.record_variant(run_id, 1, variant)
+
+                with patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(-55.0, symbol="GBPTRY", timeframe="H1", trades=0),
+                ):
+                    status, _result = evaluate_variant_report(
+                        memory, variant, report, ScoreConfig(), {}, "ICTRADING"
+                    )
+
+                row = memory.conn.execute(
+                    "select status, score, accepted, metrics_json from candidates where set_path=?",
+                    (str(variant.path),),
+                ).fetchone()
+                data = json.loads(row["metrics_json"])
+                self.assertEqual(status, "trade_disabled")
+                self.assertEqual(row["status"], "trade_disabled")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertEqual(data["trade_mode"], "close_only")
+                self.assertEqual(data["trade_retcode"], 10044)
+                self.assertFalse(data["retryable"])
+            finally:
+                memory.close()
+
+    def test_generic_order_error_keeps_strategy_no_trades_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "EURUSD_H1_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "CTrade::OrderSend [unknown retcode 4756]",
+                encoding="utf-8",
+            )
+            memory = AgentMemory(root / "memory.sqlite")
+            try:
+                run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+                seed = Seed(root / "seed.set", "EURUSD", "H1", "family", "1")
+                variant = Variant(root / "candidate.set", seed, "EURUSD", "H1", (), (), "test")
+                memory.record_variant(run_id, 1, variant)
+                with patch(
+                    "ubs_agent.score_report_file",
+                    return_value=score(-55.0, symbol="EURUSD", timeframe="H1", trades=0),
+                ):
+                    status, _result = evaluate_variant_report(
+                        memory, variant, report, ScoreConfig(), {}, "ICTRADING"
+                    )
+                self.assertEqual(status, "no_trades")
+            finally:
+                memory.close()
+
+    def test_memory_migrates_legacy_no_trades_with_trade_block_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            memory_path = root / "memory.sqlite"
+            report = root / "GBPTRY_M30_report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            report.with_name(f"{report.stem}.mt5log.txt").write_text(
+                "failed buy stop 0.01 GBPTRY [Only position closing is allowed]",
+                encoding="utf-8",
+            )
+            memory = AgentMemory(memory_path)
+            run_id = memory.create_run(root / "source", root / "output", 1, 1, 10, True, False)
+            seed = Seed(root / "seed.set", "GBPTRY", "M30", "family", "1")
+            variant = Variant(root / "candidate.set", seed, "GBPTRY", "M30", (), (), "test")
+            memory.record_variant(run_id, 1, variant)
+            memory.record_score(
+                variant.path,
+                score(-55.0, symbol="GBPTRY", timeframe="M30", trades=0),
+                "no_trades",
+                report,
+            )
+            memory.close()
+
+            migrated = AgentMemory(memory_path)
+            try:
+                row = migrated.conn.execute(
+                    "select status, score, accepted, metrics_json from candidates where set_path=?",
+                    (str(variant.path),),
+                ).fetchone()
+                self.assertEqual(row["status"], "trade_disabled")
+                self.assertIsNone(row["score"])
+                self.assertIsNone(row["accepted"])
+                self.assertEqual(json.loads(row["metrics_json"])["trade_mode"], "close_only")
+            finally:
+                migrated.close()
+
     def test_trade_server_sync_failure_is_retryable_not_no_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
