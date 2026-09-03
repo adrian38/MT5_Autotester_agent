@@ -456,6 +456,36 @@ class UBSUniverseLogicMixin:
             return None
         return extraction, sync_result
 
+    def _query_mt5_trade_modes_from_saved_session(self, title: str):
+        """Consulta MT5 usando el perfil configurado y la sesion ya iniciada."""
+        profile = self._default_mt5_symbol_extract_profile()
+        raw_path = str(profile.get("mt5_path") or "").strip()
+        terminal_path = Path(raw_path).expanduser() if raw_path else None
+        if terminal_path is not None and not terminal_path.is_file():
+            messagebox.showerror(title, f"No existe el terminal:\n{terminal_path}")
+            return None
+        self.status_text.set("Consultando trade_mode en la sesion MT5 activa...")
+        self.update_idletasks()
+        try:
+            extraction = extract_symbols_from_mt5(terminal_path=terminal_path)
+            if not extraction.symbols:
+                messagebox.showerror(title, "MT5 devolvio un inventario vacio.")
+                return None
+            save_trade_mode_snapshot(
+                self._ubs_trade_mode_snapshot_path(),
+                extraction.symbols,
+                account_login=extraction.account_login,
+                server=extraction.server,
+                terminal_path=extraction.terminal_path,
+            )
+            return extraction
+        except MT5SymbolExtractionError as exc:
+            messagebox.showerror(title, str(exc))
+        except Exception as exc:
+            messagebox.showerror(title, f"Error inesperado:\n{exc}")
+        self.status_text.set("Consulta MT5 fallida")
+        return None
+
     def _sync_mt5_universe_symbols(self) -> None:
         """Extrae del servidor y deja el universo listo para el probe historico.
 
@@ -703,10 +733,8 @@ class UBSUniverseLogicMixin:
         self._refresh_ubs_universe()
 
     def _disable_trade_disabled_universe_symbols(self) -> None:
-        extraction = self._extract_live_mt5_symbols(
-            "Deshabilitar trading bloqueado",
-            "Se consultara directamente en el terminal MT5 el trade_mode actual de todos los simbolos.\n\n"
-            "Esta consulta no usa journals ni deshabilita nada todavia. Despues podras revisar y confirmar.",
+        extraction = self._query_mt5_trade_modes_from_saved_session(
+            "Deshabilitar trading bloqueado"
         )
         if extraction is None:
             return

@@ -192,14 +192,13 @@ class TradeDisabledPolicyTests(unittest.TestCase):
             ):
                 harness._disable_trade_disabled_universe_symbols()
 
-            extract.assert_called_once()
+            extract.assert_called_once_with(terminal_path=None)
             saved = json.loads(policy.read_text(encoding="utf-8"))
             self.assertEqual(saved["disabled"], ["OLD", "USTEC"])
             self.assertEqual(harness.refreshed, 1)
             self.assertIn("1 nuevos", harness.status_text.value)
-            self.assertEqual(confirm.call_count, 2)
-            self.assertIn("no usa journals", confirm.call_args_list[0].args[1])
-            self.assertIn("DISABLED o CLOSEONLY", confirm.call_args_list[1].args[1])
+            confirm.assert_called_once()
+            self.assertIn("DISABLED o CLOSEONLY", confirm.call_args.args[1])
 
 
 if __name__ == "__main__":
