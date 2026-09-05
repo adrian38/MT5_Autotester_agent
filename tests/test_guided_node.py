@@ -83,6 +83,27 @@ class GuidedNodeTests(unittest.TestCase):
         self.assertNotIn('--dry-run',command)
         with self.assertRaises(ValueError):self.controller.start({'guided_batch_id':p['batch_id']})
 
+    def test_guided_launch_options_enable_two_phase_repair_and_are_immutable(self):
+        p=package();options={'max_workers':5,'repair_after_generation':True,'repair_max_workers':4,
+                            'repair_phase2_max_workers':1,'repair_attempts':2}
+        with mock.patch.object(self.controller,'_schedule_queue_drain'):
+            result=self.controller.submit_guided({'package':p,'launch_options':options})
+        self.assertFalse(result['duplicate'])
+        request=self.controller.queue[0]['payload']
+        self.assertEqual({key:request[key] for key in options},options)
+        with mock.patch.object(self.controller,'_launch_step'):
+            self.controller._start_generation(request)
+        pipeline=self.controller.state['pipeline']
+        self.assertEqual(pipeline[0]['action'],'generation')
+        repairs=pipeline[1:]
+        self.assertEqual({step['attempt'] for step in repairs},{1,2})
+        self.assertEqual({step['phase'] for step in repairs},{1,2})
+        self.assertEqual({step['max_workers'] for step in repairs if step['phase']==1},{4})
+        self.assertEqual({step['max_workers'] for step in repairs if step['phase']==2},{1})
+        changed={**options,'repair_attempts':3}
+        with self.assertRaisesRegex(ValueError,'otra configuración'):
+            self.controller.submit_guided({'package':p,'launch_options':changed})
+
     def test_paused_pipeline_keeps_ownership_when_guided_batch_arrives(self):
         self.controller.state.update(status='paused', pipeline=[{'action':'generation'}],
                                      current_step_index=0, log_path='existing.log')
