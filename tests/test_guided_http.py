@@ -64,15 +64,22 @@ server.serve_forever()
         def post(payload):
             req=urllib.request.Request(endpoint,json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
             with urllib.request.urlopen(req,timeout=5) as response:return json.loads(response.read())
-        status={'node':{'broker':'ICTRADING','account_type':'STANDARD','project_dir':str(root)},'capabilities':{'guided_batches_v1':True}}
+        status={'node':{'broker':'ICTRADING','account_type':'STANDARD','project_dir':str(root)},'capabilities':{'guided_batches_v1':True,'guided_launch_options_v1':True}}
         with mock.patch.object(controller,'status',return_value=status),mock.patch.object(controller,'_schedule_queue_drain'), \
              mock.patch.object(NodeHandler,'log_message'):
-            first=post(fixture.package);second=post(fixture.package)
+            launch_options={'max_workers':5,'repair_after_generation':True,'repair_max_workers':4,
+                            'repair_phase2_max_workers':1,'repair_attempts':2}
+            submission={'package':fixture.package,'launch_options':launch_options}
+            first=post(submission);second=post(submission)
             self.assertFalse(first['duplicate']);self.assertTrue(second['duplicate'])
             self.assertEqual(len(controller.queue),1)
             with mock.patch.object(controller,'_launch_step'):
                 controller._start_generation(controller.queue.pop()['payload'])
-            self.assertEqual([x['action'] for x in controller.state['pipeline']],['generation','robustness','final_tick','final_tick_6m'])
+            pipeline=controller.state['pipeline']
+            self.assertEqual(pipeline[0]['action'],'generation')
+            self.assertEqual({step['attempt'] for step in pipeline[1:]},{1,2})
+            self.assertEqual({step['max_workers'] for step in pipeline[1:] if step['phase']==1},{4})
+            self.assertEqual({step['max_workers'] for step in pipeline[1:] if step['phase']==2},{1})
             run_prepared(fixture.args,fixture.memory,ScoreConfig(),fixture.api)
             fixture.api.create_variant.assert_not_called()
             checkpoint=protocol.read_run(root,fixture.package['batch_id']);candidate_id=next(iter(checkpoint['candidate_ids'].values()))
