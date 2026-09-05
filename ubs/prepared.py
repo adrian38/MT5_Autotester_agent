@@ -10,8 +10,8 @@ from manager_node_runtime import guided_batches as protocol
 from .models import Seed, Variant
 
 
-def _axi_execution_item(item, universe, symbol_map, api):
-    """Return broker-exact AXI symbol spelling without changing batch identity."""
+def _broker_execution_item(item, universe, symbol_map, api):
+    """Return active-universe spelling without changing batch identity."""
     mapped = api.apply_symbol_map(item['target_symbol'], symbol_map)
     normalized = api.normalize_set_symbol(mapped)
     exact = next(
@@ -70,8 +70,8 @@ def load_prepared(args, memory, api):
         if not any(api.normalize_set_symbol(s)==api.normalize_set_symbol(mapped) for s in universe):
             raise ValueError('Instrumento fuera del universo del broker')
         execution_item = (
-            _axi_execution_item(item, universe, symbol_map, api)
-            if str(args.broker).strip().upper() == 'AXI'
+            _broker_execution_item(item, universe, symbol_map, api)
+            if str(args.broker).strip().upper() in {'AXI', 'ICTRADING'}
             else item
         )
         for key,value in frozen.items():
@@ -85,6 +85,13 @@ def load_prepared(args, memory, api):
         # of prepared candidate can enter the evaluator.
         if protocol.set_params('\n'.join(lines).encode()) != values:
             raise ValueError('Los timeframes del set no coinciden con el destino')
+        # Validate the immutable package first; only the IC execution copy gets
+        # broker spelling. MT5 reads ForceSymbol, not the candidate metadata.
+        if (str(args.broker).strip().upper() == 'ICTRADING'
+                and values.get('ForceSymbol', '').split('||')[0] != execution_item['target_symbol']):
+            if not api.replace_existing_current_value(lines, 'ForceSymbol', execution_item['target_symbol']):
+                api.replace_or_add_plain_key(lines, 'ForceSymbol', execution_item['target_symbol'])
+            raw = '\n'.join(lines).encode('utf-8')
         if item['mode']=='symbol_exploration':
             existing = memory.conn.execute('''select 1 from candidates c join candidate_final_tick_6m f
                 on f.candidate_id=c.id where upper(c.target_symbol)=upper(?) and f.status='accepted' limit 1''',

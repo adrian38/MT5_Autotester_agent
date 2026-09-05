@@ -79,7 +79,69 @@ class PreparedTests(unittest.TestCase):
         variants=self.api.evaluate_generation.call_args.args[4]
         self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',('ForceSymbol',)))
 
+    def test_ictrading_execution_preserves_broker_case_and_original_package(self):
+        for symbol in ('TecDE30', 'MidDE50'):
+            with self.subTest(symbol=symbol):
+                value = symbol_package()
+                item = value['candidates'][0]
+                parent = base64.b64decode(item['parent_b64'])
+                raw = parent.replace(b'ForceSymbol=US30', ('ForceSymbol='+symbol.upper()).encode())
+                item.update(
+                    target_symbol=symbol.upper(),
+                    mutation={'kind':'symbol_exploration','key':'ForceSymbol','old':'US30','new':symbol.upper()},
+                    fingerprint=protocol.fingerprint('ICTRADING','STANDARD',symbol.upper(),'M15',protocol.set_params(raw)),
+                    set_sha256=protocol.digest(raw),
+                    set_b64=base64.b64encode(raw).decode(),
+                )
+                value['batch_id'] = protocol.batch_identity(value)
+                directory = protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+                original_manifest = (directory/'batch.json').read_bytes()
+                self.args.prepared_manifest = directory/'batch.json'
+                self.api.broker_universe_symbols = lambda args:{symbol}
+                self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+                variant = self.api.evaluate_generation.call_args.args[4][0]
+                actual = protocol.set_params(variant.path.read_bytes())
+                expected = protocol.set_params(raw)
+                expected['ForceSymbol'] = symbol
+                self.assertEqual(actual, expected)
+                self.assertEqual(variant.target_symbol, symbol)
+                self.assertEqual(variant.mutation_details[0]['new'], symbol)
+                self.assertEqual((directory/(item['fingerprint']+'.set')).read_bytes(), raw)
+                self.assertEqual((directory/'batch.json').read_bytes(), original_manifest)
+                before = self.memory.conn.execute('select count(*) from candidates').fetchone()[0]
+                self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+                self.assertEqual(self.memory.conn.execute('select count(*) from candidates').fetchone()[0], before)
+
+    def test_ictrading_numeric_candidate_keeps_mutation_and_repairs_symbol(self):
+        value = package()
+        item = value['candidates'][0]
+        parent = base64.b64decode(item['parent_b64']).replace(b'US30', b'TECDE30')
+        raw = base64.b64decode(item['set_b64']).replace(b'US30', b'TECDE30')
+        (self.root/'accepted_parent.set').write_bytes(parent)
+        item.update(target_symbol='TECDE30',
+                    fingerprint=protocol.fingerprint('ICTRADING','STANDARD','TECDE30','M15',protocol.set_params(raw)),
+                    parent_sha256=protocol.digest(parent),parent_b64=base64.b64encode(parent).decode(),
+                    set_sha256=protocol.digest(raw),set_b64=base64.b64encode(raw).decode())
+        value['batch_id'] = protocol.batch_identity(value)
+        directory = protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+        self.args.prepared_manifest = directory/'batch.json'
+        self.api.broker_universe_symbols = lambda args:{'TecDE30'}
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        variant = self.api.evaluate_generation.call_args.args[4][0]
+        expected = protocol.set_params(raw)
+        expected['ForceSymbol'] = 'TecDE30'
+        self.assertEqual(protocol.set_params(variant.path.read_bytes()), expected)
+        self.assertEqual(variant.mutated_keys, ('ATR_Period',))
+        self.assertEqual(variant.mutation_details[0]['new'], 11.0)
+        self.assertEqual((self.root/'accepted_parent.set').read_bytes(), parent)
+
     def test_axi_prepared_symbol_uses_exact_universe_casing(self):
+        self._check_other_broker_spelling('AXI', 'Apple+')
+
+    def test_roboforex_prepared_execution_is_unchanged(self):
+        self._check_other_broker_spelling('ROBOFOREX', 'APPLE+')
+
+    def _check_other_broker_spelling(self, broker, expected):
         value = symbol_package()
         item = value['candidates'][0]
         parent = base64.b64decode(item['parent_b64'])
@@ -87,22 +149,23 @@ class PreparedTests(unittest.TestCase):
         item.update(
             target_symbol='APPLE+',
             mutation={'kind':'symbol_exploration','key':'ForceSymbol','old':'US30','new':'APPLE+'},
-            fingerprint=protocol.fingerprint('AXI','STANDARD','APPLE+','M15',protocol.set_params(raw)),
+            fingerprint=protocol.fingerprint(broker,'STANDARD','APPLE+','M15',protocol.set_params(raw)),
             set_sha256=protocol.digest(raw),
             set_b64=base64.b64encode(raw).decode(),
         )
-        value['broker'] = 'AXI'
+        value['broker'] = broker
         value['batch_id'] = protocol.batch_identity(value)
-        directory = protocol.store_batch(self.root,value,'AXI','STANDARD')
+        directory = protocol.store_batch(self.root,value,broker,'STANDARD')
         self.args.prepared_manifest = directory/'batch.json'
-        self.args.broker = 'AXI'
+        self.args.broker = broker
         self.api.broker_universe_symbols = lambda args:{'Apple+'}
 
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
 
         variants = self.api.evaluate_generation.call_args.args[4]
-        self.assertEqual(variants[0].target_symbol,'Apple+')
-        self.assertEqual(variants[0].mutation_details[0]['new'],'Apple+')
+        self.assertEqual(variants[0].target_symbol,expected)
+        self.assertEqual(variants[0].mutation_details[0]['new'],expected)
+        self.assertEqual(variants[0].path.read_bytes(), raw)
 
 
 if __name__=='__main__':unittest.main()

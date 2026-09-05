@@ -25,3 +25,9 @@ SQLite, synthetic results, no MT5). Manager checks portable module parity.
 
 Reopen the app to load source changes. The existing restart endpoint performs Git
 pull/push before relaunch; do not treat it as a Python-only restart.
+
+ICTrading prepared execution resolves symbols against the active ICTrading universe
+and writes exact broker casing (for example `TecDE30`, `MidDE50`) into the
+execution copy's `ForceSymbol` and candidate metadata. Package bytes, hashes,
+parent sets and batch identity stay unchanged. This applies to both exploration
+and numeric prepared candidates; AXI and RoboForex execution behavior is unchanged.
