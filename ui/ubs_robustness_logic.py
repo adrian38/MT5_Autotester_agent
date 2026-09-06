@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.tester_diagnostics import invalid_stops_reason
 from ubs.manual_status import mark_candidate_robustness
 from ubs.path_utils import resolve_workspace_path
 
@@ -187,10 +188,9 @@ class UBSRobustnessLogicMixin:
             return "error al parsear reporte OOS"
         if status == "report_mismatch":
             return "mismatch symbol/TF OOS"
-        if isinstance(degradation, dict) and degradation.get("failure_type") == "invalid_stops":
-            count = int(degradation.get("invalid_order_count") or 0)
-            prefix = f"{count} orden(es) rechazada(s)" if count else "ordenes rechazadas"
-            return f"{prefix} por stops invalidos; no pasa robustez"
+        reason = invalid_stops_reason(degradation) or invalid_stops_reason(metrics)
+        if reason:
+            return f"{reason}; no pasa robustez"
         if status == "no_trades":
             return "reporte correcto, 0 operaciones; no pasa robustez"
         reasons = metrics.get("reasons") or []

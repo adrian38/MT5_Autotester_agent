@@ -458,6 +458,18 @@ def _insert_proposal(
     scope: str,
 ) -> int:
     result: PortfolioResult = selected["result"]
+    source_id = int(selected["inputs"].get("improvement_source_portfolio_id") or 0)
+    if scope == "full_history" and len(proposals) == 1 and source_id > 0:
+        # A selected-mode improvement is a new standalone portfolio. Never
+        # replace the source bundle or calculate its other variants here.
+        portfolio_id = helper._insert_portfolio(conn, selected["inputs"], result, commit=False)
+        labels = {"aggressive": "Agresivo", "balanced": "Moderado", "conservative": "Conservador"}
+        mode = str(selected["inputs"]["portfolio_type"])
+        conn.execute(
+            "update portfolios set name=? where id=?",
+            (f"Mejora de #{source_id} | {labels.get(mode, mode)}", portfolio_id),
+        )
+        return portfolio_id
     if scope == "full_history":
         return helper._insert_portfolio_bundle(conn, proposals, result, commit=False)
     return helper._insert_portfolio(conn, selected["inputs"], result, commit=False)

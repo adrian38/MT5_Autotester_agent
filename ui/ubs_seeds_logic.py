@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+from ubs.tester_diagnostics import invalid_stops_reason
 import sqlite3
 import sys
 from collections import Counter
@@ -36,6 +38,13 @@ class UBSSeedsLogicMixin:
             self._safe_refresh(label, callback)
 
     def _ubs_seed_reason(self, row: object, status: str) -> str:
+        if status in {"rejected", "no_trades"}:
+            try:
+                reason = invalid_stops_reason(json.loads(row["metrics_json"] or "{}"))
+            except (TypeError, ValueError, KeyError, IndexError):
+                reason = ""
+            if reason:
+                return reason
         if status == "report_mismatch":
             return "mismatch symbol/TF"
         if status == "pending_tester_context":

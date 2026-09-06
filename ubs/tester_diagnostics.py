@@ -37,6 +37,65 @@ def tester_journal_sidecar(report_path: Path) -> Path:
     return report_path.with_name(f"{report_path.stem}.mt5log.txt")
 
 
+def invalid_stops_metadata(
+    report_path: Path, symbol: str, timeframe: str,
+) -> dict[str, object] | None:
+    """Read order rejections for the latest matching test, including journal tails.
+
+    The runner stores only 64 KiB. If the start header was truncated, require
+    the matching test completion instead. Never borrow evidence from another
+    symbol, timeframe, or an earlier attempt in the same daily journal.
+    Counts describe the saved excerpt, not necessarily the complete backtest.
+    """
+    symbol, timeframe = str(symbol).strip(), str(timeframe).strip().upper()
+    if not symbol or timeframe in {"", "M0", "UNKNOWN"}:
+        return None
+    sidecar = tester_journal_sidecar(report_path)
+    try:
+        text = sidecar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    identity = r"(?P<symbol>[^\s,]+),(?P<period>(?:MN|M|H|D|W)\d+)"
+    starts = list(re.finditer(identity + r"[^\r\n]*testing of Experts", text, re.I))
+    if starts:
+        latest = starts[-1]
+        attempt = text[latest.start():]
+    else:
+        completions = list(re.finditer(
+            identity + r":[^\r\n]*\bTest passed\b[^\r\n]*", text, re.I,
+        ))
+        if not completions:
+            return None
+        latest = completions[-1]
+        begin = completions[-2].end() if len(completions) > 1 else 0
+        attempt = text[begin:latest.end()]
+    if (latest.group("symbol").casefold() != symbol.casefold()
+            or latest.group("period").upper() != timeframe):
+        return None
+    matches = list(re.finditer(
+        rf"\bfailed\s+(?:buy|sell)\b[^\r\n]*?\s{re.escape(symbol)}(?=\s)"
+        r"[^\r\n]*\[Invalid stops\]", attempt, re.I,
+    ))
+    if not matches:
+        return None
+    return {
+        "failure_type": "invalid_stops",
+        "reasons": ["invalid_stops"],
+        "invalid_order_count": len(matches),
+        "invalid_order_count_scope": "journal_excerpt",
+        "invalid_order_sample": matches[0].group(0).strip(),
+        "log_source": str(sidecar),
+        "retryable": False,
+    }
+
+
+def invalid_stops_reason(metadata: object) -> str:
+    """Shared user-facing reason for base results, seeds and robustness."""
+    if not isinstance(metadata, dict) or metadata.get("failure_type") != "invalid_stops":
+        return ""
+    return "ordenes rechazadas por Invalid stops (stops invalidos)"
+
+
 def trade_mode_snapshot_path(project_dir: Path, broker: object, account_type: object) -> Path:
     broker_key = re.sub(r"[^A-Z0-9_-]+", "_", str(broker or "UNKNOWN").strip().upper())
     account_key = re.sub(r"[^A-Z0-9_-]+", "_", str(account_type or "UNKNOWN").strip().upper())

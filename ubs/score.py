@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 import hashlib
 import json
@@ -86,7 +86,10 @@ class ScoreResult:
         if not isinstance(data, dict):
             raise ValueError("ScoreResult JSON must contain an object")
         data["reasons"] = tuple(str(reason) for reason in data.get("reasons") or ())
-        return cls(**data)
+        # metrics_json can also carry execution diagnostics. They belong to
+        # the persisted audit, not to the numeric score dataclass.
+        score_fields = {item.name for item in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in score_fields})
 
 
 def score_report_file(
