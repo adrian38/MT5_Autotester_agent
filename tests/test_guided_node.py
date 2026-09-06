@@ -94,8 +94,11 @@ class GuidedNodeTests(unittest.TestCase):
         with mock.patch.object(self.controller,'_launch_step'):
             self.controller._start_generation(request)
         pipeline=self.controller.state['pipeline']
-        self.assertEqual(pipeline[0]['action'],'generation')
-        repairs=pipeline[1:]
+        self.assertEqual(
+            [step['action'] for step in pipeline[:4]],
+            ['generation','robustness','final_tick','final_tick_6m'],
+        )
+        repairs=[step for step in pipeline if 'phase' in step]
         self.assertEqual({step['attempt'] for step in repairs},{1,2})
         self.assertEqual({step['phase'] for step in repairs},{1,2})
         self.assertEqual({step['max_workers'] for step in repairs if step['phase']==1},{4})

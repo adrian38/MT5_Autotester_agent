@@ -407,8 +407,12 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             self.assertEqual(result["request"]["repair_max_workers"], 3)
             repair_steps = [
                 step for step in result["pipeline"]
-                if step["action"] != "generation"
+                if "phase" in step
             ]
+            self.assertEqual(
+                [step["action"] for step in result["pipeline"][:2]],
+                ["generation", "robustness"],
+            )
             self.assertTrue(repair_steps)
             # La fase 1 usa el límite de reparación; la 2, el suyo. Detalle en
             # tests/test_manager_node_repair_phases.py.
