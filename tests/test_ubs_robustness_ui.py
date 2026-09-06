@@ -15,7 +15,7 @@ class UBSRobustnessReasonTests(unittest.TestCase):
 
         self.assertEqual(
             reason,
-            "5 orden(es) rechazada(s) por stops invalidos; no pasa robustez",
+            "ordenes rechazadas por Invalid stops (stops invalidos); no pasa robustez",
         )
 
 

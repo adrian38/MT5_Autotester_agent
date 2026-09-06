@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -18,6 +19,33 @@ from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
 
 
 class ManagerNodePortfolioSaveTests(unittest.TestCase):
+    def test_improvement_is_new_named_single_mode_and_preserves_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Path(temp_dir) / "memory.sqlite"
+            memory.touch()
+            original = save_portfolio_payload(memory, self._payload("original"))["portfolio_id"]
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                before = conn.execute("select * from portfolios where id=?", (original,)).fetchone()
+                members_before = conn.execute("select * from portfolio_allocations where portfolio_id=?", (original,)).fetchall()
+            improvement = self._proposal("conservative", "Conservador", 2, "improvement")
+            improvement["inputs"]["improvement_source_portfolio_id"] = original
+            payload = {"scope": "full_history", "operation": "generate", "selected_key": "conservative", "request_id": "improvement", "proposals": [improvement]}
+            saved = save_portfolio_payload(memory, payload)
+            retry = save_portfolio_payload(memory, payload)
+            self.assertNotEqual(saved["portfolio_id"], original)
+            self.assertEqual(saved["portfolio_id"], retry["portfolio_id"])
+            self.assertTrue(retry["deduplicated"])
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                self.assertEqual(before, conn.execute("select * from portfolios where id=?", (original,)).fetchone())
+                self.assertEqual(members_before, conn.execute("select * from portfolio_allocations where portfolio_id=?", (original,)).fetchall())
+                row = conn.execute("select name,portfolio_type,metrics_json from portfolios where id=?", (saved["portfolio_id"],)).fetchone()
+                self.assertEqual(conn.execute("select count(*) from portfolios").fetchone()[0], 2)
+            self.assertEqual(row[0], f"Mejora de #{original} | Conservador")
+            self.assertEqual(row[1], "conservative")
+            metrics = json.loads(row[2])
+            self.assertFalse(metrics.get("portfolio_bundle", False))
+            self.assertEqual(metrics["inputs"]["improvement_source_portfolio_id"], original)
+
     @staticmethod
     def _proposal(key: str, label: str, units: int, request_id: str) -> dict[str, object]:
         inputs = {
