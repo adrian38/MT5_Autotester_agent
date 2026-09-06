@@ -119,7 +119,7 @@ from ubs.set_utils import (
     write_set_text,
     write_set_use_every_tick,
 )
-from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, invalid_stops_metadata
 from ubs.universe import (
     augment_aliases_with_symbol_map,
     canonical_symbol,
@@ -3245,12 +3245,21 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             invalid_metrics += 1
             print(f"AVISO: metrics_json base invalido candidate #{int(row['id'])}: {exc}")
             continue
-        status = "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
+        payload = json.loads(result.to_json())
+        stored = json.loads(row["metrics_json"])
+        invalid_stops = result.trades <= 0 and stored.get("failure_type") == "invalid_stops"
+        if invalid_stops:
+            for key in ("failure_type", "reasons", "invalid_order_count", "invalid_order_count_scope",
+                        "invalid_order_sample", "log_source", "retryable"):
+                if key in stored:
+                    payload[key] = stored[key]
+            payload["accepted"] = False
+        status = "rejected" if invalid_stops else "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
         updates.append(
             (
                 result.score,
                 int(status == "accepted" and result.accepted),
-                result.to_json(),
+                json.dumps(payload, ensure_ascii=True, sort_keys=True),
                 status,
                 int(row["id"]),
             )
@@ -3939,45 +3948,8 @@ def tester_log_invalid_stops_metadata(
     report: Path,
     variant: Variant,
 ) -> dict[str, object] | None:
-    """Describe OOS orders rejected for invalid stops in the latest test attempt."""
-    sidecar = tester_journal_sidecar_path(report)
-    if not sidecar.exists():
-        return None
-    try:
-        text = sidecar.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    symbol = str(variant.target_symbol or "").strip()
-    if not symbol:
-        return None
-    escaped = re.escape(symbol)
-    attempt_matches = list(
-        re.finditer(
-            rf"{escaped},[^\r\n]*testing of Experts",
-            text,
-            re.IGNORECASE,
-        )
-    )
-    if not attempt_matches:
-        return None
-    attempt_text = text[attempt_matches[-1].start():]
-    invalid_matches = list(
-        re.finditer(
-            rf"failed\s+(?:buy|sell)[^\r\n]*{escaped}[^\r\n]*\[Invalid stops\]",
-            attempt_text,
-            re.IGNORECASE,
-        )
-    )
-    if not invalid_matches:
-        return None
-    return {
-        "failure_type": "invalid_stops",
-        "reasons": ["invalid_stops"],
-        "invalid_order_count": len(invalid_matches),
-        "invalid_order_sample": invalid_matches[0].group(0).strip(),
-        "log_source": str(sidecar),
-        "retryable": False,
-    }
+    """Describe rejected orders using the shared, truncated-journal detector."""
+    return invalid_stops_metadata(report, variant.target_symbol, variant.target_period)
 
 
 def classify_zero_trade_robustness(
@@ -4251,9 +4223,12 @@ def evaluate_seed_report(
                 trade_disabled,
             )
             return TRADE_DISABLED_STATUS, result
-        print(f"AVISO: reporte seed sin operaciones para {seed.path.name}; marcado como no_trades.")
-        memory.record_seed_score(evaluated_seed, result, "no_trades", report)
-        return "no_trades", result
+        metadata = invalid_stops_metadata(report, result.symbol, result.timeframe)
+        status = "rejected" if metadata else "no_trades"
+        reason = "ordenes rechazadas por Invalid stops" if metadata else "sin operaciones"
+        print(f"AVISO: reporte seed {reason} para {seed.path.name}; marcado como {status}.")
+        memory.record_seed_score(evaluated_seed, result, status, report, metadata=metadata)
+        return status, result
 
     status = "accepted" if result.accepted else "rejected"
     memory.record_seed_score(evaluated_seed, result, status, report)
@@ -4412,8 +4387,12 @@ def evaluate_variant_report(
                 trade_disabled,
             )
             return TRADE_DISABLED_STATUS, result
-        memory.record_score(variant.path, result, "no_trades", report)
-        return "no_trades", result
+        metadata = invalid_stops_metadata(report, result.symbol, result.timeframe)
+        status = "rejected" if metadata else "no_trades"
+        memory.record_score(variant.path, result, status, report, metadata=metadata)
+        if metadata:
+            print(f"AVISO: {variant.path.name}: ordenes rechazadas por Invalid stops.")
+        return status, result
     status = "accepted" if result.accepted else "rejected"
     memory.record_score(variant.path, result, status, report)
     return status, result

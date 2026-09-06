@@ -16,7 +16,7 @@ from ubs.selection import (
     SelectionPrediction,
     descendant_fitness_predictions,
 )
-from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, invalid_stops_metadata
 from ubs.weights import (
     FeedbackSignal,
     TIMEFRAME_PATCH_KEYS,
@@ -268,6 +268,7 @@ class AgentMemory:
         self._reclassify_empty_tester_contexts()
         self._reclassify_legacy_real_tick_no_history()
         self._reclassify_trade_disabled_no_trades()
+        self._reclassify_invalid_stops_no_trades()
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -367,6 +368,56 @@ class AgentMemory:
                 ),
             )
             migrated += 1
+        return migrated
+
+    def _reclassify_invalid_stops_no_trades(self, run_id: int | None = None) -> int:
+        """Recover evidence for the latest run and seeds without rerunning MT5.
+
+        A caller may repair a specific older run. Only matching, zero-trade
+        metrics and an attributable journal qualify; numeric scores stay intact.
+        """
+        if run_id is None:
+            run_id = self.conn.execute("select max(id) from runs").fetchone()[0]
+        migrated = 0
+        for table, key in (("candidates", "id"), ("candidate_robustness", "candidate_id"),
+                           ("seed_scores", "id")):
+            scope = "" if table == "seed_scores" else " and run_id=?"
+            params = () if table == "seed_scores" else (run_id,)
+            rows = self.conn.execute(
+                f"select * from {table} where status='no_trades' "
+                f"and coalesce(report_path, '') != ''{scope}", params,
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["metrics_json"] or "{}")
+                    if not isinstance(payload, dict) or float(payload.get("trades", -1)) != 0:
+                        continue
+                    metadata = invalid_stops_metadata(
+                        resolve_workspace_path(row["report_path"]),
+                        payload.get("symbol") or "", payload.get("timeframe") or "",
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if not metadata:
+                    continue
+                payload.update(metadata)
+                payload["accepted"] = False
+                extra, values = "", []
+                if table == "candidate_robustness":
+                    try:
+                        audit = json.loads(row["degradation_json"] or "{}")
+                    except (TypeError, ValueError):
+                        audit = {}
+                    audit = audit if isinstance(audit, dict) else {}
+                    audit.update(metadata)
+                    extra = ", degradation_json=?"
+                    values.append(json.dumps(audit, ensure_ascii=True, sort_keys=True))
+                self.conn.execute(
+                    f"update {table} set status='rejected', accepted=0, metrics_json=?{extra} "
+                    f"where {key}=? and status='no_trades'",
+                    (json.dumps(payload, ensure_ascii=True, sort_keys=True), *values, row[key]),
+                )
+                migrated += 1
         return migrated
 
     def _reclassify_legacy_real_tick_no_history(self) -> int:
@@ -716,9 +767,15 @@ class AgentMemory:
             result.update((str(row["feature_path"]), row) for row in rows)
         return result
 
-    def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
+    def record_score(self, set_path: Path, result: ScoreResult | None, status: str, report_path: Path | None = None, *, metadata: dict[str, object] | None = None) -> None:
         accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
         score_value = None if status == "no_history" else (result.score if result else None)
+        metrics_json = result.to_json() if result else None
+        if result and metadata:
+            payload = json.loads(metrics_json)
+            payload.update(metadata)
+            payload["accepted"] = bool(accepted)
+            metrics_json = json.dumps(payload, ensure_ascii=True, sort_keys=True)
         self.conn.execute(
             """
             update candidates
@@ -729,7 +786,7 @@ class AgentMemory:
                 str(report_path) if report_path else (result.report_path if result else None),
                 score_value,
                 accepted,
-                result.to_json() if result else None,
+                metrics_json,
                 status,
                 str(set_path),
             ),
@@ -1054,9 +1111,15 @@ class AgentMemory:
             )
         return resolved
 
-    def record_seed_score(self, seed: Seed, result: ScoreResult | None, status: str, report_path: Path | None = None) -> None:
+    def record_seed_score(self, seed: Seed, result: ScoreResult | None, status: str, report_path: Path | None = None, *, metadata: dict[str, object] | None = None) -> None:
         accepted = int(status == "accepted" and bool(result and result.accepted)) if result else None
         score_value = None if status == "no_history" else (result.score if result else None)
+        metrics_json = result.to_json() if result else None
+        if result and metadata:
+            payload = json.loads(metrics_json)
+            payload.update(metadata)
+            payload["accepted"] = bool(accepted)
+            metrics_json = json.dumps(payload, ensure_ascii=True, sort_keys=True)
         self.conn.execute(
             """
             update seed_scores
@@ -1073,7 +1136,7 @@ class AgentMemory:
                 str(report_path) if report_path else (result.report_path if result else None),
                 score_value,
                 accepted,
-                result.to_json() if result else None,
+                metrics_json,
                 status,
                 datetime.now().isoformat(timespec="seconds"),
                 str(seed.path),

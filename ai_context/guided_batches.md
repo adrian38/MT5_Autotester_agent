@@ -26,6 +26,12 @@ SQLite, synthetic results, no MT5). Manager checks portable module parity.
 Reopen the app to load source changes. The existing restart endpoint performs Git
 pull/push before relaunch; do not treat it as a Python-only restart.
 
+Automatic repair is strictly post-run. The node first executes the ordinary
+pipeline once (`generation`, robustness and both Final Tick stages as enabled),
+using the run worker limit. Only after those stages finish does it append the
+configured repair attempts and their two pending-only phases. Repair must never
+replace or split the ordinary pipeline.
+
 ICTrading prepared execution resolves symbols against the active ICTrading universe
 and writes exact broker casing (for example `TecDE30`, `MidDE50`) into the
 execution copy's `ForceSymbol` and candidate metadata. Package bytes, hashes,

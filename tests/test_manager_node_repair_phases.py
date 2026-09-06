@@ -155,9 +155,13 @@ class ManagerNodeRepairPhasesTests(unittest.TestCase):
         self.assertEqual(state["request"]["repair_max_workers"], 3)
         self.assertEqual(state["request"]["repair_phase2_max_workers"], 1)
         self.assertEqual(
+            [step["action"] for step in state["pipeline"][:2]],
+            ["generation", "robustness"],
+        )
+        self.assertEqual(
             [
                 (step["action"], step["phase"], step["max_workers"])
-                for step in state["pipeline"] if step["action"] != "generation"
+                for step in state["pipeline"] if "phase" in step
             ],
             [
                 (action, phase, workers)

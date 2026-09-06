@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import json
+
+from ubs.tester_diagnostics import invalid_stops_reason
 import queue
 import re
 import shutil
@@ -46,6 +48,13 @@ def ubs_run_base_dates(config_json: object) -> tuple[str, str]:
 
 class UBSResultsLogicMixin:
     def _ubs_result_reason(self, row: object, status: str) -> str:
+        if status in {"rejected", "no_trades"}:
+            try:
+                reason = invalid_stops_reason(json.loads(row["metrics_json"] or "{}"))
+            except (TypeError, ValueError, KeyError, IndexError):
+                reason = ""
+            if reason:
+                return reason
         if status == "report_mismatch":
             return "mismatch symbol/TF"
         if status == "parse_error":

@@ -158,6 +158,10 @@ batch wrappers.
 
 ## Recent Important Changes
 
+- Invalid stops displayed as `no_trades`: see
+  [invalid_stops_diagnostics.md](invalid_stops_diagnostics.md) for the truncated
+  journal detector, base/seed/OOS evidence, latest-run recovery and UI rendering.
+
 ### Manager node — retry a failed resumed stage
 
 `manager_node_runtime/node.py` treats `failed` as resumable only when the saved
