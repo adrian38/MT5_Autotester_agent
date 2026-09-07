@@ -103,3 +103,37 @@ Validation: 65 focused unittest tests passed (`test_ubs_weights`,
 `test_invalid_stops_diagnostics`), plus read-only assertions on the two actual
 rows for score reconstruction, unchanged before/after selection signals,
 technical neutrality and base/OOS labels.
+
+
+## Incompatible volume (2026-09-08)
+
+Run 448 candidates 82403/82404 (AVXUSD H1) carried BTCUSD inputs with
+StartLots=0.01 and MaxLots=99, while their matching tester journals explicitly
+reported a minimum of 100 lots. `execution_failure_metadata` now handles both
+invalid stops and `incompatible_volume`. Volume classification requires the
+same attributable test's MaxLots input to be below its positive broker minimum;
+a minimum warning or low StartLots alone is insufficient. Truncated journals
+without MaxLots remain unclassified. No live symbol specs or current sets are
+used as substitutes for the actual test evidence.
+
+Base, seeds, OOS and SQLite rescore preserve this rejection reason and numeric
+scores, through the existing invalid-stops migration entry point (name retained
+for compatibility). Existing technical/report-context and trade-mode gates
+retain priority. Latest-run migration also covers incompatible volume.
+
+`manager_node_runtime.node.database_snapshot` exposes separate
+`execution_failures` counts for base and OOS. The manager's node copy carries
+the same read-only contract. Its app.js splits those counts out of the rejected
+chip, displaying “Lotaje incompatible” and “Invalid stops”; original stage
+counts and totals remain unchanged, and old nodes keep their existing display.
+The IC desktop agent must reload Python modules when idle; the manager must
+serve the updated app.js and the browser reload it.
+
+The two run-448 candidate rows were reclassified with before-images in
+`outputs/backups/incompatible_volume_run448_20260908_004909.json`, after the
+manager dev-branch write guard. Scores remain -75; no set/report or other run
+was modified by that repair.
+
+Verification: focused detector/evaluation/migration/rescore and existing agent
+suite, manager node tests, and Node VM assertions for actual card HTML,
+remaining rejected count, unchanged total and old-node fallback.
