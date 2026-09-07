@@ -416,8 +416,10 @@ def get_running_terminal_processes() -> list[dict[str, str]]:
             "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
         ),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False, creationflags=NO_WINDOW)
-    if result.returncode != 0 or not result.stdout.strip():
+    result = subprocess.run(command, capture_output=True, text=True, check=False, creationflags=NO_WINDOW, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError("No se pudo comprobar el cierre de MT5: fallo al consultar procesos")
+    if not result.stdout.strip():
         return []
 
     import json
@@ -490,9 +492,46 @@ def find_matching_running_terminals(mt5_path: Path) -> list[dict[str, str]]:
     for process in get_running_terminal_processes():
         process_path = process["path"].lower()
         process_command = process["command"].lower()
-        if process_path == target or target in process_command:
+        # LiveUpdate hands the job to another PID, whose executable is outside
+        # the installation. Its /path identifies the terminal it will relaunch.
+        update_target = re.search(r'/path:(?:"([^"]+)"|(\S+))', process_command)
+        update_dir = (update_target.group(1) or update_target.group(2)) if update_target else ""
+        if process_path == target or target in process_command or (
+            update_dir and update_dir.rstrip("\\/") == str(mt5_path.parent).lower().rstrip("\\/")
+        ):
             matches.append(process)
     return matches
+
+
+class TerminalStillRunningError(RuntimeError):
+    """The worker must not reuse a terminal whose previous job still owns it."""
+
+
+def wait_for_terminal_release(mt5_path: Path, logger: RunLogger, timeout: float = 120) -> None:
+    """Confirm exit across MT5 LiveUpdate PID handoffs without killing terminals."""
+    deadline = time.monotonic() + timeout
+    clear_checks = 0
+    last_pids = None
+    while True:
+        running = find_matching_running_terminals(mt5_path)
+        pids = tuple(item["pid"] for item in running)
+        if running:
+            clear_checks = 0
+            if pids != last_pids:
+                logger.write(f"Esperando cierre real MT5: {mt5_path}; PIDs={','.join(pids)}")
+        else:
+            clear_checks += 1
+            # A quiet interval prevents a brief updater/relaunch gap from
+            # releasing the profile to another candidate or pipeline stage.
+            if clear_checks >= 2:
+                return
+        last_pids = pids
+        if time.monotonic() >= deadline:
+            raise TerminalStillRunningError(
+                f"MT5 no libero el perfil en {timeout:g}s: {mt5_path}; PIDs={','.join(pids)}. "
+                "Se detiene este worker sin reutilizar el terminal."
+            )
+        time.sleep(1)
 
 
 def discover_terminal_data_dirs(expert_names: list[str]) -> list[Path]:
@@ -2407,6 +2446,15 @@ def run_test(
                 report_path=report_path,
                 mt5_path=settings.mt5_path,
             )
+            # Popen.wait/poll only observes the original PID, not an updater's
+            # successor. Do not restore history, retry or finish this job yet.
+            try:
+                wait_for_terminal_release(
+                    settings.mt5_path, logger,
+                    timeout=max(120, settings.tester_max_runtime_seconds),
+                )
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+                raise TerminalStillRunningError(str(exc)) from exc
         finally:
             finish_model4_history_preflight(history_rotations, logger)
         last_exit_code = exit_code
@@ -2642,6 +2690,10 @@ def run_jobs_parallel(
                     logger,
                     set_mode=set_mode,
                 )
+            except TerminalStillRunningError as exc:
+                logger.write(f"[{profile.name}] ERROR: {exc}")
+                job_queue.task_done()
+                return failures + 1
             except Exception as exc:
                 logger.write(f"[{profile.name}] ERROR inesperado: {exc}")
                 exit_code = 1

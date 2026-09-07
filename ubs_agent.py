@@ -119,7 +119,7 @@ from ubs.set_utils import (
     write_set_text,
     write_set_use_every_tick,
 )
-from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, invalid_stops_metadata
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, execution_failure_metadata, execution_failure_reason
 from ubs.universe import (
     augment_aliases_with_symbol_map,
     canonical_symbol,
@@ -3247,10 +3247,10 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
             continue
         payload = json.loads(result.to_json())
         stored = json.loads(row["metrics_json"])
-        invalid_stops = result.trades <= 0 and stored.get("failure_type") == "invalid_stops"
+        invalid_stops = result.trades <= 0 and stored.get("failure_type") in {"invalid_stops", "incompatible_volume"}
         if invalid_stops:
             for key in ("failure_type", "reasons", "invalid_order_count", "invalid_order_count_scope",
-                        "invalid_order_sample", "log_source", "retryable"):
+                        "invalid_order_sample", "log_source", "retryable", "volume_min", "max_lots", "volume_evidence"):
                 if key in stored:
                     payload[key] = stored[key]
             payload["accepted"] = False
@@ -3409,11 +3409,11 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
                 oos_to_date=row["robust_to_date"],
                 config=degradation_config,
             )
-        elif stored_degradation.get("failure_type") == "invalid_stops":
+        elif stored_degradation.get("failure_type") in {"invalid_stops", "incompatible_volume"}:
             degradation = stored_degradation
         status = (
             "rejected"
-            if result.trades <= 0 and degradation.get("failure_type") == "invalid_stops"
+            if result.trades <= 0 and degradation.get("failure_type") in {"invalid_stops", "incompatible_volume"}
             else "no_trades"
             if result.trades <= 0
             else "accepted"
@@ -3949,7 +3949,7 @@ def tester_log_invalid_stops_metadata(
     variant: Variant,
 ) -> dict[str, object] | None:
     """Describe rejected orders using the shared, truncated-journal detector."""
-    return invalid_stops_metadata(report, variant.target_symbol, variant.target_period)
+    return execution_failure_metadata(report, variant.target_symbol, variant.target_period)
 
 
 def classify_zero_trade_robustness(
@@ -4223,9 +4223,9 @@ def evaluate_seed_report(
                 trade_disabled,
             )
             return TRADE_DISABLED_STATUS, result
-        metadata = invalid_stops_metadata(report, result.symbol, result.timeframe)
+        metadata = execution_failure_metadata(report, result.symbol, result.timeframe)
         status = "rejected" if metadata else "no_trades"
-        reason = "ordenes rechazadas por Invalid stops" if metadata else "sin operaciones"
+        reason = execution_failure_reason(metadata) if metadata else "sin operaciones"
         print(f"AVISO: reporte seed {reason} para {seed.path.name}; marcado como {status}.")
         memory.record_seed_score(evaluated_seed, result, status, report, metadata=metadata)
         return status, result
@@ -4387,11 +4387,11 @@ def evaluate_variant_report(
                 trade_disabled,
             )
             return TRADE_DISABLED_STATUS, result
-        metadata = invalid_stops_metadata(report, result.symbol, result.timeframe)
+        metadata = execution_failure_metadata(report, result.symbol, result.timeframe)
         status = "rejected" if metadata else "no_trades"
         memory.record_score(variant.path, result, status, report, metadata=metadata)
         if metadata:
-            print(f"AVISO: {variant.path.name}: ordenes rechazadas por Invalid stops.")
+            print(f"AVISO: {variant.path.name}: {execution_failure_reason(metadata)}.")
         return status, result
     status = "accepted" if result.accepted else "rejected"
     memory.record_score(variant.path, result, status, report)

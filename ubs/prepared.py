@@ -25,7 +25,9 @@ def _broker_execution_item(item, universe, symbol_map, api):
     if exact == item['target_symbol']:
         return item
     mutation = dict(item['mutation'])
-    if item['mode'] == 'symbol_exploration':
+    # Only retargeting carries the instrument inside its mutation. A recovery
+    # keeps the instrument and moves a numeric parameter instead.
+    if item['mode'] == 'symbol_exploration' and mutation.get('kind') != 'symbol_recovery':
         mutation['new'] = exact
     return {**item, 'target_symbol': exact, 'mutation': mutation}
 
@@ -54,13 +56,28 @@ def load_prepared(args, memory, api):
     globals_ = api.load_global_params()
     validated = []
     for item, raw, parent in decoded:
-        row = memory.conn.execute('''select c.set_path from candidates c join candidate_final_tick_6m f
-            on f.candidate_id=c.id where c.id=? and f.status='accepted' ''',(item['parent_candidate_id'],)).fetchone()
-        if not row:
-            raise ValueError('El padre no es un positivo final de esta memoria')
+        recovery = item['mode']=='symbol_exploration' and item['mutation'].get('kind')=='symbol_recovery'
+        if recovery:
+            # Adapting partial progress has its own provenance: the parent is a
+            # candidate this node already evaluated for a prepared batch, on the
+            # same timeframe, that never reached an accepted final positive. The
+            # protocol already proved the child keeps its parent's instrument.
+            row = memory.conn.execute('''select c.set_path from candidates c join runs r on r.id=c.run_id
+                where c.id=? and c.period=? and json_extract(case when json_valid(r.config_json)
+                    then r.config_json else '{}' end,'$.prepared_batch_id') is not null
+                and not exists (select 1 from candidate_final_tick_6m f
+                                where f.candidate_id=c.id and f.status='accepted')''',
+                (item['parent_candidate_id'],item['period'])).fetchone()
+            if not row:
+                raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
+        else:
+            row = memory.conn.execute('''select c.set_path from candidates c join candidate_final_tick_6m f
+                on f.candidate_id=c.id where c.id=? and f.status='accepted' ''',(item['parent_candidate_id'],)).fetchone()
+            if not row:
+                raise ValueError('El padre no es un positivo final de esta memoria')
         source = Path(row[0]).resolve()
         if not source.is_relative_to(api.BASE_DIR.resolve()) or protocol.set_text(source.read_bytes())!=protocol.set_text(parent):
-            raise ValueError('El padre recibido no coincide con el set local aceptado')
+            raise ValueError('El padre recibido no coincide con el set local registrado')
         values = protocol.set_params(raw)
         strategy = values.get('Run_Strategy','').split('||')[0]
         if item['period'] not in timeframes or api.target_symbol_disabled(item['target_symbol'],universe,
@@ -98,10 +115,13 @@ def load_prepared(args, memory, api):
                 (item['target_symbol'],)).fetchone()
             if existing:
                 raise ValueError('El símbolo de exploración ya tiene un positivo final')
-            if key!='ForceSymbol':
-                raise ValueError('La exploración de símbolo debe cambiar solo ForceSymbol')
-            validated.append((execution_item,raw,parent,strategy,timeframe_keys))
-            continue
+            # A recovery keeps symbol and timeframe, so its single numeric step
+            # falls through to the same rules any other mutation must satisfy.
+            if not recovery:
+                if key!='ForceSymbol':
+                    raise ValueError('La exploración de símbolo debe cambiar solo ForceSymbol')
+                validated.append((execution_item,raw,parent,strategy,timeframe_keys))
+                continue
         choices = api.line_candidates(protocol.set_text(parent),strategy,{},excluded_keys=timeframe_keys)
         if key not in choices:
             raise ValueError('Mutación no permitida por las reglas actuales del agente')
@@ -150,13 +170,15 @@ def run_prepared(args, memory, score_config, api):
             target.write_bytes(raw)
         seed = Seed(directory/(item['fingerprint']+'.parent.set'),item['target_symbol'],item['period'],item['family'],strategy)
         change = item['mutation']
-        if item['mode']=='symbol_exploration':
+        if item['mode']=='symbol_exploration' and change.get('kind')!='symbol_recovery':
             detail = {'kind':'symbol_exploration','key':'ForceSymbol','old':change['old'],
                       'new':change['new'],'wrapped':False}
         else:
             detail = {'key':change['key'],'old':float(change['old']),'new':float(change['new']),
                       'step':float(change['step']),'delta':float(change['new'])-float(change['old']),
                       'direction':int(change['direction']),'wrapped':False}
+            if change.get('kind')=='symbol_recovery':
+                detail = {**detail,'kind':'symbol_recovery','parent_stage':int(change['parent_stage'])}
         variant = Variant(target,seed,item['target_symbol'],item['period'],(change['key'],),(),
                           'guided_prepared:'+item['mode'],tuple(timeframe_keys),(detail,))
         row = memory.conn.execute('select id from candidates where run_id=? and set_path=?',(run_id,str(target))).fetchone()

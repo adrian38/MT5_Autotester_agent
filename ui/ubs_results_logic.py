@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import json
 
-from ubs.tester_diagnostics import invalid_stops_reason
+from ubs.tester_diagnostics import execution_failure_reason
 import queue
 import re
 import shutil
@@ -50,7 +50,7 @@ class UBSResultsLogicMixin:
     def _ubs_result_reason(self, row: object, status: str) -> str:
         if status in {"rejected", "no_trades"}:
             try:
-                reason = invalid_stops_reason(json.loads(row["metrics_json"] or "{}"))
+                reason = execution_failure_reason(json.loads(row["metrics_json"] or "{}"))
             except (TypeError, ValueError, KeyError, IndexError):
                 reason = ""
             if reason:

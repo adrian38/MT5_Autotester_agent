@@ -9,7 +9,7 @@ from unittest import mock
 
 import ubs_agent as agent
 from manager_node_runtime import guided_batches as protocol
-from tests.test_guided_node import package, symbol_package
+from tests.test_guided_node import package, recovery_package, symbol_package
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.prepared import run_prepared
@@ -78,6 +78,46 @@ class PreparedTests(unittest.TestCase):
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
         variants=self.api.evaluate_generation.call_args.args[4]
         self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',('ForceSymbol',)))
+
+    def _prepare_recovery(self, parent_candidate_id=None):
+        value=recovery_package();item=value['candidates'][0]
+        attempt=self.root/'failed_attempt.set';attempt.write_bytes(base64.b64decode(item['parent_b64']))
+        run=self.memory.create_run(self.root,self.root/'attempt',1,1,1,True,False,
+                                   config={'prepared_batch_id':'a'*64,'prepared_no_remutation':True})
+        seed=Seed(attempt,'EURUSD','M15','Client_sets','1')
+        self.memory.record_variant(run,1,Variant(attempt,seed,'EURUSD','M15',('ForceSymbol',),(),
+                                                 'guided_prepared:symbol_exploration'))
+        self.memory.conn.commit()
+        item['parent_candidate_id']=parent_candidate_id or self.memory.conn.execute(
+            'select id from candidates where set_path=?',(str(attempt),)).fetchone()[0]
+        value['batch_id']=protocol.batch_identity(value)
+        directory=protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+        return value
+
+    def test_symbol_recovery_adapts_a_prepared_attempt_without_a_final_positive(self):
+        self._prepare_recovery()
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        self.api.create_variant.assert_not_called()
+        variant=self.api.evaluate_generation.call_args.args[4][0]
+        self.assertEqual((variant.target_symbol,variant.mutated_keys),('EURUSD',('ATR_Period',)))
+        self.assertEqual(variant.mutation_details[0]['kind'],'symbol_recovery')
+        self.assertEqual(variant.mutation_details[0]['new'],11.0)
+
+    def test_symbol_recovery_rejects_a_parent_this_node_never_prepared(self):
+        # Candidate 1 is a final positive of an ordinary run: valid to retarget,
+        # never a partial attempt to adapt in place.
+        self._prepare_recovery(parent_candidate_id=1)
+        with self.assertRaisesRegex(ValueError,'recuperación'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+        self.api.evaluate_generation.assert_not_called()
+
+    def test_symbol_recovery_stops_once_the_symbol_has_a_final_positive(self):
+        self._prepare_recovery()
+        self.memory.conn.execute("update candidates set target_symbol='EURUSD' where id=1")
+        self.memory.conn.commit()
+        with self.assertRaisesRegex(ValueError,'ya tiene un positivo final'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
 
     def test_ictrading_execution_preserves_broker_case_and_original_package(self):
         for symbol in ('TecDE30', 'MidDE50'):
