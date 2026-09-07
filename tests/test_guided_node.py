@@ -36,6 +36,20 @@ def symbol_package():
     return value
 
 
+def recovery_package():
+    """A symbol attempt that made partial progress, adapted by one parameter."""
+    value=symbol_package();item=value['candidates'][0]
+    parent=base64.b64decode(item['set_b64'])
+    raw=parent.replace(b'ATR_Period=10||',b'ATR_Period=11||')
+    item.update(parent_sha256=protocol.digest(parent),parent_b64=base64.b64encode(parent).decode(),
+                mutation={'kind':'symbol_recovery','key':'ATR_Period','old':'10','new':'11','step':'1',
+                          'direction':1,'minimum':'1','maximum':'50','parent_stage':2},
+                fingerprint=protocol.fingerprint('ICTRADING','STANDARD','EURUSD','M15',protocol.set_params(raw)),
+                set_sha256=protocol.digest(raw),set_b64=base64.b64encode(raw).decode())
+    value['batch_id']=protocol.batch_identity(value)
+    return value
+
+
 class GuidedNodeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -65,6 +79,16 @@ class GuidedNodeTests(unittest.TestCase):
         p=symbol_package();protocol.validate_package(p,'ICTRADING','STANDARD')
         p['candidates'][0]['mutation']['key']='ATR_Period';p['batch_id']=protocol.batch_identity(p)
         with self.assertRaisesRegex(ValueError,'Retargeting'):protocol.validate_package(p,'ICTRADING','STANDARD')
+
+    def test_symbol_recovery_moves_one_parameter_and_never_the_instrument(self):
+        protocol.validate_package(recovery_package(),'ICTRADING','STANDARD')
+        for change,message in ((lambda m:m.pop('step'),'Recuperación'),
+                               (lambda m:m.update(key='ForceSymbol'),'Recuperación'),
+                               (lambda m:m.update(parent_stage=0),'Etapa'),
+                               (lambda m:m.update(parent_stage='2'),'Etapa')):
+            p=recovery_package();change(p['candidates'][0]['mutation'])
+            p['batch_id']=protocol.batch_identity(p)
+            with self.assertRaisesRegex(ValueError,message):protocol.validate_package(p,'ICTRADING','STANDARD')
 
     def test_persistent_queue_retry_and_forced_pipeline(self):
         p=package()
