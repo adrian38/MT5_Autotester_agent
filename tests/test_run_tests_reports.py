@@ -15,6 +15,12 @@ class ListLogger:
 
 
 class CopyReportsToProjectTests(unittest.TestCase):
+    def setUp(self):
+        # Process inventory is covered separately; report tests never query MT5.
+        release = patch.object(run_tests, "wait_for_terminal_release")
+        self.release = release.start()
+        self.addCleanup(release.stop)
+
     def test_detects_model4_report_shell_with_zero_bars_and_ticks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             report = run_tests.Path(temp_dir) / "empty.htm"
@@ -166,6 +172,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(popen.call_count, 2)
+            self.assertEqual(self.release.call_count, 2)
             self.assertEqual(preflight.call_count, 2)
             self.assertEqual(finish_preflight.call_count, 2)
             retry_wait.assert_not_called()
