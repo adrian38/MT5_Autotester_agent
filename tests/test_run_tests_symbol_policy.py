@@ -31,6 +31,11 @@ def write_ini(path, symbol: str, model: str = "1") -> None:
 
 
 class TesterAbortCodeTests(unittest.TestCase):
+    def setUp(self):
+        release = patch.object(run_tests, "wait_for_terminal_release")
+        release.start()
+        self.addCleanup(release.stop)
+
     def test_translates_unsigned_windows_code_for_missing_symbol(self) -> None:
         # 3294954938 es como Popen entrega el -1000012358 del journal.
         self.assertEqual(run_tests.signed_exit_code(3294954938), -1000012358)

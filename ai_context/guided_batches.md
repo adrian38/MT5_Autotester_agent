@@ -32,6 +32,15 @@ using the run worker limit. Only after those stages finish does it append the
 configured repair attempts and their two pending-only phases. Repair must never
 replace or split the ordinary pipeline.
 
+MT5 LiveUpdate can exit the launched PID and retain/relaunch the same profile
+under another PID (`/update /path:...`, then `/skipupdate`). `run_tests.run_test`
+now waits for profile release after every process wait, before restoring history,
+retrying or completing a job. Matching includes the updater installation path;
+two clear process snapshots are required. The wait uses the configured absolute
+job timeout (minimum 120 seconds). If release cannot be confirmed, that worker
+stops consuming jobs; it must not reuse the profile. This is runner ownership,
+not a Lab or manager scheduling delay. New runner subprocesses load this change.
+
 ICTrading prepared execution resolves symbols against the active ICTrading universe
 and writes exact broker casing (for example `TecDE30`, `MidDE50`) into the
 execution copy's `ForceSymbol` and candidate metadata. Package bytes, hashes,

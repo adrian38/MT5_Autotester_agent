@@ -37,16 +37,7 @@ def tester_journal_sidecar(report_path: Path) -> Path:
     return report_path.with_name(f"{report_path.stem}.mt5log.txt")
 
 
-def invalid_stops_metadata(
-    report_path: Path, symbol: str, timeframe: str,
-) -> dict[str, object] | None:
-    """Read order rejections for the latest matching test, including journal tails.
-
-    The runner stores only 64 KiB. If the start header was truncated, require
-    the matching test completion instead. Never borrow evidence from another
-    symbol, timeframe, or an earlier attempt in the same daily journal.
-    Counts describe the saved excerpt, not necessarily the complete backtest.
-    """
+def _matching_test_journal(report_path: Path, symbol: str, timeframe: str):
     symbol, timeframe = str(symbol).strip(), str(timeframe).strip().upper()
     if not symbol or timeframe in {"", "M0", "UNKNOWN"}:
         return None
@@ -72,6 +63,23 @@ def invalid_stops_metadata(
     if (latest.group("symbol").casefold() != symbol.casefold()
             or latest.group("period").upper() != timeframe):
         return None
+    return sidecar, attempt
+
+
+def invalid_stops_metadata(
+    report_path: Path, symbol: str, timeframe: str,
+) -> dict[str, object] | None:
+    """Read order rejections for the latest matching test, including journal tails.
+
+    The runner stores only 64 KiB. If the start header was truncated, require
+    the matching test completion instead. Never borrow evidence from another
+    symbol, timeframe, or an earlier attempt in the same daily journal.
+    Counts describe the saved excerpt, not necessarily the complete backtest.
+    """
+    scoped = _matching_test_journal(report_path, symbol, timeframe)
+    if scoped is None:
+        return None
+    sidecar, attempt = scoped
     matches = list(re.finditer(
         rf"\bfailed\s+(?:buy|sell)\b[^\r\n]*?\s{re.escape(symbol)}(?=\s)"
         r"[^\r\n]*\[Invalid stops\]", attempt, re.I,
@@ -87,6 +95,42 @@ def invalid_stops_metadata(
         "log_source": str(sidecar),
         "retryable": False,
     }
+
+
+def incompatible_volume_metadata(report_path: Path, symbol: str, timeframe: str) -> dict[str, object] | None:
+    """Require an explicit broker minimum above the same test's MaxLots input.
+
+    StartLots below the minimum alone is insufficient: EAs can round it up.
+    Journal tails missing the input must not borrow values from current sets.
+    """
+    scoped = _matching_test_journal(report_path, symbol, timeframe)
+    if scoped is None:
+        return None
+    sidecar, attempt = scoped
+    minimum = re.search(r"Minimum lotsize for this broker is\s+(\d+(?:\.\d+)?)\s*lots", attempt, re.I)
+    maximum = re.search(r"\bMaxLots=(\d+(?:\.\d+)?)(?=\s|$)", attempt)
+    if not minimum or not maximum:
+        return None
+    volume_min, max_lots = float(minimum[1]), float(maximum[1])
+    if volume_min <= 0 or max_lots >= volume_min:
+        return None
+    return {
+        "failure_type": "incompatible_volume", "reasons": ["incompatible_volume"],
+        "volume_min": volume_min, "max_lots": max_lots,
+        "volume_evidence": minimum[0], "log_source": str(sidecar), "retryable": False,
+    }
+
+
+def execution_failure_metadata(report_path: Path, symbol: str, timeframe: str) -> dict[str, object] | None:
+    return (invalid_stops_metadata(report_path, symbol, timeframe)
+            or incompatible_volume_metadata(report_path, symbol, timeframe))
+
+
+def execution_failure_reason(metadata: object) -> str:
+    if isinstance(metadata, dict) and metadata.get("failure_type") == "incompatible_volume":
+        return (f"lotaje incompatible: minimo broker {metadata.get('volume_min')} lotes "
+                f"> MaxLots {metadata.get('max_lots')}")
+    return invalid_stops_reason(metadata)
 
 
 def invalid_stops_reason(metadata: object) -> str:

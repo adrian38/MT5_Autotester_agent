@@ -16,7 +16,7 @@ from ubs.selection import (
     SelectionPrediction,
     descendant_fitness_predictions,
 )
-from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, invalid_stops_metadata
+from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, execution_failure_metadata
 from ubs.weights import (
     FeedbackSignal,
     TIMEFRAME_PATCH_KEYS,
@@ -392,7 +392,7 @@ class AgentMemory:
                     payload = json.loads(row["metrics_json"] or "{}")
                     if not isinstance(payload, dict) or float(payload.get("trades", -1)) != 0:
                         continue
-                    metadata = invalid_stops_metadata(
+                    metadata = execution_failure_metadata(
                         resolve_workspace_path(row["report_path"]),
                         payload.get("symbol") or "", payload.get("timeframe") or "",
                     )
