@@ -83,10 +83,13 @@ def load_prepared(args, memory, api):
     frozen, _ = api.load_mutation_overrides()
     globals_ = api.load_global_params()
     validated = []
+    registered_row_cache = {}
     registered_parent_cache = {}
     for item, raw, parent in decoded:
         recovery = item['mode']=='symbol_exploration' and item['mutation'].get('kind')=='symbol_recovery'
-        if recovery:
+        row_key=(recovery,item['parent_candidate_id'],item['period'] if recovery else None)
+        row=registered_row_cache.get(row_key)
+        if row_key not in registered_row_cache and recovery:
             # Adapting partial progress has its own provenance: the parent is a
             # candidate this node already evaluated for a prepared batch, on the
             # same timeframe, that never reached an accepted final positive. The
@@ -97,13 +100,14 @@ def load_prepared(args, memory, api):
                 and not exists (select 1 from candidate_final_tick_6m f
                                 where f.candidate_id=c.id and f.status='accepted')''',
                 (item['parent_candidate_id'],item['period'])).fetchone()
-            if not row:
-                raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
-        else:
+        elif row_key not in registered_row_cache:
             row = memory.conn.execute('''select c.set_path from candidates c join candidate_final_tick_6m f
                 on f.candidate_id=c.id where c.id=? and f.status='accepted' ''',(item['parent_candidate_id'],)).fetchone()
-            if not row:
-                raise ValueError('El padre no es un positivo final de esta memoria')
+        registered_row_cache[row_key]=row
+        if not row:
+            if recovery:
+                raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
+            raise ValueError('El padre no es un positivo final de esta memoria')
         source = Path(row[0]).resolve()
         if not source.is_relative_to(api.BASE_DIR.resolve()):
             raise ValueError('El padre recibido no coincide con el set local registrado')
