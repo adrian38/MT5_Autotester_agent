@@ -83,6 +83,7 @@ def load_prepared(args, memory, api):
     frozen, _ = api.load_mutation_overrides()
     globals_ = api.load_global_params()
     validated = []
+    registered_parent_cache = {}
     for item, raw, parent in decoded:
         recovery = item['mode']=='symbol_exploration' and item['mutation'].get('kind')=='symbol_recovery'
         if recovery:
@@ -104,8 +105,13 @@ def load_prepared(args, memory, api):
             if not row:
                 raise ValueError('El padre no es un positivo final de esta memoria')
         source = Path(row[0]).resolve()
-        if (not source.is_relative_to(api.BASE_DIR.resolve())
-                or not _registered_parent_matches(source.read_bytes(), parent, symbol_map, api)):
+        if not source.is_relative_to(api.BASE_DIR.resolve()):
+            raise ValueError('El padre recibido no coincide con el set local registrado')
+        source_raw = registered_parent_cache.get(source)
+        if source_raw is None:
+            source_raw = source.read_bytes()
+            registered_parent_cache[source] = source_raw
+        if not _registered_parent_matches(source_raw, parent, symbol_map, api):
             raise ValueError('El padre recibido no coincide con el set local registrado')
         values = protocol.set_params(raw)
         strategy = values.get('Run_Strategy','').split('||')[0]
