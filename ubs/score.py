@@ -61,6 +61,10 @@ class ScoreResult:
     avg_trade: float
     sqn: float
     reasons: tuple[str, ...]
+    # Number of losing trades. ``None`` marks a row persisted before this field
+    # existed: legacy rows must be probed with ``run_is_lossless`` instead of
+    # being read as zero, which would label every old report loss-free.
+    losing_trades: int | None = None
     active_months: int | None = None
     top3_month_profit: float | None = None
     residual_profit_after_top3: float | None = None
@@ -211,6 +215,7 @@ def score_report(
         avg_trade=round(avg_trade, 4),
         sqn=round(sqn, 4),
         reasons=tuple(reasons),
+        losing_trades=len(losses),
         active_months=len(monthly_values),
         top3_month_profit=round(top3_month_profit, 4),
         residual_profit_after_top3=round(residual_profit_after_top3, 4),
@@ -275,6 +280,29 @@ def rescore_result(result: ScoreResult, config: ScoreConfig | None = None) -> Sc
         score_config=config.to_dict(),
         score_config_hash=config.stable_hash(),
     )
+
+
+def run_is_lossless(result: ScoreResult) -> bool:
+    """True when the backtest closed without a single losing trade.
+
+    That state makes ``profit_factor`` and ``drawdown_pct`` degenerate: the PF is
+    the 99.0 sentinel (there is no gross loss to divide by) and the drawdown is a
+    flat 0.0. Any *relative* comparison against those two is meaningless, so
+    callers use this to switch to absolute checks instead of reading the
+    artifact as a real divergence.
+
+    Rows written before ``losing_trades`` existed carry ``None``; for those we
+    fall back to the sentinel pair. The fallback is deliberately an exact 99.0
+    match because a genuine profit factor can exceed 99 (the memory holds 28
+    such rows), and requiring a zero drawdown alongside it removes the rest of
+    the ambiguity.
+    """
+
+    if float(result.drawdown_pct) != 0.0:
+        return False
+    if result.losing_trades is not None:
+        return int(result.losing_trades) == 0
+    return float(result.profit_factor) == 99.0
 
 
 def _score_formula(

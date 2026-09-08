@@ -67,6 +67,9 @@ class UBSUniverseViewMixin:
             ("Reset pesos TF", "danger", self._clear_all_tf_weights),
             ("Calcular pesos", "primary", self._ubs_apply_weights),
         ]
+        memory_buttons = [
+            ("Actualizar estados Final Tick", "danger", self._repair_final_tick_status_mismatches),
+        ]
 
         def build_button_row(row: int, title: str, buttons: list) -> list[tk.Button]:
             holder = tk.Frame(bar, bg=self.colors["panel_alt"])
@@ -96,6 +99,7 @@ class UBSUniverseViewMixin:
         build_button_row(1, "Datos MT5", flow_buttons)
         build_button_row(2, "Marcados", selection_buttons)
         self._ubs_calc_weights_btn = build_button_row(3, "Pesos", weight_buttons)[-1]
+        build_button_row(4, "Memoria", memory_buttons)
 
         filter_bar = ttk.Frame(panel, style="Panel.TFrame")
         filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))

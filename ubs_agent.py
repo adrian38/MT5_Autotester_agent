@@ -15,7 +15,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable
 from contextlib import nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -95,7 +95,7 @@ from ubs.regression_rules import (
     DEFAULT_REGRESSION_TO_DATE,
     validate_regression_date_range,
 )
-from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
+from ubs.score import ScoreConfig, ScoreResult, rescore_result, run_is_lossless, score_report_file
 from ubs.selection import (
     FITNESS_TARGET_FINAL_TICK_6M,
     DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
@@ -574,6 +574,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-max-pf-delta-pct", type=float, default=35.0, help="Diferencia maxima de PF vs OHLC.")
     parser.add_argument("--final-tick-max-dd-delta-pct", type=float, default=35.0, help="Diferencia maxima de DD pct vs OHLC.")
     parser.add_argument("--final-tick-max-trades-delta-pct", type=float, default=35.0, help="Diferencia maxima de trades vs OHLC.")
+    # Respaldo para 6M cuando el control OHLC cierra sin ninguna operacion
+    # perdedora: PF y DD dejan de ser comparables y la pata de tick pasa a
+    # juzgarse sola. Defaults = p05 (p95 para DD) de la pata real-tick de las
+    # filas candidate_final_tick_6m aceptadas en memoria a 2026-09.
+    lossless_defaults = LosslessControlGate()
+    parser.add_argument("--final-tick-6m-lossless-min-trades", type=int, default=lossless_defaults.min_trades, help="6M control sin perdidas: operaciones minimas de la pata real tick.")
+    parser.add_argument("--final-tick-6m-lossless-min-net", type=float, default=lossless_defaults.min_normalized_net_profit, help="6M control sin perdidas: net normalizado minimo de la pata real tick.")
+    parser.add_argument("--final-tick-6m-lossless-min-pf", type=float, default=lossless_defaults.min_profit_factor, help="6M control sin perdidas: profit factor minimo de la pata real tick.")
+    parser.add_argument("--final-tick-6m-lossless-max-dd-pct", type=float, default=lossless_defaults.max_drawdown_pct, help="6M control sin perdidas: drawdown maximo de la pata real tick.")
+    parser.add_argument("--final-tick-6m-lossless-min-recovery", type=float, default=lossless_defaults.min_recovery_factor, help="6M control sin perdidas: recovery factor minimo de la pata real tick.")
+    parser.add_argument("--final-tick-6m-lossless-min-positive-month-ratio", type=float, default=lossless_defaults.min_positive_month_ratio, help="6M control sin perdidas: ratio minimo de meses positivos de la pata real tick.")
     parser.add_argument(
         "--evaluate-regression",
         action="store_true",
@@ -4854,6 +4865,34 @@ def _bounded_profit_factor(value: float) -> float:
     return min(max(float(value), 0.0), 10.0)
 
 
+@dataclass(frozen=True)
+class LosslessControlGate:
+    """Umbrales absolutos para cuando el control OHLC no tiene ni una perdida.
+
+    Con la pata OHLC sin perdidas, PF (centinela 99 -> tope 10) y DD (0.0) dejan
+    de ser comparables: exigirian PF de tick >=7.0 y DD de tick <=0.7pp, asi que
+    el candidato se rechaza por el artefacto y no por su comportamiento. Cuando
+    pasa eso dejamos de preguntar "se parecen?" y preguntamos "se sostiene la
+    pata de tick por si sola?", que es la que de verdad se operaria.
+
+    Los valores por defecto son el percentil 5 de la pata real-tick de las 786
+    filas ``candidate_final_tick_6m`` aceptadas en memoria a 2026-09 (p95 para el
+    drawdown). Es decir: un candidato con control degenerado tiene que caer
+    dentro del territorio donde ya vive el 95% de lo que el pipeline acepta, ni
+    una vara mas dura ni una barra libre.
+
+    Solo aplica a la etapa de 6M: los umbrales estan calibrados sobre esa
+    ventana y no significan nada sobre el probe de un mes.
+    """
+
+    min_trades: int = 25
+    min_normalized_net_profit: float = 17.0
+    min_profit_factor: float = 1.20
+    max_drawdown_pct: float = 17.8
+    min_recovery_factor: float = 0.75
+    min_positive_month_ratio: float = 0.50
+
+
 def final_tick_similarity(
     ohlc_result: ScoreResult,
     real_tick_result: ScoreResult,
@@ -4864,6 +4903,7 @@ def final_tick_similarity(
     max_dd_delta_pct: float,
     max_trades_delta_pct: float,
     min_model_profit_factor: float | None = None,
+    lossless_control_gate: LosslessControlGate | None = None,
 ) -> dict[str, object]:
     """Decide si OHLC y real-tick son suficientemente parecidos.
 
@@ -4878,9 +4918,32 @@ def final_tick_similarity(
     net_profit se guarda como informacional pero NO bloquea la aceptación.
     La escala de normalized_net_profit depende del grupo de normalización y produce
     falsos fallos cuando los valores son pequeños en comparación absoluta.
+
+    Cuando la pata OHLC no tiene ni una operación perdedora, PF y DD dejan de
+    compararse en cualquier etapa (quedan como informacionales): son un
+    centinela contra un cero, no una divergencia. Si además se pasa
+    ``lossless_control_gate`` —solo 6M— la pata de tick tiene que pasar en su
+    lugar las puertas absolutas de ``LosslessControlGate``. El veredicto sigue
+    siendo accepted/rejected: lo que cambia es que se decide con lo medible.
     """
     reasons: list[str] = []
     checks: dict[str, dict[str, object]] = {}
+    # La degeneracion de PF y DD no depende de la etapa: si el control no perdio
+    # nunca, esas dos comparaciones no miden nada ni en el probe ni en 6M, y se
+    # descartan siempre. Lo que si es especifico de 6M es el sustituto: alli hay
+    # una barra de calidad a la que caer (la poblacion aceptada tiene PF>=1.2,
+    # net mediano 145, RF mediano 1.6) y en el probe no la hay (net mediano
+    # 0.38, RF mediano 0.075), porque el probe solo cribra divergencia. Sin gate
+    # se descartan las dos y deciden las que siguen siendo medibles.
+    lossless_control = run_is_lossless(ohlc_result)
+    absolute_gate = lossless_control and lossless_control_gate is not None
+    checks["ohlc_lossless"] = {
+        "ohlc_losing_trades": ohlc_result.losing_trades,
+        "detected": lossless_control,
+        "absolute_gate_applied": absolute_gate,
+        "accepted": True,
+        "checked": False,
+    }
 
     # 1. History quality
     history_quality = real_tick_result.history_quality
@@ -4918,7 +4981,9 @@ def final_tick_similarity(
             "checked": True,
         }
     pf_delta  = _relative_delta_pct(ohlc_pf, tick_pf, floor=1.0)
-    pf_accepted = pf_delta <= max_pf_delta_pct
+    # Sin pérdidas en OHLC el PF es el centinela 99 recortado a 10: comparar
+    # contra eso exigiría PF de tick >=7.0, que no mide nada de la estrategia.
+    pf_accepted = lossless_control or pf_delta <= max_pf_delta_pct
     if not pf_accepted:
         reasons.append("profit_factor")
     checks["profit_factor"] = {
@@ -4927,7 +4992,7 @@ def final_tick_similarity(
         "delta_pct": round(pf_delta, 4),
         "max_delta_pct": round(float(max_pf_delta_pct), 4),
         "accepted": pf_accepted,
-        "checked": True,
+        "checked": not lossless_control,
     }
 
     # 4. Drawdown — simétrico, piso 2pp
@@ -4935,7 +5000,9 @@ def final_tick_similarity(
     tick_dd   = float(real_tick_result.drawdown_pct)
     dd_floor  = max(ohlc_dd, tick_dd, 2.0)
     dd_delta  = abs(tick_dd - ohlc_dd) / dd_floor * 100.0
-    dd_accepted = dd_delta <= max_dd_delta_pct
+    # Con OHLC a 0.0 de DD la diferencia relativa es 100% en cuanto el tick pase
+    # de 0.7pp: es la misma degeneración que el PF, no una divergencia real.
+    dd_accepted = lossless_control or dd_delta <= max_dd_delta_pct
     if not dd_accepted:
         reasons.append("drawdown_pct")
     checks["drawdown_pct"] = {
@@ -4944,7 +5011,7 @@ def final_tick_similarity(
         "delta_pct": round(dd_delta, 4),
         "max_delta_pct": round(float(max_dd_delta_pct), 4),
         "accepted": dd_accepted,
-        "checked": True,
+        "checked": not lossless_control,
     }
 
     # 5. Trades — simétrico
@@ -4963,6 +5030,51 @@ def final_tick_similarity(
         "checked": True,
     }
 
+    # 6. Control sin pérdidas en 6M: la pata de tick tiene que sostenerse sola.
+    if absolute_gate:
+        gate = lossless_control_gate
+        for name, observed, limit, ok in (
+            ("tick_trades", tick_trades, float(gate.min_trades), tick_trades >= gate.min_trades),
+            (
+                "tick_net_profit",
+                float(real_tick_result.normalized_net_profit),
+                gate.min_normalized_net_profit,
+                float(real_tick_result.normalized_net_profit) >= gate.min_normalized_net_profit,
+            ),
+            (
+                "tick_profit_factor",
+                float(real_tick_result.profit_factor),
+                gate.min_profit_factor,
+                float(real_tick_result.profit_factor) >= gate.min_profit_factor,
+            ),
+            (
+                "tick_drawdown_pct",
+                tick_dd,
+                gate.max_drawdown_pct,
+                tick_dd <= gate.max_drawdown_pct,
+            ),
+            (
+                "tick_recovery_factor",
+                float(real_tick_result.recovery_factor),
+                gate.min_recovery_factor,
+                float(real_tick_result.recovery_factor) >= gate.min_recovery_factor,
+            ),
+            (
+                "tick_positive_month_ratio",
+                float(real_tick_result.positive_month_ratio),
+                gate.min_positive_month_ratio,
+                float(real_tick_result.positive_month_ratio) >= gate.min_positive_month_ratio,
+            ),
+        ):
+            if not ok:
+                reasons.append(name)
+            checks[name] = {
+                "real_tick": round(float(observed), 4),
+                "limit": round(float(limit), 4),
+                "accepted": bool(ok),
+                "checked": True,
+            }
+
     return {
         "accepted": not reasons,
         "reasons": reasons,
@@ -4970,6 +5082,74 @@ def final_tick_similarity(
         "min_history_quality": float(min_history_quality),
         "checks": checks,
     }
+
+
+# Causas que dejan la fila pendiente de historico en vez de rechazarla.
+# "history_quality" la emite final_tick_similarity; las otras dos las escriben
+# directamente las rutas de fallo tecnico (descarga Real Tick interrumpida y
+# reporte sin contexto de tester usable). Las tres tienen que estar aqui: un
+# consumidor que solo conozca la primera leeria las otras como rechazos.
+FINAL_TICK_PENDING_HISTORY_REASONS = frozenset(
+    {"history_quality", "real_tick_no_history", "empty_tester_context"}
+)
+
+
+def final_tick_status_from_similarity(similarity: object) -> str | None:
+    """Estado que corresponde a un veredicto de similitud ya calculado.
+
+    Fuente unica de la regla: la escriben las dos rutas que evaluan Final Tick y
+    la lee el reparador de la pestana Universo, para que un arreglo no pueda
+    divergir de quien genero el estado.
+
+    Devuelve ``None`` cuando el payload no es un veredicto cerrado y por tanto
+    no determina un estado: un dict sin ``accepted``, algo que no es dict, o un
+    payload ``pending`` (el de ``pending_ohlc_trades``, que corta antes de
+    comparar nada). Un ``final_tick_similarity`` recien calculado siempre
+    devuelve un estado.
+    """
+
+    if not isinstance(similarity, dict) or "accepted" not in similarity:
+        return None
+    if similarity.get("pending"):
+        return None
+    reasons = {str(reason) for reason in similarity.get("reasons") or ()}
+    if reasons & FINAL_TICK_PENDING_HISTORY_REASONS:
+        return "pending_history_quality"
+    return "accepted" if bool(similarity.get("accepted")) else "rejected"
+
+
+def lossless_control_gate_from_args(args: argparse.Namespace) -> LosslessControlGate:
+    """Puertas absolutas de 6M para el caso de control OHLC sin perdidas.
+
+    Lee con ``getattr`` porque por aqui pasan namespaces montados a mano (los
+    reconciliadores y los tests no rellenan la lista completa de flags); lo que
+    falte cae al default del propio dataclass, que es el mismo que publica el
+    parser.
+    """
+
+    fallback = LosslessControlGate()
+    return LosslessControlGate(
+        min_trades=int(getattr(args, "final_tick_6m_lossless_min_trades", fallback.min_trades)),
+        min_normalized_net_profit=float(
+            getattr(args, "final_tick_6m_lossless_min_net", fallback.min_normalized_net_profit)
+        ),
+        min_profit_factor=float(
+            getattr(args, "final_tick_6m_lossless_min_pf", fallback.min_profit_factor)
+        ),
+        max_drawdown_pct=float(
+            getattr(args, "final_tick_6m_lossless_max_dd_pct", fallback.max_drawdown_pct)
+        ),
+        min_recovery_factor=float(
+            getattr(args, "final_tick_6m_lossless_min_recovery", fallback.min_recovery_factor)
+        ),
+        min_positive_month_ratio=float(
+            getattr(
+                args,
+                "final_tick_6m_lossless_min_positive_month_ratio",
+                fallback.min_positive_month_ratio,
+            )
+        ),
+    )
 
 
 def final_tick_ohlc_trades_pending_payload(ohlc_result: ScoreResult, min_ohlc_trades: int) -> dict[str, object]:
@@ -5930,12 +6110,9 @@ def _evaluate_final_tick_tick_report(
         max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
         max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
         min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
+        lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
     )
-    reasons = set(str(reason) for reason in (similarity.get("reasons") or []))
-    if "history_quality" in reasons:
-        status = "pending_history_quality"
-    else:
-        status = "accepted" if bool(similarity.get("accepted")) else "rejected"
+    status = final_tick_status_from_similarity(similarity) or "rejected"
     memory.record_candidate_final_tick(
         candidate_id, run_id, status, ohlc_result, real_tick_result,
         ohlc_report, real_tick_report,
@@ -6173,13 +6350,9 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
             max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
             max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
             min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
+            lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
         )
-        reasons = {str(reason) for reason in similarity.get("reasons") or ()}
-        status = (
-            "pending_history_quality"
-            if "history_quality" in reasons
-            else ("accepted" if bool(similarity.get("accepted")) else "rejected")
-        )
+        status = final_tick_status_from_similarity(similarity) or "rejected"
         memory.record_candidate_final_tick(
             candidate_id, int(row["ft_run_id"] or row["run_id"]), status,
             ohlc_result, real_result, ohlc_report, real_report,
