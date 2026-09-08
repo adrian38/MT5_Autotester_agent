@@ -722,6 +722,28 @@ class UBSFinalTickLogicMixin:
                     f"PF minimo: OHLC {self._format_ubs_number(ohlc)} / tick {self._format_ubs_number(tick)} < {self._format_ubs_number(minimum)}"
                 )
                 continue
+            # Puertas absolutas del respaldo por control OHLC sin perdidas: no
+            # llevan delta contra el OHLC, sino el valor de la pata de tick
+            # contra su limite.
+            absolute_labels = {
+                "tick_trades": ("ops tick", "<"),
+                "tick_net_profit": ("net tick", "<"),
+                "tick_profit_factor": ("PF tick", "<"),
+                "tick_drawdown_pct": ("DD tick", ">"),
+                "tick_recovery_factor": ("RF tick", "<"),
+                "tick_positive_month_ratio": ("meses+ tick", "<"),
+            }
+            if str(reason) in absolute_labels:
+                check = checks.get(str(reason), {}) if isinstance(checks, dict) else {}
+                label, operator = absolute_labels[str(reason)]
+                observed = check.get("real_tick") if isinstance(check, dict) else None
+                limit = check.get("limit") if isinstance(check, dict) else None
+                parts.append(
+                    f"{label}: {self._format_ubs_number(observed)} {operator} {self._format_ubs_number(limit)}"
+                    if observed is not None
+                    else label
+                )
+                continue
             check = checks.get(str(reason), {}) if isinstance(checks, dict) else {}
             delta = check.get("delta_pct") if isinstance(check, dict) else None
             maximum = check.get("max_delta_pct") if isinstance(check, dict) else None
