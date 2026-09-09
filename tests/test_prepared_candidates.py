@@ -72,6 +72,17 @@ class PreparedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'no coincide'):
             run_prepared(self.args,self.memory,ScoreConfig(),self.api)
 
+    def test_relocated_historical_parent_is_resolved_inside_current_workspace(self):
+        current=self.root/'outputs'/'ubs_agent'/'ECN'/'historical'/'accepted_parent.set'
+        current.parent.mkdir(parents=True)
+        (self.root/'accepted_parent.set').replace(current)
+        legacy=Path(r'C:\Users\Adrian\Adrian\TRADING\MT5_Autotester_agent')/'outputs'/'ubs_agent'/'ECN'/'historical'/'accepted_parent.set'
+        self.memory.conn.execute('update candidates set set_path=? where id=1',(str(legacy),))
+        self.memory.conn.commit()
+
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        self.api.evaluate_generation.assert_called_once()
+
     def test_unseen_enabled_symbol_enters_evaluator_without_numeric_remutation(self):
         self.package=symbol_package();directory=protocol.store_batch(self.root,self.package,'ICTRADING','STANDARD')
         self.args.prepared_manifest=directory/'batch.json'
