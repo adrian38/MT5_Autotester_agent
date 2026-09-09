@@ -300,6 +300,15 @@ class StrategyAllocation:
     margin_leverage: float = 0.0
     margin_contract_size: float = 0.0
     margin_price: float = 0.0
+    max_balance_dd_001: float = 0.0
+    max_equity_dd_001: float = 0.0
+    floating_dd_source: str = ""
+    standalone_floating_dd: float = 0.0
+    recent_net_profit_001: float = 0.0
+    recent_equity_dd_001: float = 0.0
+    has_recent_performance: bool = False
+    final_tick_report_path: str = ""
+    full_history_report_path: str = ""
 
 
 @dataclass
@@ -368,6 +377,9 @@ class PortfolioResult:
     daily_dd_summary: dict[str, object] = field(default_factory=dict)
     daily_dd_full_history: bool = False
     enforce_point_dd: bool = True
+    actual_closed_valley_dd: float = 0.0
+    floating_dd_buffer: float = 0.0
+    floating_overlap_audit: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
