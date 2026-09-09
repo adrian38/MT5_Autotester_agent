@@ -135,6 +135,8 @@ class UBSPortfolioLogicMixin:
                 target_point_dd real not null default 0,
                 actual_valley_dd real not null default 0,
                 actual_point_dd real not null default 0,
+                actual_closed_valley_dd real not null default 0,
+                floating_dd_buffer real not null default 0,
                 valley_usage_pct real not null default 0,
                 point_usage_pct real not null default 0,
                 total_net_profit real not null default 0,
@@ -164,6 +166,8 @@ class UBSPortfolioLogicMixin:
             ("target_point_dd", "real not null default 0"),
             ("actual_valley_dd", "real not null default 0"),
             ("actual_point_dd", "real not null default 0"),
+            ("actual_closed_valley_dd", "real not null default 0"),
+            ("floating_dd_buffer", "real not null default 0"),
             ("valley_usage_pct", "real not null default 0"),
             ("point_usage_pct", "real not null default 0"),
             ("total_net_profit", "real not null default 0"),
@@ -205,6 +209,15 @@ class UBSPortfolioLogicMixin:
                 margin_price real not null default 0,
                 is_report_path text,
                 oos_report_path text,
+                final_tick_report_path text,
+                full_history_report_path text,
+                max_balance_dd_001 real not null default 0,
+                max_equity_dd_001 real not null default 0,
+                floating_dd_source text not null default '',
+                standalone_floating_dd real not null default 0,
+                recent_net_profit_001 real not null default 0,
+                recent_equity_dd_001 real not null default 0,
+                has_recent_performance integer not null default 0,
                 foreign key (portfolio_id) references portfolios(id)
             )
             """
@@ -217,6 +230,15 @@ class UBSPortfolioLogicMixin:
             ("margin_leverage", "real not null default 0"),
             ("margin_contract_size", "real not null default 0"),
             ("margin_price", "real not null default 0"),
+            ("final_tick_report_path", "text"),
+            ("full_history_report_path", "text"),
+            ("max_balance_dd_001", "real not null default 0"),
+            ("max_equity_dd_001", "real not null default 0"),
+            ("floating_dd_source", "text not null default ''"),
+            ("standalone_floating_dd", "real not null default 0"),
+            ("recent_net_profit_001", "real not null default 0"),
+            ("recent_equity_dd_001", "real not null default 0"),
+            ("has_recent_performance", "integer not null default 0"),
         ):
             self._ensure_sqlite_column(conn, "portfolio_allocations", column, definition)
         conn.execute(
@@ -714,6 +736,9 @@ class UBSPortfolioLogicMixin:
             "target_daily_dd": result.target_daily_dd,
             "daily_dd_full_history": result.daily_dd_full_history,
             "enforce_point_dd": result.enforce_point_dd,
+            "actual_closed_valley_dd": result.actual_closed_valley_dd,
+            "floating_dd_buffer": result.floating_dd_buffer,
+            "floating_overlap_audit": result.floating_overlap_audit,
         }
 
     def _insert_portfolio_allocation(
@@ -733,8 +758,11 @@ class UBSPortfolioLogicMixin:
                 net_profit_contribution, standalone_valley_dd, standalone_point_dd,
                 set_path, timeframe, lot_size_step, margin_required, margin_pct,
                 margin_leverage, margin_contract_size, margin_price,
-                is_report_path, oos_report_path
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_report_path, oos_report_path, final_tick_report_path,
+                full_history_report_path, max_balance_dd_001, max_equity_dd_001,
+                floating_dd_source, standalone_floating_dd, recent_net_profit_001,
+                recent_equity_dd_001, has_recent_performance
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 portfolio_id,
@@ -758,6 +786,15 @@ class UBSPortfolioLogicMixin:
                 allocation.margin_price,
                 allocation.is_report_path,
                 allocation.oos_report_path,
+                allocation.final_tick_report_path,
+                allocation.full_history_report_path,
+                allocation.max_balance_dd_001,
+                allocation.max_equity_dd_001,
+                allocation.floating_dd_source,
+                allocation.standalone_floating_dd,
+                allocation.recent_net_profit_001,
+                allocation.recent_equity_dd_001,
+                int(allocation.has_recent_performance),
             ),
         )
         conn.execute(
@@ -813,10 +850,11 @@ class UBSPortfolioLogicMixin:
                 created_at, name, type, portfolio_type, num_symbols, account_capital,
                 capital, target_valley_dd_pct, target_point_dd_pct, target_valley_dd,
                 target_point_dd, actual_valley_dd, actual_point_dd, valley_usage_pct,
-                point_usage_pct, total_net_profit, total_lot, total_units,
+                point_usage_pct, total_net_profit, actual_closed_valley_dd,
+                floating_dd_buffer, total_lot, total_units,
                 active_strategies, target_strategies, stop_reason, binding_constraint,
                 portfolio_scope, target_month, metrics_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -835,6 +873,8 @@ class UBSPortfolioLogicMixin:
                 result.valley_usage_pct,
                 result.point_usage_pct,
                 result.total_net_profit,
+                result.actual_closed_valley_dd,
+                result.floating_dd_buffer,
                 result.total_lot,
                 result.total_units,
                 result.active_strategies,
@@ -930,6 +970,8 @@ class UBSPortfolioLogicMixin:
                 "total_net_profit": result.total_net_profit,
                 "actual_valley_dd": result.actual_valley_dd,
                 "actual_point_dd": result.actual_point_dd,
+                "actual_closed_valley_dd": result.actual_closed_valley_dd,
+                "floating_dd_buffer": result.floating_dd_buffer,
                 "valley_usage_pct": result.valley_usage_pct,
                 "point_usage_pct": result.point_usage_pct,
                 "total_lot": result.total_lot,
@@ -986,10 +1028,11 @@ class UBSPortfolioLogicMixin:
                 created_at, name, type, portfolio_type, num_symbols, account_capital,
                 capital, target_valley_dd_pct, target_point_dd_pct, target_valley_dd,
                 target_point_dd, actual_valley_dd, actual_point_dd, valley_usage_pct,
-                point_usage_pct, total_net_profit, total_lot, total_units,
+                point_usage_pct, total_net_profit, actual_closed_valley_dd,
+                floating_dd_buffer, total_lot, total_units,
                 active_strategies, target_strategies, stop_reason, binding_constraint,
                 portfolio_scope, target_month, metrics_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -1008,6 +1051,8 @@ class UBSPortfolioLogicMixin:
                 selected_result.valley_usage_pct,
                 selected_result.point_usage_pct,
                 selected_result.total_net_profit,
+                selected_result.actual_closed_valley_dd,
+                selected_result.floating_dd_buffer,
                 selected_result.total_lot,
                 selected_result.total_units,
                 len(common_set_ids),

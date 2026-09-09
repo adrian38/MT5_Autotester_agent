@@ -161,11 +161,8 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
             self.assertEqual(portfolio_count, 1)
 
     def test_a_payload_from_a_newer_manager_saves_at_the_first_attempt(self) -> None:
-        # El manager envia la tanda de riesgo por equity y los campos de auditoria
-        # que este `portfolio_manager/ubs_portfolio.py` todavia no declara. Antes
-        # el nodo moria con `unexpected keyword argument`, devolvia un 500 con la
-        # traza en la consola y solo guardaba en el segundo POST, el que el manager
-        # reintenta con `legacy_compatible_portfolio_save_payload`.
+        # El nodo debe conservar la tanda de riesgo por equity y los campos de
+        # auditoría, además de aceptar el payload sin el reintento legacy.
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = Path(temp_dir) / "ubs_memory_ICTRADING_STANDARD.sqlite"
             memory.touch()
@@ -192,12 +189,25 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
 
             self.assertFalse(saved["deduplicated"])
             with contextlib.closing(sqlite3.connect(memory)) as conn:
-                units = conn.execute(
-                    "select units from portfolio_allocations "
+                conn.row_factory = sqlite3.Row
+                allocation = conn.execute(
+                    "select * from portfolio_allocations "
                     "where portfolio_id=? and variant_key='balanced'",
                     (portfolio_id,),
-                ).fetchone()[0]
-            self.assertEqual(units, 2)
+                ).fetchone()
+                portfolio = conn.execute(
+                    "select * from portfolios where id=?", (portfolio_id,)
+                ).fetchone()
+                metrics = json.loads(portfolio["metrics_json"])
+            self.assertEqual(allocation["units"], 2)
+            self.assertEqual(allocation["max_equity_dd_001"], 25.0)
+            self.assertEqual(allocation["floating_dd_source"], "2020-2024")
+            self.assertEqual(allocation["recent_net_profit_001"], 12.0)
+            self.assertEqual(allocation["final_tick_report_path"], "final.html")
+            self.assertEqual(allocation["has_recent_performance"], 1)
+            self.assertEqual(portfolio["actual_closed_valley_dd"], 50.0)
+            self.assertEqual(portfolio["floating_dd_buffer"], 30.0)
+            self.assertEqual(metrics["floating_overlap_audit"], {"pairs": 0})
 
     def test_delete_runs_locally_and_removes_parent_and_children(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -104,6 +104,22 @@ class PreparedTests(unittest.TestCase):
         self.assertEqual(variant.mutation_details[0]['kind'],'symbol_recovery')
         self.assertEqual(variant.mutation_details[0]['new'],11.0)
 
+    def test_symbol_recovery_accepts_only_equivalent_broker_symbol_spelling(self):
+        self._prepare_recovery()
+        attempt=self.root/'failed_attempt.set'
+        attempt.write_bytes(attempt.read_bytes().replace(b'ForceSymbol=EURUSD',b'ForceSymbol=EurUsd'))
+        self.api.broker_universe_symbols=lambda args:{'EurUsd'}
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+
+    def test_symbol_recovery_rejects_other_changes_with_equivalent_symbol_spelling(self):
+        self._prepare_recovery()
+        attempt=self.root/'failed_attempt.set'
+        attempt.write_bytes(attempt.read_bytes().replace(b'ForceSymbol=EURUSD',b'ForceSymbol=EurUsd'))
+        attempt.write_bytes(attempt.read_bytes().replace(b'ATR_Period=10',b'ATR_Period=12'))
+        with self.assertRaisesRegex(ValueError,'no coincide'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+        self.api.evaluate_generation.assert_not_called()
+
     def test_symbol_recovery_rejects_a_parent_this_node_never_prepared(self):
         # Candidate 1 is a final positive of an ordinary run: valid to retarget,
         # never a partial attempt to adapt in place.
