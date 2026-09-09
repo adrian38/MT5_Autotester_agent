@@ -34,12 +34,18 @@ class PreparedTests(unittest.TestCase):
         self.args.symbol_map=''
         self.args.output_dir=self.root/'outputs';self.args.execute_backtests=True;self.args.dry_run=False
         self.api=SimpleNamespace(**vars(agent));self.api.BASE_DIR=self.root
-        self.api.broker_universe_symbols=lambda args:{'US30','EURUSD'}
+        self._use_real_universe('US30', 'EURUSD')
         self.api.load_disabled_symbols=lambda path:set()
         self.api.target_timeframe_universe=lambda *args,**kwargs:['M15']
         self.api.load_mutation_overrides=lambda:({},set());self.api.load_global_params=lambda:{}
         self.api.evaluate_generation=mock.Mock(return_value=[])
         self.api.create_variant=mock.Mock(side_effect=AssertionError('Must not remutate'))
+
+    def _use_real_universe(self, *symbols):
+        self.args.assets = self.root/'assets.ini'
+        self.args.assets.write_text('[Indices]\nsymbols='+','.join(symbols)+'\n', encoding='utf-8')
+        agent._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        self.api.broker_universe_symbols = agent.broker_universe_symbols
 
     def test_exact_set_enters_normal_evaluator_and_retry_does_not_create_another_run(self):
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
@@ -119,7 +125,7 @@ class PreparedTests(unittest.TestCase):
         self._prepare_recovery()
         attempt=self.root/'failed_attempt.set'
         attempt.write_bytes(attempt.read_bytes().replace(b'ForceSymbol=EURUSD',b'ForceSymbol=EurUsd'))
-        self.api.broker_universe_symbols=lambda args:{'EurUsd'}
+        self._use_real_universe('EurUsd')
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
 
     def test_symbol_recovery_rejects_other_changes_with_equivalent_symbol_spelling(self):
@@ -147,7 +153,7 @@ class PreparedTests(unittest.TestCase):
             run_prepared(self.args,self.memory,ScoreConfig(),self.api)
 
     def test_ictrading_execution_preserves_broker_case_and_original_package(self):
-        for symbol in ('TecDE30', 'MidDE50'):
+        for symbol in ('TecDE30', 'MidDE50', '.JP225Cash', 'Stock.Name+', 'MixedSuffix.a'):
             with self.subTest(symbol=symbol):
                 value = symbol_package()
                 item = value['candidates'][0]
@@ -164,7 +170,8 @@ class PreparedTests(unittest.TestCase):
                 directory = protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
                 original_manifest = (directory/'batch.json').read_bytes()
                 self.args.prepared_manifest = directory/'batch.json'
-                self.api.broker_universe_symbols = lambda args:{symbol}
+                self._use_real_universe(symbol)
+                self.assertIn(symbol.upper(), self.api.broker_universe_symbols(self.args))
                 self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
                 variant = self.api.evaluate_generation.call_args.args[4][0]
                 actual = protocol.set_params(variant.path.read_bytes())
@@ -192,7 +199,7 @@ class PreparedTests(unittest.TestCase):
         value['batch_id'] = protocol.batch_identity(value)
         directory = protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
         self.args.prepared_manifest = directory/'batch.json'
-        self.api.broker_universe_symbols = lambda args:{'TecDE30'}
+        self._use_real_universe('TecDE30')
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
         variant = self.api.evaluate_generation.call_args.args[4][0]
         expected = protocol.set_params(raw)
@@ -201,6 +208,29 @@ class PreparedTests(unittest.TestCase):
         self.assertEqual(variant.mutated_keys, ('ATR_Period',))
         self.assertEqual(variant.mutation_details[0]['new'], 11.0)
         self.assertEqual((self.root/'accepted_parent.set').read_bytes(), parent)
+
+    def test_alias_key_cannot_override_actual_broker_spelling(self):
+        self._use_real_universe('Us30')
+        with self.args.assets.open('a', encoding='utf-8') as stream:
+            stream.write('[CommonAliases]\nUS30=Us30\n')
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        variant = self.api.evaluate_generation.call_args.args[4][0]
+        self.assertEqual(variant.target_symbol, 'Us30')
+        self.assertEqual(protocol.set_params(variant.path.read_bytes())['ForceSymbol'], 'Us30')
+
+    def test_ambiguous_broker_spelling_stops_before_execution(self):
+        self._use_real_universe('Us30', 'US30')
+        with self.assertRaisesRegex(ValueError, 'nombre MT5 único'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+        self.api.evaluate_generation.assert_not_called()
+
+    def test_alias_without_resolvable_instrument_stops_before_execution(self):
+        self._use_real_universe('EURUSD')
+        with self.args.assets.open('a', encoding='utf-8') as stream:
+            stream.write('[CommonAliases]\nUS30=EURUSD\n')
+        with self.assertRaisesRegex(ValueError, 'nombre MT5 único'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+        self.api.evaluate_generation.assert_not_called()
 
     def test_axi_prepared_symbol_uses_exact_universe_casing(self):
         self._check_other_broker_spelling('AXI', 'Apple+')

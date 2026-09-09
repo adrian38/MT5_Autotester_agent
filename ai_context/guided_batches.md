@@ -46,3 +46,13 @@ and writes exact broker casing (for example `TecDE30`, `MidDE50`) into the
 execution copy's `ForceSymbol` and candidate metadata. Package bytes, hashes,
 parent sets and batch identity stay unchanged. This applies to both exploration
 and numeric prepared candidates; AXI and RoboForex execution behavior is unchanged.
+
+Execution spelling must come from the instrument groups returned by
+`load_asset_universe`, never `broker_universe_symbols`: the latter intentionally
+uppercases membership keys and includes aliases. IC prepared execution matches
+case-insensitively without stripping punctuation or suffixes, requires exactly
+one actual instrument after symbol mapping, and rejects unresolved/ambiguous
+names before creating a run. Regression tests use a real temporary assets INI
+and the real membership loader, covering mixed case, suffixes and alias keys.
+This fixes new prepared execution copies; existing completed batches and their
+persisted retry sets are not automatically rewritten.
