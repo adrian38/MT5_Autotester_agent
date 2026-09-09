@@ -52,5 +52,17 @@ assets, margin profiles or normalization.
 Broker branches (`AXI`, `IC`) merge into `dev`. Paths are per-workstation, and
 the IC checkout is normally worked on a different PC than `dev`/`AXI`.
 
+## Absolute write boundary
+
+Codex may modify agent code only in this ICTrading checkout while it is on
+branch `IC`. It must never modify the AXI or RoboForex checkouts or their
+branches directly, even to repair a live failure. The user alone ports commits
+from `IC` to the other broker branches and restarts those agents. Codex must
+report every agent commit and wait for the user to confirm porting and restart
+before asking to resume work that depends on it.
+
+Manager changes are allowed only in the separate
+`MT5_Autotester_agent_manager` repository on branch `dev`.
+
 For functional requirements and the technical-debt backlog, see
 [requirements.md](requirements.md).
