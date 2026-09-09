@@ -108,7 +108,10 @@ def load_prepared(args, memory, api):
             if recovery:
                 raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
             raise ValueError('El padre no es un positivo final de esta memoria')
-        source = Path(row[0]).resolve()
+        # Memories survive checkout moves (for example the RoboForex workspace
+        # moved from C: to G:). Resolve only known workspace subtrees below the
+        # current BASE_DIR, then keep the existing containment and byte checks.
+        source = api.resolve_workspace_path(row[0], base_dir=api.BASE_DIR).resolve()
         if not source.is_relative_to(api.BASE_DIR.resolve()):
             raise ValueError('El padre recibido no coincide con el set local registrado')
         source_raw = registered_parent_cache.get(source)
