@@ -88,6 +88,7 @@ from ubs_agent import (
     validate_final_tick_stage_dates,
     validate_seed_backtest_set,
     variant_as_next_seed,
+    write_retry_set,
     write_set_force_symbol,
 )
 from run_tests import infer_period_from_set, load_set_params, normalize_set_symbol, parse_symbol_map
@@ -3160,6 +3161,43 @@ class UBSSetsFileTests(unittest.TestCase):
             self.assertTrue(robust_status_pending_for_retry(status))
         for status in ("accepted", "rejected"):
             self.assertFalse(robust_status_pending_for_retry(status))
+
+
+class RetrySetBrokerSpellingTests(unittest.TestCase):
+    def test_retry_repairs_exact_symbol_spelling_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "old.set"
+            destination = root / "retry.set"
+            assets = root / "assets.ini"
+            source.write_text(
+                "ForceSymbol=MIDDE50\nUseEveryTick=true||false||0||true||N\n",
+                encoding="utf-8",
+            )
+            assets.write_text(
+                "[Indices]\nsymbols=MidDE50,TecDE30,.JP225Cash,MixedSuffix.a\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(broker="ICTRADING", assets=assets, symbol_map="")
+
+            exact = write_retry_set(source, destination, False, args, "MIDDE50")
+
+            self.assertEqual(exact, "MidDE50")
+            self.assertIn("ForceSymbol=MidDE50", destination.read_text(encoding="utf-8"))
+            self.assertIn("UseEveryTick=false", destination.read_text(encoding="utf-8"))
+            self.assertIn("ForceSymbol=MIDDE50", source.read_text(encoding="utf-8"))
+
+    def test_retry_rejects_ambiguous_case_before_mt5(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "old.set"
+            assets = root / "assets.ini"
+            source.write_text("ForceSymbol=MIDDE50\n", encoding="utf-8")
+            assets.write_text("[Indices]\nsymbols=MidDE50,MIDDE50\n", encoding="utf-8")
+            args = SimpleNamespace(broker="ICTRADING", assets=assets, symbol_map="")
+
+            with self.assertRaisesRegex(ValueError, "nombre MT5 único"):
+                write_retry_set(source, root / "retry.set", False, args, "MIDDE50")
 
 
 if __name__ == "__main__":

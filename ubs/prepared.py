@@ -10,18 +10,24 @@ from manager_node_runtime import guided_batches as protocol
 from .models import Seed, Variant
 
 
-def _broker_execution_item(item, universe, symbol_map, api):
+def _broker_execution_item(item, universe, symbol_map, api, *, strict=False):
     """Return active-universe spelling without changing batch identity."""
     mapped = api.apply_symbol_map(item['target_symbol'], symbol_map)
     normalized = api.normalize_set_symbol(mapped)
-    exact = next(
-        (
-            symbol
-            for symbol in sorted(universe)
-            if api.normalize_set_symbol(symbol) == normalized
-        ),
-        item['target_symbol'],
-    )
+    if strict:
+        matches = [symbol for symbol in universe if symbol.casefold() == str(mapped).strip().casefold()]
+        if len(matches) != 1:
+            raise ValueError('No se puede resolver un nombre MT5 único en el universo del broker: '+str(mapped))
+        exact = matches[0]
+    else:
+        exact = next(
+            (
+                symbol
+                for symbol in sorted(universe)
+                if api.normalize_set_symbol(symbol) == normalized
+            ),
+            item['target_symbol'],
+        )
     if exact == item['target_symbol']:
         return item
     mutation = dict(item['mutation'])
@@ -76,6 +82,12 @@ def load_prepared(args, memory, api):
             'parent_b64':base64.b64encode((directory/(item['fingerprint']+'.parent.set')).read_bytes()).decode()})
     decoded = protocol.validate_package(package,args.broker,args.account_type)
     universe = api.broker_universe_symbols(args)
+    execution_universe = universe
+    if str(args.broker).strip().upper() == 'ICTRADING':
+        # Membership keys include aliases and are uppercased. They cannot be
+        # used as MT5 names: read the actual instruments with broker spelling.
+        groups, _ = api.load_asset_universe(Path(args.assets), include_disabled=True)
+        execution_universe = {symbol for symbols in groups.values() for symbol in symbols}
     disabled = api.load_disabled_symbols(api.disabled_symbols_file_for_account(args.account_type,args.broker))
     symbol_map = api.parse_symbol_map(args.symbol_map)
     timeframes = api.target_timeframe_universe(bool(args.experimental_long_timeframes),base_dir=api.BASE_DIR,
@@ -129,7 +141,8 @@ def load_prepared(args, memory, api):
         if not any(api.normalize_set_symbol(s)==api.normalize_set_symbol(mapped) for s in universe):
             raise ValueError('Instrumento fuera del universo del broker')
         execution_item = (
-            _broker_execution_item(item, universe, symbol_map, api)
+            _broker_execution_item(item, execution_universe, symbol_map, api,
+                                   strict=str(args.broker).strip().upper() == 'ICTRADING')
             if str(args.broker).strip().upper() in {'AXI', 'ICTRADING'}
             else item
         )
