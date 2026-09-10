@@ -55,4 +55,7 @@ one actual instrument after symbol mapping, and rejects unresolved/ambiguous
 names before creating a run. Regression tests use a real temporary assets INI
 and the real membership loader, covering mixed case, suffixes and alias keys.
 This fixes new prepared execution copies; existing completed batches and their
-persisted retry sets are not automatically rewritten.
+persisted source sets are not rewritten. Candidate, generation and full-run
+retry paths repair `ForceSymbol` in their temporary execution copies from the
+current IC instrument groups, so historical candidates also use exact broker
+spelling. An unresolved or ambiguous name stops before MT5 is launched.

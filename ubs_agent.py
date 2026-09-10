@@ -1191,6 +1191,40 @@ def broker_universe_symbols(args: argparse.Namespace) -> set[str]:
     return symbols
 
 
+def write_retry_set(
+    source: Path,
+    destination: Path,
+    enabled: bool,
+    args: argparse.Namespace,
+    target_symbol: str,
+) -> str:
+    """Create a stage copy and restore the broker's exact MT5 symbol spelling."""
+    write_set_use_every_tick(source, destination, enabled)
+    if normalize_broker(getattr(args, "broker", DEFAULT_BROKER)) != "ICTRADING":
+        return target_symbol
+
+    groups, _ = load_asset_universe(Path(args.assets), include_disabled=True)
+    actual_symbols = {
+        str(symbol).strip()
+        for group_symbols in groups.values()
+        for symbol in group_symbols
+        if str(symbol).strip()
+    }
+    mapped = apply_symbol_map(target_symbol, parse_symbol_map(args.symbol_map))
+    matches = [symbol for symbol in actual_symbols if symbol.casefold() == mapped.strip().casefold()]
+    if len(matches) != 1:
+        raise ValueError(
+            "No se puede resolver un nombre MT5 único en el universo del broker: " + str(mapped)
+        )
+    exact = matches[0]
+    text, encoding = read_set_with_encoding(destination)
+    lines = text.splitlines()
+    if not replace_existing_current_value(lines, "ForceSymbol", exact):
+        replace_or_add_plain_key(lines, "ForceSymbol", exact)
+    write_set_text(destination, "\n".join(lines), encoding)
+    return exact
+
+
 def symbol_not_offered(
     symbol: str,
     universe_symbols: set[str] | None,
@@ -6587,9 +6621,9 @@ def _retry_single_candidate(
     generation = int(row["generation"] or 0)
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"candidate_{candidate_id}")
     retry_set = retry_dir / set_path.name
-    write_set_use_every_tick(set_path, retry_set, False)
-
     variant = variant_from_candidate_row(row)
+    exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
+    variant = replace(variant, target_symbol=exact_symbol)
     if not args.dry_run:
         remove_report_artifacts(set_path)
         remove_candidate_copies(run_dir, generation, set_path.name)
@@ -6818,11 +6852,10 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
     run_dir = resolve_workspace_path(run["output_dir"])
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_gen_{generation:03d}")
     rows = [row for row, _set_path in rows_with_paths]
-    variants = [variant_from_candidate_row(row) for row in rows]
-
     print(f"Retry problemas tecnicos run #{run_id} gen {generation}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     retry_sets_by_id: dict[int, Path] = {}
+    variants: list[Variant] = []
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
@@ -6830,7 +6863,9 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        write_set_use_every_tick(set_path, retry_set, False)
+        variant = variant_from_candidate_row(row)
+        exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
+        variants.append(replace(variant, target_symbol=exact_symbol))
         if not args.dry_run:
             remove_report_artifacts(set_path)
             remove_candidate_copies(run_dir, generation, set_path.name)
@@ -6899,11 +6934,10 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
     run_dir = resolve_workspace_path(run["output_dir"])
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_all")
     rows = [row for row, _set_path in rows_with_paths]
-    variants = [variant_from_candidate_row(row) for row in rows]
-
     print(f"Retry problemas tecnicos run #{run_id}: {len(rows)} candidato(s)")
     seen_names: set[str] = set()
     retry_sets_by_id: dict[int, Path] = {}
+    variants: list[Variant] = []
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
@@ -6911,7 +6945,9 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        write_set_use_every_tick(set_path, retry_set, False)
+        variant = variant_from_candidate_row(row)
+        exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
+        variants.append(replace(variant, target_symbol=exact_symbol))
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
@@ -7002,13 +7038,12 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
     suffix = "selected" if requested_ids else "all"
     retry_dir = recreate_work_dir(run_dir / "retry_full" / f"run_{run_id}_{suffix}")
     rows = [row for row, _set_path in rows_with_paths]
-    variants = [variant_from_candidate_row(row) for row in rows]
-
     print(f"Reprobar run completo #{run_id}: {len(rows)} candidato(s)")
     if requested_ids:
         print("Modo seleccionado: " + ", ".join(str(row["id"]) for row in rows))
     seen_names: set[str] = set()
     retry_sets_by_id: dict[int, Path] = {}
+    variants: list[Variant] = []
     for row, set_path in rows_with_paths:
         if set_path.name in seen_names:
             print(f"ERROR: nombre de set duplicado en reprobar run: {set_path.name}")
@@ -7016,7 +7051,9 @@ def retry_full_run(args: argparse.Namespace, memory: AgentMemory, score_config: 
         seen_names.add(set_path.name)
         retry_set = retry_dir / set_path.name
         retry_sets_by_id[int(row["id"])] = retry_set
-        write_set_use_every_tick(set_path, retry_set, False)
+        variant = variant_from_candidate_row(row)
+        exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
+        variants.append(replace(variant, target_symbol=exact_symbol))
         if not args.dry_run:
             generation = int(row["generation"] or 0)
             remove_report_artifacts(set_path)
