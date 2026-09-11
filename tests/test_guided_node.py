@@ -36,6 +36,18 @@ def symbol_package():
     return value
 
 
+def rebuild_package():
+    """Retarget onto an enabled destination that is already proven.
+
+    Its own historical sets no longer pass today's safety rules, so without
+    this shape the universe keeps that destination permanently closed.
+    """
+    value=symbol_package();item=value['candidates'][0]
+    item['mutation']={**item['mutation'],'kind':'symbol_retarget'}
+    value['batch_id']=protocol.batch_identity(value)
+    return value
+
+
 def recovery_package():
     """A symbol attempt that made partial progress, adapted by one parameter."""
     value=symbol_package();item=value['candidates'][0]
