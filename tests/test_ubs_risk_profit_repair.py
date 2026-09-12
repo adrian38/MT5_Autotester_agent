@@ -8,12 +8,18 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ubs.degradation import RobustnessDegradationConfig, evaluate_robustness_degradation
-from ubs.risk_profit import RiskProfitConfig
+from ubs.risk_profit import RiskProfitConfig, evaluate_risk_profit
 from ubs.risk_profit_repair import (
     apply_risk_profit_restatements,
     scan_risk_profit_restatements,
 )
-from ubs.score import ScoreConfig, ScoreResult, rescore_result
+from ubs.score import (
+    ScoreConfig,
+    ScoreResult,
+    rescore_result,
+    residual_profit_ratio_after_top_months,
+    top_month_count,
+)
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
 
@@ -80,7 +86,26 @@ class RiskProfitRepairTests(unittest.TestCase):
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.reads: list[str] = []
+        self.monthly_reads: list[str] = []
         self.equity = {"base.htm": (5.7, .56), "oos.htm": (2.0, .2)}
+        # Todo lo que la ruta OOS lee y las filas viejas no guardaron. 17 meses
+        # -> el 5% quita 1 mes, no los 3 fijos.
+        self.evidence = {
+            "oos.htm": dict(
+                equity_drawdown=2.0, equity_drawdown_pct=.2, equity_recovery_factor=2.5,
+                scaled_residual_profit_ratio=.79, scaled_residual_top_months=1,
+                trade_curve_stability=.99, bootstrap_reps=2000, bootstrap_mean_block=5.0,
+                bootstrap_net_positive_probability=.99, bootstrap_net_p05=1.0,
+                bootstrap_pf_p05=1.8,
+            ),
+            "base.htm": dict(
+                equity_drawdown=5.7, equity_drawdown_pct=.56, equity_recovery_factor=4.03,
+                scaled_residual_profit_ratio=.86, scaled_residual_top_months=3,
+                trade_curve_stability=.99, bootstrap_reps=2000, bootstrap_mean_block=5.0,
+                bootstrap_net_positive_probability=.999, bootstrap_net_p05=2.0,
+                bootstrap_pf_p05=1.8,
+            ),
+        }
 
     def tearDown(self) -> None:
         self.conn.close()
@@ -91,9 +116,16 @@ class RiskProfitRepairTests(unittest.TestCase):
             raise OSError(f"no such report: {path}")
         return self.equity[path]
 
+    def read_oos_evidence(self, path: str, share: float):
+        self.monthly_reads.append(path)
+        if path not in self.evidence:
+            raise OSError(f"no such report: {path}")
+        return dict(self.evidence[path])
+
     def scan(self, **kwargs):
         return scan_risk_profit_restatements(
-            self.conn, read_equity=self.read_equity, **kwargs
+            self.conn, read_equity=self.read_equity,
+            read_oos_evidence=self.read_oos_evidence, **kwargs
         )
 
     def insert_base(self, candidate_id=1, *, status="rejected", result=None, **extra):
@@ -119,7 +151,8 @@ class RiskProfitRepairTests(unittest.TestCase):
         values.update(overrides)
         return metrics(**values)
 
-    def insert_oos_pair(self, candidate_id=1, *, oos_status="rejected", base_equity=None):
+    def insert_oos_pair(self, candidate_id=1, *, oos_status="rejected", base_equity=None,
+                        extra_reasons=()):
         """An accepted base row plus an OOS row rejected only by the net gate."""
 
         lenient = self.config(mode="off", thresholds=LENIENT_THRESHOLDS)
@@ -134,7 +167,7 @@ class RiskProfitRepairTests(unittest.TestCase):
             oos_from_date=OOS_WINDOW[0], oos_to_date=OOS_WINDOW[1],
             config=RobustnessDegradationConfig(),
         )
-        combined = tuple(dict.fromkeys([*oos.reasons, *degradation["reasons"]]))
+        combined = tuple(dict.fromkeys([*oos.reasons, *extra_reasons, *degradation["reasons"]]))
         self.conn.execute(
             """insert into candidate_robustness
                    (candidate_id, run_id, status, report_path, score, accepted,
@@ -178,16 +211,16 @@ class RiskProfitRepairTests(unittest.TestCase):
         self.assertEqual(payload["risk_profit_audit"]["selected_route"], "risk_adjusted")
         self.assertEqual(payload["score_config"]["risk_profit"]["mode"], "enforce")
 
-    def test_shadow_mode_stores_the_audit_without_moving_the_verdict(self) -> None:
+    def test_shadow_mode_reports_the_rescue_without_writing_anything(self) -> None:
         self.insert_base()
         plan = self.scan(policy=RiskProfitConfig(mode="shadow"))
         self.assertEqual(plan.base, [])
-        self.assertEqual(len(plan.base_evidence), 1)
+        self.assertTrue(plan.is_empty(), "shadow no mueve nada, asi que no escribe")
+        self.assertEqual(len(plan.audit_only), 1)
+        audit = json.loads(plan.audit_only[0]["metrics_json"])["risk_profit_audit"]
+        self.assertTrue(audit["would_rescue"])
         apply_risk_profit_restatements(self.conn, plan)
-        row = self.conn.execute("select * from candidates where id=1").fetchone()
-        payload = json.loads(row["metrics_json"])
-        self.assertEqual(row["status"], "rejected")
-        self.assertTrue(payload["risk_profit_audit"]["would_rescue"])
+        self.assertEqual(self.stored_row(), "rejected")
 
     def test_rows_failing_another_gate_are_never_read_or_touched(self) -> None:
         self.insert_base(result=metrics(reasons=("net_profit", "profit_factor")))
@@ -239,13 +272,16 @@ class RiskProfitRepairTests(unittest.TestCase):
         self.assertTrue(second.is_empty())
         self.assertEqual(self.reads, [])
 
-    def test_rejected_row_that_stays_rejected_converges_too(self) -> None:
+    def test_row_the_route_cannot_rescue_is_left_untouched(self) -> None:
         self.insert_base(result=metrics(active_months=12))
-        first = self.scan()
-        self.assertEqual(len(first.base_evidence), 1)
-        apply_risk_profit_restatements(self.conn, first)
+        stored_before = self.stored_row(column="metrics_json")
+        plan = self.scan()
+        self.assertTrue(plan.is_empty())
+        self.assertEqual(len(plan.audit_only), 1)
+        self.assertEqual(plan.audit_only[0]["risk_status"], "insufficient_evidence")
+        apply_risk_profit_restatements(self.conn, plan)
         self.assertEqual(self.stored_row(), "rejected")
-        self.assertTrue(self.scan().is_empty())
+        self.assertEqual(self.stored_row(column="metrics_json"), stored_before)
 
     def test_apply_leaves_rows_that_moved_meanwhile_alone(self) -> None:
         self.insert_base()
@@ -283,18 +319,41 @@ class RiskProfitRepairTests(unittest.TestCase):
 
     def test_oos_row_without_base_equity_evidence_stays_pending(self) -> None:
         self.insert_oos_pair()
-        self.equity.pop("base.htm")
+        self.evidence.pop("base.htm")
         plan = self.scan()
         self.assertEqual(plan.base_evidence, [])
         self.assertEqual(plan.robustness[0]["expected_status"], "pending_risk_evidence")
         self.assertIn("base_equity", plan.robustness[0]["missing_comparisons"])
 
     def test_pending_oos_row_resolves_once_the_report_can_be_read(self) -> None:
-        self.insert_oos_pair(oos_status="pending_risk_evidence")
+        """Una fila que ya paso por la ruta lleva `risk_profit_evidence` en sus
+        razones. Eso lo escribe la propia regla, no un criterio guardado: si
+        contara como causa, la fila quedaria excluida para siempre."""
+
+        self.insert_oos_pair(oos_status="pending_risk_evidence",
+                             extra_reasons=("risk_profit_evidence",))
         plan = self.scan()
         self.assertEqual(plan.robustness[0]["expected_status"], "accepted")
         apply_risk_profit_restatements(self.conn, plan)
         self.assertTrue(self.scan().is_empty())
+
+    def test_a_row_the_route_parked_is_revisited(self) -> None:
+        """Al aparcar una fila la ruta le QUITA `net_profit` de las razones.
+
+        Si el scope leyera esas razones al pie de la letra, ninguna fila
+        aparcada volveria a mirarse: la regla no podria resolver lo que ella
+        misma dejo pendiente.
+        """
+
+        self.insert_oos_pair(oos_status="pending_risk_evidence")
+        self.conn.execute(
+            "update candidate_robustness set metrics_json=? where candidate_id=1",
+            (stored(replace(self.oos_result(), reasons=("risk_profit_evidence",))),),
+        )
+        self.conn.commit()
+        plan = self.scan()
+        self.assertEqual(len(plan.robustness), 1)
+        self.assertEqual(plan.robustness[0]["expected_status"], "accepted")
 
     def test_oos_row_rejected_by_another_absolute_gate_is_out_of_scope(self) -> None:
         self.insert_oos_pair()
@@ -307,14 +366,118 @@ class RiskProfitRepairTests(unittest.TestCase):
         self.assertEqual(plan.robustness, [])
         self.assertEqual(self.reads, [])
 
-    def test_oos_row_shadow_mode_audits_without_moving_the_verdict(self) -> None:
+    def test_base_rows_never_pay_for_the_monthly_series(self) -> None:
+        """El cambio de duracion es solo de robustez: base no reparsea nada."""
+
+        self.insert_base()
+        plan = self.scan()
+        self.assertEqual(len(plan.base), 1)
+        self.assertEqual(self.reads, ["base.htm"])
+        self.assertEqual(self.monthly_reads, [])
+        payload = json.loads(plan.base[0]["metrics_json"])
+        self.assertIsNone(payload["scaled_residual_profit_ratio"])
+        self.assertEqual(payload["residual_profit_ratio"], .876)
+
+    def test_oos_row_is_judged_with_the_scaled_concentration(self) -> None:
+        self.insert_oos_pair()
+        plan = self.scan()
+        change = plan.robustness[0]
+        self.assertEqual(self.monthly_reads, ["base.htm", "oos.htm"],
+                         "el par completo: la comparacion es relativa")
+        self.assertEqual(change["evidence_source"], "reporte")
+        self.assertEqual(change["scaled_residual_top_months"], 1)
+        self.assertEqual(change["scaled_residual_profit_ratio"], .79)
+        payload = json.loads(change["metrics_json"])
+        checks = payload["risk_profit_audit"]["checks"]
+        self.assertEqual(checks["residual_profit_ratio"]["value"], .79)
+        self.assertEqual(checks["residual_profit_ratio"]["basis"], "scaled_top_months")
+        degradation = json.loads(change["degradation_json"])
+        self.assertEqual(degradation["checks"]["residual_profit_ratio"]["value"], .79)
+        self.assertEqual(degradation["checks"]["residual_profit_ratio"]["top_months_removed"], 1)
+
+    def test_oos_recovery_only_has_to_be_measurable_and_positive(self) -> None:
+        """El nivel se probo en base; cuanto sobrevivio lo mide la retencion.
+
+        net 5.0 con equity DD 2.0 sobre una cuenta de 1000 es un DD del 0.2%:
+        por debajo del suelo del 2% que ya usa `dd_inflation`, asi que el
+        recovery se reporta con ese suelo y no decide nada por si mismo.
+        """
+
+        self.insert_oos_pair()
+        checks = json.loads(self.scan().robustness[0]["metrics_json"])["risk_profit_audit"]["checks"]
+        recovery = checks["recovery"]
+        self.assertEqual(recovery["threshold"], 0.0)
+        self.assertEqual(recovery["basis"], "per_year_floored_drawdown")
+        self.assertEqual(recovery["judged_by"], "recovery_retention")
+        self.assertEqual(recovery["years"], 1.0)
+        self.assertEqual(recovery["raw"], 2.5)
+        self.assertAlmostEqual(recovery["floored"], 5.0 / (2.0 * 2.0 / .2))
+        self.assertTrue(recovery["accepted"])
+
+    def test_oos_recovery_must_still_be_positive(self) -> None:
+        self.insert_oos_pair()
+        self.conn.execute(
+            "update candidate_robustness set metrics_json=? where candidate_id=1",
+            (stored(self.oos_result(net_profit=-5.0, normalized_net_profit=-5.77)),),
+        )
+        self.conn.commit()
+        plan = self.scan()
+        self.assertEqual(plan.robustness, [])
+
+    def test_oos_row_without_monthly_series_is_reported(self) -> None:
+        self.insert_oos_pair()
+        self.evidence.pop("oos.htm")
+        plan = self.scan()
+        self.assertEqual(plan.robustness, [])
+        self.assertEqual(plan.skipped.get("reporte_ilegible"), 1)
+
+    def test_oos_row_shadow_mode_audits_without_writing(self) -> None:
         self.insert_oos_pair()
         plan = self.scan(policy=RiskProfitConfig(mode="shadow"))
         self.assertEqual(plan.robustness, [])
-        self.assertEqual(len(plan.robustness_evidence), 1)
-        audit = json.loads(plan.robustness_evidence[0]["metrics_json"])["risk_profit_audit"]
+        self.assertTrue(plan.is_empty())
+        audit = json.loads(plan.audit_only[-1]["metrics_json"])["risk_profit_audit"]
         self.assertTrue(audit["would_rescue"])
         self.assertEqual(audit["selected_route"], "none")
+
+
+class ScaleFreeConcentrationTests(unittest.TestCase):
+    """El test de concentracion tiene que medir lo mismo en 17 y en 60 meses."""
+
+    def test_share_reproduces_the_historical_three_months_on_a_five_year_window(self) -> None:
+        self.assertEqual(top_month_count(60, .05), 3)
+        self.assertEqual([top_month_count(n, .05) for n in (3, 17, 30, 72)], [1, 1, 2, 4])
+        self.assertIsNone(top_month_count(0, .05))
+
+    def test_a_full_window_gives_the_same_number_as_the_fixed_measure(self) -> None:
+        monthly = [1.0] * 55 + [8.0, 6.0, 4.0, 2.0, -3.0]
+        net = sum(monthly)
+        fixed = residual_profit_ratio_after_top_months(monthly, net, 3)
+        scaled = residual_profit_ratio_after_top_months(monthly, net, top_month_count(60, .05))
+        self.assertEqual(fixed, scaled)
+
+    def test_short_window_keeps_profit_the_fixed_measure_erases(self) -> None:
+        monthly = [0.5] * 14 + [4.0, 3.0, 2.0]  # 17 meses, beneficio 16.0
+        net = sum(monthly)
+        self.assertAlmostEqual(residual_profit_ratio_after_top_months(monthly, net, 3), .4375)
+        self.assertAlmostEqual(
+            residual_profit_ratio_after_top_months(monthly, net, top_month_count(17, .05)), .75
+        )
+
+    def test_oos_row_without_the_scaled_field_falls_back_to_the_stricter_measure(self) -> None:
+        metrics = dict(
+            net_profit=5.0, equity_drawdown=2.0, equity_drawdown_pct=.2, profit_factor=2.8,
+            trades=250, active_months=12, positive_month_ratio=.9, residual_profit_ratio=.15,
+        )
+        legacy = evaluate_risk_profit(metrics, RiskProfitConfig(), stage="oos")
+        scaled = evaluate_risk_profit(
+            {**metrics, "scaled_residual_profit_ratio": .55, "scaled_residual_top_months": 1},
+            RiskProfitConfig(), stage="oos",
+        )
+        self.assertFalse(legacy["eligible"])
+        self.assertEqual(legacy["checks"]["residual_profit_ratio"]["basis"], "fixed_top3_fallback")
+        self.assertTrue(scaled["eligible"])
+        self.assertEqual(scaled["checks"]["residual_profit_ratio"]["top_months"], 1)
 
 
 class Repairer(UBSUniverseLogicMixin):
@@ -363,7 +526,11 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
         conn = sqlite3.connect(self.memory_path)
         conn.row_factory = sqlite3.Row
         try:
-            return scan_risk_profit_restatements(conn, read_equity=lambda path: (5.7, .56))
+            return scan_risk_profit_restatements(
+                conn,
+                read_equity=lambda path: (5.7, .56),
+                read_oos_evidence=lambda path, share: {},
+            )
         finally:
             conn.close()
 
@@ -385,7 +552,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
         self.assertEqual(self.stored_status(), "accepted")
         self.assertIn("ubs_universe", self.app.refreshed)
         audit = json.loads(self.audits()[0].read_text(encoding="utf-8"))
-        self.assertEqual(audit["rule"], "risk_profit_v1")
+        self.assertEqual(audit["rule"], "risk_profit_v2")
         self.assertEqual(audit["policy"]["mode"], "enforce")
         self.assertEqual(audit["base"][0]["stored_status"], "rejected")
         self.assertIn("previous_metrics_json", audit["base"][0])
@@ -399,7 +566,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
         self.assertEqual(self.audits(), [])
         self.assertEqual(self.app.refreshed, [])
 
-    def test_evidence_only_rows_stay_out_of_the_audit_blobs(self) -> None:
+    def test_rows_the_route_leaves_alone_are_reported_not_written(self) -> None:
         conn = sqlite3.connect(self.memory_path)
         conn.execute(
             "update candidates set metrics_json=? where id=1",
@@ -409,14 +576,10 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
         conn.close()
         plan = self.plan()
         with patch("ui.ubs_universe_logic.messagebox") as box:
-            box.askyesno.return_value = True
             self.app._finish_risk_profit_repair(self.memory_path, plan)
+            box.askyesno.assert_not_called()
         self.assertEqual(self.stored_status(), "rejected")
-        audit = json.loads(self.audits()[0].read_text(encoding="utf-8"))
-        self.assertEqual(audit["base"], [])
-        self.assertNotIn("metrics_json", audit["base_evidence"][0])
-        # 12 meses activos no llegan al minimo de 24: muestra insuficiente, no fallo.
-        self.assertEqual(audit["base_evidence"][0]["risk_status"], "insufficient_evidence")
+        self.assertEqual(self.audits(), [], "nada que escribir, nada que auditar")
 
     def test_nothing_to_do_reports_and_skips_the_confirmation(self) -> None:
         conn = sqlite3.connect(self.memory_path)

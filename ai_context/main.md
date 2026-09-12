@@ -403,6 +403,54 @@ of silently reverting to `enforce`.
 - Risk is measured on equity on purpose: these strategies have a tiny balance
   drawdown and a recovery factor that hits the 99 sentinel, so the relative
   balance comparison carries no information.
+- **The OOS thresholds are duration-normalized; the base ones are not.**
+  Robustness measures a fraction of the construction years (≈17 active months
+  against 60), and two checks move with the length of the window instead of
+  with the strategy:
+  - *recovery*: net accumulates with time, the drawdown does not, and the
+    drawdown of a third of the sample is a different extreme altogether — so
+    **there is no absolute recovery level in OOS**. There is no
+    `oos_min_recovery`: the level was proven by `min_recovery` in base, and how
+    much of it survived is what `recovery_retention` measures. The OOS check
+    only requires the recovery to be measurable and positive, reported per year
+    over a floored drawdown.
+  - *the drawdown floor*: `recovery_retention` used to divide by the raw
+    drawdown while `dd_inflation`, right next to it, floors it at
+    `DD_RATIO_FLOOR_PCT` (2% of the account). The same strategy then passed one
+    check and failed the other on the very same two numbers — 0.56% of the
+    account over five years against 0.98% over seventeen months passed
+    `dd_inflation` (0.49 of the allowed 2.0) and failed `recovery_retention`
+    (0.37 of the required 0.50), because the 1.7x drawdown ratio ate the
+    retention. Both the equity-basis retention and the OOS gate now floor the
+    drawdown, so below the floor the retention degenerates into net retention,
+    which is the honest reading when the drawdown is under 1% of the account.
+  - *concentration*: `residual_profit_ratio` removes a fixed three best months,
+    which is 5% of a 60-month window but 18% of a 17-month one. The OOS route
+    reads `scaled_residual_profit_ratio`, which removes
+    `max(1, round(active_months * RESIDUAL_TOP_MONTH_SHARE))` months instead —
+    identical to the fixed three on a 5-year window by construction. A row
+    scored before the field existed falls back to the fixed measure, which on
+    these short windows removes *more* months, so the fallback can withhold a
+    rescue but never grant one.
+  Measured on the ICTrading memory: the fixed measure let 89% of ≥48-month base
+  rows pass its stricter `0.50`, but only 39% of 13–18-month OOS rows pass
+  `0.20` (3% below 12 months; median residual `0.00` to `-1.00`), and
+  `generalization_residual_profit` was the top OOS rejection cause (7856 of 9021
+  rejected rows). With the scaled measure the OOS median goes to `+0.53` and
+  the failures inside the route drop from 263 rows to 14.
+- The repair completes the rest of what the route reads and older rows never
+  stored — trade-curve stability and the generalization bootstrap — from the
+  same full parse (`route_evidence_from_report_file`). They are measurements of
+  the report, the bootstrap included: it seeds itself from a hash of the trade
+  series, so it is reproducible and completing it is not re-judging the row.
+  Without them a row the route had already found eligible could only be parked
+  as `pending_risk_evidence`.
+- The scaled measure is deliberately scoped: `ubs/degradation.py` reads it only
+  when `risk_basis="equity"`, which exists only for rows on the risk route. The
+  balance-basis degradation that judges every other robustness row, the base
+  verdicts and `_score_formula` all keep the fixed top-three measure, and the
+  audit `version` stays `risk_profit_v1` for base audits (`risk_profit_v2` marks
+  a duration-normalized OOS one) so no stored base blob changes.
 - Final Tick verdicts do not change: `final_tick_similarity()` decides on
   measured OHLC/tick metrics and never reads `ScoreResult.accepted`.
 
@@ -412,24 +460,50 @@ of silently reverting to `enforce`.
 `ubs/risk_profit_repair.py`). Rows judged before the rule never stored
 `equity_drawdown`, so it is read back from the report on disk with
 `parse_report_metrics()` (Results block only — it cuts the orders/deals tables
-before parsing, ~13x faster than `parse_report`); MT5 is not opened. Only rows
+before parsing, ~13x faster than `parse_report`); MT5 is not opened. Robustness
+rows additionally need the monthly series for the scaled concentration measure,
+which is not in the Results block, so those rows are parsed in full
+(`scaled_residual_from_report_file`). Base rows never pay for that parse, and a
+base row is rewritten only when its verdict moves or when the pass measured its
+equity for the first time — refreshing the recorded policy is not a reason,
+because the OOS half of it changes without any base verdict depending on it. Only rows
 the route can move are considered, and each is re-judged **with the thresholds it
 stored**: a verdict that no longer follows from them is reported as
 `criterio_desfasado` instead of being rewritten, so a pending criteria change
-cannot ride along inside this repair. Rows that keep their verdict still get the
-equity evidence and the audit explaining why there was no rescue. It writes a
-reversible audit to `outputs/diagnostics/risk_profit_repair_*.json` (blobs for
-verdict changes, compact records for audit-only rows) and is idempotent: a second
-pass reads no reports. Base rescues end up accepted with no OOS row, which is
+cannot ride along inside this repair.
+
+Scoping a row reads its stored reasons minus the relative ones (owned by the
+degradation blob) **and minus the route's own markers** (`risk_profit_evidence`,
+which a previous pass of this same rule appends). Treating a marker as a failing
+criterion would permanently exclude exactly the rows the rule already moved once
+— it is what made a corrected rule look like it changed nothing.
+
+Writes are limited to rows whose state actually moves, plus the base evidence
+each of those moves was compared against (so the new state stays derivable from
+the memory, not from one run). Rows the route examined and left alone are not
+rewritten at all, not even to store what the pass measured on them: they are
+listed in `audit_only` inside
+`outputs/diagnostics/risk_profit_repair_*.json`, which also keeps the old and new
+blobs of every change so the repair can be reverted row by row. Base rescues end up accepted with no OOS row, which is
 **new robustness work** (one backtest each). `pending_risk_evidence` rows caused
 by a missing generalization bootstrap are resolved with
 `--rescore-robustness-only --rescore-from-reports`.
 
-Measured on a copy of the ICTrading memory on 2026-09-12 (not yet applied to the
-live memory): 393 base rows would be rescued (`rejected -> accepted`), 8 OOS rows
-would move to `pending_risk_evidence` (all missing the bootstrap fields), 6976
-rows would be re-audited without a verdict change, 1 skipped for a missing
-report. The scan took ~80 s for 7378 report reads; the write took under a second.
+First pass on the ICTrading memory (2026-09-12, fixed-top-three rules): 393 base
+rows rescued (`rejected -> accepted`), 8 OOS rows parked as
+`pending_risk_evidence`, 6976 rows re-audited without a verdict change, 1 skipped
+for a missing report. Scan ~80 s for 7378 report reads, write under a second.
+
+Second pass, after normalizing the OOS duration, flooring the drawdown of the
+recovery comparisons and completing the evidence from the report: base untouched
+(0 rewrites, 6378 rows reported as `sin_cambio`), 19 OOS rows rewritten — 5
+`rejected -> accepted`, 9 `pending_risk_evidence -> accepted`, 5
+`pending_risk_evidence -> rejected` — plus the 12 base rows whose equity those
+comparisons were made against. 288 rows were examined and left alone, 4 skipped
+for an unreadable report or a report without the measurements. No row is left
+parked: `pending_risk_evidence` went from 14 to 0, and robustness `accepted` from
+3444 to 3458. Scan ~98 s (the OOS rows are parsed in full and their bootstrap
+recomputed); second pass rewrites nothing.
 
 ### UBS Final Tick
 
