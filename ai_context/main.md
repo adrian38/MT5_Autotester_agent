@@ -494,14 +494,16 @@ rows rescued (`rejected -> accepted`), 8 OOS rows parked as
 `pending_risk_evidence`, 6976 rows re-audited without a verdict change, 1 skipped
 for a missing report. Scan ~80 s for 7378 report reads, write under a second.
 
-Second pass, after normalizing the OOS duration: base untouched (0 rewrites,
-6378 rows reported as `sin_cambio`), 6 more OOS rows moved to
-`pending_risk_evidence` (14 in total) and 289 were re-audited. None reached
-`accepted`: the binding constraint is now the relative comparison, and those 14
-rows lack the generalization bootstrap and `trade_curve_stability` their blobs
-never stored. Completing that evidence needs a reparse — `--rescore-robustness-only
---rescore-from-reports` — not this button, which by design only measures what the
-route reads.
+Second pass, after normalizing the OOS duration, flooring the drawdown of the
+recovery comparisons and completing the evidence from the report: base untouched
+(0 rewrites, 6378 rows reported as `sin_cambio`), 19 OOS rows rewritten — 5
+`rejected -> accepted`, 9 `pending_risk_evidence -> accepted`, 5
+`pending_risk_evidence -> rejected` — plus the 12 base rows whose equity those
+comparisons were made against. 288 rows were examined and left alone, 4 skipped
+for an unreadable report or a report without the measurements. No row is left
+parked: `pending_risk_evidence` went from 14 to 0, and robustness `accepted` from
+3444 to 3458. Scan ~98 s (the OOS rows are parsed in full and their bootstrap
+recomputed); second pass rewrites nothing.
 
 ### UBS Final Tick
 
