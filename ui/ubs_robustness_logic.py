@@ -203,6 +203,9 @@ class UBSRobustnessLogicMixin:
             "drawdown_pct": ("DD", ".1f", "%"),
             "recovery_factor": ("RF", ".2f", ""),
             "positive_month_ratio": ("meses+", ".0%", ""),
+            # La via de riesgo no pudo completar la comparacion contra la
+            # ventana de construccion: ni pasa ni suspende.
+            "risk_profit_evidence": ("falta evidencia de riesgo", "", ""),
         }
         parts: list[str] = []
         checks = degradation.get("checks", {}) if isinstance(degradation, dict) else {}
