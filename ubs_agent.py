@@ -96,6 +96,7 @@ from ubs.regression_rules import (
     validate_regression_date_range,
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, run_is_lossless, score_report_file
+from ubs.risk_profit import RiskProfitConfig, combine_robustness_profit_gate, robustness_result_status
 from ubs.selection import (
     FITNESS_TARGET_FINAL_TICK_6M,
     DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
@@ -670,6 +671,10 @@ def parse_args() -> argparse.Namespace:
         help="Relanza los problemas tecnicos reintentables de una generacion.",
     )
     parser.add_argument("--min-net-profit", type=float, default=score_defaults.min_net_profit)
+    parser.add_argument("--risk-profit-mode", choices=("off", "shadow", "enforce"), default=None,
+                        help="Via alternativa por riesgo: shadow audita; enforce permite rescates.")
+    parser.add_argument("--risk-profit-config", type=Path,
+                        help="JSON con umbrales RiskProfitConfig para base y robustez.")
     parser.add_argument("--min-profit-factor", type=float, default=score_defaults.min_profit_factor)
     parser.add_argument("--min-trades", type=int, default=score_defaults.min_trades)
     parser.add_argument("--min-trades-w1", type=int, default=12, help="Trades minimos para W1 en score base/robustez.")
@@ -3126,35 +3131,27 @@ def _stored_or_discovered_report(row: sqlite3.Row) -> Path | None:
     return None
 
 
-def _rescore_metrics_json(raw: object, config: ScoreConfig) -> ScoreResult:
+def _rescore_metrics_json(raw: object, config: ScoreConfig, *, risk_stage: str = "base") -> ScoreResult:
     if raw is None or not str(raw).strip():
         raise ValueError("metrics_json vacio")
-    return rescore_result(ScoreResult.from_json(str(raw)), config)
+    return rescore_result(ScoreResult.from_json(str(raw)), config, risk_stage=risk_stage)
 
 
 def _stored_score_config(raw: object, fallback: ScoreConfig) -> ScoreConfig:
+    """Thresholds a stored row was judged with, falling back field by field.
+
+    Every field the blob lacks keeps the caller's value, the risk-profit policy
+    included: a row written before the route existed must be re-judged with the
+    policy this invocation asked for, not with the route's defaults.
+    """
+
     try:
         payload = json.loads(str(raw or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
         return fallback
-    stored = payload.get("score_config") if isinstance(payload, dict) else None
-    if not isinstance(stored, dict):
-        return fallback
-    try:
-        return ScoreConfig(
-            min_net_profit=float(stored.get("min_net_profit", fallback.min_net_profit)),
-            min_profit_factor=float(stored.get("min_profit_factor", fallback.min_profit_factor)),
-            min_trades=int(stored.get("min_trades", fallback.min_trades)),
-            max_drawdown_pct=float(stored.get("max_drawdown_pct", fallback.max_drawdown_pct)),
-            min_recovery_factor=float(
-                stored.get("min_recovery_factor", fallback.min_recovery_factor)
-            ),
-            min_positive_month_ratio=float(
-                stored.get("min_positive_month_ratio", fallback.min_positive_month_ratio)
-            ),
-        )
-    except (TypeError, ValueError):
-        return fallback
+    return ScoreConfig.from_dict(
+        payload.get("score_config") if isinstance(payload, dict) else None, fallback
+    )
 
 
 def robustness_degradation_config(args: argparse.Namespace) -> RobustnessDegradationConfig:
@@ -3239,11 +3236,18 @@ def apply_robustness_degradation(
         config=config,
     )
     absolute_accepted = bool(result.accepted)
-    reasons = tuple(dict.fromkeys((*result.reasons, *degradation["reasons"])))
+    policy = RiskProfitConfig.from_dict(result.score_config.get("risk_profit"))
+    reasons, risk_audit, degradation = combine_robustness_profit_gate(
+        base_metrics, oos_metrics, list(result.reasons), degradation, policy,
+        max_drawdown_pct=float(result.score_config.get("max_drawdown_pct", 25.0)),
+        min_recovery_factor=float(result.score_config.get("min_recovery_factor", 1.0)),
+        degradation_config=config,
+    )
     combined = replace(
         result,
-        accepted=absolute_accepted and bool(degradation["accepted"]),
-        reasons=reasons,
+        accepted=not reasons,
+        reasons=tuple(reasons),
+        risk_profit_audit=risk_audit,
     )
     degradation["absolute_accepted"] = absolute_accepted
     degradation["final_accepted"] = combined.accepted
@@ -3414,7 +3418,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
         from candidate_robustness cr
         join candidates c on c.id = cr.candidate_id
         join runs r on r.id = cr.run_id
-        where cr.status in ('accepted', 'rejected', 'no_trades')
+        where cr.status in ('accepted', 'rejected', 'no_trades', 'pending_risk_evidence')
           and coalesce(cr.metrics_json, '') != ''
         order by cr.run_id, c.generation, c.id
         """
@@ -3433,7 +3437,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             min_trades_mn=args.min_trades_mn,
         )
         try:
-            result = _rescore_metrics_json(row["robust_metrics_json"], config)
+            result = _rescore_metrics_json(row["robust_metrics_json"], config, risk_stage="oos")
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             invalid_metrics += 1
             print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
@@ -3461,9 +3465,7 @@ def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score
             if result.trades <= 0 and degradation.get("failure_type") in {"invalid_stops", "incompatible_volume"}
             else "no_trades"
             if result.trades <= 0
-            else "accepted"
-            if result.accepted
-            else "rejected"
+            else robustness_result_status(result)
         )
         updates.append(
             (
@@ -3568,6 +3570,7 @@ def _rescore_robustness_from_reports(
                 config=period_score_config,
                 broker=args.broker,
                 include_generalization_bootstrap=True,
+                risk_stage="oos",
             )
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez candidate #{candidate_id}: {exc}")
@@ -3620,7 +3623,7 @@ def _rescore_robustness_from_reports(
                 oos_to_date=row["robust_to_date"],
                 config=degradation_config,
             )
-            status = "accepted" if result.accepted else "rejected"
+            status = robustness_result_status(result)
         memory.record_candidate_robustness(
             candidate_id,
             run_id,
@@ -4803,6 +4806,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
                 config=period_score_config,
                 broker=args.broker,
                 include_generalization_bootstrap=True,
+                risk_stage="oos",
             )
         except Exception as exc:
             print(f"AVISO: no pude parsear robustez {report}: {exc}")
@@ -4861,7 +4865,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             oos_to_date=args.to_date,
             config=degradation_config,
         )
-        status = "accepted" if result.accepted else "rejected"
+        status = robustness_result_status(result)
         memory.record_candidate_robustness(
             candidate_id,
             run_id,
@@ -7943,6 +7947,13 @@ def resume_last_run(args: argparse.Namespace, memory: AgentMemory, score_config:
 
 
 def run_agent(args: argparse.Namespace) -> int:
+    policy_values = {}
+    policy_path = getattr(args, "risk_profit_config", None)
+    if policy_path:
+        policy_values = json.loads(Path(policy_path).read_text(encoding="utf-8-sig"))
+    if getattr(args, "risk_profit_mode", None) is not None:
+        policy_values["mode"] = args.risk_profit_mode
+    risk_policy = RiskProfitConfig.from_dict(policy_values)
     source_dir = resolve_workspace_path(args.source_dir)
     output_root = resolve_workspace_path(args.output_dir)
     run_dir = output_root / datetime.now().strftime("run_%Y%m%d_%H%M%S")
@@ -7954,6 +7965,7 @@ def run_agent(args: argparse.Namespace) -> int:
         max_drawdown_pct=args.max_drawdown_pct,
         min_recovery_factor=args.min_recovery_factor,
         min_positive_month_ratio=args.min_positive_month_ratio,
+        risk_profit=risk_policy,
     )
 
     if getattr(args, "prepared_manifest", None):

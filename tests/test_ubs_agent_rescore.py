@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ubs.memory import AgentMemory
+from ubs.risk_profit import RiskProfitConfig
 from ubs.score import ScoreConfig, ScoreResult
-from ubs_agent import rescore_candidate_scores_only, rescore_robustness_only
+from ubs_agent import _stored_score_config, rescore_candidate_scores_only, rescore_robustness_only
 
 
 class UBSAgentRescoreTests(unittest.TestCase):
@@ -287,6 +288,45 @@ class UBSAgentRescoreTests(unittest.TestCase):
                 self.assertFalse(audit["retryable"])
             finally:
                 memory.close()
+
+
+class StoredScoreConfigTests(unittest.TestCase):
+    """Umbrales de una fila guardada: lo que falta lo pone la invocacion.
+
+    El campo que se escapaba era `risk_profit`: una fila anterior a la regla no
+    lo guarda, y resolverlo con los defaults de la via en vez de con la politica
+    pedida hacia que `--risk-profit-mode` no se obedeciera al repuntuar base
+    desde reportes.
+    """
+
+    def setUp(self) -> None:
+        self.invocation = ScoreConfig(
+            min_net_profit=100.0, min_trades=50,
+            risk_profit=RiskProfitConfig(mode="shadow"),
+        )
+
+    def stored(self, score_config: object) -> str:
+        return json.dumps({"score_config": score_config})
+
+    def test_legacy_row_keeps_its_thresholds_and_the_requested_policy(self) -> None:
+        config = _stored_score_config(
+            self.stored({"min_net_profit": 20.0, "min_trades": 46}), self.invocation
+        )
+        self.assertEqual((config.min_net_profit, config.min_trades), (20.0, 46))
+        self.assertEqual(config.risk_profit.mode, "shadow")
+
+    def test_row_with_its_own_policy_keeps_it(self) -> None:
+        config = _stored_score_config(
+            self.stored({"min_net_profit": 20.0, "risk_profit": {"mode": "off", "min_recovery": 4.0}}),
+            self.invocation,
+        )
+        self.assertEqual(config.risk_profit.mode, "off")
+        self.assertEqual(config.risk_profit.min_recovery, 4.0)
+
+    def test_unusable_blobs_fall_back_whole(self) -> None:
+        for raw in (None, "", "{no json", self.stored(7), self.stored({"min_trades": "x"})):
+            with self.subTest(raw=raw):
+                self.assertEqual(_stored_score_config(raw, self.invocation), self.invocation)
 
 
 if __name__ == "__main__":

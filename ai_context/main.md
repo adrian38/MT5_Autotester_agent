@@ -373,6 +373,64 @@ robustness rows (`accepted=500`, `rejected=161`). The audit still reports
 accepted candidates pending robustness because normalization promoted new base
 accepted rows that have not yet been sent to OOS.
 
+### Risk-adjusted profit route (results and robustness)
+
+`ubs/risk_profit.py` adds an alternative route that can waive **only** the net
+profit gate. Modes: `off`, `shadow` (audits without moving the verdict) and
+`enforce` (**the default**). CLI: `--risk-profit-mode`, `--risk-profit-config`
+(JSON with `RiskProfitConfig` thresholds). The policy travels inside
+`ScoreConfig.risk_profit`, so it is recorded per row in
+`metrics_json.score_config.risk_profit`, in the per-row audit
+`metrics_json.risk_profit_audit`, and per run in `runs.config_json` →
+`score.risk_profit`. Every `ubs_agent.py` entry point goes through `run_agent`,
+so base scoring, seeds, robustness, Final Tick and the rescore paths all receive
+it — the UI passes no flag, so UI-launched runs use `enforce` with the defaults.
+Rescores that re-judge a row with its own stored thresholds
+(`_stored_score_config` → `ScoreConfig.from_dict`) fall back field by field, the
+policy included: a row that stored no `risk_profit` inherits the policy of the
+current invocation, so `--risk-profit-mode` is honoured on pre-rule rows instead
+of silently reverting to `enforce`.
+
+- Base stage: rescues a row rejected **only** for net profit when it shows
+  recovery over **equity** drawdown, sample (trades, active months) and temporal
+  consistency (positive-month ratio, residual profit after the top 3 months).
+  Profit factor, drawdown and minimum trades are never waived.
+- Robustness: additionally requires the construction-window comparison
+  recomputed on equity (`evaluate_robustness_degradation(..., risk_basis="equity")`).
+  Missing evidence is neither a pass nor a rejection: the row becomes
+  `pending_risk_evidence` — neutral for weights (`ubs/weights.py` only observes
+  `accepted`/`rejected`/`no_trades`) and it does not advance to Final Tick.
+- Risk is measured on equity on purpose: these strategies have a tiny balance
+  drawdown and a recovery factor that hits the 99 sentinel, so the relative
+  balance comparison carries no information.
+- Final Tick verdicts do not change: `final_tick_similarity()` decides on
+  measured OHLC/tick metrics and never reads `ScoreResult.accepted`.
+
+**Repairing states older than the rule**: `UBS Universo` → *Memoria* row →
+**Reaplicar regla riesgo/beneficio**
+(`ui/ubs_universe_logic.py:_repair_risk_profit_states`, domain logic in
+`ubs/risk_profit_repair.py`). Rows judged before the rule never stored
+`equity_drawdown`, so it is read back from the report on disk with
+`parse_report_metrics()` (Results block only — it cuts the orders/deals tables
+before parsing, ~13x faster than `parse_report`); MT5 is not opened. Only rows
+the route can move are considered, and each is re-judged **with the thresholds it
+stored**: a verdict that no longer follows from them is reported as
+`criterio_desfasado` instead of being rewritten, so a pending criteria change
+cannot ride along inside this repair. Rows that keep their verdict still get the
+equity evidence and the audit explaining why there was no rescue. It writes a
+reversible audit to `outputs/diagnostics/risk_profit_repair_*.json` (blobs for
+verdict changes, compact records for audit-only rows) and is idempotent: a second
+pass reads no reports. Base rescues end up accepted with no OOS row, which is
+**new robustness work** (one backtest each). `pending_risk_evidence` rows caused
+by a missing generalization bootstrap are resolved with
+`--rescore-robustness-only --rescore-from-reports`.
+
+Measured on a copy of the ICTrading memory on 2026-09-12 (not yet applied to the
+live memory): 393 base rows would be rescued (`rejected -> accepted`), 8 OOS rows
+would move to `pending_risk_evidence` (all missing the bootstrap fields), 6976
+rows would be re-audited without a verdict change, 1 skipped for a missing
+report. The scan took ~80 s for 7378 report reads; the write took under a second.
+
 ### UBS Final Tick
 
 Final Tick is the stage after robustness. Only rows with

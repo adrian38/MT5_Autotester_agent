@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 import tkinter as tk
 from datetime import datetime, timedelta
@@ -32,11 +34,13 @@ from ubs.tester_diagnostics import (
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
+    NON_PARAMETER_CHANGE_KEYS,
     SEED_WEIGHT_SCALE,
     TIMEFRAME_ACCEPTED_BONUS,
     candidate_group_key,
     feedback_weight,
     grouped_shrunk_mean,
+    parameter_mutation_keys,
     seed_group_key,
 )
 
@@ -1445,6 +1449,135 @@ class UBSUniverseLogicMixin:
         self.status_text.set(f"Todos los pesos de TF limpiados: {n} candidatos afectados")
         self._refresh_ubs_universe()
 
+    # ----- Memoria: claves que describen contexto, no mutaciones -----------
+
+    def scan_non_parameter_mutation_keys(self, conn) -> list[dict]:
+        """Find persisted execution-context keys incorrectly labelled mutations."""
+
+        try:
+            rows = conn.execute(
+                """select id, run_id, mutated_keys
+                   from candidates
+                   where coalesce(mutated_keys, '') != ''
+                   order by run_id, id"""
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+
+        changes: list[dict] = []
+        for row in rows:
+            previous = str(row["mutated_keys"] or "")
+            raw_keys = tuple(key.strip() for key in previous.split(";") if key.strip())
+            removed = tuple(key for key in raw_keys if key in NON_PARAMETER_CHANGE_KEYS)
+            if not removed:
+                continue
+            changes.append(
+                {
+                    "candidate_id": int(row["id"]),
+                    "run_id": int(row["run_id"]),
+                    "previous_mutated_keys": previous,
+                    "mutated_keys": ";".join(parameter_mutation_keys(previous)),
+                    "removed_keys": list(removed),
+                }
+            )
+        return changes
+
+    def apply_non_parameter_mutation_key_updates(self, conn, changes: list[dict]) -> int:
+        """Apply a reviewed repair without overwriting concurrent row changes."""
+
+        updated = 0
+        for item in changes:
+            cursor = conn.execute(
+                """update candidates
+                   set mutated_keys=?
+                   where id=? and mutated_keys=?""",
+                (
+                    item["mutated_keys"],
+                    item["candidate_id"],
+                    item["previous_mutated_keys"],
+                ),
+            )
+            updated += max(0, int(cursor.rowcount))
+        conn.commit()
+        return updated
+
+    def _repair_non_parameter_mutation_keys(self) -> None:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo("Reparar claves de mutacion", "No existe memoria UBS.")
+            return
+
+        conn = connect_memory(memory_path)
+        try:
+            changes = self.scan_non_parameter_mutation_keys(conn)
+        finally:
+            conn.close()
+
+        if not changes:
+            messagebox.showinfo(
+                "Reparar claves de mutacion",
+                "Nada que hacer: no hay claves de contexto guardadas como mutaciones.",
+            )
+            self.status_text.set("Claves de mutacion: memoria al dia")
+            return
+
+        runs = sorted({item["run_id"] for item in changes})
+        examples = "\n".join(
+            f"  #{item['candidate_id']} (run {item['run_id']}): "
+            f"{item['previous_mutated_keys']} -> {item['mutated_keys'] or '(vacio)'}"
+            for item in changes[:12]
+        )
+        if len(changes) > 12:
+            examples += f"\n  ... (+{len(changes) - 12})"
+        if not messagebox.askyesno(
+            "Reparar claves de mutacion",
+            "Se quitaran de mutated_keys solo las claves de contexto de ejecucion "
+            f"({', '.join(sorted(NON_PARAMETER_CHANGE_KEYS))}).\n\n"
+            f"Filas afectadas: {len(changes)}\n"
+            f"Runs afectados: {len(runs)}\n\n"
+            f"{examples}\n\n"
+            "mutation_details_json y todos los resultados de backtest se conservaran. "
+            "Se guardara una auditoria reversible. ¿Continuar?",
+        ):
+            return
+
+        audit_path = self._write_mutation_key_repair_audit(memory_path, changes)
+        conn = connect_memory(memory_path)
+        try:
+            updated = self.apply_non_parameter_mutation_key_updates(conn, changes)
+        finally:
+            conn.close()
+
+        self.status_text.set(
+            f"Claves de mutacion reparadas: {updated}/{len(changes)}; auditoria={audit_path.name}"
+        )
+        messagebox.showinfo(
+            "Reparar claves de mutacion",
+            f"Filas reparadas: {updated} de {len(changes)}.\n"
+            "Los detalles del retarget y los resultados historicos se conservaron.\n\n"
+            f"Auditoria: {audit_path}",
+        )
+        self._refresh_ubs_universe()
+
+    def _write_mutation_key_repair_audit(self, memory_path: Path, changes: list[dict]) -> Path:
+        folder = memory_path.parent / "diagnostics"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = folder / f"mutation_key_repair_{stamp}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "memory": str(memory_path),
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "changes": changes,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     # ----- Final Tick: estados incoherentes con su propio veredicto -----------
 
     FINAL_TICK_STATUS_TABLES = (
@@ -1798,6 +1931,202 @@ class UBSUniverseLogicMixin:
                     "memory": str(memory_path),
                     "generated_at": datetime.now().isoformat(timespec="seconds"),
                     **groups,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    # ----- Regla riesgo/beneficio: estados anteriores a la regla -------------
+
+    RISK_PROFIT_REPAIR_TITLE = "Reaplicar regla riesgo/beneficio"
+
+    def _repair_risk_profit_states(self) -> None:
+        """Reaplica la via de riesgo a resultados y robustez ya guardados.
+
+        El analisis relee el equity drawdown de cada reporte en disco (la regla
+        lo necesita y las filas antiguas no lo guardaron), asi que va en un hilo
+        con progreso. No escribe nada hasta que el resumen se confirma.
+        """
+
+        title = self.RISK_PROFIT_REPAIR_TITLE
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo(title, "No existe memoria UBS.")
+            return
+        if not messagebox.askyesno(
+            title,
+            "Se revisaran los estados guardados que la regla de riesgo/beneficio "
+            "puede mover:\n"
+            "  - Resultados rechazados unicamente por net profit.\n"
+            "  - Robustez cuya unica causa absoluta es ese mismo net profit.\n\n"
+            "Para cada uno se relee el equity drawdown de su reporte en disco, "
+            "porque las filas anteriores a la regla no lo guardaron. No se abre "
+            "MT5 y todavia no se escribe nada: primero veras el resumen.\n\n"
+            "Puede tardar uno o dos minutos. ¿Analizar ahora?",
+        ):
+            return
+
+        from ubs.risk_profit import RiskProfitConfig
+        from ubs.risk_profit_repair import scan_risk_profit_restatements
+
+        policy = RiskProfitConfig()
+        q: queue.Queue = queue.Queue()
+
+        def _worker() -> None:
+            try:
+                conn = connect_memory(memory_path)
+                try:
+                    plan = scan_risk_profit_restatements(
+                        conn,
+                        policy=policy,
+                        progress=lambda done, total, label: q.put(
+                            ("progress", done - 1, total, label or "revisando memoria")
+                        ),
+                    )
+                finally:
+                    conn.close()
+            except Exception as exc:  # el dialogo lo muestra y se cierra solo
+                q.put(("failed", f"No se pudo analizar la memoria:\n{exc}"))
+                return
+            q.put(("done", plan))
+
+        def _on_done(payload: tuple) -> None:
+            self._finish_risk_profit_repair(memory_path, payload[0])
+
+        dlg, poll = self._ubs_seed_progress_dialog(
+            title,
+            "Analizando estados guardados",
+            "Releyendo el equity drawdown de los reportes implicados. "
+            "No se modifica nada durante el analisis.",
+            0,
+            q,
+            _on_done,
+        )
+        threading.Thread(target=_worker, daemon=True).start()
+        dlg.after(40, poll)
+
+    def _finish_risk_profit_repair(self, memory_path: Path, plan) -> None:
+        title = self.RISK_PROFIT_REPAIR_TITLE
+        skipped = ", ".join(f"{reason}={count}" for reason, count in sorted(plan.skipped.items()))
+        if plan.is_empty():
+            messagebox.showinfo(
+                title,
+                "Nada que hacer: ninguna fila guardada cambia con la regla de "
+                "riesgo/beneficio ni le falta la evidencia de equity.\n\n"
+                + (f"Omitidas: {skipped}" if skipped else ""),
+            )
+            self.status_text.set("Regla riesgo/beneficio: estados al dia")
+            return
+
+        summary = [
+            f"Regla riesgo/beneficio (risk_profit_v1), modo {plan.policy.get('mode', '?')}.\n"
+            "Cada fila se rejuzga con los umbrales que ella misma guardo, asi que "
+            "un cambio de criterio pendiente no viaja dentro de este arreglo."
+        ]
+        if plan.base:
+            summary.append(
+                f"A) Resultados que pasan a aceptado: {len(plan.base)}\n"
+                "   La via de riesgo sustituye el net profit por recuperacion sobre\n"
+                "   equity, muestra y consistencia temporal. El resto de umbrales\n"
+                "   (PF, DD, operaciones) se mantiene tal cual."
+            )
+        if plan.pending_robustness:
+            runs = sorted({item["run_id"] for item in plan.pending_robustness})
+            summary.append(
+                f"   OJO: {len(plan.pending_robustness)} quedan aceptados sin fila de\n"
+                "   robustez, o sea trabajo OOS nuevo (un backtest cada uno) en\n"
+                f"   {len(runs)} runs: {', '.join(str(r) for r in runs[:12])}"
+                + (f", ... (+{len(runs) - 12})" if len(runs) > 12 else "")
+            )
+        if plan.robustness:
+            destinos = {}
+            for item in plan.robustness:
+                destinos[item["expected_status"]] = destinos.get(item["expected_status"], 0) + 1
+            detalle = "\n".join(f"     - {status}: {count}" for status, count in sorted(destinos.items()))
+            summary.append(
+                f"B) Robustez que cambia de estado: {len(plan.robustness)}\n{detalle}\n"
+                "   'pending_risk_evidence' no es un rechazo: la comparacion contra la\n"
+                "   ventana de construccion esta incompleta (las filas viejas no\n"
+                "   guardaron el bootstrap). Se resuelven con\n"
+                "   --rescore-robustness-only --rescore-from-reports."
+            )
+        evidence = len(plan.base_evidence) + len(plan.robustness_evidence)
+        if evidence:
+            summary.append(
+                f"C) Solo auditoria, veredicto intacto: {evidence}\n"
+                f"   ({len(plan.base_evidence)} resultados y {len(plan.robustness_evidence)} robustez)\n"
+                "   Se guarda el equity drawdown leido y por que no hubo rescate."
+            )
+        lines = [
+            f"  #{item['candidate_id']} ({item['symbol']} {item['period']}, run {item['run_id']}): "
+            f"{item['stored_status']} -> {item['expected_status']}"
+            for item in (plan.base + plan.robustness)[:12]
+        ]
+        if plan.verdict_changes() > 12:
+            lines.append(f"  ... (+{plan.verdict_changes() - 12})")
+
+        if not messagebox.askyesno(
+            title,
+            "\n\n".join(summary)
+            + (f"\n\nOmitidas: {skipped}" if skipped else "")
+            + f"\n\nFilas a reescribir: {plan.rows_to_write()} "
+            f"(cambian de veredicto: {plan.verdict_changes()})\n\n"
+            + "\n".join(lines)
+            + "\n\nSe guardara una auditoria con el antes/despues. ¿Aplicar?",
+        ):
+            self.status_text.set("Regla riesgo/beneficio: analisis descartado")
+            return
+
+        from ubs.risk_profit_repair import apply_risk_profit_restatements
+
+        audit_path = self._write_risk_profit_repair_audit(memory_path, plan)
+        conn = connect_memory(memory_path)
+        try:
+            written = apply_risk_profit_restatements(conn, plan)
+        finally:
+            conn.close()
+
+        total = sum(written.values())
+        resumen = ", ".join(f"{group}={count}" for group, count in sorted(written.items()) if count)
+        self.status_text.set(
+            f"Regla riesgo/beneficio aplicada: {total} filas ({resumen}); auditoria={audit_path.name}"
+        )
+        messagebox.showinfo(
+            title,
+            f"Filas reescritas: {total} de {plan.rows_to_write()}.\n"
+            f"Resultados a aceptado: {written['base']} | robustez con estado nuevo: {written['robustness']}.\n"
+            f"Solo auditoria: {written['base_evidence'] + written['robustness_evidence']}.\n\n"
+            f"Auditoria: {audit_path}",
+        )
+        for label, callback in (
+            ("ubs_universe", self._refresh_ubs_universe),
+            ("ubs_resultados", getattr(self, "_refresh_ubs_results", None)),
+            ("ubs_robustez", getattr(self, "_refresh_ubs_robustness", None)),
+        ):
+            if callback is not None:
+                self._safe_refresh(label, callback)
+
+    def _write_risk_profit_repair_audit(self, memory_path: Path, plan) -> Path:
+        """Antes/despues fila a fila, para poder deshacer el arreglo.
+
+        Incluye el ``metrics_json`` nuevo y, en robustez, el ``degradation_json``
+        recalculado sobre equity: son los dos blobs que esta operacion
+        sobrescribe.
+        """
+
+        folder = memory_path.parent / "diagnostics"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = folder / f"risk_profit_repair_{stamp}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "memory": str(memory_path),
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    **plan.to_audit(),
                 },
                 ensure_ascii=False,
                 indent=2,
