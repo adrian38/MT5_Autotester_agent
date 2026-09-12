@@ -9,7 +9,7 @@ from unittest import mock
 
 import ubs_agent as agent
 from manager_node_runtime import guided_batches as protocol
-from tests.test_guided_node import package, recovery_package, symbol_package
+from tests.test_guided_node import package, rebuild_package, recovery_package, symbol_package
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.prepared import run_prepared
@@ -95,6 +95,34 @@ class PreparedTests(unittest.TestCase):
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
         variants=self.api.evaluate_generation.call_args.args[4]
         self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',('ForceSymbol',)))
+
+    def test_rebuild_retargets_a_destination_that_already_has_a_final_positive(self):
+        # The destination is enabled and proven, but no set of its own still
+        # passes today's safety rules. Exploration refuses it by design; a
+        # rebuild is exactly the case that keeps such a destination reachable.
+        self.package=rebuild_package();directory=protocol.store_batch(self.root,self.package,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+        self.memory.conn.execute("update candidates set target_symbol='EURUSD' where id=1")
+        self.memory.conn.commit()
+
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+
+        variant=self.api.evaluate_generation.call_args.args[4][0]
+        self.assertEqual((variant.target_symbol,variant.mutated_keys),('EURUSD',('ForceSymbol',)))
+        # Both shapes must stay distinguishable in the memory or neither can be
+        # measured apart from the other.
+        self.assertEqual(variant.mutation_details[0]['kind'],'symbol_retarget')
+        self.api.create_variant.assert_not_called()
+
+    def test_exploration_still_refuses_a_symbol_with_a_final_positive(self):
+        self.package=symbol_package();directory=protocol.store_batch(self.root,self.package,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+        self.memory.conn.execute("update candidates set target_symbol='EURUSD' where id=1")
+        self.memory.conn.commit()
+
+        with self.assertRaisesRegex(ValueError,'ya tiene un positivo final'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+        self.api.evaluate_generation.assert_not_called()
 
     def _prepare_recovery(self, parent_candidate_id=None):
         value=recovery_package();item=value['candidates'][0]
