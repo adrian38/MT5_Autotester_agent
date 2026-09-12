@@ -165,11 +165,17 @@ def load_prepared(args, memory, api):
                 api.replace_or_add_plain_key(lines, 'ForceSymbol', execution_item['target_symbol'])
             raw = '\n'.join(lines).encode('utf-8')
         if item['mode']=='symbol_exploration':
-            existing = memory.conn.execute('''select 1 from candidates c join candidate_final_tick_6m f
-                on f.candidate_id=c.id where upper(c.target_symbol)=upper(?) and f.status='accepted' limit 1''',
-                (item['target_symbol'],)).fetchone()
-            if existing:
-                raise ValueError('El símbolo de exploración ya tiene un positivo final')
+            # Exploration must reach new ground, so an instrument that already
+            # produced a final positive is refused. A rebuild is the opposite
+            # case on purpose: the destination is enabled and already proven,
+            # but no set of its own still passes today's safety rules, so
+            # without this the universe would keep it permanently closed.
+            if item['mutation'].get('kind')!='symbol_retarget':
+                existing = memory.conn.execute('''select 1 from candidates c join candidate_final_tick_6m f
+                    on f.candidate_id=c.id where upper(c.target_symbol)=upper(?) and f.status='accepted' limit 1''',
+                    (item['target_symbol'],)).fetchone()
+                if existing:
+                    raise ValueError('El símbolo de exploración ya tiene un positivo final')
             # A recovery keeps symbol and timeframe, so its single numeric step
             # falls through to the same rules any other mutation must satisfy.
             if not recovery:
@@ -226,8 +232,10 @@ def run_prepared(args, memory, score_config, api):
         seed = Seed(directory/(item['fingerprint']+'.parent.set'),item['target_symbol'],item['period'],item['family'],strategy)
         change = item['mutation']
         if item['mode']=='symbol_exploration' and change.get('kind')!='symbol_recovery':
-            detail = {'kind':'symbol_exploration','key':'ForceSymbol','old':change['old'],
-                      'new':change['new'],'wrapped':False}
+            # Keep the declared shape: exploration and rebuild must stay
+            # distinguishable in the memory, or neither can be measured apart.
+            detail = {'kind':change.get('kind','symbol_exploration'),'key':'ForceSymbol',
+                      'old':change['old'],'new':change['new'],'wrapped':False}
         else:
             detail = {'key':change['key'],'old':float(change['old']),'new':float(change['new']),
                       'step':float(change['step']),'delta':float(change['new'])-float(change['old']),
