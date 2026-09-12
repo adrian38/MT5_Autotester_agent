@@ -20,6 +20,13 @@ from ubs.risk_profit import RiskProfitConfig, apply_base_profit_gate
 SCORE_FORMULA_VERSION = "2"
 GENERALIZATION_BOOTSTRAP_REPS = 2000
 GENERALIZATION_BOOTSTRAP_MEAN_BLOCK = 5.0
+# Share of the active months the scale-free concentration measure removes. 5% of
+# a 60-month construction window is the historical fixed top three, so both
+# measures agree there and only diverge on the shorter windows robustness uses.
+# Deliberately not part of ScoreConfig: putting it there would change the score
+# config hash of every stored row to express something no verdict depends on
+# outside the OOS risk route.
+RESIDUAL_TOP_MONTH_SHARE = 0.05
 
 
 @dataclass(frozen=True)
@@ -117,6 +124,11 @@ class ScoreResult:
     equity_drawdown_pct: float | None = None
     equity_recovery_factor: float | None = None
     risk_profit_audit: dict[str, object] = field(default_factory=dict)
+    # Concentration measured by removing a *share* of the active months instead
+    # of a fixed three. Only the OOS risk route reads it; `None` marks a row
+    # scored before the field existed, whose monthly series is not stored.
+    scaled_residual_profit_ratio: float | None = None
+    scaled_residual_top_months: int | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=True, sort_keys=True)
@@ -183,6 +195,12 @@ def score_report(
     top3_month_profit = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:3])
     residual_profit_after_top3 = net_profit - top3_month_profit
     residual_profit_ratio = residual_profit_after_top3 / net_profit if net_profit > 0 else -1.0
+    scaled_residual_top_months = top_month_count(len(monthly_values), RESIDUAL_TOP_MONTH_SHARE)
+    scaled_residual_profit_ratio = (
+        residual_profit_ratio_after_top_months(monthly_values, net_profit, scaled_residual_top_months)
+        if scaled_residual_top_months
+        else None
+    )
     trade_curve_stability = _trade_curve_stability(profits)
     avg_trade = net_profit / len(profits) if profits else 0.0
     deviation = statistics.pstdev(profits) if len(profits) > 1 else 0.0
@@ -299,6 +317,12 @@ def score_report(
         equity_drawdown_pct=equity_drawdown_pct,
         equity_recovery_factor=equity_recovery_factor,
         risk_profit_audit=risk_audit,
+        scaled_residual_profit_ratio=(
+            round(scaled_residual_profit_ratio, 6)
+            if scaled_residual_profit_ratio is not None
+            else None
+        ),
+        scaled_residual_top_months=scaled_residual_top_months,
     )
 
 
@@ -516,6 +540,77 @@ def _generalization_bootstrap(
         "net_p05": _percentile(nets, 0.05),
         "pf_p05": _percentile(profit_factors, 0.05),
     }
+
+
+def top_month_count(active_months: int, share: float) -> int | None:
+    """How many best months the concentration measure removes, half-up.
+
+    A fixed three months is 5% of a 60-month construction window but 18% of a
+    17-month OOS window, so the same number makes a categorically harsher test
+    on the shorter one. Scaling the count keeps the test comparable; it never
+    drops below one month, or there would be nothing to remove.
+    """
+
+    if active_months <= 0 or share <= 0:
+        return None
+    return max(1, int(active_months * share + 0.5))
+
+
+def residual_profit_ratio_after_top_months(
+    monthly_values: list[float], net_profit: float, count: int
+) -> float:
+    """Share of the net profit that survives removing the `count` best months."""
+
+    top = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:count])
+    return (net_profit - top) / net_profit if net_profit > 0 else -1.0
+
+
+def route_evidence_from_report_file(
+    path: Path | str, share: float = RESIDUAL_TOP_MONTH_SHARE
+) -> dict[str, object]:
+    """Measurements the OOS risk route reads and legacy rows never stored.
+
+    The equity drawdown is in the Results block, but the scaled concentration,
+    the trade-curve stability and the generalization bootstrap all come from the
+    trade and monthly series, so the report is parsed in full. Every value here
+    is a measurement of the report — deterministic and threshold-free, the
+    bootstrap included (it seeds itself from the trade series) — so completing
+    them is not re-judging the row.
+
+    Only the keys it could measure are returned.
+    """
+
+    report = parse_report(Path(path))
+    profits = [trade.profit_loss for trade in report.trades]
+    monthly_values = [value for months in report.monthly.values() for value in months.values()]
+    net_profit = round(sum(profits), 2)
+    amount, pct = _equity_drawdown(report)
+    evidence: dict[str, object] = {}
+    if amount is not None or pct is not None:
+        evidence["equity_drawdown"] = amount
+        evidence["equity_drawdown_pct"] = pct
+        evidence["equity_recovery_factor"] = (
+            round(net_profit / amount, 6) if amount is not None and amount > 0 else None
+        )
+    count = top_month_count(len(monthly_values), share)
+    if count is not None:
+        evidence["scaled_residual_top_months"] = count
+        evidence["scaled_residual_profit_ratio"] = round(
+            residual_profit_ratio_after_top_months(monthly_values, net_profit, count), 6
+        )
+    stability = _trade_curve_stability(profits)
+    if stability is not None:
+        evidence["trade_curve_stability"] = stability
+    bootstrap = _generalization_bootstrap(profits)
+    if bootstrap:
+        evidence.update(
+            bootstrap_reps=bootstrap.get("reps"),
+            bootstrap_mean_block=bootstrap.get("mean_block"),
+            bootstrap_net_positive_probability=bootstrap.get("net_positive_probability"),
+            bootstrap_net_p05=bootstrap.get("net_p05"),
+            bootstrap_pf_p05=bootstrap.get("pf_p05"),
+        )
+    return evidence
 
 
 def equity_drawdown_from_report_file(path: Path | str) -> tuple[float | None, float | None]:

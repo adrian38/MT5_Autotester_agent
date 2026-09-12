@@ -113,14 +113,21 @@ class RiskProfitTests(unittest.TestCase):
 
     def test_oos_does_not_reject_rescue_using_legacy_balance_recovery(self):
         # Balance recovery 67.6 is a sentinel to the legacy comparison. Equity
-        # recovery 4.03 remains measurable and must appear in the new comparison.
+        # recovery remains measurable and must appear in the new comparison,
+        # over a drawdown floored at 2% of the account: 0.56% of it is not a
+        # measurement of risk, and `dd_inflation` already refuses to compare it.
         result, degradation = self.combine()
         self.assertTrue(result.accepted)
-        self.assertAlmostEqual(degradation["checks"]["recovery_retention"]["base"], 4.03333333)
+        self.assertAlmostEqual(
+            degradation["checks"]["recovery_retention"]["base"], 22.99 / (5.7 * 2.0 / .56)
+        )
 
     def test_oos_duration_adjustment_and_degradation_failure(self):
-        one_year, _ = self.combine(self.oos(equity_drawdown=5.0))
-        five_years, _ = self.combine(self.oos(equity_drawdown=5.0), years=5)
+        # El importe y el porcentaje describen la misma cuenta (~1000), como en
+        # cualquier reporte real: el suelo del 2% se deriva de esa pareja.
+        heavier = self.oos(equity_drawdown=5.0, equity_drawdown_pct=.5)
+        one_year, _ = self.combine(heavier)
+        five_years, _ = self.combine(heavier, years=5)
         self.assertTrue(one_year.accepted)
         self.assertFalse(five_years.accepted)
         self.assertFalse(five_years.risk_profit_audit["equity_degradation"]["checks"]["recovery_retention"]["accepted"])
@@ -161,7 +168,7 @@ class RiskProfitTests(unittest.TestCase):
 
     def test_invalid_config_is_rejected(self):
         for values in (dict(mode="yes"), dict(min_recovery=0), dict(min_positive_month_ratio=2),
-                       dict(min_trades=2.5), dict(oos_min_recovery=float("nan"))):
+                       dict(min_trades=2.5), dict(oos_min_profit_factor=float("nan"))):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 RiskProfitConfig(**values)
 

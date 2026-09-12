@@ -160,9 +160,25 @@ def evaluate_robustness_degradation(
     oos_recovery = _number(oos.get("recovery_factor"))
     if risk_basis == "equity":
         def recovery(metrics: Mapping[str, object]) -> float | None:
+            """Net over the equity drawdown, with the same floor `dd_inflation` uses.
+
+            Without it this comparison contradicts the one next to it: a
+            strategy whose drawdown goes from 0.56% to 0.98% of the account
+            passes `dd_inflation` (0.49 of the allowed 2.0, because both are
+            under the floor) and fails `recovery_retention` (0.37 of the
+            required 0.50), on the very same two numbers. Below the floor the
+            drawdown is not a measurement of risk, so the retention degenerates
+            into net retention, which is the honest reading at that scale.
+            """
+
             net = _number(metrics.get("net_profit"))
             dd = _number(metrics.get("equity_drawdown"))
-            return net / dd if net is not None and dd is not None and dd > 0 else None
+            if net is None or dd is None or dd <= 0:
+                return None
+            pct = _number(metrics.get("equity_drawdown_pct"))
+            if pct is not None and 0 < pct < DD_RATIO_FLOOR_PCT:
+                dd = dd * DD_RATIO_FLOOR_PCT / pct
+            return net / dd
         base_recovery = recovery(base)
         oos_recovery = recovery(oos)
     base_recovery_annual = (
@@ -217,7 +233,18 @@ def evaluate_robustness_degradation(
     positive_month_delta = (
         oos_months - base_months if base_months is not None and oos_months is not None else None
     )
+    # The concentration measure removes the best months of the OOS window. The
+    # equity basis (the risk-adjusted route) reads the scaled one, which removes
+    # a share of the months instead of a fixed three: on a window a third as
+    # long as the construction one, a fixed three is a categorically harsher
+    # test. The balance basis keeps the historical measure untouched.
     residual_profit_ratio = _number(oos.get("residual_profit_ratio"))
+    residual_top_months = 3
+    if risk_basis == "equity":
+        scaled = _number(oos.get("scaled_residual_profit_ratio"))
+        if scaled is not None:
+            residual_profit_ratio = scaled
+            residual_top_months = _number(oos.get("scaled_residual_top_months"))
     base_stability = _number(base.get("trade_curve_stability"))
     oos_stability = _number(oos.get("trade_curve_stability"))
     stability_retention = (
@@ -281,6 +308,7 @@ def evaluate_robustness_degradation(
                 "oos_net": _number(oos.get("net_profit")),
                 "top3_month_profit": _number(oos.get("top3_month_profit")),
                 "residual_profit_after_top3": _number(oos.get("residual_profit_after_top3")),
+                "top_months_removed": residual_top_months,
             },
         ),
         "oos_positive_month_ratio": _check(
