@@ -32,11 +32,13 @@ from ubs.tester_diagnostics import (
 from ubs.universe import asset_rows_from_groups, canonical_symbol, load_asset_universe
 from ubs.weights import (
     ASSET_ACCEPTED_BONUS,
+    NON_PARAMETER_CHANGE_KEYS,
     SEED_WEIGHT_SCALE,
     TIMEFRAME_ACCEPTED_BONUS,
     candidate_group_key,
     feedback_weight,
     grouped_shrunk_mean,
+    parameter_mutation_keys,
     seed_group_key,
 )
 
@@ -1444,6 +1446,135 @@ class UBSUniverseLogicMixin:
         self.ubs_timeframe_checked.clear()
         self.status_text.set(f"Todos los pesos de TF limpiados: {n} candidatos afectados")
         self._refresh_ubs_universe()
+
+    # ----- Memoria: claves que describen contexto, no mutaciones -----------
+
+    def scan_non_parameter_mutation_keys(self, conn) -> list[dict]:
+        """Find persisted execution-context keys incorrectly labelled mutations."""
+
+        try:
+            rows = conn.execute(
+                """select id, run_id, mutated_keys
+                   from candidates
+                   where coalesce(mutated_keys, '') != ''
+                   order by run_id, id"""
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+
+        changes: list[dict] = []
+        for row in rows:
+            previous = str(row["mutated_keys"] or "")
+            raw_keys = tuple(key.strip() for key in previous.split(";") if key.strip())
+            removed = tuple(key for key in raw_keys if key in NON_PARAMETER_CHANGE_KEYS)
+            if not removed:
+                continue
+            changes.append(
+                {
+                    "candidate_id": int(row["id"]),
+                    "run_id": int(row["run_id"]),
+                    "previous_mutated_keys": previous,
+                    "mutated_keys": ";".join(parameter_mutation_keys(previous)),
+                    "removed_keys": list(removed),
+                }
+            )
+        return changes
+
+    def apply_non_parameter_mutation_key_updates(self, conn, changes: list[dict]) -> int:
+        """Apply a reviewed repair without overwriting concurrent row changes."""
+
+        updated = 0
+        for item in changes:
+            cursor = conn.execute(
+                """update candidates
+                   set mutated_keys=?
+                   where id=? and mutated_keys=?""",
+                (
+                    item["mutated_keys"],
+                    item["candidate_id"],
+                    item["previous_mutated_keys"],
+                ),
+            )
+            updated += max(0, int(cursor.rowcount))
+        conn.commit()
+        return updated
+
+    def _repair_non_parameter_mutation_keys(self) -> None:
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            messagebox.showinfo("Reparar claves de mutacion", "No existe memoria UBS.")
+            return
+
+        conn = connect_memory(memory_path)
+        try:
+            changes = self.scan_non_parameter_mutation_keys(conn)
+        finally:
+            conn.close()
+
+        if not changes:
+            messagebox.showinfo(
+                "Reparar claves de mutacion",
+                "Nada que hacer: no hay claves de contexto guardadas como mutaciones.",
+            )
+            self.status_text.set("Claves de mutacion: memoria al dia")
+            return
+
+        runs = sorted({item["run_id"] for item in changes})
+        examples = "\n".join(
+            f"  #{item['candidate_id']} (run {item['run_id']}): "
+            f"{item['previous_mutated_keys']} -> {item['mutated_keys'] or '(vacio)'}"
+            for item in changes[:12]
+        )
+        if len(changes) > 12:
+            examples += f"\n  ... (+{len(changes) - 12})"
+        if not messagebox.askyesno(
+            "Reparar claves de mutacion",
+            "Se quitaran de mutated_keys solo las claves de contexto de ejecucion "
+            f"({', '.join(sorted(NON_PARAMETER_CHANGE_KEYS))}).\n\n"
+            f"Filas afectadas: {len(changes)}\n"
+            f"Runs afectados: {len(runs)}\n\n"
+            f"{examples}\n\n"
+            "mutation_details_json y todos los resultados de backtest se conservaran. "
+            "Se guardara una auditoria reversible. ¿Continuar?",
+        ):
+            return
+
+        audit_path = self._write_mutation_key_repair_audit(memory_path, changes)
+        conn = connect_memory(memory_path)
+        try:
+            updated = self.apply_non_parameter_mutation_key_updates(conn, changes)
+        finally:
+            conn.close()
+
+        self.status_text.set(
+            f"Claves de mutacion reparadas: {updated}/{len(changes)}; auditoria={audit_path.name}"
+        )
+        messagebox.showinfo(
+            "Reparar claves de mutacion",
+            f"Filas reparadas: {updated} de {len(changes)}.\n"
+            "Los detalles del retarget y los resultados historicos se conservaron.\n\n"
+            f"Auditoria: {audit_path}",
+        )
+        self._refresh_ubs_universe()
+
+    def _write_mutation_key_repair_audit(self, memory_path: Path, changes: list[dict]) -> Path:
+        folder = memory_path.parent / "diagnostics"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = folder / f"mutation_key_repair_{stamp}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "memory": str(memory_path),
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "changes": changes,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return path
 
     # ----- Final Tick: estados incoherentes con su propio veredicto -----------
 
