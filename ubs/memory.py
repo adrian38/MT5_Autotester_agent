@@ -19,8 +19,10 @@ from ubs.selection import (
 from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, execution_failure_metadata
 from ubs.weights import (
     FeedbackSignal,
+    NON_PARAMETER_CHANGE_KEYS,
     TIMEFRAME_PATCH_KEYS,
     candidate_group_key,
+    parameter_mutation_keys,
     probability_feedback_signals,
     seed_group_key,
 )
@@ -1596,13 +1598,16 @@ class AgentMemory:
         ).fetchall()
 
     def mutation_feedback_signals(self, *, terminal_stage: str | None = None) -> dict[str, FeedbackSignal]:
-        rows = [row for row in self._candidate_feedback_rows() if str(row["mutated_keys"] or "")]
+        rows = [
+            (row, parameter_mutation_keys(row["mutated_keys"]))
+            for row in self._candidate_feedback_rows()
+            if parameter_mutation_keys(row["mutated_keys"])
+        ]
         global_groups: dict[object, list[object]] = {}
         grouped: dict[str, dict[object, list[object]]] = {}
-        for row in rows:
+        for row, mutation_keys in rows:
             global_groups.setdefault(candidate_group_key(row), []).append(row)
-            for key in str(row["mutated_keys"]).split(";"):
-                key = key.strip()
+            for key in mutation_keys:
                 if key and key not in TIMEFRAME_PATCH_KEYS:
                     grouped.setdefault(key, {}).setdefault(candidate_group_key(row, key), []).append(row)
         return probability_feedback_signals(
@@ -1644,7 +1649,7 @@ class AgentMemory:
                 if detail.get("wrapped") is True:
                     continue
                 key = str(detail.get("key") or "").strip()
-                if not key or key in TIMEFRAME_PATCH_KEYS:
+                if not key or key in TIMEFRAME_PATCH_KEYS or key in NON_PARAMETER_CHANGE_KEYS:
                     continue
                 try:
                     delta = float(detail.get("delta") or 0.0)
@@ -1978,7 +1983,7 @@ def variant_from_candidate_row(row: sqlite3.Row) -> Variant:
         seed=seed,
         target_symbol=row["target_symbol"] or row["symbol"] or "UNKNOWN",
         target_period=(row["period"] or seed.period or "UNKNOWN").upper(),
-        mutated_keys=tuple(key for key in str(row["mutated_keys"] or "").split(";") if key),
+        mutated_keys=parameter_mutation_keys(row["mutated_keys"]),
         missing_lot_keys=tuple(key for key in str(row["missing_lot_keys"] or "").split(";") if key),
         policy=row["policy"] or "",
         timeframe_keys=tuple(key for key in str(row["timeframe_keys"] if "timeframe_keys" in row.keys() else "").split(";") if key),

@@ -6,10 +6,12 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from lxml import html
+from lxml import etree, html
 
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+# The Results block ends where the orders table starts, in either report language.
+RESULTS_END_MARKERS = (">Orders<", ">Órdenes<", ">Ordenes<")
 
 
 @dataclass
@@ -116,6 +118,48 @@ def parse_report(path: Path) -> StrategyReport:
         image_paths=_find_images(path),
         set_path=path.with_suffix(".set") if path.with_suffix(".set").exists() else None,
     )
+
+
+def parse_report_metrics(path: Path) -> dict[str, str]:
+    """Parse only the Results block of an MT5 report.
+
+    ``parse_report`` also rebuilds every deal and trade, which is nearly the
+    whole file. A bulk pass that needs a single metric (the equity drawdown of
+    thousands of already-scored reports, for example) would pay for the orders
+    and deals tables on every file just to discard them, so they are cut off
+    before the HTML is parsed. Returns an empty mapping when the file cannot be
+    read or has no Results block.
+    """
+
+    text = _read_report_text(path)
+    cut = len(text)
+    for marker in RESULTS_END_MARKERS:
+        index = text.find(marker)
+        if 0 < index < cut:
+            cut = index
+    text = text[:cut]
+    if not text.strip():
+        return {}
+    try:
+        doc = html.fromstring(text)
+    except (etree.ParserError, etree.XMLSyntaxError, ValueError):
+        return {}
+    return _parse_results([_row_cells(row) for row in doc.xpath("//tr")])
+
+
+def _read_report_text(path: Path) -> str:
+    """MT5 writes UTF-16-LE; copies edited by other tools show up as UTF-8.
+
+    A report that cannot be opened raises: callers must be able to tell a
+    missing file from a report whose metric is simply not there.
+    """
+
+    for encoding in ("utf-16-le", "utf-8", "utf-16", "cp1252"):
+        try:
+            return path.read_text(encoding=encoding)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return ""
 
 
 def _row_cells(row) -> list[str]:

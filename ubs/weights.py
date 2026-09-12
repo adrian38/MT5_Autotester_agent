@@ -47,6 +47,20 @@ TIMEFRAME_PATCH_KEYS = frozenset({
     "ATR_Timeframe",
 })
 
+# Execution-context changes describe where a candidate was tested; they are
+# not EA parameter mutations and must never influence mutation-key learning.
+NON_PARAMETER_CHANGE_KEYS = frozenset({"ForceSymbol"})
+
+
+def parameter_mutation_keys(value: object) -> tuple[str, ...]:
+    """Return only genuine EA parameter keys from the persisted list."""
+
+    return tuple(
+        key
+        for raw_key in str(value or "").split(";")
+        if (key := raw_key.strip()) and key not in NON_PARAMETER_CHANGE_KEYS
+    )
+
 REJECTED_REASON_PENALTIES = {
     "net_profit": 40.0,
     "profit_factor": 25.0,

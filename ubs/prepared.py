@@ -231,9 +231,10 @@ def run_prepared(args, memory, score_config, api):
             target.write_bytes(raw)
         seed = Seed(directory/(item['fingerprint']+'.parent.set'),item['target_symbol'],item['period'],item['family'],strategy)
         change = item['mutation']
-        if item['mode']=='symbol_exploration' and change.get('kind')!='symbol_recovery':
-            # Keep the declared shape: exploration and rebuild must stay
-            # distinguishable in the memory, or neither can be measured apart.
+        pure_retarget = item['mode']=='symbol_exploration' and change.get('kind')!='symbol_recovery'
+        if pure_retarget:
+            # ForceSymbol is execution context, not a strategy parameter. Keep
+            # the retarget provenance, but never expose it to mutation learning.
             detail = {'kind':change.get('kind','symbol_exploration'),'key':'ForceSymbol',
                       'old':change['old'],'new':change['new'],'wrapped':False}
         else:
@@ -242,7 +243,8 @@ def run_prepared(args, memory, score_config, api):
                       'direction':int(change['direction']),'wrapped':False}
             if change.get('kind')=='symbol_recovery':
                 detail = {**detail,'kind':'symbol_recovery','parent_stage':int(change['parent_stage'])}
-        variant = Variant(target,seed,item['target_symbol'],item['period'],(change['key'],),(),
+        mutated_keys = () if pure_retarget else (change['key'],)
+        variant = Variant(target,seed,item['target_symbol'],item['period'],mutated_keys,(),
                           'guided_prepared:'+item['mode'],tuple(timeframe_keys),(detail,))
         row = memory.conn.execute('select id from candidates where run_id=? and set_path=?',(run_id,str(target))).fetchone()
         if not row:

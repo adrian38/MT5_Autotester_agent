@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import math
 from typing import Mapping
 
 
@@ -45,7 +46,7 @@ def _number(value: object) -> float | None:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
-    if number != number:  # NaN
+    if not math.isfinite(number):
         return None
     return number
 
@@ -108,6 +109,7 @@ def evaluate_robustness_degradation(
     oos_from_date: object,
     oos_to_date: object,
     config: RobustnessDegradationConfig | None = None,
+    risk_basis: str = "balance",
 ) -> dict[str, object]:
     """Measure how much of the construction-window edge survives OOS.
 
@@ -116,6 +118,8 @@ def evaluate_robustness_degradation(
     """
 
     cfg = config or RobustnessDegradationConfig()
+    if risk_basis not in {"balance", "equity"}:
+        raise ValueError("risk_basis must be balance or equity")
     base = base_metrics or {}
     oos = oos_metrics or {}
     base_window = _window(base_from_date, base_to_date)
@@ -154,10 +158,18 @@ def evaluate_robustness_degradation(
 
     base_recovery = _number(base.get("recovery_factor"))
     oos_recovery = _number(oos.get("recovery_factor"))
+    if risk_basis == "equity":
+        def recovery(metrics: Mapping[str, object]) -> float | None:
+            net = _number(metrics.get("net_profit"))
+            dd = _number(metrics.get("equity_drawdown"))
+            return net / dd if net is not None and dd is not None and dd > 0 else None
+        base_recovery = recovery(base)
+        oos_recovery = recovery(oos)
     base_recovery_annual = (
         base_recovery * 365.25 / base_days
         if base_recovery is not None
-        and 0 < base_recovery < RECOVERY_SENTINEL_CAP
+        and 0 < base_recovery
+        and (risk_basis == "equity" or base_recovery < RECOVERY_SENTINEL_CAP)
         and base_days is not None
         and base_days > 0
         else None
@@ -165,7 +177,7 @@ def evaluate_robustness_degradation(
     oos_recovery_annual = (
         oos_recovery * 365.25 / oos_days
         if oos_recovery is not None
-        and oos_recovery < RECOVERY_SENTINEL_CAP
+        and (risk_basis == "equity" or oos_recovery < RECOVERY_SENTINEL_CAP)
         and oos_days is not None
         and oos_days > 0
         else None
@@ -178,8 +190,9 @@ def evaluate_robustness_degradation(
         else None
     )
 
-    base_dd = _number(base.get("drawdown_pct"))
-    oos_dd = _number(oos.get("drawdown_pct"))
+    dd_key = "equity_drawdown_pct" if risk_basis == "equity" else "drawdown_pct"
+    base_dd = _number(base.get(dd_key))
+    oos_dd = _number(oos.get(dd_key))
     dd_inflation = (
         oos_dd / max(base_dd, DD_RATIO_FLOOR_PCT)
         if base_dd is not None and oos_dd is not None and base_dd >= 0 and oos_dd >= 0
@@ -323,6 +336,7 @@ def evaluate_robustness_degradation(
     enabled_checks = sum(1 for check in checks.values() if check["enabled"])
     return {
         "version": DEGRADATION_FORMULA_VERSION,
+        "risk_basis": risk_basis,
         "accepted": not reasons,
         "reasons": list(reasons),
         "config": cfg.to_dict(),

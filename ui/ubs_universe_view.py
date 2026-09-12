@@ -69,6 +69,8 @@ class UBSUniverseViewMixin:
         ]
         memory_buttons = [
             ("Actualizar estados Final Tick", "danger", self._repair_final_tick_status_mismatches),
+            ("Reparar claves de mutacion", "danger", self._repair_non_parameter_mutation_keys),
+            ("Reaplicar regla riesgo/beneficio", "danger", self._repair_risk_profit_states),
         ]
 
         def build_button_row(row: int, title: str, buttons: list) -> list[tk.Button]:

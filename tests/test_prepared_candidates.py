@@ -94,7 +94,12 @@ class PreparedTests(unittest.TestCase):
         self.args.prepared_manifest=directory/'batch.json'
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
         variants=self.api.evaluate_generation.call_args.args[4]
-        self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',('ForceSymbol',)))
+        self.assertEqual((variants[0].target_symbol,variants[0].mutated_keys),('EURUSD',()))
+        stored=self.memory.conn.execute('''select mutated_keys,mutation_details_json from candidates
+            order by id desc limit 1''').fetchone()
+        self.assertEqual(stored['mutated_keys'],'')
+        self.assertEqual(json.loads(stored['mutation_details_json'])[0]['kind'],'symbol_exploration')
+        self.assertEqual(json.loads(stored['mutation_details_json'])[0]['key'],'ForceSymbol')
 
     def test_rebuild_retargets_a_destination_that_already_has_a_final_positive(self):
         # The destination is enabled and proven, but no set of its own still
@@ -108,7 +113,7 @@ class PreparedTests(unittest.TestCase):
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
 
         variant=self.api.evaluate_generation.call_args.args[4][0]
-        self.assertEqual((variant.target_symbol,variant.mutated_keys),('EURUSD',('ForceSymbol',)))
+        self.assertEqual((variant.target_symbol,variant.mutated_keys),('EURUSD',()))
         # Both shapes must stay distinguishable in the memory or neither can be
         # measured apart from the other.
         self.assertEqual(variant.mutation_details[0]['kind'],'symbol_retarget')

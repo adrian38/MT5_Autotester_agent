@@ -8,10 +8,13 @@ import math
 import random
 import re
 import statistics
+from types import SimpleNamespace
+from typing import Mapping
 
-from portfolio_manager.mt5_report import StrategyReport, parse_report
+from portfolio_manager.mt5_report import StrategyReport, parse_report, parse_report_metrics
 from ubs.account import DEFAULT_BROKER
 from ubs.normalization import net_profit_normalization
+from ubs.risk_profit import RiskProfitConfig, apply_base_profit_gate
 
 
 SCORE_FORMULA_VERSION = "2"
@@ -27,9 +30,41 @@ class ScoreConfig:
     max_drawdown_pct: float = 25.0
     min_recovery_factor: float = 1.0
     min_positive_month_ratio: float = 0.0
+    risk_profit: RiskProfitConfig = field(default_factory=RiskProfitConfig)
 
-    def to_dict(self) -> dict[str, float | int]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: object, fallback: ScoreConfig | None = None) -> ScoreConfig:
+        """Rebuild the thresholds a row was judged with, from its stored copy.
+
+        Every field falls back one by one: a blob written before a threshold
+        existed must keep the caller's value for that one field instead of
+        losing the rest of the stored configuration.
+        """
+
+        base = fallback or cls()
+        if not isinstance(raw, Mapping):
+            return base
+        try:
+            return cls(
+                min_net_profit=float(raw.get("min_net_profit", base.min_net_profit)),
+                min_profit_factor=float(raw.get("min_profit_factor", base.min_profit_factor)),
+                min_trades=int(raw.get("min_trades", base.min_trades)),
+                max_drawdown_pct=float(raw.get("max_drawdown_pct", base.max_drawdown_pct)),
+                min_recovery_factor=float(raw.get("min_recovery_factor", base.min_recovery_factor)),
+                min_positive_month_ratio=float(
+                    raw.get("min_positive_month_ratio", base.min_positive_month_ratio)
+                ),
+                risk_profit=(
+                    RiskProfitConfig.from_dict(raw["risk_profit"])
+                    if "risk_profit" in raw
+                    else base.risk_profit
+                ),
+            )
+        except (TypeError, ValueError):
+            return base
 
     def stable_hash(self) -> str:
         payload = json.dumps(self.to_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -78,6 +113,10 @@ class ScoreResult:
     score_formula_version: str = SCORE_FORMULA_VERSION
     score_config: dict[str, float | int] = field(default_factory=dict)
     score_config_hash: str = ""
+    equity_drawdown: float | None = None
+    equity_drawdown_pct: float | None = None
+    equity_recovery_factor: float | None = None
+    risk_profit_audit: dict[str, object] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=True, sort_keys=True)
@@ -102,12 +141,14 @@ def score_report_file(
     *,
     broker: object = DEFAULT_BROKER,
     include_generalization_bootstrap: bool = False,
+    risk_stage: str = "base",
 ) -> ScoreResult:
     return score_report(
         parse_report(path),
         config=config,
         broker=broker,
         include_generalization_bootstrap=include_generalization_bootstrap,
+        risk_stage=risk_stage,
     )
 
 
@@ -117,6 +158,7 @@ def score_report(
     *,
     broker: object = DEFAULT_BROKER,
     include_generalization_bootstrap: bool = False,
+    risk_stage: str = "base",
 ) -> ScoreResult:
     config = config or ScoreConfig()
     profits = [trade.profit_loss for trade in report.trades]
@@ -148,8 +190,24 @@ def score_report(
     net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol, broker=broker)
     normalized_net_profit = round(net_profit * net_profit_factor, 2)
     history_quality = _history_quality(report)
+    equity_drawdown, equity_drawdown_pct = _equity_drawdown(report)
+    equity_recovery_factor = (
+        net_profit / equity_drawdown
+        if equity_drawdown is not None and equity_drawdown > 0 else None
+    )
+    risk_metrics = dict(
+        net_profit=net_profit, equity_drawdown=equity_drawdown,
+        equity_drawdown_pct=equity_drawdown_pct, profit_factor=profit_factor,
+        trades=len(profits), active_months=len(monthly_values),
+        positive_month_ratio=positive_month_ratio, residual_profit_ratio=residual_profit_ratio,
+    )
+    _, preliminary_risk = apply_base_profit_gate(
+        risk_metrics, ["net_profit"], config.risk_profit, stage=risk_stage,
+        max_drawdown_pct=config.max_drawdown_pct, min_recovery_factor=config.min_recovery_factor,
+    )
     absolute_gate_candidate = (
-        normalized_net_profit > config.min_net_profit
+        (normalized_net_profit > config.min_net_profit
+         or (config.risk_profit.mode != "off" and preliminary_risk["eligible"]))
         and profit_factor >= config.min_profit_factor
         and len(profits) >= config.min_trades
         and drawdown_pct <= config.max_drawdown_pct
@@ -190,6 +248,10 @@ def score_report(
         reasons.append("recovery_factor")
     if positive_month_ratio < config.min_positive_month_ratio:
         reasons.append("positive_month_ratio")
+    reasons, risk_audit = apply_base_profit_gate(
+        risk_metrics, reasons, config.risk_profit, stage=risk_stage,
+        max_drawdown_pct=config.max_drawdown_pct, min_recovery_factor=config.min_recovery_factor,
+    )
 
     return ScoreResult(
         report_path=str(report.path),
@@ -233,10 +295,16 @@ def score_report(
         score_formula_version=SCORE_FORMULA_VERSION,
         score_config=config.to_dict(),
         score_config_hash=config.stable_hash(),
+        equity_drawdown=equity_drawdown,
+        equity_drawdown_pct=equity_drawdown_pct,
+        equity_recovery_factor=equity_recovery_factor,
+        risk_profit_audit=risk_audit,
     )
 
 
-def rescore_result(result: ScoreResult, config: ScoreConfig | None = None) -> ScoreResult:
+def rescore_result(
+    result: ScoreResult, config: ScoreConfig | None = None, *, risk_stage: str = "base",
+) -> ScoreResult:
     """Apply current score weights and gates to already persisted raw metrics.
 
     This deliberately preserves normalization and parser-derived fields. Use a
@@ -271,6 +339,10 @@ def rescore_result(result: ScoreResult, config: ScoreConfig | None = None) -> Sc
         reasons.append("recovery_factor")
     if result.positive_month_ratio < config.min_positive_month_ratio:
         reasons.append("positive_month_ratio")
+    reasons, risk_audit = apply_base_profit_gate(
+        asdict(result), reasons, config.risk_profit, stage=risk_stage,
+        max_drawdown_pct=config.max_drawdown_pct, min_recovery_factor=config.min_recovery_factor,
+    )
     return replace(
         result,
         score=round(score, 4),
@@ -279,6 +351,7 @@ def rescore_result(result: ScoreResult, config: ScoreConfig | None = None) -> Sc
         score_formula_version=SCORE_FORMULA_VERSION,
         score_config=config.to_dict(),
         score_config_hash=config.stable_hash(),
+        risk_profit_audit=risk_audit,
     )
 
 
@@ -443,6 +516,49 @@ def _generalization_bootstrap(
         "net_p05": _percentile(nets, 0.05),
         "pf_p05": _percentile(profit_factors, 0.05),
     }
+
+
+def equity_drawdown_from_report_file(path: Path | str) -> tuple[float | None, float | None]:
+    """Equity drawdown of an already-scored report, without reparsing its trades.
+
+    Rows scored before the risk-adjusted route existed carry no equity
+    drawdown: the field is younger than their ``metrics_json``. Reading the
+    Results block back recovers that evidence from the report on disk, so the
+    rule can be applied to them without an MT5 run.
+    """
+
+    return _equity_drawdown(SimpleNamespace(metrics=parse_report_metrics(Path(path))))
+
+
+def _equity_drawdown(report: StrategyReport) -> tuple[float | None, float | None]:
+    """Read maximal equity amount and maximum relative equity %, without balance fallback."""
+    maximal = _first_metric(
+        report, "Equity Drawdown Maximal", "Reducción máxima de la equidad",
+        "Reduccion maxima de la equidad", "Reducción máxima del patrimonio",
+    )
+    relative = _first_metric(
+        report, "Equity Drawdown Relative", "Reducción relativa de la equidad",
+        "Reduccion relativa de la equidad", "Reducción relativa del patrimonio",
+    )
+    number = r"[-+]?\d(?:[\d\s.,]*\d)?"
+    amount = pct = None
+    match = re.fullmatch(rf"\s*({number})\s*\(\s*({number})\s*%\s*\)\s*", maximal)
+    if match:
+        amount, pct = _to_float(match[1]), _to_float(match[2])
+    else:
+        match = re.fullmatch(rf"\s*({number})\s*%\s*\(\s*({number})\s*\)\s*", maximal)
+        if match:
+            pct, amount = _to_float(match[1]), _to_float(match[2])
+        elif re.fullmatch(rf"\s*{number}\s*", maximal):
+            amount = _to_float(maximal)
+    match = re.search(rf"({number})\s*%", relative)
+    if match:
+        pct = _to_float(match[1])
+    if amount is not None and (not math.isfinite(amount) or amount < 0):
+        amount = None
+    if pct is not None and (not math.isfinite(pct) or pct < 0):
+        pct = None
+    return amount, pct
 
 
 def _drawdown_amount(report: StrategyReport) -> float:

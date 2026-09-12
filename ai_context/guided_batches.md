@@ -15,6 +15,13 @@ the existing persistent FIFO and forces base, robustness, Final Tick and Final T
 accepted parent, current universe and mutation rules, then calls the existing
 evaluator without remutating. The batch run.json binds fingerprints/candidate IDs
 to the exact run for later stages and results. Parent acceptance is not inherited.
+Pure symbol retargets keep their `symbol_exploration`/`symbol_retarget` provenance
+in `mutation_details_json`, but persist an empty `mutated_keys`: `ForceSymbol` is
+execution context, never a strategy-parameter mutation or mutation-weight signal.
+Legacy rows are also filtered when memory is read. The Universe tab's
+`Reparar claves de mutacion` action can remove `ForceSymbol` from historical
+`mutated_keys` after confirmation; it preserves retarget details and writes a
+JSON audit before updating the database.
 
 API: POST `/api/v1/guided-batches`, GET `/api/v1/guided-batches/{sha256}` with existing
 bearer authentication. No payload paths accepted; inbox: `outputs/guided_batches`.

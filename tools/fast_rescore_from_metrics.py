@@ -44,6 +44,7 @@ from ubs.degradation import RobustnessDegradationConfig, evaluate_robustness_deg
 from ubs.memory import AgentMemory
 from ubs.normalization import net_profit_normalization
 from ubs.score import _score_formula
+from ubs.risk_profit import RiskProfitConfig, apply_base_profit_gate, combine_robustness_profit_gate
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ def _renormalize(metrics: dict, broker: str) -> tuple[dict, float, float] | None
     return updated, normalized, round(score, 4)
 
 
-def _reasons(metrics: dict, normalized: float, gates: Gates) -> list[str]:
+def _reasons(metrics: dict, normalized: float, gates: Gates, *, stage: str = "base") -> list[str]:
     reasons: list[str] = []
     if normalized <= gates.min_net:
         reasons.append("net_profit")
@@ -159,6 +160,12 @@ def _reasons(metrics: dict, normalized: float, gates: Gates) -> list[str]:
         reasons.append("recovery_factor")
     if float(metrics.get("positive_month_ratio", 0.0) or 0.0) < gates.min_positive_month_ratio:
         reasons.append("positive_month_ratio")
+    policy = RiskProfitConfig.from_dict((metrics.get("score_config") or {}).get("risk_profit"))
+    reasons, audit = apply_base_profit_gate(
+        metrics, reasons, policy, stage=stage,
+        max_drawdown_pct=gates.max_dd, min_recovery_factor=gates.min_recovery,
+    )
+    metrics["risk_profit_audit"] = audit
     return reasons
 
 
@@ -292,15 +299,26 @@ def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None
         base_result = _renormalize(base_metrics, broker)
         if base_result is not None:
             base_metrics = base_result[0]
-        absolute_reasons = _reasons(updated, normalized, gates)
+        absolute_reasons = _reasons(updated, normalized, gates, stage="oos")
         degradation = _stored_degradation(degradation_raw, base_metrics, updated)
         degradation_reasons = degradation.get("reasons", []) if degradation else []
         if not isinstance(degradation_reasons, list):
             degradation_reasons = []
         degradation_accepted = bool(degradation.get("accepted", True)) if degradation else True
-        reasons = list(dict.fromkeys([*absolute_reasons, *degradation_reasons]))
-        accepted = not absolute_reasons and degradation_accepted
-        status = "accepted" if accepted else "rejected"
+        policy = RiskProfitConfig.from_dict((updated.get("score_config") or {}).get("risk_profit"))
+        cfg = RobustnessDegradationConfig(**{
+            key: value for key, value in (degradation.get("config") or {}).items()
+            if key in RobustnessDegradationConfig.__dataclass_fields__
+        })
+        reasons, risk_audit, degradation = combine_robustness_profit_gate(
+            base_metrics, updated, absolute_reasons, degradation, policy,
+            max_drawdown_pct=gates.max_dd, min_recovery_factor=gates.min_recovery,
+            degradation_config=cfg,
+        )
+        updated["risk_profit_audit"] = risk_audit
+        accepted = not reasons and (degradation_accepted or risk_audit["selected_route"] == "risk_adjusted")
+        status = ("accepted" if accepted else "pending_risk_evidence"
+                  if risk_audit["selected_route"] == "pending_evidence" else "rejected")
         updated["reasons"] = reasons
         updated["accepted"] = accepted
         if degradation:
