@@ -27,11 +27,23 @@ from ubs.risk_profit import (
     combine_robustness_profit_gate,
     robustness_result_status,
 )
-from ubs.score import ScoreConfig, ScoreResult, equity_drawdown_from_report_file, rescore_result
+from ubs.score import (
+    RESIDUAL_TOP_MONTH_SHARE,
+    ScoreConfig,
+    ScoreResult,
+    equity_drawdown_from_report_file,
+    rescore_result,
+    route_evidence_from_report_file,
+)
 
 
 NET_PROFIT_REASON = "net_profit"
 BASE_SCOPE_STATUS = "rejected"
+# Reasons the route itself appends, not stored criteria. A previous pass writes
+# them, so reading them as failing criteria would permanently exclude the very
+# rows this rule already moved once.
+ROUTE_MARKER_REASONS = ("risk_profit_evidence",)
+PARKED_STATUS = "pending_risk_evidence"
 AUDIT_BLOB_KEYS = (
     "metrics_json",
     "degradation_json",
@@ -41,6 +53,20 @@ AUDIT_BLOB_KEYS = (
 # ``pending_risk_evidence`` is re-examined on purpose: a row parked for missing
 # evidence must be able to resolve once the report can be read.
 ROBUST_SCOPE_STATUSES = ("rejected", "pending_risk_evidence")
+# Measurements of the report the OOS route reads and older rows never stored.
+ROUTE_EVIDENCE_FIELDS = (
+    "equity_drawdown",
+    "equity_drawdown_pct",
+    "equity_recovery_factor",
+    "scaled_residual_profit_ratio",
+    "scaled_residual_top_months",
+    "trade_curve_stability",
+    "bootstrap_reps",
+    "bootstrap_mean_block",
+    "bootstrap_net_positive_probability",
+    "bootstrap_net_p05",
+    "bootstrap_pf_p05",
+)
 
 
 @dataclass(frozen=True)
@@ -57,9 +83,9 @@ class ScopedRow:
 class RestatementPlan:
     policy: dict[str, object] = field(default_factory=dict)
     base: list[dict] = field(default_factory=list)
-    base_evidence: list[dict] = field(default_factory=list)
     robustness: list[dict] = field(default_factory=list)
-    robustness_evidence: list[dict] = field(default_factory=list)
+    base_evidence: list[dict] = field(default_factory=list)
+    audit_only: list[dict] = field(default_factory=list)
     pending_robustness: list[dict] = field(default_factory=list)
     skipped: dict[str, int] = field(default_factory=dict)
 
@@ -73,13 +99,19 @@ class RestatementPlan:
         return self.rows_to_write() == 0
 
     def buckets(self) -> dict[str, list[dict]]:
-        """The four write groups: verdict changes and evidence-only rewrites."""
+        """What gets written: rows whose state the route moved, plus the base
+        evidence each of those moves was compared against.
+
+        Rows the route examined and left where they were are not rewritten, not
+        even to store what this pass measured on them. They go to ``audit_only``
+        and the audit file explains them, so the repair only touches robustness
+        rows that actually changed.
+        """
 
         return {
             "base": self.base,
-            "base_evidence": self.base_evidence,
             "robustness": self.robustness,
-            "robustness_evidence": self.robustness_evidence,
+            "base_evidence": self.base_evidence,
         }
 
     def to_audit(self) -> dict[str, object]:
@@ -91,12 +123,12 @@ class RestatementPlan:
         """
 
         return {
-            "rule": "risk_profit_v1",
+            "rule": "risk_profit_v2",
             "policy": dict(self.policy),
             "base": list(self.base),
             "robustness": list(self.robustness),
-            "base_evidence": [_compact(item) for item in self.base_evidence],
-            "robustness_evidence": [_compact(item) for item in self.robustness_evidence],
+            "base_evidence": list(self.base_evidence),
+            "audit_only": [_compact(item) for item in self.audit_only],
             "pending_robustness": list(self.pending_robustness),
             "skipped": dict(self.skipped),
         }
@@ -107,6 +139,8 @@ def scan_risk_profit_restatements(
     *,
     policy: RiskProfitConfig | None = None,
     read_equity=equity_drawdown_from_report_file,
+    read_oos_evidence=route_evidence_from_report_file,
+    residual_share: float = RESIDUAL_TOP_MONTH_SHARE,
     progress=None,
 ) -> RestatementPlan:
     """Plan every state change the route produces, without writing anything."""
@@ -117,7 +151,8 @@ def scan_risk_profit_restatements(
     base_ids = {int(item.row["id"]) for item in base_scope}
     parents = [
         item for item in robust_scope
-        if int(item.row["candidate_id"]) not in base_ids and _needs_equity(item.base_metrics)
+        if int(item.row["candidate_id"]) not in base_ids
+        and _needs_parent_evidence(item.base_metrics)
     ]
     total = len(base_scope) + len(robust_scope) + len(parents)
     done = 0
@@ -133,31 +168,45 @@ def scan_risk_profit_restatements(
         if change is None:
             continue
         restated_base[int(item.row["id"])] = json.loads(change["metrics_json"])
-        bucket = plan.base if change["expected_status"] != change["stored_status"] else plan.base_evidence
+        bucket = (
+            plan.base
+            if change["expected_status"] != change["stored_status"]
+            else plan.audit_only
+        )
         bucket.append(change)
 
     parent_ids = {int(item.row["candidate_id"]) for item in parents}
+    parent_changes: dict[int, dict] = {}
     for item in robust_scope:
         candidate_id = int(item.row["candidate_id"])
         if candidate_id in parent_ids and candidate_id not in restated_base:
             done += 1
             _tick(progress, done, total, str(item.row["base_report_path"] or ""))
-            parent = _restate_base_parent(item, policy, read_equity, plan)
+            parent = _restate_base_parent(
+                item, policy, lambda path: read_oos_evidence(path, residual_share), plan
+            )
             if parent is not None:
                 restated_base[candidate_id] = json.loads(parent["metrics_json"])
-                plan.base_evidence.append(parent)
+                parent_changes[candidate_id] = parent
         done += 1
         _tick(progress, done, total, str(item.row["report_path"] or item.row["symbol"] or ""))
         base_metrics = restated_base.get(candidate_id, item.base_metrics)
-        change = _restate_robustness(item, base_metrics, policy, read_equity, plan)
+        change = _restate_robustness(
+            item, base_metrics, policy,
+            lambda path: read_oos_evidence(path, residual_share), plan,
+        )
         if change is None:
             continue
-        bucket = (
-            plan.robustness
-            if change["expected_status"] != change["stored_status"]
-            else plan.robustness_evidence
-        )
-        bucket.append(change)
+        if change["expected_status"] == change["stored_status"]:
+            plan.audit_only.append(change)
+            continue
+        plan.robustness.append(change)
+        # The base equity is what the comparison was made against: storing it
+        # next to the change keeps the new state derivable from the memory
+        # instead of only from this run.
+        parent = parent_changes.get(candidate_id)
+        if parent is not None:
+            plan.base_evidence.append(parent)
 
     plan.pending_robustness = pending_robustness_rows(
         conn, [int(item["candidate_id"]) for item in plan.base]
@@ -199,7 +248,7 @@ def collect_scope(conn) -> tuple[list[ScopedRow], list[ScopedRow]]:
     ).fetchall():
         metrics = _payload(row["metrics_json"])
         degradation = _payload(row["degradation_json"])
-        if _absolute_reasons(metrics, degradation) != (NET_PROFIT_REASON,):
+        if _judged_absolute_reasons(row, metrics, degradation) != (NET_PROFIT_REASON,):
             continue
         robust_scope.append(
             ScopedRow(
@@ -261,7 +310,7 @@ def apply_risk_profit_restatements(conn, plan: RestatementPlan) -> dict[str, int
                 ),
             )
             written[key] += max(0, int(cursor.rowcount))
-    for key in ("robustness", "robustness_evidence"):
+    for key in ("robustness",):
         for item in plan.buckets()[key]:
             cursor = conn.execute(
                 """
@@ -303,7 +352,13 @@ def _restate_base(
     restated = rescore_result(enriched, config)
     payload = _merged_payload(metrics, restated)
     expected = "accepted" if restated.accepted else "rejected"
-    if expected == str(row["status"]) and payload == metrics:
+    # A base row is rewritten when its verdict moves or when this pass measured
+    # its equity for the first time. Refreshing the recorded policy is not a
+    # reason: the OOS side of it changes without any base verdict depending on
+    # it, and that would rewrite thousands of rows this repair does not judge.
+    if expected == str(row["status"]) and (
+        source == "almacenada" or _same_payload(metrics, payload)
+    ):
         _skip(plan, "sin_cambio")
         return None
     return {
@@ -327,7 +382,7 @@ def _restate_base(
 
 
 def _restate_base_parent(
-    item: ScopedRow, policy: RiskProfitConfig, read_equity, plan: RestatementPlan
+    item: ScopedRow, policy: RiskProfitConfig, read_evidence, plan: RestatementPlan
 ) -> dict | None:
     """Store the equity evidence of an OOS row's base, which stays as it is.
 
@@ -345,7 +400,7 @@ def _restate_base_parent(
     if not _verdict_follows_criteria(result, config, stage="base"):
         _skip(plan, "criterio_base_desfasado")
         return None
-    enriched, source = _with_equity_evidence(result, row["base_report_path"], read_equity, plan)
+    enriched, source = _with_route_evidence(result, row["base_report_path"], read_evidence, plan)
     if enriched is None:
         return None
     restated = rescore_result(enriched, config)
@@ -353,7 +408,7 @@ def _restate_base_parent(
         _skip(plan, "criterio_base_desfasado")
         return None
     payload = _merged_payload(item.base_metrics, restated)
-    if payload == item.base_metrics:
+    if _same_payload(item.base_metrics, payload):
         return None
     return {
         "candidate_id": int(row["candidate_id"]),
@@ -364,7 +419,7 @@ def _restate_base_parent(
         "expected_status": str(row["base_status"]),
         "expected_accepted": int(bool(restated.accepted)),
         "score": restated.score,
-        "equity_source": source,
+        "evidence_source": source,
         "equity_drawdown": restated.equity_drawdown,
         "equity_drawdown_pct": restated.equity_drawdown_pct,
         "selected_route": str(restated.risk_profit_audit.get("selected_route", "")),
@@ -376,7 +431,8 @@ def _restate_base_parent(
 
 
 def _restate_robustness(
-    item: ScopedRow, base_metrics: dict, policy: RiskProfitConfig, read_equity, plan: RestatementPlan
+    item: ScopedRow, base_metrics: dict, policy: RiskProfitConfig, read_oos_evidence,
+    plan: RestatementPlan,
 ) -> dict | None:
     row = item.row
     if not item.degradation:
@@ -389,11 +445,12 @@ def _restate_robustness(
         _skip(plan, "metricas_invalidas")
         return None
     if not _verdict_follows_criteria(
-        result, config, stage="oos", stored_reasons=_absolute_reasons(item.metrics, item.degradation)
+        result, config, stage="oos",
+        stored_reasons=_judged_absolute_reasons(item.row, item.metrics, item.degradation),
     ):
         _skip(plan, "criterio_desfasado")
         return None
-    enriched, source = _with_equity_evidence(result, row["report_path"], read_equity, plan)
+    enriched, source = _with_route_evidence(result, row["report_path"], read_oos_evidence, plan)
     if enriched is None:
         return None
     absolute = rescore_result(enriched, _without_route(config), risk_stage="oos")
@@ -420,7 +477,7 @@ def _restate_robustness(
     degradation["final_accepted"] = combined.accepted
     expected = robustness_result_status(combined)
     payload = _merged_payload(item.metrics, combined)
-    if expected == str(row["status"]) and payload == item.metrics:
+    if expected == str(row["status"]) and _same_payload(item.metrics, payload):
         _skip(plan, "sin_cambio")
         return None
     return {
@@ -432,9 +489,11 @@ def _restate_robustness(
         "expected_status": expected,
         "expected_accepted": int(bool(combined.accepted)),
         "score": combined.score,
-        "equity_source": source,
+        "evidence_source": source,
         "equity_drawdown": combined.equity_drawdown,
         "equity_drawdown_pct": combined.equity_drawdown_pct,
+        "scaled_residual_profit_ratio": combined.scaled_residual_profit_ratio,
+        "scaled_residual_top_months": combined.scaled_residual_top_months,
         "selected_route": str(audit.get("selected_route", "")),
         "risk_status": str(audit.get("status", "")),
         "missing_comparisons": list(audit.get("missing_comparisons") or ()),
@@ -478,6 +537,46 @@ def _with_equity_evidence(
     )
 
 
+def _with_route_evidence(
+    result: ScoreResult, report_path: object, read_oos_evidence, plan: RestatementPlan
+) -> tuple[ScoreResult | None, str]:
+    """Complete every measurement the OOS route reads, in one parse.
+
+    Robustness needs more than the equity drawdown: the scale-free
+    concentration, the trade-curve stability and the generalization bootstrap
+    all come from the trade and monthly series. They are measurements of the
+    report, not criteria — the bootstrap seeds itself from the trade series, so
+    it is reproducible — and without them the route can only answer "pending
+    evidence" on rows it has already judged eligible.
+
+    Fields the row already stored are kept: this only fills gaps.
+    """
+
+    missing = [name for name in ROUTE_EVIDENCE_FIELDS if getattr(result, name) is None]
+    if not missing:
+        return result, "almacenada"
+    path = str(report_path or "").strip()
+    if not path:
+        _skip(plan, "sin_reporte")
+        return None, "sin_reporte"
+    try:
+        evidence = read_oos_evidence(path)
+    except OSError:
+        _skip(plan, "reporte_ilegible")
+        return None, "reporte_ilegible"
+    except Exception:  # parser roto para esta fila: se reporta, no se adivina
+        _skip(plan, "evidencia_no_calculable")
+        return None, "evidencia_no_calculable"
+    filled = {
+        name: value for name, value in evidence.items()
+        if name in ROUTE_EVIDENCE_FIELDS and getattr(result, name) is None and value is not None
+    }
+    if not filled:
+        _skip(plan, "sin_evidencia_en_reporte")
+        return None, "sin_evidencia_en_reporte"
+    return replace(result, **filled), "reporte"
+
+
 def _verdict_follows_criteria(
     result: ScoreResult,
     config: ScoreConfig,
@@ -514,6 +613,26 @@ def _json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=True, sort_keys=True)
 
 
+def _same_payload(stored: dict, payload: dict) -> bool:
+    """True when nothing measurable changed.
+
+    A field that appears with no value is not a change: base rows gain the
+    scaled concentration keys as nulls, because that measure is read from the
+    report only for the robustness rows the route can move. Rewriting thousands
+    of base blobs to store two nulls would reopen a stage this repair does not
+    touch.
+    """
+
+    if payload == stored:
+        return True
+    empty_additions = {
+        key for key in payload.keys() - stored.keys() if payload[key] is None
+    }
+    return {
+        key: value for key, value in payload.items() if key not in empty_additions
+    } == stored
+
+
 def _compact(item: dict) -> dict:
     return {key: value for key, value in item.items() if key not in AUDIT_BLOB_KEYS}
 
@@ -547,14 +666,43 @@ def _reasons(metrics: dict) -> tuple[str, ...]:
 
 
 def _absolute_reasons(metrics: dict, degradation: dict) -> tuple[str, ...]:
-    """Stored reasons minus the ones the degradation blob owns."""
+    """Stored reasons minus the relative ones and the route's own markers.
 
-    relative = {str(reason) for reason in degradation.get("reasons") or ()}
-    return tuple(reason for reason in _reasons(metrics) if reason not in relative)
+    The degradation blob owns the relative comparisons, and a previous pass of
+    this route owns ``risk_profit_evidence``. Neither is a stored threshold, so
+    neither may push a row out of scope: doing that would freeze out exactly the
+    rows the rule has already moved once.
+    """
+
+    ignored = {str(reason) for reason in degradation.get("reasons") or ()}
+    ignored.update(ROUTE_MARKER_REASONS)
+    return tuple(reason for reason in _reasons(metrics) if reason not in ignored)
 
 
-def _needs_equity(metrics: dict) -> bool:
-    return metrics.get("equity_drawdown") is None and metrics.get("equity_drawdown_pct") is None
+def _judged_absolute_reasons(row, metrics: dict, degradation: dict) -> tuple[str, ...]:
+    """The absolute gate the stored thresholds have to reproduce.
+
+    A row the route parked as ``pending_risk_evidence`` has already had its net
+    gate waived by the route, so its stored reasons no longer name it even
+    though that is still the gate it stands or falls on. Reading them literally
+    would put every parked row out of scope — the rule could never revisit what
+    it had parked.
+    """
+
+    absolute = _absolute_reasons(metrics, degradation)
+    if not absolute and str(row["status"]) == PARKED_STATUS:
+        return (NET_PROFIT_REASON,)
+    return absolute
+
+
+def _needs_parent_evidence(metrics: dict) -> bool:
+    """What the equity-basis comparison needs from the base side of a pair."""
+
+    missing_equity = (
+        metrics.get("equity_drawdown") is None
+        and metrics.get("equity_drawdown_pct") is None
+    )
+    return missing_equity or metrics.get("trade_curve_stability") is None
 
 
 def _skip(plan: RestatementPlan, reason: str) -> None:

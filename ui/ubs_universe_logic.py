@@ -1963,9 +1963,14 @@ class UBSUniverseLogicMixin:
             "  - Resultados rechazados unicamente por net profit.\n"
             "  - Robustez cuya unica causa absoluta es ese mismo net profit.\n\n"
             "Para cada uno se relee el equity drawdown de su reporte en disco, "
-            "porque las filas anteriores a la regla no lo guardaron. No se abre "
-            "MT5 y todavia no se escribe nada: primero veras el resumen.\n\n"
-            "Puede tardar uno o dos minutos. ¿Analizar ahora?",
+            "porque las filas anteriores a la regla no lo guardaron. En las de "
+            "robustez se relee tambien la serie mensual, que es lo que permite "
+            "medir la concentracion con la misma severidad que en resultados "
+            "(quitar el 5% de los meses en vez de 3 fijos: en 17 meses son 3 de "
+            "17, en 60 son 3 de 60). Esas filas tardan mas porque hay que "
+            "parsear el reporte completo.\n\n"
+            "No se abre MT5 y todavia no se escribe nada: primero veras el "
+            "resumen. Puede tardar unos minutos. ¿Analizar ahora?",
         ):
             return
 
@@ -2014,17 +2019,19 @@ class UBSUniverseLogicMixin:
         if plan.is_empty():
             messagebox.showinfo(
                 title,
-                "Nada que hacer: ninguna fila guardada cambia con la regla de "
-                "riesgo/beneficio ni le falta la evidencia de equity.\n\n"
+                "Nada que hacer: ninguna fila guardada cambia de estado con la "
+                "regla de riesgo/beneficio.\n\n"
+                f"Revisadas sin moverlas: {len(plan.audit_only)}.\n"
                 + (f"Omitidas: {skipped}" if skipped else ""),
             )
             self.status_text.set("Regla riesgo/beneficio: estados al dia")
             return
 
         summary = [
-            f"Regla riesgo/beneficio (risk_profit_v1), modo {plan.policy.get('mode', '?')}.\n"
+            f"Regla riesgo/beneficio, modo {plan.policy.get('mode', '?')}.\n"
             "Cada fila se rejuzga con los umbrales que ella misma guardo, asi que "
-            "un cambio de criterio pendiente no viaja dentro de este arreglo."
+            "un cambio de criterio pendiente no viaja dentro de este arreglo.\n"
+            "Solo se reescriben las filas que cambian de estado."
         ]
         if plan.base:
             summary.append(
@@ -2048,17 +2055,23 @@ class UBSUniverseLogicMixin:
             detalle = "\n".join(f"     - {status}: {count}" for status, count in sorted(destinos.items()))
             summary.append(
                 f"B) Robustez que cambia de estado: {len(plan.robustness)}\n{detalle}\n"
+                "   Se les guarda la evidencia releida del reporte (equity, "
+                "concentracion\n   escalada, estabilidad y bootstrap), que es lo que "
+                "sostiene el cambio.\n"
                 "   'pending_risk_evidence' no es un rechazo: la comparacion contra la\n"
-                "   ventana de construccion esta incompleta (las filas viejas no\n"
-                "   guardaron el bootstrap). Se resuelven con\n"
-                "   --rescore-robustness-only --rescore-from-reports."
+                "   ventana de construccion sigue incompleta."
             )
-        evidence = len(plan.base_evidence) + len(plan.robustness_evidence)
-        if evidence:
+        if plan.base_evidence:
             summary.append(
-                f"C) Solo auditoria, veredicto intacto: {evidence}\n"
-                f"   ({len(plan.base_evidence)} resultados y {len(plan.robustness_evidence)} robustez)\n"
-                "   Se guarda el equity drawdown leido y por que no hubo rescate."
+                f"C) Resultados cuya evidencia acompana a un cambio: {len(plan.base_evidence)}\n"
+                "   Mantienen su veredicto; se guarda el equity con el que se comparo\n"
+                "   la robustez, para que el estado nuevo se derive de la memoria."
+            )
+        if plan.audit_only:
+            summary.append(
+                f"D) Revisadas y NO tocadas: {len(plan.audit_only)}\n"
+                "   La regla no las mueve, asi que su fila no se reescribe. El porque\n"
+                "   de cada una queda en el fichero de auditoria."
             )
         lines = [
             f"  #{item['candidate_id']} ({item['symbol']} {item['period']}, run {item['run_id']}): "
@@ -2097,8 +2110,10 @@ class UBSUniverseLogicMixin:
         messagebox.showinfo(
             title,
             f"Filas reescritas: {total} de {plan.rows_to_write()}.\n"
-            f"Resultados a aceptado: {written['base']} | robustez con estado nuevo: {written['robustness']}.\n"
-            f"Solo auditoria: {written['base_evidence'] + written['robustness_evidence']}.\n\n"
+            f"Resultados a aceptado: {written['base']} | robustez con estado nuevo: "
+            f"{written['robustness']} | evidencia base que los sostiene: "
+            f"{written['base_evidence']}.\n"
+            f"Revisadas sin tocar: {len(plan.audit_only)}.\n\n"
             f"Auditoria: {audit_path}",
         )
         for label, callback in (
