@@ -24,6 +24,66 @@ class _PortfolioPersistence(UBSPortfolioLogicMixin):
     """Reuse the desktop portfolio persistence without constructing the UI."""
 
 
+def normalize_portfolio_alias(value: Any) -> str:
+    """Normalize the optional human label without changing portfolio identity."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("El alias del portafolio debe ser texto")
+    alias = " ".join(value.split())
+    if len(alias) > 80:
+        raise ValueError("El alias del portafolio no puede superar 80 caracteres")
+    return alias
+
+
+def set_portfolio_alias_payload(
+    memory_path: str | Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist the display alias in the node-owned portfolio memory."""
+    portfolio_id = int(payload.get("portfolio_id") or 0)
+    scope = "monthly" if str(payload.get("scope") or "") == "monthly" else "full_history"
+    if portfolio_id <= 0:
+        raise ValueError("Falta el portafolio cuyo alias se quiere cambiar")
+    if scope != "full_history":
+        raise ValueError("El alias solo está disponible en Portafolio UBS")
+    alias = normalize_portfolio_alias(payload.get("alias"))
+    conn = connect_memory(memory_path, timeout=10.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("begin immediate")
+        row = conn.execute(
+            "select metrics_json from portfolios where id=? and "
+            "coalesce(nullif(portfolio_scope,''),'full_history')=?",
+            (portfolio_id, scope),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+        try:
+            parsed = json.loads(row["metrics_json"] or "{}")
+            metrics = parsed if isinstance(parsed, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            metrics = {}
+        inputs = metrics.get("inputs") if isinstance(metrics.get("inputs"), dict) else {}
+        metrics["inputs"] = inputs
+        if alias:
+            inputs["portfolio_alias"] = alias
+        else:
+            inputs.pop("portfolio_alias", None)
+        conn.execute(
+            "update portfolios set metrics_json=? where id=?",
+            (json.dumps(metrics, ensure_ascii=True, separators=(",", ":")), portfolio_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"portfolio_id": portfolio_id, "scope": scope, "alias": alias}
+
+
 # --- Motivo de exclusion (copia bifurcada de mt5_manager/candidate_verdict.py) ---
 #
 # El manager envia `reason_code` con la exclusion. Cuando no es `manual`, la
@@ -465,9 +525,10 @@ def _insert_proposal(
         portfolio_id = helper._insert_portfolio(conn, selected["inputs"], result, commit=False)
         labels = {"aggressive": "Agresivo", "balanced": "Moderado", "conservative": "Conservador"}
         mode = str(selected["inputs"]["portfolio_type"])
+        label = str(selected["inputs"].get("improvement_label") or "").strip()
         conn.execute(
             "update portfolios set name=? where id=?",
-            (f"Mejora de #{source_id} | {labels.get(mode, mode)}", portfolio_id),
+            (label or f"Mejora de #{source_id} | {labels.get(mode, mode)}", portfolio_id),
         )
         return portfolio_id
     if scope == "full_history":
