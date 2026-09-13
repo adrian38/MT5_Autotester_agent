@@ -14,11 +14,48 @@ from manager_node_runtime.portfolio_save import (
     exclude_portfolio_members_payload,
     requalify_portfolio_member_payload,
     save_portfolio_payload,
+    set_portfolio_alias_payload,
 )
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
 
 
 class ManagerNodePortfolioSaveTests(unittest.TestCase):
+    def test_alias_is_additional_editable_and_removable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Path(temp_dir) / "memory.sqlite"
+            memory.touch()
+            portfolio_id = save_portfolio_payload(memory, self._payload("alias-base"))["portfolio_id"]
+
+            result = set_portfolio_alias_payload(memory, {
+                "scope": "full_history",
+                "portfolio_id": portfolio_id,
+                "alias": "  Londres   estable  ",
+            })
+            self.assertEqual(result["alias"], "Londres estable")
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                row = conn.execute(
+                    "select name,metrics_json from portfolios where id=?", (portfolio_id,)
+                ).fetchone()
+            self.assertNotEqual(row[0], "Londres estable")
+            self.assertEqual(
+                json.loads(row[1])["inputs"]["portfolio_alias"], "Londres estable"
+            )
+
+            cleared = set_portfolio_alias_payload(memory, {
+                "scope": "full_history", "portfolio_id": portfolio_id, "alias": "",
+            })
+            self.assertEqual(cleared["alias"], "")
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                metrics = json.loads(conn.execute(
+                    "select metrics_json from portfolios where id=?", (portfolio_id,)
+                ).fetchone()[0])
+            self.assertNotIn("portfolio_alias", metrics["inputs"])
+
+            with self.assertRaisesRegex(ValueError, "80 caracteres"):
+                set_portfolio_alias_payload(memory, {
+                    "scope": "full_history", "portfolio_id": portfolio_id, "alias": "x" * 81,
+                })
+
     def test_improvement_is_new_named_single_mode_and_preserves_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = Path(temp_dir) / "memory.sqlite"
