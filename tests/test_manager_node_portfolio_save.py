@@ -29,6 +29,7 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
                 members_before = conn.execute("select * from portfolio_allocations where portfolio_id=?", (original,)).fetchall()
             improvement = self._proposal("conservative", "Conservador", 2, "improvement")
             improvement["inputs"]["improvement_source_portfolio_id"] = original
+            improvement["inputs"]["improvement_label"] = f"Mejora del portafolio #{original} | modo Conservador"
             payload = {"scope": "full_history", "operation": "generate", "selected_key": "conservative", "request_id": "improvement", "proposals": [improvement]}
             saved = save_portfolio_payload(memory, payload)
             retry = save_portfolio_payload(memory, payload)
@@ -40,7 +41,7 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
                 self.assertEqual(members_before, conn.execute("select * from portfolio_allocations where portfolio_id=?", (original,)).fetchall())
                 row = conn.execute("select name,portfolio_type,metrics_json from portfolios where id=?", (saved["portfolio_id"],)).fetchone()
                 self.assertEqual(conn.execute("select count(*) from portfolios").fetchone()[0], 2)
-            self.assertEqual(row[0], f"Mejora de #{original} | Conservador")
+            self.assertEqual(row[0], f"Mejora del portafolio #{original} | modo Conservador")
             self.assertEqual(row[1], "conservative")
             metrics = json.loads(row[2])
             self.assertFalse(metrics.get("portfolio_bundle", False))

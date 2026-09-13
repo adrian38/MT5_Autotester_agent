@@ -465,9 +465,10 @@ def _insert_proposal(
         portfolio_id = helper._insert_portfolio(conn, selected["inputs"], result, commit=False)
         labels = {"aggressive": "Agresivo", "balanced": "Moderado", "conservative": "Conservador"}
         mode = str(selected["inputs"]["portfolio_type"])
+        label = str(selected["inputs"].get("improvement_label") or "").strip()
         conn.execute(
             "update portfolios set name=? where id=?",
-            (f"Mejora de #{source_id} | {labels.get(mode, mode)}", portfolio_id),
+            (label or f"Mejora de #{source_id} | {labels.get(mode, mode)}", portfolio_id),
         )
         return portfolio_id
     if scope == "full_history":
