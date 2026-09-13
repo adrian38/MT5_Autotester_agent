@@ -33,8 +33,10 @@ from .live_audit import LiveAuditController
 from .universe_service import UniverseControllerMixin, build_history_command
 from .portfolio_save import (
     exclude_portfolio_members_payload,
+    normalize_portfolio_alias,
     requalify_portfolio_member_payload,
     save_portfolio_payload,
+    set_portfolio_alias_payload,
 )
 
 
@@ -1977,6 +1979,16 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
             rows = conn.execute("select * from portfolios where coalesce(nullif(portfolio_scope,''),'full_history')=? order by id desc", (portfolio_scope,)).fetchall() if _table_exists(conn,"portfolios") else []
         def value(row: sqlite3.Row, key: str, default: Any = None) -> Any: return row[key] if key in row.keys() else default
         portfolios = [{"id":int(value(row,"id",0) or 0),"created_at":str(value(row,"created_at","") or ""),"name":str(value(row,"name","") or ""),"portfolio_type":str(value(row,"portfolio_type",value(row,"type","")) or ""),"portfolio_scope":portfolio_scope,"target_month":int(value(row,"target_month",0) or 0) or None,"capital":float(value(row,"capital",value(row,"account_capital",0)) or 0),"total_net_profit":float(value(row,"total_net_profit",0) or 0),"actual_valley_dd":float(value(row,"actual_valley_dd",0) or 0),"target_valley_dd":float(value(row,"target_valley_dd",0) or 0),"valley_usage_pct":float(value(row,"valley_usage_pct",0) or 0),"actual_point_dd":float(value(row,"actual_point_dd",0) or 0),"target_point_dd":float(value(row,"target_point_dd",0) or 0),"point_usage_pct":float(value(row,"point_usage_pct",0) or 0),"total_lot":float(value(row,"total_lot",0) or 0),"total_units":int(value(row,"total_units",0) or 0),"active_strategies":int(value(row,"active_strategies",0) or 0),"target_strategies":int(value(row,"target_strategies",0) or 0),"stop_reason":str(value(row,"stop_reason","") or ""),"binding_constraint":str(value(row,"binding_constraint","") or "")} for row in rows]
+        if portfolio_scope == "full_history":
+            for portfolio, row in zip(portfolios, rows):
+                try:
+                    metrics = json.loads(value(row, "metrics_json", "{}") or "{}")
+                    inputs = metrics.get("inputs") if isinstance(metrics, dict) else {}
+                    portfolio["alias"] = normalize_portfolio_alias(
+                        inputs.get("portfolio_alias") if isinstance(inputs, dict) else ""
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    portfolio["alias"] = ""
         return {"node":{"id":self.config.get("node_id"),"name":self.config.get("display_name") or self.config.get("node_id"),"broker":self.config.get("broker"),"account_type":self.config.get("account_type")},"scope":portfolio_scope,"portfolios":portfolios,"summary":{"total":len(portfolios),"strategies":sum(item["active_strategies"] for item in portfolios),"latest_id":portfolios[0]["id"] if portfolios else None},"observed_at":utc_now()}
 
     def portfolio_detail(self, portfolio_id: int, scope: str = "full_history") -> dict[str, Any]:
@@ -2011,6 +2023,12 @@ class JobController(GuidedControllerMixin, UniverseControllerMixin):
                 f"{int(result.get('active_strategies') or 0)} estrategias",
             )
             self._persist()
+        return result
+
+    def set_portfolio_alias(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _cfg, db_path = self._settings_and_memory()
+        result = set_portfolio_alias_payload(db_path, payload)
+        self._persist()
         return result
 
     def delete_portfolio(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2243,6 +2261,8 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send(202, self.server.controller.start_universe_history())
             elif self.path == "/api/v1/portfolios/save":
                 self._send(201, self.server.controller.save_portfolio(self._body(50_000_000)))
+            elif self.path == "/api/v1/portfolios/alias":
+                self._send(200, self.server.controller.set_portfolio_alias(self._body()))
             elif self.path == "/api/v1/portfolios/delete":
                 self._send(200, self.server.controller.delete_portfolio(self._body()))
             elif self.path == "/api/v1/portfolios/exclude":

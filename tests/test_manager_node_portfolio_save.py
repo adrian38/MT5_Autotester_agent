@@ -14,11 +14,48 @@ from manager_node_runtime.portfolio_save import (
     exclude_portfolio_members_payload,
     requalify_portfolio_member_payload,
     save_portfolio_payload,
+    set_portfolio_alias_payload,
 )
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
 
 
 class ManagerNodePortfolioSaveTests(unittest.TestCase):
+    def test_alias_is_additional_editable_and_removable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Path(temp_dir) / "memory.sqlite"
+            memory.touch()
+            portfolio_id = save_portfolio_payload(memory, self._payload("alias-base"))["portfolio_id"]
+
+            result = set_portfolio_alias_payload(memory, {
+                "scope": "full_history",
+                "portfolio_id": portfolio_id,
+                "alias": "  Londres   estable  ",
+            })
+            self.assertEqual(result["alias"], "Londres estable")
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                row = conn.execute(
+                    "select name,metrics_json from portfolios where id=?", (portfolio_id,)
+                ).fetchone()
+            self.assertNotEqual(row[0], "Londres estable")
+            self.assertEqual(
+                json.loads(row[1])["inputs"]["portfolio_alias"], "Londres estable"
+            )
+
+            cleared = set_portfolio_alias_payload(memory, {
+                "scope": "full_history", "portfolio_id": portfolio_id, "alias": "",
+            })
+            self.assertEqual(cleared["alias"], "")
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                metrics = json.loads(conn.execute(
+                    "select metrics_json from portfolios where id=?", (portfolio_id,)
+                ).fetchone()[0])
+            self.assertNotIn("portfolio_alias", metrics["inputs"])
+
+            with self.assertRaisesRegex(ValueError, "80 caracteres"):
+                set_portfolio_alias_payload(memory, {
+                    "scope": "full_history", "portfolio_id": portfolio_id, "alias": "x" * 81,
+                })
+
     def test_improvement_is_new_named_single_mode_and_preserves_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = Path(temp_dir) / "memory.sqlite"
@@ -29,6 +66,7 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
                 members_before = conn.execute("select * from portfolio_allocations where portfolio_id=?", (original,)).fetchall()
             improvement = self._proposal("conservative", "Conservador", 2, "improvement")
             improvement["inputs"]["improvement_source_portfolio_id"] = original
+            improvement["inputs"]["improvement_label"] = f"Mejora del portafolio #{original} | modo Conservador"
             payload = {"scope": "full_history", "operation": "generate", "selected_key": "conservative", "request_id": "improvement", "proposals": [improvement]}
             saved = save_portfolio_payload(memory, payload)
             retry = save_portfolio_payload(memory, payload)
@@ -40,7 +78,7 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
                 self.assertEqual(members_before, conn.execute("select * from portfolio_allocations where portfolio_id=?", (original,)).fetchall())
                 row = conn.execute("select name,portfolio_type,metrics_json from portfolios where id=?", (saved["portfolio_id"],)).fetchone()
                 self.assertEqual(conn.execute("select count(*) from portfolios").fetchone()[0], 2)
-            self.assertEqual(row[0], f"Mejora de #{original} | Conservador")
+            self.assertEqual(row[0], f"Mejora del portafolio #{original} | modo Conservador")
             self.assertEqual(row[1], "conservative")
             metrics = json.loads(row[2])
             self.assertFalse(metrics.get("portfolio_bundle", False))
