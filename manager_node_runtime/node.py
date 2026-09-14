@@ -217,10 +217,18 @@ def _load_universe_rows(config: dict[str, Any]) -> tuple[list[dict[str, Any]], s
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
     parser.read(assets_path, encoding="utf-8-sig")
-    aliases = {str(alias).strip().upper(): str(target).strip().upper() for alias, target in (parser["CommonAliases"].items() if parser.has_section("CommonAliases") else []) if str(alias).strip() and str(target).strip()}
+    aliases = {
+        str(alias).strip().upper(): str(target).strip()
+        for alias, target in (
+            parser["CommonAliases"].items()
+            if parser.has_section("CommonAliases")
+            else []
+        )
+        if str(alias).strip() and str(target).strip()
+    }
     reverse_aliases: dict[str, list[str]] = {}
     for alias, target in aliases.items():
-        reverse_aliases.setdefault(target, []).append(alias)
+        reverse_aliases.setdefault(target.upper(), []).append(alias)
     policy: dict[str, Any] = {}
     if policy_path.is_file():
         try:
@@ -236,13 +244,20 @@ def _load_universe_rows(config: dict[str, Any]) -> tuple[list[dict[str, Any]], s
         if section == "CommonAliases":
             continue
         for raw in parser[section].get("symbols", "").split(","):
-            symbol = raw.strip().upper()
-            canonical = aliases.get(symbol, symbol)
-            if not canonical or canonical in seen:
+            symbol = raw.strip()
+            canonical = aliases.get(symbol.upper(), symbol)
+            canonical_key = canonical.upper()
+            if not canonical or canonical_key in seen:
                 continue
-            seen.add(canonical)
-            generation_enabled = canonical not in disabled
-            rows.append({"symbol": canonical, "group": section, "aliases": sorted(reverse_aliases.get(canonical, [])), "generation_enabled": generation_enabled, "seeds_enabled": generation_enabled or canonical in seed_enabled})
+            seen.add(canonical_key)
+            generation_enabled = canonical_key not in disabled
+            rows.append({
+                "symbol": canonical,
+                "group": section,
+                "aliases": sorted(reverse_aliases.get(canonical_key, [])),
+                "generation_enabled": generation_enabled,
+                "seeds_enabled": generation_enabled or canonical_key in seed_enabled,
+            })
     rows.sort(key=lambda item: (str(item["group"]).casefold(), str(item["symbol"]).casefold()))
     return rows, disabled, seed_enabled
 
