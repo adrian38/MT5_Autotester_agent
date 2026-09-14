@@ -279,6 +279,11 @@ class RegressionRuntimeHookTests(unittest.TestCase):
     def test_runtime_without_args_keeps_previous_behaviour(self) -> None:
         self.assertIsNone(ubs_agent.regression_runtime().missing_report_status)
 
+    def test_runtime_exposes_the_stage_copy_that_repairs_spelling(self) -> None:
+        self.assertIs(ubs_agent.regression_runtime().write_stage_set, ubs_agent.write_retry_set)
+
+
+
 
 class StageRetrySetsTests(unittest.TestCase):
     def test_status_is_terminal_in_every_retry_set(self) -> None:

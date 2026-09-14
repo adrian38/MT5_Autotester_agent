@@ -48,6 +48,9 @@ class RegressionRuntime:
     # simbolo: no_report esta en REGRESSION_RETRYABLE_STATUSES y el manager lo
     # reencolaria para siempre. Opcional para no romper runtimes existentes.
     missing_report_status: Callable[[str], str] | None = None
+    # Copia de etapa que ademas repara la ortografia MT5 del ForceSymbol y
+    # devuelve el nombre exacto. Opcional: sin ella se copia el .set tal cual.
+    write_stage_set: Callable[..., str] | None = None
 
 
 def _score_config_for_period(config: ScoreConfig, period: str, args: Any) -> ScoreConfig:
@@ -412,17 +415,25 @@ def evaluate_candidate_regression(
     for row, source_set in rows_with_paths:
         set_label = compact_safe_part(source_set.stem, 72, fallback="candidate")
         destination = regression_dir / f"regression_{int(row['id']):06d}_{set_label}.set"
-        write_set_use_every_tick(source_set, destination, False)
+        original = runtime.variant_from_candidate_row(row)
+        # Un ForceSymbol mal escrito heredado del .set guardado cierra MT5 sin
+        # reporte, y no_report es retryable: la regresiva no avanzaria nunca.
+        if runtime.write_stage_set is not None:
+            target_symbol = runtime.write_stage_set(
+                source_set, destination, False, args, original.target_symbol
+            )
+        else:
+            write_set_use_every_tick(source_set, destination, False)
+            target_symbol = original.target_symbol
         if not args.dry_run:
             runtime.remove_report_artifacts(destination)
-        original = runtime.variant_from_candidate_row(row)
         copied.append(
             (
                 row,
                 Variant(
                     path=destination,
                     seed=original.seed,
-                    target_symbol=original.target_symbol,
+                    target_symbol=target_symbol,
                     target_period=original.target_period,
                     mutated_keys=original.mutated_keys,
                     missing_lot_keys=original.missing_lot_keys,

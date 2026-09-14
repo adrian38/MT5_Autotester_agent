@@ -90,6 +90,7 @@ from ubs_agent import (
     variant_as_next_seed,
     write_retry_set,
     write_set_force_symbol,
+    write_set_use_every_tick,
 )
 from run_tests import infer_period_from_set, load_set_params, normalize_set_symbol, parse_symbol_map
 
@@ -3217,6 +3218,38 @@ class RetrySetBrokerSpellingTests(unittest.TestCase):
 
             self.assertEqual(exact, ".US500Cash")
             self.assertIn("ForceSymbol=.US500Cash", destination.read_text(encoding="utf-8"))
+
+    def test_missing_universe_leaves_the_stage_copy_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "old.set"
+            destination = root / "stage.set"
+            source.write_text("ForceSymbol=.US500CASH\n", encoding="utf-8")
+            args = SimpleNamespace(broker="ICTRADING", assets=root / "missing.ini", symbol_map="")
+
+            exact = write_retry_set(source, destination, False, args, ".US500CASH")
+
+            self.assertEqual(exact, ".US500CASH")
+            self.assertIn("ForceSymbol=.US500CASH", destination.read_text(encoding="utf-8"))
+
+    def test_stage_copy_is_byte_identical_when_spelling_already_matches(self) -> None:
+        # Final Tick compara byte a byte para reutilizar OHLC ya ejecutados, asi
+        # que el caso normal no puede normalizar finales de linea.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "old.set"
+            plain = root / "plain.set"
+            repaired = root / "repaired.set"
+            assets = root / "assets.ini"
+            source.write_bytes(b"ForceSymbol=.US500Cash\r\nATR_Period=30\r\n")
+            assets.write_text("[IndicesEnergies]\nsymbols=.US500Cash\n", encoding="utf-8")
+            args = SimpleNamespace(broker="ROBOFOREX", assets=assets, symbol_map="")
+
+            write_set_use_every_tick(source, plain, False)
+            exact = write_retry_set(source, repaired, False, args, ".US500Cash")
+
+            self.assertEqual(exact, ".US500Cash")
+            self.assertEqual(repaired.read_bytes(), plain.read_bytes())
 
     def test_retry_outside_ic_keeps_unresolvable_symbol_instead_of_aborting(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
