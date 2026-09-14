@@ -1205,9 +1205,11 @@ def write_retry_set(
 ) -> str:
     """Create a stage copy and restore the broker's exact MT5 symbol spelling."""
     write_set_use_every_tick(source, destination, enabled)
-    if normalize_broker(getattr(args, "broker", DEFAULT_BROKER)) != "ICTRADING":
-        return target_symbol
-
+    # Todos los brokers lo necesitan: el .ini es la unica fuente de la ortografia
+    # MT5 y un ForceSymbol mal escrito cierra el terminal sin reporte. Solo
+    # ICTrading es estricto; en el resto, un nombre que no se resuelve (por
+    # ejemplo un alias) deja el set intacto en vez de abortar el reintento.
+    strict = normalize_broker(getattr(args, "broker", DEFAULT_BROKER)) == "ICTRADING"
     groups, _ = load_asset_universe(Path(args.assets), include_disabled=True)
     actual_symbols = {
         str(symbol).strip()
@@ -1215,12 +1217,14 @@ def write_retry_set(
         for symbol in group_symbols
         if str(symbol).strip()
     }
-    mapped = apply_symbol_map(target_symbol, parse_symbol_map(args.symbol_map))
+    mapped = apply_symbol_map(target_symbol, parse_symbol_map(getattr(args, "symbol_map", "") or ""))
     matches = [symbol for symbol in actual_symbols if symbol.casefold() == mapped.strip().casefold()]
     if len(matches) != 1:
-        raise ValueError(
-            "No se puede resolver un nombre MT5 único en el universo del broker: " + str(mapped)
-        )
+        if strict:
+            raise ValueError(
+                "No se puede resolver un nombre MT5 único en el universo del broker: " + str(mapped)
+            )
+        return target_symbol
     exact = matches[0]
     text, encoding = read_set_with_encoding(destination)
     lines = text.splitlines()

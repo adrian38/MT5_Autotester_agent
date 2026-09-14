@@ -3199,6 +3199,43 @@ class RetrySetBrokerSpellingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "nombre MT5 único"):
                 write_retry_set(source, root / "retry.set", False, args, "MIDDE50")
 
+    def test_retry_repairs_spelling_for_every_broker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "old.set"
+            destination = root / "retry.set"
+            assets = root / "assets.ini"
+            source.write_text("ForceSymbol=.US500CASH\n", encoding="utf-8")
+            assets.write_text(
+                "[IndicesEnergies]\nsymbols=.US500Cash,.US30Cash\n"
+                "[CommonAliases]\nUS500=.US500Cash\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(broker="ROBOFOREX", assets=assets, symbol_map="")
+
+            exact = write_retry_set(source, destination, False, args, ".US500CASH")
+
+            self.assertEqual(exact, ".US500Cash")
+            self.assertIn("ForceSymbol=.US500Cash", destination.read_text(encoding="utf-8"))
+
+    def test_retry_outside_ic_keeps_unresolvable_symbol_instead_of_aborting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "old.set"
+            destination = root / "retry.set"
+            assets = root / "assets.ini"
+            source.write_text("ForceSymbol=US500\n", encoding="utf-8")
+            assets.write_text(
+                "[IndicesEnergies]\nsymbols=.US500Cash\n[CommonAliases]\nUS500=.US500Cash\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(broker="ROBOFOREX", assets=assets, symbol_map="")
+
+            exact = write_retry_set(source, destination, False, args, "US500")
+
+            self.assertEqual(exact, "US500")
+            self.assertIn("ForceSymbol=US500", destination.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
