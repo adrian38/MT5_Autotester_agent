@@ -221,3 +221,18 @@ Si la instalación estaba abierta antes de auditar, la reapertura verificada se
 deja abierta. Si la lanzó únicamente el auditor, vuelve a cerrarse limpiamente.
 Un fallo en la reapertura se publica como restauración fallida y ocurre antes de
 reanudar el pipeline.
+
+## Lote real independiente por estrategia (2026-09-14)
+
+El contrato del auditor acepta `real_strategy_lots`, indexado por el
+`candidate_id` estable de cada miembro. Ese lote se usa solo para decidir qué
+cierres del historial pertenecen al portafolio; el Strategy Tester conserva el
+lote efectivo derivado del portafolio y de las reglas del broker. Sin valor
+explícito se usa el lote efectivo anterior para mantener compatibilidad.
+
+El filtro se aplica después de ejecutar el tester para obtener también el
+símbolo efectivo de su reporte. Así una estrategia guardada como `NAS100` puede
+reconocer cierres reales `NAS100.fs`, y una estrategia ETH guardada a `0.7`
+puede reconocer `0.6` cuando ese es el lote real configurado. Los artefactos
+guardan `real_account_lot` y su origen junto a los lotes del portafolio y del
+tester.
