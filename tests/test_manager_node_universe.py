@@ -52,6 +52,22 @@ class ManagerNodeUniverseTests(unittest.TestCase):
             conn.execute("insert into candidates(target_symbol,status,policy) values(?,?,?)", (symbol, status, policy))
             conn.commit()
 
+    def test_universe_preserves_exact_broker_symbol_casing(self):
+        self.assets.write_text(
+            "[Indices]\nsymbols=US500,.US500Cash\n[CommonAliases]\nUS500=.US500Cash\n",
+            encoding="utf-8",
+        )
+
+        payload = self.controller.universe()
+
+        self.assertEqual(payload["symbols"], [{
+            "symbol": ".US500Cash",
+            "group": "Indices",
+            "aliases": ["US500"],
+            "generation_enabled": True,
+            "seeds_enabled": True,
+        }])
+
     def test_sync_uses_saved_session_and_retires_symbols_with_backups(self):
         extraction = SymbolExtractionResult(
             (ExtractedSymbol("EURUSD", trade_mode=4), ExtractedSymbol("NEW", trade_mode=3)),
