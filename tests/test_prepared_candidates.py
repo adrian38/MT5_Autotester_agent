@@ -268,10 +268,17 @@ class PreparedTests(unittest.TestCase):
     def test_axi_prepared_symbol_uses_exact_universe_casing(self):
         self._check_other_broker_spelling('AXI', 'Apple+')
 
-    def test_roboforex_prepared_execution_is_unchanged(self):
-        self._check_other_broker_spelling('ROBOFOREX', 'APPLE+')
+    def test_roboforex_prepared_symbol_uses_exact_universe_casing(self):
+        # MT5 cierra el terminal sin reporte si ForceSymbol no coincide con la
+        # ortografia del broker, asi que la reparacion no puede ser solo de IC.
+        self._check_other_broker_spelling('ROBOFOREX', 'Apple+')
 
-    def _check_other_broker_spelling(self, broker, expected):
+    def test_unresolvable_symbol_leaves_non_ic_batch_untouched(self):
+        # Fuera de IC un destino que no resuelve a un instrumento unico (un
+        # alias, por ejemplo) conserva el lote tal cual en vez de abortarlo.
+        self._check_other_broker_spelling('ROBOFOREX', 'APPLE+', instruments=('EURUSD',))
+
+    def _check_other_broker_spelling(self, broker, expected, *, instruments=('Apple+',)):
         value = symbol_package()
         item = value['candidates'][0]
         parent = base64.b64decode(item['parent_b64'])
@@ -288,14 +295,19 @@ class PreparedTests(unittest.TestCase):
         directory = protocol.store_batch(self.root,value,broker,'STANDARD')
         self.args.prepared_manifest = directory/'batch.json'
         self.args.broker = broker
-        self.api.broker_universe_symbols = lambda args:{'Apple+'}
+        # La pertenencia llega en mayusculas (incluye alias); la ortografia MT5
+        # real solo esta en el .ini de instrumentos.
+        self._use_real_universe(*instruments)
+        self.api.broker_universe_symbols = lambda args:{'APPLE+'}
 
         self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
 
         variants = self.api.evaluate_generation.call_args.args[4]
         self.assertEqual(variants[0].target_symbol,expected)
         self.assertEqual(variants[0].mutation_details[0]['new'],expected)
-        self.assertEqual(variants[0].path.read_bytes(), raw)
+        # MT5 lee ForceSymbol del set; nada mas puede cambiar en la copia.
+        self.assertEqual(protocol.set_params(variants[0].path.read_bytes()),
+                         {**protocol.set_params(raw),'ForceSymbol':expected})
 
 
 if __name__=='__main__':unittest.main()

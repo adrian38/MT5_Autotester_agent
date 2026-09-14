@@ -48,21 +48,28 @@ job timeout (minimum 120 seconds). If release cannot be confirmed, that worker
 stops consuming jobs; it must not reuse the profile. This is runner ownership,
 not a Lab or manager scheduling delay. New runner subprocesses load this change.
 
-ICTrading prepared execution resolves symbols against the active ICTrading universe
-and writes exact broker casing (for example `TecDE30`, `MidDE50`) into the
+Prepared execution resolves symbols against the active broker universe and writes
+exact broker casing (for example `TecDE30`, `MidDE50`, `.US500Cash`) into the
 execution copy's `ForceSymbol` and candidate metadata. Package bytes, hashes,
 parent sets and batch identity stay unchanged. This applies to both exploration
-and numeric prepared candidates; AXI and RoboForex execution behavior is unchanged.
+and numeric prepared candidates, and to **every** broker: MT5 closes without
+opening the Strategy Tester when `ForceSymbol` does not match the server's
+spelling, and the candidate is then recorded as a retryable `no_report` that no
+retry can ever fix.
 
 Execution spelling must come from the instrument groups returned by
 `load_asset_universe`, never `broker_universe_symbols`: the latter intentionally
-uppercases membership keys and includes aliases. IC prepared execution matches
-case-insensitively without stripping punctuation or suffixes, requires exactly
-one actual instrument after symbol mapping, and rejects unresolved/ambiguous
-names before creating a run. Regression tests use a real temporary assets INI
-and the real membership loader, covering mixed case, suffixes and alias keys.
+uppercases membership keys and includes aliases, so a miscased name still passes
+the membership and `symbol_not_offered` checks. Matching is case-insensitive
+without stripping punctuation or suffixes and requires exactly one actual
+instrument after symbol mapping. ICTrading is strict and rejects an
+unresolved/ambiguous name before creating a run; on the other brokers an
+unresolved name (an alias, for example) leaves the batch untouched instead of
+aborting it. Regression tests use a real temporary assets INI and the real
+membership loader, covering mixed case, suffixes and alias keys.
+
 This fixes new prepared execution copies; existing completed batches and their
 persisted source sets are not rewritten. Candidate, generation and full-run
 retry paths repair `ForceSymbol` in their temporary execution copies from the
-current IC instrument groups, so historical candidates also use exact broker
-spelling. An unresolved or ambiguous name stops before MT5 is launched.
+current instrument groups, so historical candidates also use exact broker
+spelling on their next retry.
