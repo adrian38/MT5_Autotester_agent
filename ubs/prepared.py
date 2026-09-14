@@ -14,10 +14,13 @@ def _broker_execution_item(item, universe, symbol_map, api, *, strict=False):
     """Return active-universe spelling without changing batch identity."""
     mapped = api.apply_symbol_map(item['target_symbol'], symbol_map)
     normalized = api.normalize_set_symbol(mapped)
+    matches = [symbol for symbol in sorted(universe) if symbol.casefold() == str(mapped).strip().casefold()]
     if strict:
-        matches = [symbol for symbol in universe if symbol.casefold() == str(mapped).strip().casefold()]
         if len(matches) != 1:
             raise ValueError('No se puede resolver un nombre MT5 único en el universo del broker: '+str(mapped))
+        exact = matches[0]
+    elif len(matches) == 1:
+        # Same name, broker's own casing: this is the spelling MT5 resolves.
         exact = matches[0]
     else:
         exact = next(
@@ -82,12 +85,11 @@ def load_prepared(args, memory, api):
             'parent_b64':base64.b64encode((directory/(item['fingerprint']+'.parent.set')).read_bytes()).decode()})
     decoded = protocol.validate_package(package,args.broker,args.account_type)
     universe = api.broker_universe_symbols(args)
-    execution_universe = universe
-    if str(args.broker).strip().upper() == 'ICTRADING':
-        # Membership keys include aliases and are uppercased. They cannot be
-        # used as MT5 names: read the actual instruments with broker spelling.
-        groups, _ = api.load_asset_universe(Path(args.assets), include_disabled=True)
-        execution_universe = {symbol for symbols in groups.values() for symbol in symbols}
+    # Membership keys include aliases and are uppercased. They cannot be used as
+    # MT5 names: read the actual instruments with broker spelling. Every broker
+    # needs this — MT5 exits without opening the tester on a miscased symbol.
+    groups, _ = api.load_asset_universe(Path(args.assets), include_disabled=True)
+    execution_universe = {symbol for symbols in groups.values() for symbol in symbols}
     disabled = api.load_disabled_symbols(api.disabled_symbols_file_for_account(args.account_type,args.broker))
     symbol_map = api.parse_symbol_map(args.symbol_map)
     timeframes = api.target_timeframe_universe(bool(args.experimental_long_timeframes),base_dir=api.BASE_DIR,
@@ -140,12 +142,9 @@ def load_prepared(args, memory, api):
         mapped = api.apply_symbol_map(item['target_symbol'],symbol_map)
         if not any(api.normalize_set_symbol(s)==api.normalize_set_symbol(mapped) for s in universe):
             raise ValueError('Instrumento fuera del universo del broker')
-        execution_item = (
-            _broker_execution_item(item, execution_universe, symbol_map, api,
-                                   strict=str(args.broker).strip().upper() == 'ICTRADING')
-            if str(args.broker).strip().upper() in {'AXI', 'ICTRADING'}
-            else item
-        )
+        execution_item = _broker_execution_item(
+            item, execution_universe, symbol_map, api,
+            strict=str(args.broker).strip().upper() == 'ICTRADING')
         for key,value in frozen.items():
             forced = globals_.get(key,value)
             if forced and key in values and protocol.normalized(values[key])!=protocol.normalized(forced):
@@ -157,10 +156,9 @@ def load_prepared(args, memory, api):
         # of prepared candidate can enter the evaluator.
         if protocol.set_params('\n'.join(lines).encode()) != values:
             raise ValueError('Los timeframes del set no coinciden con el destino')
-        # Validate the immutable package first; only the IC execution copy gets
+        # Validate the immutable package first; only the execution copy gets the
         # broker spelling. MT5 reads ForceSymbol, not the candidate metadata.
-        if (str(args.broker).strip().upper() == 'ICTRADING'
-                and values.get('ForceSymbol', '').split('||')[0] != execution_item['target_symbol']):
+        if values.get('ForceSymbol', '').split('||')[0] != execution_item['target_symbol']:
             if not api.replace_existing_current_value(lines, 'ForceSymbol', execution_item['target_symbol']):
                 api.replace_or_add_plain_key(lines, 'ForceSymbol', execution_item['target_symbol'])
             raw = '\n'.join(lines).encode('utf-8')
