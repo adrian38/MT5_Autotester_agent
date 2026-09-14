@@ -221,3 +221,32 @@ Si la instalación estaba abierta antes de auditar, la reapertura verificada se
 deja abierta. Si la lanzó únicamente el auditor, vuelve a cerrarse limpiamente.
 Un fallo en la reapertura se publica como restauración fallida y ocurre antes de
 reanudar el pipeline.
+
+La reapertura de comprobación no debe llamar a `_launch_terminal` antes de
+`MetaTrader5.initialize(path=...)`: `initialize` ya arranca el ejecutable si
+está cerrado. En AXI build 6182, el doble arranque produjo `terminal process
+already started` en el Journal y después `(-10005, 'IPC timeout')` en los cuatro
+terminales de la auditoría del 2026-09-14. El arranque manual se conserva solo
+para la primera fase, porque ahí es necesario pasar el INI con `KeepPrivate=1`.
+
+Además, esa reapertura debe pasar `login` y `server` explícitos a `initialize`,
+pero nunca `password`. El INI personalizado es de solo lectura: aunque autentica
+y guarda el secreto, no sustituye necesariamente el login del `common.ini`. Si
+se omite también el login, MT5 reabre la cuenta auditada anterior y muestra su
+diálogo de contraseña; indicar la cuenta obliga a recuperar su secreto desde
+`accounts.dat` y mantiene verificable la persistencia.
+
+## Lote real independiente por estrategia (2026-09-14)
+
+El contrato del auditor acepta `real_strategy_lots`, indexado por el
+`candidate_id` estable de cada miembro. Ese lote se usa solo para decidir qué
+cierres del historial pertenecen al portafolio; el Strategy Tester conserva el
+lote efectivo derivado del portafolio y de las reglas del broker. Sin valor
+explícito se usa el lote efectivo anterior para mantener compatibilidad.
+
+El filtro se aplica después de ejecutar el tester para obtener también el
+símbolo efectivo de su reporte. Así una estrategia guardada como `NAS100` puede
+reconocer cierres reales `NAS100.fs`, y una estrategia ETH guardada a `0.7`
+puede reconocer `0.6` cuando ese es el lote real configurado. Los artefactos
+guardan `real_account_lot` y su origen junto a los lotes del portafolio y del
+tester.
