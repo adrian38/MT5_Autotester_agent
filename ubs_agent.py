@@ -1196,6 +1196,18 @@ def broker_universe_symbols(args: argparse.Namespace) -> set[str]:
     return symbols
 
 
+def current_set_symbol(lines: list[str]) -> str:
+    """Return the active ForceSymbol value of a .set, ignoring ``||`` metadata."""
+    for line in lines:
+        if "=" not in line or line.lstrip().startswith(";"):
+            continue
+        lhs, raw_value = line.split("=", 1)
+        if lhs.strip() != "ForceSymbol":
+            continue
+        return raw_value.split("||", 1)[0].strip()
+    return ""
+
+
 def write_retry_set(
     source: Path,
     destination: Path,
@@ -1210,13 +1222,18 @@ def write_retry_set(
     # ICTrading es estricto; en el resto, un nombre que no se resuelve (por
     # ejemplo un alias) deja el set intacto en vez de abortar el reintento.
     strict = normalize_broker(getattr(args, "broker", DEFAULT_BROKER)) == "ICTRADING"
-    groups, _ = load_asset_universe(Path(args.assets), include_disabled=True)
+    assets = str(getattr(args, "assets", "") or "")
+    groups, _ = load_asset_universe(Path(assets), include_disabled=True) if assets else ({}, {})
     actual_symbols = {
         str(symbol).strip()
         for group_symbols in groups.values()
         for symbol in group_symbols
         if str(symbol).strip()
     }
+    if not actual_symbols:
+        # Sin inventario no hay contra que resolver: es preferible dejar el set
+        # como esta que abortar la etapa por un fichero ausente o ilegible.
+        return target_symbol
     mapped = apply_symbol_map(target_symbol, parse_symbol_map(getattr(args, "symbol_map", "") or ""))
     matches = [symbol for symbol in actual_symbols if symbol.casefold() == mapped.strip().casefold()]
     if len(matches) != 1:
@@ -1228,6 +1245,11 @@ def write_retry_set(
     exact = matches[0]
     text, encoding = read_set_with_encoding(destination)
     lines = text.splitlines()
+    # Reescribir es normalizar finales de linea, y eso rompe la comparacion
+    # byte a byte con la que Final Tick decide si puede reutilizar los OHLC ya
+    # ejecutados. Con la ortografia ya correcta -el caso normal- no se toca.
+    if current_set_symbol(lines) == exact:
+        return exact
     if not replace_existing_current_value(lines, "ForceSymbol", exact):
         replace_or_add_plain_key(lines, "ForceSymbol", exact)
     write_set_text(destination, "\n".join(lines), encoding)
@@ -1418,6 +1440,7 @@ def regression_runtime(args: argparse.Namespace | None = None) -> RegressionRunt
         missing_report_status=(
             (lambda symbol: missing_report_status(symbol, args)) if args is not None else None
         ),
+        write_stage_set=write_retry_set,
         running_terminal_exit_code=RUNNING_TERMINAL_EXIT_CODE,
         recreate_work_dir=recreate_work_dir,
         remove_report_artifacts=remove_report_artifacts,
@@ -4731,17 +4754,22 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
             return 1
         used_names.add(name)
         retry_set = robust_dir / name
-        write_set_use_every_tick(source_set, retry_set, False)
+        original_variant = variant_from_candidate_row(row)
+        # El .set guardado puede llevar un ForceSymbol con la ortografia
+        # equivocada; sin repararlo MT5 cierra sin reporte y robustez nunca
+        # avanza, igual que pasaba en los retries.
+        exact_symbol = write_retry_set(
+            source_set, retry_set, False, args, original_variant.target_symbol
+        )
         if not args.dry_run:
             remove_report_artifacts(retry_set)
-        original_variant = variant_from_candidate_row(row)
         copied.append(
             (
                 row,
                 Variant(
                     path=retry_set,
                     seed=original_variant.seed,
-                    target_symbol=original_variant.target_symbol,
+                    target_symbol=exact_symbol,
                     target_period=original_variant.target_period,
                     mutated_keys=original_variant.mutated_keys,
                     missing_lot_keys=original_variant.missing_lot_keys,
@@ -5614,18 +5642,22 @@ def _evaluate_candidate_final_tick_pass(
             False,
         ):
             ohlc_sets_unchanged = False
-        write_set_use_every_tick(source_set, ohlc_set, False)
-        write_set_use_every_tick(source_set, real_tick_set, True)
+        original_variant = variant_from_candidate_row(row)
+        # Las dos copias salen del mismo .set guardado, asi que ambas heredan
+        # un ForceSymbol mal escrito; sin reparar, MT5 cierra sin reporte.
+        exact_symbol = write_retry_set(
+            source_set, ohlc_set, False, args, original_variant.target_symbol
+        )
+        write_retry_set(source_set, real_tick_set, True, args, original_variant.target_symbol)
         if not args.dry_run:
             remove_report_artifacts(real_tick_set)
             if not resume_pending_dir:
                 remove_report_artifacts(ohlc_set)
 
-        original_variant = variant_from_candidate_row(row)
         ohlc_variant = Variant(
             path=ohlc_set,
             seed=original_variant.seed,
-            target_symbol=original_variant.target_symbol,
+            target_symbol=exact_symbol,
             target_period=original_variant.target_period,
             mutated_keys=original_variant.mutated_keys,
             missing_lot_keys=original_variant.missing_lot_keys,
@@ -5634,7 +5666,7 @@ def _evaluate_candidate_final_tick_pass(
         real_tick_variant = Variant(
             path=real_tick_set,
             seed=original_variant.seed,
-            target_symbol=original_variant.target_symbol,
+            target_symbol=exact_symbol,
             target_period=original_variant.target_period,
             mutated_keys=original_variant.mutated_keys,
             missing_lot_keys=original_variant.missing_lot_keys,

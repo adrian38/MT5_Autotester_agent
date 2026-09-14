@@ -69,7 +69,17 @@ aborting it. Regression tests use a real temporary assets INI and the real
 membership loader, covering mixed case, suffixes and alias keys.
 
 This fixes new prepared execution copies; existing completed batches and their
-persisted source sets are not rewritten. Candidate, generation and full-run
-retry paths repair `ForceSymbol` in their temporary execution copies from the
-current instrument groups, so historical candidates also use exact broker
-spelling on their next retry.
+persisted source sets are not rewritten. Every later stage that launches MT5
+from a copy of the stored `.set` repairs `ForceSymbol` the same way — candidate,
+generation and full-run retries, robustness, Final Tick (short and 6M, both the
+OHLC and the Every Tick copy) and the 2017-2019 regression — so historical
+candidates also use exact broker spelling from their next stage on. Otherwise a
+miscased symbol survives as a retryable `no_report` that is requeued forever:
+`broker_universe_symbols` uppercases, so `symbol_not_offered` never sees it.
+
+The repair is a no-op when the spelling already matches, because rewriting the
+file normalizes line endings and Final Tick compares the OHLC copy byte for byte
+against its source to decide whether it can reuse already-executed OHLC reports.
+With no readable instrument INI nothing is resolved and the copy is left as is,
+for every broker. `ubs.regression` receives the helper through
+`RegressionRuntime.write_stage_set`; without it, it falls back to a plain copy.
