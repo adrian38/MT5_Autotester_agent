@@ -496,6 +496,99 @@ class ManagerNodeExclusionVerdictTests(unittest.TestCase):
             self.assertEqual(self._stages(memory), before)
 
 
+class ManagerNodePoolExclusionTests(unittest.TestCase):
+    """Excluir un set que no esta en ningun portafolio.
+
+    Es lo que hace la ventana «Gestion por simbolo» del manager. Antes esto
+    abortaba en la primera linea con «Falta el portafolio que contiene las
+    estrategias», porque el unico sitio donde se buscaba al miembro era
+    `portfolio_allocations`: un set que ningun portafolio usara no habia forma de
+    sacarlo del pool. Resolverlo aqui es imposible —la ruta que manda el manager
+    no es la que guarda esta memoria—, asi que el manager lo resuelve
+    (`PortfolioSource.pool_member_payload`) y lo manda en `pool_member`.
+    """
+
+    def _memory(self, project: Path) -> Path:
+        memory = project / "outputs" / "ubs_memory_ICTRADING_STANDARD.sqlite"
+        memory.parent.mkdir()
+        memory.touch()
+        with contextlib.closing(sqlite3.connect(memory)) as conn:
+            conn.executescript(CANDIDATE_STAGES)
+            conn.commit()
+        return memory
+
+    def _exclude(self, project: Path, memory: Path, reason_code: str, **overrides) -> dict:
+        payload = {
+            "scope": "full_history",
+            "set_path": "same.set",
+            "reason_code": reason_code,
+            "pool_member": {
+                "set_path": "same.set",
+                "candidate_id": "ICTRADING/STANDARD:1",
+                "symbol": "EURUSD",
+                "timeframe": "H1",
+            },
+        }
+        payload.update(overrides)
+        return exclude_portfolio_members_payload(project, "ICTRADING", memory, payload)
+
+    def test_a_set_outside_every_portfolio_can_be_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory = self._memory(project)
+
+            result = self._exclude(project, memory, "degradation")
+
+            self.assertTrue(result["pool_exclusion"])
+            self.assertTrue(result["verdict_applied"])
+            self.assertIsNone(result["portfolio_id"])
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                row = conn.execute(
+                    "select account_type,symbol,timeframe,reason,source_portfolio_id,reason_code,"
+                    "restore_json from portfolio_quarantine"
+                ).fetchone()
+                robustness = conn.execute(
+                    "select status from candidate_robustness where candidate_id=1"
+                ).fetchall()
+            self.assertEqual(row[0], "ICTRADING/STANDARD")
+            self.assertEqual(row[1], "EURUSD")
+            self.assertEqual(row[2], "H1")
+            self.assertIn("Excluida manualmente desde la gestión por símbolo", row[3])
+            # No sale de ningun portafolio: la columna no puede inventarse uno.
+            self.assertIsNone(row[4])
+            self.assertEqual(row[5], "degradation")
+            self.assertIn("candidate_final_tick_6m", row[6])
+            # El veredicto es lo que la saca del pool en la siguiente generacion.
+            self.assertEqual(robustness, [("rejected",)])
+
+    def test_a_pool_exclusion_without_the_resolved_candidate_is_rejected(self) -> None:
+        # El manager es quien sabe traducir la ruta; sin su resultado esto no
+        # puede adivinar a que candidato pertenece el set.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory = self._memory(project)
+
+            with self.assertRaises(ValueError) as raised:
+                self._exclude(project, memory, "degradation", pool_member=None)
+
+            self.assertIn("Falta el portafolio que contiene las estrategias", str(raised.exception))
+
+    def test_batch_exclusion_still_needs_a_portfolio(self) -> None:
+        # Las casillas solo existen en el detalle de un portafolio guardado; una
+        # exclusion multiple sin portafolio seria una peticion mal formada.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory = self._memory(project)
+
+            with self.assertRaises(ValueError) as raised:
+                exclude_portfolio_members_payload(
+                    project, "ICTRADING", memory,
+                    {"scope": "full_history", "set_paths": ["same.set"], "reason_code": "manual"},
+                )
+
+            self.assertIn("Falta el portafolio que contiene las estrategias", str(raised.exception))
+
+
 class ManagerNodeRequalifyTests(unittest.TestCase):
     """Cambiar el estado de una estrategia ya excluida corre en el nodo.
 
