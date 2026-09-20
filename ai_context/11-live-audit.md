@@ -250,3 +250,33 @@ reconocer cierres reales `NAS100.fs`, y una estrategia ETH guardada a `0.7`
 puede reconocer `0.6` cuando ese es el lote real configurado. Los artefactos
 guardan `real_account_lot` y su origen junto a los lotes del portafolio y del
 tester.
+
+## Auditoría AXI p54: tolerancias y cierres solapados (2026-09-15)
+
+Los Excel `auditor_v2_antes.xlsx` y `auditor_v2_despues.xlsx` describen la
+auditoría AXI `20260915_014415_634090`, iniciada el 2026-09-14 a las 23:44 UTC
+y finalizada el 2026-09-15 a la 01:47, hora peninsular. Es posterior al commit
+del motor de referencia que diagnosticó el problema, pero el nodo AXI todavía
+ejecutaba el fork sin portar; la fecha de las operaciones (1-4 de septiembre)
+no es la fecha de ejecución de la auditoría.
+
+La validación manual fija pisos absolutos para el precio de apertura: NAS100 y
+US100 admiten ±5 unidades, y BTC admite ±10 USD. El límite configurado en puntos
+puede ampliar esos pisos, nunca reducirlos. Así NAS100.fs con una diferencia de
+0,66 deja de ser una falsa desviación, mientras las diferencias BTCUSD de 13,65
+y 35,68 siguen fuera de tolerancia.
+
+El reporte tester real
+`audit_003_BTCUSD_H1_NEW_STRATEGIES_MIX_BTC_H1__Bitcoin_f4f272a8_g001_s004_v002.htm`
+contiene dos ventas solapadas. El cierre `sl 77006.22` pertenece a la orden de
+entrada 3 y el cierre `tp 76466.87` a la orden 5. El lector anterior consumía
+los cierres FIFO y los cruzaba. El lector corregido extrae SL/TP de la tabla
+`Órdenes` y reconstruye:
+
+- ticket 2: 21:27:18 → 21:45:34, beneficio 75,28;
+- ticket 3: 21:28:01 → 21:29:48, beneficio -17,03.
+
+El port necesita ambas piezas: `manager_node_runtime/live_audit.py` para los
+pisos de tolerancia y `portfolio_manager/mt5_report.py` para reconstruir los
+cierres. Las pruebas del nodo cubren los dos contratos con los datos observados
+en AXI.
