@@ -683,65 +683,88 @@ def exclude_portfolio_members_payload(
     scope = "monthly" if str(payload.get("scope") or "") == "monthly" else "full_history"
     raw_paths = payload.get("set_paths")
     single_path = payload.get("set_path") or payload.get("set_id")
-    if portfolio_id <= 0:
-        raise ValueError("Falta el portafolio que contiene las estrategias")
     multiple = isinstance(raw_paths, list) and bool(raw_paths)
     if not multiple and not single_path:
         raise ValueError("Selecciona al menos una estrategia")
+    # Exclusion de pool: «Gestion por simbolo» excluye un set que no tiene por
+    # que pertenecer a ningun portafolio, asi que no hay `portfolio_id` ni fila
+    # en `portfolio_allocations` donde buscarlo. Resolverlo aqui es imposible:
+    # la ruta que manda el manager no es la que guarda esta memoria
+    # (`/data/axi/...` contra `F:\TRADING\...`) y quien sabe traducirla es
+    # `_resolve_source_path`, que solo existe en el manager. Por eso el manager
+    # resuelve el candidato y lo manda en `pool_member`
+    # (`PortfolioSource.pool_member_payload`) y aqui solo se escribe.
+    # Sin esta rama la ventana devolvia 400 y no habia forma de sacar del pool
+    # un set que ningun portafolio usara.
+    pool_member = payload.get("pool_member") if not multiple else None
+    pool_exclusion = portfolio_id <= 0
+    if pool_exclusion and not isinstance(pool_member, dict):
+        raise ValueError("Falta el portafolio que contiene las estrategias")
 
     def path_key(value: object) -> str:
         return str(Path(str(value or "")).expanduser()).replace("/", "\\").casefold()
 
-    conn = connect_memory(active_memory, timeout=10.0)
-    try:
-        conn.row_factory = sqlite3.Row
-        portfolio = conn.execute(
-            "select portfolio_type,type,metrics_json from portfolios "
-            "where id=? and coalesce(nullif(portfolio_scope,''),'full_history')=?",
-            (portfolio_id, scope),
-        ).fetchone()
-        if portfolio is None:
-            raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
-        try:
-            metrics = json.loads(portfolio["metrics_json"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            metrics = {}
-        portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
-        is_bundle = portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
-        # Multiple exclusion is allowed where the manager offers the checkboxes:
-        # A/M/C bundles and any saved month. Ya no hay ninguna asimetria de
-        # borrado detras: ningun ambito borra ni modifica el portafolio guardado.
-        if multiple and not (is_bundle or scope == "monthly"):
-            raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C y mensuales")
-        rows = [dict(row) for row in conn.execute(
-            "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
-            "where portfolio_id=?",
-            (portfolio_id,),
-        ).fetchall()]
-    finally:
-        conn.close()
-
-    members_by_path = {
-        path_key(row.get("set_path") or row.get("set_id")): row for row in rows
-    }
+    is_bundle = False
     selected: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw_path in (raw_paths if multiple else [single_path]):
-        key = path_key(raw_path)
-        if key in seen:
-            continue
-        member = members_by_path.get(key)
-        if member is None:
-            raise ValueError(
-                "Una estrategia seleccionada ya no pertenece al portafolio"
-                if multiple else "No se encontró la estrategia dentro del portafolio"
-            )
-        seen.add(key)
-        selected.append(member)
+    if pool_exclusion:
+        selected.append({
+            "set_path": str(pool_member.get("set_path") or single_path or ""),
+            "set_id": str(pool_member.get("set_path") or single_path or ""),
+            "candidate_id": str(pool_member.get("candidate_id") or ""),
+            "symbol": str(pool_member.get("symbol") or ""),
+            "timeframe": str(pool_member.get("timeframe") or ""),
+        })
+    else:
+        conn = connect_memory(active_memory, timeout=10.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            portfolio = conn.execute(
+                "select portfolio_type,type,metrics_json from portfolios "
+                "where id=? and coalesce(nullif(portfolio_scope,''),'full_history')=?",
+                (portfolio_id, scope),
+            ).fetchone()
+            if portfolio is None:
+                raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+            try:
+                metrics = json.loads(portfolio["metrics_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metrics = {}
+            portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
+            is_bundle = portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
+            # Multiple exclusion is allowed where the manager offers the checkboxes:
+            # A/M/C bundles and any saved month. Ya no hay ninguna asimetria de
+            # borrado detras: ningun ambito borra ni modifica el portafolio guardado.
+            if multiple and not (is_bundle or scope == "monthly"):
+                raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C y mensuales")
+            rows = [dict(row) for row in conn.execute(
+                "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
+                "where portfolio_id=?",
+                (portfolio_id,),
+            ).fetchall()]
+        finally:
+            conn.close()
+
+        members_by_path = {
+            path_key(row.get("set_path") or row.get("set_id")): row for row in rows
+        }
+        seen: set[str] = set()
+        for raw_path in (raw_paths if multiple else [single_path]):
+            key = path_key(raw_path)
+            if key in seen:
+                continue
+            member = members_by_path.get(key)
+            if member is None:
+                raise ValueError(
+                    "Una estrategia seleccionada ya no pertenece al portafolio"
+                    if multiple else "No se encontró la estrategia dentro del portafolio"
+                )
+            seen.add(key)
+            selected.append(member)
 
     reason_code = normalize_reason_code(payload.get("reason_code"))
     reason = reason_with_verdict(
-        "Excluida manualmente desde un portafolio A/M/C guardado" if is_bundle
+        "Excluida manualmente desde la gestión por símbolo" if pool_exclusion
+        else "Excluida manualmente desde un portafolio A/M/C guardado" if is_bundle
         else "Excluida manualmente desde un Portafolio UBS mensual guardado" if scope == "monthly"
         else "Retirada manualmente de un portafolio guardado",
         reason_code,
@@ -799,7 +822,7 @@ def exclude_portfolio_members_payload(
                         str(member.get("symbol") or ""),
                         str(member.get("timeframe") or ""),
                         reason,
-                        portfolio_id,
+                        portfolio_id or None,
                         datetime.now().isoformat(timespec="seconds"),
                         reason_code,
                         restore_json,
@@ -838,8 +861,9 @@ def exclude_portfolio_members_payload(
     return {
         "quarantine_id": quarantine_ids[0] if quarantine_ids else 0,
         "deleted": False,
-        "portfolio_id": portfolio_id,
+        "portfolio_id": portfolio_id or None,
         "scope": scope,
         "reason_code": reason_code,
         "verdict_applied": verdict_applied,
+        "pool_exclusion": pool_exclusion,
     }
