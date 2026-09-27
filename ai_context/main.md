@@ -11,6 +11,9 @@ this context is optimized for AI/code tools and cross-project consistency.
 
 Prepared Discovery integration: [guided_batches.md](guided_batches.md).
 
+Repository verification and ratchets:
+[project_verification_contract.md](project_verification_contract.md).
+
 `MT5_Autotester` is a Windows-focused Python desktop/tooling project for
 MetaTrader 5. It automates three related workflows:
 
