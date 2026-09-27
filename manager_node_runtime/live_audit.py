@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from .common import load_json, save_json, utc_now
+from .live_audit_price import (
+    ADAPTIVE_PRICE_TOLERANCE_FLOORS,
+    adaptive_price_tolerance_floor,
+)
 from .mt5_native_history_report import NativeHistoryReportError, export_native_history_report
 
 
@@ -36,23 +40,6 @@ PROGRESS = {
     "completed": ("completed", 100), "not_comparable": ("completed", 100),
     "failed": ("completed", 100),
 }
-
-# Pisos absolutos validados por el usuario. La tolerancia configurada en puntos
-# sigue existiendo y puede ampliar estos límites, pero no reducirlos: un único
-# número de puntos no representa la misma desviación económica en EURUSD,
-# metales e índices con escalas de cotización distintas.
-ADAPTIVE_PRICE_TOLERANCE_FLOORS = {
-    "indices": 10.5,
-    "nasdaq": 5.0,
-    "crypto_btc": 10.0,
-    "gold": 2.05,
-    "silver": 0.02,
-    "jpy_fx": 0.05,
-    "fx": 0.0005,
-}
-_INDEX_SYMBOL_PREFIXES = ("US30", "DE40", "USTEC", "USTECH")
-_FX_CURRENCIES = frozenset({"AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD"})
-
 
 def _as_int(value: Any, name: str, minimum: int = 0) -> int:
     try:
@@ -100,31 +87,12 @@ def _member_strategy_id(member: dict[str, Any], fallback: str = "") -> str:
     return Path(source).stem if source else fallback
 
 
-def _adaptive_price_tolerance_floor(symbol: str) -> tuple[float | None, str]:
-    """Devuelve el piso absoluto validado para la familia del instrumento."""
-    root = re.split(r"[^A-Z0-9]", str(symbol or "").upper(), maxsplit=1)[0]
-    if root.startswith(("NAS100", "US100")):
-        return ADAPTIVE_PRICE_TOLERANCE_FLOORS["nasdaq"], "adaptive_nasdaq"
-    if root.startswith("BTC"):
-        return ADAPTIVE_PRICE_TOLERANCE_FLOORS["crypto_btc"], "adaptive_crypto_btc"
-    if root.startswith(_INDEX_SYMBOL_PREFIXES):
-        return ADAPTIVE_PRICE_TOLERANCE_FLOORS["indices"], "adaptive_indices"
-    if root.startswith("XAU"):
-        return ADAPTIVE_PRICE_TOLERANCE_FLOORS["gold"], "adaptive_gold"
-    if root.startswith("XAG"):
-        return ADAPTIVE_PRICE_TOLERANCE_FLOORS["silver"], "adaptive_silver"
-    if len(root) >= 6 and root[:3] in _FX_CURRENCIES and root[3:6] in _FX_CURRENCIES:
-        family = "jpy_fx" if root[3:6] == "JPY" else "fx"
-        return ADAPTIVE_PRICE_TOLERANCE_FLOORS[family], f"adaptive_{family}"
-    return None, "configured_points"
-
-
 def _effective_price_tolerance(
     symbol: str, point: float, configured_points: float,
 ) -> tuple[float | None, float | None, str]:
     """Combina el límite manual en puntos con el piso de cada instrumento."""
     configured_absolute = configured_points * point if point > 0 else None
-    adaptive_absolute, adaptive_rule = _adaptive_price_tolerance_floor(symbol)
+    adaptive_absolute, adaptive_rule = adaptive_price_tolerance_floor(symbol)
     available = [value for value in (configured_absolute, adaptive_absolute) if value is not None]
     if not available:
         return None, None, "unavailable"

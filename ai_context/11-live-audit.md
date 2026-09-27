@@ -276,7 +276,7 @@ los cierres FIFO y los cruzaba. El lector corregido extrae SL/TP de la tabla
 - ticket 2: 21:27:18 → 21:45:34, beneficio 75,28;
 - ticket 3: 21:28:01 → 21:29:48, beneficio -17,03.
 
-El port necesita ambas piezas: `manager_node_runtime/live_audit.py` para los
-pisos de tolerancia y `portfolio_manager/mt5_report.py` para reconstruir los
-cierres. Las pruebas del nodo cubren los dos contratos con los datos observados
-en AXI.
+El port necesita ambas piezas: `manager_node_runtime/live_audit_price.py` para
+los pisos de tolerancia, consumido por `live_audit.py`, y
+`portfolio_manager/mt5_report.py` para reconstruir los cierres. Las pruebas del
+nodo cubren los dos contratos con los datos observados en AXI.

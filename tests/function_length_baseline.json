@@ -30,7 +30,7 @@
     "portfolio_manager/dd_excel.py::_write_dd_sheet": 64,
     "portfolio_manager/dd_excel.py::_write_portfolio_dd_sheet": 75,
     "portfolio_manager/dd_excel.py::_write_portfolio_valley_dd_sheet": 86,
-    "portfolio_manager/mt5_report.py::_build_trades": 76,
+    "portfolio_manager/mt5_report.py::_build_trades": 72,
     "portfolio_manager/ubs_portfolio.py::_allocations_respect_constraints": 61,
     "portfolio_manager/ubs_portfolio.py::_deep_refine_allocations": 211,
     "portfolio_manager/ubs_portfolio.py::_repair_allocations_to_strict_monthly": 122,

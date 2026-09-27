@@ -321,6 +321,18 @@ def _matching_stop_slot(
     return None
 
 
+def _completed_trade(
+    ticket: str, open_type: str, open_time: datetime, weighted_open_price: float,
+    matched_volume: float, deal: RawDeal, entry_net: float, close_net: float,
+) -> Trade:
+    return Trade(
+        ticket=ticket, trade_type=open_type.capitalize(), open_time=open_time,
+        open_price=weighted_open_price / matched_volume, size=matched_volume,
+        close_time=deal.timestamp, close_price=deal.price,
+        profit_loss=entry_net + close_net, comment=deal.comment,
+    )
+
+
 def _build_trades(
     raw_deals: list[RawDeal], order_stops: dict[str, dict[str, float]] | None = None,
 ) -> list[Trade]:
@@ -386,19 +398,10 @@ def _build_trades(
 
         if matched_volume <= 0.0 or open_time is None:
             continue
-        trades.append(
-            Trade(
-                ticket=ticket,
-                trade_type=open_type.capitalize(),
-                open_time=open_time,
-                open_price=weighted_open_price / matched_volume,
-                size=matched_volume,
-                close_time=deal.timestamp,
-                close_price=deal.price,
-                profit_loss=entry_net + close_net,
-                comment=deal.comment,
-            )
-        )
+        trades.append(_completed_trade(
+            ticket, open_type, open_time, weighted_open_price, matched_volume,
+            deal, entry_net, close_net,
+        ))
 
     trades.sort(key=lambda trade: trade.open_time)
     return trades
