@@ -13,6 +13,15 @@ from ubs.risk_profit_repair import (
     apply_risk_profit_restatements,
     scan_risk_profit_restatements,
 )
+from tests.ubs_risk_profit_repair_fixtures import (
+    BASE_THRESHOLDS,
+    BASE_WINDOW,
+    LENIENT_THRESHOLDS,
+    OOS_WINDOW,
+    SCHEMA,
+    metrics,
+    stored,
+)
 from ubs.score import (
     ScoreConfig,
     ScoreResult,
@@ -20,64 +29,7 @@ from ubs.score import (
     residual_profit_ratio_after_top_months,
     top_month_count,
 )
-from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
-
-BASE_THRESHOLDS = {
-    "min_net_profit": 100.0,
-    "min_profit_factor": 1.2,
-    "min_trades": 50,
-    "max_drawdown_pct": 25.0,
-    "min_recovery_factor": 1.0,
-    "min_positive_month_ratio": 0.0,
-}
-# The base leg of an OOS pair was accepted, so its own net gate had to be below
-# the normalized net it stored.
-LENIENT_THRESHOLDS = {**BASE_THRESHOLDS, "min_net_profit": 20.0}
-BASE_WINDOW = ("2020.01.01", "2024.12.31")
-OOS_WINDOW = ("2025.01.01", "2025.12.31")
-SCHEMA = """
-create table candidates (
-    id integer primary key, run_id integer, generation integer, symbol text,
-    target_symbol text, period text, report_path text, score real,
-    accepted integer, metrics_json text, status text
-);
-create table candidate_robustness (
-    candidate_id integer primary key, run_id integer, status text, report_path text,
-    score real, accepted integer, metrics_json text, degradation_json text
-);
-"""
-
-
-def metrics(**overrides) -> ScoreResult:
-    """A low-net candidate with strong equity evidence, as stored before the rule."""
-
-    values = dict(
-        report_path="base.htm", name="sample", symbol="USDCAD", timeframe="H1",
-        score=218.147, accepted=False, net_profit=22.99, raw_net_profit=22.99,
-        normalized_net_profit=26.55, net_profit_factor=1.1548,
-        net_profit_basis="test", normalization_group="Forex", history_quality=100.0,
-        profit_factor=3.2944, recovery_factor=67.6176, drawdown=.34, drawdown_pct=.03,
-        trades=1108, positive_month_ratio=59 / 60, max_month_concentration=.0453,
-        avg_trade=.0207, sqn=18.0, reasons=("net_profit",), active_months=60,
-        residual_profit_ratio=.876, trade_curve_stability=.99,
-        bootstrap_reps=2000, bootstrap_net_positive_probability=.999,
-        bootstrap_pf_p05=1.8, score_config=dict(BASE_THRESHOLDS),
-    )
-    values.update(overrides)
-    return ScoreResult(**values)
-
-
-def stored(result: ScoreResult, **extra) -> str:
-    """Serialize the way a pre-rule row looks: no policy, no risk audit."""
-
-    payload = {**json.loads(result.to_json()), **extra}
-    payload["score_config"] = {
-        key: value for key, value in (payload.get("score_config") or {}).items()
-        if key != "risk_profit"
-    }
-    payload.pop("risk_profit_audit", None)
-    return json.dumps(payload, sort_keys=True)
 
 
 class RiskProfitRepairTests(unittest.TestCase):
@@ -479,127 +431,3 @@ class ScaleFreeConcentrationTests(unittest.TestCase):
         self.assertTrue(scaled["eligible"])
         self.assertEqual(scaled["checks"]["residual_profit_ratio"]["top_months"], 1)
 
-
-class Repairer(UBSUniverseLogicMixin):
-    """Solo el mixin: el boton de Universo no necesita widgets para decidir."""
-
-    def __init__(self, memory_path: Path) -> None:
-        self.memory_path = memory_path
-        self.messages: list[str] = []
-        self.refreshed: list[str] = []
-        self.status_text = SimpleNamespace(set=self.messages.append)
-
-    def _ubs_memory_path(self) -> Path:
-        return self.memory_path
-
-    def _safe_refresh(self, label: str, callback) -> None:
-        self.refreshed.append(label)
-
-    def _refresh_ubs_universe(self) -> None:
-        pass
-
-
-class RiskProfitRepairButtonTests(unittest.TestCase):
-    """El boton: confirmar, escribir auditoria, aplicar y refrescar."""
-
-    def setUp(self) -> None:
-        self.folder = tempfile.TemporaryDirectory()
-        self.memory_path = Path(self.folder.name) / "memory.sqlite"
-        conn = sqlite3.connect(self.memory_path)
-        conn.executescript(SCHEMA)
-        result = metrics()
-        conn.execute(
-            """insert into candidates
-                   (id, run_id, generation, symbol, target_symbol, period, report_path,
-                    score, accepted, metrics_json, status)
-               values (1, 7, 1, 'USDCAD', 'USDCAD', 'H1', 'base.htm', ?, 0, ?, 'rejected')""",
-            (result.score, stored(result)),
-        )
-        conn.commit()
-        conn.close()
-        self.app = Repairer(self.memory_path)
-
-    def tearDown(self) -> None:
-        self.folder.cleanup()
-
-    def plan(self):
-        conn = sqlite3.connect(self.memory_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            return scan_risk_profit_restatements(
-                conn,
-                read_equity=lambda path: (5.7, .56),
-                read_oos_evidence=lambda path, share: {},
-            )
-        finally:
-            conn.close()
-
-    def stored_status(self) -> str:
-        conn = sqlite3.connect(self.memory_path)
-        try:
-            return conn.execute("select status from candidates where id=1").fetchone()[0]
-        finally:
-            conn.close()
-
-    def audits(self) -> list[Path]:
-        return sorted((self.memory_path.parent / "diagnostics").glob("risk_profit_repair_*.json"))
-
-    def test_confirming_applies_writes_the_audit_and_refreshes(self) -> None:
-        plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
-            box.askyesno.return_value = True
-            self.app._finish_risk_profit_repair(self.memory_path, plan)
-        self.assertEqual(self.stored_status(), "accepted")
-        self.assertIn("ubs_universe", self.app.refreshed)
-        audit = json.loads(self.audits()[0].read_text(encoding="utf-8"))
-        self.assertEqual(audit["rule"], "risk_profit_v2")
-        self.assertEqual(audit["policy"]["mode"], "enforce")
-        self.assertEqual(audit["base"][0]["stored_status"], "rejected")
-        self.assertIn("previous_metrics_json", audit["base"][0])
-
-    def test_declining_writes_nothing(self) -> None:
-        plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
-            box.askyesno.return_value = False
-            self.app._finish_risk_profit_repair(self.memory_path, plan)
-        self.assertEqual(self.stored_status(), "rejected")
-        self.assertEqual(self.audits(), [])
-        self.assertEqual(self.app.refreshed, [])
-
-    def test_rows_the_route_leaves_alone_are_reported_not_written(self) -> None:
-        conn = sqlite3.connect(self.memory_path)
-        conn.execute(
-            "update candidates set metrics_json=? where id=1",
-            (stored(metrics(active_months=12)),),
-        )
-        conn.commit()
-        conn.close()
-        plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
-            self.app._finish_risk_profit_repair(self.memory_path, plan)
-            box.askyesno.assert_not_called()
-        self.assertEqual(self.stored_status(), "rejected")
-        self.assertEqual(self.audits(), [], "nada que escribir, nada que auditar")
-
-    def test_nothing_to_do_reports_and_skips_the_confirmation(self) -> None:
-        conn = sqlite3.connect(self.memory_path)
-        conn.execute("update candidates set status='no_trades' where id=1")
-        conn.commit()
-        conn.close()
-        plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
-            self.app._finish_risk_profit_repair(self.memory_path, plan)
-            box.askyesno.assert_not_called()
-            box.showinfo.assert_called_once()
-        self.assertEqual(self.audits(), [])
-
-    def test_missing_memory_never_reaches_the_scan(self) -> None:
-        self.app.memory_path = self.memory_path.with_name("gone.sqlite")
-        with patch("ui.ubs_universe_logic.messagebox") as box:
-            self.app._repair_risk_profit_states()
-            box.showinfo.assert_called_once()
-            box.askyesno.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()
