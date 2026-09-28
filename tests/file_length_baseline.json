@@ -5,7 +5,6 @@
     "manager_node_runtime/node.py": 2350,
     "portfolio_manager/ubs_portfolio.py": 5083,
     "run_tests.py": 3064,
-    "tests/test_ubs_agent_files.py": 3274,
     "ubs/memory.py": 1990,
     "ubs_agent.py": 8559,
     "ui/ubs_portfolio_logic.py": 4299,
