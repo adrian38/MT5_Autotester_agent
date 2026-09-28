@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-import csv
 from datetime import datetime
 import json
 from pathlib import Path
@@ -23,27 +22,26 @@ from ubs.account import (  # noqa: E402
     account_types_for_broker,
     normalize_broker,
 )
+from tools.audit_generalization_output import (  # noqa: E402
+    write_changed_csv,
+    write_text_report,
+)
+from tools.audit_generalization_rows import (  # noqa: E402
+    DEGRADATION_VERSION,
+    FORMULA_VERSION,
+    REQUIRED_CHECKS,
+    SCORED_STATUSES,
+    audit_current_rows,
+    full_downstream_rows,
+    full_pass_chain,
+    issue,
+    pipeline_summary,
+    resolved_report_exists,
+    safe_json,
+    stage_snapshot,
+)
 
 
-FORMULA_VERSION = "2"
-DEGRADATION_VERSION = "robustness_degradation_v2"
-REQUIRED_CHECKS: dict[str, float] = {
-    "net_retention": 0.50,
-    "pf_edge_retention": 0.50,
-    "recovery_retention": 0.50,
-    "dd_inflation": 2.00,
-    "trade_rate_retention": 0.50,
-    "residual_profit_ratio": 0.20,
-    "oos_positive_month_ratio": 0.50,
-    "trade_curve_stability": 0.60,
-    "stability_retention": 0.75,
-    "bootstrap_net_positive_probability": 0.95,
-    "bootstrap_pf_p05": 1.05,
-}
-# ubs_agent.py solo ejecuta apply_robustness_degradation() en la rama que termina
-# en accepted/rejected. no_trades, report_mismatch y parse_error guardan
-# degradation_json vacio por diseno: no hay metricas OOS comparables.
-SCORED_STATUSES = {"accepted", "rejected"}
 TERMINAL_REGRESSION_STATUSES = {
     "accepted",
     "rejected",
@@ -121,16 +119,6 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     if not table_exists(conn, table):
         return set()
     return {str(row[1]) for row in conn.execute(f"pragma table_info({table})")}
-
-
-def safe_json(raw: object) -> dict[str, Any] | None:
-    if raw is None or str(raw).strip() == "":
-        return None
-    try:
-        value = json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -228,223 +216,6 @@ def load_portfolio_members(conn: sqlite3.Connection) -> set[int]:
         for row in conn.execute(
             "select distinct candidate_id from portfolio_members where candidate_id is not null"
         )
-    }
-
-
-def resolved_report_exists(raw: object) -> bool:
-    text = str(raw or "").strip()
-    if not text:
-        return False
-    path = Path(text)
-    if not path.is_absolute():
-        path = BASE_DIR / path
-    return path.exists()
-
-
-def issue(severity: str, code: str, count: int, detail: str) -> dict[str, Any]:
-    return {"severity": severity, "code": code, "count": int(count), "detail": detail}
-
-
-def audit_current_rows(rows: dict[int, dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    counters: Counter[str] = Counter()
-    check_stats: dict[str, Counter[str]] = {name: Counter() for name in REQUIRED_CHECKS}
-    check_threshold_mismatches: Counter[str] = Counter()
-    issues: list[dict[str, Any]] = []
-
-    for row in rows.values():
-        status = str(row.get("status") or "")
-        metrics = safe_json(row.get("metrics_json"))
-        degradation = safe_json(row.get("degradation_json"))
-        if metrics is None:
-            counters["invalid_metrics_json"] += 1
-        elif str(metrics.get("score_formula_version", "")) != FORMULA_VERSION:
-            counters["wrong_score_formula_version"] += 1
-        else:
-            counters["score_v2"] += 1
-
-        if not resolved_report_exists(row.get("report_path")):
-            counters["missing_report_file"] += 1
-
-        expected_accepted = 1 if status == "accepted" else 0
-        if status in {"accepted", "rejected", "no_trades"}:
-            try:
-                stored_accepted = int(row.get("accepted") or 0)
-            except (TypeError, ValueError):
-                stored_accepted = -1
-            if stored_accepted != expected_accepted:
-                counters["accepted_flag_mismatch"] += 1
-
-        if status not in SCORED_STATUSES:
-            # Estas filas no pasan por el motor de degradacion; exigirles version
-            # v2 seria un falso positivo. Lo que si es un error es lo contrario:
-            # que arrastren un payload de degradacion.
-            if degradation not in (None, {}):
-                counters["non_scored_with_degradation"] += 1
-            continue
-
-        if degradation is None:
-            counters["invalid_degradation_json"] += 1
-            continue
-        if str(degradation.get("version", "")) != DEGRADATION_VERSION:
-            counters["wrong_degradation_version"] += 1
-            continue
-        counters["degradation_v2"] += 1
-        checks = degradation.get("checks")
-        if not isinstance(checks, dict):
-            counters["missing_checks_object"] += 1
-            continue
-
-        missing_checks = set(REQUIRED_CHECKS) - set(checks)
-        if missing_checks:
-            counters["rows_missing_required_checks"] += 1
-            for name in missing_checks:
-                check_stats[name]["missing"] += 1
-
-        available_results: list[bool] = []
-        for name, expected_threshold in REQUIRED_CHECKS.items():
-            raw_check = checks.get(name)
-            if not isinstance(raw_check, dict):
-                continue
-            stats = check_stats[name]
-            stats["total"] += 1
-            if bool(raw_check.get("enabled", False)):
-                stats["enabled"] += 1
-            if bool(raw_check.get("available", False)):
-                stats["available"] += 1
-                accepted = bool(raw_check.get("accepted", False))
-                stats["passed" if accepted else "failed"] += 1
-                if bool(raw_check.get("enabled", False)):
-                    available_results.append(accepted)
-            else:
-                stats["unavailable"] += 1
-            try:
-                threshold = float(raw_check.get("threshold"))
-            except (TypeError, ValueError):
-                check_threshold_mismatches[name] += 1
-            else:
-                if abs(threshold - expected_threshold) > 1e-9:
-                    check_threshold_mismatches[name] += 1
-
-        recovery = checks.get("recovery_retention")
-        if isinstance(recovery, dict) and not {
-            "base_annualized",
-            "oos_annualized",
-        }.issubset(recovery):
-            counters["recovery_duration_fields_missing"] += 1
-
-        absolute_accepted = bool(degradation.get("absolute_accepted", False))
-        computed_final = absolute_accepted and all(available_results)
-        stored_final = bool(degradation.get("final_accepted", degradation.get("accepted", False)))
-        if computed_final != stored_final:
-            counters["degradation_final_recompute_mismatch"] += 1
-        expected_status = "accepted" if stored_final else "rejected"
-        if status != expected_status:
-            counters["status_vs_degradation_mismatch"] += 1
-
-    critical_fields = (
-        "invalid_metrics_json",
-        "wrong_score_formula_version",
-        "invalid_degradation_json",
-        "wrong_degradation_version",
-        "non_scored_with_degradation",
-        "missing_checks_object",
-        "rows_missing_required_checks",
-        "accepted_flag_mismatch",
-        "recovery_duration_fields_missing",
-        "degradation_final_recompute_mismatch",
-        "status_vs_degradation_mismatch",
-    )
-    for name in critical_fields:
-        if counters[name]:
-            issues.append(issue("critical", name, counters[name], "Inconsistencia en filas actuales de robustez."))
-    if counters["missing_report_file"]:
-        issues.append(
-            issue(
-                "warning",
-                "missing_report_file",
-                counters["missing_report_file"],
-                "La fila fue auditada, pero el reporte local ya no existe.",
-            )
-        )
-    for name, count in sorted(check_threshold_mismatches.items()):
-        if count:
-            issues.append(
-                issue(
-                    "critical",
-                    f"threshold_mismatch:{name}",
-                    count,
-                    f"El umbral guardado no coincide con {REQUIRED_CHECKS[name]}",
-                )
-            )
-    for name, stats in sorted(check_stats.items()):
-        if stats["unavailable"]:
-            issues.append(
-                issue(
-                    "warning",
-                    f"unavailable_check:{name}",
-                    stats["unavailable"],
-                    "La regla quedo neutral en estas filas por falta de datos comparables.",
-                )
-            )
-
-    summary = dict(counters)
-    summary["total"] = len(rows)
-    summary["checks"] = {name: dict(stats) for name, stats in check_stats.items()}
-    summary["threshold_mismatches"] = dict(check_threshold_mismatches)
-    return summary, issues
-
-
-def stage_snapshot(
-    candidate_id: int,
-    probe: dict[int, str],
-    six_month: dict[int, str],
-    regression: dict[int, str],
-    portfolio: set[int],
-) -> dict[str, Any]:
-    return {
-        "final_tick": probe.get(candidate_id),
-        "final_tick_6m": six_month.get(candidate_id),
-        "regression": regression.get(candidate_id),
-        "portfolio_member": candidate_id in portfolio,
-    }
-
-
-def full_downstream_rows(snapshot: dict[str, Any]) -> bool:
-    return all(snapshot.get(name) is not None for name in ("final_tick", "final_tick_6m", "regression"))
-
-
-def full_pass_chain(snapshot: dict[str, Any]) -> bool:
-    return (
-        snapshot.get("final_tick") in {"accepted", "pending_ohlc_trades"}
-        and snapshot.get("final_tick_6m") == "accepted"
-        and snapshot.get("regression") == "accepted"
-    )
-
-
-def pipeline_summary(rows: dict[int, dict[str, Any]], stages: dict[str, dict[int, str]]) -> dict[str, int]:
-    eligible_probe = {
-        candidate_id
-        for candidate_id, row in rows.items()
-        if row.get("base_status") == "accepted" and row.get("status") == "accepted"
-    }
-    probe = stages["final_tick"]
-    six_month = stages["final_tick_6m"]
-    regression = stages["regression"]
-    eligible_6m = {
-        candidate_id
-        for candidate_id in eligible_probe
-        if probe.get(candidate_id) in {"accepted", "pending_ohlc_trades"}
-    }
-    eligible_regression = {
-        candidate_id for candidate_id in eligible_6m if six_month.get(candidate_id) == "accepted"
-    }
-    return {
-        "eligible_final_tick": len(eligible_probe),
-        "missing_final_tick": sum(candidate_id not in probe for candidate_id in eligible_probe),
-        "eligible_final_tick_6m": len(eligible_6m),
-        "missing_final_tick_6m": sum(candidate_id not in six_month for candidate_id in eligible_6m),
-        "eligible_regression": len(eligible_regression),
-        "missing_regression": sum(candidate_id not in regression for candidate_id in eligible_regression),
     }
 
 
@@ -728,106 +499,6 @@ def build_audit(
     finally:
         before.close()
         current.close()
-
-
-def write_text_report(audit: dict[str, Any], path: Path) -> None:
-    newly = audit["newly_accepted"]
-    pipeline = audit["pipeline"]
-    coverage = audit["coverage"]
-    lines = [
-        f"AUDITORIA GENERALIZATION-V2 - {audit['scope']}",
-        f"Veredicto: {audit['verdict']}",
-        f"Actual: {audit['current_database']}",
-        f"Antes:  {audit['before_database']}",
-        f"Integridad: {audit['integrity']}",
-        "",
-        f"Estados antes:  {audit['status_counts']['before']}",
-        f"Estados ahora:  {audit['status_counts']['current']}",
-        f"Transiciones:   {audit['transition_counts']}",
-        "",
-        f"Cobertura score v2: {coverage.get('score_v2', 0)}/{coverage['total']}",
-        f"Cobertura degradacion v2: {coverage.get('degradation_v2', 0)}/{coverage['total']}",
-        "",
-        f"Nuevos accepted: {newly['count']}",
-        f"  Con alguna etapa posterior previa: {newly['with_prior_any_downstream']}",
-        f"  Con todas las etapas posteriores previas: {newly['with_prior_complete_downstream']}",
-        f"  Con cadena previa completamente accepted: {newly['with_prior_full_pass_chain']}",
-        f"  Sin Final Tick actual: {newly['currently_missing_final_tick']}",
-        f"  Con degradacion completa: {newly['with_complete_degradation_data']}",
-        f"  Con degradacion incompleta/neutral: {newly['with_incomplete_degradation_data']}",
-        f"  Checks neutrales en nuevos accepted: {newly['unavailable_checks']}",
-        f"  Motivos anteriores: {newly['previous_reasons']}",
-        "",
-        f"Nuevos rejected: {audit['newly_rejected']['count']}",
-        f"  Etapas previas invalidadas: {audit['newly_rejected']['prior_stage_rows_invalidated']}",
-        f"  Etapas incompatibles que permanecen: {audit['newly_rejected']['with_stale_current_downstream']}",
-        "",
-        f"Pipeline actual: {pipeline}",
-        "",
-        "Disponibilidad de checks:",
-    ]
-    for name, stats in coverage["checks"].items():
-        lines.append(f"  {name}: {stats}")
-    lines.extend(["", "Incidencias:"])
-    if audit["issues"]:
-        for item in audit["issues"]:
-            lines.append(
-                f"  [{item['severity'].upper()}] {item['code']}={item['count']}: {item['detail']}"
-            )
-    else:
-        lines.append("  Ninguna.")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def write_changed_csv(rows: list[dict[str, Any]], path: Path) -> None:
-    fieldnames = [
-        "candidate_id",
-        "run_id",
-        "symbol",
-        "period",
-        "before_status",
-        "current_status",
-        "before_final_tick",
-        "before_final_tick_6m",
-        "before_regression",
-        "before_portfolio_member",
-        "current_final_tick",
-        "current_final_tick_6m",
-        "current_regression",
-        "current_portfolio_member",
-        "prior_any_downstream",
-        "prior_complete_downstream",
-        "prior_full_pass_chain",
-        "current_degradation_complete",
-        "current_unavailable_checks",
-        "before_reasons",
-        "current_reasons",
-        "before_score",
-        "current_score",
-        "set_path",
-    ]
-    with path.open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            before = row["before_downstream"]
-            current = row["current_downstream"]
-            writer.writerow(
-                {
-                    **{name: row.get(name, "") for name in fieldnames},
-                    "before_final_tick": before.get("final_tick"),
-                    "before_final_tick_6m": before.get("final_tick_6m"),
-                    "before_regression": before.get("regression"),
-                    "before_portfolio_member": before.get("portfolio_member"),
-                    "current_final_tick": current.get("final_tick"),
-                    "current_final_tick_6m": current.get("final_tick_6m"),
-                    "current_regression": current.get("regression"),
-                    "current_portfolio_member": current.get("portfolio_member"),
-                    "current_unavailable_checks": "|".join(row["current_unavailable_checks"]),
-                    "before_reasons": "|".join(str(value) for value in row["before_reasons"]),
-                    "current_reasons": "|".join(str(value) for value in row["current_reasons"]),
-                }
-            )
 
 
 def main() -> int:
