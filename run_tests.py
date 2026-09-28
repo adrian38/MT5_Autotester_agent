@@ -1676,7 +1676,7 @@ def delete_existing_report_files(
     *,
     protected_set_name: str = "",
 ) -> None:
-    suffixes = {".htm", ".html", ".xml", ".png", ".set"}
+    suffixes = {".htm", ".html", ".xml", ".png", ".set", ".gif"}
     for path in find_report_files(report_path, terminal_data_dirs, mt5_path):
         if not path.is_file() or path.suffix.lower() not in suffixes:
             continue
