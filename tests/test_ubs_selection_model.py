@@ -8,10 +8,10 @@ from unittest.mock import Mock
 
 from tests.ubs_selection_fixtures import metrics
 from ubs.memory import AgentMemory
-from ubs.selection import (
+from ubs.selection_common import _sigmoid
+from ubs.selection_fitness import (
     SelectionFitnessModel,
     _batch_logistic_gradients,
-    _sigmoid,
     finalized_robustness_label,
     finalized_six_month_label,
 )
