@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from portfolio_manager.ubs_portfolio import PortfolioType, optimize_portfolio
-from tests.test_ubs_portfolio import make_strategy
+from tests.ubs_portfolio_fixtures import make_strategy
 from tests.ubs_portfolio_persistence_fixtures import (
     _BatchSaveLogic,
     _MonthlyProposalApplyLogic,
