@@ -196,13 +196,6 @@
     "ui/ubs_seeds_logic.py::UBSSeedsLogicMixin._repair_ubs_seed_sets": 124,
     "ui/ubs_seeds_logic.py::UBSSeedsLogicMixin._save_ubs_seed_override": 139,
     "ui/ubs_seeds_view.py::UBSSeedsViewMixin._build_ubs_seeds": 190,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin._ask_mt5_symbol_extract_credentials": 113,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin._finish_risk_profit_repair": 110,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin._refresh_ubs_universe": 379,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin._repair_final_tick_status_mismatches": 111,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin._repair_risk_profit_states": 69,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin._sync_mt5_universe_symbols": 71,
-    "ui/ubs_universe_logic.py::UBSUniverseLogicMixin.recompute_final_tick_verdicts": 87,
     "ui/ubs_universe_view.py::UBSUniverseViewMixin._build_ubs_universe": 170
   }
 }

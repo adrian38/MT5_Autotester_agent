@@ -77,7 +77,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
 
     def test_confirming_applies_writes_the_audit_and_refreshes(self) -> None:
         plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
+        with patch("ui.ubs_universe_risk_repair.messagebox") as box:
             box.askyesno.return_value = True
             self.app._finish_risk_profit_repair(self.memory_path, plan)
         self.assertEqual(self.stored_status(), "accepted")
@@ -90,7 +90,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
 
     def test_declining_writes_nothing(self) -> None:
         plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
+        with patch("ui.ubs_universe_risk_repair.messagebox") as box:
             box.askyesno.return_value = False
             self.app._finish_risk_profit_repair(self.memory_path, plan)
         self.assertEqual(self.stored_status(), "rejected")
@@ -106,7 +106,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
         conn.commit()
         conn.close()
         plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
+        with patch("ui.ubs_universe_risk_repair.messagebox") as box:
             self.app._finish_risk_profit_repair(self.memory_path, plan)
             box.askyesno.assert_not_called()
         self.assertEqual(self.stored_status(), "rejected")
@@ -118,7 +118,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
         conn.commit()
         conn.close()
         plan = self.plan()
-        with patch("ui.ubs_universe_logic.messagebox") as box:
+        with patch("ui.ubs_universe_risk_repair.messagebox") as box:
             self.app._finish_risk_profit_repair(self.memory_path, plan)
             box.askyesno.assert_not_called()
             box.showinfo.assert_called_once()
@@ -126,7 +126,7 @@ class RiskProfitRepairButtonTests(unittest.TestCase):
 
     def test_missing_memory_never_reaches_the_scan(self) -> None:
         self.app.memory_path = self.memory_path.with_name("gone.sqlite")
-        with patch("ui.ubs_universe_logic.messagebox") as box:
+        with patch("ui.ubs_universe_risk_repair.messagebox") as box:
             self.app._repair_risk_profit_states()
             box.showinfo.assert_called_once()
             box.askyesno.assert_not_called()
