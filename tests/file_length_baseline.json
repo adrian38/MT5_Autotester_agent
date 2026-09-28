@@ -8,7 +8,6 @@
     "ubs/memory.py": 1990,
     "ubs_agent.py": 8559,
     "ui/ubs_portfolio_logic.py": 4299,
-    "ui/ubs_results_logic.py": 2215,
     "ui/ubs_search_logic.py": 1808,
     "ui/ubs_universe_logic.py": 2151
   }
