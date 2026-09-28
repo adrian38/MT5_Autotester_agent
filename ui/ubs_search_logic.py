@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import unescape
-import json
 from pathlib import Path
 import re
 import shutil
 import sqlite3
-import statistics
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -38,6 +36,7 @@ from ubs.weights import (
     reason_penalty,
     robust_bonus,
 )
+from ui.ubs_audit_utils import AuditReportFormatter
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -809,29 +808,16 @@ class UBSSearchLogicMixin:
             return {str(row[0]): int(row[1] or 0) for row in conn.execute(sql, params)}
 
         def fmt_counts(data: dict[str, int]) -> str:
-            return ", ".join(f"{key}={value}" for key, value in sorted(data.items())) or "sin filas"
+            return AuditReportFormatter.fmt_counts(data)
 
         def stat(values: list[object]) -> str:
-            nums: list[float] = []
-            for value in values:
-                try:
-                    if value is not None:
-                        nums.append(float(value))
-                except (TypeError, ValueError):
-                    pass
-            if not nums:
-                return "n=0"
-            return (
-                f"n={len(nums)} min={min(nums):.2f} avg={sum(nums)/len(nums):.2f} "
-                f"med={statistics.median(nums):.2f} max={max(nums):.2f}"
-            )
+            return AuditReportFormatter.stat(values)
 
         def parse_json(raw: object) -> dict[str, object]:
-            try:
-                data = json.loads(str(raw or "{}"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return {}
-            return data if isinstance(data, dict) else {}
+            return AuditReportFormatter.parse_json(raw)
+
+        def fnum(value: object) -> str:
+            return AuditReportFormatter.fnum(value)
 
         expected_context = self._parse_ubs_account_context(account_type)
         if expected_context is None:
@@ -1502,18 +1488,11 @@ class UBSSearchLogicMixin:
             checks = sim.get("checks") if isinstance(sim.get("checks"), dict) else {}
             pf = checks.get("profit_factor", {}) if isinstance(checks, dict) else {}
             floor = checks.get("profit_factor_floor", {}) if isinstance(checks, dict) else {}
-
-            def num(value_obj: object) -> str:
-                try:
-                    return f"{float(value_obj):.2f}"
-                except (TypeError, ValueError):
-                    return ""
-
             line(
                 f"  id={row['id']} {row['target_symbol']} {row['period']} "
-                f"base={num(row['base_score'])} robust={num(row['robust_score'])} "
-                f"ohlc={num(row['ohlc_score'])} tick={num(row['real_tick_score'])} "
-                f"weight={num(value)} pf_delta={pf.get('delta_pct')} floor_ok={floor.get('accepted')} "
+                f"base={fnum(row['base_score'])} robust={fnum(row['robust_score'])} "
+                f"ohlc={fnum(row['ohlc_score'])} tick={fnum(row['real_tick_score'])} "
+                f"weight={fnum(value)} pf_delta={pf.get('delta_pct')} floor_ok={floor.get('accepted')} "
                 f"set={Path(str(row['set_path'] or '')).name}"
             )
 

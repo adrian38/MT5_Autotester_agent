@@ -227,7 +227,7 @@
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._run_ubs_robustness_for_latest_run": 66,
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._ubs_robust_reason": 80,
     "ui/ubs_robustness_view.py::UBSRobustnessViewMixin._build_ubs_robustness": 246,
-    "ui/ubs_search_logic.py::UBSSearchLogicMixin._compose_ubs_run_audit": 808,
+    "ui/ubs_search_logic.py::UBSSearchLogicMixin._compose_ubs_run_audit": 788,
     "ui/ubs_search_logic.py::UBSSearchLogicMixin._compose_ubs_run_audit.account_process_summary": 64,
     "ui/ubs_search_logic.py::UBSSearchLogicMixin._compose_ubs_run_audit.weight_breakdown": 79,
     "ui/ubs_search_logic.py::UBSSearchLogicMixin._detect_ubs_report_account_header": 62,
