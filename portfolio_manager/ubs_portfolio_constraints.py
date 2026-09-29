@@ -172,6 +172,30 @@ def violates_correlation_limits(
     return False, ""
 
 
+def _allocation_totals(
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    max_units_per_set: int | None,
+) -> tuple[int, dict[str, int], dict[str, int], dict[str, int]] | None:
+    total_units = 0
+    units_by_symbol: dict[str, int] = {}
+    active_sets_by_symbol: dict[str, int] = {}
+    active_sets_by_group: dict[str, int] = {}
+    for strategy in sets:
+        units = max(int(allocations.get(strategy.set_id, 0)), 0)
+        total_units += units
+        if max_units_per_set is not None and units > max_units_per_set:
+            return None
+        if units <= 0:
+            continue
+        symbol_key = portfolio_symbol_key(strategy.symbol)
+        units_by_symbol[symbol_key] = units_by_symbol.get(symbol_key, 0) + units
+        active_sets_by_symbol[symbol_key] = active_sets_by_symbol.get(symbol_key, 0) + 1
+        group_key = portfolio_group_key(strategy.symbol)
+        active_sets_by_group[group_key] = active_sets_by_group.get(group_key, 0) + 1
+    return total_units, units_by_symbol, active_sets_by_symbol, active_sets_by_group
+
+
 def _allocations_respect_constraints(
     sets: list[RobustStrategySet],
     allocations: dict[str, int],
@@ -188,23 +212,10 @@ def _allocations_respect_constraints(
     stock_contract_size: float = 100.0,
     default_contract_size: float = 1.0,
 ) -> bool:
-    total_units = 0
-    units_by_symbol: dict[str, int] = {}
-    active_sets_by_symbol: dict[str, int] = {}
-    active_sets_by_group: dict[str, int] = {}
-
-    for strategy in sets:
-        units = max(int(allocations.get(strategy.set_id, 0)), 0)
-        total_units += units
-        if max_units_per_set is not None and units > max_units_per_set:
-            return False
-        if units <= 0:
-            continue
-        symbol_key = portfolio_symbol_key(strategy.symbol)
-        units_by_symbol[symbol_key] = units_by_symbol.get(symbol_key, 0) + units
-        active_sets_by_symbol[symbol_key] = active_sets_by_symbol.get(symbol_key, 0) + 1
-        group_key = portfolio_group_key(strategy.symbol)
-        active_sets_by_group[group_key] = active_sets_by_group.get(group_key, 0) + 1
+    totals = _allocation_totals(sets, allocations, max_units_per_set)
+    if totals is None:
+        return False
+    total_units, units_by_symbol, active_sets_by_symbol, active_sets_by_group = totals
 
     if max_total_units is not None and total_units > max_total_units:
         return False

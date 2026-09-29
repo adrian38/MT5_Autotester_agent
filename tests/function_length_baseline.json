@@ -21,7 +21,6 @@
     "manager_node_runtime/portfolio_save.py::save_portfolio_payload": 86,
     "portfolio_manager/mt5_report.py::_build_trades": 72,
     "portfolio_manager/ubs_portfolio_candidates.py::load_robust_sets_from_rows": 87,
-    "portfolio_manager/ubs_portfolio_constraints.py::_allocations_respect_constraints": 61,
     "portfolio_manager/ubs_portfolio_constraints.py::can_add_unit": 74,
     "portfolio_manager/ubs_portfolio_curves.py::bootstrap_valley_drawdown": 79,
     "portfolio_manager/ubs_portfolio_evaluate.py::evaluate_portfolio": 73,
