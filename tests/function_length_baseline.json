@@ -1,10 +1,6 @@
 {
   "grandfathered": {
-    "app_ui.py::MT5AutotesterUI.__init__": 623,
-    "app_ui.py::MT5AutotesterUI._build_sidebar": 89,
-    "app_ui.py::MT5AutotesterUI._configure_style": 124,
-    "app_ui.py::MT5AutotesterUI._drain_output_queue": 116,
-    "app_ui.py::MT5AutotesterUI._ubs_agent_notification_message": 213,
+    "app_ui.py::MT5AutotesterUI.__init__": 83,
     "compile_and_backtest.py::main": 65,
     "compile_mq5.py::compile_source": 61,
     "compile_mq5.py::main": 68,
@@ -132,6 +128,10 @@
     "ubs_agent.py::target_symbol_options_for_seed": 74,
     "ubs_agent.py::tester_log_no_history_metadata": 185,
     "ubs_generate_sets.py::generate_sets": 71,
+    "ui/app_chrome.py::AppChromeMixin._build_sidebar": 89,
+    "ui/app_chrome.py::AppChromeMixin._configure_style": 124,
+    "ui/app_notify.py::AppNotifyMixin._ubs_agent_notification_message": 213,
+    "ui/app_process.py::AppProcessMixin._drain_output_queue": 116,
     "ui/dashboard_view.py::DashboardViewMixin._build_dashboard": 210,
     "ui/multiterminal_view.py::MultiterminalViewMixin._build_multiterminal": 186,
     "ui/settings_logic.py::SettingsLogicMixin._write_ui_settings": 262,
