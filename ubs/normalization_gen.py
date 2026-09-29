@@ -434,6 +434,28 @@ def _group_fallback_factors(factors: list[SymbolFactor]) -> dict[str, float]:
     }
 
 
+def _merged_symbol_factors(
+    factors: list[SymbolFactor], previous_factors: dict[str, float] | None
+) -> tuple[dict[str, float], set[str], list[str]]:
+    symbol_factors = {
+        item.name.upper(): item.factor
+        for item in sorted(factors, key=lambda factor: factor.name.upper())
+    }
+    measured = set(symbol_factors)
+    carried: list[str] = []
+    for name, factor in sorted((previous_factors or {}).items()):
+        key = str(name).upper()
+        try:
+            value = float(factor)
+        except (TypeError, ValueError):
+            continue
+        if key in measured or value <= 0:
+            continue
+        symbol_factors[key] = value
+        carried.append(key)
+    return symbol_factors, measured, carried
+
+
 def build_normalization_config(
     factors: list[SymbolFactor],
     *,
@@ -459,22 +481,7 @@ def build_normalization_config(
     The legacy ``group_suffix``/``symbol_suffix`` maps are cleared because a
     measured per-symbol factor supersedes those crude compensations.
     """
-    symbol_factors = {
-        item.name.upper(): item.factor
-        for item in sorted(factors, key=lambda f: f.name.upper())
-    }
-    measured = set(symbol_factors)
-    carried: list[str] = []
-    for name, factor in sorted((previous_factors or {}).items()):
-        key = str(name).upper()
-        try:
-            value = float(factor)
-        except (TypeError, ValueError):
-            continue
-        if key in measured or value <= 0:
-            continue
-        symbol_factors[key] = value
-        carried.append(key)
+    symbol_factors, measured, carried = _merged_symbol_factors(factors, previous_factors)
 
     still_skipped = sorted(
         name for name in (skipped_symbols or []) if str(name).upper() not in symbol_factors
