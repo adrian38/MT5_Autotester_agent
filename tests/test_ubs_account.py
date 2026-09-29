@@ -192,7 +192,7 @@ class UBSAccountTests(unittest.TestCase):
         self.assertIn("multiterminal_tree", refreshed)
 
     def test_ubs_portfolio_sources_are_limited_to_active_broker(self) -> None:
-        import ui.ubs_portfolio_logic as portfolio_logic
+        import ui.ubs_portfolio_schema as portfolio_logic
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as temp_dir:

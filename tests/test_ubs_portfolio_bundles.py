@@ -127,7 +127,13 @@ class UBSPortfolioBundlePersistenceTests(unittest.TestCase):
 
     def test_locked_normal_variants_share_sets_and_persist_as_one_bundle(self) -> None:
         inputs = self._locked_variant_inputs()
-        with patch("ui.ubs_portfolio_logic.optimize_portfolio", wraps=optimize_portfolio) as optimize_mock:
+        # La composicion base se optimiza en un modulo y las variantes en otro:
+        # el mismo doble vigila los dos para contar todas las llamadas.
+        with (
+            patch("ui.ubs_portfolio_optimize.optimize_portfolio",
+                  wraps=optimize_portfolio) as optimize_mock,
+            patch("ui.ubs_portfolio_proposals.optimize_portfolio", new=optimize_mock),
+        ):
             proposals = self.logic._optimize_locked_ubs_portfolio_variants(
                 [
                     make_strategy("a.set", "EURUSD", [0, 60, 50, 100]),

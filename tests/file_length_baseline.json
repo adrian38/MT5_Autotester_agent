@@ -1,7 +1,6 @@
 {
   "grandfathered": {
     "portfolio_manager/ubs_portfolio.py": 5083,
-    "ubs_agent.py": 8559,
-    "ui/ubs_portfolio_logic.py": 4299
+    "ubs_agent.py": 8559
   }
 }
