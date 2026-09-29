@@ -339,6 +339,18 @@ class UBSAccountTests(unittest.TestCase):
 
         self.assertEqual(universe.saved, ({".USTECHCASH"}, set()))
 
+    @staticmethod
+    def _canonical_axi_symbol(universe, symbol: str, symbol_map, suffix_universe) -> str:
+        return universe._canonical_ubs_symbol(
+            symbol,
+            {},
+            symbol_map=symbol_map,
+            suffix_universe=suffix_universe,
+            symbol_suffix=".sa",
+            futures_suffix=".fs",
+            shares_suffix="+",
+        )
+
     def test_axi_universe_resolves_memory_symbols_to_broker_symbols(self) -> None:
         universe = _FakeUniverse("AXI")
         universe.symbol_suffix_enabled = _FakeVar(True)
@@ -354,54 +366,20 @@ class UBSAccountTests(unittest.TestCase):
             "NAS100": ".fs",
         }
 
-        self.assertEqual(
-            universe._canonical_ubs_symbol(
-                "XAUUSD",
-                {},
-                symbol_map=symbol_map,
-                suffix_universe=suffix_universe,
-                symbol_suffix=".sa",
-                futures_suffix=".fs",
-                shares_suffix="+",
-            ),
-            "XAUUSD.SA",
-        )
-        self.assertEqual(
-            universe._canonical_ubs_symbol(
-                "USTEC",
-                {},
-                symbol_map=symbol_map,
-                suffix_universe=suffix_universe,
-                symbol_suffix=".sa",
-                futures_suffix=".fs",
-                shares_suffix="+",
-            ),
-            "USTECH.SA",
-        )
-        self.assertEqual(
-            universe._canonical_ubs_symbol(
-                "XTIUSD",
-                {},
-                symbol_map=symbol_map,
-                suffix_universe=suffix_universe,
-                symbol_suffix=".sa",
-                futures_suffix=".fs",
-                shares_suffix="+",
-            ),
-            "USOIL.SA",
-        )
-        self.assertEqual(
-            universe._canonical_ubs_symbol(
-                "NAS100",
-                {},
-                symbol_map=symbol_map,
-                suffix_universe=suffix_universe,
-                symbol_suffix=".sa",
-                futures_suffix=".fs",
-                shares_suffix="+",
-            ),
-            "NAS100.FS",
-        )
+        expected = {
+            "XAUUSD": "XAUUSD.SA",
+            "USTEC": "USTECH.SA",
+            "XTIUSD": "USOIL.SA",
+            "NAS100": "NAS100.FS",
+        }
+        for source, target in expected.items():
+            with self.subTest(source=source):
+                self.assertEqual(
+                    self._canonical_axi_symbol(
+                        universe, source, symbol_map, suffix_universe,
+                    ),
+                    target,
+                )
 
     def test_axi_universe_signal_aliases_match_broker_symbols(self) -> None:
         universe = _FakeUniverse("AXI")
