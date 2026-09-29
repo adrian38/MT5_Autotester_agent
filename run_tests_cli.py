@@ -7,10 +7,8 @@ from pathlib import Path
 from run_tests_base import TEMPLATE_FILE, UI_SETTINGS_FILE
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Ejecuta backtests de MT5 en serie para los EA listados en experts_list.txt."
-    )
+def _add_terminal_arguments(parser: argparse.ArgumentParser) -> None:
+    """Terminal MT5, plantilla y sufijos de simbolo."""
     parser.add_argument("--mt5-path", help="Ruta completa a terminal64.exe.")
     parser.add_argument(
         "--data-dir",
@@ -42,6 +40,10 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Correspondencias de simbolos del broker, por ejemplo XTIUSD=USOIL,GER40=DAX.",
     )
+
+
+def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
+    """Expertos, ficheros .set y como inferir el contexto del tester."""
     parser.add_argument(
         "--experts-dir",
         help="Carpeta donde buscar .ex5. Si se usa, no lee experts_list.txt.",
@@ -73,6 +75,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="No comprobar si MT5 ya esta abierto antes de lanzar los backtests.",
     )
+
+
+def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
+    """Portabilidad, multiterminal, fechas y modelo del tester."""
     parser.add_argument(
         "--portable",
         action="store_true",
@@ -118,6 +124,10 @@ def parse_args() -> argparse.Namespace:
             "Vacio usa el template."
         ),
     )
+
+
+def _add_watchdog_arguments(parser: argparse.ArgumentParser) -> None:
+    """Tiempos del watchdog y enfriamiento del terminal."""
     parser.add_argument(
         "--tester-kick-after",
         type=int,
@@ -154,4 +164,14 @@ def parse_args() -> argparse.Namespace:
             "Por defecto lee [Multiterminal] terminal_cooldown."
         ),
     )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Ejecuta backtests de MT5 en serie para los EA listados en experts_list.txt."
+    )
+    _add_terminal_arguments(parser)
+    _add_input_arguments(parser)
+    _add_execution_arguments(parser)
+    _add_watchdog_arguments(parser)
     return parser.parse_args()

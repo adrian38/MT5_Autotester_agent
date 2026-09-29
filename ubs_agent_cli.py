@@ -69,9 +69,8 @@ from ubs_agent_config import (
 )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
-    score_defaults = ScoreConfig()
+def _add_path_arguments(parser: argparse.ArgumentParser) -> None:
+    """Cuenta, rutas de trabajo y terminales que usa el agente."""
     parser.add_argument("--broker", choices=BROKERS, default=DEFAULT_BROKER, help="Broker UBS: ROBOFOREX, ICTRADING o AXI.")
     parser.add_argument("--account-type", choices=ACCOUNT_TYPES, default=DEFAULT_ACCOUNT_TYPE, help="Tipo de cuenta UBS del broker seleccionado.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE))
@@ -89,12 +88,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol-futures-suffix", default="", help="Sufijo de futuros/CFDs del broker, por ejemplo .fs para AXI.")
     parser.add_argument("--symbol-shares-suffix", default="", help="Sufijo de shares/ETFs del broker, por ejemplo + para AXI.")
     parser.add_argument("--symbol-map")
-    parser.add_argument("--generations", type=int, default=1)
-    parser.add_argument("--variants-per-seed", type=int, default=3)
-    parser.add_argument("--max-seeds", type=int, default=30)
-    parser.add_argument("--mutations-per-variant", type=int, default=6)
-    parser.add_argument("--prepared-manifest", type=Path, help="Lote recibido por el nodo; se evalúa sin volver a mutar")
-    parser.add_argument("--top-percent", type=float, default=20.0)
+
+
+def _add_unseeded_arguments(parser: argparse.ArgumentParser) -> None:
+    """Probabilidades de forzar activos y timeframes sin semilla."""
     parser.add_argument(
         "--asset-unseeded-prob-gen1",
         type=probability_argument,
@@ -131,6 +128,10 @@ def parse_args() -> argparse.Namespace:
         default=TF_UNSEEDED_FORCE_PROB_LATE,
         help="Probabilidad discovery de forzar un timeframe sin seed desde generacion 3.",
     )
+
+
+def _add_generation_mode_arguments(parser: argparse.ArgumentParser) -> None:
+    """Modo de generacion, universo sin semilla y continuacion."""
     parser.add_argument(
         "--generation-mode",
         choices=GENERATION_MODES,
@@ -153,10 +154,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Con --continue-last-run, ejecuta solo candidatos generated pendientes y no crea generaciones nuevas.",
     )
+
+
+def _add_generation_arguments(parser: argparse.ArgumentParser) -> None:
+    """Tamano de la generacion y probabilidades de exploracion."""
+    parser.add_argument("--generations", type=int, default=1)
+    parser.add_argument("--variants-per-seed", type=int, default=3)
+    parser.add_argument("--max-seeds", type=int, default=30)
+    parser.add_argument("--mutations-per-variant", type=int, default=6)
+    parser.add_argument("--prepared-manifest", type=Path, help="Lote recibido por el nodo; se evalúa sin volver a mutar")
+    parser.add_argument("--top-percent", type=float, default=20.0)
+    _add_unseeded_arguments(parser)
+    _add_generation_mode_arguments(parser)
+
+
+def _add_seed_stage_arguments(parser: argparse.ArgumentParser) -> None:
+    """Evaluacion de semillas y sondeo del historico."""
     parser.add_argument("--evaluate-seeds", action="store_true", help="Backtestea y puntua las semillas UBS nuevas o modificadas.")
     parser.add_argument("--probe-universe-history", action="store_true", help="Prueba si los simbolos activos del universo tienen historico para el rango configurado.")
     parser.add_argument("--probe-history-timeframe", default="H1", help="Timeframe usado para el probe de historico del universo.")
     parser.add_argument("--probe-history-limit", type=int, default=0, help="Limita el numero de simbolos a probar; 0 = todos los GEN=si.")
+
+
+def _add_robustness_arguments(parser: argparse.ArgumentParser) -> None:
+    """Umbrales y bonus de la robustez OOS."""
     parser.add_argument("--evaluate-robustness", action="store_true", help="Backtestea candidatos accepted de un run en ventana OOS/robustez.")
     parser.add_argument("--robust-run-id", type=int, help="Run SQLite cuyos accepted se enviaran al test de robustez.")
     parser.add_argument(
@@ -179,6 +200,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robust-min-stability-retention", type=float, default=DEFAULT_MIN_STABILITY_RETENTION, help="Retencion minima de estabilidad OOS frente a construccion; 0 desactiva.")
     parser.add_argument("--robust-min-bootstrap-net-probability", type=float, default=DEFAULT_MIN_BOOTSTRAP_NET_POSITIVE_PROBABILITY, help="Probabilidad bootstrap minima de neto OOS positivo; 0 desactiva.")
     parser.add_argument("--robust-min-bootstrap-pf-p05", type=float, default=DEFAULT_MIN_BOOTSTRAP_PF_P05, help="Percentil 5 bootstrap minimo del PF OOS; 0 desactiva.")
+
+
+def _add_final_tick_arguments(parser: argparse.ArgumentParser) -> None:
+    """Etapas, umbrales y control lossless del Final Tick."""
     parser.add_argument("--evaluate-final-tick", action="store_true", help="Compara OHLC vs Every tick based on real ticks para robustez accepted.")
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument(
@@ -212,6 +237,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-tick-6m-lossless-max-dd-pct", type=float, default=lossless_defaults.max_drawdown_pct, help="6M control sin perdidas: drawdown maximo de la pata real tick.")
     parser.add_argument("--final-tick-6m-lossless-min-recovery", type=float, default=lossless_defaults.min_recovery_factor, help="6M control sin perdidas: recovery factor minimo de la pata real tick.")
     parser.add_argument("--final-tick-6m-lossless-min-positive-month-ratio", type=float, default=lossless_defaults.min_positive_month_ratio, help="6M control sin perdidas: ratio minimo de meses positivos de la pata real tick.")
+
+
+def _add_regression_arguments(parser: argparse.ArgumentParser) -> None:
+    """Fechas, umbrales y puntos de la regresiva OHLC."""
     parser.add_argument(
         "--evaluate-regression",
         action="store_true",
@@ -257,6 +286,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--regression-positive-points", type=float, default=DEFAULT_REGRESSION_POSITIVE_POINTS)
     parser.add_argument("--regression-negative-points", type=float, default=DEFAULT_REGRESSION_NEGATIVE_POINTS)
+
+
+def _add_rescore_arguments(parser: argparse.ArgumentParser) -> None:
+    """Repuntuaciones y reconciliaciones desde reportes en disco."""
     parser.add_argument("--rescore-seeds-only", action="store_true", help="Recalcula accepted/rejected de seeds existentes sin abrir MT5.")
     parser.add_argument("--rescore-candidates-only", action="store_true", help="Recalcula candidatos existentes desde metrics_json sin abrir MT5.")
     parser.add_argument("--rescore-robustness-only", action="store_true", help="Recalcula resultados OOS existentes desde metrics_json sin abrir MT5.")
@@ -277,6 +310,10 @@ def parse_args() -> argparse.Namespace:
         help="Con --evaluate-seeds, clasifica reportes de evaluaciones seed incompletas sin abrir MT5.",
     )
     parser.add_argument("--reevaluate-seeds", action="store_true", help="Con --evaluate-seeds, vuelve a testear todas las semillas activas.")
+
+
+def _add_retry_arguments(parser: argparse.ArgumentParser) -> None:
+    """Reintentos por candidato, semilla, generacion o run."""
     parser.add_argument(
         "--retry-candidate-id",
         type=int,
@@ -296,6 +333,10 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Relanza los problemas tecnicos reintentables de una generacion.",
     )
+
+
+def _add_score_arguments(parser: argparse.ArgumentParser, score_defaults) -> None:
+    """Umbrales de aceptacion y opciones de ejecucion."""
     parser.add_argument("--min-net-profit", type=float, default=score_defaults.min_net_profit)
     parser.add_argument("--risk-profit-mode", choices=("off", "shadow", "enforce"), default=None,
                         help="Via alternativa por riesgo: shadow audita; enforce permite rescates.")
@@ -314,6 +355,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute-backtests", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="No abre MT5; pasa --dry-run a run_tests.")
     parser.add_argument("--random-seed", type=int)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Agente UBS con seleccion de assets, mutacion guiada y memoria.")
+    score_defaults = ScoreConfig()
+    _add_path_arguments(parser)
+    _add_generation_arguments(parser)
+    _add_seed_stage_arguments(parser)
+    _add_robustness_arguments(parser)
+    _add_final_tick_arguments(parser)
+    _add_regression_arguments(parser)
+    _add_rescore_arguments(parser)
+    _add_retry_arguments(parser)
+    _add_score_arguments(parser, score_defaults)
     args = parser.parse_args()
     if args.force_unseeded_universe:
         args.generation_mode = "discovery"
