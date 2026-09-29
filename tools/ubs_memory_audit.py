@@ -204,21 +204,25 @@ def audit_candidates(conn, audit: Audit) -> None:
         for row in duplicates[:3]:
             print(f"duplicado run #{row['run_id']}: {row['n']}x {row['set_path']}")
 
-    missing_reports = []
-    for row in conn.execute(
+    missing_reports = _missing_candidate_reports(conn)
+    print(f"reportes de candidatos faltantes en disco: {len(missing_reports)}")
+    if missing_reports:
+        audit.warn(f"{len(missing_reports)} reporte(s) de candidatos ya puntuados no existen en disco.")
+
+
+def _missing_candidate_reports(conn) -> list:
+    rows = conn.execute(
         """
         select id, status, report_path
         from candidates
         where status in ('accepted','rejected','no_trades')
           and coalesce(report_path, '') != ''
         """
-    ):
-        path = resolve_workspace_path(str(row["report_path"]))
-        if not path.exists():
-            missing_reports.append(row)
-    print(f"reportes de candidatos faltantes en disco: {len(missing_reports)}")
-    if missing_reports:
-        audit.warn(f"{len(missing_reports)} reporte(s) de candidatos ya puntuados no existen en disco.")
+    )
+    return [
+        row for row in rows
+        if not resolve_workspace_path(str(row["report_path"])).exists()
+    ]
 def audit_weights(memory_path: Path, assets_path: Path, account_type: str, broker: str) -> None:
     print_heading("Pesos")
     disabled = load_disabled_symbols(account_disabled_symbols_path(BASE_DIR, account_type, broker))
