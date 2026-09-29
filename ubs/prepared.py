@@ -193,9 +193,7 @@ def load_prepared(args, memory, api):
     return data,directory,validated
 
 
-def run_prepared(args, memory, score_config, api):
-    data,directory,validated = load_prepared(args,memory,api)
-    batch_id = data['batch_id']
+def _prepared_run(args, memory, api, directory, batch_id, candidate_count):
     # The run's persisted provenance is also the recovery index if a process
     # exits after create_run but before publishing run.json.
     existing = memory.conn.execute("select id,output_dir from runs where json_extract(case when json_valid(config_json) then config_json else '{}' end,'$.prepared_batch_id')=?",
@@ -211,7 +209,14 @@ def run_prepared(args, memory, score_config, api):
         config = {'schema_version':2,'prepared_batch_id':batch_id,'broker':args.broker,'account_type':args.account_type,
                   'generation_mode':'discovery','args':api.json_safe(vars(args)),
                   'execution':{'from_date':args.from_date,'to_date':args.to_date},'prepared_no_remutation':True}
-        run_id = memory.create_run(directory,run_dir,1,1,len(validated),args.execute_backtests,args.dry_run,config=config)
+        run_id = memory.create_run(directory,run_dir,1,1,candidate_count,args.execute_backtests,args.dry_run,config=config)
+    return run_id, run_dir
+
+
+def run_prepared(args, memory, score_config, api):
+    data,directory,validated = load_prepared(args,memory,api)
+    batch_id = data['batch_id']
+    run_id, run_dir = _prepared_run(args, memory, api, directory, batch_id, len(validated))
     checkpoint = protocol.read_run(api.BASE_DIR,batch_id) or {}
     if checkpoint.get('base_complete'):
         return 0

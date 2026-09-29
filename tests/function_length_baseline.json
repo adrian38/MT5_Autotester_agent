@@ -63,7 +63,6 @@
     "ubs/normalization_gen.py::build_normalization_config": 69,
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
     "ubs/prepared.py::load_prepared": 122,
-    "ubs/prepared.py::run_prepared": 64,
     "ubs/regression.py::evaluate_candidate_regression": 162,
     "ubs/regression.py::evaluate_regression_report": 162,
     "ubs/regression.py::rescore_regression_only": 141,
