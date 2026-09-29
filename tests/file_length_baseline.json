@@ -1,6 +1,3 @@
 {
-  "grandfathered": {
-    "portfolio_manager/ubs_portfolio_optimize.py": 662,
-    "ubs_agent_final_tick_pass.py": 766
-  }
+  "grandfathered": {}
 }
