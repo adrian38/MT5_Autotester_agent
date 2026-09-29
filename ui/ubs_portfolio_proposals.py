@@ -213,6 +213,47 @@ class UBSPortfolioProposalsMixin:
             tree.focus(first_key)
         self._on_ubs_portfolio_proposal_select()
 
+    @staticmethod
+    def _ubs_portfolio_proposal_summary_text(
+        proposal: dict[str, object], result: PortfolioResult, inputs: dict[str, object]
+    ) -> tuple[str, bool]:
+        month_prefix = ""
+        if str(inputs.get("portfolio_scope") or "full_history") == "monthly":
+            month_label = str(inputs.get("target_month_label") or "").strip()
+            if month_label:
+                month_prefix = f"Objetivo {month_label} | "
+        stress = result.stress_bootstrap
+        stress_text = (
+            f"DD bootstrap P50/P95 {stress.valley_dd_p50:.2f}/{stress.valley_dd_p95:.2f} | "
+            f"P(> nominal) {stress.probability_exceed_nominal_pct:.1f}% | "
+            f"P(> efectivo) {stress.probability_exceed_effective_pct:.1f}% | "
+            f"{'ALERTA ROJA' if stress.alert else 'estres OK'} | "
+            if stress else "bootstrap sin datos | "
+        )
+        margin_text = ""
+        if result.margin_summary:
+            margin_text = (
+                f"margen {float(result.margin_summary.get('total', 0.0)):,.2f}/"
+                f"{float(result.margin_summary.get('limit', 0.0)):,.2f} "
+                f"({float(result.margin_summary.get('usage_pct', 0.0)):.1f}%) | "
+            )
+        daily_text = (
+            f"DD diario {result.max_daily_dd:.2f}/{float(result.target_daily_dd):.2f} | "
+            if result.target_daily_dd else ""
+        )
+        point_text = (
+            f"DD puntual {result.actual_point_dd:.2f} info | " if not result.enforce_point_dd
+            else f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
+        )
+        text = (
+            f"{month_prefix}{proposal['label']}: net {result.total_net_profit:,.2f} | "
+            f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
+            f"{point_text}{daily_text}{stress_text}{margin_text}"
+            f"reserva {float(proposal['reserve_pct']):.1f}% | "
+            f"{result.active_strategies} estrategias | {result.total_units} unidades."
+        )
+        return text, bool(stress and stress.alert)
+
     def _on_ubs_portfolio_proposal_select(self, _event=None) -> None:
         tree = getattr(self, "ubs_portfolio_proposals_tree", None)
         diff_tree = getattr(self, "ubs_portfolio_proposals_diff_tree", None)
@@ -237,48 +278,14 @@ class UBSPortfolioProposalsMixin:
             diff_tree.insert("", "end", values=values, tags=(tag,))
         summary_var = getattr(self, "ubs_portfolio_proposals_summary", None)
         if summary_var is not None:
-            month_prefix = ""
-            if str(inputs.get("portfolio_scope") or "full_history") == "monthly":
-                month_label = str(inputs.get("target_month_label") or "").strip()
-                if month_label:
-                    month_prefix = f"Objetivo {month_label} | "
-            stress = result.stress_bootstrap
-            stress_text = (
-                f"DD bootstrap P50/P95 {stress.valley_dd_p50:.2f}/{stress.valley_dd_p95:.2f} | "
-                f"P(> nominal) {stress.probability_exceed_nominal_pct:.1f}% | "
-                f"P(> efectivo) {stress.probability_exceed_effective_pct:.1f}% | "
-                f"{'ALERTA ROJA' if stress.alert else 'estres OK'} | "
-                if stress else "bootstrap sin datos | "
+            summary, stress_alert = self._ubs_portfolio_proposal_summary_text(
+                proposal, result, inputs
             )
-            margin_text = ""
-            if result.margin_summary:
-                margin_text = (
-                    f"margen {float(result.margin_summary.get('total', 0.0)):,.2f}/"
-                    f"{float(result.margin_summary.get('limit', 0.0)):,.2f} "
-                    f"({float(result.margin_summary.get('usage_pct', 0.0)):.1f}%) | "
-                )
-            daily_text = ""
-            if result.target_daily_dd:
-                daily_text = f"DD diario {result.max_daily_dd:.2f}/{float(result.target_daily_dd):.2f} | "
-            point_text = (
-                f"DD puntual {result.actual_point_dd:.2f} info | "
-                if not result.enforce_point_dd
-                else f"DD puntual {result.actual_point_dd:.2f}/{result.target_point_dd:.2f} | "
-            )
-            summary_var.set(
-                f"{month_prefix}{proposal['label']}: net {result.total_net_profit:,.2f} | "
-                f"DD valle {result.actual_valley_dd:.2f}/{result.target_valley_dd:.2f} | "
-                f"{point_text}"
-                f"{daily_text}"
-                f"{stress_text}"
-                f"{margin_text}"
-                f"reserva {float(proposal['reserve_pct']):.1f}% | "
-                f"{result.active_strategies} estrategias | {result.total_units} unidades."
-            )
+            summary_var.set(summary)
             summary_label = getattr(self, "ubs_portfolio_proposals_summary_label", None)
             if summary_label is not None:
                 summary_label.configure(
-                    fg=self.colors["danger"] if stress and stress.alert else self.colors["accent_soft_text"]
+                    fg=self.colors["danger"] if stress_alert else self.colors["accent_soft_text"]
                 )
 
     def _apply_selected_ubs_portfolio_proposal(self) -> None:
