@@ -78,6 +78,44 @@ def child_command(script_name: str) -> list[str]:
     return [sys.executable, str(BASE_DIR / script_name)]
 
 
+def _compile_command(args, source_dir: Path) -> list[str]:
+    command = child_command("compile_mq5.py") + ["--source-dir", str(source_dir)]
+    for value, flag in (
+        (args.mt5_path, "--mt5-path"),
+        (args.metaeditor_path, "--metaeditor-path"),
+        (args.source_file, "--source-file"),
+    ):
+        if value:
+            command.extend([flag, value])
+    for enabled, flag in ((args.recursive, "--recursive"), (args.dry_run, "--dry-run")):
+        if enabled:
+            command.append(flag)
+    return command
+
+
+def _backtest_command(args, source_dir: Path) -> list[str]:
+    command = child_command("run_tests.py") + ["--experts-dir", str(source_dir)]
+    values = (
+        (args.mt5_path, "--mt5-path"), (args.data_dir, "--data-dir"),
+        (str(args.delay), "--delay"),
+        (str(Path(args.source_file).with_suffix(".ex5")) if args.source_file else "", "--expert"),
+        (args.template, "--template"), (args.symbol_suffix, "--symbol-suffix"),
+        (args.symbol_futures_suffix, "--symbol-futures-suffix"),
+        (args.symbol_shares_suffix, "--symbol-shares-suffix"),
+        (args.symbol_universe, "--symbol-universe"), (args.symbol_map, "--symbol-map"),
+    )
+    for value, flag in values:
+        if value:
+            command.extend([flag, value])
+    for enabled, flag in (
+        (args.skip_running_check, "--skip-running-check"),
+        (args.recursive, "--recursive"), (args.dry_run, "--dry-run"),
+    ):
+        if enabled:
+            command.append(flag)
+    return command
+
+
 def main() -> int:
     args = parse_args()
     source_dir = Path(args.source_dir).expanduser() if args.source_dir else load_compile_root()
@@ -85,18 +123,7 @@ def main() -> int:
         print(f"ERROR: indica --source-dir o escribe una ruta activa en {COMPILE_ROOT_FILE}")
         return 1
 
-    compile_command = child_command("compile_mq5.py") + ["--source-dir", str(source_dir)]
-    if args.mt5_path:
-        compile_command.extend(["--mt5-path", args.mt5_path])
-    if args.metaeditor_path:
-        compile_command.extend(["--metaeditor-path", args.metaeditor_path])
-    if args.source_file:
-        compile_command.extend(["--source-file", args.source_file])
-    if args.recursive:
-        compile_command.append("--recursive")
-    if args.dry_run:
-        compile_command.append("--dry-run")
-
+    compile_command = _compile_command(args, source_dir)
     compile_code = run_step("Compilacion", compile_command)
     if compile_code != 0:
         print("ERROR: la compilacion fallo; no se ejecutan backtests.")
@@ -115,34 +142,7 @@ def main() -> int:
             print("  Detalle en logs\\last_compile.log.")
             return 1
 
-    backtest_command = child_command("run_tests.py") + ["--experts-dir", str(source_dir)]
-    if args.mt5_path:
-        backtest_command.extend(["--mt5-path", args.mt5_path])
-    if args.data_dir:
-        backtest_command.extend(["--data-dir", args.data_dir])
-    backtest_command.extend(["--delay", str(args.delay)])
-    if args.source_file:
-        backtest_command.extend(["--expert", str(Path(args.source_file).with_suffix(".ex5"))])
-    if args.template:
-        backtest_command.extend(["--template", args.template])
-    if args.symbol_suffix:
-        backtest_command.extend(["--symbol-suffix", args.symbol_suffix])
-    if args.symbol_futures_suffix:
-        backtest_command.extend(["--symbol-futures-suffix", args.symbol_futures_suffix])
-    if args.symbol_shares_suffix:
-        backtest_command.extend(["--symbol-shares-suffix", args.symbol_shares_suffix])
-    if args.symbol_universe:
-        backtest_command.extend(["--symbol-universe", args.symbol_universe])
-    if args.symbol_map:
-        backtest_command.extend(["--symbol-map", args.symbol_map])
-    if args.skip_running_check:
-        backtest_command.append("--skip-running-check")
-    if args.recursive:
-        backtest_command.append("--recursive")
-    if args.dry_run:
-        backtest_command.append("--dry-run")
-
-    return run_step("Backtests", backtest_command)
+    return run_step("Backtests", _backtest_command(args, source_dir))
 
 
 if __name__ == "__main__":

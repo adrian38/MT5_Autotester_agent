@@ -1,9 +1,6 @@
 {
   "grandfathered": {
     "app_ui.py::MT5AutotesterUI.__init__": 83,
-    "compile_and_backtest.py::main": 65,
-    "compile_mq5.py::compile_source": 61,
-    "compile_mq5.py::main": 68,
     "manager_node_runtime/live_audit.py::LiveAuditController._run": 230,
     "manager_node_runtime/live_audit_compare.py::LiveAuditCompareMixin._compare": 204,
     "manager_node_runtime/live_audit_extract.py::LiveAuditExtractMixin._export_native_account_report": 64,
