@@ -130,7 +130,6 @@
     "ui/ubs_final_tick_view.py::UBSFinalTickViewMixin._build_ubs_final_tick_table": 71,
     "ui/ubs_params_logic.py::UBSParamsLogicMixin._ubs_params_edit_selected": 85,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._save_pending_ubs_portfolio": 99,
-    "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._saved_portfolio_curves": 61,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._ubs_portfolio_worker": 114,
     "ui/ubs_portfolio_bundle.py::UBSPortfolioBundleMixin._insert_portfolio_bundle": 185,
     "ui/ubs_portfolio_complete.py::UBSPortfolioCompleteMixin._complete_saved_ubs_portfolio_worker": 191,

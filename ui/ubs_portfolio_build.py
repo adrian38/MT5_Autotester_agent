@@ -17,6 +17,38 @@ from portfolio_manager.ubs_portfolio import (
 from ui.ubs_portfolio_base import PORTFOLIO_TYPE_BATCH_SPECS
 
 
+def _float_curve(value: object) -> list[float] | None:
+    if not isinstance(value, list) or len(value) <= 1:
+        return None
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _portfolio_metric_curves(
+    metrics: object, target_portfolio_type: PortfolioType
+) -> list[list[float]]:
+    if not isinstance(metrics, dict):
+        return []
+    if bool(metrics.get("portfolio_bundle")) and isinstance(metrics.get("variants"), dict):
+        keys = (
+            ("aggressive",)
+            if target_portfolio_type == PortfolioType.AGGRESSIVE
+            else ("balanced", "conservative")
+        )
+        curves = []
+        for key in keys:
+            variant = metrics["variants"].get(key)
+            value = variant.get("equity_curve_2020_2026") if isinstance(variant, dict) else None
+            curve = _float_curve(value)
+            if curve is not None:
+                curves.append(curve)
+        return curves
+    curve = _float_curve(metrics.get("equity_curve_2020_2026"))
+    return [curve] if curve is not None else []
+
+
 class UBSPortfolioBuildMixin:
     """Construccion en segundo plano y guardado del portafolio propuesto."""
 
@@ -200,29 +232,7 @@ class UBSPortfolioBuildMixin:
                 metrics = json.loads(row["metrics_json"])
             except Exception:
                 continue
-            if isinstance(metrics, dict) and bool(metrics.get("portfolio_bundle")):
-                variants = metrics.get("variants")
-                keys = (
-                    ("aggressive",)
-                    if target_portfolio_type == PortfolioType.AGGRESSIVE
-                    else ("balanced", "conservative")
-                )
-                if isinstance(variants, dict):
-                    for key in keys:
-                        variant = variants.get(key)
-                        curve = variant.get("equity_curve_2020_2026") if isinstance(variant, dict) else None
-                        if isinstance(curve, list) and len(curve) > 1:
-                            try:
-                                curves.append([float(value) for value in curve])
-                            except (TypeError, ValueError):
-                                continue
-                    continue
-            curve = metrics.get("equity_curve_2020_2026") if isinstance(metrics, dict) else None
-            if isinstance(curve, list) and len(curve) > 1:
-                try:
-                    curves.append([float(value) for value in curve])
-                except (TypeError, ValueError):
-                    continue
+            curves.extend(_portfolio_metric_curves(metrics, target_portfolio_type))
         return curves
 
     def _saved_portfolio_curves_all_accounts(
