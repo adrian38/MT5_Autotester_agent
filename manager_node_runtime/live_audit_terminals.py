@@ -217,6 +217,22 @@ class LiveAuditTerminalsMixin:
             raise RuntimeError("el terminal reabierto no conectó sin volver a pedir la contraseña")
         raise RuntimeError("el terminal reabierto no confirmó la cuenta guardada")
 
+    @staticmethod
+    def _saved_account_config(directory: str, login: str, password: str, server: str) -> Path:
+        config_path = Path(directory) / "restore.ini"
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser["Common"] = {
+            "Login": login, "Password": password, "Server": server, "KeepPrivate": "1",
+        }
+        with config_path.open("w", encoding="utf-8", newline="\n") as handle:
+            parser.write(handle)
+        try:
+            config_path.chmod(0o600)
+        except OSError:
+            pass
+        return config_path
+
     def _persist_terminal_account(
         self, mt5: Any, terminal_path: str, login: str, password: str, server: str,
     ) -> Any:
@@ -234,21 +250,7 @@ class LiveAuditTerminalsMixin:
             raise RuntimeError("MT5 no se cerró limpiamente antes de guardar la cuenta final")
 
         with tempfile.TemporaryDirectory(prefix="restore_account_", dir=self.runtime_dir) as temp:
-            config_path = Path(temp) / "restore.ini"
-            parser = configparser.ConfigParser(interpolation=None)
-            parser.optionxform = str
-            parser["Common"] = {
-                "Login": login,
-                "Password": password,
-                "Server": server,
-                "KeepPrivate": "1",
-            }
-            with config_path.open("w", encoding="utf-8", newline="\n") as handle:
-                parser.write(handle)
-            try:
-                config_path.chmod(0o600)
-            except OSError:
-                pass
+            config_path = self._saved_account_config(temp, login, password, server)
             self._launch_terminal(terminal_path, config_path)
             try:
                 self._connect_saved_account(
