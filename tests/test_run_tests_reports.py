@@ -8,6 +8,22 @@ import run_tests_watchdog
 from tests.run_tests_report_fixtures import ListLogger
 
 
+def model4_retry_fixture(root):
+    settings = run_tests.TesterSettings(
+        mt5_path=root / "terminal64.exe",
+        delay_seconds=0,
+        portable=False,
+        data_dir=None,
+        tester_kick_after_seconds=0,
+        terminal_cooldown_seconds=0,
+    )
+    first_report = root / "attempt1.htm"
+    second_report = root / "attempt2.htm"
+    first_report.write_text("empty", encoding="utf-8")
+    second_report.write_text("valid", encoding="utf-8")
+    return settings, first_report, second_report
+
+
 class CopyReportsToProjectTests(unittest.TestCase):
     def setUp(self):
         # Process inventory is covered separately; report tests never query MT5.
@@ -112,18 +128,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = run_tests.Path(temp_dir)
             logger = ListLogger()
-            settings = run_tests.TesterSettings(
-                mt5_path=root / "terminal64.exe",
-                delay_seconds=0,
-                portable=False,
-                data_dir=None,
-                tester_kick_after_seconds=0,
-                terminal_cooldown_seconds=0,
-            )
-            first_report = root / "attempt1.htm"
-            second_report = root / "attempt2.htm"
-            first_report.write_text("empty", encoding="utf-8")
-            second_report.write_text("valid", encoding="utf-8")
+            settings, first_report, second_report = model4_retry_fixture(root)
             first_process = Mock(pid=101)
             second_process = Mock(pid=102)
 
