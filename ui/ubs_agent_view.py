@@ -11,7 +11,8 @@ from ui.ubs_agent_view_cards import UBSAgentViewCardsMixin
 
 
 class UBSAgentViewMixin(UBSAgentViewCardsMixin):
-    def _build_ubs_agent(self, parent: ttk.Frame) -> None:
+    def _build_ubs_agent_scroll(self, parent):
+        """Lienzo desplazable que contiene las tarjetas del agente."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -36,8 +37,10 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
         canvas.bind("<Configure>", _on_canvas_resize)
         canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_scroll))
         canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        return inner
 
-        # ── Rutas ───────────────────────────────────────────────────────────
+    def _build_ubs_agent_paths(self, inner):
+        """Tarjeta de cuenta, rutas y evaluacion de semillas."""
         paths = self._card(inner, "Rutas Agente UBS")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
@@ -90,28 +93,8 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
             command=self._run_ubs_seed_evaluation,
         ).grid(row=0, column=1, sticky="e")
 
-        # ── Configuracion ───────────────────────────────────────────────────
-        agent = self._card(inner, "Configuracion Agente UBS")
-        agent.grid(row=1, column=0, sticky="ew")
-        for column in (1, 3, 5):
-            agent.columnconfigure(column, weight=1)
-
-        gen_fields = [
-            ("Generaciones", self.ubs_generation_count, 1, 100),
-            ("Variantes por set", self.ubs_variants_per_seed, 1, 100),
-            ("Max seeds/gen", self.ubs_max_seeds, 0, 5000),
-        ]
-        for index, (label, variable, from_value, to_value) in enumerate(gen_fields):
-            column = index * 2
-            left_pad = 20 if index == 0 else 10
-            right_pad = 10 if index < len(gen_fields) - 1 else 20
-            ttk.Label(agent, text=label, style="Panel.TLabel").grid(
-                row=1, column=column, sticky="w", padx=(left_pad, 10), pady=7
-            )
-            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=8).grid(
-                row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
-            )
-
+    def _build_ubs_agent_dates(self, agent):
+        """Fechas base del agente y su relleno desde la plantilla."""
         dates_row = ttk.Frame(agent, style="Panel.TFrame")
         dates_row.grid(row=2, column=0, columnspan=6, sticky="ew", padx=20, pady=(4, 0))
         _date_tip = (
@@ -138,6 +121,8 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
         self.after(200, _fill_agent_dates)
         self.template_path.trace_add("write", lambda *_: self.after(300, _fill_agent_dates))
 
+    def _build_ubs_agent_mode(self, agent):
+        """Ejecutar backtests y modo de generacion."""
         exec_row = tk.Frame(agent, bg=self.colors["panel"])
         exec_row.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))
         exec_row.columnconfigure(0, weight=1)
@@ -174,6 +159,8 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
             width=12,
         ).grid(row=0, column=1, sticky="e", pady=(4, 0))
 
+    def _build_ubs_agent_long_timeframes(self, agent):
+        """Umbrales y activacion de los timeframes W1 y MN."""
         long_tf_row = tk.Frame(agent, bg=self.colors["panel"])
         long_tf_row.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(6, 6))
         long_tf_row.columnconfigure(0, weight=1)
@@ -221,8 +208,8 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
             height=18,
         ).grid(row=0, column=2, sticky="ne", pady=(4, 0))
 
-        self._build_ubs_multiterminal_row(agent, row=6)
-
+    def _build_ubs_agent_buttons(self, agent):
+        """Guardar, lanzar y continuar el agente."""
         buttons = ttk.Frame(agent, style="Panel.TFrame")
         buttons.grid(row=7, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
         buttons.columnconfigure(0, weight=1)
@@ -257,5 +244,40 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
         ttk.Label(agent, textvariable=self.ubs_continue_status, style="Muted.TLabel").grid(
             row=8, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
+
+    def _build_ubs_agent_config(self, inner):
+        """Tarjeta de configuracion del agente y sus botones."""
+        agent = self._card(inner, "Configuracion Agente UBS")
+        agent.grid(row=1, column=0, sticky="ew")
+        for column in (1, 3, 5):
+            agent.columnconfigure(column, weight=1)
+
+        gen_fields = [
+            ("Generaciones", self.ubs_generation_count, 1, 100),
+            ("Variantes por set", self.ubs_variants_per_seed, 1, 100),
+            ("Max seeds/gen", self.ubs_max_seeds, 0, 5000),
+        ]
+        for index, (label, variable, from_value, to_value) in enumerate(gen_fields):
+            column = index * 2
+            left_pad = 20 if index == 0 else 10
+            right_pad = 10 if index < len(gen_fields) - 1 else 20
+            ttk.Label(agent, text=label, style="Panel.TLabel").grid(
+                row=1, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            )
+            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=8).grid(
+                row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
+            )
+
+        self._build_ubs_agent_dates(agent)
+        self._build_ubs_agent_mode(agent)
+        self._build_ubs_agent_long_timeframes(agent)
+        self._build_ubs_multiterminal_row(agent, row=6)
+        self._build_ubs_agent_buttons(agent)
+        return None
+
+    def _build_ubs_agent(self, parent: ttk.Frame) -> None:
+        inner = self._build_ubs_agent_scroll(parent)
+        self._build_ubs_agent_paths(inner)
+        self._build_ubs_agent_config(inner)
 
         self._build_ubs_agent_filter_cards(inner)
