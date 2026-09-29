@@ -335,6 +335,20 @@ class UBSRegressionLogicMixin:
         args.extend(self._effective_symbol_suffix_args())
         return args
 
+    def _ubs_regression_confirmation_details(
+        self, run_id: int, candidate_count: int, values: dict[str, object]
+    ) -> list[str]:
+        details = [
+            f"Run #{run_id} | candidatos: {candidate_count}",
+            f"Rango: {self.ubs_regression_from_date.get()} -> {self.ubs_regression_to_date.get()}",
+            "Modelo: OHLC 1 minuto (Model=1)",
+            f"Net > {values['net']} | PF >= {values['pf']} | ops >= {values['trades']}",
+            f"DD <= {values['dd']}% | recovery >= {values['recovery']} | meses + >= {values['months']}",
+            f"Puntos: OK {float(values['positive']):+.0f}; FAIL base {float(values['negative']):+.0f}, hasta -60 extra por causas",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        return details
+
     def _run_ubs_regression_for_latest_run(
         self,
         *,
@@ -381,15 +395,7 @@ class UBSRegressionLogicMixin:
             else:
                 self._show_error("No se pudo preparar la prueba regresiva", str(exc))
             return False
-        details = [
-            f"Run #{run_id} | candidatos: {len(rows)}",
-            f"Rango: {self.ubs_regression_from_date.get()} -> {self.ubs_regression_to_date.get()}",
-            "Modelo: OHLC 1 minuto (Model=1)",
-            f"Net > {values['net']} | PF >= {values['pf']} | ops >= {values['trades']}",
-            f"DD <= {values['dd']}% | recovery >= {values['recovery']} | meses + >= {values['months']}",
-            f"Puntos: OK {float(values['positive']):+.0f}; FAIL base {float(values['negative']):+.0f}, hasta -60 extra por causas",
-        ]
-        details.extend(self._multiterminal_execution_details())
+        details = self._ubs_regression_confirmation_details(run_id, len(rows), values)
         if confirm and not self._confirm_execution_start("Confirmar prueba regresiva UBS", len(rows), details):
             return False
         self._show_section("ubs_regression")

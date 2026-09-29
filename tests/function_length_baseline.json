@@ -148,7 +148,6 @@
     "ui/ubs_portfolio_tables.py::UBSPortfolioTablesMixin._quarantine_selected_ubs_portfolio_member_impl": 93,
     "ui/ubs_portfolio_versions.py::UBSPortfolioVersionsMixin._recalculate_saved_portfolio": 136,
     "ui/ubs_regression_logic.py::UBSRegressionLogicMixin._refresh_ubs_regression": 89,
-    "ui/ubs_regression_logic.py::UBSRegressionLogicMixin._run_ubs_regression_for_latest_run": 61,
     "ui/ubs_results_logic.py::UBSResultsLogicMixin._refresh_ubs_results": 181,
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._refresh_ubs_robustness": 131,
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._run_ubs_robustness_for_latest_run": 66,
