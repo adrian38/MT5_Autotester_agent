@@ -120,6 +120,32 @@ def allocation_margin_required(
     return lot * contract_size * strategy_reference_price(strategy) / leverage
 
 
+def _strategy_margin_entry(
+    strategy: RobustStrategySet, units: int, *, margin_profile: str | None,
+    stock_leverage: float, default_leverage: float,
+    stock_contract_size: float, default_contract_size: float,
+) -> tuple[float, dict[str, float | str | int]]:
+    leverage = margin_leverage_for_profile(
+        strategy.symbol, margin_profile=margin_profile,
+        stock_leverage=stock_leverage, default_leverage=default_leverage,
+    )
+    contract_size = margin_contract_size_for_profile(
+        strategy.symbol, margin_profile=margin_profile,
+        stock_contract_size=stock_contract_size, default_contract_size=default_contract_size,
+    )
+    margin = allocation_margin_required(
+        strategy, units, margin_profile=margin_profile,
+        stock_leverage=stock_leverage, default_leverage=default_leverage,
+        stock_contract_size=stock_contract_size, default_contract_size=default_contract_size,
+    )
+    return margin, {
+        "symbol": strategy.symbol, "group": portfolio_group_key(strategy.symbol),
+        "units": units, "lot": units * 0.01, "leverage": leverage,
+        "contract_size": contract_size, "price": strategy_reference_price(strategy),
+        "margin": margin,
+    }
+
+
 def portfolio_margin_summary(
     sets: list[RobustStrategySet],
     allocations: dict[str, int],
@@ -138,39 +164,13 @@ def portfolio_margin_summary(
         units = max(int(allocations.get(strategy.set_id, 0)), 0)
         if units <= 0:
             continue
-        leverage = margin_leverage_for_profile(
-            strategy.symbol,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-        )
-        contract_size = margin_contract_size_for_profile(
-            strategy.symbol,
-            margin_profile=margin_profile,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-        )
-        price = strategy_reference_price(strategy)
-        margin = allocation_margin_required(
-            strategy,
-            units,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
+        margin, entry = _strategy_margin_entry(
+            strategy, units, margin_profile=margin_profile,
+            stock_leverage=stock_leverage, default_leverage=default_leverage,
+            stock_contract_size=stock_contract_size, default_contract_size=default_contract_size,
         )
         total += margin
-        by_set[strategy.set_id] = {
-            "symbol": strategy.symbol,
-            "group": portfolio_group_key(strategy.symbol),
-            "units": units,
-            "lot": units * 0.01,
-            "leverage": leverage,
-            "contract_size": contract_size,
-            "price": price,
-            "margin": margin,
-        }
+        by_set[strategy.set_id] = entry
     limit = float(balance) * float(max_margin_pct) / 100.0 if balance > 0 else 0.0
     return {
         "enabled": True,

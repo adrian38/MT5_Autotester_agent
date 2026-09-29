@@ -21,7 +21,6 @@
     "portfolio_manager/ubs_portfolio_curves.py::bootstrap_valley_drawdown": 79,
     "portfolio_manager/ubs_portfolio_evaluate.py::evaluate_portfolio": 73,
     "portfolio_manager/ubs_portfolio_greedy.py::build_portfolio_greedy": 297,
-    "portfolio_manager/ubs_portfolio_margin.py::portfolio_margin_summary": 67,
     "portfolio_manager/ubs_portfolio_monthly.py::_strict_monthly_candidate_variants": 100,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_repair_allocations_to_strict_monthly": 122,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_strict_monthly_deep_refine_allocations": 228,
