@@ -71,8 +71,6 @@
     "ubs/regression.py::evaluate_candidate_regression": 162,
     "ubs/regression.py::evaluate_regression_report": 162,
     "ubs/regression.py::rescore_regression_only": 141,
-    "ubs/risk_profit.py::combine_robustness_profit_gate": 69,
-    "ubs/risk_profit.py::evaluate_risk_profit": 63,
     "ubs/risk_profit_repair.py::_restate_robustness": 73,
     "ubs/risk_profit_repair.py::scan_risk_profit_restatements": 78,
     "ubs/score.py::score_report": 160,
