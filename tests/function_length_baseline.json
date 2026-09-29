@@ -50,7 +50,6 @@
     "tools/fast_rescore_from_metrics.py::rescore_robustness_stage": 90,
     "tools/gen_axi_normalization.py::main": 231,
     "tools/installer_app.py::InstallerUI._install_thread": 75,
-    "ubs/degradation.py::evaluate_robustness_degradation": 278,
     "ubs/manual_status.py::mark_candidate_final_tick": 119,
     "ubs/manual_status.py::mark_candidate_regression": 92,
     "ubs/manual_status.py::mark_candidate_robustness": 75,
