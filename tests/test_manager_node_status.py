@@ -41,7 +41,7 @@ class ManagerNodeStatusTests(unittest.TestCase):
             http_thread = threading.Thread(target=server.serve_forever, daemon=True)
             http_thread.start()
             try:
-                with patch("manager_node_runtime.node.pipeline_stage_pending_count", side_effect=pending):
+                with patch("manager_node_runtime.node_snapshots.pipeline_stage_pending_count", side_effect=pending):
                     worker = threading.Thread(target=prepare)
                     worker.start()
                     try:

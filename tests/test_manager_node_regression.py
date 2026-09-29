@@ -64,10 +64,10 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             controller = self._controller(project)
             command = [sys.executable, str(worker)]
             with patch(
-                "manager_node_runtime.node.pipeline_stage_pending_count",
+                "manager_node_runtime.node_snapshots.pipeline_stage_pending_count",
                 return_value=1,
             ), patch(
-                "manager_node_runtime.node.build_pipeline_stage_command",
+                "manager_node_runtime.node_commands.build_pipeline_stage_command",
                 return_value=(command, project),
             ) as build_command:
                 result = controller.start_regression({
@@ -102,7 +102,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             project = Path(temp_dir)
             controller = self._controller(project)
             with patch(
-                "manager_node_runtime.node.pipeline_stage_pending_count",
+                "manager_node_runtime.node_snapshots.pipeline_stage_pending_count",
                 return_value=0,
             ):
                 result = controller.start_regression({"run_ids": [4]})
@@ -117,10 +117,10 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             controller = self._controller(project)
             command = [sys.executable, str(worker)]
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ), patch(
-                "manager_node_runtime.node.pipeline_stage_pending_count",
+                "manager_node_runtime.node_snapshots.pipeline_stage_pending_count",
                 return_value=0,
             ):
                 controller.start({"cycles": 1, "dry_run": True})
@@ -185,7 +185,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
                 return None
 
             with patch(
-                "manager_node_runtime.node.stored_run_generation_mode",
+                "manager_node_runtime.node_settings.stored_run_generation_mode",
                 side_effect=mode_for_run,
             ), patch.object(controller, "_launch_next_runnable", return_value=True):
                 result = controller.start_repair({
@@ -227,7 +227,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
 
             def actions_for(payload: dict) -> list[str]:
                 with patch(
-                    "manager_node_runtime.node.stored_run_generation_mode",
+                    "manager_node_runtime.node_settings.stored_run_generation_mode",
                     return_value="production",
                 ), patch.object(controller, "_launch_next_runnable", return_value=True):
                     result = controller.start_repair({
@@ -301,7 +301,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             controller = self._controller(project)
             command = [sys.executable, str(project / "worker.py")]
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ), patch.object(controller, "_launch_step"):
                 result = controller.start({
@@ -319,7 +319,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             controller = self._controller(project)
             command = [sys.executable, str(project / "worker.py")]
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ), patch.object(controller, "_launch_step"):
                 result = controller.start({
@@ -391,7 +391,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             controller = self._controller(project)
             command = [sys.executable, str(project / "worker.py")]
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ), patch.object(controller, "_launch_step"):
                 result = controller.start({
@@ -427,7 +427,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             controller = self._controller(project)
             command = [sys.executable, str(project / "worker.py")]
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ), patch.object(controller, "_launch_step"):
                 result = controller.start({

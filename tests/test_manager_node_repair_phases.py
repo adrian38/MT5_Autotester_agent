@@ -34,10 +34,10 @@ class ManagerNodeRepairPhasesTests(unittest.TestCase):
             project = Path(temp_dir)
             controller = self._controller(project)
             with patch(
-                "manager_node_runtime.node.stored_run_generation_mode",
+                "manager_node_runtime.node_settings.stored_run_generation_mode",
                 return_value="discovery",
             ), patch(
-                "manager_node_runtime.node.pipeline_stage_pending_count",
+                "manager_node_runtime.node_snapshots.pipeline_stage_pending_count",
                 return_value=0,
             ):
                 return controller.start_repair(payload)
@@ -135,7 +135,7 @@ class ManagerNodeRepairPhasesTests(unittest.TestCase):
             project = Path(temp_dir)
             controller = self._controller(project)
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=([sys.executable, "-c", "pass"], project),
             ), patch.object(controller, "_launch_step"):
                 state = controller.start({

@@ -31,7 +31,7 @@ class ManagerNodeQueueTests(unittest.TestCase):
             command = [sys.executable, str(worker)]
 
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ):
                 first = controller.start({**payload, "variants_per_seed": 1})

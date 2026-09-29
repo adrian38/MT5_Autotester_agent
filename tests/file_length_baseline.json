@@ -1,7 +1,6 @@
 {
   "grandfathered": {
     "app_ui.py": 2656,
-    "manager_node_runtime/node.py": 1503,
     "portfolio_manager/ubs_portfolio.py": 5083,
     "run_tests.py": 3064,
     "ubs_agent.py": 8559,
