@@ -350,3 +350,152 @@ def requalify_portfolio_member_payload(
         "reason_code": target,
         "previous_reason_code": current,
     }
+
+
+def _select_excluded_members(active_memory, multiple, path_key, pool_exclusion, pool_member, portfolio_id, raw_paths, scope, selected, single_path):
+    """Resuelve que miembros se excluyen, sean del pool o de un portafolio."""
+    is_bundle = False
+    member = None
+    if pool_exclusion:
+        selected.append({
+            "set_path": str(pool_member.get("set_path") or single_path or ""),
+            "set_id": str(pool_member.get("set_path") or single_path or ""),
+            "candidate_id": str(pool_member.get("candidate_id") or ""),
+            "symbol": str(pool_member.get("symbol") or ""),
+            "timeframe": str(pool_member.get("timeframe") or ""),
+        })
+    else:
+        conn = connect_memory(active_memory, timeout=10.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            portfolio = conn.execute(
+                "select portfolio_type,type,metrics_json from portfolios "
+                "where id=? and coalesce(nullif(portfolio_scope,''),'full_history')=?",
+                (portfolio_id, scope),
+            ).fetchone()
+            if portfolio is None:
+                raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+            try:
+                metrics = json.loads(portfolio["metrics_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metrics = {}
+            portfolio_type = str(portfolio["portfolio_type"] or portfolio["type"] or "").lower()
+            is_bundle = portfolio_type == "bundle" or bool(metrics.get("portfolio_bundle"))
+            # Multiple exclusion is allowed where the manager offers the checkboxes:
+            # A/M/C bundles and any saved month. Ya no hay ninguna asimetria de
+            # borrado detras: ningun ambito borra ni modifica el portafolio guardado.
+            if multiple and not (is_bundle or scope == "monthly"):
+                raise ValueError("La exclusión múltiple solo está disponible para portafolios A/M/C y mensuales")
+            rows = [dict(row) for row in conn.execute(
+                "select set_path,set_id,candidate_id,symbol,timeframe from portfolio_allocations "
+                "where portfolio_id=?",
+                (portfolio_id,),
+            ).fetchall()]
+        finally:
+            conn.close()
+
+        members_by_path = {
+            path_key(row.get("set_path") or row.get("set_id")): row for row in rows
+        }
+        seen: set[str] = set()
+        for raw_path in (raw_paths if multiple else [single_path]):
+            key = path_key(raw_path)
+            if key in seen:
+                continue
+            member = members_by_path.get(key)
+            if member is None:
+                raise ValueError(
+                    "Una estrategia seleccionada ya no pertenece al portafolio"
+                    if multiple else "No se encontró la estrategia dentro del portafolio"
+                )
+            seen.add(key)
+            selected.append(member)
+    return is_bundle, member
+
+
+def _group_members_by_memory(broker, active_memory, project, selected):
+    """Agrupa los miembros elegidos por la memoria donde viven."""
+    grouped: dict[Path, list[tuple[str, int | None, dict[str, Any]]]] = {}
+    for member in selected:
+        candidate_text = str(member.get("candidate_id") or "")
+        account_label, separator, raw_candidate_id = candidate_text.rpartition(":")
+        account_type = account_label.rsplit("/", 1)[-1] if separator else ""
+        candidate_id = int(raw_candidate_id) if separator and raw_candidate_id.isdigit() else None
+        source_memory = account_memory_path(project, account_type, broker) if account_type else active_memory
+        if not source_memory.is_file():
+            source_memory = active_memory
+        grouped.setdefault(source_memory.resolve(), []).append((account_label, candidate_id, member))
+    return grouped
+
+
+def _quarantine_grouped_members(grouped, portfolio_id, quarantine_ids, reason, reason_code):
+    """Pone en cuarentena los miembros elegidos en cada memoria de origen."""
+    for source_memory, members in grouped.items():
+        source_conn = connect_memory(source_memory, timeout=10.0)
+        try:
+            source_conn.row_factory = sqlite3.Row
+            source_conn.execute("begin immediate")
+            source_conn.execute(
+                """create table if not exists portfolio_quarantine (
+                    id integer primary key autoincrement, account_type text not null,
+                    candidate_id, set_path text not null unique, symbol text, timeframe text,
+                    reason text not null default '', source_portfolio_id integer,
+                    quarantined_at text not null
+                )"""
+            )
+            ensure_quarantine_reason_columns(source_conn)
+            for account_label, candidate_id, member in members:
+                set_path = str(member.get("set_path") or member.get("set_id") or "")
+                # El respaldo se lee ANTES del veredicto y viaja con la fila de
+                # cuarentena: es lo unico que permite reintegrar despues.
+                restore_json = (
+                    snapshot_candidate_stages(source_conn, candidate_id)
+                    if reason_code != MANUAL_REASON else None
+                )
+                source_conn.execute(
+                    """insert into portfolio_quarantine(
+                        account_type,candidate_id,set_path,symbol,timeframe,reason,
+                        source_portfolio_id,quarantined_at,reason_code,restore_json
+                    ) values(?,?,?,?,?,?,?,?,?,?) on conflict(set_path) do update set
+                        account_type=excluded.account_type,candidate_id=excluded.candidate_id,
+                        symbol=excluded.symbol,timeframe=excluded.timeframe,
+                        reason=excluded.reason,source_portfolio_id=excluded.source_portfolio_id,
+                        quarantined_at=excluded.quarantined_at,
+                        reason_code=excluded.reason_code,restore_json=excluded.restore_json""",
+                    (
+                        account_label,
+                        candidate_id,
+                        set_path,
+                        str(member.get("symbol") or ""),
+                        str(member.get("timeframe") or ""),
+                        reason,
+                        portfolio_id or None,
+                        datetime.now().isoformat(timespec="seconds"),
+                        reason_code,
+                        restore_json,
+                    ),
+                )
+                saved = source_conn.execute(
+                    "select id from portfolio_quarantine where set_path=?", (set_path,)
+                ).fetchone()
+                quarantine_ids.append(int(saved[0]))
+                apply_candidate_verdict(source_conn, candidate_id, reason_code)
+            source_conn.commit()
+        except Exception:
+            source_conn.rollback()
+            raise
+        finally:
+            source_conn.close()
+
+
+def _exclusion_response_message(multiple, portfolio_id, quarantine_ids, reason_code, scope, verdict_applied):
+    """Mensaje de respuesta de la exclusion segun cuantos miembros toca."""
+    if multiple:
+        return {
+            "quarantine_ids": quarantine_ids,
+            "deleted": False,
+            "portfolio_id": portfolio_id,
+            "scope": scope,
+            "reason_code": reason_code,
+            "verdict_applied": verdict_applied,
+        }
