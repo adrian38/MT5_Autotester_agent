@@ -19,6 +19,24 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def write_embedded_config(path: Path, app_base: Path, port: int, token: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "node_id": "embedded-test",
+                "display_name": "Embedded Test",
+                "project_dir": str(app_base),
+                "broker": "ICTRADING",
+                "account_type": "STANDARD",
+                "host": "127.0.0.1",
+                "port": port,
+                "token": token,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class EmbeddedManagerNodeTests(unittest.TestCase):
     def test_node_starts_and_stops_with_matching_app_project(self) -> None:
         app_base = Path(__file__).resolve().parent.parent
@@ -26,21 +44,7 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             config_path = Path(temp) / "node.json"
             token = "test-embedded-token"
             port = free_port()
-            config_path.write_text(
-                json.dumps(
-                    {
-                        "node_id": "embedded-test",
-                        "display_name": "Embedded Test",
-                        "project_dir": str(app_base),
-                        "broker": "ICTRADING",
-                        "account_type": "STANDARD",
-                        "host": "127.0.0.1",
-                        "port": port,
-                        "token": token,
-                    }
-                ),
-                encoding="utf-8",
-            )
+            write_embedded_config(config_path, app_base, port, token)
             settings = configparser.ConfigParser()
             settings["ManagerNode"] = {
                 "enabled": "1",
