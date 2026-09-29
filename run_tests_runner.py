@@ -271,6 +271,18 @@ def run_test(
 
     return last_exit_code
 
+
+def _log_backtest_job(
+    job: BacktestJob, profile: TerminalProfile, expert: str, logger: RunLogger
+) -> None:
+    logger.write("")
+    logger.write(
+        f"[{profile.name}] Job #{job.index}: "
+        f"{Path(expert).name if expert else '(perfil UBS)'}"
+        + (f" | set={job.set_file.name}" if job.set_file else "")
+    )
+
+
 def run_backtest_job(
     job: BacktestJob,
     profile: TerminalProfile,
@@ -284,12 +296,7 @@ def run_backtest_job(
 ) -> int:
     terminal_data_dirs = terminal_data_dirs_for_profile(profile, settings)
     expert = profile_expert_for_job(profile, job, set_mode)
-    logger.write("")
-    logger.write(
-        f"[{profile.name}] Job #{job.index}: "
-        f"{Path(expert).name if expert else '(perfil UBS)'}"
-        + (f" | set={job.set_file.name}" if job.set_file else "")
-    )
+    _log_backtest_job(job, profile, expert, logger)
     try:
         ini_path, report_path = create_ini(
             expert,
