@@ -226,62 +226,66 @@ class NodeHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "Ruta no encontrada"})
 
+    def _dispatch_post(self) -> tuple[int, Any]:
+        controller = self.server.controller
+        if self.path == "/api/v1/application/restart":
+            return 202, self.server.request_application_restart()
+        if self.path == "/api/v1/guided-batches":
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= guided_batches.MAX_BODY:
+                raise ValueError("Lote demasiado grande o vacío")
+            return 202, controller.submit_guided(self._body(guided_batches.MAX_BODY))
+        if self.path == "/api/v1/jobs/generation":
+            return 202, controller.start(self._body())
+        if self.path == "/api/v1/jobs/repair":
+            return 202, controller.start_repair(self._body())
+        if self.path == "/api/v1/jobs/regression":
+            return 202, controller.start_regression(self._body())
+        if self.path == "/api/v1/jobs/cleanup":
+            return 202, controller.start_cleanup()
+        if self.path == "/api/v1/jobs/stop":
+            return 202, controller.stop()
+        if self.path == "/api/v1/jobs/pause":
+            return 202, controller.pause()
+        if self.path == "/api/v1/jobs/resume":
+            return 202, controller.resume()
+        if self.path == "/api/v1/jobs/queue/cancel":
+            return 200, controller.cancel_queued(str(self._body().get("task_id") or ""))
+        if self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/run"):
+            portfolio_id = safe_int(self.path.strip("/").split("/")[-2], 0, minimum=1)
+            body = self._body()
+            body["portfolio_id"] = portfolio_id
+            return 202, {"audit": controller.live_audits.start(body)}
+        if self.path == "/api/v1/universe/symbols":
+            return 200, controller.update_universe(self._body())
+        if self.path in {
+            "/api/v1/universe/sync", "/api/v1/universe/history-preview",
+            "/api/v1/universe/disable-preview", "/api/v1/universe/disable-no-history",
+            "/api/v1/universe/trade-disabled-preview", "/api/v1/universe/disable-trade-disabled",
+        }:
+            return 200, controller.universe_action(self.path.rsplit("/", 1)[1], self._body())
+        if self.path == "/api/v1/jobs/universe-history":
+            return 202, controller.start_universe_history()
+        portfolio_routes = {
+            "/api/v1/portfolios/save": (201, controller.save_portfolio, 50_000_000),
+            "/api/v1/portfolios/alias": (200, controller.set_portfolio_alias, 1_000_000),
+            "/api/v1/portfolios/delete": (200, controller.delete_portfolio, 1_000_000),
+            "/api/v1/portfolios/exclude": (200, controller.exclude_portfolio_members, 1_000_000),
+            "/api/v1/portfolios/requalify": (200, controller.requalify_portfolio_member, 1_000_000),
+        }
+        route = portfolio_routes.get(self.path)
+        if route:
+            status, action, maximum = route
+            return status, action(self._body(maximum))
+        return 404, {"error": "Ruta no encontrada"}
+
     def do_POST(self) -> None:
         if not self._authorized():
             self._send(401, {"error": "No autorizado"})
             return
         try:
-            if self.path == "/api/v1/application/restart":
-                self._send(202, self.server.request_application_restart())
-            elif self.path == "/api/v1/guided-batches":
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= guided_batches.MAX_BODY:
-                    raise ValueError("Lote demasiado grande o vacío")
-                self._send(202, self.server.controller.submit_guided(self._body(guided_batches.MAX_BODY)))
-            elif self.path == "/api/v1/jobs/generation":
-                self._send(202, self.server.controller.start(self._body()))
-            elif self.path == "/api/v1/jobs/repair":
-                self._send(202, self.server.controller.start_repair(self._body()))
-            elif self.path == "/api/v1/jobs/regression":
-                self._send(202, self.server.controller.start_regression(self._body()))
-            elif self.path == "/api/v1/jobs/cleanup":
-                self._send(202, self.server.controller.start_cleanup())
-            elif self.path == "/api/v1/jobs/stop":
-                self._send(202, self.server.controller.stop())
-            elif self.path == "/api/v1/jobs/pause":
-                self._send(202, self.server.controller.pause())
-            elif self.path == "/api/v1/jobs/resume":
-                self._send(202, self.server.controller.resume())
-            elif self.path == "/api/v1/jobs/queue/cancel":
-                self._send(200, self.server.controller.cancel_queued(str(self._body().get("task_id") or "")))
-            elif self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/run"):
-                portfolio_id = safe_int(self.path.strip("/").split("/")[-2], 0, minimum=1)
-                body = self._body()
-                body["portfolio_id"] = portfolio_id
-                self._send(202, {"audit": self.server.controller.live_audits.start(body)})
-            elif self.path == "/api/v1/universe/symbols":
-                self._send(200, self.server.controller.update_universe(self._body()))
-            elif self.path in {
-                "/api/v1/universe/sync", "/api/v1/universe/history-preview",
-                "/api/v1/universe/disable-preview", "/api/v1/universe/disable-no-history",
-                "/api/v1/universe/trade-disabled-preview",
-                "/api/v1/universe/disable-trade-disabled",
-            }:
-                self._send(200, self.server.controller.universe_action(self.path.rsplit("/", 1)[1], self._body()))
-            elif self.path == "/api/v1/jobs/universe-history":
-                self._send(202, self.server.controller.start_universe_history())
-            elif self.path == "/api/v1/portfolios/save":
-                self._send(201, self.server.controller.save_portfolio(self._body(50_000_000)))
-            elif self.path == "/api/v1/portfolios/alias":
-                self._send(200, self.server.controller.set_portfolio_alias(self._body()))
-            elif self.path == "/api/v1/portfolios/delete":
-                self._send(200, self.server.controller.delete_portfolio(self._body()))
-            elif self.path == "/api/v1/portfolios/exclude":
-                self._send(200, self.server.controller.exclude_portfolio_members(self._body()))
-            elif self.path == "/api/v1/portfolios/requalify":
-                self._send(200, self.server.controller.requalify_portfolio_member(self._body()))
-            else:
-                self._send(404, {"error": "Ruta no encontrada"})
+            status, value = self._dispatch_post()
+            self._send(status, value)
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self._send(409, {"error": str(exc)})
         except Exception as exc:
