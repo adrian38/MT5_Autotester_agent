@@ -193,101 +193,48 @@ class UBSResultsLogicMixin(
         variable = getattr(self, "ubs_account_type", None)
         return normalize_account_type(variable.get() if variable is not None else "", self._ubs_broker())
 
-    def _refresh_ubs_results(self) -> None:
-        if hasattr(self, "ubs_results_tree"):
-            for item in self.ubs_results_tree.get_children():
-                self.ubs_results_tree.delete(item)
-        self.ubs_result_paths.clear()
-        self.ubs_result_checked.clear()
+    def _populate_ubs_results_rows(self, rows, valid_ids):
+        """Pinta cada candidato del run en la tabla de resultados."""
+        for index, row in enumerate(rows):
+            metrics = self._parse_ubs_metrics(row["metrics_json"])
+            status = str(row["status"] or "")
+            candidate_id = str(row["id"] or "")
+            valid_ids.add(candidate_id)
+            reason = self._ubs_result_reason(row, status)
+            item = self.ubs_results_tree.insert(
+                "",
+                "end",
+                values=(
+                    self._checkbox_text(candidate_id in self.ubs_result_checked),
+                    row["run_id"],
+                    row["generation"],
+                    self._format_ubs_status(status),
+                    row["target_symbol"] or row["symbol"],
+                    row["period"],
+                    self._format_ubs_number(row["score"]),
+                    self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("normalized_net_profit")),
+                    self._format_ubs_number(metrics.get("profit_factor")),
+                    self._format_ubs_number(metrics.get("drawdown_pct")),
+                    self._format_ubs_int(metrics.get("trades")),
+                    reason,
+                    self._format_ubs_set_label(row),
+                ),
+                tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
+            )
+            self.ubs_result_paths[item] = {
+                "id": candidate_id,
+                "run": str(row["run_id"] or ""),
+                "generation": str(row["generation"] or ""),
+                "status": status,
+                "symbol": str(row["target_symbol"] or row["symbol"] or ""),
+                "period": str(row["period"] or ""),
+                "set": str(row["set_path"] or ""),
+                "report": str(row["report_path"] or ""),
+            }
 
-        memory_path = self._ubs_memory_path()
-        if not memory_path.exists():
-            self.ubs_results_summary.set("Sin resultados UBS")
-            self.ubs_results_status.set(f"No existe memoria: {memory_path}")
-            self._set_ubs_results_execute_backtests_enabled(False)
-            self._set_ubs_results_complete_run_enabled(False)
-            self._set_ubs_results_continue_run_enabled(False)
-            return
-
-        try:
-            conn = connect_memory(memory_path)
-            conn.row_factory = sqlite3.Row
-            self._ensure_ubs_memory_schema(conn)
-            run_options = self._ubs_results_run_options(conn)
-            selected_run_id = self._selected_ubs_results_run_id(run_options)
-            self._update_ubs_results_run_combo(run_options, selected_run_id)
-            if selected_run_id <= 0:
-                total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
-                self.ubs_results_summary.set("Sin resultados visibles")
-                if total_runs:
-                    self.ubs_results_status.set("Los resultados anteriores estan archivados; el agente conserva la memoria.")
-                else:
-                    self.ubs_results_status.set(f"Memoria: {memory_path}")
-                conn.close()
-                self._set_ubs_results_execute_backtests_enabled(False)
-                self._set_ubs_results_complete_run_enabled(False)
-                self._set_ubs_results_continue_run_enabled(False)
-                return
-            latest_run = conn.execute(
-                "select * from runs where id=?", (selected_run_id,)
-            ).fetchone()
-            if latest_run is None:
-                total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
-                self.ubs_results_summary.set("Sin resultados visibles")
-                if total_runs:
-                    self.ubs_results_status.set("Los resultados anteriores estan archivados; el agente conserva la memoria.")
-                else:
-                    self.ubs_results_status.set(f"Memoria: {memory_path}")
-                conn.close()
-                self._set_ubs_results_execute_backtests_enabled(False)
-                self._set_ubs_results_complete_run_enabled(False)
-                self._set_ubs_results_continue_run_enabled(False)
-                return
-
-            counts = conn.execute(
-                """
-                select
-                    count(*) as total,
-                    sum(case when status in ('accepted', 'rejected') and score is not null then 1 else 0 end) as scored,
-                    sum(case when status = 'accepted' then 1 else 0 end) as accepted,
-                    sum(case when status = 'rejected' then 1 else 0 end) as rejected,
-                    sum(case when status = 'generated' then 1 else 0 end) as generated,
-                    sum(case when status = 'no_report' then 1 else 0 end) as no_report,
-                    sum(case when status = 'no_trades' then 1 else 0 end) as no_trades,
-                    sum(case when status = 'no_history' then 1 else 0 end) as no_history,
-                    sum(case when status = 'trade_disabled' then 1 else 0 end) as trade_disabled,
-                    sum(case when status = 'symbol_not_exist' then 1 else 0 end) as symbol_not_exist,
-                    sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
-                from candidates
-                where run_id = ?
-                """,
-                (latest_run["id"],),
-            ).fetchone()
-            rows = conn.execute(
-                """
-                select *
-                from candidates
-                where run_id = ?
-                order by
-                    case
-                        when status = 'accepted' then 0
-                        when status = 'rejected' then 1
-                        else 2
-                    end,
-                    score desc,
-                    id desc
-                """,
-                (latest_run["id"],),
-            ).fetchall()
-            conn.close()
-        except sqlite3.Error as exc:
-            self.ubs_results_summary.set("No se pudieron leer resultados UBS")
-            self.ubs_results_status.set(str(exc))
-            self._set_ubs_results_execute_backtests_enabled(False)
-            self._set_ubs_results_complete_run_enabled(False)
-            self._set_ubs_results_continue_run_enabled(False)
-            return
-
+    def _update_ubs_results_summary(self, counts, latest_run, rows):
+        """Resumen, estado y botones segun los recuentos del run."""
         total = int(counts["total"] or 0)
         scored = int(counts["scored"] or 0)
         accepted = int(counts["accepted"] or 0)
@@ -333,46 +280,123 @@ class UBSResultsLogicMixin(
         self._set_ubs_results_complete_run_enabled(complete_enabled)
         self._set_ubs_results_continue_run_enabled((report_mismatch + no_report) > 0)
 
+    def _read_ubs_results_rows(self, conn, selected_run_id):
+        """Recuentos por estado y filas del run seleccionado."""
+        counts = conn.execute(
+            """
+            select
+                count(*) as total,
+                sum(case when status in ('accepted', 'rejected') and score is not null then 1 else 0 end) as scored,
+                sum(case when status = 'accepted' then 1 else 0 end) as accepted,
+                sum(case when status = 'rejected' then 1 else 0 end) as rejected,
+                sum(case when status = 'generated' then 1 else 0 end) as generated,
+                sum(case when status = 'no_report' then 1 else 0 end) as no_report,
+                sum(case when status = 'no_trades' then 1 else 0 end) as no_trades,
+                sum(case when status = 'no_history' then 1 else 0 end) as no_history,
+                sum(case when status = 'trade_disabled' then 1 else 0 end) as trade_disabled,
+                sum(case when status = 'symbol_not_exist' then 1 else 0 end) as symbol_not_exist,
+                sum(case when status = 'report_mismatch' then 1 else 0 end) as report_mismatch
+            from candidates
+            where run_id = ?
+            """,
+            (latest_run["id"],),
+        ).fetchone()
+        rows = conn.execute(
+            """
+            select *
+            from candidates
+            where run_id = ?
+            order by
+                case
+                    when status = 'accepted' then 0
+                    when status = 'rejected' then 1
+                    else 2
+                end,
+                score desc,
+                id desc
+            """,
+            (latest_run["id"],),
+        ).fetchall()
+        return counts, rows
+
+    def _clear_ubs_results_view(self, memory_path) -> None:
+        """Deja la pantalla vacia cuando no hay memoria que leer."""
+        self.ubs_results_summary.set("Sin resultados UBS")
+        self.ubs_results_status.set(f"No existe memoria: {memory_path}")
+        self._set_ubs_results_execute_backtests_enabled(False)
+        self._set_ubs_results_complete_run_enabled(False)
+        self._set_ubs_results_continue_run_enabled(False)
+
+    def _load_ubs_results_run(self, memory_path):
+        """Abre la memoria y devuelve el run elegido con sus filas."""
+        conn = connect_memory(memory_path)
+        conn.row_factory = sqlite3.Row
+        self._ensure_ubs_memory_schema(conn)
+        run_options = self._ubs_results_run_options(conn)
+        selected_run_id = self._selected_ubs_results_run_id(run_options)
+        self._update_ubs_results_run_combo(run_options, selected_run_id)
+        if selected_run_id <= 0:
+            total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
+            self.ubs_results_summary.set("Sin resultados visibles")
+            if total_runs:
+                self.ubs_results_status.set("Los resultados anteriores estan archivados; el agente conserva la memoria.")
+            else:
+                self.ubs_results_status.set(f"Memoria: {memory_path}")
+            conn.close()
+            self._set_ubs_results_execute_backtests_enabled(False)
+            self._set_ubs_results_complete_run_enabled(False)
+            self._set_ubs_results_continue_run_enabled(False)
+            return None, None, None
+        latest_run = conn.execute(
+            "select * from runs where id=?", (selected_run_id,)
+        ).fetchone()
+        if latest_run is None:
+            total_runs = conn.execute("select count(*) as total from runs").fetchone()["total"]
+            self.ubs_results_summary.set("Sin resultados visibles")
+            if total_runs:
+                self.ubs_results_status.set("Los resultados anteriores estan archivados; el agente conserva la memoria.")
+            else:
+                self.ubs_results_status.set(f"Memoria: {memory_path}")
+            conn.close()
+            self._set_ubs_results_execute_backtests_enabled(False)
+            self._set_ubs_results_complete_run_enabled(False)
+            self._set_ubs_results_continue_run_enabled(False)
+            return None, None, None
+
+        counts, rows = self._read_ubs_results_rows(conn, selected_run_id)
+        conn.close()
+        return counts, latest_run, rows
+
+    def _refresh_ubs_results(self) -> None:
+        if hasattr(self, "ubs_results_tree"):
+            for item in self.ubs_results_tree.get_children():
+                self.ubs_results_tree.delete(item)
+        self.ubs_result_paths.clear()
+        self.ubs_result_checked.clear()
+
+        memory_path = self._ubs_memory_path()
+        if not memory_path.exists():
+            self._clear_ubs_results_view(memory_path)
+            return
+
+        try:
+            counts, latest_run, rows = self._load_ubs_results_run(memory_path)
+            if latest_run is None:
+                return
+        except sqlite3.Error as exc:
+            self.ubs_results_summary.set("No se pudieron leer resultados UBS")
+            self.ubs_results_status.set(str(exc))
+            self._set_ubs_results_execute_backtests_enabled(False)
+            self._set_ubs_results_complete_run_enabled(False)
+            self._set_ubs_results_continue_run_enabled(False)
+            return
+
+        self._update_ubs_results_summary(counts, latest_run, rows)
+
         if not hasattr(self, "ubs_results_tree"):
             return
         valid_ids = set()
-        for index, row in enumerate(rows):
-            metrics = self._parse_ubs_metrics(row["metrics_json"])
-            status = str(row["status"] or "")
-            candidate_id = str(row["id"] or "")
-            valid_ids.add(candidate_id)
-            reason = self._ubs_result_reason(row, status)
-            item = self.ubs_results_tree.insert(
-                "",
-                "end",
-                values=(
-                    self._checkbox_text(candidate_id in self.ubs_result_checked),
-                    row["run_id"],
-                    row["generation"],
-                    self._format_ubs_status(status),
-                    row["target_symbol"] or row["symbol"],
-                    row["period"],
-                    self._format_ubs_number(row["score"]),
-                    self._format_ubs_number(metrics.get("net_profit")),
-                    self._format_ubs_number(metrics.get("normalized_net_profit")),
-                    self._format_ubs_number(metrics.get("profit_factor")),
-                    self._format_ubs_number(metrics.get("drawdown_pct")),
-                    self._format_ubs_int(metrics.get("trades")),
-                    reason,
-                    self._format_ubs_set_label(row),
-                ),
-                tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
-            )
-            self.ubs_result_paths[item] = {
-                "id": candidate_id,
-                "run": str(row["run_id"] or ""),
-                "generation": str(row["generation"] or ""),
-                "status": status,
-                "symbol": str(row["target_symbol"] or row["symbol"] or ""),
-                "period": str(row["period"] or ""),
-                "set": str(row["set_path"] or ""),
-                "report": str(row["report_path"] or ""),
-            }
+        self._populate_ubs_results_rows(rows, valid_ids)
         self.ubs_result_checked.intersection_update(valid_ids)
 
     def _hide_latest_ubs_results(self) -> None:

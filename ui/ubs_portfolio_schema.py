@@ -12,73 +12,91 @@ from ui.ubs_portfolio_base import BASE_DIR
 class UBSPortfolioSchemaMixin:
     """Esquema SQLite del portafolio y conexiones por cuenta."""
 
-    def _ensure_portfolio_schema(self, conn: sqlite3.Connection) -> None:
+    def _ensure_portfolio_member_tables(self, conn):
+        """Tablas de miembros, cuarentena y versiones del portafolio."""
         conn.execute(
             """
-            create table if not exists portfolios (
+            create table if not exists portfolio_members (
                 id integer primary key autoincrement,
-                created_at text not null,
-                name text not null default '',
-                type text not null default '',
-                portfolio_type text not null default 'balanced',
-                num_symbols integer not null default 0,
-                account_capital real not null default 0,
-                capital real not null default 0,
-                target_valley_dd_pct real not null default 0,
-                target_point_dd_pct real not null default 0,
-                target_valley_dd real not null default 0,
-                target_point_dd real not null default 0,
-                actual_valley_dd real not null default 0,
-                actual_point_dd real not null default 0,
-                actual_closed_valley_dd real not null default 0,
-                floating_dd_buffer real not null default 0,
-                valley_usage_pct real not null default 0,
-                point_usage_pct real not null default 0,
-                total_net_profit real not null default 0,
-                total_lot real not null default 0,
-                total_units integer not null default 0,
-                active_strategies integer not null default 0,
-                target_strategies integer not null default 0,
-                stop_reason text not null default '',
-                scale_factor real,
-                binding_constraint text,
-                portfolio_scope text not null default 'full_history',
-                target_month integer,
-                metrics_json text
+                portfolio_id integer not null,
+                variant_key text not null default '',
+                variant_label text not null default '',
+                candidate_id integer,
+                set_path text not null,
+                symbol text,
+                period text,
+                lot_multiplier real,
+                lot real,
+                lot_size_step real,
+                standalone_dd real,
+                quality_score real,
+                combined_net_profit real,
+                is_report_path text,
+                oos_report_path text
             )
             """
         )
         for column, definition in (
-            ("name", "text not null default ''"),
-            ("type", "text not null default ''"),
-            ("portfolio_type", "text not null default 'balanced'"),
-            ("num_symbols", "integer not null default 0"),
-            ("account_capital", "real not null default 0"),
-            ("capital", "real not null default 0"),
-            ("target_valley_dd_pct", "real not null default 0"),
-            ("target_point_dd_pct", "real not null default 0"),
-            ("target_valley_dd", "real not null default 0"),
-            ("target_point_dd", "real not null default 0"),
-            ("actual_valley_dd", "real not null default 0"),
-            ("actual_point_dd", "real not null default 0"),
-            ("actual_closed_valley_dd", "real not null default 0"),
-            ("floating_dd_buffer", "real not null default 0"),
-            ("valley_usage_pct", "real not null default 0"),
-            ("point_usage_pct", "real not null default 0"),
-            ("total_net_profit", "real not null default 0"),
-            ("total_lot", "real not null default 0"),
-            ("total_units", "integer not null default 0"),
-            ("active_strategies", "integer not null default 0"),
-            ("target_strategies", "integer not null default 0"),
-            ("stop_reason", "text not null default ''"),
-            ("scale_factor", "real"),
-            ("binding_constraint", "text"),
-            ("portfolio_scope", "text not null default 'full_history'"),
-            ("target_month", "integer"),
-            ("metrics_json", "text"),
+            ("variant_key", "text not null default ''"),
+            ("variant_label", "text not null default ''"),
         ):
-            self._ensure_sqlite_column(conn, "portfolios", column, definition)
+            self._ensure_sqlite_column(conn, "portfolio_members", column, definition)
+        conn.execute(
+            """
+            create table if not exists portfolio_quarantine (
+                id integer primary key autoincrement,
+                account_type text not null,
+                candidate_id integer,
+                set_path text not null unique,
+                symbol text,
+                timeframe text,
+                reason text not null default '',
+                source_portfolio_id integer,
+                quarantined_at text not null
+            )
+            """
+        )
+        conn.execute(
+            """
+            create table if not exists portfolio_versions (
+                id integer primary key autoincrement,
+                portfolio_id integer not null,
+                version_no integer not null,
+                created_at text not null,
+                reason text not null,
+                snapshot_json blob not null,
+                unique(portfolio_id, version_no)
+            )
+            """
+        )
 
+    def _ensure_portfolio_decision_table(self, conn):
+        """Tabla del registro de decisiones de la optimizacion."""
+        conn.execute(
+            """
+            create table if not exists portfolio_decision_log (
+                id integer primary key autoincrement,
+                portfolio_id integer not null,
+                step integer not null,
+                action text not null,
+                set_id text,
+                from_set_id text,
+                to_set_id text,
+                gain real not null,
+                valley_cost real not null,
+                point_cost real not null,
+                score real not null,
+                portfolio_net_profit_after real not null,
+                portfolio_valley_dd_after real not null,
+                portfolio_point_dd_after real not null,
+                reason text not null,
+                foreign key (portfolio_id) references portfolios(id)
+            )
+            """
+        )
+
+    def _ensure_portfolio_allocation_tables(self, conn):
+        """Tablas de asignaciones y del registro de decisiones."""
         conn.execute(
             """
             create table if not exists portfolio_allocations (
@@ -136,85 +154,83 @@ class UBSPortfolioSchemaMixin:
             ("has_recent_performance", "integer not null default 0"),
         ):
             self._ensure_sqlite_column(conn, "portfolio_allocations", column, definition)
+        self._ensure_portfolio_decision_table(conn)
+
+    def _ensure_portfolio_columns(self, conn):
+        """Columnas que se anadieron despues a la tabla de portafolios."""
+        for column, definition in (
+            ("name", "text not null default ''"),
+            ("type", "text not null default ''"),
+            ("portfolio_type", "text not null default 'balanced'"),
+            ("num_symbols", "integer not null default 0"),
+            ("account_capital", "real not null default 0"),
+            ("capital", "real not null default 0"),
+            ("target_valley_dd_pct", "real not null default 0"),
+            ("target_point_dd_pct", "real not null default 0"),
+            ("target_valley_dd", "real not null default 0"),
+            ("target_point_dd", "real not null default 0"),
+            ("actual_valley_dd", "real not null default 0"),
+            ("actual_point_dd", "real not null default 0"),
+            ("actual_closed_valley_dd", "real not null default 0"),
+            ("floating_dd_buffer", "real not null default 0"),
+            ("valley_usage_pct", "real not null default 0"),
+            ("point_usage_pct", "real not null default 0"),
+            ("total_net_profit", "real not null default 0"),
+            ("total_lot", "real not null default 0"),
+            ("total_units", "integer not null default 0"),
+            ("active_strategies", "integer not null default 0"),
+            ("target_strategies", "integer not null default 0"),
+            ("stop_reason", "text not null default ''"),
+            ("scale_factor", "real"),
+            ("binding_constraint", "text"),
+            ("portfolio_scope", "text not null default 'full_history'"),
+            ("target_month", "integer"),
+            ("metrics_json", "text"),
+        ):
+            self._ensure_sqlite_column(conn, "portfolios", column, definition)
+
+    def _ensure_portfolio_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
             """
-            create table if not exists portfolio_decision_log (
+            create table if not exists portfolios (
                 id integer primary key autoincrement,
-                portfolio_id integer not null,
-                step integer not null,
-                action text not null,
-                set_id text,
-                from_set_id text,
-                to_set_id text,
-                gain real not null,
-                valley_cost real not null,
-                point_cost real not null,
-                score real not null,
-                portfolio_net_profit_after real not null,
-                portfolio_valley_dd_after real not null,
-                portfolio_point_dd_after real not null,
-                reason text not null,
-                foreign key (portfolio_id) references portfolios(id)
+                created_at text not null,
+                name text not null default '',
+                type text not null default '',
+                portfolio_type text not null default 'balanced',
+                num_symbols integer not null default 0,
+                account_capital real not null default 0,
+                capital real not null default 0,
+                target_valley_dd_pct real not null default 0,
+                target_point_dd_pct real not null default 0,
+                target_valley_dd real not null default 0,
+                target_point_dd real not null default 0,
+                actual_valley_dd real not null default 0,
+                actual_point_dd real not null default 0,
+                actual_closed_valley_dd real not null default 0,
+                floating_dd_buffer real not null default 0,
+                valley_usage_pct real not null default 0,
+                point_usage_pct real not null default 0,
+                total_net_profit real not null default 0,
+                total_lot real not null default 0,
+                total_units integer not null default 0,
+                active_strategies integer not null default 0,
+                target_strategies integer not null default 0,
+                stop_reason text not null default '',
+                scale_factor real,
+                binding_constraint text,
+                portfolio_scope text not null default 'full_history',
+                target_month integer,
+                metrics_json text
             )
             """
         )
+        self._ensure_portfolio_columns(conn)
+
+        self._ensure_portfolio_allocation_tables(conn)
         # Compatibility with the previous UBS Portafolio tab. Existing rows in
         # this table still count as used sets and remain exportable.
-        conn.execute(
-            """
-            create table if not exists portfolio_members (
-                id integer primary key autoincrement,
-                portfolio_id integer not null,
-                variant_key text not null default '',
-                variant_label text not null default '',
-                candidate_id integer,
-                set_path text not null,
-                symbol text,
-                period text,
-                lot_multiplier real,
-                lot real,
-                lot_size_step real,
-                standalone_dd real,
-                quality_score real,
-                combined_net_profit real,
-                is_report_path text,
-                oos_report_path text
-            )
-            """
-        )
-        for column, definition in (
-            ("variant_key", "text not null default ''"),
-            ("variant_label", "text not null default ''"),
-        ):
-            self._ensure_sqlite_column(conn, "portfolio_members", column, definition)
-        conn.execute(
-            """
-            create table if not exists portfolio_quarantine (
-                id integer primary key autoincrement,
-                account_type text not null,
-                candidate_id integer,
-                set_path text not null unique,
-                symbol text,
-                timeframe text,
-                reason text not null default '',
-                source_portfolio_id integer,
-                quarantined_at text not null
-            )
-            """
-        )
-        conn.execute(
-            """
-            create table if not exists portfolio_versions (
-                id integer primary key autoincrement,
-                portfolio_id integer not null,
-                version_no integer not null,
-                created_at text not null,
-                reason text not null,
-                snapshot_json blob not null,
-                unique(portfolio_id, version_no)
-            )
-            """
-        )
+        self._ensure_portfolio_member_tables(conn)
         conn.commit()
 
     def _ensure_sqlite_column(
