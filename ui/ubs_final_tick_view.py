@@ -5,7 +5,8 @@ from tkinter import ttk
 
 
 class UBSFinalTickViewMixin:
-    def _build_ubs_final_tick(self, parent: ttk.Frame) -> None:
+    def _build_ubs_final_tick_panel(self, parent):
+        """Panel de la pantalla y su barra de resumen."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -17,6 +18,10 @@ class UBSFinalTickViewMixin:
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         bar.columnconfigure(0, weight=1)
+        return panel, bar
+
+    def _build_ubs_final_tick_actions(self, bar):
+        """Resumen y botones de accion de la barra superior."""
         tk.Label(
             bar,
             textvariable=self.ubs_final_tick_summary,
@@ -90,6 +95,8 @@ class UBSFinalTickViewMixin:
             command=self._refresh_ubs_final_tick_panel,
         ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
 
+    def _build_ubs_final_tick_run_row(self, bar):
+        """Selector de run y accesos a los artefactos del candidato."""
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
         row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(1, weight=1)
@@ -174,6 +181,8 @@ class UBSFinalTickViewMixin:
             command=self._manual_reject_selected_ubs_final_tick,
         ).grid(row=0, column=7, sticky="e", padx=(0, 4))
 
+    def _build_ubs_final_tick_criteria(self, panel):
+        """Estado y criterios de aceptacion del Final Tick."""
         ttk.Label(panel, textvariable=self.ubs_final_tick_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(4, 4)
         )
@@ -204,6 +213,8 @@ class UBSFinalTickViewMixin:
                 row=row, column=col_index * 2, sticky="w", padx=(0, 12), pady=(0, 2)
             )
 
+    def _build_ubs_final_tick_table(self, panel):
+        """Tabla de candidatos con sus columnas y etiquetas."""
         table_frame = ttk.Frame(panel, style="Panel.TFrame")
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
         table_frame.columnconfigure(0, weight=1)
@@ -273,3 +284,10 @@ class UBSFinalTickViewMixin:
         self.ubs_final_tick_tree.bind("<Button-1>", self._on_ubs_final_tick_tree_click)
         self.ubs_final_tick_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_final_tick_real_report())
         self._attach_tree_scrollbars(table_frame, self.ubs_final_tick_tree, 0, vertical=True)
+
+    def _build_ubs_final_tick(self, parent: ttk.Frame) -> None:
+        panel, bar = self._build_ubs_final_tick_panel(parent)
+        self._build_ubs_final_tick_actions(bar)
+        self._build_ubs_final_tick_run_row(bar)
+        self._build_ubs_final_tick_criteria(panel)
+        self._build_ubs_final_tick_table(panel)

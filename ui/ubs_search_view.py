@@ -5,7 +5,8 @@ from tkinter import ttk
 
 
 class UBSSearchViewMixin:
-    def _build_ubs_search(self, parent: ttk.Frame) -> None:
+    def _build_ubs_search_panes(self, parent):
+        """Tarjeta de la pantalla y sus dos paneles redimensionables."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -34,29 +35,10 @@ class UBSSearchViewMixin:
         audit_pane.rowconfigure(3, weight=1)
         search_pane.columnconfigure(0, weight=1)
         search_pane.rowconfigure(3, weight=1)
+        return audit_pane, search_pane
 
-        self._ubs_search_section_title(audit_pane, 0, "Auditoria de run")
-
-        audit = tk.Frame(audit_pane, bg=self.colors["panel_alt"])
-        audit.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        audit.columnconfigure(3, weight=1)
-        tk.Label(
-            audit,
-            text="Cuenta",
-            bg=self.colors["panel_alt"],
-            fg=self.colors["muted"],
-            font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=(10, 8), pady=6)
-        account_combo = ttk.Combobox(
-            audit,
-            textvariable=self.ubs_audit_account,
-            values=(),
-            state="readonly",
-            width=18,
-        )
-        self.ubs_audit_account_combo = account_combo
-        account_combo.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
-        account_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_audit_run_combo())
+    def _build_ubs_audit_run_selector(self, audit):
+        """Selector de run y acciones de la auditoria."""
         tk.Label(
             audit,
             text="Run",
@@ -97,6 +79,34 @@ class UBSSearchViewMixin:
         self._refresh_ubs_audit_account_values()
         self._refresh_ubs_audit_run_combo()
 
+    def _build_ubs_audit_controls(self, audit_pane):
+        """Cuenta, run y acciones de la auditoria de un run."""
+        self._ubs_search_section_title(audit_pane, 0, "Auditoria de run")
+
+        audit = tk.Frame(audit_pane, bg=self.colors["panel_alt"])
+        audit.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        audit.columnconfigure(3, weight=1)
+        tk.Label(
+            audit,
+            text="Cuenta",
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=(10, 8), pady=6)
+        account_combo = ttk.Combobox(
+            audit,
+            textvariable=self.ubs_audit_account,
+            values=(),
+            state="readonly",
+            width=18,
+        )
+        self.ubs_audit_account_combo = account_combo
+        account_combo.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=6)
+        account_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_audit_run_combo())
+        self._build_ubs_audit_run_selector(audit)
+
+    def _build_ubs_audit_tables(self, audit_pane):
+        """Cuatro tablas con el detalle de la auditoria por etapa."""
         self._ubs_search_section_title(audit_pane, 2, "Auditoria por test")
         audit_tables = tk.PanedWindow(
             audit_pane,
@@ -141,6 +151,8 @@ class UBSSearchViewMixin:
         ]:
             bottom_tables.add(self._create_ubs_audit_table(bottom_tables, key, title), minsize=320, stretch="always")
 
+    def _build_ubs_search_bar(self, search_pane):
+        """Caja de busqueda y acciones sobre el set seleccionado."""
         self._ubs_search_section_title(search_pane, 0, "Buscar set")
 
         bar = tk.Frame(search_pane, bg=self.colors["panel_alt"])
@@ -200,32 +212,8 @@ class UBSSearchViewMixin:
             style="Muted.TLabel",
         ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
-        table_frame = ttk.Frame(search_pane, style="Panel.TFrame")
-        table_frame.grid(row=3, column=0, sticky="nsew")
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
-
-        columns = (
-            "account",
-            "candidate",
-            "status",
-            "robust",
-            "final_tick",
-            "final_tick_6m",
-            "regression",
-            "symbol",
-            "tf",
-            "score",
-            "set_name",
-            "run",
-        )
-        self.ubs_search_tree = ttk.Treeview(
-            table_frame,
-            columns=columns,
-            show="headings",
-            height=18,
-            selectmode="extended",
-        )
+    def _style_ubs_search_columns(self, table_frame, columns):
+        """Titulos, anchos y etiquetas de color de la tabla de busqueda."""
         headings = {
             "account": "CUENTA",
             "candidate": "CAND.",
@@ -264,6 +252,43 @@ class UBSSearchViewMixin:
         self.ubs_search_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_search_set())
         self._make_tree_sortable(self.ubs_search_tree)
         self._attach_tree_scrollbars(table_frame, self.ubs_search_tree, 0)
+
+    def _build_ubs_search_table(self, search_pane):
+        """Tabla de resultados de la busqueda con sus columnas."""
+        table_frame = ttk.Frame(search_pane, style="Panel.TFrame")
+        table_frame.grid(row=3, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        columns = (
+            "account",
+            "candidate",
+            "status",
+            "robust",
+            "final_tick",
+            "final_tick_6m",
+            "regression",
+            "symbol",
+            "tf",
+            "score",
+            "set_name",
+            "run",
+        )
+        self.ubs_search_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=18,
+            selectmode="extended",
+        )
+        self._style_ubs_search_columns(table_frame, columns)
+
+    def _build_ubs_search(self, parent: ttk.Frame) -> None:
+        audit_pane, search_pane = self._build_ubs_search_panes(parent)
+        self._build_ubs_audit_controls(audit_pane)
+        self._build_ubs_audit_tables(audit_pane)
+        self._build_ubs_search_bar(search_pane)
+        self._build_ubs_search_table(search_pane)
 
     def _create_ubs_audit_table(
         self,
