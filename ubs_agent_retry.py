@@ -63,6 +63,32 @@ def retry_candidate(args: argparse.Namespace, memory: AgentMemory, score_config:
     return exit_code
 
 
+def _evaluate_retried_candidate(
+    args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig,
+    variant, retry_set: Path, run_dir: Path, generation: int, batch_started_at: float,
+) -> None:
+    status, result = evaluate_variant(
+        memory,
+        variant,
+        score_config,
+        parse_symbol_map(args.symbol_map),
+        args.broker,
+        min_report_mtime=batch_started_at - 1.0,
+        min_trades_w1=args.min_trades_w1,
+        min_trades_mn=args.min_trades_mn,
+        symbol_suffix=args.symbol_suffix,
+        universe_symbols=broker_universe_symbols(args),
+    )
+    if status == "accepted" and result is not None:
+        copied = copy_accepted(
+            [(replace(variant, path=retry_set), result)],
+            run_dir / f"accepted_gen_{generation:03d}",
+        )
+        print(f"Retry aceptado; copias accepted: {len(copied)}")
+    else:
+        print(f"Retry terminado con estado: {status}")
+
+
 def _retry_single_candidate(
     candidate_id: int,
     args: argparse.Namespace,
@@ -105,26 +131,9 @@ def _retry_single_candidate(
     if args.dry_run:
         return 0
 
-    status, result = evaluate_variant(
-        memory,
-        variant,
-        score_config,
-        parse_symbol_map(args.symbol_map),
-        args.broker,
-        min_report_mtime=batch_started_at - 1.0,
-        min_trades_w1=args.min_trades_w1,
-        min_trades_mn=args.min_trades_mn,
-        symbol_suffix=args.symbol_suffix,
-        universe_symbols=broker_universe_symbols(args),
+    _evaluate_retried_candidate(
+        args, memory, score_config, variant, retry_set, run_dir, generation, batch_started_at
     )
-    if status == "accepted" and result is not None:
-        copied = copy_accepted(
-            [(replace(variant, path=retry_set), result)],
-            run_dir / f"accepted_gen_{generation:03d}",
-        )
-        print(f"Retry aceptado; copias accepted: {len(copied)}")
-    else:
-        print(f"Retry terminado con estado: {status}")
     return 0
 
 

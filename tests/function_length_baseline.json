@@ -93,7 +93,6 @@
     "ubs_agent_rescore.py::rescore_candidate_scores_only": 69,
     "ubs_agent_rescore.py::rescore_robustness_only": 104,
     "ubs_agent_resume.py::resume_last_run": 380,
-    "ubs_agent_retry.py::_retry_single_candidate": 63,
     "ubs_agent_retry.py::retry_full_run": 104,
     "ubs_agent_retry.py::retry_generation_mismatches": 87,
     "ubs_agent_retry.py::retry_run_mismatches": 86,
