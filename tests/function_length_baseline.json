@@ -11,7 +11,6 @@
     "manager_node_runtime/mt5_native_history_report.py::_WindowsTerminalReportExporter._type_filename": 71,
     "manager_node_runtime/node_commands.py::build_generation_command": 86,
     "manager_node_runtime/node_commands.py::build_pipeline_stage_command": 147,
-    "manager_node_runtime/node_jobs_api.py::JobApiMixin.status": 62,
     "manager_node_runtime/node_jobs_pipeline.py::JobPipelineMixin._watch": 86,
     "manager_node_runtime/node_jobs_start.py::JobStartMixin._start_generation": 71,
     "manager_node_runtime/node_jobs_start.py::JobStartMixin._start_repair": 68,

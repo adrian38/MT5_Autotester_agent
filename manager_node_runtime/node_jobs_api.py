@@ -23,6 +23,23 @@ from .portfolio_save import (
 class JobApiMixin:
     """Respuestas de la API: estado, universo, portafolios, runs y log."""
 
+    def _launch_defaults(self, cfg: Any) -> dict[str, Any]:
+        defaults = self.config.get("defaults") if isinstance(self.config.get("defaults"), dict) else {}
+        return {
+            "cycles": safe_int(defaults.get("cycles", 1), 1, minimum=1, maximum=100),
+            "generations": safe_int(defaults.get("generations", node_settings.setting(cfg, "General", "ubs_generation_count", "1")), 1, minimum=1),
+            "variants_per_seed": safe_int(defaults.get("variants_per_seed", node_settings.setting(cfg, "General", "ubs_variants_per_seed", "10")), 10, minimum=1),
+            "max_seeds": safe_int(defaults.get("max_seeds", node_settings.setting(cfg, "General", "ubs_max_seeds", "30")), 30, minimum=0),
+            "generation_mode": str(defaults.get("generation_mode", node_settings.setting(cfg, "General", "ubs_generation_mode", "production"))),
+            "random_seed": defaults.get("random_seed"),
+            "max_workers": safe_int(node_settings.setting(cfg, "Multiterminal", "workers", "1"), 1, minimum=1, maximum=64),
+            "run_robustness": node_settings.setting_bool(cfg, "General", "ubs_robust_auto", False),
+            "run_final_tick": node_settings.setting_bool(cfg, "General", "ubs_final_tick_auto", False),
+            "run_final_tick_6m": node_settings.setting_bool(cfg, "General", "ubs_final_tick_6m_auto", False),
+            "run_regression": node_settings.setting_bool(cfg, "General", "ubs_regression_auto", False),
+            "cleanup_after_run": bool(node_settings.historical_cleanup_scripts(self.config, required=False)),
+        }
+
     def status(self) -> dict[str, Any]:
         result, task_queue, job_observed_at, job_snapshot_stale = self._read_status_snapshot()
         settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
@@ -32,21 +49,7 @@ class JobApiMixin:
         try:
             cfg = node_settings.read_settings(settings_path)
             db = node_snapshots.database_snapshot(node_settings.memory_path(self.config, cfg))
-            defaults = self.config.get("defaults") if isinstance(self.config.get("defaults"), dict) else {}
-            launch_defaults = {
-                "cycles": safe_int(defaults.get("cycles", 1), 1, minimum=1, maximum=100),
-                "generations": safe_int(defaults.get("generations", node_settings.setting(cfg, "General", "ubs_generation_count", "1")), 1, minimum=1),
-                "variants_per_seed": safe_int(defaults.get("variants_per_seed", node_settings.setting(cfg, "General", "ubs_variants_per_seed", "10")), 10, minimum=1),
-                "max_seeds": safe_int(defaults.get("max_seeds", node_settings.setting(cfg, "General", "ubs_max_seeds", "30")), 30, minimum=0),
-                "generation_mode": str(defaults.get("generation_mode", node_settings.setting(cfg, "General", "ubs_generation_mode", "production"))),
-                "random_seed": defaults.get("random_seed"),
-                "max_workers": safe_int(node_settings.setting(cfg, "Multiterminal", "workers", "1"), 1, minimum=1, maximum=64),
-                "run_robustness": node_settings.setting_bool(cfg, "General", "ubs_robust_auto", False),
-                "run_final_tick": node_settings.setting_bool(cfg, "General", "ubs_final_tick_auto", False),
-                "run_final_tick_6m": node_settings.setting_bool(cfg, "General", "ubs_final_tick_6m_auto", False),
-                "run_regression": node_settings.setting_bool(cfg, "General", "ubs_regression_auto", False),
-                "cleanup_after_run": bool(node_settings.historical_cleanup_scripts(self.config, required=False)),
-            }
+            launch_defaults = self._launch_defaults(cfg)
         except Exception as exc:
             db = {"available": False, "error": str(exc)}
             launch_defaults = {}
