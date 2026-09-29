@@ -107,7 +107,11 @@ class JobQueueMixin:
             if self._busy() or not self.queue:
                 return
             item = self.queue.pop(0)
-            self._persist_queue()
+            # Keep the published snapshot on the queued item until the new job
+            # persists its running state. Otherwise readers can briefly observe
+            # the previous completed job with an empty queue and conclude that
+            # the whole FIFO has finished.
+            save_json(self.queue_path, self.queue)
             try:
                 payload = dict(item.get("payload") or {})
                 if item.get("type") == "repair":
