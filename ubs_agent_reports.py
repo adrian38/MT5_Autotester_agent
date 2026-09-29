@@ -157,61 +157,70 @@ def report_has_empty_tester_context(result: ScoreResult) -> bool:
     )
 
 
-def tester_log_no_history_metadata(
-    report: Path,
-    variant: Variant,
-    symbol_map: dict[str, str] | None = None,
-    symbol_suffix: str = "",
-) -> dict[str, object] | None:
-    sidecar = tester_journal_sidecar_path(report)
-    if not sidecar.exists():
-        return None
-    try:
-        text = sidecar.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    raw_symbol = str(variant.target_symbol or "").strip()
-    if not raw_symbol:
-        return None
-    broker_symbol = apply_symbol_suffix(
-        apply_symbol_map(raw_symbol, symbol_map or {}),
-        symbol_suffix,
+def _no_history_metadata_from_matches(found_matches, missing_matches, tick_download_failed):
+    """Arma los metadatos de falta de historico con lo hallado en el journal."""
+    found = found_matches[-1] if found_matches else None
+    missing = missing_matches[-1] if missing_matches else None
+    recommendation = "desactivar simbolo y revisar historico del broker"
+    if tick_download_failed:
+        recommendation = (
+            "reintentar tras estabilizar la conexion MT5; "
+            "no asumir ausencia de historico del broker"
+        )
+    return found, missing, recommendation
+
+def _trade_server_sync_only(
+    found_matches, last_failure_position, missing_matches, text,
+    tick_download_failed, trade_server_sync_pattern,
+) -> bool:
+    """El journal solo culpa a la sincronizacion con el servidor de trading."""
+    trade_server_sync_matches = [
+        match
+        for match in trade_server_sync_pattern.finditer(text)
+        if match.start() < last_failure_position
+    ]
+    if trade_server_sync_matches and not tick_download_failed:
+        latest_trade_server_sync = trade_server_sync_matches[-1].start()
+        sync_warning_in_current_attempt = (
+            last_failure_position - latest_trade_server_sync <= 20_000
+        )
+        explicit_history_positions = [
+            *(match.start() for match in found_matches),
+            *(match.start() for match in missing_matches),
+        ]
+        if sync_warning_in_current_attempt and not any(
+            position > latest_trade_server_sync for position in explicit_history_positions
+        ):
+            return True
+    return False
+
+def _tick_download_failure(escaped, failure_positions, text):
+    """Detecta la descarga de ticks interrumpida y si hubo fallo posterior."""
+    tick_download_failed = False
+    download_matches = list(
+        re.finditer(
+            rf"{escaped}:\s+preliminary downloading of history ticks started",
+            text,
+            re.IGNORECASE,
+        )
     )
-    symbols = sorted(
-        {symbol for symbol in (raw_symbol, broker_symbol) if symbol},
-        key=len,
-        reverse=True,
-    )
-    escaped = "(?:" + "|".join(re.escape(symbol) for symbol in symbols) + ")"
-    found_pattern = re.compile(
-        rf"{escaped}:\s+found history data from\s+(.+?)\s+to\s+(.+?),\s+specified period is out of this range",
-        re.IGNORECASE,
-    )
-    missing_pattern = re.compile(
-        rf"{escaped}:\s+no history data from\s+(.+?)\s+to\s+(.+?)(?:\r?\n|$)",
-        re.IGNORECASE,
-    )
-    cannot_get_pattern = re.compile(
-        rf"cannot get history\s+{escaped},[^\s]+",
-        re.IGNORECASE,
-    )
-    no_sync_pattern = re.compile(
-        rf"{escaped}:\s+no data synchronized",
-        re.IGNORECASE,
-    )
-    trade_server_sync_pattern = re.compile(
-        r"not synchronized with trade server",
-        re.IGNORECASE,
-    )
-    success_pattern = re.compile(
-        rf"{escaped},[^:]+:.*\btest passed\b",
-        re.IGNORECASE,
-    )
-    # Shares quoted in a sub-unit (for example AXI's NationGrid+ in GBX) can
-    # require a separate conversion symbol.  MT5 reports the failure against
-    # that dependency, not against the tested symbol, so limiting detection to
-    # ``variant.target_symbol`` incorrectly turns an empty technical report
-    # into a scored ``no_trades`` result.
+    if download_matches:
+        # Model=4 can fail before MT5 prints the requested date range. Associate
+        # the generic stop message with the latest symbol-specific tick download.
+        latest_download = download_matches[-1]
+        download_tail = text[latest_download.start(): latest_download.start() + 2000]
+        generic_failure = re.search(
+            r"no history data,\s*stop testing",
+            download_tail,
+            re.IGNORECASE,
+        )
+        if generic_failure:
+            failure_positions.append(latest_download.start() + generic_failure.start())
+            tick_download_failed = True
+    return tick_download_failed
+
+def _dependent_symbol_failures(escaped, symbols, text):
+    """Localiza los simbolos de conversion que impidieron el backtest."""
     attempt_pattern = re.compile(
         rf"{escaped},[^\r\n]*testing of Experts",
         re.IGNORECASE,
@@ -247,74 +256,10 @@ def tester_log_no_history_metadata(
                     dependent_failures.append(
                         (attempt_start + match.start(), failed_symbol)
                     )
-    found_matches = list(found_pattern.finditer(text))
-    missing_matches = list(missing_pattern.finditer(text))
-    failure_positions = [
-        *(match.start() for match in found_matches),
-        *(match.start() for match in missing_matches),
-        *(match.start() for match in cannot_get_pattern.finditer(text)),
-        *(match.start() for match in no_sync_pattern.finditer(text)),
-        *(position for position, _symbol in dependent_failures),
-    ]
-    tick_download_failed = False
-    download_matches = list(
-        re.finditer(
-            rf"{escaped}:\s+preliminary downloading of history ticks started",
-            text,
-            re.IGNORECASE,
-        )
-    )
-    if download_matches:
-        # Model=4 can fail before MT5 prints the requested date range. Associate
-        # the generic stop message with the latest symbol-specific tick download.
-        latest_download = download_matches[-1]
-        download_tail = text[latest_download.start(): latest_download.start() + 2000]
-        generic_failure = re.search(
-            r"no history data,\s*stop testing",
-            download_tail,
-            re.IGNORECASE,
-        )
-        if generic_failure:
-            failure_positions.append(latest_download.start() + generic_failure.start())
-            tick_download_failed = True
-    if not failure_positions:
-        return None
-    last_failure_position = max(failure_positions)
-    success_matches = list(success_pattern.finditer(text))
-    if success_matches and success_matches[-1].start() > last_failure_position:
-        return None
-    # ``no data synchronized`` / ``cannot get history`` are also emitted when
-    # the terminal itself has lost synchronization with the trade server.  In
-    # that case they are weak transport evidence, not proof that the broker has
-    # no history for the symbol.  Keep explicit date-range evidence authoritative
-    # and let empty-report handling classify the transport failure as a retryable
-    # ``pending_tester_context``.
-    trade_server_sync_matches = [
-        match
-        for match in trade_server_sync_pattern.finditer(text)
-        if match.start() < last_failure_position
-    ]
-    if trade_server_sync_matches and not tick_download_failed:
-        latest_trade_server_sync = trade_server_sync_matches[-1].start()
-        sync_warning_in_current_attempt = (
-            last_failure_position - latest_trade_server_sync <= 20_000
-        )
-        explicit_history_positions = [
-            *(match.start() for match in found_matches),
-            *(match.start() for match in missing_matches),
-        ]
-        if sync_warning_in_current_attempt and not any(
-            position > latest_trade_server_sync for position in explicit_history_positions
-        ):
-            return None
-    found = found_matches[-1] if found_matches else None
-    missing = missing_matches[-1] if missing_matches else None
-    recommendation = "desactivar simbolo y revisar historico del broker"
-    if tick_download_failed:
-        recommendation = (
-            "reintentar tras estabilizar la conexion MT5; "
-            "no asumir ausencia de historico del broker"
-        )
+    return dependent_failures
+
+def _no_history_metadata(dependent_failures, found, missing, recommendation, sidecar, tick_download_failed):
+    """Metadatos finales de falta de historico, con sus avisos y recomendacion."""
     metadata = {
         "reasons": ["no_history_data"],
         "no_score": True,
@@ -341,6 +286,103 @@ def tester_log_no_history_metadata(
         metadata["tick_download_failed"] = True
         metadata["retryable"] = True
         metadata["failure_type"] = "tick_history_sync"
+    return metadata
+
+def _no_history_patterns(escaped):
+    """Expresiones del journal que delatan la falta de historico."""
+    found_pattern = re.compile(
+        rf"{escaped}:\s+found history data from\s+(.+?)\s+to\s+(.+?),\s+specified period is out of this range",
+        re.IGNORECASE,
+    )
+    missing_pattern = re.compile(
+        rf"{escaped}:\s+no history data from\s+(.+?)\s+to\s+(.+?)(?:\r?\n|$)",
+        re.IGNORECASE,
+    )
+    cannot_get_pattern = re.compile(
+        rf"cannot get history\s+{escaped},[^\s]+",
+        re.IGNORECASE,
+    )
+    no_sync_pattern = re.compile(
+        rf"{escaped}:\s+no data synchronized",
+        re.IGNORECASE,
+    )
+    trade_server_sync_pattern = re.compile(
+        r"not synchronized with trade server",
+        re.IGNORECASE,
+    )
+    success_pattern = re.compile(
+        rf"{escaped},[^:]+:.*\btest passed\b",
+        re.IGNORECASE,
+    )
+    return cannot_get_pattern, found_pattern, missing_pattern, no_sync_pattern, success_pattern, trade_server_sync_pattern
+
+def _journal_symbol_pattern(variant, symbol_map, symbol_suffix):
+    """Alternativa de expresiones con las ortografias del simbolo objetivo."""
+    raw_symbol = str(variant.target_symbol or "").strip()
+    if not raw_symbol:
+        return None
+    broker_symbol = apply_symbol_suffix(
+        apply_symbol_map(raw_symbol, symbol_map or {}),
+        symbol_suffix,
+    )
+    symbols = sorted(
+        {symbol for symbol in (raw_symbol, broker_symbol) if symbol},
+        key=len,
+        reverse=True,
+    )
+    escaped = "(?:" + "|".join(re.escape(symbol) for symbol in symbols) + ")"
+    return escaped, symbols
+
+def tester_log_no_history_metadata(
+    report: Path,
+    variant: Variant,
+    symbol_map: dict[str, str] | None = None,
+    symbol_suffix: str = "",
+) -> dict[str, object] | None:
+    sidecar = tester_journal_sidecar_path(report)
+    if not sidecar.exists():
+        return None
+    try:
+        text = sidecar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    escaped, symbols = _journal_symbol_pattern(variant, symbol_map, symbol_suffix)
+    cannot_get_pattern, found_pattern, missing_pattern, no_sync_pattern, success_pattern, trade_server_sync_pattern = _no_history_patterns(escaped)
+    # Shares quoted in a sub-unit (for example AXI's NationGrid+ in GBX) can
+    # require a separate conversion symbol.  MT5 reports the failure against
+    # that dependency, not against the tested symbol, so limiting detection to
+    # ``variant.target_symbol`` incorrectly turns an empty technical report
+    # into a scored ``no_trades`` result.
+    dependent_failures = _dependent_symbol_failures(escaped, symbols, text)
+    found_matches = list(found_pattern.finditer(text))
+    missing_matches = list(missing_pattern.finditer(text))
+    failure_positions = [
+        *(match.start() for match in found_matches),
+        *(match.start() for match in missing_matches),
+        *(match.start() for match in cannot_get_pattern.finditer(text)),
+        *(match.start() for match in no_sync_pattern.finditer(text)),
+        *(position for position, _symbol in dependent_failures),
+    ]
+    tick_download_failed = _tick_download_failure(escaped, failure_positions, text)
+    if not failure_positions:
+        return None
+    last_failure_position = max(failure_positions)
+    success_matches = list(success_pattern.finditer(text))
+    if success_matches and success_matches[-1].start() > last_failure_position:
+        return None
+    # ``no data synchronized`` / ``cannot get history`` are also emitted when
+    # the terminal itself has lost synchronization with the trade server.  In
+    # that case they are weak transport evidence, not proof that the broker has
+    # no history for the symbol.  Keep explicit date-range evidence authoritative
+    # and let empty-report handling classify the transport failure as a retryable
+    # ``pending_tester_context``.
+    if _trade_server_sync_only(
+        found_matches, last_failure_position, missing_matches, text,
+        tick_download_failed, trade_server_sync_pattern,
+    ):
+        return None
+    found, missing, recommendation = _no_history_metadata_from_matches(found_matches, missing_matches, tick_download_failed)
+    metadata = _no_history_metadata(dependent_failures, found, missing, recommendation, sidecar, tick_download_failed)
     return metadata
 
 
