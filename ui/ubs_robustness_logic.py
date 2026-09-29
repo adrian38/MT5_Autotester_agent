@@ -214,6 +214,24 @@ class UBSRobustnessLogicMixin(UBSRobustnessRowsMixin):
         args.extend(self._effective_symbol_suffix_args())
         return args
 
+    def _ubs_robustness_confirmation_details(
+        self, run_id: int, candidate_count: int, pending_only: bool,
+        selected: bool, positive_bonus: float, negative_bonus: float,
+    ) -> list[str]:
+        details = [
+            f"Accion: {'Continuar robustez OOS UBS' if pending_only else 'Reprobar robustez OOS UBS'} run #{run_id}",
+            f"Modo: {'accepted sin OOS + OOS retryable' if pending_only else ('seleccion marcada, reemplaza OOS existente' if selected else 'todos los accepted, reemplaza OOS existente')}",
+            f"Candidatos accepted a testear: {candidate_count}",
+            f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
+            f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",
+            f"Pass OOS: trades>={self.ubs_robust_pass_min_trades.get()} | recovery>={self.ubs_robust_pass_min_recovery_factor.get().strip()}",
+            f"Degradacion: ret. net>={self.ubs_robust_min_net_retention.get().strip()} | edge PF>={self.ubs_robust_min_pf_edge_retention.get().strip()} | recovery>={self.ubs_robust_min_recovery_retention.get().strip()} | DD<={self.ubs_robust_max_dd_inflation.get().strip()}x",
+            f"Trades W1/MN OOS: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
+            f"Bonus: accepted {positive_bonus:+.2f} | rejected {negative_bonus:+.2f}",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        return details
+
     def _run_ubs_robustness_for_latest_run(
         self,
         *,
@@ -263,18 +281,9 @@ class UBSRobustnessLogicMixin(UBSRobustnessRowsMixin):
                 self._append_console(f"\n[Robustez auto] No se pudo preparar: {exc}\n", tag="error")
             return False
 
-        details = [
-            f"Accion: {'Continuar robustez OOS UBS' if pending_only else 'Reprobar robustez OOS UBS'} run #{run_id}",
-            f"Modo: {'accepted sin OOS + OOS retryable' if pending_only else ('seleccion marcada, reemplaza OOS existente' if candidate_ids else 'todos los accepted, reemplaza OOS existente')}",
-            f"Candidatos accepted a testear: {len(rows)}",
-            f"Fechas: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}",
-            f"Pass OOS: net>{self.ubs_robust_pass_min_net_profit.get().strip()} | PF>={self.ubs_robust_pass_min_profit_factor.get().strip()} | DD<={self.ubs_robust_pass_max_drawdown_pct.get().strip()}%",
-            f"Pass OOS: trades>={self.ubs_robust_pass_min_trades.get()} | recovery>={self.ubs_robust_pass_min_recovery_factor.get().strip()}",
-            f"Degradacion: ret. net>={self.ubs_robust_min_net_retention.get().strip()} | edge PF>={self.ubs_robust_min_pf_edge_retention.get().strip()} | recovery>={self.ubs_robust_min_recovery_retention.get().strip()} | DD<={self.ubs_robust_max_dd_inflation.get().strip()}x",
-            f"Trades W1/MN OOS: W1>={self.ubs_long_tf_min_trades_w1.get().strip()} | MN>={self.ubs_long_tf_min_trades_mn.get().strip()}",
-            f"Bonus: accepted {positive_bonus:+.2f} | rejected {negative_bonus:+.2f}",
-        ]
-        details.extend(self._multiterminal_execution_details())
+        details = self._ubs_robustness_confirmation_details(
+            run_id, len(rows), pending_only, bool(candidate_ids), positive_bonus, negative_bonus
+        )
         if confirm and not self._confirm_execution_start("Confirmar robustez UBS", len(rows), details):
             return False
         self._show_section("ubs_robustez")
