@@ -46,6 +46,361 @@ def _existing_path(value: object) -> bool:
     return bool(text) and Path(text).is_file()
 
 
+def _audit_summary(memory_path: Path, conn, run, run_id: int) -> dict[str, Any]:
+    """Cabecera del informe y recuentos por etapa del run."""
+    summary: dict[str, Any] = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "memory_path": str(memory_path),
+        "run_id": run_id,
+        "run_created_at": run["created_at"],
+        "counts": {
+            "base": _count_map(_rows(conn, "select status,count(*) n from candidates where run_id=? group by status", (run_id,))),
+            "robust": _count_map(
+                _rows(
+                    conn,
+                    "select cr.status,count(*) n from candidate_robustness cr join candidates c on c.id=cr.candidate_id where c.run_id=? group by cr.status",
+                    (run_id,),
+                )
+            ),
+            "final_tick_probe": _count_map(
+                _rows(
+                    conn,
+                    "select ft.status,count(*) n from candidate_final_tick ft join candidates c on c.id=ft.candidate_id where c.run_id=? group by ft.status",
+                    (run_id,),
+                )
+            ),
+            "final_tick_6m": _count_map(
+                _rows(
+                    conn,
+                    "select ft.status,count(*) n from candidate_final_tick_6m ft join candidates c on c.id=ft.candidate_id where c.run_id=? group by ft.status",
+                    (run_id,),
+                )
+            ),
+            "regression": _count_map(
+                _rows(
+                    conn,
+                    "select rg.status,count(*) n from candidate_regression rg join candidates c on c.id=rg.candidate_id where c.run_id=? group by rg.status",
+                    (run_id,),
+                )
+            ),
+        },
+    }
+    return summary
+
+
+def _audit_checks(conn, run_id: int) -> dict[str, int]:
+    """Comprobaciones de coherencia entre la memoria y el disco."""
+    return {
+        "base_scored_missing_report_path": conn.execute(
+            "select count(*) from candidates where run_id=? and status in ('accepted','rejected','no_trades') and coalesce(report_path,'')=''",
+            (run_id,),
+        ).fetchone()[0],
+        "accepted_without_robust": conn.execute(
+            """
+            select count(*)
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id=c.id
+            where c.run_id=? and c.status='accepted' and cr.candidate_id is null
+            """,
+            (run_id,),
+        ).fetchone()[0],
+        "robust_accepted_without_probe": conn.execute(
+            """
+            select count(*)
+            from candidates c
+            join candidate_robustness cr on cr.candidate_id=c.id
+            left join candidate_final_tick ft on ft.candidate_id=c.id
+            where c.run_id=? and c.status='accepted' and cr.status='accepted' and ft.candidate_id is null
+            """,
+            (run_id,),
+        ).fetchone()[0],
+        "probe_eligible_without_6m": conn.execute(
+            """
+            select count(*)
+            from candidates c
+            join candidate_robustness cr on cr.candidate_id=c.id
+            join candidate_final_tick ft on ft.candidate_id=c.id
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
+            where c.run_id=? and c.status='accepted' and cr.status='accepted'
+              and ft.status in ('accepted','pending_ohlc_trades')
+              and ft6.candidate_id is null
+            """,
+            (run_id,),
+        ).fetchone()[0],
+        "portfolio_usable_6m": conn.execute(
+            """
+            select count(*)
+            from candidates c
+            join candidate_robustness cr on cr.candidate_id=c.id
+            join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
+            where c.run_id=? and c.status='accepted' and cr.status='accepted' and ft6.status='accepted'
+            """,
+            (run_id,),
+        ).fetchone()[0],
+        "six_month_accepted_without_regression": conn.execute(
+            """
+            select count(*)
+            from candidates c
+            join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted'
+            left join candidate_regression rg on rg.candidate_id=c.id
+            where c.run_id=? and c.status='accepted' and rg.candidate_id is null
+            """,
+            (run_id,),
+        ).fetchone()[0],
+    }
+
+
+def _audit_base_refs(conn, refs, run_id: int):
+    base_rows = _rows(conn, "select id,status,set_path,report_path,score,metrics_json from candidates where run_id=?", (run_id,))
+    for row in base_rows:
+        _add_report_ref(
+            refs,
+            row["report_path"],
+            stage="base",
+            row_id=int(row["id"]),
+            status=row["status"],
+            metrics_json=row["metrics_json"],
+        )
+    return base_rows
+
+
+def _audit_robust_refs(conn, refs, run_id: int):
+    robust_rows = _rows(
+        conn,
+        """
+        select cr.candidate_id,cr.status,cr.report_path,cr.metrics_json
+        from candidate_robustness cr
+        join candidates c on c.id=cr.candidate_id
+        where c.run_id=?
+        """,
+        (run_id,),
+    )
+    for row in robust_rows:
+        _add_report_ref(
+            refs,
+            row["report_path"],
+            stage="robust",
+            row_id=int(row["candidate_id"]),
+            status=row["status"],
+            metrics_json=row["metrics_json"],
+        )
+    return robust_rows
+
+
+def _audit_final_tick_refs(conn, refs, run_id: int) -> None:
+    for table, stage in (("candidate_final_tick", "final_tick_probe"), ("candidate_final_tick_6m", "final_tick_6m")):
+        ft_rows = _rows(
+            conn,
+            f"""
+            select ft.candidate_id,ft.status,ft.ohlc_report_path,ft.real_tick_report_path,
+                   ft.ohlc_metrics_json,ft.real_tick_metrics_json
+            from {table} ft
+            join candidates c on c.id=ft.candidate_id
+            where c.run_id=?
+            """,
+            (run_id,),
+        )
+        for row in ft_rows:
+            _add_report_ref(
+                refs,
+                row["ohlc_report_path"],
+                stage=f"{stage}_ohlc",
+                row_id=int(row["candidate_id"]),
+                status=row["status"],
+                metrics_json=row["ohlc_metrics_json"],
+            )
+            _add_report_ref(
+                refs,
+                row["real_tick_report_path"],
+                stage=f"{stage}_tick",
+                row_id=int(row["candidate_id"]),
+                status=row["status"],
+                metrics_json=row["real_tick_metrics_json"],
+            )
+
+
+def _audit_regression_refs(conn, refs, run_id: int):
+    regression_rows = _rows(
+        conn,
+        """
+        select rg.candidate_id,rg.status,rg.report_path,rg.metrics_json,rg.details_json
+        from candidate_regression rg
+        join candidates c on c.id=rg.candidate_id
+        where c.run_id=?
+        """,
+        (run_id,),
+    )
+    for row in regression_rows:
+        _add_report_ref(
+            refs,
+            row["report_path"],
+            stage="regression_ohlc",
+            row_id=int(row["candidate_id"]),
+            status=row["status"],
+            metrics_json=row["metrics_json"],
+        )
+    return regression_rows
+
+
+def _audit_seed_refs(conn, refs) -> None:
+    seed_rows = _rows(
+        conn,
+        "select id,status,seed_path,report_path,score,metrics_json from seed_scores where active=1",
+    )
+    for row in seed_rows:
+        _add_report_ref(
+            refs,
+            row["report_path"],
+            stage="active_seed",
+            row_id=int(row["id"]),
+            status=row["status"],
+            metrics_json=row["metrics_json"],
+        )
+
+
+def _audit_report_refs(conn, summary: dict[str, Any], run_id: int):
+    """Referencias a reportes por etapa y cuales faltan en disco."""
+    refs: dict[str, list[dict[str, Any]]] = {}
+    base_rows = _audit_base_refs(conn, refs, run_id)
+    robust_rows = _audit_robust_refs(conn, refs, run_id)
+    _audit_final_tick_refs(conn, refs, run_id)
+    regression_rows = _audit_regression_refs(conn, refs, run_id)
+    _audit_seed_refs(conn, refs)
+    missing_files = [
+        {"path": path, "refs": refs[path]}
+        for path in sorted(refs)
+        if not _existing_path(path)
+    ]
+    summary["report_refs"] = {
+        "unique_paths": len(refs),
+        "total_refs": sum(len(items) for items in refs.values()),
+        "missing_files": len(missing_files),
+        "missing_file_examples": missing_files[:30],
+    }
+    return refs, base_rows, robust_rows, regression_rows
+
+
+def _audit_reason_counts(
+    conn, summary, run_id: int, base_rows, robust_rows, regression_rows,
+) -> None:
+    """Recuento de causas de rechazo por etapa."""
+    reason_counts: dict[str, dict[str, int]] = {}
+    for stage, rows, column in (
+        ("base", base_rows, "metrics_json"),
+        ("robust", robust_rows, "metrics_json"),
+    ):
+        counter = Counter()
+        for row in rows:
+            counter.update(metric_reasons(row[column]))
+        reason_counts[stage] = dict(counter.most_common())
+    for table, stage in (("candidate_final_tick", "final_tick_probe"), ("candidate_final_tick_6m", "final_tick_6m")):
+        counter = Counter()
+        for row in _rows(
+            conn,
+            f"select ft.similarity_json from {table} ft join candidates c on c.id=ft.candidate_id where c.run_id=?",
+            (run_id,),
+        ):
+            counter.update(metric_reasons(row["similarity_json"]))
+        reason_counts[stage] = dict(counter.most_common())
+    regression_counter = Counter()
+    for row in regression_rows:
+        regression_counter.update(metric_reasons(row["details_json"] or row["metrics_json"]))
+    reason_counts["regression"] = dict(regression_counter.most_common())
+    summary["reason_counts"] = reason_counts
+
+
+def _audit_weights(conn, summary: dict[str, Any], run_id: int) -> None:
+    """Pesos aplicados y su reparto por estado del Final Tick 6M."""
+    feedback_rows = _rows(
+        conn,
+        """
+        select c.run_id,c.generation,c.id,c.set_path,c.seed_path,c.target_symbol,c.symbol,c.period,c.family,
+               c.score,c.accepted,c.metrics_json,c.status,c.report_path,
+               cr.status robust_status,cr.positive_bonus robust_positive_bonus,
+               cr.negative_bonus robust_negative_bonus,cr.metrics_json robust_metrics_json,
+               ft.status final_tick_status,ft.similarity_json final_tick_similarity_json,
+               ft6.status final_tick_6m_status,ft6.similarity_json final_tick_6m_similarity_json,
+               rg.status regression_status,rg.points_applied regression_points_applied
+        from candidates c
+        left join candidate_robustness cr on cr.candidate_id=c.id and c.status='accepted'
+        left join candidate_final_tick ft on ft.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
+        left join candidate_final_tick_6m ft6
+          on ft6.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
+         and ft.status in ('accepted','pending_ohlc_trades')
+        left join candidate_regression rg on rg.candidate_id=c.id and ft6.status='accepted'
+        where c.run_id=? and c.status in ('accepted','rejected','no_trades')
+          and (c.score is not null or c.status='no_trades')
+        """,
+        (run_id,),
+    )
+    weights = []
+    by_6m: dict[str, list[float]] = defaultdict(list)
+    for row in feedback_rows:
+        value = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
+        if value is None:
+            continue
+        weights.append(float(value))
+        by_6m[str(row["final_tick_6m_status"] or "sin_6m")].append(float(value))
+    summary["weights"] = {
+        "rows_considered": len(feedback_rows),
+        "rows_weighted": len(weights),
+        "min": round(min(weights), 4) if weights else None,
+        "avg": round(sum(weights) / len(weights), 4) if weights else None,
+        "max": round(max(weights), 4) if weights else None,
+        "by_final_tick_6m": {
+            key: {
+                "n": len(values),
+                "avg": round(sum(values) / len(values), 4),
+                "min": round(min(values), 4),
+                "max": round(max(values), 4),
+            }
+            for key, values in sorted(by_6m.items())
+        },
+    }
+
+
+def _audit_parse_reports(refs, workers: int) -> dict[str, Any]:
+    existing_paths = [path for path in sorted(refs) if _existing_path(path)]
+    report_results: list[dict[str, Any]] = []
+    if existing_paths:
+        with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = {pool.submit(_parse_report_worker, path): path for path in existing_paths}
+            for future in as_completed(futures):
+                report_results.append(future.result())
+    report_results.sort(key=lambda item: item["path"])
+    parse_errors = [item for item in report_results if not item.get("ok")]
+    net_mismatches = [
+        item for item in report_results
+        if item.get("ok") and abs(float(item.get("net_diff") or 0.0)) > 0.05
+    ]
+    unmatched = [
+        item for item in report_results
+        if item.get("ok") and int(item.get("unmatched_out_deals") or 0) > 0
+    ]
+    mixed_numbers = [item for item in report_results if item.get("mixed_separator_hits")]
+    metric_mismatches = []
+    for item in report_results:
+        metric_mismatches.extend(_metric_mismatches(item, refs.get(str(item["path"]), [])))
+    return {
+        "parsed": len(report_results),
+        "parse_errors": len(parse_errors),
+        "parse_error_examples": parse_errors[:20],
+        "raw_vs_trade_net_mismatches": len(net_mismatches),
+        "raw_vs_trade_net_examples": net_mismatches[:30],
+        "unmatched_out_deal_reports": len(unmatched),
+        "unmatched_out_deal_examples": unmatched[:30],
+        "mixed_separator_reports": len(mixed_numbers),
+        "mixed_separator_examples": mixed_numbers[:30],
+        "stored_metric_mismatches": len(metric_mismatches),
+        "stored_metric_mismatch_examples": metric_mismatches[:50],
+        "slowest_reports": sorted(
+            report_results,
+            key=lambda item: float(item.get("seconds") or 0.0),
+            reverse=True,
+        )[:20],
+    }
+
+
 def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, workers: int) -> dict[str, Any]:
     conn = connect_memory(memory_path)
     conn.row_factory = sqlite3.Row
@@ -58,315 +413,19 @@ def build_audit(memory_path: Path, *, run_id: int | None, parse_reports: bool, w
             return {"memory_path": str(memory_path), "error": "no runs"}
         run_id = int(run["id"])
 
-        summary: dict[str, Any] = {
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "memory_path": str(memory_path),
-            "run_id": run_id,
-            "run_created_at": run["created_at"],
-            "counts": {
-                "base": _count_map(_rows(conn, "select status,count(*) n from candidates where run_id=? group by status", (run_id,))),
-                "robust": _count_map(
-                    _rows(
-                        conn,
-                        "select cr.status,count(*) n from candidate_robustness cr join candidates c on c.id=cr.candidate_id where c.run_id=? group by cr.status",
-                        (run_id,),
-                    )
-                ),
-                "final_tick_probe": _count_map(
-                    _rows(
-                        conn,
-                        "select ft.status,count(*) n from candidate_final_tick ft join candidates c on c.id=ft.candidate_id where c.run_id=? group by ft.status",
-                        (run_id,),
-                    )
-                ),
-                "final_tick_6m": _count_map(
-                    _rows(
-                        conn,
-                        "select ft.status,count(*) n from candidate_final_tick_6m ft join candidates c on c.id=ft.candidate_id where c.run_id=? group by ft.status",
-                        (run_id,),
-                    )
-                ),
-                "regression": _count_map(
-                    _rows(
-                        conn,
-                        "select rg.status,count(*) n from candidate_regression rg join candidates c on c.id=rg.candidate_id where c.run_id=? group by rg.status",
-                        (run_id,),
-                    )
-                ),
-            },
-        }
+        summary = _audit_summary(memory_path, conn, run, run_id)
+        summary["checks"] = _audit_checks(conn, run_id)
 
-        checks = {
-            "base_scored_missing_report_path": conn.execute(
-                "select count(*) from candidates where run_id=? and status in ('accepted','rejected','no_trades') and coalesce(report_path,'')=''",
-                (run_id,),
-            ).fetchone()[0],
-            "accepted_without_robust": conn.execute(
-                """
-                select count(*)
-                from candidates c
-                left join candidate_robustness cr on cr.candidate_id=c.id
-                where c.run_id=? and c.status='accepted' and cr.candidate_id is null
-                """,
-                (run_id,),
-            ).fetchone()[0],
-            "robust_accepted_without_probe": conn.execute(
-                """
-                select count(*)
-                from candidates c
-                join candidate_robustness cr on cr.candidate_id=c.id
-                left join candidate_final_tick ft on ft.candidate_id=c.id
-                where c.run_id=? and c.status='accepted' and cr.status='accepted' and ft.candidate_id is null
-                """,
-                (run_id,),
-            ).fetchone()[0],
-            "probe_eligible_without_6m": conn.execute(
-                """
-                select count(*)
-                from candidates c
-                join candidate_robustness cr on cr.candidate_id=c.id
-                join candidate_final_tick ft on ft.candidate_id=c.id
-                left join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
-                where c.run_id=? and c.status='accepted' and cr.status='accepted'
-                  and ft.status in ('accepted','pending_ohlc_trades')
-                  and ft6.candidate_id is null
-                """,
-                (run_id,),
-            ).fetchone()[0],
-            "portfolio_usable_6m": conn.execute(
-                """
-                select count(*)
-                from candidates c
-                join candidate_robustness cr on cr.candidate_id=c.id
-                join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id
-                where c.run_id=? and c.status='accepted' and cr.status='accepted' and ft6.status='accepted'
-                """,
-                (run_id,),
-            ).fetchone()[0],
-            "six_month_accepted_without_regression": conn.execute(
-                """
-                select count(*)
-                from candidates c
-                join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted'
-                left join candidate_regression rg on rg.candidate_id=c.id
-                where c.run_id=? and c.status='accepted' and rg.candidate_id is null
-                """,
-                (run_id,),
-            ).fetchone()[0],
-        }
-        summary["checks"] = checks
-
-        refs: dict[str, list[dict[str, Any]]] = {}
-        base_rows = _rows(conn, "select id,status,set_path,report_path,score,metrics_json from candidates where run_id=?", (run_id,))
-        for row in base_rows:
-            _add_report_ref(
-                refs,
-                row["report_path"],
-                stage="base",
-                row_id=int(row["id"]),
-                status=row["status"],
-                metrics_json=row["metrics_json"],
-            )
-        robust_rows = _rows(
-            conn,
-            """
-            select cr.candidate_id,cr.status,cr.report_path,cr.metrics_json
-            from candidate_robustness cr
-            join candidates c on c.id=cr.candidate_id
-            where c.run_id=?
-            """,
-            (run_id,),
+        refs, base_rows, robust_rows, regression_rows = _audit_report_refs(
+            conn, summary, run_id,
         )
-        for row in robust_rows:
-            _add_report_ref(
-                refs,
-                row["report_path"],
-                stage="robust",
-                row_id=int(row["candidate_id"]),
-                status=row["status"],
-                metrics_json=row["metrics_json"],
-            )
-        for table, stage in (("candidate_final_tick", "final_tick_probe"), ("candidate_final_tick_6m", "final_tick_6m")):
-            ft_rows = _rows(
-                conn,
-                f"""
-                select ft.candidate_id,ft.status,ft.ohlc_report_path,ft.real_tick_report_path,
-                       ft.ohlc_metrics_json,ft.real_tick_metrics_json
-                from {table} ft
-                join candidates c on c.id=ft.candidate_id
-                where c.run_id=?
-                """,
-                (run_id,),
-            )
-            for row in ft_rows:
-                _add_report_ref(
-                    refs,
-                    row["ohlc_report_path"],
-                    stage=f"{stage}_ohlc",
-                    row_id=int(row["candidate_id"]),
-                    status=row["status"],
-                    metrics_json=row["ohlc_metrics_json"],
-                )
-                _add_report_ref(
-                    refs,
-                    row["real_tick_report_path"],
-                    stage=f"{stage}_tick",
-                    row_id=int(row["candidate_id"]),
-                    status=row["status"],
-                    metrics_json=row["real_tick_metrics_json"],
-                )
-        regression_rows = _rows(
-            conn,
-            """
-            select rg.candidate_id,rg.status,rg.report_path,rg.metrics_json,rg.details_json
-            from candidate_regression rg
-            join candidates c on c.id=rg.candidate_id
-            where c.run_id=?
-            """,
-            (run_id,),
+        _audit_reason_counts(
+            conn, summary, run_id, base_rows, robust_rows, regression_rows,
         )
-        for row in regression_rows:
-            _add_report_ref(
-                refs,
-                row["report_path"],
-                stage="regression_ohlc",
-                row_id=int(row["candidate_id"]),
-                status=row["status"],
-                metrics_json=row["metrics_json"],
-            )
-        seed_rows = _rows(
-            conn,
-            "select id,status,seed_path,report_path,score,metrics_json from seed_scores where active=1",
-        )
-        for row in seed_rows:
-            _add_report_ref(
-                refs,
-                row["report_path"],
-                stage="active_seed",
-                row_id=int(row["id"]),
-                status=row["status"],
-                metrics_json=row["metrics_json"],
-            )
-
-        missing_files = [
-            {"path": path, "refs": refs[path]}
-            for path in sorted(refs)
-            if not _existing_path(path)
-        ]
-        summary["report_refs"] = {
-            "unique_paths": len(refs),
-            "total_refs": sum(len(items) for items in refs.values()),
-            "missing_files": len(missing_files),
-            "missing_file_examples": missing_files[:30],
-        }
-
-        reason_counts: dict[str, dict[str, int]] = {}
-        for stage, rows, column in (
-            ("base", base_rows, "metrics_json"),
-            ("robust", robust_rows, "metrics_json"),
-        ):
-            counter = Counter()
-            for row in rows:
-                counter.update(metric_reasons(row[column]))
-            reason_counts[stage] = dict(counter.most_common())
-        for table, stage in (("candidate_final_tick", "final_tick_probe"), ("candidate_final_tick_6m", "final_tick_6m")):
-            counter = Counter()
-            for row in _rows(
-                conn,
-                f"select ft.similarity_json from {table} ft join candidates c on c.id=ft.candidate_id where c.run_id=?",
-                (run_id,),
-            ):
-                counter.update(metric_reasons(row["similarity_json"]))
-            reason_counts[stage] = dict(counter.most_common())
-        regression_counter = Counter()
-        for row in regression_rows:
-            regression_counter.update(metric_reasons(row["details_json"] or row["metrics_json"]))
-        reason_counts["regression"] = dict(regression_counter.most_common())
-        summary["reason_counts"] = reason_counts
-
-        feedback_rows = _rows(
-            conn,
-            """
-            select c.run_id,c.generation,c.id,c.set_path,c.seed_path,c.target_symbol,c.symbol,c.period,c.family,
-                   c.score,c.accepted,c.metrics_json,c.status,c.report_path,
-                   cr.status robust_status,cr.positive_bonus robust_positive_bonus,
-                   cr.negative_bonus robust_negative_bonus,cr.metrics_json robust_metrics_json,
-                   ft.status final_tick_status,ft.similarity_json final_tick_similarity_json,
-                   ft6.status final_tick_6m_status,ft6.similarity_json final_tick_6m_similarity_json,
-                   rg.status regression_status,rg.points_applied regression_points_applied
-            from candidates c
-            left join candidate_robustness cr on cr.candidate_id=c.id and c.status='accepted'
-            left join candidate_final_tick ft on ft.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
-            left join candidate_final_tick_6m ft6
-              on ft6.candidate_id=c.id and c.status='accepted' and cr.status='accepted'
-             and ft.status in ('accepted','pending_ohlc_trades')
-            left join candidate_regression rg on rg.candidate_id=c.id and ft6.status='accepted'
-            where c.run_id=? and c.status in ('accepted','rejected','no_trades')
-              and (c.score is not null or c.status='no_trades')
-            """,
-            (run_id,),
-        )
-        weights = []
-        by_6m: dict[str, list[float]] = defaultdict(list)
-        for row in feedback_rows:
-            value = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
-            if value is None:
-                continue
-            weights.append(float(value))
-            by_6m[str(row["final_tick_6m_status"] or "sin_6m")].append(float(value))
-        summary["weights"] = {
-            "rows_considered": len(feedback_rows),
-            "rows_weighted": len(weights),
-            "min": round(min(weights), 4) if weights else None,
-            "avg": round(sum(weights) / len(weights), 4) if weights else None,
-            "max": round(max(weights), 4) if weights else None,
-            "by_final_tick_6m": {
-                key: {
-                    "n": len(values),
-                    "avg": round(sum(values) / len(values), 4),
-                    "min": round(min(values), 4),
-                    "max": round(max(values), 4),
-                }
-                for key, values in sorted(by_6m.items())
-            },
-        }
+        _audit_weights(conn, summary, run_id)
 
         if parse_reports:
-            existing_paths = [path for path in sorted(refs) if _existing_path(path)]
-            report_results: list[dict[str, Any]] = []
-            if existing_paths:
-                with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
-                    futures = {pool.submit(_parse_report_worker, path): path for path in existing_paths}
-                    for future in as_completed(futures):
-                        report_results.append(future.result())
-            report_results.sort(key=lambda item: item["path"])
-            parse_errors = [item for item in report_results if not item.get("ok")]
-            net_mismatches = [
-                item
-                for item in report_results
-                if item.get("ok") and abs(float(item.get("net_diff") or 0.0)) > 0.05
-            ]
-            unmatched = [
-                item for item in report_results if item.get("ok") and int(item.get("unmatched_out_deals") or 0) > 0
-            ]
-            mixed_numbers = [item for item in report_results if item.get("mixed_separator_hits")]
-            metric_mismatches = []
-            for item in report_results:
-                metric_mismatches.extend(_metric_mismatches(item, refs.get(str(item["path"]), [])))
-            summary["report_parse"] = {
-                "parsed": len(report_results),
-                "parse_errors": len(parse_errors),
-                "parse_error_examples": parse_errors[:20],
-                "raw_vs_trade_net_mismatches": len(net_mismatches),
-                "raw_vs_trade_net_examples": net_mismatches[:30],
-                "unmatched_out_deal_reports": len(unmatched),
-                "unmatched_out_deal_examples": unmatched[:30],
-                "mixed_separator_reports": len(mixed_numbers),
-                "mixed_separator_examples": mixed_numbers[:30],
-                "stored_metric_mismatches": len(metric_mismatches),
-                "stored_metric_mismatch_examples": metric_mismatches[:50],
-                "slowest_reports": sorted(report_results, key=lambda item: float(item.get("seconds") or 0.0), reverse=True)[:20],
-            }
+            summary["report_parse"] = _audit_parse_reports(refs, workers)
         return summary
     finally:
         conn.close()
