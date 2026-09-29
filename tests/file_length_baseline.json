@@ -1,7 +1,6 @@
 {
   "grandfathered": {
     "app_ui.py": 2656,
-    "manager_node_runtime/live_audit.py": 1995,
     "manager_node_runtime/node.py": 2350,
     "portfolio_manager/ubs_portfolio.py": 5083,
     "run_tests.py": 3064,

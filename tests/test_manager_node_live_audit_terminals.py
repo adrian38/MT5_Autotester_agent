@@ -342,16 +342,22 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         # pipeline (`tester_pids`) y dejó dos días de discovery puntuando 0
         # supervivientes. El único uso legítimo es el último recurso dentro de
         # `_close_terminal_pids_gracefully`, para los que ignoran WM_CLOSE.
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "manager_node_runtime" / "live_audit.py"
-        ).read_text(encoding="utf-8")
+        # La auditoria vive repartida en varios modulos; la guarda los revisa
+        # todos para que dividir el fichero no la apague en silencio.
+        modules = sorted(
+            (Path(__file__).resolve().parents[1] / "manager_node_runtime")
+            .glob("live_audit*.py")
+        )
+        self.assertGreaterEqual(len(modules), 2, msg=str(modules))
+        sources = {path.name: path.read_text(encoding="utf-8") for path in modules}
+        source = "\n".join(sources.values())
         # El único uso permitido es el último recurso del cierre ordenado, para
         # los terminales que ignoran WM_CLOSE.
         fallback = "self._close_terminal_pids(pids & self._terminal_pids())"
         calls = [
-            f"{number}: {line.strip()}"
-            for number, line in enumerate(source.splitlines(), start=1)
+            f"{name}:{number}: {line.strip()}"
+            for name, text in sources.items()
+            for number, line in enumerate(text.splitlines(), start=1)
             if "self._close_terminal_pids(" in line and fallback not in line
         ]
         self.assertEqual(
