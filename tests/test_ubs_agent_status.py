@@ -1,3 +1,5 @@
+import ubs_agent_evaluate
+import ubs_agent_reports
 import json
 import tempfile
 import unittest
@@ -81,7 +83,7 @@ class UBSAgentStatusTests(unittest.TestCase):
                 memory.record_variant(run_id, 1, variant)
 
                 with patch(
-                    "ubs_agent.score_report_file",
+                    "ubs_agent_evaluate.score_report_file",
                     return_value=score(-75.0, symbol="NationGrid+", timeframe="M30", trades=0),
                 ):
                     status, _result = evaluate_variant_report(
@@ -166,7 +168,7 @@ class UBSAgentStatusTests(unittest.TestCase):
                 variant = Variant(root / "candidate.set", seed, "AUDJPY", "H1", (), (), "test")
                 memory.record_variant(run_id, 1, variant)
 
-                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                with patch("ubs_agent_evaluate.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
                     status, _result = evaluate_variant_report(
                         memory,
                         variant,
@@ -271,7 +273,7 @@ class UBSAgentStatusTests(unittest.TestCase):
                 memory.record_variant(0, 0, probe, status="history_ok")
                 memory.record_variant(run_id, 1, variant)
 
-                with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+                with patch("ubs_agent_evaluate.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
                     status, _result = evaluate_variant_report(
                         memory,
                         variant,
@@ -316,7 +318,7 @@ class UBSAgentStatusTests(unittest.TestCase):
                 memory.record_variant(0, 0, probe)
 
                 with patch(
-                    "ubs_agent.score_report_file",
+                    "ubs_agent_evaluate.score_report_file",
                     return_value=score(-55.0, symbol="NSLR.NAS", timeframe="H1", trades=0),
                 ):
                     status, _result = evaluate_history_probe(
@@ -367,8 +369,8 @@ class UBSAgentStatusTests(unittest.TestCase):
                 variant = create_history_probe_variant(seed, "META", "H1", root / "probe", 1)
                 memory.record_variant(run_id, 1, variant, status="history_probe")
 
-                with patch("ubs_agent.find_report_for_set", return_value=report), patch(
-                    "ubs_agent.score_report_file",
+                with patch("ubs_agent_evaluate.find_report_for_set", return_value=report), patch(
+                    "ubs_agent_evaluate.score_report_file",
                     return_value=score(42.0, symbol="META", timeframe="H1", trades=12),
                 ):
                     status, _result = evaluate_history_probe(
@@ -489,8 +491,8 @@ class UBSAgentStatusTests(unittest.TestCase):
             )
 
             with (
-                patch("ubs_agent.find_report_for_set", return_value=report),
-                patch("ubs_agent.score_report_file", return_value=empty_result),
+                patch("ubs_agent_evaluate.find_report_for_set", return_value=report),
+                patch("ubs_agent_evaluate.score_report_file", return_value=empty_result),
             ):
                 counts, processed = reconcile_seed_eval_reports(
                     memory,

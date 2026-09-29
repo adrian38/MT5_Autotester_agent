@@ -1,3 +1,5 @@
+import ubs_agent_rescore
+import ubs_agent_evaluate
 import argparse
 import json
 import sqlite3
@@ -119,8 +121,8 @@ class UBSAgentRescoreTests(unittest.TestCase):
             )
 
             with (
-                patch("ubs_agent.evaluate_history_probe", return_value=("history_ok", None)) as history_probe,
-                patch("ubs_agent.evaluate_variant_report", return_value=("accepted", None)) as candidate_score,
+                patch("ubs_agent_rescore.evaluate_history_probe", return_value=("history_ok", None)) as history_probe,
+                patch("ubs_agent_rescore.evaluate_variant_report", return_value=("accepted", None)) as candidate_score,
             ):
                 self.assertEqual(rescore_candidate_scores_only(args, memory, ScoreConfig()), 0)
 

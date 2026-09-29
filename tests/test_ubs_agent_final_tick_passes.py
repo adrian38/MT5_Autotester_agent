@@ -1,3 +1,8 @@
+import ubs_agent_final_tick_entry
+import ubs_agent_sets
+import ubs_agent_final_tick
+import ubs_agent_final_tick_pass
+import ubs_agent_universe
 import contextlib
 import io
 import tempfile
@@ -162,7 +167,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
                     deferred_out.extend([{"id": 1}, {"id": 2}])
             return 0
 
-        with patch("ubs_agent._evaluate_candidate_final_tick_pass", side_effect=fake_pass):
+        with patch("ubs_agent_final_tick_entry._evaluate_candidate_final_tick_pass", side_effect=fake_pass):
             code = evaluate_candidate_final_tick(args, Mock(), ScoreConfig())
 
         self.assertEqual(code, 0)
@@ -179,7 +184,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
         )
 
         with patch(
-            "ubs_agent._evaluate_candidate_final_tick_pass", return_value=0
+            "ubs_agent_final_tick_entry._evaluate_candidate_final_tick_pass", return_value=0
         ) as pass_mock:
             self.assertEqual(evaluate_candidate_final_tick(args, Mock(), ScoreConfig()), 0)
         self.assertEqual(pass_mock.call_count, 1)
@@ -190,7 +195,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             return 1
 
         with patch(
-            "ubs_agent._evaluate_candidate_final_tick_pass", side_effect=failing_pass
+            "ubs_agent_final_tick_entry._evaluate_candidate_final_tick_pass", side_effect=failing_pass
         ) as pass_mock:
             self.assertEqual(evaluate_candidate_final_tick(args, Mock(), ScoreConfig()), 1)
         self.assertEqual(pass_mock.call_count, 1)
@@ -278,11 +283,11 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             )
             output = io.StringIO()
             with (
-                patch("ubs_agent.split_retired_symbols", side_effect=lambda r, _a: (r, [])),
-                patch("ubs_agent.variant_from_candidate_row", return_value=variant),
-                patch("ubs_agent.write_set_use_every_tick"),
+                patch("ubs_agent_final_tick_pass.split_retired_symbols", side_effect=lambda r, _a: (r, [])),
+                patch("ubs_agent_final_tick_pass.variant_from_candidate_row", return_value=variant),
+                patch("ubs_agent_sets.write_set_use_every_tick"),
                 patch(
-                    "ubs_agent._read_ohlc_report_cfg_dates",
+                    "ubs_agent_final_tick._read_ohlc_report_cfg_dates",
                     return_value=("2026.01.01", "2026.06.30"),
                 ),
                 contextlib.redirect_stdout(output),

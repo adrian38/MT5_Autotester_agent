@@ -1,3 +1,8 @@
+import ubs_agent_evaluate
+import ubs_agent_final_tick_rescore
+import ubs_agent_config
+import ubs_agent_final_tick
+import ubs_agent_reports
 import json
 import random
 import tempfile
@@ -153,7 +158,7 @@ class UBSSetsFileTests(unittest.TestCase):
             snapshot = reports / "candidate.watchdog_attempt_1.mt5log.txt"
             snapshot.write_text("watchdog evidence", encoding="utf-8")
 
-            with patch("ubs_agent.BASE_DIR", root):
+            with patch("ubs_agent_reports.BASE_DIR", root):
                 self.assertIsNone(find_report_for_set(set_path))
                 self.assertEqual(find_watchdog_snapshot_for_set(set_path), snapshot)
 
@@ -194,25 +199,25 @@ class UBSSetsFileTests(unittest.TestCase):
                 missing_lot_keys=(),
                 policy="test",
             )
-            results = [
-                score(10.0, symbol="S&P.fs", timeframe="H1", trades=20),
-                score(5.0, symbol="S&P.fs", timeframe="H1", trades=20),
-            ]
-
             def find_report(path: Path) -> Path:
                 return tick_report if path.name.startswith("tick6m_") else ohlc_report
 
+            # El mismo doble cubre los dos modulos que puntuan aqui.
+            score_report = Mock(side_effect=[
+                score(10.0, symbol="S&P.fs", timeframe="H1", trades=20),
+                score(5.0, symbol="S&P.fs", timeframe="H1", trades=20)])
             with (
-                patch("ubs_agent.variant_from_candidate_row", return_value=variant),
-                patch("ubs_agent.find_report_for_set", side_effect=find_report),
+                patch("ubs_agent_final_tick_rescore.variant_from_candidate_row", return_value=variant),
+                patch("ubs_agent_final_tick_rescore.find_report_for_set", side_effect=find_report),
                 patch(
-                    "ubs_agent._read_ohlc_report_cfg_dates",
+                    "ubs_agent_final_tick_rescore._read_ohlc_report_cfg_dates",
                     return_value=("2026.01.01", "2026.06.30"),
                 ),
-                patch("ubs_agent.score_report_file", side_effect=results) as score_report,
-                patch("ubs_agent.report_matches_variant", return_value=(True, "")),
+                patch("ubs_agent_final_tick_rescore.score_report_file", new=score_report),
+                patch("ubs_agent_final_tick.score_report_file", new=score_report),
+                patch("ubs_agent_final_tick_rescore.report_matches_variant", return_value=(True, "")),
                 patch(
-                    "ubs_agent.final_tick_similarity",
+                    "ubs_agent_final_tick.final_tick_similarity",
                     return_value={"accepted": False, "reasons": ["profit_factor_floor"]},
                 ),
             ):
@@ -365,7 +370,7 @@ class UBSSetsFileTests(unittest.TestCase):
         )
         memory = Memory()
 
-        with patch("ubs_agent.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+        with patch("ubs_agent_evaluate.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
             status, _result = evaluate_variant_report(
                 memory,
                 variant,
@@ -403,7 +408,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 memory.record_variant(run_id, 1, variant)
 
                 with patch(
-                    "ubs_agent.score_report_file",
+                    "ubs_agent_evaluate.score_report_file",
                     return_value=score(-55.0, symbol="", timeframe="M0", trades=0),
                 ):
                     status, _result = evaluate_variant_report(
@@ -446,7 +451,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 memory.record_variant(run_id, 1, variant)
 
                 with patch(
-                    "ubs_agent.score_report_file",
+                    "ubs_agent_evaluate.score_report_file",
                     return_value=score(-55.0, symbol="GBPTRY", timeframe="H1", trades=0),
                 ):
                     status, _result = evaluate_variant_report(
@@ -484,7 +489,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 variant = Variant(root / "candidate.set", seed, "EURUSD", "H1", (), (), "test")
                 memory.record_variant(run_id, 1, variant)
                 with patch(
-                    "ubs_agent.score_report_file",
+                    "ubs_agent_evaluate.score_report_file",
                     return_value=score(-55.0, symbol="EURUSD", timeframe="H1", trades=0),
                 ):
                     status, _result = evaluate_variant_report(

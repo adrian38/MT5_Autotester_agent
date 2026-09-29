@@ -1,3 +1,4 @@
+import ubs_agent_final_tick
 import json
 import random
 import tempfile
@@ -304,7 +305,7 @@ class UBSAgentVariantTests(unittest.TestCase):
         status_counts: dict[str, int] = {}
 
         with patch(
-            "ubs_agent.score_report_file",
+            "ubs_agent_final_tick.score_report_file",
             # MT5 may retain 99% quality even though the actual tester context
             # is empty.  The empty symbol/M0 pair must take precedence.
             return_value=score(-55.0, symbol="", timeframe="M0", trades=0, history_quality=99.0),
