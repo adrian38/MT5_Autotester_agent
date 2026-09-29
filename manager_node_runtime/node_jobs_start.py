@@ -71,8 +71,8 @@ class JobStartMixin:
         payload["cleanup_after_run"] = node_settings.cleanup_after_run_enabled(self.config, payload)
         return payload
 
-    def _start_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        payload = self._normalize_generation(payload)
+    @staticmethod
+    def _generation_pipeline(payload: dict[str, Any]) -> list[dict[str, Any]]:
         cycles = payload["cycles"]
         run_robustness = payload["run_robustness"]
         run_final_tick = payload["run_final_tick"]
@@ -127,6 +127,11 @@ class JobStartMixin:
                     {"action": action, "cycle": cycle, "run_id": None}
                     for action in CLEANUP_STAGES
                 )
+        return pipeline
+
+    def _start_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = self._normalize_generation(payload)
+        pipeline = self._generation_pipeline(payload)
         command, cwd = node_commands.build_generation_command(self.config, payload)
         job_id = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
         log_path = self.runtime_dir / f"generation_{job_id}.log"
@@ -185,8 +190,10 @@ class JobStartMixin:
         payload["cleanup_after_run"] = node_settings.cleanup_after_run_enabled(self.config, payload)
         return payload
 
-    def _start_repair(self, payload: dict[str, Any]) -> dict[str, Any]:
-        payload = self._normalize_repair(payload)
+    @staticmethod
+    def _repair_pipeline(
+        payload: dict[str, Any], run_modes: dict[int, str | None]
+    ) -> list[dict[str, Any]]:
         run_ids = payload["run_ids"]
         repair_attempts = payload["repair_attempts"]
         retry_low_quality = payload["retry_low_quality"]
@@ -197,13 +204,6 @@ class JobStartMixin:
         actions.append("final_tick_6m")
         if retry_low_quality:
             actions.append("final_tick_6m_quality")
-        run_modes = {
-            run_id: node_settings.stored_run_generation_mode(self.config, run_id)
-            for run_id in run_ids
-        }
-        payload["run_generation_modes"] = {
-            str(run_id): mode or "unknown" for run_id, mode in run_modes.items()
-        }
         # El reintento pertenece a un run seleccionado: se termina con ese run
         # antes de pasar al siguiente. Dentro de cada reintento hay dos fases,
         # distinguidas solo por cuantos terminales usan a la vez: la fase 1 recorre
@@ -229,6 +229,19 @@ class JobStartMixin:
                     {"action": action, "cycle": None, "run_id": run_id}
                     for action in CLEANUP_STAGES
                 )
+        return pipeline
+
+    def _start_repair(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = self._normalize_repair(payload)
+        run_ids = payload["run_ids"]
+        run_modes = {
+            run_id: node_settings.stored_run_generation_mode(self.config, run_id)
+            for run_id in run_ids
+        }
+        payload["run_generation_modes"] = {
+            str(run_id): mode or "unknown" for run_id, mode in run_modes.items()
+        }
+        pipeline = self._repair_pipeline(payload, run_modes)
         job_id = "repair_" + time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
         log_path = self.runtime_dir / f"{job_id}.log"
         self.state = {
