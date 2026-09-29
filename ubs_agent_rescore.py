@@ -262,6 +262,38 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
     return 0
 
 
+def _rescore_candidate_report(
+    row, args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig, symbol_map: dict[str, str],
+) -> str | None:
+    report = _stored_or_discovered_report(row)
+    if report is None:
+        return None
+    variant = variant_from_candidate_row(row)
+    if str(row["policy"] or "") == "history_probe":
+        status, _ = evaluate_history_probe(
+            memory,
+            variant,
+            score_config,
+            symbol_map,
+            args.broker,
+            report_path=report,
+            symbol_suffix=args.symbol_suffix,
+        )
+    else:
+        status, _ = evaluate_variant_report(
+            memory,
+            variant,
+            report,
+            score_config,
+            symbol_map,
+            args.broker,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+            symbol_suffix=args.symbol_suffix,
+        )
+    return status
+
+
 def _rescore_candidate_scores_from_reports(
     args: argparse.Namespace,
     memory: AgentMemory,
@@ -282,33 +314,10 @@ def _rescore_candidate_scores_from_reports(
     status_counts: dict[str, int] = {}
     skipped_no_report = 0
     for row in rows:
-        report = _stored_or_discovered_report(row)
-        if report is None:
+        status = _rescore_candidate_report(row, args, memory, score_config, symbol_map)
+        if status is None:
             skipped_no_report += 1
             continue
-        variant = variant_from_candidate_row(row)
-        if str(row["policy"] or "") == "history_probe":
-            status, _ = evaluate_history_probe(
-                memory,
-                variant,
-                score_config,
-                symbol_map,
-                args.broker,
-                report_path=report,
-                symbol_suffix=args.symbol_suffix,
-            )
-        else:
-            status, _ = evaluate_variant_report(
-                memory,
-                variant,
-                report,
-                score_config,
-                symbol_map,
-                args.broker,
-                min_trades_w1=args.min_trades_w1,
-                min_trades_mn=args.min_trades_mn,
-                symbol_suffix=args.symbol_suffix,
-            )
         status_counts[status] = status_counts.get(status, 0) + 1
 
     total = sum(status_counts.values())
