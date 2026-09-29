@@ -105,18 +105,29 @@ class LiveAuditExtractMixin:
             mt5.shutdown()
             self._close_terminal_pids_gracefully(launched_pids)
 
+    @staticmethod
+    def _native_report_metadata(
+        terminal_path: Path, login: str, server: str, period_start: datetime,
+        period_end: datetime, destination: Path, profile_name: str, *, isolated: bool = False,
+    ) -> dict[str, object]:
+        metadata = export_native_history_report(
+            terminal_path=terminal_path, login=login, server=server,
+            period_start=period_start, period_end=period_end, destination=destination,
+        )
+        metadata["capture_terminal_profile"] = profile_name
+        if isolated:
+            metadata["isolated_capture_terminal"] = True
+        return metadata
+
     def _export_native_account_report(
         self, *, mt5: Any, request: dict[str, Any], profile_name: str,
         terminal_path: Path, login: str, server: str, period_start: datetime,
         period_end: datetime, destination: Path,
     ) -> dict[str, object]:
         try:
-            metadata = export_native_history_report(
-                terminal_path=terminal_path, login=login, server=server,
-                period_start=period_start, period_end=period_end, destination=destination,
+            return self._native_report_metadata(
+                terminal_path, login, server, period_start, period_end, destination, profile_name,
             )
-            metadata["capture_terminal_profile"] = profile_name
-            return metadata
         except NativeHistoryReportError as primary_error:
             # MetaTrader5 puede adjuntarse a un terminal abierto en otra sesión
             # de Windows. La API funciona, pero su ventana no es automatizable
@@ -151,13 +162,10 @@ class LiveAuditExtractMixin:
                         errors.append(f"{profile.get('name') or section}: la cuenta no quedó conectada")
                         continue
                     self._synchronised_history(mt5, period_start, period_end)
-                    metadata = export_native_history_report(
-                        terminal_path=path, login=login, server=server,
-                        period_start=period_start, period_end=period_end, destination=destination,
+                    return self._native_report_metadata(
+                        path, login, server, period_start, period_end, destination,
+                        str(profile.get("name") or section), isolated=True,
                     )
-                    metadata["capture_terminal_profile"] = str(profile.get("name") or section)
-                    metadata["isolated_capture_terminal"] = True
-                    return metadata
                 except Exception as exc:
                     errors.append(f"{profile.get('name') or section}: {exc}")
                 finally:

@@ -3,7 +3,6 @@
     "app_ui.py::MT5AutotesterUI.__init__": 83,
     "manager_node_runtime/live_audit.py::LiveAuditController._run": 230,
     "manager_node_runtime/live_audit_compare.py::LiveAuditCompareMixin._compare": 204,
-    "manager_node_runtime/live_audit_extract.py::LiveAuditExtractMixin._export_native_account_report": 64,
     "manager_node_runtime/live_audit_extract.py::LiveAuditExtractMixin._extract_real": 90,
     "manager_node_runtime/live_audit_helpers.py::normalize_request": 71,
     "manager_node_runtime/live_audit_terminals.py::LiveAuditTerminalsMixin._persist_terminal_account": 64,
