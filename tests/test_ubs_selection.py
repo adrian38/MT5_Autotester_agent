@@ -11,6 +11,22 @@ from ubs.selection import (
 )
 
 
+def insert_selection_candidate(
+    memory: AgentMemory, run_id: int, generation: int, seed_path: str, set_path: str
+) -> int:
+    cursor = memory.conn.execute(
+        """
+        insert into candidates (
+            run_id, generation, seed_path, set_path, symbol,
+            target_symbol, period, family, run_strategy,
+            mutated_keys, missing_lot_keys, policy, status, created_at
+        ) values (?, ?, ?, ?, 'XAUUSD', 'XAUUSD', 'H1',
+                  'test', '1', '', '', 'exploit', 'accepted', 'now')
+        """,
+        (run_id, generation, seed_path, set_path),
+    )
+    return int(cursor.lastrowid)
+
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
@@ -152,22 +168,12 @@ class UBSSelectionFitnessTests(unittest.TestCase):
                     (run_id,),
                 )
 
-                def candidate(generation: int, seed_path: str, set_path: str) -> int:
-                    cursor = memory.conn.execute(
-                        """
-                        insert into candidates (
-                            run_id, generation, seed_path, set_path, symbol,
-                            target_symbol, period, family, run_strategy,
-                            mutated_keys, missing_lot_keys, policy, status, created_at
-                        ) values (?, ?, ?, ?, 'XAUUSD', 'XAUUSD', 'H1',
-                                  'test', '1', '', '', 'exploit', 'accepted', 'now')
-                        """,
-                        (run_id, generation, seed_path, set_path),
-                    )
-                    return int(cursor.lastrowid)
-
-                parent_id = candidate(1, "root.set", "generation_1.set")
-                child_id = candidate(2, "generation_1.set", "generation_2.set")
+                parent_id = insert_selection_candidate(
+                    memory, run_id, 1, "root.set", "generation_1.set"
+                )
+                child_id = insert_selection_candidate(
+                    memory, run_id, 2, "generation_1.set", "generation_2.set"
+                )
                 memory.conn.execute(
                     "insert into candidate_robustness (candidate_id, run_id, status, evaluated_at) values (?, ?, 'rejected', 'now')",
                     (parent_id, run_id),
