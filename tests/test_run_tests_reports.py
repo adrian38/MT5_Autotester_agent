@@ -3,13 +3,15 @@ import unittest
 from unittest.mock import Mock, patch
 
 import run_tests
+import run_tests_runner
+import run_tests_watchdog
 from tests.run_tests_report_fixtures import ListLogger
 
 
 class CopyReportsToProjectTests(unittest.TestCase):
     def setUp(self):
         # Process inventory is covered separately; report tests never query MT5.
-        release = patch.object(run_tests, "wait_for_terminal_release")
+        release = patch.object(run_tests_runner, "wait_for_terminal_release")
         self.release = release.start()
         self.addCleanup(release.stop)
 
@@ -126,32 +128,32 @@ class CopyReportsToProjectTests(unittest.TestCase):
             second_process = Mock(pid=102)
 
             with (
-                patch.object(run_tests, "tester_model_from_ini", return_value="4"),
-                patch.object(run_tests.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
+                patch.object(run_tests_runner, "tester_model_from_ini", return_value="4"),
+                patch.object(run_tests_runner.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
                 patch.object(
-                    run_tests,
+                    run_tests_runner,
                     "wait_for_mt5_process",
                     side_effect=[(0, False, 1.0), (0, False, 2.0)],
                 ),
-                patch.object(run_tests, "delete_existing_report_files"),
+                patch.object(run_tests_runner, "delete_existing_report_files"),
                 patch.object(
-                    run_tests,
+                    run_tests_runner,
                     "find_report_files",
                     side_effect=[[first_report], [second_report]],
                 ),
-                patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
+                patch.object(run_tests_runner, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
                 patch.object(
-                    run_tests,
+                    run_tests_runner,
                     "model4_report_has_empty_tester_data",
                     side_effect=[True, False],
                 ),
-                patch.object(run_tests, "copy_reports_to_project", return_value=[second_report]) as copy_reports,
-                patch.object(run_tests, "write_tester_journal_sidecars"),
-                patch.object(run_tests, "prepare_model4_history_preflight", return_value=[]) as preflight,
-                patch.object(run_tests, "finish_model4_history_preflight") as finish_preflight,
-                patch.object(run_tests, "log_ini_content"),
-                patch.object(run_tests.time, "sleep"),
-                patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
+                patch.object(run_tests_runner, "copy_reports_to_project", return_value=[second_report]) as copy_reports,
+                patch.object(run_tests_runner, "write_tester_journal_sidecars"),
+                patch.object(run_tests_runner, "prepare_model4_history_preflight", return_value=[]) as preflight,
+                patch.object(run_tests_runner, "finish_model4_history_preflight") as finish_preflight,
+                patch.object(run_tests_runner, "log_ini_content"),
+                patch.object(run_tests_runner.time, "sleep"),
+                patch.object(run_tests_runner._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
             ):
                 exit_code = run_tests.run_test(
                     root / "tester.ini",
@@ -192,22 +194,22 @@ class CopyReportsToProjectTests(unittest.TestCase):
             second_process = Mock(pid=102)
 
             with (
-                patch.object(run_tests, "tester_model_from_ini", return_value="1"),
-                patch.object(run_tests.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
+                patch.object(run_tests_runner, "tester_model_from_ini", return_value="1"),
+                patch.object(run_tests_runner.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
                 patch.object(
-                    run_tests,
+                    run_tests_runner,
                     "wait_for_mt5_process",
                     side_effect=[(0, False, 1.0), (0, False, 2.0)],
                 ),
-                patch.object(run_tests, "delete_existing_report_files") as delete_reports,
-                patch.object(run_tests, "find_report_files", side_effect=[[], [report]]),
-                patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
-                patch.object(run_tests, "copy_reports_to_project", return_value=[report]),
-                patch.object(run_tests, "write_tester_journal_sidecars"),
-                patch.object(run_tests, "finish_model4_history_preflight"),
-                patch.object(run_tests, "log_ini_content"),
-                patch.object(run_tests.time, "sleep"),
-                patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
+                patch.object(run_tests_runner, "delete_existing_report_files") as delete_reports,
+                patch.object(run_tests_runner, "find_report_files", side_effect=[[], [report]]),
+                patch.object(run_tests_runner, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
+                patch.object(run_tests_runner, "copy_reports_to_project", return_value=[report]),
+                patch.object(run_tests_runner, "write_tester_journal_sidecars"),
+                patch.object(run_tests_runner, "finish_model4_history_preflight"),
+                patch.object(run_tests_runner, "log_ini_content"),
+                patch.object(run_tests_runner.time, "sleep"),
+                patch.object(run_tests_runner._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
             ):
                 exit_code = run_tests.run_test(
                     root / "tester.ini",
@@ -236,11 +238,11 @@ class CopyReportsToProjectTests(unittest.TestCase):
         clock = iter([0, 0, 0, 1, 1, 2, 2, 3, 3])
 
         with (
-            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
-            patch.object(run_tests.time, "sleep"),
-            patch.object(run_tests, "fresh_report_signature", return_value=signature),
-            patch.object(run_tests, "REPORT_SAVE_CHECK_INTERVAL", 0),
-            patch.object(run_tests, "terminate_process_tree") as terminate,
+            patch.object(run_tests_watchdog.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests_watchdog.time, "sleep"),
+            patch.object(run_tests_watchdog, "fresh_report_signature", return_value=signature),
+            patch.object(run_tests_watchdog, "REPORT_SAVE_CHECK_INTERVAL", 0),
+            patch.object(run_tests_watchdog, "terminate_process_tree") as terminate,
         ):
             exit_code, restarted, _elapsed = run_tests.wait_for_mt5_process(
                 process,
@@ -266,11 +268,11 @@ class CopyReportsToProjectTests(unittest.TestCase):
         clock = iter([0, 0, 10, 20, 30, 40])
 
         with (
-            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
-            patch.object(run_tests.time, "sleep"),
-            patch.object(run_tests, "find_tester_journal_log", return_value=journal),
-            patch.object(run_tests, "read_tester_journal_tail", return_value=("testing started", 100)),
-            patch.object(run_tests, "terminate_process_tree") as terminate,
+            patch.object(run_tests_watchdog.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests_watchdog.time, "sleep"),
+            patch.object(run_tests_watchdog, "find_tester_journal_log", return_value=journal),
+            patch.object(run_tests_watchdog, "read_tester_journal_tail", return_value=("testing started", 100)),
+            patch.object(run_tests_watchdog, "terminate_process_tree") as terminate,
         ):
             exit_code, restarted, elapsed = run_tests.wait_for_mt5_process(
                 process,
@@ -296,11 +298,11 @@ class CopyReportsToProjectTests(unittest.TestCase):
         clock = iter([0, 0, 10, 20, 30, 40])
 
         with (
-            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
-            patch.object(run_tests.time, "sleep"),
-            patch.object(run_tests, "find_tester_journal_log", return_value=journal),
+            patch.object(run_tests_watchdog.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests_watchdog.time, "sleep"),
+            patch.object(run_tests_watchdog, "find_tester_journal_log", return_value=journal),
             patch.object(
-                run_tests,
+                run_tests_runner,
                 "read_tester_journal_tail",
                 side_effect=[
                     ("testing started", 100),
@@ -308,7 +310,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
                     ("testing advanced", 200),
                 ],
             ),
-            patch.object(run_tests, "terminate_process_tree") as terminate,
+            patch.object(run_tests_watchdog, "terminate_process_tree") as terminate,
         ):
             exit_code, restarted, elapsed = run_tests.wait_for_mt5_process(
                 process,
@@ -333,9 +335,9 @@ class CopyReportsToProjectTests(unittest.TestCase):
         clock = iter([0, 0, 10, 20, 30])
 
         with (
-            patch.object(run_tests.time, "time", side_effect=lambda: next(clock)),
-            patch.object(run_tests.time, "sleep"),
-            patch.object(run_tests, "terminate_process_tree") as terminate,
+            patch.object(run_tests_watchdog.time, "time", side_effect=lambda: next(clock)),
+            patch.object(run_tests_watchdog.time, "sleep"),
+            patch.object(run_tests_watchdog, "terminate_process_tree") as terminate,
         ):
             exit_code, restarted, elapsed = run_tests.wait_for_mt5_process(
                 process,
@@ -372,23 +374,23 @@ class CopyReportsToProjectTests(unittest.TestCase):
             second_process = Mock(pid=102)
 
             with (
-                patch.object(run_tests, "tester_model_from_ini", return_value="1"),
-                patch.object(run_tests.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
+                patch.object(run_tests_runner, "tester_model_from_ini", return_value="1"),
+                patch.object(run_tests_runner.subprocess, "Popen", side_effect=[first_process, second_process]) as popen,
                 patch.object(
-                    run_tests,
+                    run_tests_runner,
                     "wait_for_mt5_process",
                     side_effect=[(1, True, 40.0), (0, False, 2.0)],
                 ) as wait_process,
-                patch.object(run_tests, "write_tester_journal_snapshot") as snapshot,
-                patch.object(run_tests, "delete_existing_report_files"),
-                patch.object(run_tests, "find_report_files", return_value=[report]),
-                patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
-                patch.object(run_tests, "copy_reports_to_project", return_value=[report]),
-                patch.object(run_tests, "write_tester_journal_sidecars"),
-                patch.object(run_tests, "finish_model4_history_preflight"),
-                patch.object(run_tests, "log_ini_content"),
-                patch.object(run_tests.time, "sleep"),
-                patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
+                patch.object(run_tests_runner, "write_tester_journal_snapshot") as snapshot,
+                patch.object(run_tests_runner, "delete_existing_report_files"),
+                patch.object(run_tests_runner, "find_report_files", return_value=[report]),
+                patch.object(run_tests_runner, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
+                patch.object(run_tests_runner, "copy_reports_to_project", return_value=[report]),
+                patch.object(run_tests_runner, "write_tester_journal_sidecars"),
+                patch.object(run_tests_runner, "finish_model4_history_preflight"),
+                patch.object(run_tests_runner, "log_ini_content"),
+                patch.object(run_tests_runner.time, "sleep"),
+                patch.object(run_tests_runner._WATCHDOG_RESTART_LIMITER, "wait_for_turn") as retry_wait,
             ):
                 exit_code = run_tests.run_test(
                     root / "tester.ini",

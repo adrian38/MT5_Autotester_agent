@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import run_tests
+import run_tests_runner
 
 
 class ListLogger:
@@ -32,7 +33,7 @@ def write_ini(path, symbol: str, model: str = "1") -> None:
 
 class TesterAbortCodeTests(unittest.TestCase):
     def setUp(self):
-        release = patch.object(run_tests, "wait_for_terminal_release")
+        release = patch.object(run_tests_runner, "wait_for_terminal_release")
         release.start()
         self.addCleanup(release.stop)
 
@@ -71,12 +72,12 @@ class TesterAbortCodeTests(unittest.TestCase):
             )
 
             with (
-                patch.object(run_tests.subprocess, "Popen", return_value=Mock(pid=1)) as popen,
-                patch.object(run_tests, "wait_for_mt5_process", return_value=(3294954938, False, 5.8)),
-                patch.object(run_tests, "delete_existing_report_files"),
-                patch.object(run_tests, "write_tester_journal_snapshot") as snapshot,
-                patch.object(run_tests, "log_ini_content"),
-                patch.object(run_tests.time, "sleep"),
+                patch.object(run_tests_runner.subprocess, "Popen", return_value=Mock(pid=1)) as popen,
+                patch.object(run_tests_runner, "wait_for_mt5_process", return_value=(3294954938, False, 5.8)),
+                patch.object(run_tests_runner, "delete_existing_report_files"),
+                patch.object(run_tests_runner, "write_tester_journal_snapshot") as snapshot,
+                patch.object(run_tests_runner, "log_ini_content"),
+                patch.object(run_tests_runner.time, "sleep"),
             ):
                 exit_code = run_tests.run_test(
                     ini_path,
@@ -116,21 +117,21 @@ class TesterAbortCodeTests(unittest.TestCase):
             )
 
             with (
-                patch.object(run_tests.subprocess, "Popen", side_effect=[Mock(pid=1), Mock(pid=2)]) as popen,
+                patch.object(run_tests_runner.subprocess, "Popen", side_effect=[Mock(pid=1), Mock(pid=2)]) as popen,
                 patch.object(
-                    run_tests,
+                    run_tests_runner,
                     "wait_for_mt5_process",
                     side_effect=[(3294954934, False, 45.0), (0, False, 30.0)],
                 ),
-                patch.object(run_tests, "delete_existing_report_files"),
-                patch.object(run_tests, "write_tester_journal_snapshot"),
-                patch.object(run_tests, "find_report_files", side_effect=[[], [report]]),
-                patch.object(run_tests, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
-                patch.object(run_tests, "copy_reports_to_project", return_value=[report]),
-                patch.object(run_tests, "write_tester_journal_sidecars"),
-                patch.object(run_tests, "log_ini_content"),
-                patch.object(run_tests.time, "sleep"),
-                patch.object(run_tests._WATCHDOG_RESTART_LIMITER, "wait_for_turn"),
+                patch.object(run_tests_runner, "delete_existing_report_files"),
+                patch.object(run_tests_runner, "write_tester_journal_snapshot"),
+                patch.object(run_tests_runner, "find_report_files", side_effect=[[], [report]]),
+                patch.object(run_tests_runner, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
+                patch.object(run_tests_runner, "copy_reports_to_project", return_value=[report]),
+                patch.object(run_tests_runner, "write_tester_journal_sidecars"),
+                patch.object(run_tests_runner, "log_ini_content"),
+                patch.object(run_tests_runner.time, "sleep"),
+                patch.object(run_tests_runner._WATCHDOG_RESTART_LIMITER, "wait_for_turn"),
             ):
                 exit_code = run_tests.run_test(
                     ini_path,
@@ -268,12 +269,12 @@ class UniverseSkipTests(unittest.TestCase):
             )
 
             with (
-                patch.object(run_tests, "terminal_data_dirs_for_profile", return_value=[]),
-                patch.object(run_tests, "profile_expert_for_job", return_value="Advisors\\EA.ex5"),
-                patch.object(run_tests, "create_ini", return_value=(ini_path, report_path)),
-                patch.object(run_tests, "copy_set_file_to_tester_profiles") as copy_set,
-                patch.object(run_tests, "run_test") as run_test,
-                patch.object(run_tests, "delete_test_artifacts") as delete_artifacts,
+                patch.object(run_tests_runner, "terminal_data_dirs_for_profile", return_value=[]),
+                patch.object(run_tests_runner, "profile_expert_for_job", return_value="Advisors\\EA.ex5"),
+                patch.object(run_tests_runner, "create_ini", return_value=(ini_path, report_path)),
+                patch.object(run_tests_runner, "copy_set_file_to_tester_profiles") as copy_set,
+                patch.object(run_tests_runner, "run_test") as run_test,
+                patch.object(run_tests_runner, "delete_test_artifacts") as delete_artifacts,
             ):
                 exit_code = run_tests.run_backtest_job(
                     run_tests.BacktestJob(1, "", root / "EEX.NYSE_M30_seed.set"),

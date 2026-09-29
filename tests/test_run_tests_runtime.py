@@ -5,6 +5,8 @@ from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
 import run_tests
+import run_tests_logging
+import run_tests_runner
 
 
 class RunLoggerTests(unittest.TestCase):
@@ -14,7 +16,7 @@ class RunLoggerTests(unittest.TestCase):
             log_path = root / "run.log"
             stdout = io.StringIO()
 
-            with patch.object(run_tests, "LOG_DIR", root), redirect_stdout(stdout):
+            with patch.object(run_tests_logging, "LOG_DIR", root), redirect_stdout(stdout):
                 logger = run_tests.RunLogger(log_path)
                 logger.write("uno")
                 logger.write_many(["dos", "tres"])
@@ -33,8 +35,8 @@ class ActionRateLimiterTests(unittest.TestCase):
         logger = Mock()
 
         with (
-            patch.object(run_tests.time, "monotonic", return_value=100.0),
-            patch.object(run_tests.time, "sleep") as sleep,
+            patch.object(run_tests_runner.time, "monotonic", return_value=100.0),
+            patch.object(run_tests_runner.time, "sleep") as sleep,
         ):
             first_delay = limiter.wait_for_turn(logger, "Reinicio watchdog")
             second_delay = limiter.wait_for_turn(logger, "Reinicio watchdog")

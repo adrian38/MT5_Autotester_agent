@@ -4,13 +4,15 @@ import configparser
 from unittest.mock import patch
 
 import run_tests
+import run_tests_runner
+import run_tests_reports
 from tests.run_tests_report_fixtures import ListLogger
 
 
 class RunTestsSetAndConfigTests(unittest.TestCase):
     def setUp(self):
         # Process inventory is covered separately; report tests never query MT5.
-        release = patch.object(run_tests, "wait_for_terminal_release")
+        release = patch.object(run_tests_runner, "wait_for_terminal_release")
         self.release = release.start()
         self.addCleanup(release.stop)
 
@@ -26,7 +28,7 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
             source.write_text("report", encoding="utf-8")
             logger = ListLogger()
 
-            with patch.object(run_tests, "REPORT_DIR", reports_dir):
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
                 copied = run_tests.copy_reports_to_project([source], logger)
 
             destination = reports_dir / source.name
@@ -43,7 +45,7 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
             source.write_text("report", encoding="utf-8")
             logger = ListLogger()
 
-            with patch.object(run_tests, "REPORT_DIR", reports_dir):
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
                 copied = run_tests.copy_reports_to_project([source], logger)
 
             self.assertEqual(copied, [source])
@@ -64,7 +66,7 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
             external_source.write_text("new", encoding="utf-8")
             logger = ListLogger()
 
-            with patch.object(run_tests, "REPORT_DIR", reports_dir):
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
                 copied = run_tests.copy_reports_to_project([local_source, external_source], logger)
 
             self.assertEqual(copied, [local_source])
@@ -87,7 +89,7 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
             old_report.write_text("old", encoding="utf-8")
             logger = ListLogger()
 
-            with patch.object(run_tests, "REPORT_DIR", reports_dir):
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
                 run_tests.delete_existing_report_files(
                     report_path,
                     [data_dir],
