@@ -47,8 +47,8 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            with patch("manager_node_runtime.node.read_settings", return_value={}), patch(
-                "manager_node_runtime.node.memory_path", return_value=db_path
+            with patch("manager_node_runtime.node_snapshots.read_settings", return_value={}), patch(
+                "manager_node_runtime.node_snapshots.memory_path", return_value=db_path
             ):
                 count = pipeline_stage_pending_count(
                     {"project_dir": str(project)}, {}, "result", 348
