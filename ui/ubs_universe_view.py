@@ -22,7 +22,8 @@ class UBSUniverseViewMixin:
         if label is not None:
             label.configure(wraplength=width)
 
-    def _build_ubs_universe(self, parent: ttk.Frame) -> None:
+    def _build_ubs_universe_panel(self, parent):
+        """Panel de la pantalla y su barra de resumen."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -47,6 +48,10 @@ class UBSUniverseViewMixin:
         self._ubs_universe_summary_label.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 10))
         self._ubs_universe_summary_wrap = 0
         bar.bind("<Configure>", self._fit_ubs_universe_summary)
+        return panel, bar
+
+    def _build_ubs_universe_buttons(self, bar):
+        """Filas de botones por area: datos, marcados, pesos y memoria."""
         flow_buttons = [
             ("Actualizar", "standard", self._refresh_ubs_universe_panel),
             ("Extraer MT5", "standard", self._extract_mt5_universe_symbols),
@@ -103,6 +108,8 @@ class UBSUniverseViewMixin:
         self._ubs_calc_weights_btn = build_button_row(3, "Pesos", weight_buttons)[-1]
         build_button_row(4, "Memoria", memory_buttons)
 
+    def _build_ubs_universe_filters(self, panel):
+        """Cajas de busqueda de activos y de timeframes."""
         filter_bar = ttk.Frame(panel, style="Panel.TFrame")
         filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
         filter_bar.columnconfigure(1, weight=1)
@@ -120,9 +127,8 @@ class UBSUniverseViewMixin:
             row=0, column=4, sticky="w"
         )
 
-        body = ttk.PanedWindow(panel, orient="horizontal")
-        body.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 8))
-
+    def _build_ubs_universe_assets_table(self, body):
+        """Tabla de activos del broker con sus columnas."""
         asset_frame = ttk.Frame(body, style="Panel.TFrame")
         asset_frame.columnconfigure(0, weight=1)
         asset_frame.rowconfigure(1, weight=1)
@@ -163,6 +169,8 @@ class UBSUniverseViewMixin:
         self.ubs_universe_assets_tree.bind("<Button-1>", self._on_ubs_universe_tree_click)
         self._attach_tree_scrollbars(asset_frame, self.ubs_universe_assets_tree, 1, vertical=True)
 
+    def _build_ubs_universe_timeframes_table(self, body):
+        """Tabla de timeframes con sus pesos y probabilidades."""
         tf_frame = ttk.Frame(body, style="Panel.TFrame")
         tf_frame.columnconfigure(0, weight=1)
         tf_frame.rowconfigure(1, weight=1)
@@ -186,9 +194,21 @@ class UBSUniverseViewMixin:
         self.ubs_timeframes_tree.bind("<Button-1>", self._on_ubs_timeframe_tree_click)
         self._attach_tree_scrollbars(tf_frame, self.ubs_timeframes_tree, 1, vertical=True)
 
-        # A shared footer keeps both table headers and scrollbars aligned,
-        # regardless of the length of the metric explanation/status text.
+    def _build_ubs_universe_legend(self, panel):
+        """Leyenda con el resumen de los pesos de timeframe."""
         legend = ttk.Label(panel, textvariable=self.ubs_timeframe_summary,
                            style="Muted.TLabel", anchor="w", justify="left", wraplength=600)
         legend.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 18))
         legend.bind("<Configure>", lambda event: legend.configure(wraplength=max(200, event.width)))
+
+    def _build_ubs_universe(self, parent: ttk.Frame) -> None:
+        panel, bar = self._build_ubs_universe_panel(parent)
+        self._build_ubs_universe_buttons(bar)
+        self._build_ubs_universe_filters(panel)
+
+        body = ttk.PanedWindow(panel, orient="horizontal")
+        body.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 8))
+
+        self._build_ubs_universe_assets_table(body)
+        self._build_ubs_universe_timeframes_table(body)
+        self._build_ubs_universe_legend(panel)

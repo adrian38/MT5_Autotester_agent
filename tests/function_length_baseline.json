@@ -135,7 +135,6 @@
     "ui/app_chrome.py::AppChromeMixin._configure_style": 124,
     "ui/app_notify.py::AppNotifyMixin._ubs_agent_notification_message": 213,
     "ui/app_process.py::AppProcessMixin._drain_output_queue": 116,
-    "ui/multiterminal_view.py::MultiterminalViewMixin._build_multiterminal": 186,
     "ui/settings_logic.py::SettingsLogicMixin._write_ui_settings": 262,
     "ui/settings_view.py::SettingsViewMixin._build_settings": 171,
     "ui/ubs_agent_logic.py::UBSAgentLogicMixin._ubs_generator_args": 72,
@@ -170,17 +169,12 @@
     "ui/ubs_portfolio_versions.py::UBSPortfolioVersionsMixin._recalculate_saved_portfolio": 136,
     "ui/ubs_regression_logic.py::UBSRegressionLogicMixin._refresh_ubs_regression": 89,
     "ui/ubs_regression_logic.py::UBSRegressionLogicMixin._run_ubs_regression_for_latest_run": 61,
-    "ui/ubs_regression_view.py::UBSRegressionViewMixin._build_ubs_regression": 153,
     "ui/ubs_results_logic.py::UBSResultsLogicMixin._refresh_ubs_results": 181,
-    "ui/ubs_results_view.py::UBSResultsViewMixin._build_ubs_comparison": 69,
-    "ui/ubs_results_view.py::UBSResultsViewMixin._build_ubs_history": 80,
-    "ui/ubs_results_view.py::UBSResultsViewMixin._build_ubs_results": 193,
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._refresh_ubs_robustness": 131,
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._run_ubs_robustness_for_latest_run": 66,
     "ui/ubs_search_logic.py::UBSSearchLogicMixin._run_ubs_search": 69,
     "ui/ubs_seeds_logic.py::UBSSeedsLogicMixin._repair_ubs_seed_sets": 124,
     "ui/ubs_seeds_logic.py::UBSSeedsLogicMixin._save_ubs_seed_override": 139,
-    "ui/ubs_seeds_view.py::UBSSeedsViewMixin._build_ubs_seeds": 190,
-    "ui/ubs_universe_view.py::UBSUniverseViewMixin._build_ubs_universe": 170
+    "ui/ubs_seeds_view.py::UBSSeedsViewMixin._build_ubs_seeds": 190
   }
 }
