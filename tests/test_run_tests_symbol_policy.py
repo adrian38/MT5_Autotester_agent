@@ -159,6 +159,39 @@ def write_universe(path, sections: dict[str, list[str]]) -> None:
     )
 
 
+def retired_symbol_job_context(root):
+    profile = run_tests.TerminalProfile(
+        name="MT5_IC_1",
+        mt5_path=root / "terminal64.exe",
+        data_dir=None,
+        experts_root=root / "MQL5" / "Experts",
+        ubs_ex5_file=None,
+        portable=False,
+    )
+    settings = run_tests.TesterSettings(
+        mt5_path=profile.mt5_path,
+        data_dir=None,
+        portable=False,
+        delay_seconds=0,
+        tester_kick_after_seconds=0,
+        tester_stall_after_seconds=0,
+        tester_max_runtime_seconds=0,
+        terminal_cooldown_seconds=0,
+    )
+    args = argparse.Namespace(
+        symbol_suffix="",
+        symbol_futures_suffix="",
+        symbol_shares_suffix="",
+        symbol_suffix_universe={},
+        infer_tester_from_set=False,
+        prefer_set_path_timeframe=False,
+        model="",
+        dry_run=False,
+        universe_symbols={"EEX.NYSE-24", "XAUUSD"},
+    )
+    return profile, settings, args
+
+
 class UniverseSkipTests(unittest.TestCase):
     def test_loads_every_section_except_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -238,35 +271,7 @@ class UniverseSkipTests(unittest.TestCase):
             write_ini(ini_path, "EEX.NYSE")
             report_path = root / "candidate"
             logger = ListLogger()
-            profile = run_tests.TerminalProfile(
-                name="MT5_IC_1",
-                mt5_path=root / "terminal64.exe",
-                data_dir=None,
-                experts_root=root / "MQL5" / "Experts",
-                ubs_ex5_file=None,
-                portable=False,
-            )
-            settings = run_tests.TesterSettings(
-                mt5_path=profile.mt5_path,
-                data_dir=None,
-                portable=False,
-                delay_seconds=0,
-                tester_kick_after_seconds=0,
-                tester_stall_after_seconds=0,
-                tester_max_runtime_seconds=0,
-                terminal_cooldown_seconds=0,
-            )
-            args = argparse.Namespace(
-                symbol_suffix="",
-                symbol_futures_suffix="",
-                symbol_shares_suffix="",
-                symbol_suffix_universe={},
-                infer_tester_from_set=False,
-                prefer_set_path_timeframe=False,
-                model="",
-                dry_run=False,
-                universe_symbols={"EEX.NYSE-24", "XAUUSD"},
-            )
+            profile, settings, args = retired_symbol_job_context(root)
 
             with (
                 patch.object(run_tests_runner, "terminal_data_dirs_for_profile", return_value=[]),
