@@ -160,7 +160,7 @@ def create_history_probe_variant(
     )
 
 
-def run_backtests(
+def _backtest_command(
     args: argparse.Namespace,
     set_dir: Path,
     *,
@@ -168,9 +168,6 @@ def run_backtests(
     from_date: str | None = None,
     to_date: str | None = None,
 ) -> int:
-    if not args.expert and not args.multi_terminal:
-        print("AVISO: --expert no indicado; se omiten backtests.")
-        return 0
     command = [
         sys.executable,
         str(BASE_DIR / "run_tests.py"),
@@ -219,6 +216,23 @@ def run_backtests(
         command.extend(["--to-date", str(effective_to_date)])
     if model:
         command.extend(["--model", str(model)])
+    return command
+
+
+def run_backtests(
+    args: argparse.Namespace,
+    set_dir: Path,
+    *,
+    model: str = "",
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> int:
+    if not args.expert and not args.multi_terminal:
+        print("AVISO: --expert no indicado; se omiten backtests.")
+        return 0
+    command = _backtest_command(
+        args, set_dir, model=model, from_date=from_date, to_date=to_date
+    )
     print("Ejecutando:", " ".join(f'"{part}"' if " " in part else part for part in command))
     diag_log(f"RUN_TESTS_START set_dir={set_dir} model={model or '(template)'} command={' '.join(command)}")
     started = time.time()

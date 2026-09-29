@@ -100,7 +100,6 @@
     "ubs_agent_targets.py::choose_target_symbol": 164,
     "ubs_agent_targets.py::diverse_target_fallback": 82,
     "ubs_agent_variants.py::create_variant": 95,
-    "ubs_agent_variants.py::run_backtests": 68,
     "ubs_generate_sets.py::generate_sets": 71,
     "ui/app_chrome.py::AppChromeMixin._build_sidebar": 89,
     "ui/app_chrome.py::AppChromeMixin._configure_style": 124,
