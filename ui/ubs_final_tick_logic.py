@@ -149,14 +149,7 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
     def _manual_reject_selected_ubs_final_tick(self) -> None:
         self._manual_mark_selected_ubs_final_tick("rejected")
 
-    def _ubs_final_tick_args(
-        self,
-        run_id: int,
-        *,
-        pending_only: bool = False,
-        retry_pending_quality: bool = False,
-        final_tick_stage: str = "probe",
-    ) -> list[str]:
+    def _validated_final_tick_stage_dates(self, final_tick_stage: str) -> tuple[str, str, str, str]:
         from_date, to_date, ohlc_from_date, ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
         if not from_date or not to_date:
             raise ValueError("Final Tick requiere fechas Desde y Hasta.")
@@ -174,6 +167,17 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
                 ohlc_date_error = validate_final_tick_stage_dates("six_month", ohlc_from_date, ohlc_to_date)
                 if ohlc_date_error:
                     raise ValueError(f"Final Tick 6M OHLC retry invalido: {ohlc_date_error}")
+        return from_date, to_date, ohlc_from_date, ohlc_to_date
+
+    def _ubs_final_tick_args(
+        self,
+        run_id: int,
+        *,
+        pending_only: bool = False,
+        retry_pending_quality: bool = False,
+        final_tick_stage: str = "probe",
+    ) -> list[str]:
+        from_date, to_date, ohlc_from_date, ohlc_to_date = self._validated_final_tick_stage_dates(final_tick_stage)
         output_dir = self._ubs_generation_output_dir()
         thresholds = self._ubs_final_tick_threshold_values()
         args = [
