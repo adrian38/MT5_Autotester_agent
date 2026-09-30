@@ -128,14 +128,7 @@ def _pnl_comparison(
     }
 
 
-def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
-    value = dict(payload or {})
-    audit_key = str(value.get("audit_key") or value.get("portfolio_id") or "").strip()
-    if not audit_key or len(audit_key) > 120 or not all(char.isalnum() or char in "-_." for char in audit_key):
-        raise ValueError("audit_key no es un identificador válido")
-    portfolio_type = str(value.get("portfolio_type") or "").strip().lower()
-    if portfolio_type not in {"aggressive", "balanced", "conservative"}:
-        raise ValueError("portfolio_type debe ser aggressive, balanced o conservative")
+def _validated_period_mode(value: dict[str, Any]) -> str:
     period_mode = str(value.get("period_mode") or "rolling_days").strip().lower()
     if period_mode not in {"rolling_days", "fixed_dates"}:
         raise ValueError("period_mode debe ser rolling_days o fixed_dates")
@@ -155,6 +148,18 @@ def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("La fecha desde no puede ser posterior a la fecha hasta")
         if (period_dates["period_end_date"] - period_dates["period_start_date"]).days > 3650:
             raise ValueError("El periodo por calendario no puede superar 3650 días")
+    return period_mode
+
+
+def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
+    value = dict(payload or {})
+    audit_key = str(value.get("audit_key") or value.get("portfolio_id") or "").strip()
+    if not audit_key or len(audit_key) > 120 or not all(char.isalnum() or char in "-_." for char in audit_key):
+        raise ValueError("audit_key no es un identificador válido")
+    portfolio_type = str(value.get("portfolio_type") or "").strip().lower()
+    if portfolio_type not in {"aggressive", "balanced", "conservative"}:
+        raise ValueError("portfolio_type debe ser aggressive, balanced o conservative")
+    period_mode = _validated_period_mode(value)
     result = {
         "audit_key": audit_key,
         "portfolio_id": _as_int(value.get("portfolio_id"), "portfolio_id", 1),
