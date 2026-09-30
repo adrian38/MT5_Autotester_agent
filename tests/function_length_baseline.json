@@ -13,7 +13,6 @@
     "portfolio_manager/ubs_portfolio_candidates.py::load_robust_sets_from_rows": 87,
     "portfolio_manager/ubs_portfolio_constraints.py::can_add_unit": 74,
     "portfolio_manager/ubs_portfolio_curves.py::bootstrap_valley_drawdown": 79,
-    "portfolio_manager/ubs_portfolio_evaluate.py::evaluate_portfolio": 73,
     "portfolio_manager/ubs_portfolio_greedy.py::build_portfolio_greedy": 297,
     "portfolio_manager/ubs_portfolio_monthly.py::_strict_monthly_candidate_variants": 100,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_repair_allocations_to_strict_monthly": 122,

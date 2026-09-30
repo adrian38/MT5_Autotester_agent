@@ -17,6 +17,31 @@ from .ubs_portfolio_utils import (
 )
 
 
+def _empty_portfolio_evaluation(
+    allocations: dict[str, int], target_valley_dd: float, target_point_dd: float,
+    target_daily_dd: float | None, daily_dd_full_history: bool, enforce_point_dd: bool,
+) -> PortfolioEvaluation:
+    return PortfolioEvaluation(
+        allocations=allocations.copy(),
+        equity_curve_2020_2026=[0.0],
+        total_net_profit=0.0,
+        valley_dd=0.0,
+        point_dd=0.0,
+        target_valley_dd=target_valley_dd,
+        target_point_dd=target_point_dd,
+        valley_usage_pct=0.0,
+        point_usage_pct=0.0,
+        total_units=0,
+        total_lot=0.0,
+        active_strategies=0,
+        daily_dd=0.0,
+        target_daily_dd=target_daily_dd,
+        daily_usage_pct=0.0,
+        daily_dd_full_history=bool(daily_dd_full_history),
+        enforce_point_dd=bool(enforce_point_dd),
+    )
+
+
 def evaluate_portfolio(
     sets: list[RobustStrategySet],
     allocations: dict[str, int],
@@ -28,24 +53,9 @@ def evaluate_portfolio(
 ) -> PortfolioEvaluation:
     active_sets = [strategy for strategy in sets if allocations.get(strategy.set_id, 0) > 0]
     if not active_sets:
-        return PortfolioEvaluation(
-            allocations=allocations.copy(),
-            equity_curve_2020_2026=[0.0],
-            total_net_profit=0.0,
-            valley_dd=0.0,
-            point_dd=0.0,
-            target_valley_dd=target_valley_dd,
-            target_point_dd=target_point_dd,
-            valley_usage_pct=0.0,
-            point_usage_pct=0.0,
-            total_units=0,
-            total_lot=0.0,
-            active_strategies=0,
-            daily_dd=0.0,
-            target_daily_dd=target_daily_dd,
-            daily_usage_pct=0.0,
-            daily_dd_full_history=bool(daily_dd_full_history),
-            enforce_point_dd=bool(enforce_point_dd),
+        return _empty_portfolio_evaluation(
+            allocations, target_valley_dd, target_point_dd, target_daily_dd,
+            daily_dd_full_history, enforce_point_dd,
         )
 
     if all(strategy.curve_points_2020_2026_001 for strategy in active_sets):
