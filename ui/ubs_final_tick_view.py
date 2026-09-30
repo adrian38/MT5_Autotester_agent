@@ -213,20 +213,12 @@ class UBSFinalTickViewMixin:
                 row=row, column=col_index * 2, sticky="w", padx=(0, 12), pady=(0, 2)
             )
 
-    def _build_ubs_final_tick_table(self, panel):
-        """Tabla de candidatos con sus columnas y etiquetas."""
-        table_frame = ttk.Frame(panel, style="Panel.TFrame")
-        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+    def _ubs_final_tick_table_spec(self):
         columns = (
             "mark", "run", "id", "gen", "status", "cause", "symbol", "period",
             "quality", "ohlc_score", "tick_score", "net_ohlc", "net_tick",
             "pf_ohlc", "pf_tick", "dd_ohlc", "dd_tick", "trades_ohlc",
             "trades_tick", "dates", "set",
-        )
-        self.ubs_final_tick_tree = ttk.Treeview(
-            table_frame, columns=columns, show="headings", height=10, selectmode="extended"
         )
         headings = {
             "mark": "SEL",
@@ -274,6 +266,18 @@ class UBSFinalTickViewMixin:
             "dates": 170,
             "set": 260,
         }
+        return columns, headings, widths
+
+    def _build_ubs_final_tick_table(self, panel):
+        """Tabla de candidatos con sus columnas y etiquetas."""
+        table_frame = ttk.Frame(panel, style="Panel.TFrame")
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns, headings, widths = self._ubs_final_tick_table_spec()
+        self.ubs_final_tick_tree = ttk.Treeview(
+            table_frame, columns=columns, show="headings", height=10, selectmode="extended"
+        )
         for column in columns:
             self.ubs_final_tick_tree.heading(column, text=headings[column])
             self.ubs_final_tick_tree.column(column, width=widths[column], minwidth=42, anchor="center", stretch=False)
