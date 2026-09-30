@@ -74,6 +74,33 @@ def _seed_override_updated_at(memory: AgentMemory, seed_path: Path) -> datetime 
         return None
 
 
+def _report_matches_seed_override(
+    memory, seed, eval_started, copied_set, parsed_result, symbol_map, symbol_suffix, broker,
+) -> bool:
+    override_updated_at = _seed_override_updated_at(memory, seed.path)
+    if override_updated_at is None or eval_started > override_updated_at:
+        return True
+    # Override guardado despues de la evaluacion: el reporte solo es
+    # reutilizable si coincide con el target efectivo actual (caso
+    # tipico: override que no cambia symbol/TF). Si no coincide, se
+    # deja pendiente para re-ejecutar en MT5.
+    if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
+        return False
+    probe_variant = Variant(
+        path=Path(copied_set.name),
+        seed=seed,
+        target_symbol=seed.symbol,
+        target_period=seed.period,
+        mutated_keys=(),
+        missing_lot_keys=(),
+        policy="seed_eval",
+    )
+    matches, _ = report_matches_variant(
+        probe_variant, parsed_result, symbol_map, symbol_suffix, broker,
+    )
+    return matches
+
+
 def _reconcile_seed_eval_copy(
     memory, score_config, symbol_map, broker, symbol_suffix, pending, pending_by_hash,
     processed_paths, status_counts, eval_started, copied_set,
@@ -101,32 +128,10 @@ def _reconcile_seed_eval_copy(
             "se ignora y la seed permanece pendiente para un backtest nuevo."
         )
         return
-    override_updated_at = _seed_override_updated_at(memory, seed.path)
-    if override_updated_at is not None and eval_started <= override_updated_at:
-        # Override guardado despues de la evaluacion: el reporte solo es
-        # reutilizable si coincide con el target efectivo actual (caso
-        # tipico: override que no cambia symbol/TF). Si no coincide, se
-        # deja pendiente para re-ejecutar en MT5.
-        if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
-            return
-        probe_variant = Variant(
-            path=Path(copied_set.name),
-            seed=seed,
-            target_symbol=seed.symbol,
-            target_period=seed.period,
-            mutated_keys=(),
-            missing_lot_keys=(),
-            policy="seed_eval",
-        )
-        matches, _ = report_matches_variant(
-            probe_variant,
-            parsed_result,
-            symbol_map,
-            symbol_suffix,
-            broker,
-        )
-        if not matches:
-            return
+    if not _report_matches_seed_override(
+        memory, seed, eval_started, copied_set, parsed_result, symbol_map, symbol_suffix, broker,
+    ):
+        return
     seed_path = str(seed.path)
     status, _ = evaluate_seed_report(
         memory,
