@@ -51,7 +51,6 @@
     "ubs/manual_status.py::mark_candidate_final_tick": 119,
     "ubs/manual_status.py::mark_candidate_regression": 92,
     "ubs/manual_status.py::mark_candidate_robustness": 75,
-    "ubs/mt5_symbol_extract.py::sync_asset_universe_groups": 72,
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
     "ubs/prepared.py::load_prepared": 122,
     "ubs/regression.py::evaluate_candidate_regression": 162,

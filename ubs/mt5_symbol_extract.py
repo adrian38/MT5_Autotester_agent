@@ -204,24 +204,33 @@ def _dedupe_sorted(symbols: Iterable[str]) -> list[str]:
     return sorted(values, key=str.upper)
 
 
+def _extracted_symbols_by_key(symbols: Iterable[ExtractedSymbol]) -> dict[str, ExtractedSymbol]:
+    indexed: dict[str, ExtractedSymbol] = {}
+    for symbol in symbols:
+        key = _symbol_key(symbol.name)
+        if key and key not in indexed:
+            indexed[key] = symbol
+    return indexed
+
+
+def _existing_symbols_by_key(existing_groups: dict[str, list[str]]) -> dict[str, str]:
+    indexed: dict[str, str] = {}
+    for current_symbols in existing_groups.values():
+        for current in current_symbols:
+            key = _symbol_key(current)
+            if key and key not in indexed:
+                indexed[key] = current
+    return indexed
+
+
 def sync_asset_universe_groups(
     existing_groups: dict[str, list[str]],
     symbols: Iterable[ExtractedSymbol],
     *,
     preserve_existing_groups: bool = True,
 ) -> tuple[dict[str, list[str]], tuple[str, ...], tuple[str, ...]]:
-    extracted_by_key: dict[str, ExtractedSymbol] = {}
-    for symbol in symbols:
-        key = _symbol_key(symbol.name)
-        if key and key not in extracted_by_key:
-            extracted_by_key[key] = symbol
-
-    existing_by_key: dict[str, str] = {}
-    for current_symbols in existing_groups.values():
-        for current in current_symbols:
-            key = _symbol_key(current)
-            if key and key not in existing_by_key:
-                existing_by_key[key] = current
+    extracted_by_key = _extracted_symbols_by_key(symbols)
+    existing_by_key = _existing_symbols_by_key(existing_groups)
 
     if not existing_groups:
         groups = group_symbols_for_universe(extracted_by_key.values())
@@ -233,14 +242,12 @@ def sync_asset_universe_groups(
         added = tuple(
             sorted(
                 (symbol.name for key, symbol in extracted_by_key.items() if key not in existing_by_key),
-                key=str.upper,
-            )
+                key=str.upper)
         )
         removed = tuple(
             sorted(
                 (symbol for key, symbol in existing_by_key.items() if key not in extracted_by_key),
-                key=str.upper,
-            )
+                key=str.upper)
         )
         return groups, added, removed
 
