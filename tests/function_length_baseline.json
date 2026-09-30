@@ -30,7 +30,6 @@
     "portfolio_manager/ubs_portfolio_phases.py::_search_phases": 73,
     "portfolio_manager/ubs_portfolio_refine.py::_deep_refine_allocations": 211,
     "portfolio_manager/ubs_portfolio_reports.py::slice_strategy_set_to_month": 76,
-    "portfolio_manager/ubs_portfolio_result.py::build_portfolio_result": 217,
     "portfolio_manager/ubs_portfolio_search.py::improve_with_local_search": 150,
     "portfolio_manager/ubs_portfolio_search.py::improve_with_multi_start_search": 175,
     "run_tests.py::main": 328,

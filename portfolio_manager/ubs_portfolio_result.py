@@ -238,7 +238,14 @@ def _portfolio_result_allocations(run, margin_by_set):
     group_summary = portfolio_group_summary(run.selected, run.allocations)
     eligible_groups = {portfolio_group_key(strategy.symbol) for strategy in run.eligible}
     group_limit_overages: list[str] = []
-    return eligible_groups, group_summary, result_allocations
+    if run.max_units_per_group_pct is not None and len(eligible_groups) > 1:
+        limit_pct = run.max_units_per_group_pct * 100.0
+        group_limit_overages = [
+            f"{group} {float(stats['unit_pct']):.1f}%"
+            for group, stats in group_summary.items()
+            if float(stats["unit_pct"]) > limit_pct + 0.1
+        ]
+    return eligible_groups, group_summary, group_limit_overages, result_allocations
 
 def _portfolio_result_margin(run):
     """Resumen de margen requerido y de drawdown diario del portafolio."""
@@ -259,11 +266,6 @@ def _portfolio_result_margin(run):
     )
     margin_by_set = margin_summary.get("by_set", {}) if isinstance(margin_summary, dict) else {}
     daily_dd_summary: dict[str, object] = {}
-    return margin_by_set, margin_summary
-
-def build_portfolio_result(run: OptimizationRun) -> PortfolioResult:
-    """Arma el resultado final con sus metricas, avisos y sets sin usar."""
-    margin_by_set, margin_summary = _portfolio_result_margin(run)
     if run.max_daily_dd is not None:
         _daily_dd, daily_dd_summary = portfolio_daily_closed_floating_dd(
             run.selected,
@@ -271,16 +273,18 @@ def build_portfolio_result(run: OptimizationRun) -> PortfolioResult:
             full_history=bool(run.daily_dd_full_history),
         )
         daily_dd_summary["limit"] = float(run.max_daily_dd)
-        daily_dd_summary["usage_pct"] = run.current.daily_dd / float(run.max_daily_dd) * 100.0 if float(run.max_daily_dd) > 0 else 0.0
+        daily_dd_summary["usage_pct"] = (
+            run.current.daily_dd / float(run.max_daily_dd) * 100.0
+            if float(run.max_daily_dd) > 0 else 0.0
+        )
+    return margin_by_set, margin_summary, daily_dd_summary
 
-    eligible_groups, group_summary, result_allocations = _portfolio_result_allocations(run, margin_by_set)
-    if run.max_units_per_group_pct is not None and len(eligible_groups) > 1:
-        limit_pct = run.max_units_per_group_pct * 100.0
-        group_limit_overages = [
-            f"{group} {float(stats['unit_pct']):.1f}%"
-            for group, stats in group_summary.items()
-            if float(stats["unit_pct"]) > limit_pct + 0.1
-        ]
+def build_portfolio_result(run: OptimizationRun) -> PortfolioResult:
+    """Arma el resultado final con sus metricas, avisos y sets sin usar."""
+    margin_by_set, margin_summary, daily_dd_summary = _portfolio_result_margin(run)
+    eligible_groups, group_summary, group_limit_overages, result_allocations = (
+        _portfolio_result_allocations(run, margin_by_set)
+    )
 
     stress_bootstrap, unused_sets, warnings = _portfolio_result_warnings(run, daily_dd_summary, eligible_groups, group_limit_overages, margin_summary, result_allocations)
     return PortfolioResult(
