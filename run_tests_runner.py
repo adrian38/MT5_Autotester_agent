@@ -340,9 +340,8 @@ def run_backtest_job(
     protected_set_name = job.set_file.name if job.set_file else ""
     return run_test(ini_path, report_path, settings, args.dry_run, logger, terminal_data_dirs, protected_set_name)
 
-def run_jobs_parallel(
-    jobs: list[BacktestJob],
-    profiles: list[TerminalProfile],
+def _run_parallel_worker(
+    profile: TerminalProfile, job_queue: queue.Queue[BacktestJob],
     template: configparser.ConfigParser,
     args: argparse.Namespace,
     symbol_map: dict[str, str],
@@ -350,67 +349,72 @@ def run_jobs_parallel(
     *,
     set_mode: bool,
 ) -> int:
+    failures = 0
+    logger.write(
+        f"DIAG WORKER_START profile={profile.name} thread={threading.current_thread().name} "
+        f"mt5={profile.mt5_path}"
+    )
+    settings = settings_from_profile(
+        profile,
+        args.delay,
+        args.tester_kick_after_seconds,
+        args.tester_stall_after_seconds,
+        args.tester_max_runtime_seconds,
+        args.terminal_cooldown_seconds,
+    )
+    while True:
+        try:
+            job = job_queue.get_nowait()
+        except queue.Empty:
+            break
+        logger.write(
+            f"DIAG WORKER_JOB_START profile={profile.name} thread={threading.current_thread().name} "
+            f"job={job.index} remaining_queue={job_queue.qsize()}"
+        )
+        try:
+            exit_code = run_backtest_job(
+                job, profile, settings, template, args, symbol_map, logger,
+                set_mode=set_mode,
+            )
+        except TerminalStillRunningError as exc:
+            logger.write(f"[{profile.name}] ERROR: {exc}")
+            job_queue.task_done()
+            return failures + 1
+        except Exception as exc:
+            logger.write(f"[{profile.name}] ERROR inesperado: {exc}")
+            exit_code = 1
+        # Un simbolo omitido por politica no es un fallo tecnico del runner.
+        if exit_code not in (0, SKIPPED_SYMBOL_EXIT_CODE):
+            failures += 1
+        logger.write(
+            f"DIAG WORKER_JOB_DONE profile={profile.name} thread={threading.current_thread().name} "
+            f"job={job.index} exit_code={exit_code} failures={failures}"
+        )
+        job_queue.task_done()
+    logger.write(
+        f"DIAG WORKER_DONE profile={profile.name} thread={threading.current_thread().name} "
+        f"failures={failures}"
+    )
+    return failures
+
+
+def run_jobs_parallel(
+    jobs: list[BacktestJob], profiles: list[TerminalProfile],
+    template: configparser.ConfigParser, args: argparse.Namespace,
+    symbol_map: dict[str, str], logger: RunLogger, *, set_mode: bool,
+) -> int:
     job_queue: queue.Queue[BacktestJob] = queue.Queue()
     for job in jobs:
         job_queue.put(job)
-
-    def worker(profile: TerminalProfile) -> int:
-        failures = 0
-        logger.write(
-            f"DIAG WORKER_START profile={profile.name} thread={threading.current_thread().name} "
-            f"mt5={profile.mt5_path}"
-        )
-        settings = settings_from_profile(
-            profile,
-            args.delay,
-            args.tester_kick_after_seconds,
-            args.tester_stall_after_seconds,
-            args.tester_max_runtime_seconds,
-            args.terminal_cooldown_seconds,
-        )
-        while True:
-            try:
-                job = job_queue.get_nowait()
-            except queue.Empty:
-                break
-            logger.write(
-                f"DIAG WORKER_JOB_START profile={profile.name} thread={threading.current_thread().name} "
-                f"job={job.index} remaining_queue={job_queue.qsize()}"
-            )
-            try:
-                exit_code = run_backtest_job(
-                    job,
-                    profile,
-                    settings,
-                    template,
-                    args,
-                    symbol_map,
-                    logger,
-                    set_mode=set_mode,
-                )
-            except TerminalStillRunningError as exc:
-                logger.write(f"[{profile.name}] ERROR: {exc}")
-                job_queue.task_done()
-                return failures + 1
-            except Exception as exc:
-                logger.write(f"[{profile.name}] ERROR inesperado: {exc}")
-                exit_code = 1
-            # Un simbolo omitido por politica no es un fallo tecnico del runner.
-            if exit_code not in (0, SKIPPED_SYMBOL_EXIT_CODE):
-                failures += 1
-            logger.write(
-                f"DIAG WORKER_JOB_DONE profile={profile.name} thread={threading.current_thread().name} "
-                f"job={job.index} exit_code={exit_code} failures={failures}"
-            )
-            job_queue.task_done()
-        logger.write(
-            f"DIAG WORKER_DONE profile={profile.name} thread={threading.current_thread().name} "
-            f"failures={failures}"
-        )
-        return failures
-
     log_runner_diagnostics(logger, "PARALLEL_BEFORE", profiles)
     with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
-        result = sum(future.result() for future in [executor.submit(worker, profile) for profile in profiles])
+        futures = [
+            executor.submit(
+                _run_parallel_worker, profile, job_queue, template, args, symbol_map, logger,
+                set_mode=set_mode,
+            )
+            for profile in profiles
+        ]
+        result = sum(future.result() for future in futures)
     log_runner_diagnostics(logger, "PARALLEL_AFTER", profiles)
     return result
