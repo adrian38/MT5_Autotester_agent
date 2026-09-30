@@ -77,9 +77,10 @@ server.serve_forever()
                 controller._start_generation(controller.queue.pop()['payload'])
             pipeline=controller.state['pipeline']
             self.assertEqual(pipeline[0]['action'],'generation')
-            self.assertEqual({step['attempt'] for step in pipeline[1:]},{1,2})
-            self.assertEqual({step['max_workers'] for step in pipeline[1:] if step['phase']==1},{4})
-            self.assertEqual({step['max_workers'] for step in pipeline[1:] if step['phase']==2},{1})
+            repairs=[step for step in pipeline if 'phase' in step]
+            self.assertEqual({step['attempt'] for step in repairs},{1,2})
+            self.assertEqual({step['max_workers'] for step in repairs if step['phase']==1},{4})
+            self.assertEqual({step['max_workers'] for step in repairs if step['phase']==2},{1})
             run_prepared(fixture.args,fixture.memory,ScoreConfig(),fixture.api)
             fixture.api.create_variant.assert_not_called()
             checkpoint=protocol.read_run(root,fixture.package['batch_id']);candidate_id=next(iter(checkpoint['candidate_ids'].values()))
