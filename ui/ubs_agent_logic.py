@@ -217,10 +217,23 @@ class UBSAgentLogicMixin:
     def _apply_ubs_account_type_to_app(self) -> None:
         self._refresh_ubs_account_context(force=True)
 
+    def _extend_ubs_execution_args(self, args: list[str]) -> None:
+        args.append("--execute-backtests")
+        if self.multiterminal_enabled.get():
+            args.extend(self._multiterminal_args(require_ubs=True))
+        else:
+            args.extend(["--expert", self._required_ubs_ex5_file()])
+            if self.mt5_path.get().strip():
+                args.extend(["--mt5-path", self.mt5_path.get()])
+            if self.mt5_data_root.get().strip():
+                args.extend(["--data-dir", self.mt5_data_root.get()])
+        symbol_map = self._effective_ubs_symbol_map_text()
+        if symbol_map: args.extend(["--symbol-map", symbol_map])
+        args.extend(self._effective_symbol_suffix_args())
+
     def _ubs_generator_args(self, *, continue_last: bool = False) -> list[str]:
         source_dir = (
-            self._ubs_generator_source_dir()
-            if self.set_files_root.get().strip()
+            self._ubs_generator_source_dir() if self.set_files_root.get().strip()
             else self._ubs_default_source_dir()
         )
         if not continue_last:
@@ -275,19 +288,7 @@ class UBSAgentLogicMixin:
             else self.ubs_agent_execute.get()
         )
         if should_execute_backtests:
-            args.append("--execute-backtests")
-            if self.multiterminal_enabled.get():
-                args.extend(self._multiterminal_args(require_ubs=True))
-            else:
-                args.extend(["--expert", self._required_ubs_ex5_file()])
-                if self.mt5_path.get().strip():
-                    args.extend(["--mt5-path", self.mt5_path.get()])
-                if self.mt5_data_root.get().strip():
-                    args.extend(["--data-dir", self.mt5_data_root.get()])
-            symbol_map = self._effective_ubs_symbol_map_text()
-            if symbol_map:
-                args.extend(["--symbol-map", symbol_map])
-            args.extend(self._effective_symbol_suffix_args())
+            self._extend_ubs_execution_args(args)
         return args
     def _run_ubs_generator(self) -> None:
         self._run_ubs_agent(continue_last=False)
