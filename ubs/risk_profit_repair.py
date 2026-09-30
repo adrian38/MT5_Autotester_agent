@@ -357,6 +357,35 @@ def _restate_base_parent(
     }
 
 
+def _robustness_change(
+    row, combined: ScoreResult, audit: dict, payload: dict, degradation: dict,
+    expected: str, source: str,
+) -> dict:
+    return {
+        "candidate_id": int(row["candidate_id"]),
+        "run_id": int(row["run_id"]),
+        "symbol": row["target_symbol"] or row["symbol"],
+        "period": row["period"],
+        "stored_status": str(row["status"]),
+        "expected_status": expected,
+        "expected_accepted": int(bool(combined.accepted)),
+        "score": combined.score,
+        "evidence_source": source,
+        "equity_drawdown": combined.equity_drawdown,
+        "equity_drawdown_pct": combined.equity_drawdown_pct,
+        "scaled_residual_profit_ratio": combined.scaled_residual_profit_ratio,
+        "scaled_residual_top_months": combined.scaled_residual_top_months,
+        "selected_route": str(audit.get("selected_route", "")),
+        "risk_status": str(audit.get("status", "")),
+        "missing_comparisons": list(audit.get("missing_comparisons") or ()),
+        "reasons": list(combined.reasons),
+        "metrics_json": _json(payload),
+        "degradation_json": _json(degradation),
+        "previous_metrics_json": row["metrics_json"],
+        "previous_degradation_json": row["degradation_json"],
+    }
+
+
 def _restate_robustness(
     item: ScopedRow, base_metrics: dict, policy: RiskProfitConfig, read_oos_evidence,
     plan: RestatementPlan,
@@ -407,26 +436,6 @@ def _restate_robustness(
     if expected == str(row["status"]) and _same_payload(item.metrics, payload):
         _skip(plan, "sin_cambio")
         return None
-    return {
-        "candidate_id": int(row["candidate_id"]),
-        "run_id": int(row["run_id"]),
-        "symbol": row["target_symbol"] or row["symbol"],
-        "period": row["period"],
-        "stored_status": str(row["status"]),
-        "expected_status": expected,
-        "expected_accepted": int(bool(combined.accepted)),
-        "score": combined.score,
-        "evidence_source": source,
-        "equity_drawdown": combined.equity_drawdown,
-        "equity_drawdown_pct": combined.equity_drawdown_pct,
-        "scaled_residual_profit_ratio": combined.scaled_residual_profit_ratio,
-        "scaled_residual_top_months": combined.scaled_residual_top_months,
-        "selected_route": str(audit.get("selected_route", "")),
-        "risk_status": str(audit.get("status", "")),
-        "missing_comparisons": list(audit.get("missing_comparisons") or ()),
-        "reasons": list(combined.reasons),
-        "metrics_json": _json(payload),
-        "degradation_json": _json(degradation),
-        "previous_metrics_json": row["metrics_json"],
-        "previous_degradation_json": row["degradation_json"],
-    }
+    return _robustness_change(
+        row, combined, audit, payload, degradation, expected, source,
+    )
