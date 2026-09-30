@@ -193,6 +193,31 @@ def choose_seeds(files: list[Path], max_seeds: int, rng: random.Random) -> list[
     return sorted(rng.sample(files, max_seeds))
 
 
+def _manifest_row(
+    generation: int,
+    seed: Path,
+    output: Path,
+    changed: list[str],
+    missing_lot_keys: set[str],
+    account_context: dict[str, str],
+) -> dict[str, str]:
+    return {
+        "generation": str(generation),
+        "seed": str(seed),
+        "output": str(output),
+        "mutated_keys": ";".join(changed),
+        "fixed_lot_keys_missing": ";".join(sorted(missing_lot_keys)),
+        "template_symbol": account_context.get("Symbol", ""),
+        "template_period": account_context.get("Period", ""),
+        "template_model": account_context.get("Model", ""),
+        "template_from": account_context.get("FromDate", ""),
+        "template_to": account_context.get("ToDate", ""),
+        "template_deposit": account_context.get("Deposit", ""),
+        "template_currency": account_context.get("Currency", ""),
+        "template_leverage": account_context.get("Leverage", ""),
+    }
+
+
 def generate_sets(
     source_dir: Path,
     output_dir: Path,
@@ -236,23 +261,9 @@ def generate_sets(
                 output = generation_dir / f"{parent_name}__g{generation:03d}_s{seed_index:03d}_v{variant_index:03d}.set"
                 write_set_text(output, mutated, encoding)
                 next_generation.append(output)
-                rows.append(
-                    {
-                        "generation": str(generation),
-                        "seed": str(seed),
-                        "output": str(output),
-                        "mutated_keys": ";".join(changed),
-                        "fixed_lot_keys_missing": ";".join(sorted(missing_lot_keys)),
-                        "template_symbol": account_context.get("Symbol", ""),
-                        "template_period": account_context.get("Period", ""),
-                        "template_model": account_context.get("Model", ""),
-                        "template_from": account_context.get("FromDate", ""),
-                        "template_to": account_context.get("ToDate", ""),
-                        "template_deposit": account_context.get("Deposit", ""),
-                        "template_currency": account_context.get("Currency", ""),
-                        "template_leverage": account_context.get("Leverage", ""),
-                    }
-                )
+                rows.append(_manifest_row(
+                    generation, seed, output, changed, missing_lot_keys, account_context,
+                ))
         current_generation = next_generation
 
     with manifest_path.open("w", encoding="utf-8", newline="") as file:

@@ -93,7 +93,6 @@
     "ubs_agent_targets.py::choose_target_symbol": 164,
     "ubs_agent_targets.py::diverse_target_fallback": 82,
     "ubs_agent_variants.py::create_variant": 95,
-    "ubs_generate_sets.py::generate_sets": 71,
     "ui/app_chrome.py::AppChromeMixin._build_sidebar": 89,
     "ui/app_chrome.py::AppChromeMixin._configure_style": 124,
     "ui/app_notify.py::AppNotifyMixin._ubs_agent_notification_message": 213,
