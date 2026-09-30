@@ -333,6 +333,54 @@ def _completed_trade(
     )
 
 
+def _match_close_deal(
+    queue: list[dict[str, object]], deal: RawDeal, open_type: str,
+    order_stops: dict[str, dict[str, float]],
+) -> Trade | None:
+    remaining_close = max(float(deal.volume), 0.0)
+    if not queue or remaining_close <= 0.0:
+        return None
+    matched_volume = 0.0
+    weighted_open_price = 0.0
+    entry_net = 0.0
+    close_net = 0.0
+    open_time: datetime | None = None
+    ticket = ""
+    while queue and remaining_close > 1e-9:
+        preferred_index = _matching_stop_slot(queue, deal, order_stops)
+        slot_index = preferred_index if preferred_index is not None else 0
+        slot = queue[slot_index]
+        opened = slot["deal"]
+        if not isinstance(opened, RawDeal):
+            queue.pop(slot_index)
+            continue
+        available = max(float(slot.get("remaining") or 0.0), 0.0)
+        if available <= 1e-9:
+            queue.pop(slot_index)
+            continue
+        volume = min(available, remaining_close)
+        entry_ratio = volume / opened.volume if opened.volume else 0.0
+        close_ratio = volume / deal.volume if deal.volume else 0.0
+        matched_volume += volume
+        weighted_open_price += opened.price * volume
+        entry_net += opened.net_profit * entry_ratio
+        close_net += deal.net_profit * close_ratio
+        if open_time is None or opened.timestamp < open_time:
+            open_time = opened.timestamp
+        if not ticket:
+            ticket = opened.ticket
+        slot["remaining"] = available - volume
+        remaining_close -= volume
+        if float(slot["remaining"]) <= 1e-9:
+            queue.pop(slot_index)
+    if matched_volume <= 0.0 or open_time is None:
+        return None
+    return _completed_trade(
+        ticket, open_type, open_time, weighted_open_price, matched_volume,
+        deal, entry_net, close_net,
+    )
+
+
 def _build_trades(
     raw_deals: list[RawDeal], order_stops: dict[str, dict[str, float]] | None = None,
 ) -> list[Trade]:
@@ -358,50 +406,9 @@ def _build_trades(
 
         open_type = "buy" if trade_type == "sell" else "sell"
         queue = open_positions.get((deal.symbol, open_type), [])
-        remaining_close = max(float(deal.volume), 0.0)
-        if not queue or remaining_close <= 0.0:
-            continue
-        matched_volume = 0.0
-        weighted_open_price = 0.0
-        entry_net = 0.0
-        close_net = 0.0
-        open_time: datetime | None = None
-        ticket = ""
-
-        while queue and remaining_close > 1e-9:
-            preferred_index = _matching_stop_slot(queue, deal, order_stops)
-            slot_index = preferred_index if preferred_index is not None else 0
-            slot = queue[slot_index]
-            opened = slot["deal"]
-            if not isinstance(opened, RawDeal):
-                queue.pop(slot_index)
-                continue
-            available = max(float(slot.get("remaining") or 0.0), 0.0)
-            if available <= 1e-9:
-                queue.pop(slot_index)
-                continue
-            volume = min(available, remaining_close)
-            entry_ratio = volume / opened.volume if opened.volume else 0.0
-            close_ratio = volume / deal.volume if deal.volume else 0.0
-            matched_volume += volume
-            weighted_open_price += opened.price * volume
-            entry_net += opened.net_profit * entry_ratio
-            close_net += deal.net_profit * close_ratio
-            if open_time is None or opened.timestamp < open_time:
-                open_time = opened.timestamp
-            if not ticket:
-                ticket = opened.ticket
-            slot["remaining"] = available - volume
-            remaining_close -= volume
-            if float(slot["remaining"]) <= 1e-9:
-                queue.pop(slot_index)
-
-        if matched_volume <= 0.0 or open_time is None:
-            continue
-        trades.append(_completed_trade(
-            ticket, open_type, open_time, weighted_open_price, matched_volume,
-            deal, entry_net, close_net,
-        ))
+        trade = _match_close_deal(queue, deal, open_type, order_stops)
+        if trade is not None:
+            trades.append(trade)
 
     trades.sort(key=lambda trade: trade.open_time)
     return trades
