@@ -11,7 +11,6 @@
     "manager_node_runtime/node_snapshots.py::pipeline_stage_pending_count": 122,
     "manager_node_runtime/portfolio_save.py::exclude_portfolio_members_payload": 75,
     "portfolio_manager/ubs_portfolio_candidates.py::load_robust_sets_from_rows": 87,
-    "portfolio_manager/ubs_portfolio_constraints.py::can_add_unit": 74,
     "portfolio_manager/ubs_portfolio_curves.py::bootstrap_valley_drawdown": 79,
     "portfolio_manager/ubs_portfolio_greedy.py::build_portfolio_greedy": 297,
     "portfolio_manager/ubs_portfolio_monthly.py::_strict_monthly_candidate_variants": 100,

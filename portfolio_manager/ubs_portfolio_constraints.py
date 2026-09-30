@@ -70,6 +70,42 @@ def _target_group_units_pct_allowed(
     return after_group_units <= max_units_with_one_step_slack
 
 
+def _respects_symbol_and_group_limits(
+    target_set: RobustStrategySet, sets: list[RobustStrategySet],
+    allocations: dict[str, int], current_units: int,
+    max_units_per_symbol: int | None, max_sets_per_symbol: int | None,
+    max_sets_per_group: int | None,
+) -> bool:
+    if max_units_per_symbol is not None:
+        target_symbol = portfolio_symbol_key(target_set.symbol)
+        symbol_units = sum(
+            allocations.get(strategy.set_id, 0)
+            for strategy in sets
+            if portfolio_symbol_key(strategy.symbol) == target_symbol
+        )
+        if symbol_units + 1 > max_units_per_symbol:
+            return False
+    if max_sets_per_symbol is not None:
+        target_symbol = portfolio_symbol_key(target_set.symbol)
+        active_same_symbol = sum(
+            1 for strategy in sets
+            if portfolio_symbol_key(strategy.symbol) == target_symbol
+            and allocations.get(strategy.set_id, 0) > 0
+        )
+        if current_units == 0 and active_same_symbol >= max_sets_per_symbol:
+            return False
+    if max_sets_per_group is not None:
+        target_group = portfolio_group_key(target_set.symbol)
+        active_same_group = sum(
+            1 for strategy in sets
+            if portfolio_group_key(strategy.symbol) == target_group
+            and allocations.get(strategy.set_id, 0) > 0
+        )
+        if current_units == 0 and active_same_group >= max_sets_per_group:
+            return False
+    return True
+
+
 def can_add_unit(
     target_set: RobustStrategySet,
     sets: list[RobustStrategySet],
@@ -94,33 +130,11 @@ def can_add_unit(
         return False
     if max_total_units is not None and sum(allocations.values()) + 1 > max_total_units:
         return False
-    if max_units_per_symbol is not None:
-        target_symbol = portfolio_symbol_key(target_set.symbol)
-        symbol_units = sum(
-            allocations.get(strategy.set_id, 0)
-            for strategy in sets
-            if portfolio_symbol_key(strategy.symbol) == target_symbol
-        )
-        if symbol_units + 1 > max_units_per_symbol:
-            return False
-    if max_sets_per_symbol is not None:
-        target_symbol = portfolio_symbol_key(target_set.symbol)
-        active_same_symbol = sum(
-            1
-            for strategy in sets
-            if portfolio_symbol_key(strategy.symbol) == target_symbol and allocations.get(strategy.set_id, 0) > 0
-        )
-        if current_units == 0 and active_same_symbol >= max_sets_per_symbol:
-            return False
-    if max_sets_per_group is not None:
-        target_group = portfolio_group_key(target_set.symbol)
-        active_same_group = sum(
-            1
-            for strategy in sets
-            if portfolio_group_key(strategy.symbol) == target_group and allocations.get(strategy.set_id, 0) > 0
-        )
-        if current_units == 0 and active_same_group >= max_sets_per_group:
-            return False
+    if not _respects_symbol_and_group_limits(
+        target_set, sets, allocations, current_units,
+        max_units_per_symbol, max_sets_per_symbol, max_sets_per_group,
+    ):
+        return False
     temp_allocations = allocations.copy()
     temp_allocations[target_set.set_id] = current_units + 1
     if not _target_group_units_pct_allowed(
