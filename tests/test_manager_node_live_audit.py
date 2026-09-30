@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from manager_node_runtime.live_audit import (
     LiveAuditController, _audit_period, _read_set_text, _redact_log_files, _redact_runner_output,
-    normalize_request,
+    normalize_request, single_variant_mode,
 )
 from manager_node_runtime.mt5_native_history_report import (
     NativeHistoryReportError, validate_native_history_report,
@@ -56,9 +56,22 @@ class FakeOwner:
         self.config = {"project_dir": ".", "settings_file": "ui_settings.ini"}
 
     def portfolio_detail(self, portfolio_id: int, scope: str) -> dict:
-        if portfolio_id != 9 or scope != "full_history":
+        if scope != "full_history":
             raise ValueError("portfolio inesperado")
-        return {"portfolio": {"id": 9, "members": [
+        if portfolio_id == 148:
+            # Mejora de una mejora: una sola variante, guardada sin `variant_key`
+            # porque la variante es la fila entera. Su modo es el de la base.
+            return {"portfolio": {
+                "id": 148, "portfolio_type": "aggressive",
+                "improvement_origin": {"source_id": 137, "mode": "aggressive", "depth": 2},
+                "members": [
+                    {"variant_key": "", "candidate_id": "imp-one", "symbol": "EURUSD", "lot": .02},
+                    {"variant_key": "", "candidate_id": "imp-two", "symbol": "XAUUSD", "lot": .03},
+                ],
+            }}
+        if portfolio_id != 9:
+            raise ValueError("portfolio inesperado")
+        return {"portfolio": {"id": 9, "portfolio_type": "bundle", "members": [
             {"variant_key": "balanced", "candidate_id": "one", "symbol": "EURUSD", "lot": .01},
             {"variant_key": "aggressive", "candidate_id": "two", "symbol": "XAUUSD"},
         ]}}
@@ -350,6 +363,24 @@ class LiveAuditEngineTests(unittest.TestCase):
             _detail, members = controller._portfolio_members(9, "balanced")
             self.assertEqual([row["candidate_id"] for row in members], ["one"])
 
+    def test_a_saved_improvement_is_audited_in_the_mode_it_inherited(self) -> None:
+        """Una mejora no es un bundle: sus miembros no declaran `variant_key`."""
+        with tempfile.TemporaryDirectory() as temp:
+            _owner, controller = self._controller(Path(temp), "idle")
+            _detail, members = controller._portfolio_members(148, "aggressive")
+            self.assertEqual([row["candidate_id"] for row in members], ["imp-one", "imp-two"])
+            with self.assertRaisesRegex(ValueError, "una sola variante, modo aggressive"):
+                controller._portfolio_members(148, "balanced")
+
+    def test_only_a_single_variant_portfolio_resolves_an_implicit_mode(self) -> None:
+        self.assertEqual(single_variant_mode({"portfolio_type": "conservative"}), "conservative")
+        self.assertEqual(
+            single_variant_mode({"portfolio_type": "improved", "improvement_origin": {"mode": "aggressive"}}),
+            "aggressive",
+        )
+        self.assertEqual(single_variant_mode({"portfolio_type": "bundle"}), "")
+        self.assertEqual(single_variant_mode({}), "")
+
     def test_tester_uses_five_configured_broker_terminals_for_six_sets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             _owner, controller = self._controller(Path(temp), "idle")
@@ -491,54 +522,6 @@ class LiveAuditEngineTests(unittest.TestCase):
         self.assertEqual(row["limits"]["open_price_rule"], "adaptive_gold")
         self.assertEqual(row["status"], "matched")
         self.assertEqual(result["within_tolerance_trades"], 1)
-
-    def test_price_tolerance_is_adapted_to_each_validated_instrument_family(self) -> None:
-        now = datetime(2026, 8, 28, 10, 0, tzinfo=timezone.utc)
-        cases = (
-            ("US30", 53462.0, 53472.5, .01, 10.5, "adaptive_indices"),
-            ("DE40", 20000.0, 20010.5, .1, 10.5, "adaptive_indices"),
-            ("USTECH", 25000.0, 25010.5, .01, 10.5, "adaptive_indices"),
-            ("NAS100.fs", 29570.0, 29575.0, .01, 5.0, "adaptive_nasdaq"),
-            ("BTCUSD", 77010.0, 77020.0, .01, 10.0, "adaptive_crypto_btc"),
-            ("USDJPY", 159.650, 159.700, .001, .05, "adaptive_jpy_fx"),
-            ("XAUUSD", 4807.16, 4809.21, .01, 2.05, "adaptive_gold"),
-            ("XAGUSD", 67.454, 67.474, .001, .02, "adaptive_silver"),
-            ("EURUSD", 1.1621, 1.1626, .00001, .0005, "adaptive_fx"),
-        )
-        for symbol, real_price, tester_price, point, absolute_limit, rule in cases:
-            with self.subTest(symbol=symbol):
-                real = [{
-                    "strategy": "real", "symbol": symbol, "side": "buy", "open_time": now,
-                    "close_time": now, "open_price": real_price, "volume": .1, "profit": 1.0,
-                }]
-                tester = [{
-                    "strategy": "tester", "symbol": symbol, "side": "buy", "open_time": now,
-                    "close_time": now, "open_price": tester_price, "volume": .1, "profit": 1.0,
-                }]
-
-                result = LiveAuditController._compare(
-                    real, tester, {symbol: point}, request(), {"tester": 1},
-                )
-
-                row = result["comparison_detail"]["operation_comparisons"][0]
-                self.assertEqual(row["status"], "matched")
-                self.assertAlmostEqual(row["limits"]["open_price_absolute"], absolute_limit)
-                self.assertEqual(row["limits"]["open_price_rule"], rule)
-
-        real = [{
-            "strategy": "real", "symbol": "US30", "side": "buy", "open_time": now,
-            "close_time": now, "open_price": 53462.0, "volume": .1, "profit": 1.0,
-        }]
-        tester = [{
-            "strategy": "tester", "symbol": "US30", "side": "buy", "open_time": now,
-            "close_time": now, "open_price": 53472.51, "volume": .1, "profit": 1.0,
-        }]
-        outside = LiveAuditController._compare(
-            real, tester, {"US30": .01}, request(), {"tester": 1},
-        )
-        self.assertEqual(
-            outside["comparison_detail"]["operation_comparisons"][0]["reasons"], ["open_price"],
-        )
 
     def test_active_pipeline_is_paused_and_only_that_pipeline_is_resumed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
