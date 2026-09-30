@@ -30,6 +30,39 @@ class UBSSearchLogicMixin(
     UBSSearchAuditWindowMixin,
     UBSSearchAuditReportMixin,
 ):
+    def _ubs_insert_search_row(self, index: int, row: dict[str, object]) -> None:
+        tag = self._ubs_search_row_tag(row)
+        item = self.ubs_search_tree.insert(
+            "",
+            "end",
+            iid=f"{row['account_type']}:{row['candidate_id']}:{index}",
+            values=(
+                row.get("account_type", ""),
+                row.get("candidate_id", ""),
+                row.get("status", ""),
+                row.get("robust_status", ""),
+                row.get("final_tick_status", ""),
+                row.get("final_tick_6m_status", ""),
+                row.get("regression_status", ""),
+                row.get("target_symbol", "") or row.get("symbol", ""),
+                row.get("period", ""),
+                self._ubs_search_score(row.get("score")),
+                row.get("set_name", ""),
+                row.get("run_id", ""),
+            ),
+            tags=(tag,),
+        )
+        self.ubs_search_paths[item] = {
+            "set": str(row.get("set_path") or ""),
+            "base_report": str(row.get("report_path") or ""),
+            "robust_report": str(row.get("robust_report_path") or ""),
+            "ohlc_report": str(row.get("ohlc_report_path") or ""),
+            "tick_report": str(row.get("real_tick_report_path") or ""),
+            "ohlc_6m_report": str(row.get("ohlc_6m_report_path") or ""),
+            "tick_6m_report": str(row.get("real_tick_6m_report_path") or ""),
+            "regression_report": str(row.get("regression_report_path") or ""),
+        }
+
     def _run_ubs_search(self) -> None:
         if not hasattr(self, "ubs_search_tree"):
             return
@@ -63,37 +96,7 @@ class UBSSearchLogicMixin(
         )
 
         for index, row in enumerate(rows):
-            tag = self._ubs_search_row_tag(row)
-            item = self.ubs_search_tree.insert(
-                "",
-                "end",
-                iid=f"{row['account_type']}:{row['candidate_id']}:{index}",
-                values=(
-                    row.get("account_type", ""),
-                    row.get("candidate_id", ""),
-                    row.get("status", ""),
-                    row.get("robust_status", ""),
-                    row.get("final_tick_status", ""),
-                    row.get("final_tick_6m_status", ""),
-                    row.get("regression_status", ""),
-                    row.get("target_symbol", "") or row.get("symbol", ""),
-                    row.get("period", ""),
-                    self._ubs_search_score(row.get("score")),
-                    row.get("set_name", ""),
-                    row.get("run_id", ""),
-                ),
-                tags=(tag,),
-            )
-            self.ubs_search_paths[item] = {
-                "set": str(row.get("set_path") or ""),
-                "base_report": str(row.get("report_path") or ""),
-                "robust_report": str(row.get("robust_report_path") or ""),
-                "ohlc_report": str(row.get("ohlc_report_path") or ""),
-                "tick_report": str(row.get("real_tick_report_path") or ""),
-                "ohlc_6m_report": str(row.get("ohlc_6m_report_path") or ""),
-                "tick_6m_report": str(row.get("real_tick_6m_report_path") or ""),
-                "regression_report": str(row.get("regression_report_path") or ""),
-            }
+            self._ubs_insert_search_row(index, row)
 
         message = f"{len(rows)} resultado(s) para: {query}"
         if errors:

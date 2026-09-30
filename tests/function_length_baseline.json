@@ -125,7 +125,6 @@
     "ui/ubs_portfolio_versions.py::UBSPortfolioVersionsMixin._recalculate_saved_portfolio": 136,
     "ui/ubs_regression_logic.py::UBSRegressionLogicMixin._refresh_ubs_regression": 89,
     "ui/ubs_robustness_logic.py::UBSRobustnessLogicMixin._refresh_ubs_robustness": 131,
-    "ui/ubs_search_logic.py::UBSSearchLogicMixin._run_ubs_search": 69,
     "ui/ubs_seeds_logic.py::UBSSeedsLogicMixin._repair_ubs_seed_sets": 124,
     "ui/ubs_seeds_logic.py::UBSSeedsLogicMixin._save_ubs_seed_override": 139
   }
