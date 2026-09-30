@@ -99,6 +99,41 @@ def target_symbol_disabled(
     )
 
 
+def _alternative_target_symbols(
+    current: str,
+    universe_symbols: tuple[str, ...],
+    exact_by_key: dict[str, str],
+    current_choice_keys: set[str],
+    source_group: str,
+    target_disabled,
+    group_for,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    universe_keys = {symbol.upper() for symbol in universe_symbols}
+    related_targets = tuple(
+        symbol
+        for symbol in dict.fromkeys(
+            candidate
+            for source in related_assets(current)
+            for candidate in (
+                *axi_cash_future_family_targets(source, universe_symbols),
+                exact_by_key.get(source.upper(), source),
+            )
+        )
+        if symbol.upper() in universe_keys
+        and symbol.upper() not in current_choice_keys
+        and not target_disabled(symbol)
+    )
+    same_group_targets = tuple(
+        symbol
+        for symbol in dict.fromkeys(universe_symbols)
+        if source_group
+        and symbol.upper() not in current_choice_keys
+        and group_for(symbol) == source_group
+        and not target_disabled(symbol)
+    )
+    return related_targets, same_group_targets
+
+
 def target_symbol_options_for_seed(
     seed: Seed,
     universe_symbols: tuple[str, ...],
@@ -133,7 +168,6 @@ def target_symbol_options_for_seed(
         return group_by_symbol.get(canonical_symbol(symbol, aliases).upper(), "")
 
     source_group = group_for(current) or group_for(mapped_current) or group_for(resolved_current)
-    universe_keys = {symbol.upper() for symbol in universe_symbols}
     current_family_targets = tuple(
         target
         for target in dict.fromkeys(
@@ -150,27 +184,9 @@ def target_symbol_options_for_seed(
         if target and not target_disabled(target)
     )
     current_choice_keys = {symbol.upper() for symbol in current_targets}
-    related_targets = tuple(
-        symbol
-        for symbol in dict.fromkeys(
-            candidate
-            for source in related_assets(current)
-            for candidate in (
-                *axi_cash_future_family_targets(source, universe_symbols),
-                exact_by_key.get(source.upper(), source),
-            )
-        )
-        if symbol.upper() in universe_keys
-        and symbol.upper() not in current_choice_keys
-        and not target_disabled(symbol)
-    )
-    same_group_targets = tuple(
-        symbol
-        for symbol in dict.fromkeys(universe_symbols)
-        if source_group
-        and symbol.upper() not in current_choice_keys
-        and group_for(symbol) == source_group
-        and not target_disabled(symbol)
+    related_targets, same_group_targets = _alternative_target_symbols(
+        current, universe_symbols, exact_by_key, current_choice_keys,
+        source_group, target_disabled, group_for,
     )
     return tuple(dict.fromkeys(current_targets)), related_targets, same_group_targets
 
