@@ -78,7 +78,6 @@
     "ubs_agent_policy.py::discovery_ranked_seed_selection": 76,
     "ubs_agent_policy.py::target_symbol_options_for_seed": 74,
     "ubs_agent_rescore.py::_rescore_robustness_from_reports": 155,
-    "ubs_agent_rescore.py::rescore_candidate_scores_only": 69,
     "ubs_agent_rescore.py::rescore_robustness_only": 104,
     "ubs_agent_resume.py::resume_last_run": 380,
     "ubs_agent_retry.py::retry_full_run": 104,

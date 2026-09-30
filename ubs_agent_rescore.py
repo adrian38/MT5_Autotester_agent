@@ -191,6 +191,31 @@ def _batched_memory_updates(function):
     return wrapped
 
 
+def _candidate_score_update(row, args: argparse.Namespace, score_config: ScoreConfig):
+    variant = variant_from_candidate_row(row)
+    config = score_config_for_variant(
+        score_config, variant, min_trades_w1=args.min_trades_w1,
+        min_trades_mn=args.min_trades_mn)
+    result = _rescore_metrics_json(row["metrics_json"], config)
+    payload, stored = json.loads(result.to_json()), json.loads(row["metrics_json"])
+    invalid_stops = result.trades <= 0 and stored.get("failure_type") in {"invalid_stops", "incompatible_volume"}
+    if invalid_stops:
+        for key in (
+            "failure_type", "reasons", "invalid_order_count", "invalid_order_count_scope",
+            "invalid_order_sample", "log_source", "retryable", "volume_min", "max_lots", "volume_evidence",
+        ):
+            if key in stored:
+                payload[key] = stored[key]
+        payload["accepted"] = False
+    status = (
+        "rejected" if invalid_stops else "no_trades" if result.trades <= 0 else
+        "accepted" if result.accepted else "rejected")
+    return (
+        result.score, int(status == "accepted" and result.accepted),
+        json.dumps(payload, ensure_ascii=True, sort_keys=True),
+        status, int(row["id"])), status
+
+
 @_batched_memory_updates
 def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if bool(getattr(args, "rescore_from_reports", False)):
@@ -208,38 +233,13 @@ def rescore_candidate_scores_only(args: argparse.Namespace, memory: AgentMemory,
     invalid_metrics = 0
     updates: list[tuple[object, ...]] = []
     for row in rows:
-        variant = variant_from_candidate_row(row)
-        config = score_config_for_variant(
-            score_config,
-            variant,
-            min_trades_w1=args.min_trades_w1,
-            min_trades_mn=args.min_trades_mn,
-        )
         try:
-            result = _rescore_metrics_json(row["metrics_json"], config)
+            update, status = _candidate_score_update(row, args, score_config)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             invalid_metrics += 1
             print(f"AVISO: metrics_json base invalido candidate #{int(row['id'])}: {exc}")
             continue
-        payload = json.loads(result.to_json())
-        stored = json.loads(row["metrics_json"])
-        invalid_stops = result.trades <= 0 and stored.get("failure_type") in {"invalid_stops", "incompatible_volume"}
-        if invalid_stops:
-            for key in ("failure_type", "reasons", "invalid_order_count", "invalid_order_count_scope",
-                        "invalid_order_sample", "log_source", "retryable", "volume_min", "max_lots", "volume_evidence"):
-                if key in stored:
-                    payload[key] = stored[key]
-            payload["accepted"] = False
-        status = "rejected" if invalid_stops else "no_trades" if result.trades <= 0 else ("accepted" if result.accepted else "rejected")
-        updates.append(
-            (
-                result.score,
-                int(status == "accepted" and result.accepted),
-                json.dumps(payload, ensure_ascii=True, sort_keys=True),
-                status,
-                int(row["id"]),
-            )
-        )
+        updates.append(update)
         status_counts[status] = status_counts.get(status, 0) + 1
     if updates:
         memory.conn.executemany(
