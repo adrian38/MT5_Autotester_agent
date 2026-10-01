@@ -73,7 +73,6 @@
     "ubs_agent_run_config.py::build_run_config": 167,
     "ubs_agent_run_modes.py::run_standalone_mode": 93,
     "ubs_agent_seeds_plan.py::ranked_seed_selection": 78,
-    "ubs_agent_sets.py::repair_seed_backtest_set": 78,
     "ubs_agent_targets.py::choose_diverse_target": 89,
     "ubs_agent_targets.py::choose_target_symbol": 164,
     "ubs_agent_targets.py::diverse_target_fallback": 82,

@@ -208,30 +208,10 @@ def replace_or_add_current_value(lines: list[str], key: str, value: str, default
     return True
 
 
-def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, object]:
-    text, encoding = read_set_with_encoding(path)
-    lines = text.splitlines()
-    params = load_set_params(path)
-    changes: list[str] = []
-
-    normalized_symbol = normalize_set_symbol(symbol)
-    if normalized_symbol and normalize_set_symbol(params.get("ForceSymbol", "")) != normalized_symbol:
-        if replace_existing_current_value(lines, "ForceSymbol", normalized_symbol):
-            changes.append("ForceSymbol")
-        else:
-            replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
-            changes.append("ForceSymbol")
-
-    run_strategy = infer_missing_run_strategy_from_set(path, params)
-    if run_strategy and str(params.get("Run_Strategy") or "").strip() != run_strategy:
-        replace_or_add_current_value(
-            lines,
-            "Run_Strategy",
-            run_strategy,
-            f"{run_strategy}||1||0||2||N",
-        )
-        changes.append("Run_Strategy")
-
+def _repair_strategy_timeframes(
+    lines: list[str], params: dict[str, str], period: str, run_strategy: str | None,
+    changes: list[str],
+) -> None:
     enum_value = TIMEFRAME_TO_ENUM.get(str(period or "").strip().upper())
     if enum_value and run_strategy == "1" and str(params.get("ST1_Timeframe") or "").strip() in {"", "0"}:
         replace_or_add_current_value(
@@ -266,6 +246,10 @@ def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, 
         )
         changes.append("RNG_ATR_Timeframe")
 
+
+def _repair_legacy_timeframes(
+    lines: list[str], params: dict[str, str], changes: list[str],
+) -> None:
     valid_timeframe_values = set(TIMEFRAME_ENUM)
     for key in (
         "ST1_Timeframe",
@@ -283,6 +267,30 @@ def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, 
             replace_existing_current_value(lines, key, replacement)
             changes.append(key)
 
+
+def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, object]:
+    text, encoding = read_set_with_encoding(path)
+    lines = text.splitlines()
+    params = load_set_params(path)
+    changes: list[str] = []
+
+    normalized_symbol = normalize_set_symbol(symbol)
+    if normalized_symbol and normalize_set_symbol(params.get("ForceSymbol", "")) != normalized_symbol:
+        if replace_existing_current_value(lines, "ForceSymbol", normalized_symbol):
+            changes.append("ForceSymbol")
+        else:
+            replace_or_add_plain_key(lines, "ForceSymbol", normalized_symbol)
+            changes.append("ForceSymbol")
+
+    run_strategy = infer_missing_run_strategy_from_set(path, params)
+    if run_strategy and str(params.get("Run_Strategy") or "").strip() != run_strategy:
+        replace_or_add_current_value(
+            lines, "Run_Strategy", run_strategy, f"{run_strategy}||1||0||2||N",
+        )
+        changes.append("Run_Strategy")
+
+    _repair_strategy_timeframes(lines, params, period, run_strategy, changes)
+    _repair_legacy_timeframes(lines, params, changes)
     if changes:
         write_set_text(path, "\n".join(lines), encoding)
     return {"changed": changes, "run_strategy": run_strategy}
