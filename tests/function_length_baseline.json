@@ -43,7 +43,6 @@
     "tools/fast_rescore_from_metrics.py::refresh_stage": 79,
     "tools/fast_rescore_from_metrics.py::rescore_robustness_stage": 90,
     "tools/gen_axi_normalization.py::main": 231,
-    "tools/installer_app.py::InstallerUI._install_thread": 75,
     "ubs/manual_status.py::mark_candidate_final_tick": 119,
     "ubs/manual_status.py::mark_candidate_regression": 92,
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
