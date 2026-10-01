@@ -163,6 +163,47 @@ def sync_manual_accepted_candidate_copies(
     return copied
 
 
+def _upsert_candidate_robustness(
+    conn: sqlite3.Connection,
+    row,
+    status: str,
+    from_date: str,
+    to_date: str,
+    positive_bonus: float,
+    negative_bonus: float,
+    evaluated_at: str,
+) -> None:
+    conn.execute(
+        """
+        insert into candidate_robustness (
+            candidate_id, run_id, status, report_path, score, accepted,
+            metrics_json, from_date, to_date, positive_bonus, negative_bonus, evaluated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(candidate_id) do update set
+            run_id=excluded.run_id,
+            status=excluded.status,
+            accepted=excluded.accepted,
+            report_path=excluded.report_path,
+            score=excluded.score,
+            metrics_json=excluded.metrics_json,
+            from_date=excluded.from_date,
+            to_date=excluded.to_date,
+            positive_bonus=excluded.positive_bonus,
+            negative_bonus=excluded.negative_bonus,
+            evaluated_at=excluded.evaluated_at
+        """,
+        (
+            int(row["candidate_id"]), int(row["run_id"]), status,
+            row["report_path"], row["score"], _accepted_value(status), row["metrics_json"],
+            str(row["from_date"] or from_date or ""),
+            str(row["to_date"] or to_date or ""),
+            float(row["positive_bonus"] if row["positive_bonus"] is not None else positive_bonus),
+            float(row["negative_bonus"] if row["negative_bonus"] is not None else negative_bonus),
+            evaluated_at,
+        ),
+    )
+
+
 def mark_candidate_robustness(
     conn: sqlite3.Connection,
     candidate_ids: Iterable[object],
@@ -197,39 +238,8 @@ def mark_candidate_robustness(
     ).fetchall()
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
-        conn.execute(
-            """
-            insert into candidate_robustness (
-                candidate_id, run_id, status, report_path, score, accepted,
-                metrics_json, from_date, to_date, positive_bonus, negative_bonus, evaluated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(candidate_id) do update set
-                run_id=excluded.run_id,
-                status=excluded.status,
-                accepted=excluded.accepted,
-                report_path=excluded.report_path,
-                score=excluded.score,
-                metrics_json=excluded.metrics_json,
-                from_date=excluded.from_date,
-                to_date=excluded.to_date,
-                positive_bonus=excluded.positive_bonus,
-                negative_bonus=excluded.negative_bonus,
-                evaluated_at=excluded.evaluated_at
-            """,
-            (
-                int(row["candidate_id"]),
-                int(row["run_id"]),
-                status,
-                row["report_path"],
-                row["score"],
-                _accepted_value(status),
-                row["metrics_json"],
-                str(row["from_date"] or from_date or ""),
-                str(row["to_date"] or to_date or ""),
-                float(row["positive_bonus"] if row["positive_bonus"] is not None else positive_bonus),
-                float(row["negative_bonus"] if row["negative_bonus"] is not None else negative_bonus),
-                now,
-            ),
+        _upsert_candidate_robustness(
+            conn, row, status, from_date, to_date, positive_bonus, negative_bonus, now,
         )
     if status != "accepted":
         placeholders = _placeholders(len(ids))
