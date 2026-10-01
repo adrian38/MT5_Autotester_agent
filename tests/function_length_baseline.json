@@ -48,7 +48,6 @@
     "ubs/regression.py::evaluate_regression_report": 162,
     "ubs/regression.py::rescore_regression_only": 141,
     "ubs/score.py::score_report": 160,
-    "ubs/selection.py::estimate_discovery_source_mix": 79,
     "ubs/selection.py::estimate_discovery_target_policy_mix": 266,
     "ubs_agent_evaluate.py::evaluate_history_probe": 92,
     "ubs_agent_evaluate.py::evaluate_seed_report": 90,

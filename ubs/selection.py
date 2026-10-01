@@ -316,22 +316,9 @@ def estimate_discovery_target_policy_mix(
     )
 
 
-def estimate_discovery_source_mix(
-    rows: Iterable[object],
-    *,
-    recent_run_limit: int = DISCOVERY_SOURCE_MIX_RECENT_RUNS,
-    minimum_trials: int = DISCOVERY_SOURCE_MIX_MIN_TRIALS,
-    floor: float = DISCOVERY_SOURCE_MIX_FLOOR,
-    ceiling: float = DISCOVERY_SOURCE_MIX_CEILING,
-) -> DiscoverySourceMix:
-    """Allocate discovery sources from broker-local, source-level outcomes.
-
-    Three variants from one selected source are correlated, so they count as a
-    single trial. A source succeeds only when any child reaches accepted FT 6M.
-    Valid failures at an earlier funnel stage count as failures; unresolved
-    technical outcomes do not turn into negative evidence.
-    """
-
+def _discovery_source_groups(
+    rows: Iterable[object], recent_run_limit: int,
+) -> tuple[list[int], dict[tuple[int, int, str, bool], list[int]]]:
     materialized = list(rows)
     run_ids = sorted(
         {
@@ -357,6 +344,26 @@ def estimate_discovery_source_mix(
             bool(_row_get(row, "exploitable", False)),
         )
         grouped.setdefault(key, []).append(outcome)
+    return run_ids, grouped
+
+
+def estimate_discovery_source_mix(
+    rows: Iterable[object],
+    *,
+    recent_run_limit: int = DISCOVERY_SOURCE_MIX_RECENT_RUNS,
+    minimum_trials: int = DISCOVERY_SOURCE_MIX_MIN_TRIALS,
+    floor: float = DISCOVERY_SOURCE_MIX_FLOOR,
+    ceiling: float = DISCOVERY_SOURCE_MIX_CEILING,
+) -> DiscoverySourceMix:
+    """Allocate discovery sources from broker-local, source-level outcomes.
+
+    Three variants from one selected source are correlated, so they count as a
+    single trial. A source succeeds only when any child reaches accepted FT 6M.
+    Valid failures at an earlier funnel stage count as failures; unresolved
+    technical outcomes do not turn into negative evidence.
+    """
+
+    run_ids, grouped = _discovery_source_groups(rows, recent_run_limit)
 
     trials = {True: 0, False: 0}
     successes = {True: 0, False: 0}
