@@ -319,6 +319,55 @@ def choose_target_period(
     return rng.choice(choices), "tf_explore"
 
 
+def _fallback_symbol_candidates(
+    seed: Seed,
+    asset_feedback: dict[str, float],
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str],
+    symbol_map: dict[str, str] | None,
+    disabled_symbols: set[str] | None,
+    production_mode: bool,
+    group_by_symbol: dict[str, str] | None,
+) -> tuple[str, ...]:
+    family_candidates = tuple(
+        target
+        for source in (seed.symbol, *related_assets(seed.symbol))
+        for target in axi_cash_future_family_targets(source, universe_symbols)
+    )
+    related_candidates = tuple(dict.fromkeys((*family_candidates, *related_assets(seed.symbol))))
+    if not production_mode:
+        return tuple(dict.fromkeys((seed.symbol, *related_candidates, *universe_symbols)))
+    _current_targets, related_targets, same_group_targets = target_symbol_options_for_seed(
+        seed, universe_symbols, aliases, symbol_map=symbol_map,
+        disabled_symbols=disabled_symbols, group_by_symbol=group_by_symbol,
+    )
+    if group_by_symbol:
+        return tuple(dict.fromkeys((seed.symbol, *related_targets, *same_group_targets)))
+    evidence_symbols = tuple(
+        symbol for symbol in universe_symbols
+        if asset_feedback.get(canonical_symbol(symbol, aliases).upper(), 0.0) > 0.0
+    )
+    return tuple(dict.fromkeys((seed.symbol, *related_candidates, *evidence_symbols)))
+
+
+def _fallback_period_candidates(
+    seed: Seed, timeframe_feedback: dict[str, float],
+    timeframe_universe: tuple[str, ...], production_mode: bool,
+) -> tuple[str, ...]:
+    if not production_mode:
+        return tuple(dict.fromkeys(
+            (*related_timeframes(seed.period, timeframe_universe), *timeframe_universe)
+        ))
+    positive_periods = tuple(
+        period for period in timeframe_universe
+        if timeframe_feedback.get(str(period).upper(), 0.0) > 0.0
+    )
+    candidates = filter_timeframe_universe(
+        tuple(dict.fromkeys((seed.period, *positive_periods))), timeframe_universe,
+    )
+    return candidates or related_timeframes(seed.period, timeframe_universe)
+
+
 def diverse_target_fallback(
     seed: Seed,
     asset_feedback: dict[str, float],
@@ -335,46 +384,13 @@ def diverse_target_fallback(
     group_by_symbol: dict[str, str] | None = None,
 ) -> tuple[str, str] | None:
     aliases = aliases or {}
-    family_candidates = tuple(
-        target
-        for source in (seed.symbol, *related_assets(seed.symbol))
-        for target in axi_cash_future_family_targets(source, universe_symbols)
+    symbol_candidates = _fallback_symbol_candidates(
+        seed, asset_feedback, universe_symbols, aliases, symbol_map, disabled_symbols,
+        production_mode, group_by_symbol,
     )
-    related_candidates = tuple(dict.fromkeys((*family_candidates, *related_assets(seed.symbol))))
-    if production_mode:
-        _current_targets, related_targets, same_group_targets = target_symbol_options_for_seed(
-            seed,
-            universe_symbols,
-            aliases,
-            symbol_map=symbol_map,
-            disabled_symbols=disabled_symbols,
-            group_by_symbol=group_by_symbol,
-        )
-        if group_by_symbol:
-            symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_targets, *same_group_targets)))
-        else:
-            evidence_symbols = tuple(
-                symbol
-                for symbol in universe_symbols
-                if asset_feedback.get(canonical_symbol(symbol, aliases).upper(), 0.0) > 0.0
-            )
-            symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *evidence_symbols)))
-    else:
-        symbol_candidates = tuple(dict.fromkeys((seed.symbol, *related_candidates, *universe_symbols)))
-    if production_mode:
-        positive_periods = tuple(
-            period
-            for period in timeframe_universe
-            if timeframe_feedback.get(str(period).upper(), 0.0) > 0.0
-        )
-        period_candidates = filter_timeframe_universe(
-            tuple(dict.fromkeys((seed.period, *positive_periods))),
-            timeframe_universe,
-        )
-        if not period_candidates:
-            period_candidates = related_timeframes(seed.period, timeframe_universe)
-    else:
-        period_candidates = tuple(dict.fromkeys((*related_timeframes(seed.period, timeframe_universe), *timeframe_universe)))
+    period_candidates = _fallback_period_candidates(
+        seed, timeframe_feedback, timeframe_universe, production_mode,
+    )
     scored: list[tuple[float, str, str]] = []
     for symbol in symbol_candidates:
         if not symbol or symbol == "UNKNOWN":
