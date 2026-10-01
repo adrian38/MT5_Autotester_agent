@@ -2654,8 +2654,7 @@ def run_jobs_parallel(
 ) -> int:
     def prepare_profile(profile: TerminalProfile) -> TesterSettings:
         return settings_from_profile(
-            profile,
-            args.delay,
+            profile, args.delay,
             args.tester_kick_after_seconds,
             args.tester_stall_after_seconds,
             args.tester_max_runtime_seconds,
@@ -2683,6 +2682,7 @@ def run_jobs_parallel(
         logger,
         success_exit_codes=(0, SKIPPED_SYMBOL_EXIT_CODE),
         fatal_exception=TerminalStillRunningError,
+        retry_exit_code=MODEL4_NO_HISTORY_EXIT_CODE,
     )
     log_runner_diagnostics(logger, "PARALLEL_AFTER", profiles)
     return result
