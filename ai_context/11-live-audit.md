@@ -280,3 +280,20 @@ El port necesita ambas piezas: `manager_node_runtime/live_audit_price.py` para
 los pisos de tolerancia, consumido por `live_audit.py`, y
 `portfolio_manager/mt5_report.py` para reconstruir los cierres. Las pruebas del
 nodo cubren los dos contratos con los datos observados en AXI.
+
+## Failover del Strategy Tester sin ticks (2026-10-01)
+
+El runner reserva el código de salida 4 para un reporte Model 4 con cero barras
+y cero ticks después de sus dos intentos normales. Bajo carga paralela, un
+agente local del tester puede rechazar temporalmente la autorización aunque el
+mismo símbolo y perfil tengan histórico válido.
+
+Cuando un job termina con ese código, `run_jobs_parallel` espera a que acaben
+todos los workers y lo ejecuta una sola vez más, en serie, sobre el siguiente
+perfil configurado. Con un único perfil se reusa ese perfil una vez ya terminada
+la contención paralela. No se reintentan códigos genéricos ni fallos de terminal
+ocupada. Si el failover también falla, el resultado continúa siendo fallo.
+
+El error publicado por la auditoría resume ahora las líneas `ERROR`, el job que
+falló y el failover; el inventario `PARALLEL_AFTER` permanece completo en
+`runner.log`, pero ya no oculta la causa en la interfaz.
