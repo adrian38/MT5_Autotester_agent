@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -394,15 +394,18 @@ def save_portfolio_payload(memory_path: str | Path, payload: dict[str, Any]) -> 
         conn.close()
 
 
-def exclude_portfolio_members_payload(
-    project_dir: str | Path,
-    broker: str,
-    memory_path: str | Path,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Quarantine selected bundle members locally, then delete the bundle."""
-    project = Path(project_dir).expanduser().resolve()
-    active_memory = Path(memory_path).expanduser().resolve()
+@dataclass(frozen=True)
+class _ExclusionRequest:
+    portfolio_id: int
+    scope: str
+    raw_paths: object
+    single_path: object
+    multiple: bool
+    pool_member: dict[str, Any] | None
+    pool_exclusion: bool
+
+
+def _parse_exclusion_request(payload: dict[str, Any]) -> _ExclusionRequest:
     portfolio_id = int(payload.get("portfolio_id") or 0)
     scope = "monthly" if str(payload.get("scope") or "") == "monthly" else "full_history"
     raw_paths = payload.get("set_paths")
@@ -424,19 +427,40 @@ def exclude_portfolio_members_payload(
     pool_exclusion = portfolio_id <= 0
     if pool_exclusion and not isinstance(pool_member, dict):
         raise ValueError("Falta el portafolio que contiene las estrategias")
+    return _ExclusionRequest(
+        portfolio_id, scope, raw_paths, single_path, multiple, pool_member, pool_exclusion,
+    )
 
-    def path_key(value: object) -> str:
-        return str(Path(str(value or "")).expanduser()).replace("/", "\\").casefold()
+
+def _exclusion_path_key(value: object) -> str:
+    return str(Path(str(value or "")).expanduser()).replace("/", "\\").casefold()
+
+
+def exclude_portfolio_members_payload(
+    project_dir: str | Path,
+    broker: str,
+    memory_path: str | Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Quarantine selected bundle members locally, then delete the bundle."""
+    project = Path(project_dir).expanduser().resolve()
+    active_memory = Path(memory_path).expanduser().resolve()
+    request = _parse_exclusion_request(payload)
 
     is_bundle = False
     selected: list[dict[str, Any]] = []
-    is_bundle, member = _select_excluded_members(active_memory, multiple, path_key, pool_exclusion, pool_member, portfolio_id, raw_paths, scope, selected, single_path)
+    is_bundle, member = _select_excluded_members(
+        active_memory, request.multiple, _exclusion_path_key, request.pool_exclusion,
+        request.pool_member, request.portfolio_id, request.raw_paths, request.scope,
+        selected, request.single_path,
+    )
 
     reason_code = normalize_reason_code(payload.get("reason_code"))
     reason = reason_with_verdict(
-        "Excluida manualmente desde la gestión por símbolo" if pool_exclusion
+        "Excluida manualmente desde la gestión por símbolo" if request.pool_exclusion
         else "Excluida manualmente desde un portafolio A/M/C guardado" if is_bundle
-        else "Excluida manualmente desde un Portafolio UBS mensual guardado" if scope == "monthly"
+        else "Excluida manualmente desde un Portafolio UBS mensual guardado"
+        if request.scope == "monthly"
         else "Retirada manualmente de un portafolio guardado",
         reason_code,
     )
@@ -445,7 +469,9 @@ def exclude_portfolio_members_payload(
 
     quarantine_ids: list[int] = []
     verdict_applied = reason_code != MANUAL_REASON
-    _quarantine_grouped_members(grouped, portfolio_id, quarantine_ids, reason, reason_code)
+    _quarantine_grouped_members(
+        grouped, request.portfolio_id, quarantine_ids, reason, reason_code,
+    )
 
     # EL PORTAFOLIO GUARDADO NO SE TOCA. Antes se borraba entero (bundle A/M/C,
     # mes, o cualquier exclusion multiple) o se le quitaba la asignacion y se
@@ -456,16 +482,17 @@ def exclude_portfolio_members_payload(
     # `verdict_applied` es la confirmacion que exige el manager cuando el motivo
     # no es manual: sin ella avisa en vez de dar por escrito un veredicto que
     # este nodo no habria aplicado.
-    if multiple:
+    if request.multiple:
         return _exclusion_response_message(
-            multiple, portfolio_id, quarantine_ids, reason_code, scope, verdict_applied,
+            request.multiple, request.portfolio_id, quarantine_ids, reason_code,
+            request.scope, verdict_applied,
         )
     return {
         "quarantine_id": quarantine_ids[0] if quarantine_ids else 0,
         "deleted": False,
-        "portfolio_id": portfolio_id or None,
-        "scope": scope,
+        "portfolio_id": request.portfolio_id or None,
+        "scope": request.scope,
         "reason_code": reason_code,
         "verdict_applied": verdict_applied,
-        "pool_exclusion": pool_exclusion,
+        "pool_exclusion": request.pool_exclusion,
     }
