@@ -418,111 +418,6 @@ class LiveAuditEngineTests(unittest.TestCase):
 
         self.assertEqual([profile[1]["name"] for profile in profiles], ["Fallback"])
 
-    def test_comparison_explains_missing_extra_and_deviation_reasons(self) -> None:
-        now = datetime.now(timezone.utc)
-        real = [{
-            "strategy": "1007", "symbol": "EURUSD", "side": "buy", "open_time": now,
-            "close_time": now, "open_price": 1.2, "volume": .02, "profit": -5.0,
-        }]
-        expected = [{
-            "strategy": "one", "symbol": "EURUSD", "side": "buy", "open_time": now,
-            "close_time": now, "open_price": 1.1, "volume": .01, "profit": 1.0,
-        }, {
-            "strategy": "two", "symbol": "XAUUSD", "side": "sell", "open_time": now,
-            "close_time": now - timedelta(hours=1), "open_price": 1.0, "volume": .01, "profit": 1.0,
-        }]
-        result = LiveAuditController._compare(
-            real, expected, {"EURUSD": .00001}, request(), {"one": 1, "two": 1},
-        )
-        self.assertEqual(result["comparison_detail"]["missing_by_strategy"], {"two": 1})
-        self.assertEqual(result["comparison_detail"]["deviation_reasons"]["volume"], 1)
-        self.assertEqual(result["comparison_detail"]["deviation_reasons"]["pnl"], 1)
-        self.assertEqual(result["matched_trades"], 1)
-        self.assertEqual(result["within_tolerance_trades"], 0)
-        self.assertEqual(result["deviating_pairs"], 1)
-        rows = result["comparison_detail"]["operation_comparisons"]
-        self.assertEqual([row["status"] for row in rows], ["deviation", "missing"])
-        self.assertEqual(rows[0]["real"]["strategy"], "1007")
-        self.assertIsInstance(rows[0]["tester"]["open_time"], str)
-        self.assertEqual(rows[0]["measurements"]["open_price_delta_points"], 10000.0)
-        self.assertEqual(rows[1]["reasons"], ["no_real_same_symbol_and_side"])
-        self.assertEqual(rows[1]["data_issues"], ["close_before_open"])
-        self.assertEqual(result["comparison_detail"]["tester_data_issues"], {"close_before_open": 1})
-        self.assertEqual(result["comparison_detail"]["strategy_summary"][0], {
-            "strategy": "one", "tester_trades": 1, "aligned": 1,
-            "within_tolerance": 0, "with_deviations": 1, "missing_real": 0,
-        })
-        self.assertIn("cada real se usa una vez", result["comparison_detail"]["methodology"]["alignment"])
-
-    def test_only_adverse_pnl_differences_trigger_the_tolerance(self) -> None:
-        now = datetime(2026, 8, 28, 10, 0, tzinfo=timezone.utc)
-        base = {
-            "strategy": "pnl", "symbol": "EURUSD", "side": "buy",
-            "open_time": now, "close_time": now, "open_price": 1.1, "volume": .1,
-        }
-        cases = (
-            (28.69, 37.64, "favorable", "matched"),
-            (-.45, 1.79, "favorable", "matched"),
-            (-4.73, -1.25, "favorable", "matched"),
-            (1.80, -1.12, "unfavorable", "deviation"),
-            (-3.15, -3.35, "unfavorable", "matched"),
-            (10.0, 9.0, "unfavorable", "matched"),
-        )
-        for tester_profit, real_profit, direction, status in cases:
-            with self.subTest(tester=tester_profit, real=real_profit):
-                result = LiveAuditController._compare(
-                    [{**base, "profit": real_profit}],
-                    [{**base, "profit": tester_profit}],
-                    {"EURUSD": .00001}, request(), {"pnl": 1},
-                )
-                row = result["comparison_detail"]["operation_comparisons"][0]
-                self.assertEqual(row["status"], status)
-                self.assertEqual(row["measurements"]["pnl_direction"], direction)
-                self.assertEqual("pnl" in row["reasons"], status == "deviation")
-                if direction == "favorable":
-                    self.assertEqual(row["measurements"]["pnl_adverse_delta"], 0)
-
-        adverse = LiveAuditController._compare(
-            [{**base, "profit": -1.12}], [{**base, "profit": 1.80}],
-            {"EURUSD": .00001}, request(), {"pnl": 1},
-        )["comparison_detail"]["operation_comparisons"][0]
-        self.assertEqual(adverse["reasons"], ["pnl"])
-        self.assertEqual(adverse["measurements"]["pnl_adverse_delta"], 2.92)
-        self.assertEqual(adverse["measurements"]["pnl_adverse_delta_pct"], 162.222)
-
-        favorable_but_late = LiveAuditController._compare(
-            [{**base, "close_time": now + timedelta(seconds=384), "profit": 37.64}],
-            [{**base, "profit": 28.69}],
-            {"EURUSD": .00001}, request(), {"pnl": 1},
-        )["comparison_detail"]["operation_comparisons"][0]
-        self.assertEqual(favorable_but_late["status"], "deviation")
-        self.assertEqual(favorable_but_late["reasons"], ["close_time"])
-        self.assertEqual(favorable_but_late["measurements"]["pnl_direction"], "favorable")
-
-    def test_xauusd_eleven_point_price_delta_is_within_default_tolerance(self) -> None:
-        now = datetime(2026, 8, 28, 10, 0, tzinfo=timezone.utc)
-        real = [{
-            "strategy": "real", "symbol": "XAUUSD", "side": "buy", "open_time": now,
-            "close_time": now, "open_price": 4566.63, "volume": .03, "profit": 1.0,
-        }]
-        tester = [{
-            "strategy": "xau", "symbol": "XAUUSD", "side": "buy", "open_time": now,
-            "close_time": now, "open_price": 4566.74, "volume": .03, "profit": 1.0,
-        }]
-
-        result = LiveAuditController._compare(
-            real, tester, {"XAUUSD": .01}, request(), {"xau": 1},
-        )
-
-        row = result["comparison_detail"]["operation_comparisons"][0]
-        self.assertEqual(row["measurements"]["open_price_delta_points"], 11.0)
-        self.assertEqual(row["limits"]["open_price_points"], 205)
-        self.assertEqual(row["limits"]["open_price_absolute"], 2.05)
-        self.assertEqual(row["limits"]["open_price_configured_points"], 15)
-        self.assertEqual(row["limits"]["open_price_rule"], "adaptive_gold")
-        self.assertEqual(row["status"], "matched")
-        self.assertEqual(result["within_tolerance_trades"], 1)
-
     def test_active_pipeline_is_paused_and_only_that_pipeline_is_resumed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             owner, controller = self._controller(Path(temp), "running")
@@ -531,30 +426,17 @@ class LiveAuditEngineTests(unittest.TestCase):
             self.assertEqual(state["status"], "completed")
             self.assertEqual((owner.pause_calls, owner.resume_calls), (1, 1))
 
-    def test_real_account_membership_uses_symbol_and_lot_not_magic(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            _owner, controller = self._controller(Path(temp), "idle")
-            now = datetime.now(timezone.utc)
-            matching = {
-                "strategy": "magic-can-differ", "symbol": "EURUSD", "side": "buy",
-                "open_time": now, "close_time": now, "open_price": 1.1,
-                "close_price": 1.1, "volume": .01, "profit": 1.0,
-            }
-            wrong_lot = {**matching, "strategy": "one", "volume": .02}
-            controller._extract_real = lambda *_args: (
-                [matching, wrong_lot], {"EURUSD": .00001},
-                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
-                 "history_detail": {}},
-            )
-            controller.start(request())
-            state = self._wait(controller)
+    def test_the_node_publishes_unfiltered_material_and_lets_the_manager_judge(self) -> None:
+        """El nodo ejecuta y observa; el criterio es del manager.
 
-        self.assertEqual(state["status"], "completed")
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["portfolio_closures"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["foreign_closures_ignored"], 1)
-
-    def test_real_account_filter_uses_effective_broker_lot_not_invalid_saved_lot(self) -> None:
+        Antes filtraba aquí por `(símbolo, lote)` y comparaba. Ahora publica los
+        cierres **sin filtrar** junto a lo único que el manager no puede saber:
+        los miembros de la variante y las especificaciones de volumen de este
+        broker. El filtro y sus casos —lote efectivo por mínimo del broker, lote
+        real configurado por estrategia y símbolo efectivo del reporte— se
+        prueban en `tests/test_live_audit_analysis.py` del manager, que es donde
+        se ejecutan.
+        """
         with tempfile.TemporaryDirectory() as temp:
             owner, controller = self._controller(Path(temp), "idle")
             owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
@@ -575,58 +457,17 @@ class LiveAuditEngineTests(unittest.TestCase):
             controller.start(request())
             state = self._wait(controller)
 
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["portfolio_closures"], 1)
-
-    def test_real_account_filter_uses_the_configured_lot_for_each_strategy(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            owner, controller = self._controller(Path(temp), "idle")
-            owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
-                "variant_key": "balanced", "candidate_id": "eth-grid", "symbol": "ETHUSD", "lot": .7,
-            }]}}
-            now = datetime.now(timezone.utc)
-            base = {
-                "strategy": "real", "symbol": "ETHUSD", "side": "buy", "open_time": now,
-                "close_time": now, "open_price": 100.0, "close_price": 100.0, "profit": 1.0,
-            }
-            controller._extract_real = lambda *_args: (
-                [{**base, "volume": .6}, {**base, "volume": .7}], {"ETHUSD": .01},
-                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
-                 "history_detail": {}},
-            )
-            controller._run_tester = lambda *_args: (
-                [{**base, "strategy": "eth-grid", "volume": .6}], [99.0], {"eth-grid": 1}, [], {},
-            )
-            controller.start({**request(), "real_strategy_lots": {"eth-grid": .6}})
-            state = self._wait(controller)
-
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["matched_trades"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["foreign_closures_ignored"], 1)
-
-    def test_real_account_filter_uses_the_symbol_reported_by_the_tester(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            owner, controller = self._controller(Path(temp), "idle")
-            owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
-                "variant_key": "balanced", "candidate_id": "nas-one", "symbol": "NAS100", "lot": .01,
-            }]}}
-            now = datetime.now(timezone.utc)
-            trade = {
-                "strategy": "nas-one", "symbol": "NAS100.fs", "side": "buy", "open_time": now,
-                "close_time": now, "open_price": 100.0, "close_price": 100.0,
-                "volume": .01, "profit": 1.0,
-            }
-            controller._extract_real = lambda *_args: (
-                [dict(trade)], {"NAS100.fs": .01},
-                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
-                 "history_detail": {}},
-            )
-            controller._run_tester = lambda *_args: ([dict(trade)], [99.0], {"nas-one": 1}, [], {})
-            controller.start(request())
-            state = self._wait(controller)
-
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["matched_trades"], 1)
+        self.assertEqual(state["status"], "completed")
+        payload = state["last_payload"]
+        self.assertEqual([trade["volume"] for trade in payload["real_trades"]], [.1, .3])
+        self.assertEqual(
+            [member["candidate_id"] for member in payload["selected_members"]], ["de40"],
+        )
+        self.assertEqual(payload["volume_rules"]["de40"], {"volume_min": .1, "volume_step": .1})
+        self.assertEqual(payload["symbol_points"], {"DE40": 1.0})
+        self.assertEqual(payload["period_start"][:10], payload["request"]["period_start_date"] or payload["period_start"][:10])
+        # El nodo no emite veredicto: no hay nada que comparar en su estado.
+        self.assertIsNone(state.get("last_result"))
 
     def test_pipeline_already_paused_by_user_stays_paused(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -699,7 +540,7 @@ class LiveAuditEngineTests(unittest.TestCase):
         self.assertTrue(restore[0]["restored"])
         self.assertTrue(restore[0]["password_persisted"])
         self.assertTrue(restore[0]["reopened_without_password"])
-        self.assertEqual(state["last_result"]["terminal_restore"], restore)
+        self.assertEqual(state["last_payload"]["terminal_restore"], restore)
         self.assertNotIn("tester-secret", str(state))
         self.assertNotIn("restore-secret", str(state))
         # La restauración precede a la reanudación: el pipeline no puede reabrir
@@ -871,13 +712,17 @@ class LiveAuditEngineTests(unittest.TestCase):
         # bloquearía la auditoría para siempre.
         self.assertIn(fallback, source)
 
-    def test_missing_tick_quality_makes_the_result_not_comparable(self) -> None:
+    def test_an_unknown_tick_quality_travels_to_the_manager_instead_of_being_judged(self) -> None:
+        # La puerta de History Quality es criterio, así que ya no la aplica el
+        # nodo: publica lo que MT5 informó —aquí, nada— y el manager decide si
+        # el resultado es NO COMPARABLE. Su regla se prueba en
+        # `tests/test_live_audit_analysis.py` del manager.
         with tempfile.TemporaryDirectory() as temp:
             owner, controller = self._controller(Path(temp), "running", quality=None)
             controller.start(request())
             state = self._wait(controller)
-            self.assertEqual(state["status"], "not_comparable")
-            self.assertIsNone(state["last_result"]["history_quality_pct"])
+            self.assertEqual(state["status"], "completed")
+            self.assertEqual(state["last_payload"]["qualities"], [])
             self.assertEqual((owner.pause_calls, owner.resume_calls), (1, 1))
 
 
