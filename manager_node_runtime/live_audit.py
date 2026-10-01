@@ -14,10 +14,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from run_tests_parallel import runner_failure_summary
+
 from .common import load_json, save_json, utc_now
-# `live_audit_price` ya no se importa aquí: los pisos de tolerancia son criterio
-# y el criterio vive en el manager. El módulo se conserva en el agente porque las
-# copias de otros brokers todavía comparan por su cuenta.
+# `live_audit_price` conserva brokers antiguos; aquí la tolerancia vive en el manager.
 from .mt5_native_history_report import NativeHistoryReportError, export_native_history_report
 
 
@@ -1791,7 +1791,7 @@ class LiveAuditController:
             "Journal principal guardado para: " + (", ".join(captured) if captured else "ninguna terminal"),
         )
         if completed.returncode:
-            tail = "\n".join(runner_output.splitlines()[-20:])
+            tail = runner_failure_summary(runner_output)
             raise RuntimeError(f"Strategy Tester terminó con código {completed.returncode}: {tail}")
         tester_trades: list[dict[str, Any]] = []
         qualities: list[float] = []

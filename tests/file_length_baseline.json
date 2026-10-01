@@ -6,7 +6,7 @@
     "manager_node_runtime/portfolio_save.py": 869,
     "portfolio_manager/dd_excel.py": 881,
     "portfolio_manager/ubs_portfolio.py": 5083,
-    "run_tests.py": 3064,
+    "run_tests.py": 3034,
     "tests/test_manager_node_live_audit.py": 730,
     "tests/test_manager_node_portfolio_save.py": 698,
     "tests/test_run_tests_reports.py": 865,

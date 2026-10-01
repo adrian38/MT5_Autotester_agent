@@ -52,7 +52,6 @@
     "run_tests.py::main": 328,
     "run_tests.py::parse_args": 148,
     "run_tests.py::run_backtest_job": 61,
-    "run_tests.py::run_jobs_parallel": 74,
     "run_tests.py::run_test": 198,
     "run_tests.py::wait_for_mt5_process": 230,
     "tests/test_audit_generalization_v2.py::create_memory": 79,
