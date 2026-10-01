@@ -145,6 +145,52 @@ def _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_
             }
 
 
+def _initialize_similarity_checks(
+    ohlc_result: ScoreResult,
+    lossless_control_gate: LosslessControlGate | None,
+    checks: dict[str, dict[str, object]],
+) -> tuple[bool, bool]:
+    # La degeneracion de PF y DD no depende de la etapa: si el control no perdio
+    # nunca, esas dos comparaciones no miden nada ni en el probe ni en 6M, y se
+    # descartan siempre. Lo que si es especifico de 6M es el sustituto: alli hay
+    # una barra de calidad a la que caer (la poblacion aceptada tiene PF>=1.2,
+    # net mediano 145, RF mediano 1.6) y en el probe no la hay (net mediano
+    # 0.38, RF mediano 0.075), porque el probe solo cribra divergencia. Sin gate
+    # se descartan las dos y deciden las que siguen siendo medibles.
+    lossless_control = run_is_lossless(ohlc_result)
+    absolute_gate = lossless_control and lossless_control_gate is not None
+    checks["ohlc_lossless"] = {
+        "ohlc_losing_trades": ohlc_result.losing_trades,
+        "detected": lossless_control,
+        "absolute_gate_applied": absolute_gate,
+        "accepted": True,
+        "checked": False,
+    }
+    return lossless_control, absolute_gate
+
+
+def _final_tick_history_quality(
+    result: ScoreResult, minimum: float, reasons: list[str],
+) -> float | None:
+    history_quality = result.history_quality
+    if history_quality is None or history_quality < minimum:
+        reasons.append("history_quality")
+    return history_quality
+
+
+def _similarity_payload(
+    reasons: list[str], history_quality: float | None, minimum: float,
+    checks: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "accepted": not reasons,
+        "reasons": reasons,
+        "history_quality": history_quality,
+        "min_history_quality": float(minimum),
+        "checks": checks,
+    }
+
+
 def final_tick_similarity(
     ohlc_result: ScoreResult,
     real_tick_result: ScoreResult,
@@ -180,28 +226,14 @@ def final_tick_similarity(
     """
     reasons: list[str] = []
     checks: dict[str, dict[str, object]] = {}
-    # La degeneracion de PF y DD no depende de la etapa: si el control no perdio
-    # nunca, esas dos comparaciones no miden nada ni en el probe ni en 6M, y se
-    # descartan siempre. Lo que si es especifico de 6M es el sustituto: alli hay
-    # una barra de calidad a la que caer (la poblacion aceptada tiene PF>=1.2,
-    # net mediano 145, RF mediano 1.6) y en el probe no la hay (net mediano
-    # 0.38, RF mediano 0.075), porque el probe solo cribra divergencia. Sin gate
-    # se descartan las dos y deciden las que siguen siendo medibles.
-    lossless_control = run_is_lossless(ohlc_result)
-    absolute_gate = lossless_control and lossless_control_gate is not None
-    checks["ohlc_lossless"] = {
-        "ohlc_losing_trades": ohlc_result.losing_trades,
-        "detected": lossless_control,
-        "absolute_gate_applied": absolute_gate,
-        "accepted": True,
-        "checked": False,
-    }
+    lossless_control, absolute_gate = _initialize_similarity_checks(
+        ohlc_result, lossless_control_gate, checks,
+    )
 
     # 1. History quality
-    history_quality = real_tick_result.history_quality
-    quality_ok = history_quality is not None and history_quality >= min_history_quality
-    if not quality_ok:
-        reasons.append("history_quality")
+    history_quality = _final_tick_history_quality(
+        real_tick_result, min_history_quality, reasons,
+    )
 
     # 2. Net profit — informacional, no bloquea aceptación
     _final_tick_net_check(ohlc_result, real_tick_result, max_net_delta_pct, checks)
@@ -218,10 +250,4 @@ def final_tick_similarity(
     # 6. Control sin pérdidas en 6M: la pata de tick tiene que sostenerse sola.
     _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_gate, checks, reasons, tick_dd, tick_trades)
 
-    return {
-        "accepted": not reasons,
-        "reasons": reasons,
-        "history_quality": history_quality,
-        "min_history_quality": float(min_history_quality),
-        "checks": checks,
-    }
+    return _similarity_payload(reasons, history_quality, min_history_quality, checks)
