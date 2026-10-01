@@ -20,6 +20,26 @@ class UBSFinalTickViewMixin:
         bar.columnconfigure(0, weight=1)
         return panel, bar
 
+    def _add_ubs_final_tick_action(
+        self, bar, text: str, command, column: int, *, primary: bool = False, last: bool = False,
+    ) -> None:
+        tk.Button(
+            bar,
+            text=text,
+            bg=self.colors["accent"] if primary else self.colors["panel"],
+            fg="#ffffff" if primary else self.colors["muted"],
+            relief="flat" if primary else "solid",
+            borderwidth=0 if primary else 1,
+            padx=10 if primary else 8,
+            pady=5,
+            font=("Segoe UI", 9, "bold") if primary else ("Segoe UI", 9),
+            cursor="hand2",
+            command=command,
+        ).grid(
+            row=0, column=column, sticky="e",
+            padx=(0, 10 if last else 6), pady=(5, 3),
+        )
+
     def _build_ubs_final_tick_actions(self, bar):
         """Resumen y botones de accion de la barra superior."""
         tk.Label(
@@ -29,71 +49,19 @@ class UBSFinalTickViewMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
-        tk.Button(
-            bar,
-            text="Continuar Final Tick",
-            bg=self.colors["accent"],
-            fg="#ffffff",
-            relief="flat",
-            borderwidth=0,
-            padx=10,
-            pady=5,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            command=self._run_ubs_final_tick_for_latest_run,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Reprobar Final Tick",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._rerun_ubs_final_tick_for_latest_run,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Reintentar calidad baja",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._retry_ubs_final_tick_pending_quality,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Guardar config",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._save_config_clicked,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Actualizar",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._refresh_ubs_final_tick_panel,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
+        self._add_ubs_final_tick_action(
+            bar, "Continuar Final Tick", self._run_ubs_final_tick_for_latest_run, 1, primary=True,
+        )
+        self._add_ubs_final_tick_action(
+            bar, "Reprobar Final Tick", self._rerun_ubs_final_tick_for_latest_run, 2,
+        )
+        self._add_ubs_final_tick_action(
+            bar, "Reintentar calidad baja", self._retry_ubs_final_tick_pending_quality, 3,
+        )
+        self._add_ubs_final_tick_action(bar, "Guardar config", self._save_config_clicked, 4)
+        self._add_ubs_final_tick_action(
+            bar, "Actualizar", self._refresh_ubs_final_tick_panel, 5, last=True,
+        )
 
     def _build_ubs_final_tick_run_row(self, bar):
         """Selector de run y accesos a los artefactos del candidato."""
