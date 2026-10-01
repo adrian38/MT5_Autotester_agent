@@ -63,6 +63,21 @@ class UBSFinalTickViewMixin:
             bar, "Actualizar", self._refresh_ubs_final_tick_panel, 5, last=True,
         )
 
+    def _add_ubs_final_tick_run_action(self, row, text: str, command, column: int) -> None:
+        tk.Button(
+            row,
+            text=text,
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=command,
+        ).grid(row=0, column=column, sticky="e", padx=(0, 4))
+
     def _build_ubs_final_tick_run_row(self, bar):
         """Selector de run y accesos a los artefactos del candidato."""
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
@@ -83,71 +98,15 @@ class UBSFinalTickViewMixin:
         )
         self.ubs_final_tick_run_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
         self.ubs_final_tick_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_final_tick())
-        tk.Button(
-            row1,
-            text="Abrir set",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_final_tick_set,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Abrir OHLC",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_final_tick_ohlc_report,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Abrir Real Tick",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_final_tick_real_report,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Manual OK",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._manual_accept_selected_ubs_final_tick,
-        ).grid(row=0, column=6, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Manual FAIL",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._manual_reject_selected_ubs_final_tick,
-        ).grid(row=0, column=7, sticky="e", padx=(0, 4))
+        actions = (
+            ("Abrir set", self._open_selected_ubs_final_tick_set),
+            ("Abrir OHLC", self._open_selected_ubs_final_tick_ohlc_report),
+            ("Abrir Real Tick", self._open_selected_ubs_final_tick_real_report),
+            ("Manual OK", self._manual_accept_selected_ubs_final_tick),
+            ("Manual FAIL", self._manual_reject_selected_ubs_final_tick),
+        )
+        for column, (text, command) in enumerate(actions, start=3):
+            self._add_ubs_final_tick_run_action(row1, text, command, column)
 
     def _build_ubs_final_tick_criteria(self, panel):
         """Estado y criterios de aceptacion del Final Tick."""
