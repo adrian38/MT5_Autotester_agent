@@ -61,6 +61,37 @@ from ubs.score import (
 )
 
 
+def _parent_evidence_rows(
+    base_scope: list[ScopedRow], robust_scope: list[ScopedRow],
+) -> list[ScopedRow]:
+    base_ids = {int(item.row["id"]) for item in base_scope}
+    return [
+        item for item in robust_scope
+        if int(item.row["candidate_id"]) not in base_ids
+        and _needs_parent_evidence(item.base_metrics)
+    ]
+
+
+def _scan_base_restatements(
+    base_scope: list[ScopedRow], policy, read_equity, plan: RestatementPlan,
+    progress, done: int, total: int, restated_base: dict[int, dict],
+) -> int:
+    for item in base_scope:
+        done += 1
+        _tick(progress, done, total, str(item.row["report_path"] or item.row["symbol"] or ""))
+        change = _restate_base(item, item.metrics, policy, read_equity, plan)
+        if change is None:
+            continue
+        restated_base[int(item.row["id"])] = json.loads(change["metrics_json"])
+        bucket = (
+            plan.base
+            if change["expected_status"] != change["stored_status"]
+            else plan.audit_only
+        )
+        bucket.append(change)
+    return done
+
+
 def scan_risk_profit_restatements(
     conn,
     *,
@@ -75,12 +106,7 @@ def scan_risk_profit_restatements(
     policy = policy or RiskProfitConfig()
     base_scope, robust_scope = collect_scope(conn)
     plan = RestatementPlan(policy=asdict(policy))
-    base_ids = {int(item.row["id"]) for item in base_scope}
-    parents = [
-        item for item in robust_scope
-        if int(item.row["candidate_id"]) not in base_ids
-        and _needs_parent_evidence(item.base_metrics)
-    ]
+    parents = _parent_evidence_rows(base_scope, robust_scope)
     total = len(base_scope) + len(robust_scope) + len(parents)
     done = 0
     restated_base: dict[int, dict] = {}
@@ -88,20 +114,8 @@ def scan_risk_profit_restatements(
     # caller showing progress is not stuck on an unknown size.
     _tick(progress, done, total, "")
 
-    for item in base_scope:
-        done += 1
-        _tick(progress, done, total, str(item.row["report_path"] or item.row["symbol"] or ""))
-        change = _restate_base(item, item.metrics, policy, read_equity, plan)
-        if change is None:
-            continue
-        restated_base[int(item.row["id"])] = json.loads(change["metrics_json"])
-        bucket = (
-            plan.base
-            if change["expected_status"] != change["stored_status"]
-            else plan.audit_only
-        )
-        bucket.append(change)
-
+    done = _scan_base_restatements(
+        base_scope, policy, read_equity, plan, progress, done, total, restated_base)
     parent_ids = {int(item.row["candidate_id"]) for item in parents}
     parent_changes: dict[int, dict] = {}
     for item in robust_scope:
@@ -135,9 +149,8 @@ def scan_risk_profit_restatements(
         if parent is not None:
             plan.base_evidence.append(parent)
 
-    plan.pending_robustness = pending_robustness_rows(
-        conn, [int(item["candidate_id"]) for item in plan.base]
-    )
+    rescued_ids = [int(item["candidate_id"]) for item in plan.base]
+    plan.pending_robustness = pending_robustness_rows(conn, rescued_ids)
     return plan
 
 
