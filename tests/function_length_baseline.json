@@ -25,7 +25,6 @@
     "portfolio_manager/ubs_portfolio_search.py::improve_with_local_search": 150,
     "portfolio_manager/ubs_portfolio_search.py::improve_with_multi_start_search": 175,
     "run_tests.py::main": 328,
-    "run_tests_experts.py::create_ini": 80,
     "run_tests_runner.py::run_test": 198,
     "run_tests_watchdog.py::wait_for_mt5_process": 230,
     "tests/test_audit_generalization_v2.py::create_memory": 79,

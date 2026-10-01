@@ -309,6 +309,39 @@ def ensure_tester_defaults(config: configparser.ConfigParser) -> None:
         if not config["Tester"].get(key, "").strip():
             config["Tester"][key] = value
 
+def _report_artifact_paths(
+    expert_path: str, index: int, set_file: Path | None,
+) -> tuple[str, Path, Path]:
+    ea_name = safe_name(expert_path)
+    report_name = safe_name(set_file.stem) if set_file else f"{index:03d}_{ea_name}"
+    return report_name, REPORT_DIR / report_name, CONFIG_DIR / f"{report_name}.ini"
+
+
+def _prepare_tester_config(
+    template: configparser.ConfigParser,
+    expert_path: str,
+    set_file: Path | None,
+    infer_tester_from_set: bool,
+    prefer_set_path_timeframe: bool,
+) -> tuple[configparser.ConfigParser, dict[str, str], bool]:
+    config = configparser.ConfigParser(interpolation=None)
+    config.optionxform = str
+    config.read_dict({section: dict(template[section]) for section in template.sections()})
+    ensure_tester_defaults(config)
+    config["Tester"]["Expert"] = normalize_expert_for_tester(expert_path)
+    inferred_fields = infer_tester_fields_from_set(set_file) if infer_tester_from_set else {}
+    if set_file and infer_tester_from_set and prefer_set_path_timeframe:
+        path_period = infer_period_from_path(set_file)
+        if path_period:
+            inferred_fields["Period"] = path_period
+    use_template_fields = bool(set_file and infer_tester_from_set and "Symbol" not in inferred_fields)
+    if use_template_fields:
+        inferred_fields = {}
+    for field, value in inferred_fields.items():
+        config["Tester"][field] = value
+    return config, inferred_fields, use_template_fields
+
+
 def create_ini(
     expert_path: str,
     index: int,
@@ -325,29 +358,10 @@ def create_ini(
     logger: RunLogger | None = None,
 ) -> tuple[Path, Path]:
     symbol_map = symbol_map or {}
-    ea_name = safe_name(expert_path)
-    if set_file:
-        report_name = safe_name(set_file.stem)
-    else:
-        report_name = f"{index:03d}_{ea_name}"
-    report_path = REPORT_DIR / report_name
-    ini_path = CONFIG_DIR / f"{report_name}.ini"
-
-    config = configparser.ConfigParser(interpolation=None)
-    config.optionxform = str
-    config.read_dict({section: dict(template[section]) for section in template.sections()})
-    ensure_tester_defaults(config)
-    config["Tester"]["Expert"] = normalize_expert_for_tester(expert_path)
-    inferred_fields = infer_tester_fields_from_set(set_file) if infer_tester_from_set else {}
-    if set_file and infer_tester_from_set and prefer_set_path_timeframe:
-        path_period = infer_period_from_path(set_file)
-        if path_period:
-            inferred_fields["Period"] = path_period
-    use_template_tester_fields = bool(set_file and infer_tester_from_set and "Symbol" not in inferred_fields)
-    if use_template_tester_fields:
-        inferred_fields = {}
-    for field, value in inferred_fields.items():
-        config["Tester"][field] = value
+    report_name, report_path, ini_path = _report_artifact_paths(expert_path, index, set_file)
+    config, inferred_fields, use_template_tester_fields = _prepare_tester_config(
+        template, expert_path, set_file, infer_tester_from_set, prefer_set_path_timeframe,
+    )
     if "Symbol" in config["Tester"]:
         config["Tester"]["Symbol"] = apply_symbol_suffix(
             apply_symbol_map(config["Tester"]["Symbol"], symbol_map),
@@ -361,7 +375,6 @@ def create_ini(
     config["Tester"]["Report"] = report_name
     if tester_model.strip():
         config["Tester"]["Model"] = tester_model.strip()
-
     if infer_tester_from_set:
         if use_template_tester_fields and logger:
             template_symbol = config["Tester"].get("Symbol", "").strip() or "(vacio)"
