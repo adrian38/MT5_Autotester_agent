@@ -1,6 +1,7 @@
 """Lectura de informes MT5 y construccion de los sets robustos."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
@@ -188,28 +189,28 @@ def build_robust_strategy_set(
     )
 
 
-def slice_strategy_set_to_month(
-    strategy: RobustStrategySet,
-    target_month: int,
-) -> RobustStrategySet:
-    """Return the strategy curve restricted to one calendar month across all years.
+@dataclass(frozen=True)
+class _MonthlyCurveSummary:
+    total: float
+    curve: list[float]
+    points: list[tuple[datetime, float]]
+    valley_dd: float
+    point_dd: float
+    profit_factor: float
+    trade_count: int
+    years: tuple[int, ...]
+    positive_years: tuple[int, ...]
 
-    The source points are accumulated trade P/L values.  We first recover each
-    closed-trade increment, then keep only trades whose close timestamp belongs
-    to ``target_month``.  Concatenating those increments chronologically gives a
-    seasonal history such as every January available in the base + OOS reports.
-    """
-    if not 1 <= int(target_month) <= 12:
-        raise ValueError("target_month must be between 1 and 12")
-    if not strategy.curve_points_2020_2026_001:
-        raise ValueError("Strategy has no timestamped trade curve")
 
+def _monthly_curve_summary(
+    source_points: list[tuple[datetime, float]], target_month: int,
+) -> _MonthlyCurveSummary:
     selected: list[tuple[datetime, float]] = []
     previous_value = 0.0
-    for timestamp, accumulated_value in strategy.curve_points_2020_2026_001:
+    for timestamp, accumulated_value in source_points:
         increment = float(accumulated_value) - previous_value
         previous_value = float(accumulated_value)
-        if timestamp.month == int(target_month):
+        if timestamp.month == target_month:
             selected.append((timestamp, increment))
 
     total = 0.0
@@ -227,17 +228,35 @@ def slice_strategy_set_to_month(
             gross_profit += increment
         else:
             gross_loss += increment
-
-    valley_dd = calc_valley_dd(curve)
-    point_dd = calc_point_dd(curve)
-    if gross_loss < 0:
-        profit_factor = gross_profit / abs(gross_loss)
-    elif gross_profit > 0:
-        profit_factor = float("inf")
-    else:
-        profit_factor = 0.0
+    profit_factor = (
+        gross_profit / abs(gross_loss) if gross_loss < 0
+        else float("inf") if gross_profit > 0 else 0.0
+    )
     years = tuple(sorted(pnl_by_year))
-    positive_years = tuple(year for year in years if pnl_by_year[year] > 0)
+    return _MonthlyCurveSummary(
+        total, curve, points, calc_valley_dd(curve), calc_point_dd(curve), profit_factor,
+        len(selected), years, tuple(year for year in years if pnl_by_year[year] > 0),
+    )
+
+
+def slice_strategy_set_to_month(
+    strategy: RobustStrategySet,
+    target_month: int,
+) -> RobustStrategySet:
+    """Return the strategy curve restricted to one calendar month across all years.
+
+    The source points are accumulated trade P/L values.  We first recover each
+    closed-trade increment, then keep only trades whose close timestamp belongs
+    to ``target_month``.  Concatenating those increments chronologically gives a
+    seasonal history such as every January available in the base + OOS reports.
+    """
+    if not 1 <= int(target_month) <= 12:
+        raise ValueError("target_month must be between 1 and 12")
+    if not strategy.curve_points_2020_2026_001:
+        raise ValueError("Strategy has no timestamped trade curve")
+    summary = _monthly_curve_summary(
+        strategy.curve_points_2020_2026_001, int(target_month),
+    )
 
     return RobustStrategySet(
         set_id=strategy.set_id,
@@ -249,20 +268,20 @@ def slice_strategy_set_to_month(
         already_used=strategy.already_used,
         report_2020_2024=strategy.report_2020_2024,
         report_2025_2026=strategy.report_2025_2026,
-        curve_2020_2026_001=curve,
-        net_profit_2020_2026_001=total,
-        valley_dd_2020_2026_001=valley_dd,
-        point_dd_2020_2026_001=point_dd,
-        profit_factor_2020_2026=profit_factor,
-        return_dd_2020_2026=total / max(valley_dd, 1.0),
-        trades_2020_2026=len(selected),
+        curve_2020_2026_001=summary.curve,
+        net_profit_2020_2026_001=summary.total,
+        valley_dd_2020_2026_001=summary.valley_dd,
+        point_dd_2020_2026_001=summary.point_dd,
+        profit_factor_2020_2026=summary.profit_factor,
+        return_dd_2020_2026=summary.total / max(summary.valley_dd, 1.0),
+        trades_2020_2026=summary.trade_count,
         set_path=strategy.set_path,
         is_report_path=strategy.is_report_path,
         oos_report_path=strategy.oos_report_path,
-        curve_points_2020_2026_001=points,
+        curve_points_2020_2026_001=summary.points,
         target_month=int(target_month),
-        month_years=years,
-        positive_month_years=positive_years,
+        month_years=summary.years,
+        positive_month_years=summary.positive_years,
     )
 
 
