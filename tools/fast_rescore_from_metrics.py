@@ -358,6 +358,49 @@ def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None
     )
 
 
+def _stage_row_update(
+    row,
+    table: str,
+    key_cols: list[str],
+    selected: list[str],
+    columns: list[tuple[str, str]],
+    broker: str,
+) -> tuple[str, list[object]] | None:
+    keys = list(row[: len(key_cols)])
+    values = dict(zip(selected, row[len(key_cols):]))
+    assignments: list[str] = []
+    params: list[object] = []
+    for metrics_col, score_col in columns:
+        raw = values.get(metrics_col)
+        if not raw:
+            continue
+        try:
+            metrics = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metrics, dict):
+            continue
+        result = _renormalize(metrics, broker)
+        if result is None:
+            continue
+        updated, _normalized, score = result
+        if _dump(updated) == _dump(metrics):
+            continue
+        assignments.append(f"{metrics_col}=?")
+        params.append(_dump(updated))
+        # A NULL score is a state, not a missing value: the UI clears it to
+        # drop a row out of the universe weights, and rows that were never
+        # scored (no_history, history_ok) carry NULL by construction. Only
+        # refresh a score that is already there.
+        if score_col and values.get(score_col) is not None:
+            assignments.append(f"{score_col}=?")
+            params.append(score)
+    if not assignments:
+        return None
+    where = " and ".join(f"{key}=?" for key in key_cols)
+    return f"update {table} set {', '.join(assignments)} where {where}", params + keys
+
+
 def refresh_stage(
     conn,
     table: str,
@@ -393,39 +436,10 @@ def refresh_stage(
     updates: list[tuple] = []
     refreshed = untouched = 0
     for row in rows:
-        keys = list(row[: len(key_cols)])
-        values = dict(zip(selected, row[len(key_cols):]))
-        assignments: list[str] = []
-        params: list[object] = []
-        for metrics_col, score_col in columns:
-            raw = values.get(metrics_col)
-            if not raw:
-                continue
-            try:
-                metrics = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(metrics, dict):
-                continue
-            result = _renormalize(metrics, broker)
-            if result is None:
-                continue
-            updated, _normalized, score = result
-            if _dump(updated) == _dump(metrics):
-                continue
-            assignments.append(f"{metrics_col}=?")
-            params.append(_dump(updated))
-            # A NULL score is a state, not a missing value: the UI clears it to
-            # drop a row out of the universe weights, and rows that were never
-            # scored (no_history, history_ok) carry NULL by construction. Only
-            # refresh a score that is already there.
-            if score_col and values.get(score_col) is not None:
-                assignments.append(f"{score_col}=?")
-                params.append(score)
-        if assignments:
+        update = _stage_row_update(row, table, key_cols, selected, columns, broker)
+        if update is not None:
             refreshed += 1
-            where = " and ".join(f"{key}=?" for key in key_cols)
-            updates.append((f"update {table} set {', '.join(assignments)} where {where}", params + keys))
+            updates.append(update)
         else:
             untouched += 1
 
