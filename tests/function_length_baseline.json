@@ -63,7 +63,6 @@
     "ubs_agent_final_tick_rescore.py::rescore_final_tick_only": 112,
     "ubs_agent_final_tick_similarity.py::final_tick_similarity": 80,
     "ubs_agent_history.py::probe_universe_history": 108,
-    "ubs_agent_policy.py::discovery_ranked_seed_selection": 76,
     "ubs_agent_rescore.py::_rescore_robustness_from_reports": 155,
     "ubs_agent_rescore.py::rescore_robustness_only": 104,
     "ubs_agent_resume.py::resume_last_run": 380,

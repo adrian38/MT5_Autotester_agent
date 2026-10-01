@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 from run_tests import apply_symbol_map, normalize_set_symbol
@@ -215,6 +216,48 @@ def production_viable_source_seeds(
     return viable
 
 
+@dataclass(frozen=True)
+class _DiscoveryRanking:
+    asset_feedback: dict[str, float]
+    timeframe_feedback: dict[str, float]
+    rng: random.Random
+    aliases: dict[str, str] | None
+    group_by_symbol: dict[str, str] | None
+    fitness_feedback: dict[str, float] | None
+
+    def select(
+        self, pool: list[Seed], count: int, *, bounded: bool = False,
+    ) -> list[tuple[float, Seed, float, float, float]]:
+        if bounded and count <= 0:
+            return []
+        return ranked_seed_selection(
+            pool, count, self.asset_feedback, self.timeframe_feedback, self.rng,
+            self.aliases, self.group_by_symbol, self.fitness_feedback,
+            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
+        )
+
+
+def _partition_discovery_seeds(
+    seeds: list[Seed],
+    universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None,
+    symbol_map: dict[str, str] | None,
+    disabled_symbols: set[str] | None,
+    group_by_symbol: dict[str, str] | None,
+) -> tuple[list[Seed], list[Seed]]:
+    exploitable: list[Seed] = []
+    cross_asset: list[Seed] = []
+    universe_keys = {symbol.upper() for symbol in universe_symbols}
+    for seed in seeds:
+        current_targets, _related_targets, _same_group_targets = target_symbol_options_for_seed(
+            seed, universe_symbols, aliases, symbol_map=symbol_map,
+            disabled_symbols=disabled_symbols, group_by_symbol=group_by_symbol,
+        )
+        has_broker_target = any(target.upper() in universe_keys for target in current_targets)
+        (exploitable if has_broker_target else cross_asset).append(seed)
+    return exploitable, cross_asset
+
+
 def discovery_ranked_seed_selection(
     seeds: list[Seed],
     max_seeds: int,
@@ -237,59 +280,25 @@ def discovery_ranked_seed_selection(
     no longer consume most of a bounded cohort merely because their historical
     feedback score is high on a symbol that cannot be executed here.
     """
-
+    ranking = _DiscoveryRanking(
+        asset_feedback, timeframe_feedback, rng, aliases, group_by_symbol, fitness_feedback,
+    )
     if max_seeds <= 0 or len(seeds) <= max_seeds:
-        return ranked_seed_selection(
-            seeds,
-            max_seeds,
-            asset_feedback,
-            timeframe_feedback,
-            rng,
-            aliases,
-            group_by_symbol,
-            fitness_feedback,
-            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
-        )
+        return ranking.select(seeds, max_seeds)
 
-    exploitable: list[Seed] = []
-    cross_asset: list[Seed] = []
-    universe_keys = {symbol.upper() for symbol in universe_symbols}
-    for seed in seeds:
-        current_targets, _related_targets, _same_group_targets = target_symbol_options_for_seed(
-            seed,
-            universe_symbols,
-            aliases,
-            symbol_map=symbol_map,
-            disabled_symbols=disabled_symbols,
-            group_by_symbol=group_by_symbol,
-        )
-        has_broker_target = any(target.upper() in universe_keys for target in current_targets)
-        (exploitable if has_broker_target else cross_asset).append(seed)
+    exploitable, cross_asset = _partition_discovery_seeds(
+        seeds, universe_symbols, aliases, symbol_map, disabled_symbols, group_by_symbol,
+    )
 
     limit = min(max_seeds, len(seeds))
     exploitable_quota = min(len(exploitable), capped_count(limit, exploitable_min_ratio))
     cross_asset_quota = min(len(cross_asset), limit - exploitable_quota)
 
-    def select(pool: list[Seed], count: int) -> list[tuple[float, Seed, float, float, float]]:
-        if count <= 0:
-            return []
-        return ranked_seed_selection(
-            pool,
-            count,
-            asset_feedback,
-            timeframe_feedback,
-            rng,
-            aliases,
-            group_by_symbol,
-            fitness_feedback,
-            DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
-        )
-
-    selected = select(exploitable, exploitable_quota)
-    selected.extend(select(cross_asset, cross_asset_quota))
+    selected = ranking.select(exploitable, exploitable_quota, bounded=True)
+    selected.extend(ranking.select(cross_asset, cross_asset_quota, bounded=True))
     selected_ids = {id(item[1]) for item in selected}
     remaining = [seed for seed in seeds if id(seed) not in selected_ids]
-    selected.extend(select(remaining, limit - len(selected)))
+    selected.extend(ranking.select(remaining, limit - len(selected), bounded=True))
     return selected
 
 
