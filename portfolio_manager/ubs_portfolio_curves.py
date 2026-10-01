@@ -254,6 +254,37 @@ def calc_point_dd(equity_curve: list[float]) -> float:
     return abs(float(worst_loss))
 
 
+def _equity_increments(equity_curve: Sequence[float]) -> list[float]:
+    return [
+        float(current) - float(previous)
+        for previous, current in zip(equity_curve, equity_curve[1:])
+    ]
+
+
+def _bootstrap_drawdowns(
+    increments: list[float], simulations: int, block_size: int, seed: int,
+) -> list[float]:
+    observation_count = len(increments)
+    rng = random.Random(int(seed))
+    drawdowns: list[float] = []
+    for _simulation in range(int(simulations)):
+        sampled = 0
+        equity = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        while sampled < observation_count:
+            start = rng.randrange(observation_count)
+            take = min(block_size, observation_count - sampled)
+            for offset in range(take):
+                equity += increments[(start + offset) % observation_count]
+                peak = max(peak, equity)
+                max_drawdown = max(max_drawdown, peak - equity)
+            sampled += take
+        drawdowns.append(float(max_drawdown))
+    drawdowns.sort()
+    return drawdowns
+
+
 def bootstrap_valley_drawdown(
     equity_curve: Sequence[float],
     *,
@@ -271,10 +302,7 @@ def bootstrap_valley_drawdown(
     """
     if simulations <= 0:
         raise ValueError("Bootstrap simulations must be positive")
-    increments = [
-        float(current) - float(previous)
-        for previous, current in zip(equity_curve, equity_curve[1:])
-    ]
+    increments = _equity_increments(equity_curve)
     observation_count = len(increments)
     if observation_count == 0:
         return BootstrapDrawdownAnalysis(
@@ -295,24 +323,7 @@ def bootstrap_valley_drawdown(
     if block_size is None:
         block_size = min(20, max(5, int(round(math.sqrt(observation_count)))))
     block_size = min(max(int(block_size), 1), observation_count)
-    rng = random.Random(int(seed))
-    drawdowns: list[float] = []
-    for _simulation in range(int(simulations)):
-        sampled = 0
-        equity = 0.0
-        peak = 0.0
-        max_drawdown = 0.0
-        while sampled < observation_count:
-            start = rng.randrange(observation_count)
-            take = min(block_size, observation_count - sampled)
-            for offset in range(take):
-                equity += increments[(start + offset) % observation_count]
-                peak = max(peak, equity)
-                max_drawdown = max(max_drawdown, peak - equity)
-            sampled += take
-        drawdowns.append(float(max_drawdown))
-
-    drawdowns.sort()
+    drawdowns = _bootstrap_drawdowns(increments, simulations, block_size, seed)
     p50 = _linear_percentile(drawdowns, 0.50)
     p95 = _linear_percentile(drawdowns, 0.95)
     nominal_limit = float(nominal_valley_dd_limit)
