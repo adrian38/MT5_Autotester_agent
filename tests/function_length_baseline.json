@@ -2,7 +2,6 @@
   "grandfathered": {
     "manager_node_runtime/live_audit.py::LiveAuditController._run": 230,
     "manager_node_runtime/live_audit_compare.py::LiveAuditCompareMixin._compare": 204,
-    "manager_node_runtime/live_audit_extract.py::LiveAuditExtractMixin._extract_real": 90,
     "manager_node_runtime/live_audit_tester.py::LiveAuditTesterMixin._run_tester": 240,
     "manager_node_runtime/node_commands.py::build_pipeline_stage_command": 147,
     "manager_node_runtime/node_snapshots.py::pipeline_stage_pending_count": 122,

@@ -37,57 +37,9 @@ class LiveAuditExtractMixin:
                 raise RuntimeError("MT5 confirmó el login local, pero el terminal no está conectado al broker")
 
             period_deals, sync_detail = self._synchronised_history(mt5, period_start, period_end)
-            market_deals = [deal for deal in period_deals if self._is_market_deal(deal)]
-            opening_positions = {
-                int(getattr(deal, "position_id", 0) or 0)
-                for deal in market_deals if int(getattr(deal, "entry", -1)) in {0, 2}
-            }
-            closing_positions = {
-                int(getattr(deal, "position_id", 0) or 0)
-                for deal in market_deals if int(getattr(deal, "entry", -1)) in {1, 2, 3}
-            }
-            missing_open_positions = closing_positions - opening_positions
-            all_deals = list(period_deals)
-            recovered_positions = 0
-            unresolved_positions: list[int] = []
-            for position_id in sorted(missing_open_positions):
-                position_deals = mt5.history_deals_get(position=position_id)
-                if position_deals is None:
-                    unresolved_positions.append(position_id)
-                    continue
-                prior_openings = [
-                    deal for deal in position_deals
-                    if self._is_market_deal(deal) and int(getattr(deal, "entry", -1)) in {0, 2}
-                ]
-                if prior_openings:
-                    recovered_positions += 1
-                    all_deals.extend(position_deals)
-                else:
-                    unresolved_positions.append(position_id)
-
-            unique_deals: dict[tuple[Any, ...], Any] = {}
-            for deal in all_deals:
-                unique_deals[self._deal_identity(deal)] = deal
-            trades = [
-                trade for trade in self._real_trades(unique_deals.values())
-                if period_start <= trade["close_time"] <= period_end
-            ]
-            points: dict[str, float] = {}
-            for symbol in {row["symbol"] for row in trades}:
-                symbol_info = mt5.symbol_info(symbol)
-                points[symbol] = float(getattr(symbol_info, "point", 0.0) or 0.0)
-            history_detail = {
-                **sync_detail,
-                "period_raw_deals": len(period_deals),
-                "market_deals": len(market_deals),
-                "opening_deals": sum(int(getattr(deal, "entry", -1)) in {0, 2} for deal in market_deals),
-                "closing_deals": sum(int(getattr(deal, "entry", -1)) in {1, 2, 3} for deal in market_deals),
-                "positions_closed": len(closing_positions),
-                "positions_missing_open_in_period": len(missing_open_positions),
-                "positions_recovered": recovered_positions,
-                "positions_unresolved": len(unresolved_positions),
-                "trades_reconstructed": len(trades),
-            }
+            trades, points, history_detail = self._reconstruct_real_history(
+                mt5, period_deals, sync_detail, period_start, period_end,
+            )
             account = {
                 "login": str(info.login), "server": actual_server, "currency": str(info.currency),
                 "connected": True, "terminal_profile": str(profile.get("name") or section),
@@ -104,6 +56,57 @@ class LiveAuditExtractMixin:
         finally:
             mt5.shutdown()
             self._close_terminal_pids_gracefully(launched_pids)
+
+    def _reconstruct_real_history(
+        self, mt5: Any, period_deals: list[Any], sync_detail: dict[str, Any],
+        period_start: datetime, period_end: datetime,
+    ) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, Any]]:
+        market_deals = [deal for deal in period_deals if self._is_market_deal(deal)]
+        opening_positions = {
+            int(getattr(deal, "position_id", 0) or 0)
+            for deal in market_deals if int(getattr(deal, "entry", -1)) in {0, 2}
+        }
+        closing_positions = {
+            int(getattr(deal, "position_id", 0) or 0)
+            for deal in market_deals if int(getattr(deal, "entry", -1)) in {1, 2, 3}
+        }
+        missing_open_positions = closing_positions - opening_positions
+        all_deals = list(period_deals)
+        recovered_positions = 0
+        unresolved_positions: list[int] = []
+        for position_id in sorted(missing_open_positions):
+            position_deals = mt5.history_deals_get(position=position_id)
+            if position_deals is None:
+                unresolved_positions.append(position_id)
+                continue
+            prior_openings = [
+                deal for deal in position_deals
+                if self._is_market_deal(deal) and int(getattr(deal, "entry", -1)) in {0, 2}
+            ]
+            if prior_openings:
+                recovered_positions += 1
+                all_deals.extend(position_deals)
+            else:
+                unresolved_positions.append(position_id)
+        unique_deals = {self._deal_identity(deal): deal for deal in all_deals}
+        trades = [
+            trade for trade in self._real_trades(unique_deals.values())
+            if period_start <= trade["close_time"] <= period_end
+        ]
+        points = {
+            symbol: float(getattr(mt5.symbol_info(symbol), "point", 0.0) or 0.0)
+            for symbol in {row["symbol"] for row in trades}
+        }
+        history_detail = {
+            **sync_detail, "period_raw_deals": len(period_deals), "market_deals": len(market_deals),
+            "opening_deals": sum(int(getattr(deal, "entry", -1)) in {0, 2} for deal in market_deals),
+            "closing_deals": sum(int(getattr(deal, "entry", -1)) in {1, 2, 3} for deal in market_deals),
+            "positions_closed": len(closing_positions),
+            "positions_missing_open_in_period": len(missing_open_positions),
+            "positions_recovered": recovered_positions, "positions_unresolved": len(unresolved_positions),
+            "trades_reconstructed": len(trades),
+        }
+        return trades, points, history_detail
 
     @staticmethod
     def _native_report_metadata(
