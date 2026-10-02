@@ -99,6 +99,56 @@ def variant_as_next_seed(variant: Variant) -> Seed:
     )
 
 
+SeedRanking = tuple[float, Seed, float, float, float]
+
+
+def _score_seed_candidates(
+    seeds: list[Seed], asset_feedback: dict[str, float],
+    timeframe_feedback: dict[str, float], rng: random.Random,
+    aliases: dict[str, str], fitness_feedback: dict[str, float],
+) -> list[SeedRanking]:
+    valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
+    if not valid:
+        valid = seeds
+    scored: list[SeedRanking] = []
+    for seed in valid:
+        asset_key = canonical_symbol(seed.symbol, aliases).upper()
+        asset_weight = asset_feedback.get(asset_key, 0.0)
+        timeframe_weight = timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
+        diversity = rng.random() * 5.0
+        fitness_weight = (
+            fitness_feedback.get(str(seed.path), 0.0) * SELECTION_FITNESS_APPLIED_SCALE
+        )
+        scored.append((
+            asset_weight + timeframe_weight + fitness_weight + diversity,
+            seed, asset_weight, timeframe_weight, diversity,
+        ))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored
+
+
+def _reserve_seed_symbols(
+    scored: list[SeedRanking], limiter: TargetDiversityLimiter, limit: int, reserve_ratio: float,
+    selected: list[SeedRanking], selected_ids: set[int],
+) -> bool:
+    if reserve_ratio <= 0:
+        return False
+    reserve_limit = min(limit, capped_count(limit, reserve_ratio))
+    reserved_symbols: set[str] = set()
+    for item in scored:
+        seed = item[1]
+        symbol_key = limiter.symbol_key(seed.symbol)
+        if symbol_key in reserved_symbols or not limiter.allows(seed.symbol, seed.period):
+            continue
+        selected.append(item)
+        selected_ids.add(id(seed))
+        reserved_symbols.add(symbol_key)
+        limiter.record(seed.symbol, seed.period)
+        if len(selected) >= reserve_limit:
+            break
+    return len(selected) >= limit
+
+
 def ranked_seed_selection(
     seeds: list[Seed],
     max_seeds: int,
@@ -111,24 +161,12 @@ def ranked_seed_selection(
     symbol_reserve_ratio: float = 0.0,
     symbol_cap_ratio: float = TARGET_SYMBOL_CAP_RATIO,
     allow_overflow: bool = True,
-) -> list[tuple[float, Seed, float, float, float]]:
+) -> list[SeedRanking]:
     aliases = aliases or {}
     fitness_feedback = fitness_feedback or {}
-    valid = [seed for seed in seeds if seed.symbol != "UNKNOWN" and seed.period != "UNKNOWN"]
-    if not valid:
-        valid = seeds
-    scored: list[tuple[float, Seed, float, float, float]] = []
-    for seed in valid:
-        asset_key = canonical_symbol(seed.symbol, aliases).upper()
-        asset_weight = asset_feedback.get(asset_key, 0.0)
-        timeframe_weight = timeframe_feedback.get(seed.period.upper(), 0.0) * 0.50
-        diversity = rng.random() * 5.0
-        fitness_weight = (
-            fitness_feedback.get(str(seed.path), 0.0)
-            * SELECTION_FITNESS_APPLIED_SCALE
-        )
-        scored.append((asset_weight + timeframe_weight + fitness_weight + diversity, seed, asset_weight, timeframe_weight, diversity))
-    scored.sort(key=lambda item: item[0], reverse=True)
+    scored = _score_seed_candidates(
+        seeds, asset_feedback, timeframe_feedback, rng, aliases, fitness_feedback,
+    )
     limit = len(scored) if max_seeds <= 0 else min(max_seeds, len(scored))
     if limit <= 0:
         return []
@@ -138,27 +176,13 @@ def ranked_seed_selection(
         group_by_symbol=group_by_symbol,
         symbol_cap_ratio=symbol_cap_ratio,
     )
-    selected: list[tuple[float, Seed, float, float, float]] = []
+    selected: list[SeedRanking] = []
     selected_ids: set[int] = set()
-    overflow: list[tuple[float, Seed, float, float, float]] = []
-    if symbol_reserve_ratio > 0:
-        reserve_limit = min(limit, capped_count(limit, symbol_reserve_ratio))
-        reserved_symbols: set[str] = set()
-        for item in scored:
-            seed = item[1]
-            symbol_key = limiter.symbol_key(seed.symbol)
-            if symbol_key in reserved_symbols:
-                continue
-            if not limiter.allows(seed.symbol, seed.period):
-                continue
-            selected.append(item)
-            selected_ids.add(id(seed))
-            reserved_symbols.add(symbol_key)
-            limiter.record(seed.symbol, seed.period)
-            if len(selected) >= reserve_limit:
-                break
-        if len(selected) >= limit:
-            return selected
+    overflow: list[SeedRanking] = []
+    if _reserve_seed_symbols(
+        scored, limiter, limit, symbol_reserve_ratio, selected, selected_ids,
+    ):
+        return selected
     for item in scored:
         seed = item[1]
         if id(seed) in selected_ids:
