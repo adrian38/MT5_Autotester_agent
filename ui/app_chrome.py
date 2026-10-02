@@ -11,6 +11,21 @@ from ui.app_widgets import _ButtonImageCache, _CornerImageCache
 from ui.app_widgets import RoundedButton, RoundedCard
 
 
+SIDEBAR_ITEMS = (
+    ("panel", "▦  Panel"), ("multiterminal", "MT5  Multiterminales"),
+    ("portfolio", "▤  Portfolio"), ("configuracion", "⚙  Configuracion"),
+    ("archivos", "▤  Archivos"), ("logs", "≣  Logs"),
+    ("agente_ubs", "UBS  Agente UBS"), ("ubs_seeds", "UBS  Seeds"),
+    ("ubs_resultados", "UBS  Resultados"), ("ubs_robustez", "UBS  Robustez"),
+    ("ubs_final_tick", "UBS  Final Tick"), ("ubs_final_tick_6m", "UBS  Final Tick 6M"),
+    ("ubs_regression", "UBS  Regresiva"), ("ubs_historico", "UBS  Historico"),
+    ("ubs_universo", "UBS  Universo"), ("ubs_comparar", "UBS  Comparar"),
+    ("ubs_params", "UBS  Parámetros"), ("portafolio_ubs", "UBS  Portafolio"),
+    ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
+    ("buscador", "UBS  Buscador"),
+)
+
+
 class AppChromeMixin:
     """Estilo, navegacion y piezas reutilizables de la ventana principal."""
 
@@ -273,29 +288,7 @@ class AppChromeMixin:
         nav_canvas.bind("<Configure>", _sync_nav_scroll)
         nav_canvas.bind("<MouseWheel>", _scroll_nav)
         nav.columnconfigure(0, weight=1)
-        items = [
-            ("panel", "▦  Panel"),
-            ("multiterminal", "MT5  Multiterminales"),
-            ("portfolio", "▤  Portfolio"),
-            ("configuracion", "⚙  Configuracion"),
-            ("archivos", "▤  Archivos"),
-            ("logs", "≣  Logs"),
-            ("agente_ubs", "UBS  Agente UBS"),
-            ("ubs_seeds", "UBS  Seeds"),
-            ("ubs_resultados", "UBS  Resultados"),
-            ("ubs_robustez", "UBS  Robustez"),
-            ("ubs_final_tick", "UBS  Final Tick"),
-            ("ubs_final_tick_6m", "UBS  Final Tick 6M"),
-            ("ubs_regression", "UBS  Regresiva"),
-            ("ubs_historico", "UBS  Historico"),
-            ("ubs_universo", "UBS  Universo"),
-            ("ubs_comparar", "UBS  Comparar"),
-            ("ubs_params", "UBS  Parámetros"),
-            ("portafolio_ubs", "UBS  Portafolio"),
-            ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
-            ("buscador", "UBS  Buscador"),
-        ]
-        for index, (key, label) in enumerate(items):
+        for index, (key, label) in enumerate(SIDEBAR_ITEMS):
             btn = RoundedButton(
                 nav, text=label, anchor="w",
                 bg=COLORS["sidebar_bg"], fg=COLORS["nav_inactive_text"],
@@ -309,6 +302,10 @@ class AppChromeMixin:
             btn.bind("<MouseWheel>", _scroll_nav)
             self.nav_buttons[key] = btn
 
+        self._build_sidebar_status(sidebar)
+
+    @staticmethod
+    def _build_sidebar_status(sidebar) -> None:
         bottom = ttk.Frame(sidebar, style="Sidebar.TFrame")
         bottom.grid(row=2, column=0, sticky="sew")
         bottom.columnconfigure(0, weight=1)
