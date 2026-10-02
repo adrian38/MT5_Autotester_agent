@@ -33,7 +33,6 @@
     "tests/test_ubs_score.py::UBSScoreTests.test_axi_normalization_keeps_cash_suffix_rules_off_futures_and_shares": 77,
     "tools/audit_generalization_v2.py::build_audit": 280,
     "tools/gen_axi_normalization.py::main": 231,
-    "ubs/manual_status.py::mark_candidate_final_tick": 119,
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
     "ubs/prepared.py::load_prepared": 122,
     "ubs/regression.py::evaluate_candidate_regression": 162,
