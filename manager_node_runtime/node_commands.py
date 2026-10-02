@@ -85,6 +85,49 @@ def filter_supported_options(command: list[str], script: Path) -> list[str]:
     return prefix + filtered
 
 
+def _add_generation_execution_args(
+    args: list[str], config: dict[str, Any], payload: dict[str, Any], cfg,
+    settings_path: Path, broker: str,
+) -> None:
+    args.append("--execute-backtests")
+    if setting_bool(cfg, "Multiterminal", "enabled"):
+        args.extend(["--multi-terminal", "--terminals-config", str(settings_path)])
+        workers = safe_int(
+            payload.get("max_workers", setting(cfg, "Multiterminal", "workers", "1")),
+            1,
+            minimum=1,
+            maximum=64,
+        )
+        _add(args, "--max-workers", workers)
+    else:
+        expert = str(config.get("expert") or setting(cfg, "Paths", "ubs_ex5_file"))
+        if not expert:
+            raise ValueError("Falta Paths.ubs_ex5_file y no hay multiterminal habilitado")
+        _add(args, "--expert", expert)
+        _add(args, "--mt5-path", setting(cfg, "Paths", "mt5_path"))
+        _add(args, "--data-dir", setting(cfg, "Paths", "mt5_data_root"))
+    broker_key = broker.lower().replace(" ", "")
+    if setting_bool(cfg, "General", "symbol_map_enabled"):
+        symbol_map = setting(cfg, "General", f"symbol_map_{broker_key}") or setting(cfg, "General", "symbol_map")
+        _add(args, "--symbol-map", symbol_map)
+    if setting_bool(cfg, "General", "symbol_suffix_enabled"):
+        _add(args, "--symbol-suffix", setting(cfg, "General", "symbol_suffix"))
+        _add(args, "--symbol-futures-suffix", setting(cfg, "General", "symbol_futures_suffix"))
+        _add(args, "--symbol-shares-suffix", setting(cfg, "General", "symbol_shares_suffix"))
+
+
+def _add_generation_range_args(args, project, payload, defaults, cfg) -> None:
+    if payload.get("guided_batch_id"):
+        prepared = guided_batches.batch_dir(project, payload["guided_batch_id"]) / "batch.json"
+        _add(args, "--prepared-manifest", prepared)
+    _add(args, "--from-date", payload.get(
+        "from_date", defaults.get("from_date", setting(cfg, "General", "ubs_agent_from_date")),
+    ))
+    _add(args, "--to-date", payload.get(
+        "to_date", defaults.get("to_date", setting(cfg, "General", "ubs_agent_to_date")),
+    ))
+
+
 def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) -> tuple[list[str], Path]:
     project = Path(str(config["project_dir"])).expanduser().resolve()
     script = project / "ubs_agent.py"
@@ -130,11 +173,7 @@ def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) ->
     _add(args, "--delay", pick("delay", "delay", 5))
     _add(args, "--generation-mode", generation_mode)
     _add(args, "--random-seed", payload.get("random_seed", defaults.get("random_seed")))
-    if payload.get("guided_batch_id"):
-        prepared = guided_batches.batch_dir(project, payload["guided_batch_id"]) / "batch.json"
-        _add(args, "--prepared-manifest", prepared)
-    _add(args, "--from-date", payload.get("from_date", defaults.get("from_date", setting(cfg, "General", "ubs_agent_from_date"))))
-    _add(args, "--to-date", payload.get("to_date", defaults.get("to_date", setting(cfg, "General", "ubs_agent_to_date"))))
+    _add_generation_range_args(args, project, payload, defaults, cfg)
 
     for key, option in SCORE_OPTIONS.items():
         _add(args, option, setting(cfg, "General", key))
@@ -145,31 +184,9 @@ def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) ->
     if bool(payload.get("dry_run", False)):
         args.append("--dry-run")
     if execute:
-        args.append("--execute-backtests")
-        if setting_bool(cfg, "Multiterminal", "enabled"):
-            args.extend(["--multi-terminal", "--terminals-config", str(settings_path)])
-            workers = safe_int(
-                payload.get("max_workers", setting(cfg, "Multiterminal", "workers", "1")),
-                1,
-                minimum=1,
-                maximum=64,
-            )
-            _add(args, "--max-workers", workers)
-        else:
-            expert = str(config.get("expert") or setting(cfg, "Paths", "ubs_ex5_file"))
-            if not expert:
-                raise ValueError("Falta Paths.ubs_ex5_file y no hay multiterminal habilitado")
-            _add(args, "--expert", expert)
-            _add(args, "--mt5-path", setting(cfg, "Paths", "mt5_path"))
-            _add(args, "--data-dir", setting(cfg, "Paths", "mt5_data_root"))
-        broker_key = broker.lower().replace(" ", "")
-        if setting_bool(cfg, "General", "symbol_map_enabled"):
-            symbol_map = setting(cfg, "General", f"symbol_map_{broker_key}") or setting(cfg, "General", "symbol_map")
-            _add(args, "--symbol-map", symbol_map)
-        if setting_bool(cfg, "General", "symbol_suffix_enabled"):
-            _add(args, "--symbol-suffix", setting(cfg, "General", "symbol_suffix"))
-            _add(args, "--symbol-futures-suffix", setting(cfg, "General", "symbol_futures_suffix"))
-            _add(args, "--symbol-shares-suffix", setting(cfg, "General", "symbol_shares_suffix"))
+        _add_generation_execution_args(
+            args, config, payload, cfg, settings_path, broker,
+        )
     return filter_supported_options(args, script), project
 
 
