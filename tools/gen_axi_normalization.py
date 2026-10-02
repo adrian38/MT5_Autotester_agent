@@ -38,6 +38,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -137,7 +138,20 @@ def _fmt(value: float) -> str:
     return f"{value:.4f}" if value < 100 else f"{value:.2f}"
 
 
-def main() -> int:
+@dataclass
+class _SpecsRead:
+    """Lo que una lectura de specs deja listo para calcular factores."""
+
+    specs: list[SymbolSpec]
+    account_currency: str = ""
+    server: str = ""
+    terminal: str = ""
+    account_leverage: int | None = None
+    missing: list[str] = field(default_factory=list)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Linea de comandos del generador de normalizacion."""
     parser = argparse.ArgumentParser(description="Generate broker notional normalization factors from MT5.")
     parser.add_argument("--broker", default="AXI")
     parser.add_argument("--account-type", default="STANDARD")
@@ -183,111 +197,109 @@ def main() -> int:
         help="Do not keep the previous factor of symbols this run could not measure "
         "(they then fall back to the conservative group factor).",
     )
-    args = parser.parse_args()
+    return parser
 
-    broker = normalize_broker(args.broker)
-    normalize_account_type(args.account_type, broker)  # validate
-    # General amplification cap: floor = reference * fraction unless an absolute override is given.
-    min_notional = (
-        args.min_notional
-        if args.min_notional >= 0
-        else max(0.0, args.reference_notional * args.min_notional_fraction)
-    )
-    symbols, group_by_symbol = _load_universe(broker)
-    print(f"Universe [{broker}]: {len(symbols)} symbols across {len(set(group_by_symbol.values()))} groups")
-    cap = f"{args.reference_notional / min_notional:g}x" if min_notional > 0 else "off"
-    print(f"Reference notional={args.reference_notional:g} | min_notional floor={min_notional:g} (amplification cap {cap})")
 
-    default_path = BASE_DIR / "assets" / f"{broker.lower()}_normalization.json"
-    out_path = Path(args.out) if args.out else default_path
-    # The file to carry from is the one in effect, not the output path: writing a
-    # staging copy must not lose the factors of symbols measured last time.
-    previous_path = Path(args.previous) if args.previous else default_path
-    previous = {} if args.no_carry else _previous_factors(previous_path)
+def _min_notional(args: argparse.Namespace) -> float:
+    """Tope general de amplificacion: referencia por fraccion salvo override absoluto."""
+    if args.min_notional >= 0:
+        return args.min_notional
+    return max(0.0, args.reference_notional * args.min_notional_fraction)
 
-    account_currency = ""
-    server = ""
-    terminal = ""
-    account_leverage: int | None = None
-    missing: list[str] = []
+
+def _read_specs(args: argparse.Namespace, symbols: list[str]) -> _SpecsRead | None:
+    """Specs desde el JSON indicado o desde MT5; None si la lectura viva falla."""
     if args.specs_json:
         specs, account_currency, server = _specs_from_json(Path(args.specs_json))
         print(f"Loaded {len(specs)} specs from {args.specs_json} | account={account_currency} server={server}")
-    else:
-        try:
-            extraction = _extract_specs_from_mt5(args, symbols)
-        except Exception as exc:  # noqa: BLE001 - surface any MT5 error clearly
-            print(f"ERROR reading MT5 specs: {exc}", file=sys.stderr)
-            print("Open the AXI terminal (logged in) and retry, or pass --specs-json.", file=sys.stderr)
-            return 2
-        specs = list(extraction.specs)
-        account_currency = extraction.account_currency
-        server = extraction.server
-        account_leverage = extraction.account_leverage
-        terminal = str(extraction.terminal_path or "")
-        missing = list(extraction.missing_symbols)
-        measured_margin = sum(1 for spec in specs if spec.margin_min_lot > 0)
+        return _SpecsRead(specs=specs, account_currency=account_currency, server=server)
+    try:
+        extraction = _extract_specs_from_mt5(args, symbols)
+    except Exception as exc:  # noqa: BLE001 - surface any MT5 error clearly
+        print(f"ERROR reading MT5 specs: {exc}", file=sys.stderr)
+        print("Open the AXI terminal (logged in) and retry, or pass --specs-json.", file=sys.stderr)
+        return None
+    read = _SpecsRead(
+        specs=list(extraction.specs),
+        account_currency=extraction.account_currency,
+        server=extraction.server,
+        terminal=str(extraction.terminal_path or ""),
+        account_leverage=extraction.account_leverage,
+        missing=list(extraction.missing_symbols),
+    )
+    measured_margin = sum(1 for spec in read.specs if spec.margin_min_lot > 0)
+    print(
+        f"MT5 specs read: {len(read.specs)} symbols | account={read.account_currency} "
+        f"leverage={read.account_leverage} server={read.server} | "
+        f"margin measured for {measured_margin} | missing={len(read.missing)}"
+    )
+    return read
+
+
+def _dump_specs_payload(read: _SpecsRead, broker: str, group_by_symbol: dict[str, str], previous_dump: dict) -> dict:
+    """Volcado de specs fusionado con el anterior, tal y como lo lee el gestor."""
+    return build_symbol_specs_payload(
+        read.specs,
+        account_currency=read.account_currency,
+        account_leverage=read.account_leverage,
+        server=read.server,
+        terminal=read.terminal,
+        broker=broker,
+        generated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        group_by_symbol=group_by_symbol,
+        missing_symbols=read.missing,
+        previous=previous_dump,
+    )
+
+
+def _dump_specs(args: argparse.Namespace, read: _SpecsRead, broker: str, group_by_symbol: dict[str, str]) -> bool:
+    """Escribe (o simula) el volcado de specs; False si la peticion no es valida."""
+    dump_path = Path(args.dump_specs)
+    if args.specs_json:
         print(
-            f"MT5 specs read: {len(specs)} symbols | account={account_currency} leverage={account_leverage} "
-            f"server={server} | margin measured for {measured_margin} | missing={len(missing)}"
+            "ERROR: --dump-specs needs a live MT5 read; with --specs-json there is nothing new to dump.",
+            file=sys.stderr,
         )
+        return False
+    payload = _dump_specs_payload(read, broker, group_by_symbol, _load_json(dump_path))
+    measured_now = {spec.name for spec in read.specs if spec.margin_min_lot > 0}
+    kept_margins = sum(
+        1
+        for name, row in payload["symbols"].items()
+        if row.get("margin_min_lot") and name not in measured_now
+    )
+    summary = (
+        f"{payload['symbol_count']} symbols, {payload['measured_symbol_count']} read now, "
+        f"{len(payload['carried_symbols'])} symbols and {kept_margins} margins carried from the previous dump"
+    )
+    if not args.write:
+        print(f"[DRY-RUN] Would write {dump_path} ({summary}).")
+        return True
+    if dump_path.exists():
+        backup = dump_path.with_suffix(dump_path.suffix + f".bak_{time.strftime('%Y%m%d_%H%M%S')}")
+        backup.write_text(dump_path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+        print(f"Backup -> {backup.name}")
+    dump_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    print(f"Dumped specs -> {dump_path} ({summary})")
+    return True
 
-    if args.dump_specs:
-        dump_path = Path(args.dump_specs)
-        if args.specs_json:
-            print(
-                "ERROR: --dump-specs needs a live MT5 read; with --specs-json there is nothing new to dump.",
-                file=sys.stderr,
-            )
-            return 2
-        previous_dump = _load_json(dump_path)
-        payload = build_symbol_specs_payload(
-            specs,
-            account_currency=account_currency,
-            account_leverage=account_leverage,
-            server=server,
-            terminal=terminal,
-            broker=broker,
-            generated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            group_by_symbol=group_by_symbol,
-            missing_symbols=missing,
-            previous=previous_dump,
-        )
-        measured_now = {spec.name for spec in specs if spec.margin_min_lot > 0}
-        kept_margins = sum(
-            1
-            for name, row in payload["symbols"].items()
-            if row.get("margin_min_lot") and name not in measured_now
-        )
-        summary = (
-            f"{payload['symbol_count']} symbols, {payload['measured_symbol_count']} read now, "
-            f"{len(payload['carried_symbols'])} symbols and {kept_margins} margins carried from the previous dump"
-        )
-        if not args.write:
-            print(f"[DRY-RUN] Would write {dump_path} ({summary}).")
-        else:
-            if dump_path.exists():
-                backup = dump_path.with_suffix(dump_path.suffix + f".bak_{time.strftime('%Y%m%d_%H%M%S')}")
-                backup.write_text(dump_path.read_text(encoding="utf-8-sig"), encoding="utf-8")
-                print(f"Backup -> {backup.name}")
-            dump_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-            print(f"Dumped specs -> {dump_path} ({summary})")
 
-    rates = implied_currency_rates(specs, account_currency=account_currency)
+def _compute_factors(args: argparse.Namespace, read: _SpecsRead, group_by_symbol: dict[str, str], min_notional: float):
+    """Factores por simbolo mas la lista de los que este run no pudo medir."""
+    rates = implied_currency_rates(read.specs, account_currency=read.account_currency)
     print(
         "Implied FX rates (1 unit of quote currency in account currency): "
         + ", ".join(f"{currency}={rate:g}" for currency, rate in sorted(rates.items()))
     )
-
     factors, skipped = compute_symbol_factors(
-        specs,
+        read.specs,
         group_by_symbol,
         reference_notional=args.reference_notional,
         requested_lot=args.requested_lot,
         min_notional=min_notional,
         currency_rates=rates,
     )
-    skipped = sorted(set(skipped) | set(missing))
+    skipped = sorted(set(skipped) | set(read.missing))
     rebuilt = [item for item in factors if item.source == "contract_rate"]
     print(
         f"Computed {len(factors)} factors "
@@ -297,19 +309,11 @@ def main() -> int:
     if rebuilt:
         preview = ", ".join(f"{item.name}={item.factor:g}" for item in rebuilt[:6])
         print(f"  rebuilt e.g.: {preview}")
+    return factors, skipped
 
-    config = build_normalization_config(
-        factors,
-        broker=broker,
-        reference_notional=args.reference_notional,
-        requested_lot=args.requested_lot,
-        min_notional=min_notional,
-        account_currency=account_currency,
-        server=server,
-        generated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        skipped_symbols=skipped,
-        previous_factors=previous,
-    )
+
+def _print_config_coverage(config: dict) -> None:
+    """Avisa de los simbolos arrastrados y de los que se quedan sin factor."""
     if config["carried_symbols"]:
         print(
             f"Carried {len(config['carried_symbols'])} factors from the previous file "
@@ -321,7 +325,9 @@ def main() -> int:
             f"(they use the conservative group minimum): {', '.join(config['skipped_symbols'][:8])}"
         )
 
-    # --- comparison against the current file (old effective factor per symbol) ---
+
+def _print_group_medians(factors, broker: str) -> None:
+    """Compara por grupo la mediana del factor efectivo actual con la nueva."""
     print("\nPer-group median of the measured factors: OLD-effective -> NEW")
     new_by_group: dict[str, list[float]] = {}
     old_by_group: dict[str, list[float]] = {}
@@ -335,6 +341,9 @@ def main() -> int:
         newm = statistics.median(new_by_group[group])
         print(f"  {group:14s} old~{_fmt(oldm):>10s}  new~{_fmt(newm):>10s}  (n={len(new_by_group[group])})")
 
+
+def _print_watch_symbols(factors, broker: str) -> None:
+    """Detalle del antes y despues para los simbolos de referencia."""
     print("\nWatch symbols: price   OLD factor -> NEW factor   (lot, notional)")
     by_name = {f.name.upper(): f for f in factors}
     for watch in WATCH_SYMBOLS:
@@ -348,11 +357,13 @@ def main() -> int:
             f"  (lot={f.lot_used:g}, notional={f.actual_notional:.0f})"
         )
 
+
+def _write_normalization(args: argparse.Namespace, out_path: Path, config: dict, broker: str) -> int:
+    """Guarda el fichero de normalizacion con copia de seguridad previa."""
     payload = json.dumps(config, ensure_ascii=True, indent=2)
     if not args.write:
         print(f"\n[DRY-RUN] Would write {out_path} ({config['symbol_count']} symbol factors). Re-run with --write.")
         return 0
-
     if out_path.exists():
         backup = out_path.with_suffix(out_path.suffix + f".bak_{time.strftime('%Y%m%d_%H%M%S')}")
         backup.write_text(out_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -368,6 +379,49 @@ def main() -> int:
         "so it will not pick a normalization change up)"
     )
     return 0
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    broker = normalize_broker(args.broker)
+    normalize_account_type(args.account_type, broker)  # validate
+    min_notional = _min_notional(args)
+    symbols, group_by_symbol = _load_universe(broker)
+    print(f"Universe [{broker}]: {len(symbols)} symbols across {len(set(group_by_symbol.values()))} groups")
+    cap = f"{args.reference_notional / min_notional:g}x" if min_notional > 0 else "off"
+    print(f"Reference notional={args.reference_notional:g} | min_notional floor={min_notional:g} (amplification cap {cap})")
+
+    default_path = BASE_DIR / "assets" / f"{broker.lower()}_normalization.json"
+    out_path = Path(args.out) if args.out else default_path
+    # The file to carry from is the one in effect, not the output path: writing a
+    # staging copy must not lose the factors of symbols measured last time.
+    previous_path = Path(args.previous) if args.previous else default_path
+    previous = {} if args.no_carry else _previous_factors(previous_path)
+
+    read = _read_specs(args, symbols)
+    if read is None:
+        return 2
+    if args.dump_specs and not _dump_specs(args, read, broker, group_by_symbol):
+        return 2
+
+    factors, skipped = _compute_factors(args, read, group_by_symbol, min_notional)
+    config = build_normalization_config(
+        factors,
+        broker=broker,
+        reference_notional=args.reference_notional,
+        requested_lot=args.requested_lot,
+        min_notional=min_notional,
+        account_currency=read.account_currency,
+        server=read.server,
+        generated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        skipped_symbols=skipped,
+        previous_factors=previous,
+    )
+    _print_config_coverage(config)
+    # --- comparison against the current file (old effective factor per symbol) ---
+    _print_group_medians(factors, broker)
+    _print_watch_symbols(factors, broker)
+    return _write_normalization(args, out_path, config, broker)
 
 
 if __name__ == "__main__":
