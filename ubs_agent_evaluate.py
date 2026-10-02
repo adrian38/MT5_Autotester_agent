@@ -129,6 +129,43 @@ def evaluate_history_probe(
     return "history_ok", result
 
 
+def _seed_evaluation_target(seed: Seed, result: ScoreResult, display_name: str) -> tuple[Seed, Variant]:
+    expected_symbol = seed.symbol if seed.symbol and seed.symbol != "UNKNOWN" else str(result.symbol or "UNKNOWN")
+    expected_period = seed.period if seed.period and seed.period != "UNKNOWN" else str(result.timeframe or "UNKNOWN").upper()
+    evaluated_seed = Seed(
+        path=seed.path, symbol=expected_symbol, period=expected_period,
+        family=seed.family, run_strategy=seed.run_strategy,
+    )
+    variant = Variant(
+        path=Path(display_name), seed=evaluated_seed,
+        target_symbol=expected_symbol, target_period=expected_period,
+        mutated_keys=(), missing_lot_keys=(), policy="seed_eval",
+    )
+    return evaluated_seed, variant
+
+
+def _record_zero_trade_seed(
+    memory: AgentMemory, seed: Seed, evaluated_seed: Seed, report: Path,
+    result: ScoreResult,
+) -> tuple[str, ScoreResult]:
+    trade_disabled = trade_disabled_metadata(report)
+    if trade_disabled:
+        print(
+            f"AVISO: el broker no permite abrir posiciones en {evaluated_seed.symbol}; "
+            f"marcado como {TRADE_DISABLED_STATUS}."
+        )
+        record_seed_score_with_metadata(
+            memory, evaluated_seed, result, TRADE_DISABLED_STATUS, report, trade_disabled,
+        )
+        return TRADE_DISABLED_STATUS, result
+    metadata = execution_failure_metadata(report, result.symbol, result.timeframe)
+    status = "rejected" if metadata else "no_trades"
+    reason = execution_failure_reason(metadata) if metadata else "sin operaciones"
+    print(f"AVISO: reporte seed {reason} para {seed.path.name}; marcado como {status}.")
+    memory.record_seed_score(evaluated_seed, result, status, report, metadata=metadata)
+    return status, result
+
+
 def evaluate_seed_report(
     memory: AgentMemory,
     seed: Seed,
@@ -167,24 +204,7 @@ def evaluate_seed_report(
         memory.record_seed_score(seed, result, "pending_tester_context", report)
         return "pending_tester_context", result
 
-    expected_symbol = seed.symbol if seed.symbol and seed.symbol != "UNKNOWN" else str(result.symbol or "UNKNOWN")
-    expected_period = seed.period if seed.period and seed.period != "UNKNOWN" else str(result.timeframe or "UNKNOWN").upper()
-    evaluated_seed = Seed(
-        path=seed.path,
-        symbol=expected_symbol,
-        period=expected_period,
-        family=seed.family,
-        run_strategy=seed.run_strategy,
-    )
-    variant = Variant(
-        path=Path(display_name),
-        seed=evaluated_seed,
-        target_symbol=expected_symbol,
-        target_period=expected_period,
-        mutated_keys=(),
-        missing_lot_keys=(),
-        policy="seed_eval",
-    )
+    evaluated_seed, variant = _seed_evaluation_target(seed, result, display_name)
     matches, mismatch_reason = report_matches_variant(
         variant, result, symbol_map, symbol_suffix, broker
     )
@@ -194,27 +214,7 @@ def evaluate_seed_report(
         return "report_mismatch", result
 
     if result.trades <= 0:
-        trade_disabled = trade_disabled_metadata(report)
-        if trade_disabled:
-            print(
-                f"AVISO: el broker no permite abrir posiciones en {expected_symbol}; "
-                f"marcado como {TRADE_DISABLED_STATUS}."
-            )
-            record_seed_score_with_metadata(
-                memory,
-                evaluated_seed,
-                result,
-                TRADE_DISABLED_STATUS,
-                report,
-                trade_disabled,
-            )
-            return TRADE_DISABLED_STATUS, result
-        metadata = execution_failure_metadata(report, result.symbol, result.timeframe)
-        status = "rejected" if metadata else "no_trades"
-        reason = execution_failure_reason(metadata) if metadata else "sin operaciones"
-        print(f"AVISO: reporte seed {reason} para {seed.path.name}; marcado como {status}.")
-        memory.record_seed_score(evaluated_seed, result, status, report, metadata=metadata)
-        return status, result
+        return _record_zero_trade_seed(memory, seed, evaluated_seed, report, result)
 
     status = "accepted" if result.accepted else "rejected"
     memory.record_seed_score(evaluated_seed, result, status, report)
