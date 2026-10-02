@@ -207,47 +207,59 @@ class JobPipelineMixin:
             )
             if return_code == 0 and stage == "generation" and has_downstream_for_cycle:
                 try:
-                    settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
-                    project = Path(str(self.config["project_dir"])).expanduser().resolve()
-                    if not settings_path.is_absolute():
-                        settings_path = project / settings_path
-                    cfg = node_settings.read_settings(settings_path)
-                    snapshot = node_snapshots.database_snapshot(node_settings.memory_path(self.config, cfg))
-                    prepared_id = (self.state.get("request") or {}).get("guided_batch_id")
-                    prepared_run = guided_batches.read_run(project, prepared_id) if prepared_id else None
-                    if prepared_id and not prepared_run:
-                        raise ValueError("El lote preparado no publicó su run exacto")
-                    generated_run = safe_int((prepared_run or snapshot.get("latest_run") or {}).get("run_id" if prepared_id else "id"), 0, minimum=0)
-                    if generated_run <= 0:
-                        raise ValueError("No se encontro el run generado")
-                    self.state.setdefault("cycle_run_ids", {})[str(cycle)] = generated_run
-                    for pending_step in pipeline:
-                        if pending_step.get("cycle") == cycle:
-                            pending_step["run_id"] = generated_run
-                    self.state["pipeline"] = pipeline
+                    self._bind_generated_cycle_run(pipeline, cycle)
                 except Exception as exc:
                     self.state["error"] = str(exc)
                     return_code = 1
-            self._notify_stage_completion(step, return_code)
-            next_index = step_index + 1
-            next_is_cleanup = (
-                next_index < len(pipeline)
-                and str(pipeline[next_index].get("action")) in CLEANUP_STAGES
-            )
-            cleanup_failed = bool(self.state.get("cleanup_failed"))
-            continue_pipeline = return_code == 0 and not cleanup_failed
-            if stage in CLEANUP_STAGES and next_is_cleanup:
-                continue_pipeline = True
-            if continue_pipeline and next_index < len(pipeline):
-                try:
-                    if self._launch_next_runnable(next_index, Path(str(self.state["log_path"]))):
-                        return
-                except Exception as exc:
-                    self.state["error"] = str(exc)
-                    return_code = 1
-            if cleanup_failed:
+            self._continue_after_watched_step(pipeline, step_index, step, return_code)
+
+    def _bind_generated_cycle_run(self, pipeline: list[dict[str, Any]], cycle: Any) -> None:
+        settings_path = Path(str(self.config.get("settings_file") or "ui_settings.ini"))
+        project = Path(str(self.config["project_dir"])).expanduser().resolve()
+        if not settings_path.is_absolute():
+            settings_path = project / settings_path
+        cfg = node_settings.read_settings(settings_path)
+        snapshot = node_snapshots.database_snapshot(node_settings.memory_path(self.config, cfg))
+        prepared_id = (self.state.get("request") or {}).get("guided_batch_id")
+        prepared_run = guided_batches.read_run(project, prepared_id) if prepared_id else None
+        if prepared_id and not prepared_run:
+            raise ValueError("El lote preparado no publicó su run exacto")
+        run_key = "run_id" if prepared_id else "id"
+        generated_run = safe_int(
+            (prepared_run or snapshot.get("latest_run") or {}).get(run_key), 0, minimum=0,
+        )
+        if generated_run <= 0:
+            raise ValueError("No se encontro el run generado")
+        self.state.setdefault("cycle_run_ids", {})[str(cycle)] = generated_run
+        for pending_step in pipeline:
+            if pending_step.get("cycle") == cycle:
+                pending_step["run_id"] = generated_run
+        self.state["pipeline"] = pipeline
+
+    def _continue_after_watched_step(
+        self, pipeline: list[dict[str, Any]], step_index: int,
+        step: dict[str, Any], return_code: int,
+    ) -> None:
+        self._notify_stage_completion(step, return_code)
+        next_index = step_index + 1
+        next_is_cleanup = (
+            next_index < len(pipeline)
+            and str(pipeline[next_index].get("action")) in CLEANUP_STAGES
+        )
+        cleanup_failed = bool(self.state.get("cleanup_failed"))
+        continue_pipeline = return_code == 0 and not cleanup_failed
+        if str(step["action"]) in CLEANUP_STAGES and next_is_cleanup:
+            continue_pipeline = True
+        if continue_pipeline and next_index < len(pipeline):
+            try:
+                if self._launch_next_runnable(next_index, Path(str(self.state["log_path"]))):
+                    return
+            except Exception as exc:
+                self.state["error"] = str(exc)
                 return_code = 1
-            self._complete(return_code)
+        if cleanup_failed:
+            return_code = 1
+        self._complete(return_code)
 
     def _terminate_current(self, process: subprocess.Popen[str]) -> None:
         try:
