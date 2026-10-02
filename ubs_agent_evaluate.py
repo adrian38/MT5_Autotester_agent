@@ -35,6 +35,30 @@ from ubs_agent_universe import (
 )
 
 
+def _finish_history_probe(
+    memory: AgentMemory, variant: Variant, result: ScoreResult | None,
+    status: str, report: Path | None, metadata: dict,
+) -> tuple[str, ScoreResult | None]:
+    record_history_probe_status(memory, variant, result, status, report, metadata)
+    return status, result
+
+
+def _missing_history_probe(
+    memory: AgentMemory, variant: Variant, universe_symbols: set[str] | None,
+    symbol_map: dict[str, str],
+) -> tuple[str, None]:
+    status = (
+        SYMBOL_NOT_EXIST_STATUS
+        if variant_symbol_not_offered(variant, universe_symbols, symbol_map)
+        else "no_report"
+    )
+    _finish_history_probe(
+        memory, variant, None, status, None,
+        {"reasons": [status], "history_probe": True},
+    )
+    return status, None
+
+
 def evaluate_history_probe(
     memory: AgentMemory,
     variant: Variant,
@@ -51,33 +75,15 @@ def evaluate_history_probe(
     if not report:
         # Las filas del probe viven en candidates, asi que un no_report aqui
         # tambien entra en el pool de retry.
-        status = (
-            SYMBOL_NOT_EXIST_STATUS
-            if variant_symbol_not_offered(variant, universe_symbols, symbol_map)
-            else "no_report"
-        )
-        record_history_probe_status(
-            memory,
-            variant,
-            None,
-            status,
-            None,
-            {"reasons": [status], "history_probe": True},
-        )
-        return status, None
+        return _missing_history_probe(memory, variant, universe_symbols, symbol_map)
     try:
         result = score_report_file(report, config=score_config, broker=broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear probe historico {report}: {exc}")
-        record_history_probe_status(
-            memory,
-            variant,
-            None,
-            "parse_error",
-            report,
+        return _finish_history_probe(
+            memory, variant, None, "parse_error", report,
             {"reasons": ["parse_error"], "error": str(exc), "history_probe": True},
         )
-        return "parse_error", None
     no_history = tester_log_no_history_metadata(
         report,
         variant,
@@ -93,40 +99,25 @@ def evaluate_history_probe(
         record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
         return "no_history", result
     if report_has_empty_tester_context(result):
-        record_history_probe_status(
-            memory,
-            variant,
-            result,
-            "pending_tester_context",
-            report,
+        return _finish_history_probe(
+            memory, variant, result, "pending_tester_context", report,
             {"reasons": ["empty_tester_context"], "history_probe": True},
         )
-        return "pending_tester_context", result
 
     matches, mismatch_reason = report_matches_variant(
         variant, result, symbol_map, symbol_suffix, broker
     )
     if not matches:
         print(f"AVISO: probe historico no coincide para {variant.path.name}: {mismatch_reason}")
-        record_history_probe_status(
-            memory,
-            variant,
-            result,
-            "report_mismatch",
-            report,
+        return _finish_history_probe(
+            memory, variant, result, "report_mismatch", report,
             {"reasons": ["report_mismatch"], "mismatch": mismatch_reason, "history_probe": True},
         )
-        return "report_mismatch", result
 
-    record_history_probe_status(
-        memory,
-        variant,
-        result,
-        "history_ok",
-        report,
+    return _finish_history_probe(
+        memory, variant, result, "history_ok", report,
         {"reasons": [], "history_probe": True},
     )
-    return "history_ok", result
 
 
 def _seed_evaluation_target(seed: Seed, result: ScoreResult, display_name: str) -> tuple[Seed, Variant]:
