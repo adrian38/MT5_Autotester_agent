@@ -295,6 +295,49 @@ def evaluate_variant(
     )
 
 
+def _record_variant_no_history(
+    memory: AgentMemory, variant: Variant, report: Path, result: ScoreResult,
+    no_history: dict,
+) -> tuple[str, ScoreResult]:
+    failed_symbols = no_history.get("failed_history_symbols") or []
+    dependency_detail = (
+        f"; falta historial dependiente de {', '.join(str(value) for value in failed_symbols)}"
+        if failed_symbols else ""
+    )
+    recommendation = str(
+        no_history.get("recommendation")
+        or "desactivar simbolo y revisar historico del broker"
+    )
+    print(
+        f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido"
+        f"{dependency_detail}; "
+        f"marcado como no_history. Recomendacion: {recommendation}."
+    )
+    record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
+    return "no_history", result
+
+
+def _record_zero_trade_variant(
+    memory: AgentMemory, variant: Variant, report: Path, result: ScoreResult,
+) -> tuple[str, ScoreResult]:
+    trade_disabled = trade_disabled_metadata(report)
+    if trade_disabled:
+        print(
+            f"AVISO: el broker no permite abrir posiciones en {variant.target_symbol}; "
+            f"marcado como {TRADE_DISABLED_STATUS}."
+        )
+        record_score_with_metadata(
+            memory, variant.path, result, TRADE_DISABLED_STATUS, report, trade_disabled,
+        )
+        return TRADE_DISABLED_STATUS, result
+    metadata = execution_failure_metadata(report, result.symbol, result.timeframe)
+    status = "rejected" if metadata else "no_trades"
+    memory.record_score(variant.path, result, status, report, metadata=metadata)
+    if metadata:
+        print(f"AVISO: {variant.path.name}: {execution_failure_reason(metadata)}.")
+    return status, result
+
+
 def evaluate_variant_report(
     memory: AgentMemory,
     variant: Variant,
@@ -326,23 +369,7 @@ def evaluate_variant_report(
         symbol_suffix,
     )
     if no_history:
-        failed_symbols = no_history.get("failed_history_symbols") or []
-        dependency_detail = (
-            f"; falta historial dependiente de {', '.join(str(value) for value in failed_symbols)}"
-            if failed_symbols
-            else ""
-        )
-        recommendation = str(
-            no_history.get("recommendation")
-            or "desactivar simbolo y revisar historico del broker"
-        )
-        print(
-            f"AVISO: {variant.target_symbol} sin historico del broker para el rango pedido"
-            f"{dependency_detail}; "
-            f"marcado como no_history. Recomendacion: {recommendation}."
-        )
-        record_score_with_metadata(memory, variant.path, result, "no_history", report, no_history)
-        return "no_history", result
+        return _record_variant_no_history(memory, variant, report, result, no_history)
     if report_has_empty_tester_context(result):
         print(
             f"AVISO: reporte sin contexto tester para {variant.path.name}; "
@@ -358,27 +385,7 @@ def evaluate_variant_report(
         memory.record_score(variant.path, result, "report_mismatch", report)
         return "report_mismatch", result
     if result.trades <= 0:
-        trade_disabled = trade_disabled_metadata(report)
-        if trade_disabled:
-            print(
-                f"AVISO: el broker no permite abrir posiciones en {variant.target_symbol}; "
-                f"marcado como {TRADE_DISABLED_STATUS}."
-            )
-            record_score_with_metadata(
-                memory,
-                variant.path,
-                result,
-                TRADE_DISABLED_STATUS,
-                report,
-                trade_disabled,
-            )
-            return TRADE_DISABLED_STATUS, result
-        metadata = execution_failure_metadata(report, result.symbol, result.timeframe)
-        status = "rejected" if metadata else "no_trades"
-        memory.record_score(variant.path, result, status, report, metadata=metadata)
-        if metadata:
-            print(f"AVISO: {variant.path.name}: {execution_failure_reason(metadata)}.")
-        return status, result
+        return _record_zero_trade_variant(memory, variant, report, result)
     status = "accepted" if result.accepted else "rejected"
     memory.record_score(variant.path, result, status, report)
     return status, result
