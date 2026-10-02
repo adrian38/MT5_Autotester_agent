@@ -266,6 +266,54 @@ def _stored_degradation(
     )
 
 
+def _robustness_row_update(row, gates: Gates, broker: str):
+    candidate_id, run_id, old_status, old_score, metrics_raw, degradation_raw, base_raw = row
+    try:
+        metrics = json.loads(metrics_raw)
+        base_metrics = json.loads(base_raw or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(metrics, dict) or not isinstance(base_metrics, dict):
+        return None
+    result = _renormalize(metrics, broker)
+    if result is None:
+        return None
+    updated, normalized, score = result
+    base_result = _renormalize(base_metrics, broker)
+    if base_result is not None:
+        base_metrics = base_result[0]
+    absolute_reasons = _reasons(updated, normalized, gates, stage="oos")
+    degradation = _stored_degradation(degradation_raw, base_metrics, updated)
+    degradation_reasons = degradation.get("reasons", []) if degradation else []
+    if not isinstance(degradation_reasons, list):
+        degradation_reasons = []
+    degradation_accepted = bool(degradation.get("accepted", True)) if degradation else True
+    policy = RiskProfitConfig.from_dict((updated.get("score_config") or {}).get("risk_profit"))
+    cfg = RobustnessDegradationConfig(**{
+        key: value for key, value in (degradation.get("config") or {}).items()
+        if key in RobustnessDegradationConfig.__dataclass_fields__
+    })
+    reasons, risk_audit, degradation = combine_robustness_profit_gate(
+        base_metrics, updated, absolute_reasons, degradation, policy,
+        max_drawdown_pct=gates.max_dd, min_recovery_factor=gates.min_recovery,
+        degradation_config=cfg,
+    )
+    updated["risk_profit_audit"] = risk_audit
+    accepted = not reasons and (degradation_accepted or risk_audit["selected_route"] == "risk_adjusted")
+    status = ("accepted" if accepted else "pending_risk_evidence"
+              if risk_audit["selected_route"] == "pending_evidence" else "rejected")
+    updated["reasons"] = reasons
+    updated["accepted"] = accepted
+    if degradation:
+        degradation["absolute_accepted"] = not absolute_reasons
+        degradation["final_accepted"] = accepted
+    update = (
+        status, int(accepted), None if old_score is None else score,
+        _dump(updated), _dump(degradation), candidate_id, run_id,
+    )
+    return update, old_status, accepted
+
+
 def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None:
     """Re-score OOS absolute gates while retaining/recomputing its degradation gate."""
     rows = conn.execute(
@@ -281,66 +329,20 @@ def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None
     ).fetchall()
     updates = []
     changed = to_accept = to_reject = skipped = 0
-    for candidate_id, run_id, old_status, old_score, metrics_raw, degradation_raw, base_raw in rows:
-        try:
-            metrics = json.loads(metrics_raw)
-            base_metrics = json.loads(base_raw or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            skipped += 1
-            continue
-        if not isinstance(metrics, dict) or not isinstance(base_metrics, dict):
-            skipped += 1
-            continue
-        result = _renormalize(metrics, broker)
+    for row in rows:
+        result = _robustness_row_update(row, gates, broker)
         if result is None:
             skipped += 1
             continue
-        updated, normalized, score = result
-        base_result = _renormalize(base_metrics, broker)
-        if base_result is not None:
-            base_metrics = base_result[0]
-        absolute_reasons = _reasons(updated, normalized, gates, stage="oos")
-        degradation = _stored_degradation(degradation_raw, base_metrics, updated)
-        degradation_reasons = degradation.get("reasons", []) if degradation else []
-        if not isinstance(degradation_reasons, list):
-            degradation_reasons = []
-        degradation_accepted = bool(degradation.get("accepted", True)) if degradation else True
-        policy = RiskProfitConfig.from_dict((updated.get("score_config") or {}).get("risk_profit"))
-        cfg = RobustnessDegradationConfig(**{
-            key: value for key, value in (degradation.get("config") or {}).items()
-            if key in RobustnessDegradationConfig.__dataclass_fields__
-        })
-        reasons, risk_audit, degradation = combine_robustness_profit_gate(
-            base_metrics, updated, absolute_reasons, degradation, policy,
-            max_drawdown_pct=gates.max_dd, min_recovery_factor=gates.min_recovery,
-            degradation_config=cfg,
-        )
-        updated["risk_profit_audit"] = risk_audit
-        accepted = not reasons and (degradation_accepted or risk_audit["selected_route"] == "risk_adjusted")
-        status = ("accepted" if accepted else "pending_risk_evidence"
-                  if risk_audit["selected_route"] == "pending_evidence" else "rejected")
-        updated["reasons"] = reasons
-        updated["accepted"] = accepted
-        if degradation:
-            degradation["absolute_accepted"] = not absolute_reasons
-            degradation["final_accepted"] = accepted
+        update, old_status, accepted = result
+        status = update[0]
         if status != old_status:
             changed += 1
             if accepted:
                 to_accept += 1
             else:
                 to_reject += 1
-        updates.append(
-            (
-                status,
-                int(accepted),
-                None if old_score is None else score,
-                _dump(updated),
-                _dump(degradation),
-                candidate_id,
-                run_id,
-            )
-        )
+        updates.append(update)
 
     if not dry and updates:
         conn.executemany(
