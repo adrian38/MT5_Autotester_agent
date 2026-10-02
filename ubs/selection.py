@@ -48,6 +48,262 @@ from ubs.selection_fitness import (  # noqa: F401  fachada de ubs.selection
 from ubs.weights import FeedbackSignal, probability_feedback_signals
 
 
+_EMPTY_FEEDBACK_SIGNAL = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
+
+
+class _RouteGroups:
+    """Grupos de ciclo de vida de una decision, por ruta y en global."""
+
+    def __init__(self, routes: tuple[str, ...]) -> None:
+        self.by_route: dict[str, dict[object, list[object]]] = {
+            route: defaultdict(list) for route in routes
+        }
+        self.global_groups: dict[object, list[object]] = defaultdict(list)
+
+    def add(self, route: str, group: tuple, row: object) -> None:
+        """Anota una fila en su ruta y en el conjunto global."""
+        self.by_route[route][group].append(row)
+        self.global_groups[(route, *group)].append(row)
+
+    def pair(self, first: str, second: str) -> tuple[FeedbackSignal, FeedbackSignal]:
+        """Senales de probabilidad de las dos rutas que se comparan."""
+        signals = probability_feedback_signals(
+            self.by_route,
+            self.global_groups,
+            normalize_keys=False,
+            terminal_stage="six_month",
+        )
+        return (
+            signals.get(first, _EMPTY_FEEDBACK_SIGNAL),
+            signals.get(second, _EMPTY_FEEDBACK_SIGNAL),
+        )
+
+
+@dataclass
+class _PolicyMixTally:
+    """Recuento por politica y grupos de ciclo de vida de cada decision."""
+
+    buckets: dict[str, list[int]]
+    allocation: _RouteGroups
+    lifecycle: _RouteGroups
+    timeframe: _RouteGroups
+    universe: _RouteGroups
+
+    @classmethod
+    def empty(cls) -> "_PolicyMixTally":
+        """Contadores a cero para las seis cestas y las cuatro decisiones."""
+        return cls(
+            buckets={
+                "unseeded": [0, 0],
+                "benchmark": [0, 0],
+                "universe_feedback": [0, 0],
+                "universe_explore": [0, 0],
+                "current_target": [0, 0],
+                "cross_target": [0, 0],
+            },
+            allocation=_RouteGroups(("UNSEEDED", "BENCHMARK")),
+            lifecycle=_RouteGroups(("CURRENT", "CROSS")),
+            timeframe=_RouteGroups(("CURRENT_TF", "CHANGED_TF")),
+            universe=_RouteGroups(("UNIVERSE_FEEDBACK", "UNIVERSE_EXPLORE")),
+        )
+
+    def count(self, bucket: str, success: int) -> None:
+        """Suma un intento y su resultado a una cesta."""
+        self.buckets[bucket][0] += 1
+        self.buckets[bucket][1] += success
+
+    def rate(self, bucket: str) -> float:
+        """Tasa de exito de la cesta con el prior de la mezcla de fuentes."""
+        trials, successes = self.buckets[bucket]
+        return (successes + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS) / (
+            trials + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS + DISCOVERY_SOURCE_MIX_PRIOR_FAILURE
+        )
+
+
+def _recent_policy_run_ids(materialized: list[object], recent_run_limit: int) -> list[int]:
+    """Los ultimos runs que entran en la estimacion, de mas nuevo a mas viejo."""
+    return sorted(
+        {
+            int(_row_get(row, "run_id", 0) or 0)
+            for row in materialized
+            if int(_row_get(row, "run_id", 0) or 0) > 0
+        },
+        reverse=True,
+    )[: max(int(recent_run_limit), 0)]
+
+
+def _tally_policy_row(tally: _PolicyMixTally, row: object, row_index: int) -> None:
+    """Reparte una fila final en sus cestas y grupos de ciclo de vida."""
+    status = str(_row_get(row, "status", "")).lower()
+    if status not in _SOURCE_FINAL_STATUSES:
+        return
+    policy = str(_row_get(row, "policy", "")).split("+", 1)[0]
+    if not policy or policy.startswith(_PRODUCTION_ASSET_POLICY_PREFIX):
+        return
+    success = int(status == "accepted")
+    primary = "unseeded" if policy in _UNSEEDED_ASSET_POLICIES else "benchmark"
+    tally.count(primary, success)
+    tally.count("current_target" if policy == "exploit" else "cross_target", success)
+    group = (
+        int(_row_get(row, "run_id", 0) or 0),
+        int(_row_get(row, "generation", 0) or 0),
+        str(_row_get(row, "seed_path", "") or "") or f"row:{row_index}",
+    )
+    tally.allocation.add("UNSEEDED" if primary == "unseeded" else "BENCHMARK", group, row)
+    tally.lifecycle.add("CURRENT" if policy == "exploit" else "CROSS", group, row)
+    source_period = str(_row_get(row, "source_period", "") or "").upper()
+    target_period = str(_row_get(row, "target_period", "") or "").upper()
+    if source_period and target_period:
+        tally.timeframe.add(
+            "CURRENT_TF" if source_period == target_period else "CHANGED_TF", group, row
+        )
+    if policy in {"asset_universe_feedback", "asset_universe_explore"}:
+        tally.count(policy.removeprefix("asset_"), success)
+        tally.universe.add(
+            "UNIVERSE_FEEDBACK" if policy == "asset_universe_feedback" else "UNIVERSE_EXPLORE",
+            group,
+            row,
+        )
+
+
+def _tally_policy_rows(materialized: list[object], allowed_runs: set[int]) -> _PolicyMixTally:
+    """Recorre las filas de los runs recientes y acumula la evidencia."""
+    tally = _PolicyMixTally.empty()
+    for row_index, row in enumerate(materialized):
+        if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
+            continue
+        _tally_policy_row(tally, row, row_index)
+    return tally
+
+
+def _bounded_share(
+    first: FeedbackSignal,
+    second: FeedbackSignal,
+    *,
+    adaptive: bool,
+    floor: float,
+    ceiling: float,
+    default: float,
+) -> float:
+    """Reparto entre dos rutas acotado entre suelo y techo, o el valor por defecto."""
+    total = first.probability + second.probability
+    if adaptive and total > 0.0:
+        return min(max(first.probability / total, floor), ceiling)
+    return default
+
+
+def _unseeded_multiplier_decision(
+    tally: _PolicyMixTally, minimum_trials: int, minimum_benchmark_trials: int
+) -> tuple[float, bool, FeedbackSignal, FeedbackSignal]:
+    """Cuanto se penaliza la busqueda sin semilla frente a la de referencia."""
+    unseeded_signal, benchmark_signal = tally.allocation.pair("UNSEEDED", "BENCHMARK")
+    adaptive = (
+        tally.buckets["unseeded"][0] >= minimum_trials
+        and tally.buckets["benchmark"][0] >= minimum_benchmark_trials
+        and unseeded_signal.probability + benchmark_signal.probability > 0.0
+    )
+    if adaptive and benchmark_signal.probability > 0.0:
+        multiplier = min(
+            max(
+                unseeded_signal.probability / benchmark_signal.probability,
+                DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR,
+            ),
+            1.0,
+        )
+    else:
+        multiplier = 1.0
+    return multiplier, adaptive, unseeded_signal, benchmark_signal
+
+
+def _universe_feedback_decision(
+    tally: _PolicyMixTally,
+) -> tuple[float, bool, FeedbackSignal, FeedbackSignal]:
+    """Probabilidad de volver a un activo ya conocido frente a explorar."""
+    feedback_signal, explore_signal = tally.universe.pair("UNIVERSE_FEEDBACK", "UNIVERSE_EXPLORE")
+    adaptive = (
+        feedback_signal.final_trials >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS
+        and explore_signal.final_trials >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS
+        and (
+            feedback_signal.final_trials + explore_signal.final_trials
+            >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_TOTAL_FINAL_TRIALS
+        )
+    )
+    probability = _bounded_share(
+        feedback_signal,
+        explore_signal,
+        adaptive=adaptive,
+        floor=DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
+        ceiling=DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
+        default=DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
+    )
+    return probability, adaptive, feedback_signal, explore_signal
+
+
+def _current_target_decision(
+    tally: _PolicyMixTally,
+) -> tuple[float, bool, FeedbackSignal, FeedbackSignal]:
+    """Probabilidad de quedarse en el simbolo actual en vez de cruzar."""
+    current_signal, cross_signal = tally.lifecycle.pair("CURRENT", "CROSS")
+    adaptive = (
+        current_signal.final_trials >= DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS
+        and cross_signal.final_trials >= DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS
+    )
+    probability = _bounded_share(
+        current_signal,
+        cross_signal,
+        adaptive=adaptive,
+        floor=DISCOVERY_CURRENT_TARGET_FLOOR,
+        ceiling=DISCOVERY_CURRENT_TARGET_CEILING,
+        default=DISCOVERY_CURRENT_TARGET_DEFAULT,
+    )
+    return probability, adaptive, current_signal, cross_signal
+
+
+def _current_timeframe_decision(
+    tally: _PolicyMixTally,
+) -> tuple[float, bool, FeedbackSignal, FeedbackSignal]:
+    """Probabilidad de mantener el marco temporal de origen."""
+    current_signal, changed_signal = tally.timeframe.pair("CURRENT_TF", "CHANGED_TF")
+    adaptive = (
+        current_signal.final_trials >= DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS
+        and changed_signal.final_trials >= DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS
+    )
+    probability = _bounded_share(
+        current_signal,
+        changed_signal,
+        adaptive=adaptive,
+        floor=DISCOVERY_CURRENT_TIMEFRAME_FLOOR,
+        ceiling=DISCOVERY_CURRENT_TIMEFRAME_CEILING,
+        default=DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
+    )
+    return probability, adaptive, current_signal, changed_signal
+
+
+def _policy_mix_counts(tally: _PolicyMixTally) -> dict[str, object]:
+    """Intentos, aciertos y tasa de cada cesta, tal y como los pide la mezcla."""
+    counts: dict[str, object] = {}
+    for bucket in ("unseeded", "benchmark", "universe_feedback", "universe_explore",
+                   "current_target", "cross_target"):
+        counts[f"{bucket}_trials"] = tally.buckets[bucket][0]
+        counts[f"{bucket}_successes"] = tally.buckets[bucket][1]
+        counts[f"{bucket}_rate"] = round(tally.rate(bucket), 6)
+    return counts
+
+
+def _policy_mix_signal_fields(
+    first_name: str, first: FeedbackSignal, second_name: str, second: FeedbackSignal
+) -> dict[str, object]:
+    """Probabilidad, confianza y ensayos finales de las dos rutas de una decision."""
+    return {
+        f"{first_name}_lifecycle_probability": first.probability,
+        f"{second_name}_lifecycle_probability": second.probability,
+        f"{first_name}_lifecycle_confidence": first.confidence,
+        f"{second_name}_lifecycle_confidence": second.confidence,
+        f"{first_name}_final_trials": first.final_trials,
+        f"{second_name}_final_trials": second.final_trials,
+    }
+
+
 def estimate_discovery_target_policy_mix(
     rows: Iterable[object],
     *,
@@ -56,261 +312,38 @@ def estimate_discovery_target_policy_mix(
     minimum_benchmark_trials: int = DISCOVERY_TARGET_POLICY_MIN_BENCHMARK_TRIALS,
 ) -> DiscoveryTargetPolicyMix:
     materialized = list(rows)
-    run_ids = sorted(
-        {
-            int(_row_get(row, "run_id", 0) or 0)
-            for row in materialized
-            if int(_row_get(row, "run_id", 0) or 0) > 0
-        },
-        reverse=True,
-    )[: max(int(recent_run_limit), 0)]
-    allowed_runs = set(run_ids)
-    buckets = {
-        "unseeded": [0, 0],
-        "benchmark": [0, 0],
-        "universe_feedback": [0, 0],
-        "universe_explore": [0, 0],
-        "current_target": [0, 0],
-        "cross_target": [0, 0],
-    }
-    lifecycle_groups: dict[str, dict[object, list[object]]] = {
-        "CURRENT": defaultdict(list),
-        "CROSS": defaultdict(list),
-    }
-    global_lifecycle_groups: dict[object, list[object]] = defaultdict(list)
-    allocation_lifecycle_groups: dict[str, dict[object, list[object]]] = {
-        "UNSEEDED": defaultdict(list),
-        "BENCHMARK": defaultdict(list),
-    }
-    global_allocation_groups: dict[object, list[object]] = defaultdict(list)
-    timeframe_lifecycle_groups: dict[str, dict[object, list[object]]] = {
-        "CURRENT_TF": defaultdict(list),
-        "CHANGED_TF": defaultdict(list),
-    }
-    global_timeframe_groups: dict[object, list[object]] = defaultdict(list)
-    universe_lifecycle_groups: dict[str, dict[object, list[object]]] = {
-        "UNIVERSE_FEEDBACK": defaultdict(list),
-        "UNIVERSE_EXPLORE": defaultdict(list),
-    }
-    global_universe_groups: dict[object, list[object]] = defaultdict(list)
-    for row_index, row in enumerate(materialized):
-        if int(_row_get(row, "run_id", 0) or 0) not in allowed_runs:
-            continue
-        status = str(_row_get(row, "status", "")).lower()
-        if status not in _SOURCE_FINAL_STATUSES:
-            continue
-        policy = str(_row_get(row, "policy", "")).split("+", 1)[0]
-        if not policy or policy.startswith(_PRODUCTION_ASSET_POLICY_PREFIX):
-            continue
-        success = int(status == "accepted")
-        primary = "unseeded" if policy in _UNSEEDED_ASSET_POLICIES else "benchmark"
-        buckets[primary][0] += 1
-        buckets[primary][1] += success
-        target_bucket = "current_target" if policy == "exploit" else "cross_target"
-        buckets[target_bucket][0] += 1
-        buckets[target_bucket][1] += success
-        route = "CURRENT" if policy == "exploit" else "CROSS"
-        seed_path = str(_row_get(row, "seed_path", "") or "")
-        generation = int(_row_get(row, "generation", 0) or 0)
-        group = (
-            int(_row_get(row, "run_id", 0) or 0),
-            generation,
-            seed_path or f"row:{row_index}",
-        )
-        allocation_route = "UNSEEDED" if primary == "unseeded" else "BENCHMARK"
-        allocation_lifecycle_groups[allocation_route][group].append(row)
-        global_allocation_groups[(allocation_route, *group)].append(row)
-        lifecycle_groups[route][group].append(row)
-        global_lifecycle_groups[(route, *group)].append(row)
-        source_period = str(_row_get(row, "source_period", "") or "").upper()
-        target_period = str(_row_get(row, "target_period", "") or "").upper()
-        if source_period and target_period:
-            timeframe_route = "CURRENT_TF" if source_period == target_period else "CHANGED_TF"
-            timeframe_lifecycle_groups[timeframe_route][group].append(row)
-            global_timeframe_groups[(timeframe_route, *group)].append(row)
-        if policy in {"asset_universe_feedback", "asset_universe_explore"}:
-            buckets[policy.removeprefix("asset_")][0] += 1
-            buckets[policy.removeprefix("asset_")][1] += success
-            universe_route = (
-                "UNIVERSE_FEEDBACK"
-                if policy == "asset_universe_feedback"
-                else "UNIVERSE_EXPLORE"
-            )
-            universe_lifecycle_groups[universe_route][group].append(row)
-            global_universe_groups[(universe_route, *group)].append(row)
-
-    def rate(bucket: str) -> float:
-        trials, successes = buckets[bucket]
-        return (successes + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS) / (
-            trials + DISCOVERY_SOURCE_MIX_PRIOR_SUCCESS + DISCOVERY_SOURCE_MIX_PRIOR_FAILURE
-        )
-
-    unseeded_rate = rate("unseeded")
-    benchmark_rate = rate("benchmark")
-    feedback_rate = rate("universe_feedback")
-    explore_rate = rate("universe_explore")
-    current_target_rate = rate("current_target")
-    cross_target_rate = rate("cross_target")
-    empty_signal = FeedbackSignal(0.0, 0.0, 0.0, 0, 0.0, {})
-    allocation_signals = probability_feedback_signals(
-        allocation_lifecycle_groups,
-        global_allocation_groups,
-        normalize_keys=False,
-        terminal_stage="six_month",
+    run_ids = _recent_policy_run_ids(materialized, recent_run_limit)
+    tally = _tally_policy_rows(materialized, set(run_ids))
+    unseeded_multiplier, adaptive_unseeded, unseeded_signal, benchmark_signal = (
+        _unseeded_multiplier_decision(tally, minimum_trials, minimum_benchmark_trials)
     )
-    unseeded_signal = allocation_signals.get("UNSEEDED", empty_signal)
-    benchmark_signal = allocation_signals.get("BENCHMARK", empty_signal)
-    adaptive_unseeded = (
-        buckets["unseeded"][0] >= minimum_trials
-        and buckets["benchmark"][0] >= minimum_benchmark_trials
-        and unseeded_signal.probability + benchmark_signal.probability > 0.0
+    feedback_probability, adaptive_feedback, feedback_signal, explore_signal = (
+        _universe_feedback_decision(tally)
     )
-    if adaptive_unseeded and benchmark_signal.probability > 0.0:
-        unseeded_multiplier = min(
-            max(
-                unseeded_signal.probability / benchmark_signal.probability,
-                DISCOVERY_UNSEEDED_MULTIPLIER_FLOOR,
-            ),
-            1.0,
-        )
-    else:
-        unseeded_multiplier = 1.0
-    universe_signals = probability_feedback_signals(
-        universe_lifecycle_groups,
-        global_universe_groups,
-        normalize_keys=False,
-        terminal_stage="six_month",
+    current_target_probability, adaptive_current_target, current_signal, cross_signal = (
+        _current_target_decision(tally)
     )
-    universe_feedback_signal = universe_signals.get("UNIVERSE_FEEDBACK", empty_signal)
-    universe_explore_signal = universe_signals.get("UNIVERSE_EXPLORE", empty_signal)
-    adaptive_feedback_lifecycle = (
-        universe_feedback_signal.final_trials >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS
-        and universe_explore_signal.final_trials >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_FINAL_TRIALS
-        and (
-            universe_feedback_signal.final_trials + universe_explore_signal.final_trials
-            >= DISCOVERY_UNIVERSE_FEEDBACK_MIN_TOTAL_FINAL_TRIALS
-        )
+    current_timeframe_probability, adaptive_current_timeframe, current_tf_signal, changed_tf_signal = (
+        _current_timeframe_decision(tally)
     )
-    if (
-        adaptive_feedback_lifecycle
-        and universe_feedback_signal.probability + universe_explore_signal.probability > 0.0
-    ):
-        feedback_probability = min(
-            max(
-                universe_feedback_signal.probability
-                / (
-                    universe_feedback_signal.probability
-                    + universe_explore_signal.probability
-                ),
-                DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
-            ),
-            DISCOVERY_UNIVERSE_FEEDBACK_CEILING,
-        )
-    else:
-        feedback_probability = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT
-    lifecycle_signals = probability_feedback_signals(
-        lifecycle_groups,
-        global_lifecycle_groups,
-        normalize_keys=False,
-        terminal_stage="six_month",
-    )
-    current_signal = lifecycle_signals.get("CURRENT", empty_signal)
-    cross_signal = lifecycle_signals.get("CROSS", empty_signal)
-    adaptive_current_target = (
-        current_signal.final_trials >= DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS
-        and cross_signal.final_trials >= DISCOVERY_CURRENT_TARGET_MIN_FINAL_TRIALS
-    )
-    if adaptive_current_target and current_signal.probability + cross_signal.probability > 0.0:
-        current_target_probability = min(
-            max(
-                current_signal.probability
-                / (current_signal.probability + cross_signal.probability),
-                DISCOVERY_CURRENT_TARGET_FLOOR,
-            ),
-            DISCOVERY_CURRENT_TARGET_CEILING,
-        )
-    else:
-        current_target_probability = DISCOVERY_CURRENT_TARGET_DEFAULT
-    timeframe_signals = probability_feedback_signals(
-        timeframe_lifecycle_groups,
-        global_timeframe_groups,
-        normalize_keys=False,
-        terminal_stage="six_month",
-    )
-    current_timeframe_signal = timeframe_signals.get("CURRENT_TF", empty_signal)
-    changed_timeframe_signal = timeframe_signals.get("CHANGED_TF", empty_signal)
-    adaptive_current_timeframe = (
-        current_timeframe_signal.final_trials >= DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS
-        and changed_timeframe_signal.final_trials >= DISCOVERY_CURRENT_TIMEFRAME_MIN_FINAL_TRIALS
-    )
-    if (
-        adaptive_current_timeframe
-        and current_timeframe_signal.probability + changed_timeframe_signal.probability > 0.0
-    ):
-        current_timeframe_probability = min(
-            max(
-                current_timeframe_signal.probability
-                / (
-                    current_timeframe_signal.probability
-                    + changed_timeframe_signal.probability
-                ),
-                DISCOVERY_CURRENT_TIMEFRAME_FLOOR,
-            ),
-            DISCOVERY_CURRENT_TIMEFRAME_CEILING,
-        )
-    else:
-        current_timeframe_probability = DISCOVERY_CURRENT_TIMEFRAME_DEFAULT
     return DiscoveryTargetPolicyMix(
         unseeded_multiplier=round(unseeded_multiplier, 6),
         universe_feedback_probability=round(feedback_probability, 6),
         current_target_probability=round(current_target_probability, 6),
-        unseeded_trials=buckets["unseeded"][0],
-        unseeded_successes=buckets["unseeded"][1],
-        unseeded_rate=round(unseeded_rate, 6),
-        benchmark_trials=buckets["benchmark"][0],
-        benchmark_successes=buckets["benchmark"][1],
-        benchmark_rate=round(benchmark_rate, 6),
-        unseeded_lifecycle_probability=unseeded_signal.probability,
-        benchmark_lifecycle_probability=benchmark_signal.probability,
-        unseeded_lifecycle_confidence=unseeded_signal.confidence,
-        benchmark_lifecycle_confidence=benchmark_signal.confidence,
-        unseeded_final_trials=unseeded_signal.final_trials,
-        benchmark_final_trials=benchmark_signal.final_trials,
-        universe_feedback_trials=buckets["universe_feedback"][0],
-        universe_feedback_successes=buckets["universe_feedback"][1],
-        universe_feedback_rate=round(feedback_rate, 6),
-        universe_explore_trials=buckets["universe_explore"][0],
-        universe_explore_successes=buckets["universe_explore"][1],
-        universe_explore_rate=round(explore_rate, 6),
-        universe_feedback_lifecycle_probability=universe_feedback_signal.probability,
-        universe_explore_lifecycle_probability=universe_explore_signal.probability,
-        universe_feedback_lifecycle_confidence=universe_feedback_signal.confidence,
-        universe_explore_lifecycle_confidence=universe_explore_signal.confidence,
-        universe_feedback_final_trials=universe_feedback_signal.final_trials,
-        universe_explore_final_trials=universe_explore_signal.final_trials,
-        universe_feedback_lifecycle_adaptive=adaptive_feedback_lifecycle,
-        current_target_trials=buckets["current_target"][0],
-        current_target_successes=buckets["current_target"][1],
-        current_target_rate=round(current_target_rate, 6),
-        cross_target_trials=buckets["cross_target"][0],
-        cross_target_successes=buckets["cross_target"][1],
-        cross_target_rate=round(cross_target_rate, 6),
-        current_target_lifecycle_probability=current_signal.probability,
-        cross_target_lifecycle_probability=cross_signal.probability,
-        current_target_lifecycle_confidence=current_signal.confidence,
-        cross_target_lifecycle_confidence=cross_signal.confidence,
-        current_target_final_trials=current_signal.final_trials,
-        cross_target_final_trials=cross_signal.final_trials,
         current_timeframe_probability=round(current_timeframe_probability, 6),
-        current_timeframe_lifecycle_probability=current_timeframe_signal.probability,
-        changed_timeframe_lifecycle_probability=changed_timeframe_signal.probability,
-        current_timeframe_lifecycle_confidence=current_timeframe_signal.confidence,
-        changed_timeframe_lifecycle_confidence=changed_timeframe_signal.confidence,
-        current_timeframe_final_trials=current_timeframe_signal.final_trials,
-        changed_timeframe_final_trials=changed_timeframe_signal.final_trials,
+        **_policy_mix_counts(tally),
+        **_policy_mix_signal_fields("unseeded", unseeded_signal, "benchmark", benchmark_signal),
+        **_policy_mix_signal_fields(
+            "universe_feedback", feedback_signal, "universe_explore", explore_signal
+        ),
+        **_policy_mix_signal_fields("current_target", current_signal, "cross_target", cross_signal),
+        **_policy_mix_signal_fields(
+            "current_timeframe", current_tf_signal, "changed_timeframe", changed_tf_signal
+        ),
+        universe_feedback_lifecycle_adaptive=adaptive_feedback,
         recent_runs=tuple(run_ids),
         adaptive_unseeded=adaptive_unseeded,
-        adaptive_universe_feedback=adaptive_feedback_lifecycle,
+        adaptive_universe_feedback=adaptive_feedback,
         adaptive_current_target=adaptive_current_target,
         adaptive_current_timeframe=adaptive_current_timeframe,
     )
