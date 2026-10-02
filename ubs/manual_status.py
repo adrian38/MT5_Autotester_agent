@@ -371,23 +371,8 @@ def mark_candidate_final_tick(
     return len(rows)
 
 
-def mark_candidate_regression(
-    conn: sqlite3.Connection,
-    candidate_ids: Iterable[object],
-    status: str,
-    *,
-    from_date: str = DEFAULT_REGRESSION_FROM_DATE,
-    to_date: str = DEFAULT_REGRESSION_TO_DATE,
-    positive_points: float = DEFAULT_REGRESSION_POSITIVE_POINTS,
-    negative_points: float = DEFAULT_REGRESSION_NEGATIVE_POINTS,
-) -> int:
-    """Apply an auditable manual verdict without inventing report metrics."""
-
-    status = _normalize_status(status)
-    ids = _ids(candidate_ids)
-    if not ids:
-        return 0
-    rows = conn.execute(
+def _regression_rows(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
+    return conn.execute(
         f"""
         select
             c.id as candidate_id,
@@ -407,59 +392,86 @@ def mark_candidate_regression(
         """,
         tuple(ids),
     ).fetchall()
+
+
+def _manual_regression_details(status: str, applied: float) -> str:
+    return json.dumps(
+        {
+            "accepted": status == "accepted",
+            "manual": True,
+            "model": "1_minute_ohlc",
+            "reasons": ["manual_verdict"],
+            "points": {"base": applied, "reason_penalty": 0.0, "applied": applied},
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+
+
+def _regression_values(
+    row: sqlite3.Row, status: str, from_date: str, to_date: str,
+    positive_points: float, negative_points: float, now: str,
+) -> tuple[object, ...]:
+    positive = float(row["positive_points"] if row["positive_points"] is not None else positive_points)
+    negative = float(row["negative_points"] if row["negative_points"] is not None else negative_points)
+    applied = regression_points(status, positive_points=positive, negative_points=negative)
+    return (
+        int(row["candidate_id"]), int(row["run_id"]), status, _accepted_value(status),
+        row["report_path"], row["score"], row["metrics_json"],
+        _manual_regression_details(status, applied),
+        str(row["from_date"] or from_date), str(row["to_date"] or to_date),
+        positive, negative, applied, now,
+    )
+
+
+def _upsert_candidate_regression(conn: sqlite3.Connection, values: tuple[object, ...]) -> None:
+    conn.execute(
+        """
+        insert into candidate_regression (
+            candidate_id, run_id, status, accepted, report_path, score,
+            metrics_json, details_json, from_date, to_date,
+            positive_points, negative_points, points_applied, evaluated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(candidate_id) do update set
+            run_id=excluded.run_id,
+            status=excluded.status,
+            accepted=excluded.accepted,
+            report_path=excluded.report_path,
+            score=excluded.score,
+            metrics_json=excluded.metrics_json,
+            details_json=excluded.details_json,
+            from_date=excluded.from_date,
+            to_date=excluded.to_date,
+            positive_points=excluded.positive_points,
+            negative_points=excluded.negative_points,
+            points_applied=excluded.points_applied,
+            evaluated_at=excluded.evaluated_at
+        """,
+        values,
+    )
+
+
+def mark_candidate_regression(
+    conn: sqlite3.Connection,
+    candidate_ids: Iterable[object],
+    status: str,
+    *,
+    from_date: str = DEFAULT_REGRESSION_FROM_DATE,
+    to_date: str = DEFAULT_REGRESSION_TO_DATE,
+    positive_points: float = DEFAULT_REGRESSION_POSITIVE_POINTS,
+    negative_points: float = DEFAULT_REGRESSION_NEGATIVE_POINTS,
+) -> int:
+    """Apply an auditable manual verdict without inventing report metrics."""
+
+    status = _normalize_status(status)
+    ids = _ids(candidate_ids)
+    if not ids:
+        return 0
+    rows = _regression_rows(conn, ids)
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
-        positive = float(row["positive_points"] if row["positive_points"] is not None else positive_points)
-        negative = float(row["negative_points"] if row["negative_points"] is not None else negative_points)
-        applied = regression_points(status, positive_points=positive, negative_points=negative)
-        details = json.dumps(
-            {
-                "accepted": status == "accepted",
-                "manual": True,
-                "model": "1_minute_ohlc",
-                "reasons": ["manual_verdict"],
-                "points": {"base": applied, "reason_penalty": 0.0, "applied": applied},
-            },
-            ensure_ascii=True,
-            sort_keys=True,
+        values = _regression_values(
+            row, status, from_date, to_date, positive_points, negative_points, now,
         )
-        conn.execute(
-            """
-            insert into candidate_regression (
-                candidate_id, run_id, status, accepted, report_path, score,
-                metrics_json, details_json, from_date, to_date,
-                positive_points, negative_points, points_applied, evaluated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(candidate_id) do update set
-                run_id=excluded.run_id,
-                status=excluded.status,
-                accepted=excluded.accepted,
-                report_path=excluded.report_path,
-                score=excluded.score,
-                metrics_json=excluded.metrics_json,
-                details_json=excluded.details_json,
-                from_date=excluded.from_date,
-                to_date=excluded.to_date,
-                positive_points=excluded.positive_points,
-                negative_points=excluded.negative_points,
-                points_applied=excluded.points_applied,
-                evaluated_at=excluded.evaluated_at
-            """,
-            (
-                int(row["candidate_id"]),
-                int(row["run_id"]),
-                status,
-                _accepted_value(status),
-                row["report_path"],
-                row["score"],
-                row["metrics_json"],
-                details,
-                str(row["from_date"] or from_date),
-                str(row["to_date"] or to_date),
-                positive,
-                negative,
-                applied,
-                now,
-            ),
-        )
+        _upsert_candidate_regression(conn, values)
     return len(rows)
