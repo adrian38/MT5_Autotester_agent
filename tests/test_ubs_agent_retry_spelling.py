@@ -2,14 +2,34 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 
 from ubs_agent import (
     write_retry_set,
     write_set_use_every_tick,
 )
+from ubs_agent_retry import RUNNING_TERMINAL_EXIT_CODE, _run_mismatch_retry_batch
 
 
 class RetrySetBrokerSpellingTests(unittest.TestCase):
+    def test_retry_batch_preserves_dry_run_failure_code(self) -> None:
+        args = SimpleNamespace(dry_run=True)
+        with patch("ubs_agent_retry.run_backtests", return_value=7):
+            early_return, _started_at = _run_mismatch_retry_batch(args, Path("retry"))
+        self.assertEqual(early_return, 7)
+
+    def test_retry_batch_evaluates_reports_after_non_dry_failure(self) -> None:
+        args = SimpleNamespace(dry_run=False)
+        with patch("ubs_agent_retry.run_backtests", return_value=7):
+            early_return, _started_at = _run_mismatch_retry_batch(args, Path("retry"))
+        self.assertIsNone(early_return)
+
+    def test_retry_batch_stops_when_terminal_is_already_running(self) -> None:
+        args = SimpleNamespace(dry_run=False)
+        with patch("ubs_agent_retry.run_backtests", return_value=RUNNING_TERMINAL_EXIT_CODE):
+            early_return, _started_at = _run_mismatch_retry_batch(args, Path("retry"))
+        self.assertEqual(early_return, 1)
+
     def test_retry_repairs_exact_symbol_spelling_without_changing_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

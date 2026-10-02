@@ -294,6 +294,75 @@ def retry_seed(args: argparse.Namespace, memory: AgentMemory, score_config: Scor
     return 1
 
 
+def _prepare_mismatch_retry(
+    args: argparse.Namespace, rows_with_paths: list[tuple], retry_dir: Path,
+    run_dir: Path, cleanup_generation: int | None,
+) -> tuple[list, dict[int, Path], list[Variant]] | None:
+    rows = [row for row, _set_path in rows_with_paths]
+    seen_names: set[str] = set()
+    retry_sets_by_id: dict[int, Path] = {}
+    variants: list[Variant] = []
+    for row, set_path in rows_with_paths:
+        if set_path.name in seen_names:
+            print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
+            return None
+        seen_names.add(set_path.name)
+        retry_set = retry_dir / set_path.name
+        retry_sets_by_id[int(row["id"])] = retry_set
+        variant = variant_from_candidate_row(row)
+        exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
+        variants.append(replace(variant, target_symbol=exact_symbol))
+        if not args.dry_run:
+            generation = (
+                cleanup_generation if cleanup_generation is not None
+                else int(row["generation"] or 0)
+            )
+            remove_report_artifacts(set_path)
+            remove_candidate_copies(run_dir, generation, set_path.name)
+    return rows, retry_sets_by_id, variants
+
+
+def _run_mismatch_retry_batch(args: argparse.Namespace, retry_dir: Path) -> tuple[int | None, float]:
+    batch_started_at = time.time()
+    code = run_backtests(args, retry_dir)
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+        return 1, batch_started_at
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+        if args.dry_run:
+            return code, batch_started_at
+    if args.dry_run:
+        return 0, batch_started_at
+    return None, batch_started_at
+
+
+def _evaluate_mismatch_variants(
+    args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig,
+    rows: list, variants: list[Variant], retry_sets_by_id: dict[int, Path],
+    batch_started_at: float, fixed_generation: int | None,
+) -> tuple[dict[str, int], dict[int, list[tuple[Variant, ScoreResult]]]]:
+    accepted_by_generation: dict[int, list[tuple[Variant, ScoreResult]]] = {}
+    status_counts: dict[str, int] = {}
+    symbol_map = parse_symbol_map(args.symbol_map)
+    for row, variant in zip(rows, variants):
+        status, result = evaluate_variant(
+            memory, variant, score_config, symbol_map, args.broker,
+            min_report_mtime=batch_started_at - 1.0,
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+            symbol_suffix=args.symbol_suffix,
+            universe_symbols=broker_universe_symbols(args),
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status == "accepted" and result is not None:
+            generation = fixed_generation if fixed_generation is not None else int(row["generation"] or 0)
+            accepted_by_generation.setdefault(generation, []).append(
+                (replace(variant, path=retry_sets_by_id[int(row["id"])]), result)
+            )
+    return status_counts, accepted_by_generation
+
+
 def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if not args.retry_mismatch_generation:
         print("ERROR: falta --retry-mismatch-generation")
@@ -323,57 +392,20 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
 
     run_dir = resolve_workspace_path(run["output_dir"])
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_gen_{generation:03d}")
-    rows = [row for row, _set_path in rows_with_paths]
-    print(f"Retry problemas tecnicos run #{run_id} gen {generation}: {len(rows)} candidato(s)")
-    seen_names: set[str] = set()
-    retry_sets_by_id: dict[int, Path] = {}
-    variants: list[Variant] = []
-    for row, set_path in rows_with_paths:
-        if set_path.name in seen_names:
-            print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
-            return 1
-        seen_names.add(set_path.name)
-        retry_set = retry_dir / set_path.name
-        retry_sets_by_id[int(row["id"])] = retry_set
-        variant = variant_from_candidate_row(row)
-        exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
-        variants.append(replace(variant, target_symbol=exact_symbol))
-        if not args.dry_run:
-            remove_report_artifacts(set_path)
-            remove_candidate_copies(run_dir, generation, set_path.name)
-
-    batch_started_at = time.time()
-    code = run_backtests(args, retry_dir)
-    if code == RUNNING_TERMINAL_EXIT_CODE:
-        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+    print(f"Retry problemas tecnicos run #{run_id} gen {generation}: {len(rows_with_paths)} candidato(s)")
+    prepared = _prepare_mismatch_retry(args, rows_with_paths, retry_dir, run_dir, generation)
+    if prepared is None:
         return 1
-    if code != 0:
-        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
-        if args.dry_run:
-            return code
-    if args.dry_run:
-        return 0
+    rows, retry_sets_by_id, variants = prepared
+    early_return, batch_started_at = _run_mismatch_retry_batch(args, retry_dir)
+    if early_return is not None:
+        return early_return
 
-    accepted: list[tuple[Variant, ScoreResult]] = []
-    status_counts: dict[str, int] = {}
-    symbol_map = parse_symbol_map(args.symbol_map)
-    for row, variant in zip(rows, variants):
-        status, result = evaluate_variant(
-            memory,
-            variant,
-            score_config,
-            symbol_map,
-            args.broker,
-            min_report_mtime=batch_started_at - 1.0,
-            min_trades_w1=args.min_trades_w1,
-            min_trades_mn=args.min_trades_mn,
-            symbol_suffix=args.symbol_suffix,
-            universe_symbols=broker_universe_symbols(args),
-        )
-        status_counts[status] = status_counts.get(status, 0) + 1
-        if status == "accepted" and result is not None:
-            accepted.append((replace(variant, path=retry_sets_by_id[int(row["id"])]), result))
-
+    status_counts, accepted_by_generation = _evaluate_mismatch_variants(
+        args, memory, score_config, rows, variants, retry_sets_by_id,
+        batch_started_at, generation,
+    )
+    accepted = accepted_by_generation.get(generation, [])
     copied = copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}")
     print(
         "Retry gen terminado: "
@@ -405,61 +437,19 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
 
     run_dir = resolve_workspace_path(run["output_dir"])
     retry_dir = recreate_work_dir(run_dir / "retry_mismatch" / f"run_{run_id}_all")
-    rows = [row for row, _set_path in rows_with_paths]
-    print(f"Retry problemas tecnicos run #{run_id}: {len(rows)} candidato(s)")
-    seen_names: set[str] = set()
-    retry_sets_by_id: dict[int, Path] = {}
-    variants: list[Variant] = []
-    for row, set_path in rows_with_paths:
-        if set_path.name in seen_names:
-            print(f"ERROR: nombre de set duplicado en retry: {set_path.name}")
-            return 1
-        seen_names.add(set_path.name)
-        retry_set = retry_dir / set_path.name
-        retry_sets_by_id[int(row["id"])] = retry_set
-        variant = variant_from_candidate_row(row)
-        exact_symbol = write_retry_set(set_path, retry_set, False, args, variant.target_symbol)
-        variants.append(replace(variant, target_symbol=exact_symbol))
-        if not args.dry_run:
-            generation = int(row["generation"] or 0)
-            remove_report_artifacts(set_path)
-            remove_candidate_copies(run_dir, generation, set_path.name)
-
-    batch_started_at = time.time()
-    code = run_backtests(args, retry_dir)
-    if code == RUNNING_TERMINAL_EXIT_CODE:
-        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza memoria.")
+    print(f"Retry problemas tecnicos run #{run_id}: {len(rows_with_paths)} candidato(s)")
+    prepared = _prepare_mismatch_retry(args, rows_with_paths, retry_dir, run_dir, None)
+    if prepared is None:
         return 1
-    if code != 0:
-        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
-        if args.dry_run:
-            return code
-    if args.dry_run:
-        return 0
+    rows, retry_sets_by_id, variants = prepared
+    early_return, batch_started_at = _run_mismatch_retry_batch(args, retry_dir)
+    if early_return is not None:
+        return early_return
 
-    accepted_by_generation: dict[int, list[tuple[Variant, ScoreResult]]] = {}
-    status_counts: dict[str, int] = {}
-    symbol_map = parse_symbol_map(args.symbol_map)
-    for row, variant in zip(rows, variants):
-        status, result = evaluate_variant(
-            memory,
-            variant,
-            score_config,
-            symbol_map,
-            args.broker,
-            min_report_mtime=batch_started_at - 1.0,
-            min_trades_w1=args.min_trades_w1,
-            min_trades_mn=args.min_trades_mn,
-            symbol_suffix=args.symbol_suffix,
-            universe_symbols=broker_universe_symbols(args),
-        )
-        status_counts[status] = status_counts.get(status, 0) + 1
-        if status == "accepted" and result is not None:
-            generation = int(row["generation"] or 0)
-            accepted_by_generation.setdefault(generation, []).append(
-                (replace(variant, path=retry_sets_by_id[int(row["id"])]), result)
-            )
-
+    status_counts, accepted_by_generation = _evaluate_mismatch_variants(
+        args, memory, score_config, rows, variants, retry_sets_by_id,
+        batch_started_at, None,
+    )
     copied = 0
     for generation, accepted in accepted_by_generation.items():
         copied += len(copy_accepted(accepted, run_dir / f"accepted_gen_{generation:03d}"))

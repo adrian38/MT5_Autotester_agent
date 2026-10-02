@@ -58,8 +58,6 @@
     "ubs_agent_rescore.py::rescore_robustness_only": 104,
     "ubs_agent_resume.py::resume_last_run": 380,
     "ubs_agent_retry.py::retry_full_run": 104,
-    "ubs_agent_retry.py::retry_generation_mismatches": 87,
-    "ubs_agent_retry.py::retry_run_mismatches": 86,
     "ubs_agent_retry.py::retry_seed": 155,
     "ubs_agent_run.py::run_agent": 425,
     "ubs_agent_run_config.py::build_run_config": 167,
