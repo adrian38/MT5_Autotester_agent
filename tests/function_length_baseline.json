@@ -89,7 +89,6 @@
     "ui/ubs_portfolio_optimize.py::UBSPortfolioOptimizeMixin._optimize_locked_ubs_portfolio_variants": 153,
     "ui/ubs_portfolio_optimize.py::UBSPortfolioOptimizeMixin._reoptimize_saved_ubs_portfolio_worker": 110,
     "ui/ubs_portfolio_proposals.py::UBSPortfolioProposalsMixin._optimize_ubs_portfolio_proposals": 114,
-    "ui/ubs_portfolio_proposals.py::UBSPortfolioProposalsMixin._show_ubs_portfolio_proposals_preview": 82,
     "ui/ubs_portfolio_result.py::UBSPortfolioResultMixin._export_ubs_portfolio_sets": 87,
     "ui/ubs_portfolio_tables.py::UBSPortfolioTablesMixin._populate_ubs_portfolio_detail": 119,
     "ui/ubs_portfolio_tables.py::UBSPortfolioTablesMixin._quarantine_selected_ubs_portfolio_member_impl": 93,

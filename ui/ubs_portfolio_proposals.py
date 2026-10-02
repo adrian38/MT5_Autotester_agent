@@ -12,6 +12,51 @@ from portfolio_manager.ubs_portfolio import (
 from ui.ubs_portfolio_base import PORTFOLIO_TYPE_DISPLAY
 
 
+def _portfolio_proposal_comparison_row(
+    proposal: dict[str, object], before_units: dict[str, int],
+) -> tuple[object, ...]:
+    result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
+    inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
+    after_units = {item.set_path or item.set_id: item.units for item in result.allocations}
+    changes = sum(
+        1 for set_path in set(before_units) | set(after_units)
+        if before_units.get(set_path, 0) != after_units.get(set_path, 0)
+    )
+    nominal_valley = float(inputs["capital"]) * float(inputs["valley_dd_pct"]) / 100.0
+    margin_pct = (
+        max(nominal_valley - result.actual_valley_dd, 0.0) / max(nominal_valley, 1e-9) * 100.0
+    )
+    max_group_pct = max(
+        (float(stats.get("unit_pct", 0.0)) for stats in result.group_summary.values()),
+        default=0.0,
+    )
+    stress = result.stress_bootstrap
+    stress_status = "ALERTA" if stress and stress.alert else "OK" if stress else "SIN DATOS"
+    margin_summary = result.margin_summary or {}
+    margin_total = float(margin_summary.get("total", 0.0) or 0.0)
+    margin_limit = float(margin_summary.get("limit", 0.0) or 0.0)
+    margin_usage = float(margin_summary.get("usage_pct", 0.0) or 0.0)
+    daily_limit = result.target_daily_dd
+    point_text = (
+        f"{result.actual_point_dd:,.2f} info"
+        if not result.enforce_point_dd
+        else f"{result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f}"
+    )
+    return (
+        proposal["key"], proposal["label"], f"{result.total_net_profit:,.0f}",
+        f"{result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f}", point_text,
+        f"{result.max_daily_dd:,.2f}/{daily_limit:,.2f}" if daily_limit else "-",
+        f"{stress.valley_dd_p50:,.2f}" if stress else "-",
+        f"{stress.valley_dd_p95:,.2f}" if stress else "-",
+        f"{stress.probability_exceed_nominal_pct:.1f}%" if stress else "-",
+        f"{stress.probability_exceed_effective_pct:.1f}%" if stress else "-",
+        f"{margin_pct:.1f}%", f"{float(proposal['reserve_pct']):.1f}%",
+        f"{margin_total:,.0f}/{margin_limit:,.0f}" if margin_summary else "-",
+        f"{margin_usage:.1f}%" if margin_summary else "-", result.total_units,
+        result.active_strategies, f"{max_group_pct:.1f}%", changes, stress_status,
+    )
+
+
 class UBSPortfolioProposalsMixin:
     """Propuestas alternativas del portafolio y su vista previa."""
 
@@ -146,58 +191,10 @@ class UBSPortfolioProposalsMixin:
             str(member.get("set_path") or member.get("set_id") or ""): int(member.get("units") or 0)
             for member in previous_members
         }
-        comparison_rows = []
-        for proposal in proposals:
-            result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
-            inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
-            after_units = {item.set_path or item.set_id: item.units for item in result.allocations}
-            changes = sum(
-                1 for set_path in set(before_units) | set(after_units)
-                if before_units.get(set_path, 0) != after_units.get(set_path, 0)
-            )
-            nominal_valley = float(inputs["capital"]) * float(inputs["valley_dd_pct"]) / 100.0
-            margin_pct = (
-                max(nominal_valley - result.actual_valley_dd, 0.0) / max(nominal_valley, 1e-9) * 100.0
-            )
-            max_group_pct = max(
-                (float(stats.get("unit_pct", 0.0)) for stats in result.group_summary.values()),
-                default=0.0,
-            )
-            stress = result.stress_bootstrap
-            stress_status = "ALERTA" if stress and stress.alert else "OK" if stress else "SIN DATOS"
-            margin_summary = result.margin_summary or {}
-            margin_total = float(margin_summary.get("total", 0.0) or 0.0)
-            margin_limit = float(margin_summary.get("limit", 0.0) or 0.0)
-            margin_usage = float(margin_summary.get("usage_pct", 0.0) or 0.0)
-            daily_limit = result.target_daily_dd
-            point_text = (
-                f"{result.actual_point_dd:,.2f} info"
-                if not result.enforce_point_dd
-                else f"{result.actual_point_dd:,.2f}/{result.target_point_dd:,.2f}"
-            )
-            comparison_rows.append(
-                (
-                    proposal["key"],
-                    proposal["label"],
-                    f"{result.total_net_profit:,.0f}",
-                    f"{result.actual_valley_dd:,.2f}/{result.target_valley_dd:,.2f}",
-                    point_text,
-                    f"{result.max_daily_dd:,.2f}/{daily_limit:,.2f}" if daily_limit else "-",
-                    f"{stress.valley_dd_p50:,.2f}" if stress else "-",
-                    f"{stress.valley_dd_p95:,.2f}" if stress else "-",
-                    f"{stress.probability_exceed_nominal_pct:.1f}%" if stress else "-",
-                    f"{stress.probability_exceed_effective_pct:.1f}%" if stress else "-",
-                    f"{margin_pct:.1f}%",
-                    f"{float(proposal['reserve_pct']):.1f}%",
-                    f"{margin_total:,.0f}/{margin_limit:,.0f}" if margin_summary else "-",
-                    f"{margin_usage:.1f}%" if margin_summary else "-",
-                    result.total_units,
-                    result.active_strategies,
-                    f"{max_group_pct:.1f}%",
-                    changes,
-                    stress_status,
-                )
-            )
+        comparison_rows = [
+            _portfolio_proposal_comparison_row(proposal, before_units)
+            for proposal in proposals
+        ]
         self._create_ubs_portfolio_proposals_window(portfolio_id, comparison_rows)
         if mode == "generate_monthly":
             selected_proposal = max(
