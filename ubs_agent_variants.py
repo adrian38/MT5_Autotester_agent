@@ -34,6 +34,75 @@ from ubs_agent_sets import (
 )
 
 
+def _apply_frozen_overrides(lines: list[str]) -> None:
+    frozen_ov, _ = load_mutation_overrides()
+    if not frozen_ov:
+        return
+    global_params = load_global_params()
+    for fkey in frozen_ov:
+        fvalue = global_params.get(fkey, frozen_ov.get(fkey, ""))
+        if fvalue:
+            replace_existing_current_value(lines, fkey, fvalue)
+
+
+def _mutation_direction(
+    current: float, start: float, step: float, stop: float,
+    direction_bias: float, rng: random.Random,
+) -> tuple[int, float]:
+    valid = [direction for direction in (-2, -1, 1, 2) if start <= current + direction * step <= stop]
+    up = [direction for direction in valid if direction > 0]
+    down = [direction for direction in valid if direction < 0]
+    strength = min(1.0, abs(float(direction_bias)) / MUTATION_SCORE_FULL_STRENGTH)
+    if direction_bias and up and down:
+        preferred = up if direction_bias > 0 else down
+        alternative = down if direction_bias > 0 else up
+        probability = 0.5 + 0.25 * strength
+        return rng.choice(preferred if rng.random() < probability else alternative), strength
+    return rng.choice(valid), strength
+
+
+def _mutate_selected(
+    lines: list[str], candidates: dict, selected: list[str],
+    direction_feedback: dict[str, float], rng: random.Random,
+) -> tuple[list[str], list[dict[str, object]]]:
+    changed: list[str] = []
+    details: list[dict[str, object]] = []
+    for key in selected:
+        line_index, parts, _ = candidates[key]
+        current, start, step, stop = (float(parts[index]) for index in range(4))
+        direction_bias = direction_feedback.get(key, 0.0)
+        direction, bias_strength = _mutation_direction(
+            current, start, step, stop, direction_bias, rng,
+        )
+        new_value = max(start, min(stop, current + direction * step))
+        parts[0] = format_like(parts[0], new_value)
+        lhs = lines[line_index].split("=", 1)[0]
+        lines[line_index] = f"{lhs}={'||'.join(parts)}"
+        changed.append(key)
+        details.append(
+            {
+                "key": key, "old": current, "new": new_value,
+                "delta": new_value - current, "step": step, "direction": direction,
+                "direction_bias": round(float(direction_bias), 4),
+                "direction_bias_strength": round(bias_strength, 4), "wrapped": False,
+            }
+        )
+    return changed, details
+
+
+def _variant_target(
+    seed: Seed, target_symbol: str, target_period: str, output_dir: Path,
+    generation: int, seed_index: int, variant_index: int,
+) -> Path:
+    seed_label = compact_safe_part(seed.path.stem, 24)
+    family_label = compact_safe_part(seed.family, 24)
+    filename = (
+        f"{safe_part(target_symbol)}_{safe_part(target_period)}_{family_label}_{seed_label}_"
+        f"g{generation:03d}_s{seed_index:03d}_v{variant_index:03d}.set"
+    )
+    return output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
+
+
 def create_variant(
     seed: Seed,
     target_symbol: str,
@@ -53,70 +122,21 @@ def create_variant(
     replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
     # Apply user-defined frozen override values from the global params config
-    frozen_ov, _ = load_mutation_overrides()
-    if frozen_ov:
-        global_params = load_global_params()
-        for fkey in frozen_ov:
-            fvalue = global_params.get(fkey, frozen_ov.get(fkey, ""))
-            if fvalue:
-                replace_existing_current_value(lines, fkey, fvalue)
+    _apply_frozen_overrides(lines)
     text = "\n".join(lines)
     candidates = line_candidates(text, seed.run_strategy, mutation_feedback, excluded_keys=timeframe_keys)
     selected = weighted_sample(candidates, mutations_per_variant, rng)
     lines = text.splitlines()
-    changed: list[str] = []
-    mutation_details: list[dict[str, object]] = []
-    for key in selected:
-        line_index, parts, _ = candidates[key]
-        current = float(parts[0])
-        start = float(parts[1])
-        step = float(parts[2])
-        stop = float(parts[3])
-        direction_bias = mutation_direction_feedback.get(key, 0.0)
-        valid_directions = [
-            direction
-            for direction in (-2, -1, 1, 2)
-            if start <= current + direction * step <= stop
-        ]
-        up_directions = [direction for direction in valid_directions if direction > 0]
-        down_directions = [direction for direction in valid_directions if direction < 0]
-        bias_strength = min(1.0, abs(float(direction_bias)) / MUTATION_SCORE_FULL_STRENGTH)
-        if direction_bias and up_directions and down_directions:
-            preferred = up_directions if direction_bias > 0 else down_directions
-            alternative = down_directions if direction_bias > 0 else up_directions
-            preferred_probability = 0.5 + 0.25 * bias_strength
-            direction = rng.choice(preferred if rng.random() < preferred_probability else alternative)
-        else:
-            direction = rng.choice(valid_directions)
-        value = current + direction * step
-        new_value = max(start, min(stop, value))
-        parts[0] = format_like(parts[0], new_value)
-        lhs = lines[line_index].split("=", 1)[0]
-        lines[line_index] = f"{lhs}={'||'.join(parts)}"
-        changed.append(key)
-        mutation_details.append(
-            {
-                "key": key,
-                "old": current,
-                "new": new_value,
-                "delta": new_value - current,
-                "step": step,
-                "direction": direction,
-                "direction_bias": round(float(direction_bias), 4),
-                "direction_bias_strength": round(bias_strength, 4),
-                "wrapped": False,
-            }
-        )
+    changed, mutation_details = _mutate_selected(
+        lines, candidates, selected, mutation_direction_feedback, rng,
+    )
 
     normalized, _, missing = force_fixed_lot_text("\n".join(lines))
     normalized = set_use_every_tick_text(normalized, False)
-    seed_label = compact_safe_part(seed.path.stem, 24)
-    family_label = compact_safe_part(seed.family, 24)
-    filename = (
-        f"{safe_part(target_symbol)}_{safe_part(target_period)}_{family_label}_{seed_label}_"
-        f"g{generation:03d}_s{seed_index:03d}_v{variant_index:03d}.set"
+    target = _variant_target(
+        seed, target_symbol, target_period, output_dir,
+        generation, seed_index, variant_index,
     )
-    target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename
     write_set_text(target, normalized, encoding)
     return Variant(
         target,
