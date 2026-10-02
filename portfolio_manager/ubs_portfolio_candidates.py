@@ -58,17 +58,8 @@ def summarize_robust_rows(rows: Iterable[object], used_set_paths: Iterable[str])
     )
 
 
-def load_robust_sets_from_rows(
-    rows: Sequence[object],
-    used_set_paths: Iterable[str],
-    *,
-    parse: Callable[[Path], StrategyReport] = parse_report,
-    progress: ProgressCallback | None = None,
-) -> tuple[list[RobustStrategySet], list[str]]:
-    warnings: list[str] = []
-    used = {_norm_path(path) for path in used_set_paths}
+def _latest_robust_rows(rows: Sequence[object]) -> list[object]:
     latest_by_stem: dict[str, object] = {}
-
     for row in rows:
         set_path = str(_row_value(row, "set_path", default=""))
         if not set_path:
@@ -82,13 +73,44 @@ def load_robust_sets_from_rows(
             current, "source_candidate_id", "candidate_id"
         ):
             latest_by_stem[stem] = row
+    return list(latest_by_stem.values())
 
+
+def _load_robust_strategy(row, set_path: str, is_path: Path, oos_path: Path, parse) -> RobustStrategySet:
+    is_period = period_report_from_strategy_report(parse(is_path), "2020_2024")
+    oos_period = period_report_from_strategy_report(parse(oos_path), "2025_2026")
+    target_symbol = str(_row_value(row, "target_symbol", "symbol", default=is_period.symbol))
+    return build_robust_strategy_set(
+        set_id=set_path,
+        candidate_id=str(_row_value(row, "candidate_id", "id", default=set_path)),
+        symbol=target_symbol,
+        timeframe=str(_row_value(row, "period", "timeframe", default=is_period.timeframe)),
+        strategy_family=str(_row_value(row, "family", "strategy_family", default="")),
+        robustness_status="accepted",
+        already_used=False,
+        report_2020_2024=is_period,
+        report_2025_2026=oos_period,
+        set_path=set_path,
+        is_report_path=str(is_path),
+        oos_report_path=str(oos_path),
+    )
+
+
+def load_robust_sets_from_rows(
+    rows: Sequence[object],
+    used_set_paths: Iterable[str],
+    *,
+    parse: Callable[[Path], StrategyReport] = parse_report,
+    progress: ProgressCallback | None = None,
+) -> tuple[list[RobustStrategySet], list[str]]:
+    warnings: list[str] = []
+    used = {_norm_path(path) for path in used_set_paths}
     loaded: list[RobustStrategySet] = []
     skipped_missing = 0
     skipped_parse = 0
     missing_examples: list[str] = []
     parse_examples: list[str] = []
-    candidates = list(latest_by_stem.values())
+    candidates = _latest_robust_rows(rows)
     for index, row in enumerate(candidates, start=1):
         set_path = str(_row_value(row, "set_path", default=""))
         if _norm_path(set_path) in used:
@@ -110,25 +132,7 @@ def load_robust_sets_from_rows(
                 )
             continue
         try:
-            is_period = period_report_from_strategy_report(parse(is_path), "2020_2024")
-            oos_period = period_report_from_strategy_report(parse(oos_path), "2025_2026")
-            target_symbol = str(_row_value(row, "target_symbol", "symbol", default=is_period.symbol))
-            loaded.append(
-                build_robust_strategy_set(
-                    set_id=set_path,
-                    candidate_id=str(_row_value(row, "candidate_id", "id", default=set_path)),
-                    symbol=target_symbol,
-                    timeframe=str(_row_value(row, "period", "timeframe", default=is_period.timeframe)),
-                    strategy_family=str(_row_value(row, "family", "strategy_family", default="")),
-                    robustness_status="accepted",
-                    already_used=False,
-                    report_2020_2024=is_period,
-                    report_2025_2026=oos_period,
-                    set_path=set_path,
-                    is_report_path=str(is_path),
-                    oos_report_path=str(oos_path),
-                )
-            )
+            loaded.append(_load_robust_strategy(row, set_path, is_path, oos_path, parse))
         except Exception as exc:
             skipped_parse += 1
             if len(parse_examples) < 5:

@@ -6,7 +6,6 @@
     "manager_node_runtime/live_audit_tester.py::LiveAuditTesterMixin._run_tester": 240,
     "manager_node_runtime/node_commands.py::build_pipeline_stage_command": 147,
     "manager_node_runtime/node_snapshots.py::pipeline_stage_pending_count": 122,
-    "portfolio_manager/ubs_portfolio_candidates.py::load_robust_sets_from_rows": 87,
     "portfolio_manager/ubs_portfolio_greedy.py::build_portfolio_greedy": 297,
     "portfolio_manager/ubs_portfolio_monthly.py::_strict_monthly_candidate_variants": 100,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_repair_allocations_to_strict_monthly": 122,
