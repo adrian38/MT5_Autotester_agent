@@ -54,7 +54,6 @@
     "ubs_agent_retry.py::retry_seed": 155,
     "ubs_agent_run.py::run_agent": 425,
     "ubs_agent_run_config.py::build_run_config": 167,
-    "ubs_agent_run_modes.py::run_standalone_mode": 93,
     "ubs_agent_targets.py::choose_diverse_target": 89,
     "ubs_agent_targets.py::choose_target_symbol": 164,
     "ubs_agent_variants.py::create_variant": 95,
