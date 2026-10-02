@@ -9,6 +9,35 @@ from portfolio_manager.ubs_portfolio import PortfolioResult, portfolio_symbol_ke
 from ui.ubs_portfolio_base import PORTFOLIO_TYPE_DISPLAY
 
 
+def _portfolio_allocation_values(portfolio_id, allocation, variant_key, variant_label):
+    return (
+        portfolio_id, variant_key, variant_label, allocation.set_id,
+        allocation.candidate_id, allocation.symbol, allocation.units, allocation.lot,
+        allocation.net_profit_contribution, allocation.standalone_valley_dd,
+        allocation.standalone_point_dd, allocation.set_path or allocation.set_id,
+        allocation.timeframe or "", allocation.lot_size_step, allocation.margin_required,
+        allocation.margin_pct, allocation.margin_leverage, allocation.margin_contract_size,
+        allocation.margin_price, allocation.is_report_path, allocation.oos_report_path,
+        allocation.final_tick_report_path, allocation.full_history_report_path,
+        allocation.max_balance_dd_001, allocation.max_equity_dd_001,
+        allocation.floating_dd_source, allocation.standalone_floating_dd,
+        allocation.recent_net_profit_001, allocation.recent_equity_dd_001,
+        int(allocation.has_recent_performance),
+    )
+
+
+def _portfolio_member_values(portfolio_id, allocation, variant_key, variant_label):
+    candidate_id = int(allocation.candidate_id) if str(allocation.candidate_id).isdigit() else None
+    return (
+        portfolio_id, variant_key, variant_label, candidate_id,
+        allocation.set_path or allocation.set_id, allocation.symbol,
+        allocation.timeframe or "", allocation.units, allocation.lot,
+        allocation.lot_size_step, allocation.standalone_valley_dd, 0.0,
+        allocation.net_profit_contribution, allocation.is_report_path,
+        allocation.oos_report_path,
+    )
+
+
 class UBSPortfolioInsertMixin:
     """Alta en memoria de un portafolio, sus asignaciones y sus lotes."""
 
@@ -35,38 +64,7 @@ class UBSPortfolioInsertMixin:
                 recent_equity_dd_001, has_recent_performance
             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                portfolio_id,
-                variant_key,
-                variant_label,
-                allocation.set_id,
-                allocation.candidate_id,
-                allocation.symbol,
-                allocation.units,
-                allocation.lot,
-                allocation.net_profit_contribution,
-                allocation.standalone_valley_dd,
-                allocation.standalone_point_dd,
-                allocation.set_path or allocation.set_id,
-                allocation.timeframe or "",
-                allocation.lot_size_step,
-                allocation.margin_required,
-                allocation.margin_pct,
-                allocation.margin_leverage,
-                allocation.margin_contract_size,
-                allocation.margin_price,
-                allocation.is_report_path,
-                allocation.oos_report_path,
-                allocation.final_tick_report_path,
-                allocation.full_history_report_path,
-                allocation.max_balance_dd_001,
-                allocation.max_equity_dd_001,
-                allocation.floating_dd_source,
-                allocation.standalone_floating_dd,
-                allocation.recent_net_profit_001,
-                allocation.recent_equity_dd_001,
-                int(allocation.has_recent_performance),
-            ),
+            _portfolio_allocation_values(portfolio_id, allocation, variant_key, variant_label),
         )
         conn.execute(
             """
@@ -77,23 +75,7 @@ class UBSPortfolioInsertMixin:
                 is_report_path, oos_report_path
             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                portfolio_id,
-                variant_key,
-                variant_label,
-                int(allocation.candidate_id) if str(allocation.candidate_id).isdigit() else None,
-                allocation.set_path or allocation.set_id,
-                allocation.symbol,
-                allocation.timeframe or "",
-                allocation.units,
-                allocation.lot,
-                allocation.lot_size_step,
-                allocation.standalone_valley_dd,
-                0.0,
-                allocation.net_profit_contribution,
-                allocation.is_report_path,
-                allocation.oos_report_path,
-            ),
+            _portfolio_member_values(portfolio_id, allocation, variant_key, variant_label),
         )
 
     def _insert_portfolio(
