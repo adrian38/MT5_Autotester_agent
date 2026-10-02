@@ -410,39 +410,5 @@ def build_portfolio_greedy(
     enforce_point_dd: bool = True,
     daily_dd_full_history: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], str, int]:
-    return _GreedyBuilder(
-        _GreedyConfig(
-            sets=sets,
-            capital=capital,
-            valley_dd_pct=valley_dd_pct,
-            point_dd_pct=point_dd_pct,
-            portfolio_type=portfolio_type,
-            max_units_per_set=max_units_per_set,
-            max_total_units=max_total_units,
-            max_units_per_symbol=max_units_per_symbol,
-            max_sets_per_symbol=max_sets_per_symbol,
-            max_pair_corr=max_pair_corr,
-            max_downside_corr=max_downside_corr,
-            max_dd_overlap=max_dd_overlap,
-            existing_portfolio_curves=existing_portfolio_curves,
-            max_portfolio_corr=max_portfolio_corr,
-            max_units_per_group_pct=max_units_per_group_pct,
-            max_sets_per_group=max_sets_per_group,
-            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-            initial_allocations=initial_allocations,
-            minimum_active_strategies=minimum_active_strategies,
-            maximum_active_strategies=maximum_active_strategies,
-            fixed_set_ids=fixed_set_ids,
-            allow_fixed_reductions_for_repair=allow_fixed_reductions_for_repair,
-            margin_balance=margin_balance,
-            max_margin_pct=max_margin_pct,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-            max_daily_dd=max_daily_dd,
-            enforce_point_dd=enforce_point_dd,
-            daily_dd_full_history=daily_dd_full_history,
-        )
-    ).run()
+    """Asignacion inicial del portafolio por incrementos de 0.01."""
+    return _GreedyBuilder(_GreedyConfig(**locals())).run()
