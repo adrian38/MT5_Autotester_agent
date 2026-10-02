@@ -124,8 +124,7 @@ class MT5AutotesterUI(
     UBSUniverseLogicMixin,
     tk.Tk,
 ):
-    def __init__(self) -> None:
-        super().__init__()
+    def _init_window_and_process_state(self) -> None:
         self._startup_progress = StartupProgress(
             (
                 "Ajustes y rutas",
@@ -155,11 +154,7 @@ class MT5AutotesterUI(
         self.stop_requested = False
         self._restart_requested = False
 
-        ui_settings = self._read_ui_settings()
-        self._manager_node = EmbeddedManagerNode(BASE_DIR, ui_settings)
-        saved_paths = ui_settings["Paths"] if ui_settings.has_section("Paths") else {}
-        saved_general = ui_settings["General"] if ui_settings.has_section("General") else {}
-        saved_multi = ui_settings["Multiterminal"] if ui_settings.has_section("Multiterminal") else {}
+    def _init_configured_state(self, ui_settings, saved_paths, saved_general, saved_multi) -> None:
         saved_theme = saved_general.get("theme", "light").strip().lower()
         self.theme_mode = tk.StringVar(value="dark" if saved_theme == "dark" else "light")
         self._apply_theme_palette()
@@ -186,6 +181,7 @@ class MT5AutotesterUI(
         self._init_dashboard_state()
         self._init_table_state()
 
+    def _finish_startup(self) -> None:
         self._startup_progress.advance("Interfaz")
         self._sync_ubs_account_paths()
         self._configure_style()
@@ -207,6 +203,17 @@ class MT5AutotesterUI(
         self.after(OUTPUT_DRAIN_IDLE_INTERVAL_MS, self._drain_output_queue)
         self.after(100, self._poll_manager_restart)
         self._startup_progress.done()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._init_window_and_process_state()
+        ui_settings = self._read_ui_settings()
+        self._manager_node = EmbeddedManagerNode(BASE_DIR, ui_settings)
+        saved_paths = ui_settings["Paths"] if ui_settings.has_section("Paths") else {}
+        saved_general = ui_settings["General"] if ui_settings.has_section("General") else {}
+        saved_multi = ui_settings["Multiterminal"] if ui_settings.has_section("Multiterminal") else {}
+        self._init_configured_state(ui_settings, saved_paths, saved_general, saved_multi)
+        self._finish_startup()
 
     def _poll_manager_restart(self) -> None:
         if self._manager_node.consume_restart_request():

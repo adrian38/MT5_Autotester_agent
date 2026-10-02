@@ -1,6 +1,5 @@
 {
   "grandfathered": {
-    "app_ui.py::MT5AutotesterUI.__init__": 83,
     "manager_node_runtime/live_audit.py::LiveAuditController._run": 230,
     "manager_node_runtime/live_audit_compare.py::LiveAuditCompareMixin._compare": 204,
     "manager_node_runtime/live_audit_extract.py::LiveAuditExtractMixin._extract_real": 90,
