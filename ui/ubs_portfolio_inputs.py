@@ -35,41 +35,27 @@ class UBSPortfolioInputsMixin:
             return None
         return self._parse_int_setting(text, label, minimum=1)
 
-    def _read_ubs_portfolio_inputs(self) -> dict[str, object]:
-        capital = self._parse_float_setting(self.ubs_portfolio_capital.get(), "Capital")
-        valley_pct = self._parse_float_setting(self.ubs_portfolio_valley_pct.get(), "DD valle")
-        point_pct = valley_pct
-        if capital <= 0 or valley_pct <= 0:
-            raise ValueError("Capital y DD valle deben ser mayores que 0.")
-
-        top_k = self._parse_int_setting(self.ubs_portfolio_top_k.get(), "Top K sets por simbolo", minimum=1)
-        max_candidates = self._parse_int_setting(
-            self.ubs_portfolio_max_candidates.get(),
-            "Maximo total de candidatos",
-            minimum=1,
-        )
-        min_trades = self._parse_int_setting(
-            self.ubs_portfolio_min_trades.get(),
-            "Minimo de trades 2020-2026",
-            minimum=0,
-        )
-        max_sets_per_symbol = self._parse_int_setting(
-            self.ubs_portfolio_max_sets_per_symbol.get(),
-            "Maximo de sets por simbolo",
-            minimum=1,
-        )
-        type_label = self.ubs_portfolio_type.get().strip()
-        portfolio_type = PORTFOLIO_TYPE_LABELS.get(type_label, PortfolioType.BALANCED)
-        values: dict[str, object] = {
-            "capital": capital,
-            "valley_dd_pct": valley_pct,
-            "point_dd_pct": point_pct,
-            "portfolio_type": portfolio_type.value,
-            "portfolio_type_label": PORTFOLIO_TYPE_DISPLAY[portfolio_type.value],
-            "enforce_point_dd": False,
-            "top_k_per_symbol": top_k,
-            "max_total_candidates": max_candidates,
-            "min_trades_2020_2026": min_trades,
+    def _ubs_portfolio_limit_inputs(self) -> dict[str, object]:
+        """Cupos y topes numericos del formulario de portafolio."""
+        return {
+            "top_k_per_symbol": self._parse_int_setting(
+                self.ubs_portfolio_top_k.get(), "Top K sets por simbolo", minimum=1
+            ),
+            "max_total_candidates": self._parse_int_setting(
+                self.ubs_portfolio_max_candidates.get(),
+                "Maximo total de candidatos",
+                minimum=1,
+            ),
+            "min_trades_2020_2026": self._parse_int_setting(
+                self.ubs_portfolio_min_trades.get(),
+                "Minimo de trades 2020-2026",
+                minimum=0,
+            ),
+            "max_sets_per_symbol": self._parse_int_setting(
+                self.ubs_portfolio_max_sets_per_symbol.get(),
+                "Maximo de sets por simbolo",
+                minimum=1,
+            ),
             "max_units_per_set": self._parse_optional_int_setting(
                 self.ubs_portfolio_max_units_per_set.get(),
                 "Maximo de unidades por set",
@@ -82,19 +68,6 @@ class UBSPortfolioInputsMixin:
                 self.ubs_portfolio_max_units_per_symbol.get(),
                 "Maximo de unidades por simbolo",
             ),
-            "max_sets_per_symbol": max_sets_per_symbol,
-            "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
-            "deep_optimization": bool(getattr(self, "ubs_portfolio_deep_optimization").get())
-            if hasattr(self, "ubs_portfolio_deep_optimization")
-            else False,
-            "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
-            "require_3_positive_months_6m": bool(self.ubs_portfolio_require_3_positive_months_6m.get()),
-            "grid_off": bool(getattr(self, "ubs_portfolio_grid_off").get())
-            if hasattr(self, "ubs_portfolio_grid_off")
-            else False,
-            "exclude_used_sets": bool(getattr(self, "ubs_portfolio_exclude_used_sets").get())
-            if hasattr(self, "ubs_portfolio_exclude_used_sets")
-            else True,
             "dd_reserve_pct": self._parse_float_setting(
                 self.ubs_portfolio_dd_reserve_pct.get(),
                 "Reserva DD",
@@ -104,6 +77,11 @@ class UBSPortfolioInputsMixin:
                 "Reinicios de busqueda",
                 minimum=0,
             ),
+        }
+
+    def _ubs_portfolio_correlation_inputs(self) -> dict[str, object]:
+        """Limites de correlacion del formulario de portafolio."""
+        return {
             "max_pair_corr": self._parse_optional_float_setting(
                 self.ubs_portfolio_max_pair_corr.get(),
                 "Max correlacion",
@@ -121,37 +99,50 @@ class UBSPortfolioInputsMixin:
                 "Max corr portafolios",
             ),
         }
-        allowed_groups = self._ubs_portfolio_allowed_asset_groups()
-        if not allowed_groups:
-            raise ValueError(
-                "Selecciona al menos un grupo permitido: Forex, Metales, Indices, "
-                "Energias, Crypto, Stocks, Bonds o Softs."
-            )
-        values["allowed_asset_groups"] = sorted(allowed_groups)
+
+    def _ubs_portfolio_switch_inputs(self) -> dict[str, object]:
+        """Casillas del formulario, con el valor por defecto de las ausentes."""
+        return {
+            "run_local_search": bool(self.ubs_portfolio_run_local_search.get()),
+            "deep_optimization": bool(getattr(self, "ubs_portfolio_deep_optimization").get())
+            if hasattr(self, "ubs_portfolio_deep_optimization")
+            else False,
+            "use_correlation": bool(self.ubs_portfolio_use_correlation.get()),
+            "require_3_positive_months_6m": bool(self.ubs_portfolio_require_3_positive_months_6m.get()),
+            "grid_off": bool(getattr(self, "ubs_portfolio_grid_off").get())
+            if hasattr(self, "ubs_portfolio_grid_off")
+            else False,
+            "exclude_used_sets": bool(getattr(self, "ubs_portfolio_exclude_used_sets").get())
+            if hasattr(self, "ubs_portfolio_exclude_used_sets")
+            else True,
+        }
+
+    def _ubs_portfolio_margin_inputs(self) -> dict[str, object]:
+        """Validacion de margen pedida, con su perfil y su tope."""
         margin_profile = self._portfolio_margin_profile()
-        values["margin_profile"] = margin_profile
+        values: dict[str, object] = {"margin_profile": margin_profile}
         margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
         margin_pct_var = getattr(self, "ubs_portfolio_max_margin_pct", None)
-        if margin_profile_var is not None or margin_pct_var is not None:
-            if margin_pct_var is None:
-                raise ValueError("Max margen no esta configurado.")
-            max_margin_pct = self._parse_float_setting(margin_pct_var.get(), "Max margen")
-            if max_margin_pct <= 0:
-                raise ValueError("Max margen debe ser mayor que 0.")
-            values["validate_margin"] = True
-            values["validate_roboforex_margin"] = margin_profile != "ttp"
-            values["validate_ttp_margin"] = margin_profile == "ttp"
-            values["max_margin_pct"] = max_margin_pct
-        else:
+        if margin_profile_var is None and margin_pct_var is None:
             values["validate_margin"] = False
             values["validate_roboforex_margin"] = False
             values["validate_ttp_margin"] = False
             values["max_margin_pct"] = None
-        if not values["use_correlation"]:
-            values["max_pair_corr"] = None
-            values["max_downside_corr"] = None
-            values["max_dd_overlap"] = None
-            values["max_portfolio_corr"] = None
+            return values
+        if margin_pct_var is None:
+            raise ValueError("Max margen no esta configurado.")
+        max_margin_pct = self._parse_float_setting(margin_pct_var.get(), "Max margen")
+        if max_margin_pct <= 0:
+            raise ValueError("Max margen debe ser mayor que 0.")
+        values["validate_margin"] = True
+        values["validate_roboforex_margin"] = margin_profile != "ttp"
+        values["validate_ttp_margin"] = margin_profile == "ttp"
+        values["max_margin_pct"] = max_margin_pct
+        return values
+
+    @staticmethod
+    def _check_ubs_portfolio_ranges(values: dict[str, object]) -> None:
+        """Comprueba que correlaciones y reserva DD esten en rango."""
         for key, label in (
             ("max_pair_corr", "Max correlacion"),
             ("max_downside_corr", "Max correlacion downside"),
@@ -163,6 +154,44 @@ class UBSPortfolioInputsMixin:
                 raise ValueError(f"{label} debe estar entre 0 y 1.")
         if not (0 <= float(values["dd_reserve_pct"]) < 100):
             raise ValueError("Reserva DD debe estar entre 0 y menos de 100.")
+
+    def _ubs_portfolio_allowed_groups_input(self) -> list[str]:
+        """Grupos de activos permitidos; al menos uno es obligatorio."""
+        allowed_groups = self._ubs_portfolio_allowed_asset_groups()
+        if not allowed_groups:
+            raise ValueError(
+                "Selecciona al menos un grupo permitido: Forex, Metales, Indices, "
+                "Energias, Crypto, Stocks, Bonds o Softs."
+            )
+        return sorted(allowed_groups)
+
+    def _read_ubs_portfolio_inputs(self) -> dict[str, object]:
+        capital = self._parse_float_setting(self.ubs_portfolio_capital.get(), "Capital")
+        valley_pct = self._parse_float_setting(self.ubs_portfolio_valley_pct.get(), "DD valle")
+        if capital <= 0 or valley_pct <= 0:
+            raise ValueError("Capital y DD valle deben ser mayores que 0.")
+        portfolio_type = PORTFOLIO_TYPE_LABELS.get(
+            self.ubs_portfolio_type.get().strip(), PortfolioType.BALANCED
+        )
+        values: dict[str, object] = {
+            "capital": capital,
+            "valley_dd_pct": valley_pct,
+            "point_dd_pct": valley_pct,
+            "portfolio_type": portfolio_type.value,
+            "portfolio_type_label": PORTFOLIO_TYPE_DISPLAY[portfolio_type.value],
+            "enforce_point_dd": False,
+        }
+        values.update(self._ubs_portfolio_limit_inputs())
+        values.update(self._ubs_portfolio_switch_inputs())
+        values.update(self._ubs_portfolio_correlation_inputs())
+        values["allowed_asset_groups"] = self._ubs_portfolio_allowed_groups_input()
+        values.update(self._ubs_portfolio_margin_inputs())
+        if not values["use_correlation"]:
+            values["max_pair_corr"] = None
+            values["max_downside_corr"] = None
+            values["max_dd_overlap"] = None
+            values["max_portfolio_corr"] = None
+        self._check_ubs_portfolio_ranges(values)
         return values
 
     def _parse_optional_float_setting(self, value: str, label: str) -> float | None:
