@@ -7,7 +7,6 @@
     "tests/test_manager_node_live_audit.py::LiveAuditEngineTests.test_real_history_waits_for_sync_and_recovers_open_before_period": 71,
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_applies_degradation_gate_and_persists_audit": 83,
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_preserves_invalid_stops_rejection": 76,
-    "tests/test_ubs_final_tick_6m.py::UBSFinalTick6MEligibilityTests.test_legacy_tick_sync_rejections_are_migrated_without_touching_real_rejections": 83,
     "ui/ubs_final_tick_logic.py::UBSFinalTickLogicMixin._run_ubs_final_tick_for_latest_run": 101,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._save_pending_ubs_portfolio": 99,
     "ui/ubs_portfolio_insert.py::UBSPortfolioInsertMixin._insert_portfolio": 95,
