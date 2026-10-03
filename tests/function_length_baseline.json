@@ -21,7 +21,7 @@
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
     "ubs/prepared.py::load_prepared": 122,
     "ubs/regression.py::rescore_regression_only": 141,
-    "ubs_agent_final_tick.py::_evaluate_final_tick_tick_report": 156,
+    "ubs_agent_final_tick.py::_evaluate_final_tick_tick_report": 63,
     "ubs_agent_final_tick_ohlc.py::collect_final_tick_ohlc_results": 156,
     "ubs_agent_final_tick_rescore.py::reconcile_final_tick_reports": 133,
     "ubs_agent_final_tick_rescore.py::rescore_final_tick_only": 112,

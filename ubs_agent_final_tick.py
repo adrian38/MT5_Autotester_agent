@@ -6,7 +6,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -241,6 +241,132 @@ def validate_final_tick_stage_dates(stage: str, from_date: str, to_date: str) ->
     return None
 
 
+@dataclass
+class _FinalTickRecord:
+    """Donde y con que umbrales se registra el resultado de un final tick."""
+
+    memory: AgentMemory
+    args: argparse.Namespace
+    run_id: int
+    candidate_id: int
+    ohlc_report: Path
+    ohlc_result: ScoreResult
+    real_tick_report: Path
+    status_counts: dict[str, int]
+
+    def write(
+        self, status: str, real_tick_result: ScoreResult | None = None,
+        similarity: str | None = None, history_quality: float | None = None,
+    ) -> bool:
+        """Guarda el estado del candidato y lo suma al recuento."""
+        args = self.args
+        self.memory.record_candidate_final_tick(
+            self.candidate_id, self.run_id, status, self.ohlc_result, real_tick_result,
+            self.ohlc_report, self.real_tick_report, similarity, history_quality,
+            args.final_tick_min_history_quality, args.from_date, args.to_date,
+            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
+            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+        )
+        self.status_counts[status] = self.status_counts.get(status, 0) + 1
+        return True
+
+
+def _final_tick_no_history(
+    record: _FinalTickRecord, real_tick_variant: Variant, real_tick_result: ScoreResult,
+    no_tick_history: dict[str, object],
+) -> bool:
+    """Deja el candidato pendiente cuando la descarga de ticks se corto."""
+    similarity = {
+        "accepted": False,
+        "reasons": ["real_tick_no_history"],
+        "history_quality": real_tick_result.history_quality,
+        "min_history_quality": float(record.args.final_tick_min_history_quality),
+        "technical_failure": True,
+        "checks": {},
+        "history": no_tick_history,
+    }
+    print(
+        f"AVISO: descarga/sincronizacion Real Tick interrumpida para "
+        f"{real_tick_variant.target_symbol}, candidate #{record.candidate_id}; "
+        "se reintentara como historico pendiente."
+    )
+    return record.write(
+        "pending_history_quality",
+        similarity=json.dumps(similarity, sort_keys=True),
+        history_quality=real_tick_result.history_quality,
+    )
+
+
+def _final_tick_empty_context(
+    record: _FinalTickRecord, real_tick_result: ScoreResult, real_mismatch: str
+) -> bool:
+    """Reporte sin contexto del tester: pendiente de calidad/historico."""
+    pending_similarity = {
+        "accepted": False,
+        "reasons": ["empty_tester_context"],
+        "history_quality": real_tick_result.history_quality,
+        "min_history_quality": float(record.args.final_tick_min_history_quality),
+        "checks": {},
+    }
+    print(
+        f"AVISO: reporte Real Tick Final Tick sin contexto usable para candidate #{record.candidate_id}: "
+        f"{real_mismatch}; se reintentara como calidad/historico pendiente."
+    )
+    return record.write(
+        "pending_history_quality",
+        similarity=json.dumps(pending_similarity, ensure_ascii=True, sort_keys=True),
+        history_quality=real_tick_result.history_quality,
+    )
+
+
+def _final_tick_mismatch(
+    record: _FinalTickRecord, real_tick_result: ScoreResult, real_mismatch: str, reconcile: bool
+) -> bool | None:
+    """Resuelve un reporte que no corresponde a la variante pedida.
+
+    MT5 can emit an empty Real Tick result (symbol="", timeframe="M0")
+    while still copying a seemingly valid History Quality value into the
+    report.  That percentage does not make the tester context usable: it
+    is a transient history/tick-data failure, not a genuine symbol/TF
+    mismatch.  Keep it pending so the dedicated history retry can recover
+    it.  A zero-trade report with a valid symbol/TF still proceeds to the
+    normal similarity checks and is rejected as expected.
+    """
+    if reconcile:
+        return False
+    if report_has_empty_tester_context(real_tick_result):
+        return _final_tick_empty_context(record, real_tick_result, real_mismatch)
+    print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{record.candidate_id}: {real_mismatch}")
+    return record.write(
+        "report_mismatch", real_tick_result, history_quality=real_tick_result.history_quality
+    )
+
+
+def _final_tick_similarity_verdict(
+    record: _FinalTickRecord, score_config: ScoreConfig, real_tick_result: ScoreResult
+) -> bool:
+    """Compara OHLC y Real Tick y guarda el veredicto de la etapa."""
+    args = record.args
+    is_six_month = record.memory.active_final_tick_stage == "six_month"
+    similarity = final_tick_similarity(
+        record.ohlc_result,
+        real_tick_result,
+        min_history_quality=args.final_tick_min_history_quality,
+        max_net_delta_pct=args.final_tick_max_net_delta_pct,
+        max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0) if is_six_month else args.final_tick_max_pf_delta_pct,
+        max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
+        max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+        min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
+        lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
+    )
+    return record.write(
+        final_tick_status_from_similarity(similarity) or "rejected",
+        real_tick_result,
+        similarity=json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+        history_quality=real_tick_result.history_quality,
+    )
+
+
 def _evaluate_final_tick_tick_report(
     memory: AgentMemory,
     args: argparse.Namespace,
@@ -262,28 +388,26 @@ def _evaluate_final_tick_tick_report(
     (parseable, symbol/TF correctos); si no lo es devuelve False sin tocar
     memoria, para que el candidato vuelva a la cola de ejecucion.
     """
-    tick_score_config = score_config_for_variant(
-        score_config,
-        real_tick_variant,
-        min_trades_w1=args.final_tick_min_trades_w1,
-        min_trades_mn=args.final_tick_min_trades_mn,
+    record = _FinalTickRecord(
+        memory, args, run_id, candidate_id, ohlc_report, ohlc_result, real_tick_report,
+        status_counts,
     )
     try:
-        real_tick_result = score_report_file(real_tick_report, config=tick_score_config, broker=args.broker)
+        real_tick_result = score_report_file(
+            real_tick_report,
+            config=score_config_for_variant(
+                score_config,
+                real_tick_variant,
+                min_trades_w1=args.final_tick_min_trades_w1,
+                min_trades_mn=args.final_tick_min_trades_mn,
+            ),
+            broker=args.broker,
+        )
     except Exception as exc:
         if reconcile:
             return False
         print(f"AVISO: no pude parsear Real Tick Final Tick candidate #{candidate_id}: {exc}")
-        memory.record_candidate_final_tick(
-            candidate_id, run_id, "parse_error", ohlc_result, None,
-            ohlc_report, real_tick_report, None, None,
-            args.final_tick_min_history_quality, args.from_date, args.to_date,
-            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
-            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
-        )
-        status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
-        return True
-
+        return record.write("parse_error")
     no_tick_history = None
     if report_has_empty_tester_context(real_tick_result):
         no_tick_history = tester_log_no_history_metadata(
@@ -295,31 +419,7 @@ def _evaluate_final_tick_tick_report(
     if no_tick_history:
         if reconcile:
             return False
-        similarity = {
-            "accepted": False,
-            "reasons": ["real_tick_no_history"],
-            "history_quality": real_tick_result.history_quality,
-            "min_history_quality": float(args.final_tick_min_history_quality),
-            "technical_failure": True,
-            "checks": {},
-            "history": no_tick_history,
-        }
-        print(
-            f"AVISO: descarga/sincronizacion Real Tick interrumpida para "
-            f"{real_tick_variant.target_symbol}, candidate #{candidate_id}; "
-            "se reintentara como historico pendiente."
-        )
-        memory.record_candidate_final_tick(
-            candidate_id, run_id, "pending_history_quality", ohlc_result, None,
-            ohlc_report, real_tick_report, json.dumps(similarity, sort_keys=True),
-            real_tick_result.history_quality,
-            args.final_tick_min_history_quality, args.from_date, args.to_date,
-            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
-            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
-        )
-        status_counts["pending_history_quality"] = status_counts.get("pending_history_quality", 0) + 1
-        return True
-
+        return _final_tick_no_history(record, real_tick_variant, real_tick_result, no_tick_history)
     real_matches, real_mismatch = report_matches_variant(
         real_tick_variant,
         real_tick_result,
@@ -328,72 +428,5 @@ def _evaluate_final_tick_tick_report(
         getattr(args, "broker", DEFAULT_BROKER),
     )
     if not real_matches:
-        # MT5 can emit an empty Real Tick result (symbol="", timeframe="M0")
-        # while still copying a seemingly valid History Quality value into the
-        # report.  That percentage does not make the tester context usable: it
-        # is a transient history/tick-data failure, not a genuine symbol/TF
-        # mismatch.  Keep it pending so the dedicated history retry can recover
-        # it.  A zero-trade report with a valid symbol/TF still proceeds to the
-        # normal similarity checks and is rejected as expected.
-        if report_has_empty_tester_context(real_tick_result):
-            if reconcile:
-                return False
-            pending_similarity = {
-                "accepted": False,
-                "reasons": ["empty_tester_context"],
-                "history_quality": real_tick_result.history_quality,
-                "min_history_quality": float(args.final_tick_min_history_quality),
-                "checks": {},
-            }
-            print(
-                f"AVISO: reporte Real Tick Final Tick sin contexto usable para candidate #{candidate_id}: "
-                f"{real_mismatch}; se reintentara como calidad/historico pendiente."
-            )
-            memory.record_candidate_final_tick(
-                candidate_id, run_id, "pending_history_quality", ohlc_result, None,
-                ohlc_report, real_tick_report,
-                json.dumps(pending_similarity, ensure_ascii=True, sort_keys=True),
-                real_tick_result.history_quality,
-                args.final_tick_min_history_quality, args.from_date, args.to_date,
-                args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
-                args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
-            )
-            status_counts["pending_history_quality"] = status_counts.get("pending_history_quality", 0) + 1
-            return True
-        if reconcile:
-            return False
-        print(f"AVISO: reporte Real Tick Final Tick no coincide para candidate #{candidate_id}: {real_mismatch}")
-        memory.record_candidate_final_tick(
-            candidate_id, run_id, "report_mismatch", ohlc_result, real_tick_result,
-            ohlc_report, real_tick_report, None, real_tick_result.history_quality,
-            args.final_tick_min_history_quality, args.from_date, args.to_date,
-            args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
-            args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
-        )
-        status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-        return True
-
-    is_six_month = memory.active_final_tick_stage == "six_month"
-    similarity = final_tick_similarity(
-        ohlc_result,
-        real_tick_result,
-        min_history_quality=args.final_tick_min_history_quality,
-        max_net_delta_pct=args.final_tick_max_net_delta_pct,
-        max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0) if is_six_month else args.final_tick_max_pf_delta_pct,
-        max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
-        max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
-        min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
-        lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
-    )
-    status = final_tick_status_from_similarity(similarity) or "rejected"
-    memory.record_candidate_final_tick(
-        candidate_id, run_id, status, ohlc_result, real_tick_result,
-        ohlc_report, real_tick_report,
-        json.dumps(similarity, ensure_ascii=True, sort_keys=True),
-        real_tick_result.history_quality,
-        args.final_tick_min_history_quality, args.from_date, args.to_date,
-        args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
-        args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
-    )
-    status_counts[status] = status_counts.get(status, 0) + 1
-    return True
+        return _final_tick_mismatch(record, real_tick_result, real_mismatch, reconcile)
+    return _final_tick_similarity_verdict(record, score_config, real_tick_result)
