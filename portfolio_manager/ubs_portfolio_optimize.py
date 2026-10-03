@@ -25,6 +25,7 @@ from .ubs_portfolio_greedy import (
     build_portfolio_greedy,
 )
 from .ubs_portfolio_phases import (
+    OptimizationPhaseContext,
     _check_execution_plan,
     _deep_refinement_phase,
     _greedy_and_local_search,
@@ -176,21 +177,8 @@ def _greedy_phase(
     names = (
         "allocations", "current", "greedy_log", "stop_reason", "correlation_rejections", "local_log",
     )
-    return dict(zip(names, _greedy_and_local_search(
-        pool.selected, params.capital, params.portfolio_type, targets.target_valley_dd,
-        targets.target_point_dd, targets.effective_valley_dd_pct, targets.effective_point_dd_pct,
-        targets.group_limits, targets.max_units_per_group_pct, targets.max_sets_per_group,
-        targets.group_unit_cap_bootstrap, params.enforce_point_dd, params.max_daily_dd,
-        params.daily_dd_full_history, pool.initial_allocations, pool.fixed_set_ids,
-        pool.required_ids, params.preserve_required_allocations, params.run_local_search,
-        params.max_units_per_set, params.max_total_units, params.max_units_per_symbol,
-        params.max_sets_per_symbol, params.max_pair_corr, params.max_downside_corr,
-        params.max_dd_overlap, params.existing_portfolio_curves, params.max_portfolio_corr,
-        params.margin_balance, params.max_margin_pct, params.margin_profile,
-        params.stock_leverage, params.default_leverage, params.stock_contract_size,
-        params.default_contract_size, params.minimum_active_strategies,
-        params.maximum_active_strategies,
-    )))
+    context = OptimizationPhaseContext(params, targets, pool)
+    return dict(zip(names, _greedy_and_local_search(context)))
 
 
 def _search_phase(
@@ -201,23 +189,8 @@ def _search_phase(
         "allocations", "current", "group_cap_relaxed", "multi_start_log", "valid_restarts",
         "correlation_rejections", "stop_reason",
     )
-    return dict(zip(names, _search_phases(
-        state["allocations"], state["current"], pool.selected, params.capital,
-        params.portfolio_type, targets.target_valley_dd, targets.target_point_dd,
-        targets.group_limits, targets.max_units_per_group_pct, targets.max_sets_per_group,
-        targets.group_unit_cap_bootstrap, params.enforce_point_dd, params.max_daily_dd,
-        params.daily_dd_full_history, params.preserve_required_allocations, pool.fixed_set_ids,
-        params.max_units_per_set, params.max_total_units, params.max_units_per_symbol,
-        params.max_sets_per_symbol, params.max_pair_corr, params.max_downside_corr,
-        params.max_dd_overlap, params.existing_portfolio_curves, params.max_portfolio_corr,
-        params.margin_balance, params.max_margin_pct, params.margin_profile,
-        params.stock_leverage, params.default_leverage, params.stock_contract_size,
-        params.default_contract_size, params.minimum_active_strategies,
-        params.maximum_active_strategies, params.search_restarts,
-        state["correlation_rejections"], state["stop_reason"], targets.effective_valley_dd_pct,
-        targets.effective_point_dd_pct, pool.initial_allocations, pool.required_ids,
-        params.run_local_search,
-    )))
+    context = OptimizationPhaseContext(params, targets, pool)
+    return dict(zip(names, _search_phases(context, state)))
 
 
 def _deep_phase(
@@ -228,22 +201,8 @@ def _deep_phase(
         "allocations", "current", "deep_log", "deep_attempts", "deep_pool_expanded",
         "deep_pool_count", "selected", "stop_reason",
     )
-    return dict(zip(names, _deep_refinement_phase(
-        state["allocations"], state["current"], pool.selected, pool.eligible, params.capital,
-        params.portfolio_type, targets.target_valley_dd, targets.target_point_dd,
-        targets.group_limits, targets.max_units_per_group_pct, targets.max_sets_per_group,
-        params.enforce_point_dd, params.max_daily_dd, params.daily_dd_full_history,
-        params.use_deep_refinement, params.preserve_required_allocations, pool.fixed_set_ids,
-        params.top_k_per_symbol, params.min_trades_2020_2026, params.max_units_per_set,
-        params.max_total_units, params.max_units_per_symbol, params.max_sets_per_symbol,
-        params.max_pair_corr, params.max_downside_corr, params.max_dd_overlap,
-        params.max_portfolio_corr, params.margin_balance, params.max_margin_pct,
-        params.margin_profile, params.stock_leverage, params.default_leverage,
-        params.stock_contract_size, params.default_contract_size, pool.eligible_by_id,
-        params.existing_portfolio_curves, state["group_cap_relaxed"],
-        targets.group_unit_cap_bootstrap, params.max_total_candidates,
-        params.minimum_active_strategies, pool.required_ids, state["stop_reason"],
-    )))
+    context = OptimizationPhaseContext(params, targets, pool)
+    return dict(zip(names, _deep_refinement_phase(context, state)))
 
 
 def _execution_phase(

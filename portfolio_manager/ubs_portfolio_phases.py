@@ -1,8 +1,9 @@
 """Fases de la optimizacion del portafolio discreto."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .ubs_portfolio import (
     DEFAULT_BOOTSTRAP_SEED,
@@ -32,6 +33,15 @@ from .ubs_portfolio_search import (
     improve_with_multi_start_search,
 )
 from .ubs_portfolio_utils import _execution_plan_allocations, group_limits_for_portfolio_type
+
+
+@dataclass(frozen=True)
+class OptimizationPhaseContext:
+    """Parametros, objetivos y candidatos compartidos por todas las fases."""
+
+    params: Any
+    targets: Any
+    pool: Any
 
 def _prepare_candidate_pool(
     raw_sets, min_trades_2020_2026, top_k_per_symbol, max_total_candidates,
@@ -86,111 +96,71 @@ def _prepare_candidate_pool(
     )
 
 
-def _greedy_and_local_search(
-    selected, capital, portfolio_type, target_valley_dd, target_point_dd,
-    effective_valley_dd_pct, effective_point_dd_pct, group_limits,
-    max_units_per_group_pct, max_sets_per_group, group_unit_cap_bootstrap,
-    enforce_point_dd, max_daily_dd, daily_dd_full_history, initial_allocations,
-    fixed_set_ids, required_ids, preserve_required_allocations, run_local_search,
-    max_units_per_set, max_total_units, max_units_per_symbol, max_sets_per_symbol,
-    max_pair_corr, max_downside_corr, max_dd_overlap, existing_portfolio_curves,
-    max_portfolio_corr, margin_balance, max_margin_pct, margin_profile,
-    stock_leverage, default_leverage, stock_contract_size, default_contract_size,
-    minimum_active_strategies, maximum_active_strategies,
-):
+def _greedy_call(context: OptimizationPhaseContext, group_cap):
+    p, t, pool = context.params, context.targets, context.pool
+    return build_portfolio_greedy(
+        sets=pool.selected, capital=p.capital, valley_dd_pct=t.effective_valley_dd_pct,
+        point_dd_pct=t.effective_point_dd_pct, portfolio_type=p.portfolio_type,
+        max_units_per_set=p.max_units_per_set, max_total_units=p.max_total_units,
+        max_units_per_symbol=p.max_units_per_symbol, max_sets_per_symbol=p.max_sets_per_symbol,
+        max_pair_corr=p.max_pair_corr, max_downside_corr=p.max_downside_corr,
+        max_dd_overlap=p.max_dd_overlap, existing_portfolio_curves=p.existing_portfolio_curves,
+        max_portfolio_corr=p.max_portfolio_corr, max_units_per_group_pct=group_cap,
+        max_sets_per_group=t.max_sets_per_group, group_unit_cap_bootstrap=t.group_unit_cap_bootstrap,
+        initial_allocations=pool.initial_allocations,
+        minimum_active_strategies=p.minimum_active_strategies,
+        maximum_active_strategies=p.maximum_active_strategies, fixed_set_ids=pool.fixed_set_ids,
+        allow_fixed_reductions_for_repair=p.preserve_required_allocations,
+        margin_balance=p.margin_balance, max_margin_pct=p.max_margin_pct,
+        margin_profile=p.margin_profile, stock_leverage=p.stock_leverage,
+        default_leverage=p.default_leverage, stock_contract_size=p.stock_contract_size,
+        default_contract_size=p.default_contract_size, max_daily_dd=p.max_daily_dd,
+        enforce_point_dd=p.enforce_point_dd, daily_dd_full_history=p.daily_dd_full_history,
+    )
+
+
+def _local_search_call(context, allocations, current, group_cap):
+    p, t, pool = context.params, context.targets, context.pool
+    return improve_with_local_search(
+        sets=pool.selected, allocations=allocations, current=current,
+        target_valley_dd=t.target_valley_dd, target_point_dd=t.target_point_dd,
+        max_units_per_set=p.max_units_per_set, max_total_units=p.max_total_units,
+        max_units_per_symbol=p.max_units_per_symbol, max_sets_per_symbol=p.max_sets_per_symbol,
+        max_pair_corr=p.max_pair_corr, max_downside_corr=p.max_downside_corr,
+        max_dd_overlap=p.max_dd_overlap, existing_portfolio_curves=p.existing_portfolio_curves,
+        max_portfolio_corr=p.max_portfolio_corr, max_units_per_group_pct=group_cap,
+        max_sets_per_group=t.max_sets_per_group, group_unit_cap_bootstrap=t.group_unit_cap_bootstrap,
+        protected_set_ids=pool.required_ids, minimum_active_strategies=p.minimum_active_strategies,
+        margin_balance=p.margin_balance, max_margin_pct=p.max_margin_pct,
+        margin_profile=p.margin_profile, stock_leverage=p.stock_leverage,
+        default_leverage=p.default_leverage, stock_contract_size=p.stock_contract_size,
+        default_contract_size=p.default_contract_size, max_daily_dd=p.max_daily_dd,
+        enforce_point_dd=p.enforce_point_dd, daily_dd_full_history=p.daily_dd_full_history,
+    )
+
+
+def _greedy_and_local_search(context: OptimizationPhaseContext):
     """Construye la asignacion inicial y la mejora con la busqueda local."""
-    allocations, current, greedy_log, stop_reason, correlation_rejections = build_portfolio_greedy(
-        sets=selected,
-        capital=capital,
-        valley_dd_pct=effective_valley_dd_pct,
-        point_dd_pct=effective_point_dd_pct,
-        portfolio_type=portfolio_type,
-        max_units_per_set=max_units_per_set,
-        max_total_units=max_total_units,
-        max_units_per_symbol=max_units_per_symbol,
-        max_sets_per_symbol=max_sets_per_symbol,
-        max_pair_corr=max_pair_corr,
-        max_downside_corr=max_downside_corr,
-        max_dd_overlap=max_dd_overlap,
-        existing_portfolio_curves=existing_portfolio_curves,
-        max_portfolio_corr=max_portfolio_corr,
-        max_units_per_group_pct=max_units_per_group_pct,
-        max_sets_per_group=max_sets_per_group,
-        group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-        initial_allocations=initial_allocations,
-        minimum_active_strategies=minimum_active_strategies,
-        maximum_active_strategies=maximum_active_strategies,
-        fixed_set_ids=fixed_set_ids,
-        allow_fixed_reductions_for_repair=preserve_required_allocations,
-        margin_balance=margin_balance,
-        max_margin_pct=max_margin_pct,
-        margin_profile=margin_profile,
-        stock_leverage=stock_leverage,
-        default_leverage=default_leverage,
-        stock_contract_size=stock_contract_size,
-        default_contract_size=default_contract_size,
-        max_daily_dd=max_daily_dd,
-        enforce_point_dd=enforce_point_dd,
-        daily_dd_full_history=daily_dd_full_history,
+    p, t = context.params, context.targets
+    allocations, current, greedy_log, stop_reason, rejections = _greedy_call(
+        context, t.max_units_per_group_pct
     )
-
     local_log: list[OptimizationDecision] = []
-    if run_local_search and not preserve_required_allocations:
-        allocations, current, local_log = improve_with_local_search(
-            sets=selected,
-            allocations=allocations,
-            current=current,
-            target_valley_dd=target_valley_dd,
-            target_point_dd=target_point_dd,
-            max_units_per_set=max_units_per_set,
-            max_total_units=max_total_units,
-            max_units_per_symbol=max_units_per_symbol,
-            max_sets_per_symbol=max_sets_per_symbol,
-            max_pair_corr=max_pair_corr,
-            max_downside_corr=max_downside_corr,
-            max_dd_overlap=max_dd_overlap,
-            existing_portfolio_curves=existing_portfolio_curves,
-            max_portfolio_corr=max_portfolio_corr,
-            max_units_per_group_pct=max_units_per_group_pct,
-            max_sets_per_group=max_sets_per_group,
-            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-            protected_set_ids=required_ids,
-            minimum_active_strategies=minimum_active_strategies,
-            margin_balance=margin_balance,
-            max_margin_pct=max_margin_pct,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-            max_daily_dd=max_daily_dd,
-            enforce_point_dd=enforce_point_dd,
-            daily_dd_full_history=daily_dd_full_history,
+    if p.run_local_search and not p.preserve_required_allocations:
+        allocations, current, local_log = _local_search_call(
+            context, allocations, current, t.max_units_per_group_pct
         )
-    return (
-        allocations, current, greedy_log, stop_reason, correlation_rejections, local_log,
-    )
+    return allocations, current, greedy_log, stop_reason, rejections, local_log
 
 
-def _relax_group_cap(
-    allocations, current, selected, capital, portfolio_type, target_valley_dd,
-    target_point_dd, effective_valley_dd_pct, effective_point_dd_pct, group_limits,
-    max_units_per_group_pct, max_sets_per_group, group_unit_cap_bootstrap,
-    enforce_point_dd, max_daily_dd, daily_dd_full_history, initial_allocations,
-    fixed_set_ids, required_ids, preserve_required_allocations, run_local_search,
-    max_units_per_set, max_total_units, max_units_per_symbol, max_sets_per_symbol,
-    max_pair_corr, max_downside_corr, max_dd_overlap, existing_portfolio_curves,
-    max_portfolio_corr, margin_balance, max_margin_pct, margin_profile,
-    stock_leverage, default_leverage, stock_contract_size, default_contract_size,
-    minimum_active_strategies, maximum_active_strategies,
-    correlation_rejections, stop_reason,
-):
+def _relax_group_cap(context, allocations, current, correlation_rejections, stop_reason):
     """Reintenta Balanced sin cupo por grupo cuando el estricto desaprovecha DD."""
+    p, t, pool = context.params, context.targets, context.pool
     group_cap_relaxed = False
     if (
-        portfolio_type == PortfolioType.BALANCED
-        and max_units_per_group_pct is not None
-        and _candidate_group_count(selected) > 1
+        p.portfolio_type == PortfolioType.BALANCED
+        and t.max_units_per_group_pct is not None
+        and _candidate_group_count(pool.selected) > 1
         and current.valley_usage_pct < 70
     ):
         (
@@ -199,72 +169,11 @@ def _relax_group_cap(
             relaxed_greedy_log,
             relaxed_stop_reason,
             relaxed_rejections,
-        ) = build_portfolio_greedy(
-            sets=selected,
-            capital=capital,
-            valley_dd_pct=effective_valley_dd_pct,
-            point_dd_pct=effective_point_dd_pct,
-            portfolio_type=portfolio_type,
-            max_units_per_set=max_units_per_set,
-            max_total_units=max_total_units,
-            max_units_per_symbol=max_units_per_symbol,
-            max_sets_per_symbol=max_sets_per_symbol,
-            max_pair_corr=max_pair_corr,
-            max_downside_corr=max_downside_corr,
-            max_dd_overlap=max_dd_overlap,
-            existing_portfolio_curves=existing_portfolio_curves,
-            max_portfolio_corr=max_portfolio_corr,
-            max_units_per_group_pct=None,
-            max_sets_per_group=max_sets_per_group,
-            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-            initial_allocations=initial_allocations,
-            minimum_active_strategies=minimum_active_strategies,
-            maximum_active_strategies=maximum_active_strategies,
-            fixed_set_ids=fixed_set_ids,
-            allow_fixed_reductions_for_repair=preserve_required_allocations,
-            margin_balance=margin_balance,
-            max_margin_pct=max_margin_pct,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-            max_daily_dd=max_daily_dd,
-            enforce_point_dd=enforce_point_dd,
-            daily_dd_full_history=daily_dd_full_history,
-        )
+        ) = _greedy_call(context, None)
         relaxed_local_log: list[OptimizationDecision] = []
-        if run_local_search and not preserve_required_allocations:
-            relaxed_allocations, relaxed_current, relaxed_local_log = improve_with_local_search(
-                sets=selected,
-                allocations=relaxed_allocations,
-                current=relaxed_current,
-                target_valley_dd=target_valley_dd,
-                target_point_dd=target_point_dd,
-                max_units_per_set=max_units_per_set,
-                max_total_units=max_total_units,
-                max_units_per_symbol=max_units_per_symbol,
-                max_sets_per_symbol=max_sets_per_symbol,
-                max_pair_corr=max_pair_corr,
-                max_downside_corr=max_downside_corr,
-                max_dd_overlap=max_dd_overlap,
-                existing_portfolio_curves=existing_portfolio_curves,
-                max_portfolio_corr=max_portfolio_corr,
-                max_units_per_group_pct=None,
-                max_sets_per_group=max_sets_per_group,
-                group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-                protected_set_ids=required_ids,
-                minimum_active_strategies=minimum_active_strategies,
-                margin_balance=margin_balance,
-                max_margin_pct=max_margin_pct,
-                margin_profile=margin_profile,
-                stock_leverage=stock_leverage,
-                default_leverage=default_leverage,
-                stock_contract_size=stock_contract_size,
-                default_contract_size=default_contract_size,
-                max_daily_dd=max_daily_dd,
-                enforce_point_dd=enforce_point_dd,
-                daily_dd_full_history=daily_dd_full_history,
+        if p.run_local_search and not p.preserve_required_allocations:
+            relaxed_allocations, relaxed_current, relaxed_local_log = _local_search_call(
+                context, relaxed_allocations, relaxed_current, None
             )
         if relaxed_current.total_net_profit > current.total_net_profit and relaxed_current.total_units > current.total_units:
             allocations = relaxed_allocations
@@ -277,148 +186,98 @@ def _relax_group_cap(
     return allocations, current, group_cap_relaxed, correlation_rejections, stop_reason
 
 
-def _search_phases(
-    allocations, current, selected, capital, portfolio_type, target_valley_dd,
-    target_point_dd, group_limits, max_units_per_group_pct, max_sets_per_group,
-    group_unit_cap_bootstrap, enforce_point_dd, max_daily_dd, daily_dd_full_history,
-    preserve_required_allocations, fixed_set_ids, max_units_per_set, max_total_units,
-    max_units_per_symbol, max_sets_per_symbol, max_pair_corr, max_downside_corr,
-    max_dd_overlap, existing_portfolio_curves, max_portfolio_corr, margin_balance,
-    max_margin_pct, margin_profile, stock_leverage, default_leverage,
-    stock_contract_size, default_contract_size, minimum_active_strategies,
-    maximum_active_strategies, search_restarts, correlation_rejections, stop_reason,
-    effective_valley_dd_pct, effective_point_dd_pct, initial_allocations,
-    required_ids, run_local_search,
-):
+def _search_phases(context: OptimizationPhaseContext, state):
     """Relaja el cupo por grupo en Balanced y prueba la busqueda multiarranque."""
-    (
-        allocations,
-        current,
-        group_cap_relaxed,
-        correlation_rejections,
-        stop_reason,
-    ) = _relax_group_cap(
-        allocations, current, selected, capital, portfolio_type, target_valley_dd,
-        target_point_dd, effective_valley_dd_pct, effective_point_dd_pct, group_limits,
-        max_units_per_group_pct, max_sets_per_group, group_unit_cap_bootstrap,
-        enforce_point_dd, max_daily_dd, daily_dd_full_history, initial_allocations,
-        fixed_set_ids, required_ids, preserve_required_allocations, run_local_search,
-        max_units_per_set, max_total_units, max_units_per_symbol, max_sets_per_symbol,
-        max_pair_corr, max_downside_corr, max_dd_overlap, existing_portfolio_curves,
-        max_portfolio_corr, margin_balance, max_margin_pct, margin_profile,
-        stock_leverage, default_leverage, stock_contract_size, default_contract_size,
-        minimum_active_strategies, maximum_active_strategies,
-        correlation_rejections, stop_reason,
+    p, t, pool = context.params, context.targets, context.pool
+    allocations, current, group_cap_relaxed, rejections, stop_reason = _relax_group_cap(
+        context, state["allocations"], state["current"],
+        state["correlation_rejections"], state["stop_reason"],
     )
-
     multi_start_log: list[OptimizationDecision] = []
     valid_restarts = 0
-    if search_restarts > 0 and not preserve_required_allocations:
+    if p.search_restarts > 0 and not p.preserve_required_allocations:
         allocations, current, multi_start_log, valid_restarts = improve_with_multi_start_search(
-            sets=selected,
-            allocations=allocations,
-            current=current,
-            target_valley_dd=target_valley_dd,
-            target_point_dd=target_point_dd,
-            restarts=int(search_restarts),
-            max_units_per_set=max_units_per_set,
-            max_total_units=max_total_units,
-            max_units_per_symbol=max_units_per_symbol,
-            max_sets_per_symbol=max_sets_per_symbol,
-            max_pair_corr=max_pair_corr,
-            max_downside_corr=max_downside_corr,
-            max_dd_overlap=max_dd_overlap,
-            existing_portfolio_curves=existing_portfolio_curves,
-            max_portfolio_corr=max_portfolio_corr,
-            max_units_per_group_pct=None if group_cap_relaxed else max_units_per_group_pct,
-            max_sets_per_group=max_sets_per_group,
-            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-            margin_balance=margin_balance,
-            max_margin_pct=max_margin_pct,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-            max_daily_dd=max_daily_dd,
-            enforce_point_dd=enforce_point_dd,
-            daily_dd_full_history=daily_dd_full_history,
+            sets=pool.selected, allocations=allocations, current=current,
+            target_valley_dd=t.target_valley_dd, target_point_dd=t.target_point_dd,
+            restarts=int(p.search_restarts), max_units_per_set=p.max_units_per_set,
+            max_total_units=p.max_total_units, max_units_per_symbol=p.max_units_per_symbol,
+            max_sets_per_symbol=p.max_sets_per_symbol, max_pair_corr=p.max_pair_corr,
+            max_downside_corr=p.max_downside_corr, max_dd_overlap=p.max_dd_overlap,
+            existing_portfolio_curves=p.existing_portfolio_curves,
+            max_portfolio_corr=p.max_portfolio_corr,
+            max_units_per_group_pct=None if group_cap_relaxed else t.max_units_per_group_pct,
+            max_sets_per_group=t.max_sets_per_group,
+            group_unit_cap_bootstrap=t.group_unit_cap_bootstrap, margin_balance=p.margin_balance,
+            max_margin_pct=p.max_margin_pct, margin_profile=p.margin_profile,
+            stock_leverage=p.stock_leverage, default_leverage=p.default_leverage,
+            stock_contract_size=p.stock_contract_size, default_contract_size=p.default_contract_size,
+            max_daily_dd=p.max_daily_dd, enforce_point_dd=p.enforce_point_dd,
+            daily_dd_full_history=p.daily_dd_full_history,
         )
     if multi_start_log:
         stop_reason += "; multi-start search improved the local solution"
     return (
         allocations, current, group_cap_relaxed, multi_start_log,
-        valid_restarts, correlation_rejections, stop_reason,
+        valid_restarts, rejections, stop_reason,
     )
 
 
-def _deep_refinement_phase(
-    allocations, current, selected, eligible, capital, portfolio_type,
-    target_valley_dd, target_point_dd, group_limits, max_units_per_group_pct,
-    max_sets_per_group, enforce_point_dd, max_daily_dd, daily_dd_full_history,
-    use_deep_refinement, preserve_required_allocations, fixed_set_ids,
-    top_k_per_symbol, min_trades_2020_2026, max_units_per_set, max_total_units,
-    max_units_per_symbol, max_sets_per_symbol, max_pair_corr,
-    max_downside_corr, max_dd_overlap, max_portfolio_corr,
-    margin_balance, max_margin_pct, margin_profile, stock_leverage,
-    default_leverage, stock_contract_size, default_contract_size,
-    eligible_by_id, existing_portfolio_curves, group_cap_relaxed,
-    group_unit_cap_bootstrap, max_total_candidates, minimum_active_strategies,
-    required_ids, stop_reason,
-):
+def _deep_candidate_pool(context):
+    p, pool = context.params, context.pool
+    deep_top_k = max(int(p.top_k_per_symbol), min(20, int(p.top_k_per_symbol) * 2))
+    deep_max = (
+        None if p.max_total_candidates is None
+        else min(len(pool.eligible), max(int(p.max_total_candidates), int(p.max_total_candidates) * 2))
+    )
+    selected = select_top_k_per_symbol(
+        pool.eligible, top_k_per_symbol=deep_top_k, max_total_candidates=deep_max,
+        min_trades_2020_2026=p.min_trades_2020_2026,
+    )
+    selected_by_id = {strategy.set_id: strategy for strategy in selected}
+    for set_id in pool.required_ids:
+        if set_id in pool.eligible_by_id:
+            selected_by_id.setdefault(set_id, pool.eligible_by_id[set_id])
+    for strategy in pool.selected:
+        selected_by_id.setdefault(strategy.set_id, strategy)
+    return list(selected_by_id.values())
+
+
+def _deep_refine_call(context, state, deep_selected):
+    p, t = context.params, context.targets
+    return _deep_refine_allocations(
+        deep_selected, state["allocations"], state["current"],
+        minimum_active_strategies=p.minimum_active_strategies,
+        max_units_per_set=p.max_units_per_set, max_total_units=p.max_total_units,
+        max_units_per_symbol=p.max_units_per_symbol, max_sets_per_symbol=p.max_sets_per_symbol,
+        max_sets_per_group=t.max_sets_per_group,
+        max_units_per_group_pct=None if state["group_cap_relaxed"] else t.max_units_per_group_pct,
+        group_unit_cap_bootstrap=t.group_unit_cap_bootstrap, max_pair_corr=p.max_pair_corr,
+        max_downside_corr=p.max_downside_corr, max_dd_overlap=p.max_dd_overlap,
+        existing_portfolio_curves=p.existing_portfolio_curves,
+        max_portfolio_corr=p.max_portfolio_corr, margin_balance=p.margin_balance,
+        max_margin_pct=p.max_margin_pct, margin_profile=p.margin_profile,
+        stock_leverage=p.stock_leverage, default_leverage=p.default_leverage,
+        stock_contract_size=p.stock_contract_size, default_contract_size=p.default_contract_size,
+        max_daily_dd=p.max_daily_dd, enforce_point_dd=p.enforce_point_dd,
+        daily_dd_full_history=p.daily_dd_full_history,
+    )
+
+
+def _deep_refinement_phase(context: OptimizationPhaseContext, state):
     """Refinado profundo con el universo ampliado si hace falta."""
     deep_log: list[OptimizationDecision] = []
     deep_attempts = 0
     deep_pool_expanded = False
+    p, pool = context.params, context.pool
+    allocations, current = state["allocations"], state["current"]
+    selected, stop_reason = pool.selected, state["stop_reason"]
     deep_pool_count = len(selected)
-    if use_deep_refinement and not preserve_required_allocations:
-        deep_top_k = max(int(top_k_per_symbol), min(20, int(top_k_per_symbol) * 2))
-        if max_total_candidates is None:
-            deep_max_candidates = None
-        else:
-            deep_max_candidates = min(len(eligible), max(int(max_total_candidates), int(max_total_candidates) * 2))
-        deep_selected = select_top_k_per_symbol(
-            eligible,
-            top_k_per_symbol=deep_top_k,
-            max_total_candidates=deep_max_candidates,
-            min_trades_2020_2026=min_trades_2020_2026,
-        )
-        deep_selected_by_id = {strategy.set_id: strategy for strategy in deep_selected}
-        for set_id in required_ids:
-            if set_id in eligible_by_id:
-                deep_selected_by_id.setdefault(set_id, eligible_by_id[set_id])
-        for strategy in selected:
-            deep_selected_by_id.setdefault(strategy.set_id, strategy)
-        deep_selected = list(deep_selected_by_id.values())
+    if p.use_deep_refinement and not p.preserve_required_allocations:
+        deep_selected = _deep_candidate_pool(context)
         deep_pool_count = len(deep_selected)
         deep_pool_expanded = len(deep_selected) > len(selected)
-        refined_allocations, refined_current, deep_log, deep_attempts = _deep_refine_allocations(
-            deep_selected,
-            allocations,
-            current,
-            minimum_active_strategies=minimum_active_strategies,
-            max_units_per_set=max_units_per_set,
-            max_total_units=max_total_units,
-            max_units_per_symbol=max_units_per_symbol,
-            max_sets_per_symbol=max_sets_per_symbol,
-            max_sets_per_group=max_sets_per_group,
-            max_units_per_group_pct=None if group_cap_relaxed else max_units_per_group_pct,
-            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-            max_pair_corr=max_pair_corr,
-            max_downside_corr=max_downside_corr,
-            max_dd_overlap=max_dd_overlap,
-            existing_portfolio_curves=existing_portfolio_curves,
-            max_portfolio_corr=max_portfolio_corr,
-            margin_balance=margin_balance,
-            max_margin_pct=max_margin_pct,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-            max_daily_dd=max_daily_dd,
-            enforce_point_dd=enforce_point_dd,
-            daily_dd_full_history=daily_dd_full_history,
+        refined_allocations, refined_current, deep_log, deep_attempts = _deep_refine_call(
+            context, state, deep_selected
         )
         if refined_current.total_net_profit > current.total_net_profit + 1e-9:
             selected = deep_selected
