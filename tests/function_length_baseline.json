@@ -4,7 +4,6 @@
     "manager_node_runtime/node_snapshots.py::pipeline_stage_pending_count": 122,
     "portfolio_manager/ubs_portfolio_monthly.py::_strict_monthly_candidate_variants": 100,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_repair_allocations_to_strict_monthly": 122,
-    "portfolio_manager/ubs_portfolio_monthly_repair.py::_strict_monthly_deep_refine_allocations": 228,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_strict_monthly_safe_refill_allocations": 143,
     "portfolio_manager/ubs_portfolio_optimize.py::optimize_portfolio": 195,
     "portfolio_manager/ubs_portfolio_optimize_monthly.py::optimize_strict_monthly_portfolio": 425,
