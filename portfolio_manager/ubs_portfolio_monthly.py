@@ -138,6 +138,62 @@ def _limit_sorted_candidates_with_symbol_reserve(
     return selected
 
 
+def _strict_candidate_rankings(
+    eligible: list[RobustStrategySet], full_by_id: dict[str, RobustStrategySet],
+    *, target_month: int, target_valley_dd: float, target_point_dd: float,
+    min_trades_2020_2026: int, enforce_point_dd: bool,
+) -> tuple[list[RobustStrategySet], list[RobustStrategySet], list[RobustStrategySet]]:
+    validations = {
+        strategy.set_id: _strict_monthly_candidate_validation(
+            full_by_id[strategy.set_id], target_month=target_month,
+            target_valley_dd=target_valley_dd, target_point_dd=target_point_dd,
+            enforce_point_dd=enforce_point_dd,
+        )
+        for strategy in eligible
+    }
+    target_best = sorted(
+        (
+            strategy for strategy in eligible
+            if int(validations[strategy.set_id].get("best_month") or 0) == target_month
+            and float(validations[strategy.set_id].get("target_month_net") or 0.0) > 0
+        ),
+        key=lambda item: score_set_for_portfolio(item, min_trades_2020_2026), reverse=True,
+    )
+    seasonal = sorted(
+        eligible,
+        key=lambda item: _strict_monthly_candidate_score(
+            item, full_by_id[item.set_id], target_month=target_month,
+            target_valley_dd=target_valley_dd, target_point_dd=target_point_dd,
+            min_trades_2020_2026=min_trades_2020_2026,
+            enforce_point_dd=enforce_point_dd,
+        ),
+        reverse=True,
+    )
+    target_net = sorted(
+        eligible,
+        key=lambda item: (
+            float(validations[item.set_id].get("target_month_net") or 0.0),
+            score_set_for_portfolio(item, min_trades_2020_2026),
+        ),
+        reverse=True,
+    )
+    return target_best, seasonal, target_net
+
+
+def _unique_strict_variants(
+    sources: list[tuple[str, list[RobustStrategySet]]], strict_limit: int,
+) -> list[tuple[str, list[RobustStrategySet]]]:
+    variants: list[tuple[str, list[RobustStrategySet]]] = []
+    seen_signatures: set[tuple[str, ...]] = set()
+    for label, ordered in sources:
+        limited = _limit_sorted_candidates_with_symbol_reserve(ordered, strict_limit)
+        signature = tuple(strategy.set_id for strategy in limited)
+        if limited and signature not in seen_signatures:
+            variants.append((label, limited))
+            seen_signatures.add(signature)
+    return variants
+
+
 def _strict_monthly_candidate_variants(
     monthly_sets: list[RobustStrategySet],
     full_sets: list[RobustStrategySet],
@@ -172,48 +228,11 @@ def _strict_monthly_candidate_variants(
         min_trades_2020_2026=min_trades_2020_2026,
     )
 
-    candidate_validations = {
-        strategy.set_id: _strict_monthly_candidate_validation(
-            full_by_id[strategy.set_id],
-            target_month=target_month,
-            target_valley_dd=target_valley_dd,
-            target_point_dd=target_point_dd,
-            enforce_point_dd=enforce_point_dd,
-        )
-        for strategy in eligible
-    }
-    individual_target_best = [
-        strategy
-        for strategy in eligible
-        if int(candidate_validations[strategy.set_id].get("best_month") or 0) == target_month
-        and float(candidate_validations[strategy.set_id].get("target_month_net") or 0.0) > 0
-    ]
-    individual_target_best = sorted(
-        individual_target_best,
-        key=lambda item: score_set_for_portfolio(item, min_trades_2020_2026),
-        reverse=True,
-    )
-
-    seasonal = sorted(
-        eligible,
-        key=lambda item: _strict_monthly_candidate_score(
-            item,
-            full_by_id[item.set_id],
-            target_month=target_month,
-            target_valley_dd=target_valley_dd,
-            target_point_dd=target_point_dd,
-            min_trades_2020_2026=min_trades_2020_2026,
-            enforce_point_dd=enforce_point_dd,
-        ),
-        reverse=True,
-    )
-    target_net = sorted(
-        eligible,
-        key=lambda item: (
-            float(candidate_validations[item.set_id].get("target_month_net") or 0.0),
-            score_set_for_portfolio(item, min_trades_2020_2026),
-        ),
-        reverse=True,
+    individual_target_best, seasonal, target_net = _strict_candidate_rankings(
+        eligible, full_by_id, target_month=target_month,
+        target_valley_dd=target_valley_dd, target_point_dd=target_point_dd,
+        min_trades_2020_2026=min_trades_2020_2026,
+        enforce_point_dd=enforce_point_dd,
     )
 
     ordered_variant_sources: list[tuple[str, list[RobustStrategySet]]] = []
@@ -228,16 +247,7 @@ def _strict_monthly_candidate_variants(
     if not individual_target_best:
         ordered_variant_sources.append(("normal", normal))
 
-    variants: list[tuple[str, list[RobustStrategySet]]] = []
-    seen_signatures: set[tuple[str, ...]] = set()
-    for label, ordered in ordered_variant_sources:
-        limited = _limit_sorted_candidates_with_symbol_reserve(ordered, strict_limit)
-        signature = tuple(strategy.set_id for strategy in limited)
-        if not limited or signature in seen_signatures:
-            continue
-        variants.append((label, limited))
-        seen_signatures.add(signature)
-    return variants
+    return _unique_strict_variants(ordered_variant_sources, strict_limit)
 
 
 def _strict_monthly_violation_score(validation: dict[str, object]) -> float:
