@@ -22,6 +22,10 @@ STATUS_LABELS = {
     "failed": "FALLIDA",
 }
 PORTFOLIO_MODES = ("aggressive", "balanced", "conservative")
+# MT5 trunca a 259 caracteres; el margen cubre el sufijo mas largo que anade a
+# un reporte, `.watchdog_attempt_N.mt5log.txt`.
+MT5_MAX_PATH = 259
+MT5_NAME_SUFFIX_BUDGET = 32
 PROGRESS = {
     "idle": ("idle", 0), "queued": ("preparing", 5), "pausing": ("preparing", 10),
     "extracting": ("extracting", 25), "testing": ("testing", 55),
@@ -291,6 +295,23 @@ def _read_set_text(path: Path) -> tuple[str, str]:
     if data[:4096].count(b"\x00") > max(8, len(data[:4096]) // 8):
         return data.decode("utf-16-le"), "utf-16"
     return data.decode("utf-8-sig", errors="replace"), "utf-8"
+
+
+def audit_set_name(index: int, source_name: str, *work_dirs: Path) -> str:
+    """Nombre del set en el área de trabajo, recortado para que MT5 lo abra.
+
+    MT5 trunca a 259 caracteres cualquier ruta que recibe: con una más larga
+    arranca sin configuración —«cannot load config ... at start» en el journal
+    del terminal— y se queda parado hasta que el watchdog lo mata. Python sí
+    escribe rutas largas, así que el límite lo pone el terminal y hay que
+    respetarlo aquí, donde se decide el nombre que acabará en el `.ini`, en el
+    reporte y en los diagnósticos del watchdog.
+    """
+    prefix = f"audit_{index:03d}_"
+    longest = max((len(str(directory)) for directory in work_dirs), default=0)
+    budget = max(MT5_MAX_PATH - longest - 1 - len(prefix) - MT5_NAME_SUFFIX_BUDGET, 8)
+    stem = Path(source_name).stem[:budget]
+    return f"{prefix}{stem.rstrip('._-') or stem}.set"
 
 
 def _redact_log_files(directory: Path, *secrets: str) -> None:

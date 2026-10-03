@@ -11,7 +11,7 @@ from typing import Any
 
 from run_tests_parallel import runner_failure_summary
 
-from .live_audit_helpers import _member_strategy_id, _metric_number, _read_set_text, _redact_log_files, _redact_runner_output
+from .live_audit_helpers import audit_set_name, _member_strategy_id, _metric_number, _read_set_text, _redact_log_files, _redact_runner_output
 from .live_audit_symbols import normalize_live_audit_set_symbols
 
 
@@ -89,7 +89,10 @@ class LiveAuditTesterMixin:
         lots = self._tester_lot(member, volume_rules)
         text = self._set_value(text, "StartLots", f"{lots[1]:.8f}".rstrip("0").rstrip("."))
         text = normalize_live_audit_set_symbols(text, request["tester_server"])
-        target = sets_dir / f"audit_{index:03d}_{source.name}"
+        work = sets_dir.parent
+        target = sets_dir / audit_set_name(
+            index, source.name, sets_dir, work / "reports", work / "configs"
+        )
         target.write_text(text, encoding=set_encoding, newline="\n")
         runtime_text, _runtime_encoding = _read_set_text(target)
         try:
