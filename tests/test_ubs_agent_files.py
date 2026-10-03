@@ -24,13 +24,27 @@ from ubs_agent import (
     generation_fitness_target,
     generation_seed_fitness_predictions,
     reconcile_final_tick_reports,
-    reconcile_final_tick_reports,
     paths_belong_to_workspace,
     report_matches_variant,
     select_next_generation_survivors,
 )
 from run_tests import normalize_set_symbol, parse_symbol_map
 from tests.ubs_agent_files_fixtures import score
+
+
+def _final_tick_reconcile_fixture(root: Path):
+    source_set = root / "candidate.set"
+    source_set.write_text("test", encoding="utf-8")
+    reports = (root / "ohlc6m_000001_candidate.htm", root / "tick6m_000001_candidate.htm")
+    row = {"id": 1, "set_path": str(source_set), "final_tick_status": "pending_history_quality"}
+    memory = SimpleNamespace(
+        active_final_tick_stage="probe",
+        accepted_candidates_for_final_tick=Mock(return_value=[row]),
+        record_candidate_final_tick=Mock(),
+    )
+    seed = Seed(source_set, "S&P.fs", "H1", "test", "1")
+    variant = Variant(source_set, seed, "S&P.fs", "H1", (), (), "test")
+    return memory, variant, reports
 
 
 class UBSSetsFileTests(unittest.TestCase):
@@ -169,36 +183,9 @@ class UBSSetsFileTests(unittest.TestCase):
     def test_final_tick_reconcile_uses_explicit_broker_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source_set = root / "candidate.set"
-            source_set.write_text("test", encoding="utf-8")
-            ohlc_report = root / "ohlc6m_000001_candidate.htm"
-            tick_report = root / "tick6m_000001_candidate.htm"
-            row = {
-                "id": 1,
-                "set_path": str(source_set),
-                "final_tick_status": "pending_history_quality",
-            }
-            memory = SimpleNamespace(
-                active_final_tick_stage="probe",
-                accepted_candidates_for_final_tick=Mock(return_value=[row]),
-                record_candidate_final_tick=Mock(),
-            )
-            seed = Seed(
-                path=source_set,
-                symbol="S&P.fs",
-                period="H1",
-                family="test",
-                run_strategy="1",
-            )
-            variant = Variant(
-                path=source_set,
-                seed=seed,
-                target_symbol="S&P.fs",
-                target_period="H1",
-                mutated_keys=(),
-                missing_lot_keys=(),
-                policy="test",
-            )
+            memory, variant, reports = _final_tick_reconcile_fixture(root)
+            ohlc_report, tick_report = reports
+
             def find_report(path: Path) -> Path:
                 return tick_report if path.name.startswith("tick6m_") else ohlc_report
 

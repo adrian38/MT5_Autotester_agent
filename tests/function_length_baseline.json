@@ -5,7 +5,6 @@
     "portfolio_manager/ubs_portfolio_phases.py::_relax_group_cap": 103,
     "portfolio_manager/ubs_portfolio_phases.py::_search_phases": 73,
     "tests/test_manager_node_live_audit.py::LiveAuditEngineTests.test_real_history_waits_for_sync_and_recovers_open_before_period": 71,
-    "tests/test_ubs_agent_files.py::UBSSetsFileTests.test_final_tick_reconcile_uses_explicit_broker_context": 70,
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_applies_degradation_gate_and_persists_audit": 83,
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_preserves_invalid_stops_rejection": 76,
     "tests/test_ubs_final_tick_6m.py::UBSFinalTick6MEligibilityTests.test_legacy_tick_sync_rejections_are_migrated_without_touching_real_rejections": 83,
