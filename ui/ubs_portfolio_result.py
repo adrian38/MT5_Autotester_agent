@@ -303,6 +303,67 @@ class UBSPortfolioResultMixin:
             return
         messagebox.showinfo("Abrir reporte", "La asignacion seleccionada no tiene reporte guardado.")
 
+    def _portfolio_export_destination(self, folder, portfolio_id, portfolio):
+        created = str(portfolio["created_at"] or "").replace("T", "_").replace(":", "").replace("-", "")
+        type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
+        type_label = (
+            PORTFOLIO_BUNDLE_DISPLAY
+            if self._portfolio_is_bundle(portfolio)
+            else PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key or "Portfolio")
+        )
+        raw_name = f"PORTAFOLIO_{portfolio_id}_{type_label}_{created[:15]}".strip("_")
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_name).strip("._")
+        return Path(folder) / (name or f"PORTAFOLIO_{portfolio_id}")
+
+    def _copy_portfolio_sets(self, members, dest):
+        exported = []
+        copied_paths: set[Path] = set()
+        missing: list[str] = []
+        for member in members:
+            set_path = resolve_workspace_path(str(member.get("set_path") or member.get("set_id") or ""))
+            if not set_path.is_file():
+                missing.append(set_path.name)
+                continue
+            out_path = dest / set_path.name
+            try:
+                resolved = set_path.resolve()
+                if resolved not in copied_paths and resolved != out_path.resolve():
+                    shutil.copy2(set_path, out_path)
+                copied_paths.add(resolved)
+            except Exception:
+                missing.append(set_path.name)
+                continue
+            exported.append((
+                self._ubs_portfolio_member_variant_label(member),
+                self._ubs_portfolio_member_account(member),
+                str(member.get("symbol") or ""),
+                str(member.get("timeframe") or member.get("period") or ""),
+                int(member.get("units") or 0), float(member.get("lot") or 0), set_path.name,
+            ))
+        return exported, missing
+
+    @staticmethod
+    def _portfolio_export_lines(portfolio, type_key, exported, missing):
+        capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
+        lines = [
+            f"Portafolio: {portfolio['name']}",
+            f"Tipo: {PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key)}   Capital: {capital:,.0f}",
+            f"DD valle objetivo: {float(portfolio['target_valley_dd'] or 0):,.2f}",
+            f"DD puntual objetivo: {float(portfolio['target_point_dd'] or 0):,.2f}",
+            f"DD valle usado: {float(portfolio['actual_valley_dd'] or 0):,.2f}",
+            f"DD puntual usado: {float(portfolio['actual_point_dd'] or 0):,.2f}",
+            f"Net profit total 2020-2026: {float(portfolio['total_net_profit'] or 0):,.2f}", "",
+            "Sets exportados: copia exacta del .set original probado.",
+            "No se modifica Risk, LotPerBalance_step, grid ni ningun otro parametro del EA.",
+            "UNID. y LOTE son la asignacion informativa calculada por el portafolio.", "",
+            f"{'PERFIL':12s} {'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'UNID.':>7s} {'LOTE':>7s}   SET",
+        ]
+        for variant, account, symbol, period, units, lot, name in exported:
+            lines.append(f"{variant[:12]:12s} {account:7s} {symbol:12s} {period:5s} {units:7d} {lot:7.2f}   {name}")
+        if missing:
+            lines.extend(("", "OMITIDOS (set no encontrado): " + ", ".join(missing)))
+        return lines
+
     def _export_ubs_portfolio_sets(self) -> None:
         if not hasattr(self, "ubs_portfolio_saved_tree"):
             return
@@ -324,67 +385,17 @@ class UBSPortfolioResultMixin:
         folder = filedialog.askdirectory(title="Carpeta destino para los sets del portafolio")
         if not folder:
             return
-        created = str(portfolio["created_at"] or "").replace("T", "_").replace(":", "").replace("-", "")
         type_key = str(portfolio["portfolio_type"] or portfolio["type"] or "")
-        type_label = PORTFOLIO_BUNDLE_DISPLAY if self._portfolio_is_bundle(portfolio) else PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key or "Portfolio")
-        raw_folder_name = f"PORTAFOLIO_{portfolio_id}_{type_label}_{created[:15]}".strip("_")
-        folder_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_folder_name).strip("._") or f"PORTAFOLIO_{portfolio_id}"
-        dest = Path(folder) / folder_name
+        dest = self._portfolio_export_destination(folder, portfolio_id, portfolio)
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             messagebox.showerror("Exportar sets", f"No pude crear la carpeta:\n{exc}")
             return
 
-        exported: list[tuple[str, str, str, str, int, float, str]] = []
-        copied_paths: set[Path] = set()
-        missing: list[str] = []
-        for member in members:
-            set_path = resolve_workspace_path(str(member.get("set_path") or member.get("set_id") or ""))
-            if not set_path.is_file():
-                missing.append(set_path.name)
-                continue
-            out_path = dest / set_path.name
-            try:
-                resolved_set_path = set_path.resolve()
-                if resolved_set_path not in copied_paths and resolved_set_path != out_path.resolve():
-                    shutil.copy2(set_path, out_path)
-                copied_paths.add(resolved_set_path)
-            except Exception:
-                missing.append(set_path.name)
-                continue
-            exported.append((
-                self._ubs_portfolio_member_variant_label(member),
-                self._ubs_portfolio_member_account(member),
-                str(member.get("symbol") or ""),
-                str(member.get("timeframe") or member.get("period") or ""),
-                int(member.get("units") or 0),
-                float(member.get("lot") or 0),
-                set_path.name,
-            ))
-
+        exported, missing = self._copy_portfolio_sets(members, dest)
         resumen = dest / f"PORTAFOLIO_{portfolio_id}_resumen.txt"
-        capital = float(portfolio["capital"] or portfolio["account_capital"] or 0)
-        lines = [
-            f"Portafolio: {portfolio['name']}",
-            f"Tipo: {PORTFOLIO_TYPE_DISPLAY.get(type_key, type_key)}   Capital: {capital:,.0f}",
-            f"DD valle objetivo: {float(portfolio['target_valley_dd'] or 0):,.2f}",
-            f"DD puntual objetivo: {float(portfolio['target_point_dd'] or 0):,.2f}",
-            f"DD valle usado: {float(portfolio['actual_valley_dd'] or 0):,.2f}",
-            f"DD puntual usado: {float(portfolio['actual_point_dd'] or 0):,.2f}",
-            f"Net profit total 2020-2026: {float(portfolio['total_net_profit'] or 0):,.2f}",
-            "",
-            "Sets exportados: copia exacta del .set original probado.",
-            "No se modifica Risk, LotPerBalance_step, grid ni ningun otro parametro del EA.",
-            "UNID. y LOTE son la asignacion informativa calculada por el portafolio.",
-            "",
-            f"{'PERFIL':12s} {'CUENTA':7s} {'SIMBOLO':12s} {'TF':5s} {'UNID.':>7s} {'LOTE':>7s}   SET",
-        ]
-        for variant, account, symbol, period, units, lot, name in exported:
-            lines.append(f"{variant[:12]:12s} {account:7s} {symbol:12s} {period:5s} {units:7d} {lot:7.2f}   {name}")
-        if missing:
-            lines.append("")
-            lines.append("OMITIDOS (set no encontrado): " + ", ".join(missing))
+        lines = self._portfolio_export_lines(portfolio, type_key, exported, missing)
         write_set_text(resumen, "\n".join(lines), "utf-8")
 
         self.ubs_portfolio_status.set(f"Exportados {len(exported)} set(s) a {dest}")
