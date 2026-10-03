@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from manager_node_runtime.live_audit import (
     LiveAuditController, _audit_period, _read_set_text, _redact_log_files, _redact_runner_output,
-    normalize_request,
+    normalize_request, single_variant_mode,
 )
 from manager_node_runtime.mt5_native_history_report import (
     NativeHistoryReportError, validate_native_history_report,
@@ -86,6 +86,22 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
             normalize_request({**request(), "real_strategy_lots": []})
         with self.assertRaisesRegex(ValueError, "fuera"):
             normalize_request({**request(), "real_strategy_lots": {"bad": 0}})
+
+    def test_saved_improvement_uses_its_inherited_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            _owner, controller = self._controller(Path(temp), "idle")
+            _detail, members = controller._portfolio_members(148, "aggressive")
+            self.assertEqual([row["candidate_id"] for row in members], ["imp-one", "imp-two"])
+            with self.assertRaisesRegex(ValueError, "una sola variante, modo aggressive"):
+                controller._portfolio_members(148, "balanced")
+
+    def test_single_variant_mode_resolves_only_single_variant_portfolios(self) -> None:
+        self.assertEqual(single_variant_mode({"portfolio_type": "conservative"}), "conservative")
+        self.assertEqual(single_variant_mode({
+            "portfolio_type": "improved", "improvement_origin": {"mode": "aggressive"},
+        }), "aggressive")
+        self.assertEqual(single_variant_mode({"portfolio_type": "bundle"}), "")
+        self.assertEqual(single_variant_mode({}), "")
 
     def test_runner_output_redacts_ini_and_incidental_secret_copies(self) -> None:
         text = "[Common]\nPassword=tester-secret\nerror tester-secret\nPassword=another-value\n"

@@ -21,6 +21,7 @@ STATUS_LABELS = {
     "completed": "COMPLETADA", "not_comparable": "NO COMPARABLE",
     "failed": "FALLIDA",
 }
+PORTFOLIO_MODES = ("aggressive", "balanced", "conservative")
 PROGRESS = {
     "idle": ("idle", 0), "queued": ("preparing", 5), "pausing": ("preparing", 10),
     "extracting": ("extracting", 25), "testing": ("testing", 55),
@@ -29,6 +30,20 @@ PROGRESS = {
     "completed": ("completed", 100), "not_comparable": ("completed", 100),
     "failed": ("completed", 100),
 }
+
+def single_variant_mode(detail: dict[str, Any]) -> str:
+    """Modo heredado de un portafolio guardado con una sola variante."""
+    origin = detail.get("improvement_origin")
+    candidates = (
+        origin.get("mode") if isinstance(origin, dict) else None,
+        detail.get("portfolio_type"),
+    )
+    for value in candidates:
+        mode = str(value or "").strip().lower()
+        if mode in PORTFOLIO_MODES:
+            return mode
+    return ""
+
 
 def _as_int(value: Any, name: str, minimum: int = 0) -> int:
     try:
@@ -311,6 +326,7 @@ def _safe_state(raw: dict[str, Any]) -> dict[str, Any]:
         "finished_at": raw.get("finished_at"),
         "can_run": status not in RUNNING_STATUSES,
         "log_lines": list(raw.get("log_lines") or [])[-500:],
+        "last_payload": raw.get("last_payload"),
         "last_result": raw.get("last_result"),
         "terminal_restore": raw.get("terminal_restore"),
         "error": raw.get("error"),

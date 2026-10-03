@@ -9,7 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from run_tests_parallel import runner_failure_summary
+
 from .live_audit_helpers import _member_strategy_id, _metric_number, _read_set_text, _redact_log_files, _redact_runner_output
+from .live_audit_symbols import normalize_live_audit_set_symbols
 
 
 @dataclass
@@ -85,6 +88,7 @@ class LiveAuditTesterMixin:
         text, set_encoding = _read_set_text(source)
         lots = self._tester_lot(member, volume_rules)
         text = self._set_value(text, "StartLots", f"{lots[1]:.8f}".rstrip("0").rstrip("."))
+        text = normalize_live_audit_set_symbols(text, request["tester_server"])
         target = sets_dir / f"audit_{index:03d}_{source.name}"
         target.write_text(text, encoding=set_encoding, newline="\n")
         runtime_text, _runtime_encoding = _read_set_text(target)
@@ -264,7 +268,7 @@ class LiveAuditTesterMixin:
             "Journal principal guardado para: " + (", ".join(captured) if captured else "ninguna terminal"),
         )
         if completed.returncode:
-            tail = "\n".join(runner_output.splitlines()[-20:])
+            tail = runner_failure_summary(runner_output)
             raise RuntimeError(f"Strategy Tester terminó con código {completed.returncode}: {tail}")
 
     @staticmethod

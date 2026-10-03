@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from .common import load_json
+from .live_audit_helpers import single_variant_mode
+from .live_audit_sets import resolve_portfolio_set
 from .mt5_native_history_report import NativeHistoryReportError, export_native_history_report
 
 
@@ -70,6 +72,9 @@ class LiveAuditExtractMixin:
             int(getattr(deal, "position_id", 0) or 0)
             for deal in market_deals if int(getattr(deal, "entry", -1)) in {1, 2, 3}
         }
+        open_at_period_end = self._open_positions_at_period_end(
+            market_deals, opening_positions, closing_positions
+        )
         missing_open_positions = closing_positions - opening_positions
         all_deals = list(period_deals)
         recovered_positions = 0
@@ -105,6 +110,8 @@ class LiveAuditExtractMixin:
             "positions_missing_open_in_period": len(missing_open_positions),
             "positions_recovered": recovered_positions, "positions_unresolved": len(unresolved_positions),
             "trades_reconstructed": len(trades),
+            "positions_open_at_period_end": len(open_at_period_end),
+            "open_positions_at_period_end": open_at_period_end,
         }
         return trades, points, history_detail
 
@@ -274,6 +281,15 @@ class LiveAuditExtractMixin:
         detail = self.owner.portfolio_detail(portfolio_id, "full_history")["portfolio"]
         members = [dict(row) for row in detail.get("members") or []]
         matching = [row for row in members if str(row.get("variant_key") or "") == portfolio_type]
+        if not matching and members and not any(str(row.get("variant_key") or "") for row in members):
+            own_mode = single_variant_mode(detail)
+            if own_mode and own_mode == portfolio_type:
+                matching = members
+            elif own_mode:
+                raise ValueError(
+                    f"El portafolio #{portfolio_id} guarda una sola variante, modo {own_mode}; "
+                    f"no puede auditarse como {portfolio_type}"
+                )
         if not matching:
             available = sorted({str(row.get("variant_key") or "") for row in members if row.get("variant_key")})
             raise ValueError(
@@ -340,16 +356,27 @@ class LiveAuditExtractMixin:
 
     def _resolve_set(self, raw: str) -> Path:
         project = Path(str(self.owner.config["project_dir"])).expanduser().resolve()
-        path = Path(raw)
-        if path.is_file():
-            return path
-        normalized = raw.replace("\\", "/")
-        for prefix in ("/data/ic/", "/data/axi/", "/data/roboforex/"):
-            if normalized.casefold().startswith(prefix):
-                candidate = project / normalized[len(prefix):]
-                if candidate.is_file():
-                    return candidate
-        matches = list(project.rglob(path.name)) if path.name else []
-        if len(matches) == 1:
-            return matches[0]
-        raise FileNotFoundError(f"No se encontró el set del portafolio: {path.name or raw}")
+        return resolve_portfolio_set(project, raw)
+
+    @staticmethod
+    def _open_positions_at_period_end(market_deals, opening_positions, closing_positions):
+        pending = set(opening_positions - closing_positions)
+        positions = []
+        for deal in sorted(
+            market_deals,
+            key=lambda item: (int(getattr(item, "time_msc", 0)), int(getattr(item, "ticket", 0))),
+        ):
+            position_id = int(getattr(deal, "position_id", 0) or 0)
+            if position_id not in pending or int(getattr(deal, "entry", -1)) not in {0, 2}:
+                continue
+            pending.discard(position_id)
+            positions.append({
+                "strategy": str(getattr(deal, "magic", 0) or getattr(deal, "comment", "") or position_id),
+                "symbol": str(getattr(deal, "symbol", "") or ""),
+                "side": "buy" if int(getattr(deal, "type", 0)) == 0 else "sell",
+                "open_time": datetime.fromtimestamp(int(getattr(deal, "time", 0)), timezone.utc),
+                "open_price": float(getattr(deal, "price", 0.0) or 0.0),
+                "volume": float(getattr(deal, "volume", 0.0) or 0.0),
+                "position_id": position_id,
+            })
+        return positions

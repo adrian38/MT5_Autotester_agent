@@ -6,6 +6,7 @@ import re
 ADAPTIVE_PRICE_TOLERANCE_FLOORS = {
     "indices": 10.5,
     "nasdaq": 5.0,
+    "nikkei": 5.0,
     "crypto_btc": 10.0,
     "gold": 2.05,
     "silver": 0.02,
@@ -13,14 +14,24 @@ ADAPTIVE_PRICE_TOLERANCE_FLOORS = {
     "fx": 0.0005,
 }
 _INDEX_SYMBOL_PREFIXES = ("US30", "DE40", "USTEC", "USTECH")
+_NIKKEI_SYMBOL_PREFIXES = ("JP225", "JPN225", "JP_225")
 _FX_CURRENCIES = frozenset({"AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD"})
 
 
 def adaptive_price_tolerance_floor(symbol: str) -> tuple[float | None, str]:
     """Devuelve el piso absoluto validado para la familia del instrumento."""
-    root = re.split(r"[^A-Z0-9]", str(symbol or "").upper(), maxsplit=1)[0]
+    # Los adornos del broker pueden ir delante y no solo detrás: RoboForex
+    # cotiza `.DE40Cash` y `.JP225Cash`. Partir por el primer separador sin
+    # quitar antes el prefijo dejaba la raíz vacía, así que esos símbolos se
+    # quedaban sin ningún piso y una diferencia admisible de dos unidades se
+    # publicaba como desviación de precio.
+    root = re.split(
+        r"[^A-Z0-9]", re.sub(r"^[^A-Z0-9]+", "", str(symbol or "").upper()), maxsplit=1,
+    )[0]
     if root.startswith(("NAS100", "US100")):
         return ADAPTIVE_PRICE_TOLERANCE_FLOORS["nasdaq"], "adaptive_nasdaq"
+    if root.startswith(_NIKKEI_SYMBOL_PREFIXES):
+        return ADAPTIVE_PRICE_TOLERANCE_FLOORS["nikkei"], "adaptive_nikkei"
     if root.startswith("BTC"):
         return ADAPTIVE_PRICE_TOLERANCE_FLOORS["crypto_btc"], "adaptive_crypto_btc"
     if root.startswith(_INDEX_SYMBOL_PREFIXES):

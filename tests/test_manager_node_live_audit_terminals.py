@@ -21,30 +21,7 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
             self.assertEqual(state["status"], "completed")
             self.assertEqual((owner.pause_calls, owner.resume_calls), (1, 1))
 
-    def test_real_account_membership_uses_symbol_and_lot_not_magic(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            _owner, controller = self._controller(Path(temp), "idle")
-            now = datetime.now(timezone.utc)
-            matching = {
-                "strategy": "magic-can-differ", "symbol": "EURUSD", "side": "buy",
-                "open_time": now, "close_time": now, "open_price": 1.1,
-                "close_price": 1.1, "volume": .01, "profit": 1.0,
-            }
-            wrong_lot = {**matching, "strategy": "one", "volume": .02}
-            controller._extract_real = lambda *_args: (
-                [matching, wrong_lot], {"EURUSD": .00001},
-                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
-                 "history_detail": {}},
-            )
-            controller.start(request())
-            state = self._wait(controller)
-
-        self.assertEqual(state["status"], "completed")
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["portfolio_closures"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["foreign_closures_ignored"], 1)
-
-    def test_real_account_filter_uses_effective_broker_lot_not_invalid_saved_lot(self) -> None:
+    def test_the_node_publishes_unfiltered_material_and_lets_the_manager_judge(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             owner, controller = self._controller(Path(temp), "idle")
             owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
@@ -65,58 +42,15 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
             controller.start(request())
             state = self._wait(controller)
 
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["portfolio_closures"], 1)
-
-    def test_real_account_filter_uses_the_configured_lot_for_each_strategy(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            owner, controller = self._controller(Path(temp), "idle")
-            owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
-                "variant_key": "balanced", "candidate_id": "eth-grid", "symbol": "ETHUSD", "lot": .7,
-            }]}}
-            now = datetime.now(timezone.utc)
-            base = {
-                "strategy": "real", "symbol": "ETHUSD", "side": "buy", "open_time": now,
-                "close_time": now, "open_price": 100.0, "close_price": 100.0, "profit": 1.0,
-            }
-            controller._extract_real = lambda *_args: (
-                [{**base, "volume": .6}, {**base, "volume": .7}], {"ETHUSD": .01},
-                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
-                 "history_detail": {}},
-            )
-            controller._run_tester = lambda *_args: (
-                [{**base, "strategy": "eth-grid", "volume": .6}], [99.0], {"eth-grid": 1}, [], {},
-            )
-            controller.start({**request(), "real_strategy_lots": {"eth-grid": .6}})
-            state = self._wait(controller)
-
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["matched_trades"], 1)
-        self.assertEqual(state["last_result"]["real_history_detail"]["foreign_closures_ignored"], 1)
-
-    def test_real_account_filter_uses_the_symbol_reported_by_the_tester(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            owner, controller = self._controller(Path(temp), "idle")
-            owner.portfolio_detail = lambda *_args: {"portfolio": {"id": 9, "members": [{
-                "variant_key": "balanced", "candidate_id": "nas-one", "symbol": "NAS100", "lot": .01,
-            }]}}
-            now = datetime.now(timezone.utc)
-            trade = {
-                "strategy": "nas-one", "symbol": "NAS100.fs", "side": "buy", "open_time": now,
-                "close_time": now, "open_price": 100.0, "close_price": 100.0,
-                "volume": .01, "profit": 1.0,
-            }
-            controller._extract_real = lambda *_args: (
-                [dict(trade)], {"NAS100.fs": .01},
-                {"login": "111", "native_report": {"filename": "real.html", "native_terminal_report": True},
-                 "history_detail": {}},
-            )
-            controller._run_tester = lambda *_args: ([dict(trade)], [99.0], {"nas-one": 1}, [], {})
-            controller.start(request())
-            state = self._wait(controller)
-
-        self.assertEqual(state["last_result"]["real_trades"], 1)
-        self.assertEqual(state["last_result"]["matched_trades"], 1)
+        self.assertEqual(state["status"], "completed")
+        payload = state["last_payload"]
+        self.assertEqual([trade["volume"] for trade in payload["real_trades"]], [.1, .3])
+        self.assertEqual(
+            [member["candidate_id"] for member in payload["selected_members"]], ["de40"],
+        )
+        self.assertEqual(payload["volume_rules"]["de40"], {"volume_min": .1, "volume_step": .1})
+        self.assertEqual(payload["symbol_points"], {"DE40": 1.0})
+        self.assertIsNone(state.get("last_result"))
 
     def test_pipeline_already_paused_by_user_stays_paused(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -151,7 +85,7 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         self.assertTrue(restore[0]["restored"])
         self.assertTrue(restore[0]["password_persisted"])
         self.assertTrue(restore[0]["reopened_without_password"])
-        self.assertEqual(state["last_result"]["terminal_restore"], restore)
+        self.assertEqual(state["last_payload"]["terminal_restore"], restore)
         self.assertNotIn("tester-secret", str(state))
         self.assertNotIn("restore-secret", str(state))
         # La restauración precede a la reanudación: el pipeline no puede reabrir
@@ -299,6 +233,33 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         self.assertEqual({row["login"] for row in rows}, {"222"})
         self.assertEqual({row["server"] for row in rows}, {"IC-Demo"})
 
+    def test_tester_login_explicitly_switches_an_initialized_terminal(self) -> None:
+        calls: list[tuple[int, str, str]] = []
+
+        class FakeMt5:
+            current_login = 111
+
+            @classmethod
+            def account_info(cls) -> SimpleNamespace:
+                return SimpleNamespace(login=cls.current_login, server="IC-Demo")
+
+            @staticmethod
+            def terminal_info() -> SimpleNamespace:
+                return SimpleNamespace(connected=True)
+
+            @classmethod
+            def login(cls, login: int, *, password: str, server: str, timeout: int) -> bool:
+                calls.append((login, password, server))
+                cls.current_login = login
+                return True
+
+        result = LiveAuditController._activate_account(
+            FakeMt5, "222", "tester-secret", "IC-Demo", .01,
+        )
+
+        self.assertEqual(calls, [(222, "tester-secret", "IC-Demo")])
+        self.assertEqual(result, ("222", "IC-Demo", True, None))
+
     def test_main_journal_capture_keeps_only_new_lines_and_redacts_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -372,13 +333,14 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         # bloquearía la auditoría para siempre.
         self.assertIn(fallback, source)
 
-    def test_missing_tick_quality_makes_the_result_not_comparable(self) -> None:
+    def test_missing_tick_quality_is_published_for_the_manager_to_judge(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             owner, controller = self._controller(Path(temp), "running", quality=None)
             controller.start(request())
             state = self._wait(controller)
-            self.assertEqual(state["status"], "not_comparable")
-            self.assertIsNone(state["last_result"]["history_quality_pct"])
+            self.assertEqual(state["status"], "completed")
+            self.assertEqual(state["last_payload"]["qualities"], [])
+            self.assertIsNone(state.get("last_result"))
             self.assertEqual((owner.pause_calls, owner.resume_calls), (1, 1))
 
 

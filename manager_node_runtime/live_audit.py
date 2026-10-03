@@ -26,6 +26,7 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     _safe_state,
     _trade_view,
     normalize_request,
+    single_variant_mode,
 )
 from .live_audit_terminals import LiveAuditTerminalsMixin
 from .live_audit_extract import LiveAuditExtractMixin
@@ -43,6 +44,8 @@ class LiveAuditController(
 
     history_sync_attempts = 6
     history_sync_delay_seconds = 1.0
+    tester_login_settle_seconds = 30.0
+    account_probe_seconds = 2.0
 
     def __init__(self, owner: Any, runtime_dir: Path) -> None:
         self.owner = owner
@@ -128,6 +131,7 @@ class LiveAuditController(
                     f"({request['source_server']}), tester {request['tester_login']} ({request['tester_server']})"
                 ],
                 "last_result": (self.states.get(audit_key) or {}).get("last_result"),
+                "last_payload": (self.states.get(audit_key) or {}).get("last_payload"),
             }
             self._persist()
         thread = threading.Thread(target=self._run, args=(request, audit_id), daemon=True)
@@ -219,7 +223,10 @@ class LiveAuditController(
 
     def _extract_real_account(
         self, request: dict[str, Any], audit_id: str, period_start: datetime, period_end: datetime
-    ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    ) -> tuple[
+        list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any],
+        dict[str, Any], list[dict[str, Any]],
+    ]:
         """Trae de MT5 el historial real del periodo junto con su HTML nativo."""
         audit_key = request["audit_key"]
         reports_dir = self.runtime_dir / f"audit_{audit_key}" / audit_id / "reports"
@@ -231,8 +238,15 @@ class LiveAuditController(
         if not real_account_report.get("native_terminal_report"):
             raise RuntimeError("MT5 no entregó el HTML nativo del historial de la cuenta real")
         real_history_detail = dict(account.pop("history_detail", {}) or {})
+        open_positions = list(real_history_detail.pop("open_positions_at_period_end", []) or [])
+        real_history_detail["open_positions_at_period_end"] = [
+            _trade_view(position) for position in open_positions
+        ]
         self._log_real_account_sync(audit_key, account, real_account_report, real_history_detail)
-        return real_trades, symbol_points, account, real_account_report, real_history_detail
+        return (
+            real_trades, symbol_points, account, real_account_report,
+            real_history_detail, open_positions,
+        )
 
     @staticmethod
     def _symbols_by_strategy(
@@ -380,6 +394,9 @@ class LiveAuditController(
             last_result = raw.get("last_result")
             if isinstance(last_result, dict) and str(last_result.get("audit_id") or "") == audit_id:
                 last_result["terminal_restore"] = restored
+            last_payload = raw.get("last_payload")
+            if isinstance(last_payload, dict) and str(last_payload.get("audit_id") or "") == audit_id:
+                last_payload["terminal_restore"] = restored
             self._persist()
         return [row for row in restored if not row["restored"]]
 
@@ -436,7 +453,7 @@ class LiveAuditController(
         audit_key = request["audit_key"]
         self._update(audit_key, "extracting", "Extrayendo operaciones de la cuenta real.", "Conectando la cuenta real")
         period_start, period_end = _audit_period(request)
-        real_trades, symbol_points, account, real_account_report, real_history_detail = (
+        real_trades, symbol_points, account, real_account_report, real_history_detail, open_positions = (
             self._extract_real_account(request, audit_id, period_start, period_end)
         )
         self._update(
@@ -449,43 +466,45 @@ class LiveAuditController(
         _detail, selected_members = self._portfolio_members(
             request["portfolio_id"], request["portfolio_type"]
         )
-        signatures = self._portfolio_trade_signatures(
-            request, selected_members, tester_trades, strategy_artifacts
-        )
-        real_trades = self._filter_real_trades(audit_key, real_trades, signatures, real_history_detail)
+        volume_rules = {
+            symbol: {"volume_min": minimum, "volume_step": step}
+            for symbol, (minimum, step) in self._broker_volume_rules().items()
+        }
         tester_groups: dict[str, int] = {}
         for trade in tester_trades:
             key = f"{trade.get('symbol') or '?'} / {trade.get('strategy') or '?'}"
             tester_groups[key] = tester_groups.get(key, 0) + 1
         tester_summary = ", ".join(f"{key}: {count}" for key, count in sorted(tester_groups.items())) or "sin operaciones"
         self._update(
-            audit_key, "comparing", "Comparando cuenta real y Strategy Tester.",
+            audit_key, "comparing", "Publicando datos para análisis en el manager.",
             f"{len(tester_trades)} operaciones del tester ({tester_summary})",
         )
-        quality = min(qualities) if qualities else None
-        if quality is None or quality < request["min_tick_history_quality_pct"]:
-            result = self._not_comparable_result(
-                request, period_start, period_end, real_trades, tester_trades, quality
-            )
-        else:
-            result = self._compared_result(
-                request, period_start, period_end, real_trades, tester_trades, quality,
-                symbol_points, strategies,
-            )
-        result["account"] = account
-        result["real_history_detail"] = real_history_detail
-        result["audit_key"] = audit_key
-        result["audit_id"] = audit_id
-        result["portfolio_type"] = request["portfolio_type"]
-        result["strategy_artifacts"] = strategy_artifacts
-        result["tester_execution"] = tester_execution
-        result["real_account_report"] = real_account_report
-        detail_log = self._comparison_detail_log(result)
+        payload = {
+            "audit_id": audit_id, "audit_key": audit_key, "completed_at": utc_now(),
+            "period_start": period_start.isoformat(), "period_end": period_end.isoformat(),
+            "request": {
+                key: request.get(key) for key in (
+                    "audit_key", "portfolio_id", "portfolio_type", "period_mode",
+                    "period_days", "period_start_date", "period_end_date",
+                )
+            },
+            "real_trades": [_trade_view(trade) for trade in real_trades],
+            "tester_trades": [_trade_view(trade) for trade in tester_trades],
+            "open_positions_at_period_end": [_trade_view(position) for position in open_positions],
+            "symbol_points": symbol_points, "strategies": strategies, "qualities": qualities,
+            "strategy_artifacts": strategy_artifacts, "selected_members": selected_members,
+            "volume_rules": volume_rules, "account": account,
+            "real_history_detail": real_history_detail, "tester_execution": tester_execution,
+            "real_account_report": real_account_report, "terminal_restore": [],
+        }
         self._update(
             audit_key, "finalizing", "Restaurando las cuentas de todas las terminales utilizadas.",
-            f"Comparación finalizada" + (f": {detail_log}" if detail_log else ""), last_result=result,
+            f"Materia prima publicada: {len(real_trades)} cierres reales sin filtrar, "
+            f"{len(tester_trades)} operaciones tester, {len(selected_members)} miembros y "
+            f"{len(volume_rules)} símbolos con especificación.",
+            last_payload=payload,
         )
-        return str(result["status"])
+        return "completed"
 
     def _run(self, request: dict[str, Any], audit_id: str) -> None:
         audit_key = request["audit_key"]
