@@ -75,3 +75,29 @@ DEFAULT_PORTFOLIO_FORM = {
     "max_dd_overlap": "0.35",
     "max_portfolio_corr": "0.50",
 }
+
+
+def portfolio_seasonal_coverage(result, raw_by_id: dict) -> dict:
+    """Cobertura mensual de cada estrategia asignada en el resultado."""
+    return {
+        allocation.set_id: {
+            "target_month": raw_by_id[allocation.set_id].target_month,
+            "years": list(raw_by_id[allocation.set_id].month_years),
+            "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
+            "year_count": len(raw_by_id[allocation.set_id].month_years),
+            "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
+            "trades": raw_by_id[allocation.set_id].trades_2020_2026,
+        }
+        for allocation in result.allocations
+        if allocation.set_id in raw_by_id
+        and raw_by_id[allocation.set_id].target_month is not None
+    }
+
+
+def portfolio_validates_margin(inputs: dict) -> bool:
+    """Si la configuracion guardada pide validar margen con el broker."""
+    return bool(
+        inputs.get("validate_margin")
+        or inputs.get("validate_roboforex_margin")
+        or inputs.get("validate_ttp_margin")
+    )

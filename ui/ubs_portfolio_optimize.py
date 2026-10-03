@@ -15,7 +15,12 @@ from portfolio_manager.ubs_portfolio import (
     slice_strategy_sets_to_month,
     validate_strict_monthly_portfolio,
 )
-from ui.ubs_portfolio_base import PORTFOLIO_TYPE_BATCH_SPECS, PORTFOLIO_TYPE_DISPLAY
+from ui.ubs_portfolio_base import (
+    PORTFOLIO_TYPE_BATCH_SPECS,
+    PORTFOLIO_TYPE_DISPLAY,
+    portfolio_seasonal_coverage,
+    portfolio_validates_margin,
+)
 
 
 class UBSPortfolioOptimizeMixin:
@@ -82,27 +87,14 @@ class UBSPortfolioOptimizeMixin:
             )
         return valid
 
-    def _optimize_locked_ubs_portfolio_variants(
-        self,
-        raw_sets: list,
-        inputs: dict[str, object],
-        base_type: PortfolioType,
-        existing_curves_by_type: dict[PortfolioType, list[list[float]]],
-        *,
-        progress=None,
-    ) -> list[dict[str, object]]:
-        configured_reserve = float(inputs.get("dd_reserve_pct") or 0)
+    def _locked_base_composition(
+        self, raw_sets: list, inputs: dict[str, object], base_type: PortfolioType,
+        existing_curves_by_type: dict, base_label: str, base_reserve: float, progress,
+    ) -> tuple[list, list[str], dict]:
+        """Composicion comun de las tres variantes, elegida con la reserva mas estricta."""
         base_key = next(
             (key for key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS if portfolio_type == base_type),
             base_type.value,
-        )
-        base_label = PORTFOLIO_TYPE_DISPLAY.get(base_type.value, base_type.value)
-        # The composition is shared by every A/M/C variant. Select it against
-        # the strictest reserve up front so the locked one-unit allocation is
-        # feasible for the conservative variant as well as the looser ones.
-        base_reserve = max(
-            self._portfolio_type_reserve_pct(configured_reserve, portfolio_type)
-            for _key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS
         )
         if callable(progress):
             progress(f"Composicion base {base_label}", 0)
@@ -125,110 +117,158 @@ class UBSPortfolioOptimizeMixin:
                 + ", ".join(Path(set_id).name for set_id in missing_locked)
             )
         locked_sets = [raw_by_id[set_id] for set_id in locked_set_ids]
-        locked_count = len(locked_sets)
         max_total_units = inputs.get("max_total_units")
-        if max_total_units is not None and int(max_total_units) < locked_count:
+        if max_total_units is not None and int(max_total_units) < len(locked_sets):
             raise ValueError(
                 "Max unidades es menor que la cantidad de sets de la composicion comun "
-                f"({int(max_total_units)} < {locked_count})."
+                f"({int(max_total_units)} < {len(locked_sets)})."
+            )
+        return locked_sets, locked_set_ids, raw_by_id
+
+    @staticmethod
+    def _locked_variant_inputs(
+        inputs: dict[str, object], key: str, label: str, portfolio_type: PortfolioType,
+        base_type: PortfolioType, base_label: str, reserve: float,
+    ) -> dict[str, object]:
+        """Entradas de una variante sobre la composicion bloqueada."""
+        proposal_inputs = dict(inputs)
+        proposal_inputs["optimization_profile"] = key
+        proposal_inputs["optimization_profile_label"] = label
+        proposal_inputs["portfolio_type"] = portfolio_type.value
+        proposal_inputs["portfolio_type_label"] = PORTFOLIO_TYPE_DISPLAY[portfolio_type.value]
+        proposal_inputs["composition_portfolio_type"] = base_type.value
+        proposal_inputs["composition_portfolio_type_label"] = base_label
+        proposal_inputs["dd_reserve_pct"] = reserve
+        return proposal_inputs
+
+    @staticmethod
+    def _locked_variant_result(
+        inputs: dict[str, object], locked_sets: list, portfolio_type: PortfolioType,
+        existing_curves: list, reserve: float,
+    ) -> PortfolioResult:
+        """Optimiza una variante manteniendo exactamente los sets bloqueados."""
+        locked_count = len(locked_sets)
+        use_correlation = inputs.get("use_correlation", True)
+        validate_margin = portfolio_validates_margin(inputs)
+        return optimize_portfolio(
+            raw_sets=locked_sets,
+            capital=float(inputs["capital"]),
+            valley_dd_pct=float(inputs["valley_dd_pct"]),
+            point_dd_pct=float(inputs["point_dd_pct"]),
+            portfolio_type=portfolio_type,
+            min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
+            top_k_per_symbol=max(int(inputs["top_k_per_symbol"]), locked_count),
+            max_total_candidates=None,
+            max_units_per_set=inputs.get("max_units_per_set"),
+            max_total_units=inputs.get("max_total_units"),
+            max_units_per_symbol=inputs.get("max_units_per_symbol"),
+            max_sets_per_symbol=inputs.get("max_sets_per_symbol"),
+            run_local_search=bool(inputs.get("run_local_search", True)),
+            max_pair_corr=inputs.get("max_pair_corr") if use_correlation else None,
+            max_downside_corr=inputs.get("max_downside_corr") if use_correlation else None,
+            max_dd_overlap=inputs.get("max_dd_overlap") if use_correlation else None,
+            existing_portfolio_curves=existing_curves,
+            max_portfolio_corr=inputs.get("max_portfolio_corr") if use_correlation else None,
+            max_units_per_group_pct=None,
+            max_sets_per_group=locked_count,
+            group_unit_cap_bootstrap=max(locked_count, 1),
+            minimum_active_strategies=locked_count,
+            maximum_active_strategies=locked_count,
+            dd_reserve_pct=reserve,
+            search_restarts=0,
+            margin_balance=float(inputs["capital"]) if validate_margin else None,
+            max_margin_pct=float(inputs.get("max_margin_pct") or 100.0) if validate_margin else None,
+            margin_profile=str(inputs.get("margin_profile") or "roboforex"),
+            stock_leverage=20.0,
+            default_leverage=500.0,
+            stock_contract_size=100.0,
+            default_contract_size=1.0,
+            max_daily_dd=inputs.get("max_daily_dd"),
+            enforce_point_dd=bool(inputs.get("enforce_point_dd", True)),
+            daily_dd_full_history=bool(inputs.get("daily_dd_full_history", False)),
+            use_deep_refinement=bool(inputs.get("deep_optimization")),
+        )
+
+    @staticmethod
+    def _locked_variant_warnings(
+        result: PortfolioResult, inputs: dict[str, object], base_label: str,
+        locked_count: int, base_reserve: float,
+    ) -> None:
+        """Explica en el resultado que la composicion venia bloqueada."""
+        result.warnings.insert(
+            0,
+            f"Composicion comun A/M/C bloqueada desde base {base_label}: {locked_count} sets; "
+            f"seleccionada con reserva DD comun {base_reserve:.1f}%.",
+        )
+        if int(inputs.get("search_restarts") or 0) > 0:
+            result.warnings.append(
+                "Reinicios multi-start omitidos en variante bloqueada para no cambiar la composicion de sets."
             )
 
-        enforce_point_dd = bool(inputs.get("enforce_point_dd", True))
+    def _locked_variant_proposal(
+        self, inputs: dict[str, object], spec: tuple, base_type: PortfolioType, base_label: str,
+        base_reserve: float, locked_sets: list, locked_set_ids: list[str], raw_by_id: dict,
+        existing_curves_by_type: dict, errors: list[str],
+    ) -> dict[str, object] | None:
+        """Calcula una variante sobre la composicion bloqueada; None si no sale."""
+        key, label, portfolio_type = spec
+        reserve = self._portfolio_type_reserve_pct(
+            float(inputs.get("dd_reserve_pct") or 0), portfolio_type
+        )
+        try:
+            result = self._locked_variant_result(
+                inputs, locked_sets, portfolio_type,
+                existing_curves_by_type.get(portfolio_type, []), reserve,
+            )
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            return None
+        if set(self._active_set_ids_from_result(result)) != set(locked_set_ids):
+            errors.append(f"{label}: el optimizador no pudo mantener todos los sets comunes.")
+            return None
+        result.seasonal_coverage = portfolio_seasonal_coverage(result, raw_by_id)
+        self._locked_variant_warnings(result, inputs, base_label, len(locked_sets), base_reserve)
+        return {
+            "key": key,
+            "label": label,
+            "reserve_pct": reserve,
+            "result": result,
+            "inputs": self._locked_variant_inputs(
+                inputs, key, label, portfolio_type, base_type, base_label, reserve
+            ),
+        }
+
+    def _optimize_locked_ubs_portfolio_variants(
+        self,
+        raw_sets: list,
+        inputs: dict[str, object],
+        base_type: PortfolioType,
+        existing_curves_by_type: dict[PortfolioType, list[list[float]]],
+        *,
+        progress=None,
+    ) -> list[dict[str, object]]:
+        base_label = PORTFOLIO_TYPE_DISPLAY.get(base_type.value, base_type.value)
+        # The composition is shared by every A/M/C variant. Select it against
+        # the strictest reserve up front so the locked one-unit allocation is
+        # feasible for the conservative variant as well as the looser ones.
+        base_reserve = max(
+            self._portfolio_type_reserve_pct(float(inputs.get("dd_reserve_pct") or 0), portfolio_type)
+            for _key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS
+        )
+        locked_sets, locked_set_ids, raw_by_id = self._locked_base_composition(
+            raw_sets, inputs, base_type, existing_curves_by_type, base_label, base_reserve, progress
+        )
         proposals: list[dict[str, object]] = []
         errors: list[str] = []
-        for index, (key, label, portfolio_type) in enumerate(PORTFOLIO_TYPE_BATCH_SPECS, start=1):
+        for index, spec in enumerate(PORTFOLIO_TYPE_BATCH_SPECS, start=1):
             if callable(progress):
-                progress(label, index)
-            reserve = self._portfolio_type_reserve_pct(configured_reserve, portfolio_type)
-            proposal_inputs = dict(inputs)
-            proposal_inputs["optimization_profile"] = key
-            proposal_inputs["optimization_profile_label"] = label
-            proposal_inputs["portfolio_type"] = portfolio_type.value
-            proposal_inputs["portfolio_type_label"] = PORTFOLIO_TYPE_DISPLAY[portfolio_type.value]
-            proposal_inputs["composition_portfolio_type"] = base_type.value
-            proposal_inputs["composition_portfolio_type_label"] = base_label
-            proposal_inputs["dd_reserve_pct"] = reserve
-            try:
-                result = optimize_portfolio(
-                    raw_sets=locked_sets,
-                    capital=float(inputs["capital"]),
-                    valley_dd_pct=float(inputs["valley_dd_pct"]),
-                    point_dd_pct=float(inputs["point_dd_pct"]),
-                    portfolio_type=portfolio_type,
-                    min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
-                    top_k_per_symbol=max(int(inputs["top_k_per_symbol"]), locked_count),
-                    max_total_candidates=None,
-                    max_units_per_set=inputs.get("max_units_per_set"),
-                    max_total_units=max_total_units,
-                    max_units_per_symbol=inputs.get("max_units_per_symbol"),
-                    max_sets_per_symbol=inputs.get("max_sets_per_symbol"),
-                    run_local_search=bool(inputs.get("run_local_search", True)),
-                    max_pair_corr=inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,
-                    max_downside_corr=inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,
-                    max_dd_overlap=inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,
-                    existing_portfolio_curves=existing_curves_by_type.get(portfolio_type, []),
-                    max_portfolio_corr=inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,
-                    max_units_per_group_pct=None,
-                    max_sets_per_group=locked_count,
-                    group_unit_cap_bootstrap=max(locked_count, 1),
-                    minimum_active_strategies=locked_count,
-                    maximum_active_strategies=locked_count,
-                    dd_reserve_pct=reserve,
-                    search_restarts=0,
-                    margin_balance=float(inputs["capital"])
-                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
-                    else None,
-                    max_margin_pct=float(inputs.get("max_margin_pct") or 100.0)
-                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
-                    else None,
-                    margin_profile=str(inputs.get("margin_profile") or "roboforex"),
-                    stock_leverage=20.0,
-                    default_leverage=500.0,
-                    stock_contract_size=100.0,
-                    default_contract_size=1.0,
-                    max_daily_dd=inputs.get("max_daily_dd"),
-                    enforce_point_dd=enforce_point_dd,
-                    daily_dd_full_history=bool(inputs.get("daily_dd_full_history", False)),
-                    use_deep_refinement=bool(inputs.get("deep_optimization")),
-                )
-            except Exception as exc:
-                errors.append(f"{label}: {exc}")
-                continue
-            variant_ids = set(self._active_set_ids_from_result(result))
-            if variant_ids != set(locked_set_ids):
-                errors.append(f"{label}: el optimizador no pudo mantener todos los sets comunes.")
-                continue
-            result.seasonal_coverage = {
-                allocation.set_id: {
-                    "target_month": raw_by_id[allocation.set_id].target_month,
-                    "years": list(raw_by_id[allocation.set_id].month_years),
-                    "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
-                    "year_count": len(raw_by_id[allocation.set_id].month_years),
-                    "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
-                    "trades": raw_by_id[allocation.set_id].trades_2020_2026,
-                }
-                for allocation in result.allocations
-                if allocation.set_id in raw_by_id
-                and raw_by_id[allocation.set_id].target_month is not None
-            }
-            result.warnings.insert(
-                0,
-                f"Composicion comun A/M/C bloqueada desde base {base_label}: {locked_count} sets; "
-                f"seleccionada con reserva DD comun {base_reserve:.1f}%.",
+                progress(spec[1], index)
+            proposal = self._locked_variant_proposal(
+                inputs, spec, base_type, base_label, base_reserve, locked_sets, locked_set_ids,
+                raw_by_id, existing_curves_by_type, errors,
             )
-            if int(inputs.get("search_restarts") or 0) > 0:
-                result.warnings.append(
-                    "Reinicios multi-start omitidos en variante bloqueada para no cambiar la composicion de sets."
-                )
-            proposals.append(
-                {
-                    "key": key,
-                    "label": label,
-                    "reserve_pct": reserve,
-                    "result": result,
-                    "inputs": proposal_inputs,
-                }
-            )
+            if proposal is not None:
+                proposals.append(proposal)
         if len(proposals) < len(PORTFOLIO_TYPE_BATCH_SPECS):
             raise ValueError(
                 "No se pudieron calcular las tres variantes sobre la misma composicion. "
