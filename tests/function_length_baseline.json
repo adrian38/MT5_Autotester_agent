@@ -23,7 +23,6 @@
     "ubs/regression.py::rescore_regression_only": 141,
     "ubs_agent_final_tick.py::_evaluate_final_tick_tick_report": 156,
     "ubs_agent_final_tick_ohlc.py::collect_final_tick_ohlc_results": 156,
-    "ubs_agent_final_tick_rescore.py::_rescore_final_tick_from_reports": 169,
     "ubs_agent_final_tick_rescore.py::reconcile_final_tick_reports": 133,
     "ubs_agent_final_tick_rescore.py::rescore_final_tick_only": 112,
     "ubs_agent_history.py::probe_universe_history": 108,

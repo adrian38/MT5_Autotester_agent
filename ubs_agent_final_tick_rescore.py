@@ -285,16 +285,144 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
     return 0
 
 
-def _rescore_final_tick_from_reports(
-    args: argparse.Namespace,
-    memory: AgentMemory,
-    score_config: ScoreConfig,
-) -> int:
-    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
-    memory.active_final_tick_stage = final_tick_stage
-    final_tick_table = final_tick_table_for_stage(final_tick_stage)
-    symbol_map = parse_symbol_map(args.symbol_map)
-    rows = memory.conn.execute(
+def _rescore_final_tick_thresholds(
+    args: argparse.Namespace, from_date: str, to_date: str
+) -> argparse.Namespace:
+    """Umbrales de final tick vigentes para repuntuar un candidato."""
+    return argparse.Namespace(
+        broker=args.broker,
+        final_tick_min_history_quality=float(args.final_tick_min_history_quality),
+        symbol_suffix=args.symbol_suffix,
+        from_date=from_date,
+        to_date=to_date,
+        final_tick_max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
+        final_tick_max_pf_delta_pct=float(args.final_tick_max_pf_delta_pct),
+        final_tick_max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
+        final_tick_max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+        final_tick_min_trades_w1=int(args.final_tick_min_trades_w1),
+        final_tick_min_trades_mn=int(args.final_tick_min_trades_mn),
+    )
+
+
+def _record_rescored_final_tick(
+    memory: AgentMemory, candidate_id: int, run_id: int, status: str, ohlc_result,
+    thresholds: argparse.Namespace, ohlc_report: Path, real_tick_report: Path | None,
+    details: str | None = None, history_quality: float | None = None,
+) -> None:
+    """Guarda el estado repuntuado con los umbrales que lo decidieron."""
+    memory.record_candidate_final_tick(
+        candidate_id, run_id, status, ohlc_result, None,
+        ohlc_report, real_tick_report,
+        details, history_quality,
+        thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
+        thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
+        thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
+    )
+
+
+def _rescore_stage_variant(original_variant: Variant, report: Path, suffix: str) -> Variant:
+    """Variante que representa un reporte guardado de esta etapa."""
+    return Variant(
+        path=report,
+        seed=original_variant.seed,
+        target_symbol=original_variant.target_symbol,
+        target_period=original_variant.target_period,
+        mutated_keys=original_variant.mutated_keys,
+        missing_lot_keys=original_variant.missing_lot_keys,
+        policy=f"{original_variant.policy}+{suffix}",
+    )
+
+
+def _rescore_final_tick_row(
+    args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig,
+    symbol_map: dict[str, str], row, status_counts: dict[str, int],
+) -> bool:
+    """Repuntua un candidato desde sus reportes guardados; False si falta el OHLC."""
+    candidate_id = int(row["id"])
+    run_id = int(row["ft_run_id"] or row["run_id"])
+    ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
+    real_tick_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
+    ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
+    real_tick_report = Path(real_tick_report_raw) if real_tick_report_raw else None
+    if ohlc_report is None or not ohlc_report.exists():
+        return False
+    from_date, to_date = _read_ohlc_report_cfg_dates(ohlc_report)
+    thresholds = _rescore_final_tick_thresholds(
+        args,
+        from_date or str(row["ft_from_date"] or args.from_date or ""),
+        to_date or str(row["ft_to_date"] or args.to_date or ""),
+    )
+    original_variant = variant_from_candidate_row(row)
+    ohlc_variant = _rescore_stage_variant(original_variant, ohlc_report, "final_tick_ohlc_rescore")
+
+    def record(status: str, result=None, details: str | None = None, quality: float | None = None) -> None:
+        _record_rescored_final_tick(
+            memory, candidate_id, run_id, status, result, thresholds,
+            ohlc_report, real_tick_report, details, quality,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    try:
+        ohlc_result = score_report_file(
+            ohlc_report,
+            config=score_config_for_variant(
+                score_config,
+                ohlc_variant,
+                min_trades_w1=args.final_tick_min_trades_w1,
+                min_trades_mn=args.final_tick_min_trades_mn,
+            ),
+            broker=args.broker,
+        )
+    except Exception as exc:
+        print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
+        record("parse_error")
+        return True
+    ohlc_matches, ohlc_mismatch = report_matches_variant(
+        ohlc_variant,
+        ohlc_result,
+        symbol_map,
+        args.symbol_suffix,
+        args.broker,
+    )
+    if not ohlc_matches:
+        print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
+        record("report_mismatch", ohlc_result, quality=ohlc_result.history_quality)
+        return True
+    period_min_ohlc_trades = min_trades_for_period(
+        ohlc_variant.target_period,
+        int(args.final_tick_min_ohlc_trades),
+        int(args.final_tick_min_trades_w1),
+        int(args.final_tick_min_trades_mn),
+    )
+    if ohlc_result.trades < period_min_ohlc_trades:
+        payload = final_tick_ohlc_trades_pending_payload(ohlc_result, period_min_ohlc_trades)
+        record(
+            "pending_ohlc_trades", ohlc_result,
+            details=json.dumps(payload, ensure_ascii=True, sort_keys=True),
+        )
+        return True
+    if real_tick_report is None or not real_tick_report.exists():
+        record(missing_report_status(ohlc_variant.target_symbol, args, symbol_map), ohlc_result)
+        return True
+    _evaluate_final_tick_tick_report(
+        memory,
+        thresholds,
+        score_config,
+        symbol_map,
+        run_id,
+        candidate_id,
+        _rescore_stage_variant(original_variant, real_tick_report, "final_tick_real_rescore"),
+        ohlc_report,
+        ohlc_result,
+        real_tick_report,
+        status_counts,
+    )
+    return True
+
+
+def _rescore_final_tick_rows(memory: AgentMemory, final_tick_table: str) -> list:
+    """Candidatos con reporte de esta etapa, en orden de run y generacion."""
+    return memory.conn.execute(
         f"""
         select
             c.*,
@@ -308,139 +436,24 @@ def _rescore_final_tick_from_reports(
         order by ft.run_id, c.generation, c.id
         """
     ).fetchall()
+
+
+def _rescore_final_tick_from_reports(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+) -> int:
+    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    memory.active_final_tick_stage = final_tick_stage
+    symbol_map = parse_symbol_map(args.symbol_map)
+    rows = _rescore_final_tick_rows(memory, final_tick_table_for_stage(final_tick_stage))
     status_counts: dict[str, int] = {}
     skipped_missing = 0
     for row in rows:
-        candidate_id = int(row["id"])
-        run_id = int(row["ft_run_id"] or row["run_id"])
-        ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
-        real_tick_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
-        ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
-        real_tick_report = Path(real_tick_report_raw) if real_tick_report_raw else None
-        if ohlc_report is None or not ohlc_report.exists():
+        if not _rescore_final_tick_row(
+            args, memory, score_config, symbol_map, row, status_counts
+        ):
             skipped_missing += 1
-            continue
-        from_date, to_date = _read_ohlc_report_cfg_dates(ohlc_report)
-        from_date = from_date or str(row["ft_from_date"] or args.from_date or "")
-        to_date = to_date or str(row["ft_to_date"] or args.to_date or "")
-        original_variant = variant_from_candidate_row(row)
-        ohlc_variant = Variant(
-            path=ohlc_report,
-            seed=original_variant.seed,
-            target_symbol=original_variant.target_symbol,
-            target_period=original_variant.target_period,
-            mutated_keys=original_variant.mutated_keys,
-            missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_ohlc_rescore",
-        )
-        thresholds = argparse.Namespace(
-            broker=args.broker,
-            final_tick_min_history_quality=float(args.final_tick_min_history_quality),
-            symbol_suffix=args.symbol_suffix,
-            from_date=from_date,
-            to_date=to_date,
-            final_tick_max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
-            final_tick_max_pf_delta_pct=float(args.final_tick_max_pf_delta_pct),
-            final_tick_max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
-            final_tick_max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
-            final_tick_min_trades_w1=int(args.final_tick_min_trades_w1),
-            final_tick_min_trades_mn=int(args.final_tick_min_trades_mn),
-        )
-        try:
-            ohlc_result = score_report_file(
-                ohlc_report,
-                config=score_config_for_variant(
-                    score_config,
-                    ohlc_variant,
-                    min_trades_w1=args.final_tick_min_trades_w1,
-                    min_trades_mn=args.final_tick_min_trades_mn,
-                ),
-                broker=args.broker,
-            )
-        except Exception as exc:
-            print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
-            memory.record_candidate_final_tick(
-                candidate_id, run_id, "parse_error", None, None,
-                ohlc_report, real_tick_report,
-                None, None,
-                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
-                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
-                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
-            )
-            status_counts["parse_error"] = status_counts.get("parse_error", 0) + 1
-            continue
-        ohlc_matches, ohlc_mismatch = report_matches_variant(
-            ohlc_variant,
-            ohlc_result,
-            symbol_map,
-            args.symbol_suffix,
-            args.broker,
-        )
-        if not ohlc_matches:
-            print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
-            memory.record_candidate_final_tick(
-                candidate_id, run_id, "report_mismatch", ohlc_result, None,
-                ohlc_report, real_tick_report,
-                None, ohlc_result.history_quality,
-                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
-                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
-                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
-            )
-            status_counts["report_mismatch"] = status_counts.get("report_mismatch", 0) + 1
-            continue
-        period_min_ohlc_trades = min_trades_for_period(
-            ohlc_variant.target_period,
-            int(args.final_tick_min_ohlc_trades),
-            int(args.final_tick_min_trades_w1),
-            int(args.final_tick_min_trades_mn),
-        )
-        if ohlc_result.trades < period_min_ohlc_trades:
-            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, period_min_ohlc_trades)
-            memory.record_candidate_final_tick(
-                candidate_id, run_id, "pending_ohlc_trades", ohlc_result, None,
-                ohlc_report, real_tick_report,
-                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
-                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
-                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
-                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
-            )
-            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
-            continue
-        if real_tick_report is None or not real_tick_report.exists():
-            status = missing_report_status(ohlc_variant.target_symbol, args, symbol_map)
-            memory.record_candidate_final_tick(
-                candidate_id, run_id, status, ohlc_result, None,
-                ohlc_report, real_tick_report,
-                None, None,
-                thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
-                thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
-                thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
-            )
-            status_counts[status] = status_counts.get(status, 0) + 1
-            continue
-        real_tick_variant = Variant(
-            path=real_tick_report,
-            seed=original_variant.seed,
-            target_symbol=original_variant.target_symbol,
-            target_period=original_variant.target_period,
-            mutated_keys=original_variant.mutated_keys,
-            missing_lot_keys=original_variant.missing_lot_keys,
-            policy=f"{original_variant.policy}+final_tick_real_rescore",
-        )
-        _evaluate_final_tick_tick_report(
-            memory,
-            thresholds,
-            score_config,
-            symbol_map,
-            run_id,
-            candidate_id,
-            real_tick_variant,
-            ohlc_report,
-            ohlc_result,
-            real_tick_report,
-            status_counts,
-        )
-
     total = sum(status_counts.values())
     if status_counts:
         print(
