@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 import sqlite3
 import sys
 from datetime import datetime
@@ -22,6 +23,25 @@ from ui.ubs_seeds_duplicates import UBSSeedsDuplicatesMixin
 from ui.ubs_seeds_eval import UBSSeedsEvalMixin
 from ui.ubs_seeds_import import UBSSeedsImportMixin
 from ui.ubs_seeds_table import UBSSeedsTableMixin
+
+
+@dataclass
+class _SeedRepairTally:
+    """Resultado de reparar una tanda de .set de seeds."""
+
+    repaired: int = 0
+    unchanged: int = 0
+    still_invalid: int = 0
+    failed: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        """Linea de estado con el reparto de la reparacion."""
+        parts = [f"reparadas={self.repaired}", f"sin cambios={self.unchanged}"]
+        if self.still_invalid:
+            parts.append(f"aun invalidas={self.still_invalid}")
+        if self.failed:
+            parts.append(f"fallos={len(self.failed)}")
+        return "Reparar sets: " + " | ".join(parts)
 
 
 class UBSSeedsLogicMixin(
@@ -286,6 +306,112 @@ class UBSSeedsLogicMixin(
             confirm_label="activa(s)",
         )
 
+    def _store_repaired_seed(
+        self, conn: sqlite3.Connection, seed_path: Path, symbol: str, period: str,
+        result: dict, row, changed: list, now: str, tally: _SeedRepairTally,
+    ) -> None:
+        """Guarda el estado de una seed reparada y si sigue siendo invalida."""
+        from ubs.models import Seed
+        from ubs_agent import validate_seed_backtest_set
+
+        stat = seed_path.stat()
+        seed = Seed(
+            seed_path,
+            symbol,
+            period,
+            str(row["family"] or "") if row else "",
+            str(result.get("run_strategy") or (row["run_strategy"] if row else "") or ""),
+        )
+        reasons = validate_seed_backtest_set(seed)
+        if reasons:
+            tally.still_invalid += 1
+            status = "invalid_seed"
+            metrics_json = json.dumps({"reasons": reasons, "repair": changed}, ensure_ascii=False)
+            evaluated_at = now
+        else:
+            status = "pending"
+            metrics_json = None
+            evaluated_at = None
+        if not self._sqlite_table_exists(conn, "seed_scores"):
+            return
+        conn.execute(
+            """
+            update seed_scores
+            set seed_mtime=?,
+                seed_size=?,
+                symbol=?,
+                period=?,
+                run_strategy=?,
+                report_path=null,
+                score=null,
+                accepted=null,
+                metrics_json=?,
+                status=?,
+                evaluated_at=?
+            where seed_path=?
+            """,
+            (
+                float(stat.st_mtime),
+                int(stat.st_size),
+                symbol,
+                period,
+                str(result.get("run_strategy") or ""),
+                metrics_json,
+                status,
+                evaluated_at,
+                str(seed_path),
+            ),
+        )
+
+    def _repair_one_ubs_seed_set(
+        self, conn: sqlite3.Connection, info: dict[str, str], now: str, tally: _SeedRepairTally
+    ) -> None:
+        """Rellena ForceSymbol y Run_Strategy de una seed y anota el resultado."""
+        from ubs_agent import repair_seed_backtest_set
+
+        seed_path = resolve_workspace_path(info.get("seed_path", ""))
+        symbol, period = self._inferred_ubs_seed_fields(seed_path)
+        if symbol in {"", "UNKNOWN"} or period in {"", "UNKNOWN"}:
+            tally.failed.append(f"{seed_path.name}: no pude inferir Symbol/TF")
+            return
+        row = None
+        if self._sqlite_table_exists(conn, "seed_scores"):
+            row = conn.execute(
+                "select family, run_strategy from seed_scores where seed_path=?",
+                (str(seed_path),),
+            ).fetchone()
+        try:
+            result = repair_seed_backtest_set(seed_path, symbol, period)
+        except OSError as exc:
+            tally.failed.append(f"{seed_path.name}: {exc}")
+            return
+        changed = list(result.get("changed") or [])
+        if not changed:
+            tally.unchanged += 1
+            return
+        tally.repaired += 1
+        self._store_repaired_seed(conn, seed_path, symbol, period, result, row, changed, now, tally)
+
+    def _confirm_seed_repair(
+        self, infos: list[dict[str, str]], title: str, empty_message: str, confirm_label: str
+    ) -> list[dict[str, str]]:
+        """Seeds activas a reparar, ya confirmadas por el usuario."""
+        active_infos = [
+            info for info in infos
+            if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))
+        ]
+        if not active_infos:
+            messagebox.showinfo(title, empty_message)
+            return []
+        if not messagebox.askyesno(
+            title,
+            f"Reparar {len(active_infos)} seed(s) {confirm_label}?\n\n"
+            "Se rellenara ForceSymbol y, si se puede inferir, Run_Strategy. "
+            "Las seeds modificadas quedaran pendientes para reevaluar.",
+        ):
+            return []
+        return active_infos
+
     def _repair_ubs_seed_sets(
         self,
         infos: list[dict[str, str]],
@@ -294,120 +420,27 @@ class UBSSeedsLogicMixin(
         empty_message: str,
         confirm_label: str,
     ) -> None:
-        active_infos = [
-            info for info in infos
-            if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))
-        ]
+        active_infos = self._confirm_seed_repair(infos, title, empty_message, confirm_label)
         if not active_infos:
-            messagebox.showinfo(title, empty_message)
             return
-        if not messagebox.askyesno(
-            title,
-            f"Reparar {len(active_infos)} seed(s) {confirm_label}?\n\n"
-            "Se rellenara ForceSymbol y, si se puede inferir, Run_Strategy. "
-            "Las seeds modificadas quedaran pendientes para reevaluar.",
-        ):
-            return
-
         memory_path = self._ubs_memory_path()
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        repaired = 0
-        unchanged = 0
-        failed: list[str] = []
-        still_invalid = 0
+        tally = _SeedRepairTally()
         now = datetime.now().isoformat(timespec="seconds")
         try:
             conn = connect_memory(memory_path)
             self._ensure_ubs_seed_override_schema(conn)
-            from ubs.models import Seed
-            from ubs_agent import repair_seed_backtest_set, validate_seed_backtest_set
-
             for info in active_infos:
-                seed_path_text = info.get("seed_path", "")
-                seed_path = resolve_workspace_path(seed_path_text)
-                symbol, period = self._inferred_ubs_seed_fields(seed_path)
-                if symbol in {"", "UNKNOWN"} or period in {"", "UNKNOWN"}:
-                    failed.append(f"{seed_path.name}: no pude inferir Symbol/TF")
-                    continue
-                row = None
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    row = conn.execute(
-                        "select family, run_strategy from seed_scores where seed_path=?",
-                        (str(seed_path),),
-                    ).fetchone()
-                try:
-                    result = repair_seed_backtest_set(seed_path, symbol, period)
-                except OSError as exc:
-                    failed.append(f"{seed_path.name}: {exc}")
-                    continue
-                changed = list(result.get("changed") or [])
-                if not changed:
-                    unchanged += 1
-                    continue
-
-                repaired += 1
-                stat = seed_path.stat()
-                seed = Seed(
-                    seed_path,
-                    symbol,
-                    period,
-                    str(row["family"] or "") if row else "",
-                    str(result.get("run_strategy") or (row["run_strategy"] if row else "") or ""),
-                )
-                reasons = validate_seed_backtest_set(seed)
-                if reasons:
-                    still_invalid += 1
-                    status = "invalid_seed"
-                    metrics_json = json.dumps({"reasons": reasons, "repair": changed}, ensure_ascii=False)
-                    evaluated_at = now
-                else:
-                    status = "pending"
-                    metrics_json = None
-                    evaluated_at = None
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?,
-                            seed_size=?,
-                            symbol=?,
-                            period=?,
-                            run_strategy=?,
-                            report_path=null,
-                            score=null,
-                            accepted=null,
-                            metrics_json=?,
-                            status=?,
-                            evaluated_at=?
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            symbol,
-                            period,
-                            str(result.get("run_strategy") or ""),
-                            metrics_json,
-                            status,
-                            evaluated_at,
-                            str(seed_path),
-                        ),
-                    )
+                self._repair_one_ubs_seed_set(conn, info, now, tally)
             conn.commit()
             conn.close()
         except (sqlite3.Error, OSError) as exc:
             self._show_error("Error reparando sets", str(exc))
             return
-
         self.ubs_seed_checked.clear()
-        parts = [f"reparadas={repaired}", f"sin cambios={unchanged}"]
-        if still_invalid:
-            parts.append(f"aun invalidas={still_invalid}")
-        if failed:
-            parts.append(f"fallos={len(failed)}")
-        self.status_text.set("Reparar sets: " + " | ".join(parts))
-        if failed:
-            messagebox.showwarning(title, "\n".join(failed[:12]))
+        self.status_text.set(tally.summary())
+        if tally.failed:
+            messagebox.showwarning(title, "\n".join(tally.failed[:12]))
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 
