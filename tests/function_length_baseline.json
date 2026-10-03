@@ -11,7 +11,6 @@
     "portfolio_manager/ubs_portfolio_phases.py::_search_phases": 73,
     "portfolio_manager/ubs_portfolio_search.py::improve_with_local_search": 150,
     "portfolio_manager/ubs_portfolio_search.py::improve_with_multi_start_search": 175,
-    "run_tests.py::main": 328,
     "tests/test_audit_generalization_v2.py::create_memory": 79,
     "tests/test_guided_http.py::GuidedHTTPTests.test_manager_routes_to_embedded_node_without_remutation_and_returns_results": 75,
     "tests/test_manager_node_live_audit.py::LiveAuditEngineTests.test_real_history_waits_for_sync_and_recovers_open_before_period": 71,
