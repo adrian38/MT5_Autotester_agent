@@ -222,6 +222,67 @@ def min_lot_notional(spec: SymbolSpec, currency_rate: float) -> float:
     return per_lot * volume_min
 
 
+def _previous_symbol_rows(previous: dict | None) -> dict[str, dict]:
+    if not isinstance(previous, dict):
+        return {}
+    raw = previous.get("symbols")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): row for name, row in raw.items() if isinstance(row, dict)}
+
+
+def _preserved_margin(spec: SymbolSpec, old: dict) -> float:
+    margin = float(spec.margin_min_lot or 0.0)
+    if margin > 0:
+        return margin
+    try:
+        return float(old.get("margin_min_lot") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _symbol_payload_row(spec: SymbolSpec, old: dict, rate: float) -> dict:
+    margin = _preserved_margin(spec, old)
+    notional = min_lot_notional(spec, rate)
+    row = dict(old)
+    row.update(
+        {
+            "contract_size": float(spec.contract_size or 0.0),
+            "currency_profit": str(spec.currency_profit or ""),
+            "currency_rate": round(rate, 8) if rate > 0 else None,
+            "digits": spec.digits,
+            "margin_min_lot": round(margin, 2) if margin > 0 else None,
+            "notional_min_lot": round(notional, 2) if notional > 0 else None,
+            "observed_leverage": round(notional / margin, 6) if notional > 0 and margin > 0 else None,
+            "price": float(spec.price or 0.0),
+            "tick_size": float(spec.tick_size or 0.0),
+            "tick_value": float(spec.tick_value or 0.0),
+            "volume_max": float(spec.volume_max or 0.0),
+            "volume_min": float(spec.volume_min or 0.0),
+            "volume_step": float(spec.volume_step or 0.0),
+        }
+    )
+    return row
+
+
+def _measured_symbol_rows(
+    specs: list[SymbolSpec], rates: dict[str, float], previous: dict[str, dict],
+    groups: dict[str, str],
+) -> tuple[dict[str, dict], list[str]]:
+    symbols: dict[str, dict] = {}
+    without_price: list[str] = []
+    for spec in sorted(specs, key=lambda item: item.name.upper()):
+        rate = rates.get(currency_key(spec.currency_profit), 0.0)
+        row = _symbol_payload_row(spec, previous.get(spec.name) or {}, rate)
+        group = groups.get(spec.name.upper())
+        if group:
+            row["group"] = group
+        symbols[spec.name] = row
+        if float(spec.price or 0.0) <= 0:
+            without_price.append(spec.name)
+    return symbols, without_price
+
+
 def build_symbol_specs_payload(
     specs: list[SymbolSpec],
     *,
@@ -249,49 +310,9 @@ def build_symbol_specs_payload(
     resolve a name must not delete that symbol's measurements.
     """
     rates = implied_currency_rates(specs, account_currency=account_currency)
-    previous_symbols = {}
-    if isinstance(previous, dict):
-        raw = previous.get("symbols")
-        if isinstance(raw, dict):
-            previous_symbols = {str(name): row for name, row in raw.items() if isinstance(row, dict)}
+    previous_symbols = _previous_symbol_rows(previous)
     groups = {key.upper(): value for key, value in (group_by_symbol or {}).items()}
-
-    symbols: dict[str, dict] = {}
-    without_price: list[str] = []
-    for spec in sorted(specs, key=lambda item: item.name.upper()):
-        old = dict(previous_symbols.get(spec.name) or {})
-        rate = rates.get(currency_key(spec.currency_profit), 0.0)
-        margin = float(spec.margin_min_lot or 0.0)
-        if margin <= 0:
-            try:
-                margin = float(old.get("margin_min_lot") or 0.0)
-            except (TypeError, ValueError):
-                margin = 0.0
-        notional = min_lot_notional(spec, rate)
-        row = dict(old)
-        row.update(
-            {
-                "contract_size": float(spec.contract_size or 0.0),
-                "currency_profit": str(spec.currency_profit or ""),
-                "currency_rate": round(rate, 8) if rate > 0 else None,
-                "digits": spec.digits,
-                "margin_min_lot": round(margin, 2) if margin > 0 else None,
-                "notional_min_lot": round(notional, 2) if notional > 0 else None,
-                "observed_leverage": round(notional / margin, 6) if notional > 0 and margin > 0 else None,
-                "price": float(spec.price or 0.0),
-                "tick_size": float(spec.tick_size or 0.0),
-                "tick_value": float(spec.tick_value or 0.0),
-                "volume_max": float(spec.volume_max or 0.0),
-                "volume_min": float(spec.volume_min or 0.0),
-                "volume_step": float(spec.volume_step or 0.0),
-            }
-        )
-        group = groups.get(spec.name.upper())
-        if group:
-            row["group"] = group
-        symbols[spec.name] = row
-        if float(spec.price or 0.0) <= 0:
-            without_price.append(spec.name)
+    symbols, without_price = _measured_symbol_rows(specs, rates, previous_symbols, groups)
 
     carried = sorted(name for name in previous_symbols if name not in symbols)
     for name in carried:
