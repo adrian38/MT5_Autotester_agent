@@ -24,7 +24,6 @@
     "ubs_agent_final_tick_rescore.py::reconcile_final_tick_reports": 133,
     "ubs_agent_final_tick_rescore.py::rescore_final_tick_only": 112,
     "ubs_agent_history.py::probe_universe_history": 108,
-    "ubs_agent_rescore.py::_rescore_robustness_from_reports": 155,
     "ubs_agent_rescore.py::rescore_robustness_only": 104,
     "ubs_agent_retry.py::retry_full_run": 104,
     "ubs_agent_retry.py::retry_seed": 155,
