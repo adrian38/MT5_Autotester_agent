@@ -25,6 +25,7 @@ from ubs.universe import (
 )
 
 from .common import utc_now
+from .node_settings import declared_cli_options
 
 
 def assert_writable(path: Path, project: Path) -> Path:
@@ -212,8 +213,10 @@ def build_history_command(config, dates):
     from .node import build_generation_command
     project = Path(config["project_dir"]).expanduser().resolve()
     script = project / "ubs_agent.py"
-    source = script.read_text(encoding="utf-8", errors="replace")
-    if '"--probe-universe-history"' not in source and "'--probe-universe-history'" not in source:
+    # Una fachada sin literales `--opcion` no declara nada: no se le puede
+    # exigir este, o el sondeo queda inalcanzable en cuanto el CLI se separa.
+    declared = declared_cli_options(script)
+    if declared is not None and "--probe-universe-history" not in declared:
         raise ValueError("El agente no soporta --probe-universe-history")
     command, cwd = build_generation_command(config, {**dates, "execute_backtests": True, "dry_run": False})
     # Keep terminal, source, broker, memory, mapping and suffix configuration.

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -13,6 +12,7 @@ from . import guided_batches
 from .common import safe_int
 from .node_settings import (
     _table_exists,
+    declared_cli_options,
     memory_path,
     read_settings,
     resolve_generation_mode,
@@ -64,13 +64,9 @@ def _add(args: list[str], option: str, value: Any) -> None:
 
 def filter_supported_options(command: list[str], script: Path) -> list[str]:
     """Remove manager options that an older broker branch does not expose."""
-    try:
-        source = script.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return command
-    supported = set(re.findall(r"[\"'](--[a-z0-9-]+)[\"']", source, flags=re.IGNORECASE))
+    supported = declared_cli_options(script)
     # A custom wrapper may not define argparse options in its own source.
-    if "--generations" not in supported:
+    if supported is None:
         return command
     prefix, options = command[:3], command[3:]
     filtered: list[str] = []
