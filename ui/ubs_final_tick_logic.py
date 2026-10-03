@@ -226,6 +226,52 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
         args.extend(self._effective_symbol_suffix_args())
         return args
 
+    def _pending_final_tick_rows(self, rows, final_tick_stage: str):
+        rows = [
+            row for row in rows
+            if self._final_tick_row_pending_for_current_dates(row, final_tick_stage=final_tick_stage)
+        ]
+        _from_date, _to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
+        has_ohlc_retry = final_tick_stage == "six_month" and bool(ohlc_from and ohlc_to)
+        has_ohlc_pending = final_tick_stage == "six_month" and any(
+            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades" for row in rows
+        )
+        if not (has_ohlc_retry and has_ohlc_pending):
+            return rows
+
+        def in_retry_scope(row) -> bool:
+            if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
+                return True
+            return (
+                str(row["final_tick_from_date"] or "").strip() == ohlc_from
+                and str(row["final_tick_to_date"] or "").strip() == ohlc_to
+            )
+
+        return [row for row in rows if in_retry_scope(row)]
+
+    def _final_tick_execution_details(self, run_id, rows, pending_only, final_tick_stage, thresholds):
+        stage_label = "Final Tick 6M" if final_tick_stage == "six_month" else "Final Tick"
+        from_date, to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
+        pf_delta = min(thresholds["pf_delta"], 30.0) if final_tick_stage == "six_month" else thresholds["pf_delta"]
+        details = [
+            f"Accion: {'Continuar' if pending_only else 'Reprobar'} {stage_label} UBS run #{run_id}",
+            f"Modo: {'pendientes + retryables' if pending_only else 'todos los elegibles, reemplaza estado existente'}",
+            f"Candidatos a testear: {len(rows)}",
+            f"Fechas: {from_date} -> {to_date}",
+            "Modelos: OHLC Model=1 vs Every tick based on real ticks Model=4",
+            f"History Quality >= {thresholds['min_quality']:.2f}%",
+            f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
+            f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
+            ("Retry pocas ops OHLC: " if final_tick_stage == "six_month" else "Fechas retry OHLC: ")
+            + f"{ohlc_from or '(mismas)'} -> {ohlc_to or '(mismas)'}",
+            f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {pf_delta:.2f}% | "
+            f"DD {thresholds['dd_delta']:.2f}% | trades {thresholds['trades_delta']:.2f}%",
+        ]
+        if final_tick_stage == "six_month":
+            details.append(f"6M PF minimo por modelo: >= {self.ubs_pass_min_profit_factor.get().strip() or '1.20'}")
+        details.extend(self._multiterminal_execution_details())
+        return details
+
     def _run_ubs_final_tick_for_latest_run(
         self,
         *,
@@ -247,30 +293,7 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
             rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [row for row in rows if resolve_workspace_path(row["set_path"]).exists()]
             if pending_only:
-                rows = [
-                    row for row in rows
-                    if self._final_tick_row_pending_for_current_dates(row, final_tick_stage=final_tick_stage)
-                ]
-                _from_date, _to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
-                has_ohlc_retry = final_tick_stage == "six_month" and bool(ohlc_from and ohlc_to)
-
-                def _row_in_retry_scope(row) -> bool:
-                    # pending_ohlc_trades o filas ya registradas con el rango retry
-                    # (p. ej. mismatch durante un retry): van con las fechas retry.
-                    if final_tick_stage == "six_month" and str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
-                        return True
-                    return (
-                        has_ohlc_retry
-                        and str(row["final_tick_from_date"] or "").strip() == ohlc_from
-                        and str(row["final_tick_to_date"] or "").strip() == ohlc_to
-                    )
-
-                has_ohlc_pending = final_tick_stage == "six_month" and any(
-                    str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
-                    for row in rows
-                )
-                if has_ohlc_retry and has_ohlc_pending:
-                    rows = [row for row in rows if _row_in_retry_scope(row)]
+                rows = self._pending_final_tick_rows(rows, final_tick_stage)
             if not rows:
                 if pending_only:
                     message = f"Run #{run_id} no tiene candidatos pendientes de {stage_label}."
@@ -289,30 +312,7 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
                 self._append_console(f"\n[{stage_label} auto] No se pudo preparar: {exc}\n", tag="error")
             return False
 
-        from_date, to_date, ohlc_from_date, ohlc_to_date = self._final_tick_stage_dates(final_tick_stage)
-        effective_pf_delta = min(thresholds["pf_delta"], 30.0) if final_tick_stage == "six_month" else thresholds["pf_delta"]
-        details = [
-            f"Accion: {'Continuar' if pending_only else 'Reprobar'} {stage_label} UBS run #{run_id}",
-            f"Modo: {'pendientes + retryables' if pending_only else 'todos los elegibles, reemplaza estado existente'}",
-            f"Candidatos a testear: {len(rows)}",
-            f"Fechas: {from_date} -> {to_date}",
-            "Modelos: OHLC Model=1 vs Every tick based on real ticks Model=4",
-            f"History Quality >= {thresholds['min_quality']:.2f}%",
-            f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
-            f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
-            (
-                ("Retry pocas ops OHLC: " if final_tick_stage == "six_month" else "Fechas retry OHLC: ")
-                + f"{ohlc_from_date or '(mismas)'} -> "
-                + f"{ohlc_to_date or '(mismas)'}"
-            ),
-            (
-                f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {effective_pf_delta:.2f}% | "
-                f"DD {thresholds['dd_delta']:.2f}% | trades {thresholds['trades_delta']:.2f}%"
-            ),
-        ]
-        if final_tick_stage == "six_month":
-            details.append(f"6M PF minimo por modelo: >= {self.ubs_pass_min_profit_factor.get().strip() or '1.20'}")
-        details.extend(self._multiterminal_execution_details())
+        details = self._final_tick_execution_details(run_id, rows, pending_only, final_tick_stage, thresholds)
         if confirm and not self._confirm_execution_start(f"Confirmar {stage_label} UBS", len(rows), details):
             return False
         if final_tick_stage == "six_month":
