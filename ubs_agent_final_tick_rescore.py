@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from run_tests import parse_symbol_map
@@ -205,14 +205,32 @@ def reconcile_final_tick_reports(
     return status_counts
 
 
-@_batched_memory_updates
-def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
-    if bool(getattr(args, "rescore_from_reports", False)):
-        return _rescore_final_tick_from_reports(args, memory, score_config)
-    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
-    memory.active_final_tick_stage = final_tick_stage
-    final_tick_table = final_tick_table_for_stage(final_tick_stage)
-    rows = memory.conn.execute(
+@dataclass
+class _FinalTickStoredRescore:
+    """Recuento del repuntuado de final tick desde las metricas guardadas."""
+
+    stage: str
+    status_counts: dict[str, int] = field(default_factory=dict)
+    invalid_metrics: int = 0
+    skipped_without_tick: int = 0
+
+    def count(self, status: str) -> None:
+        """Suma un estado al recuento del repuntuado."""
+        self.status_counts[status] = self.status_counts.get(status, 0) + 1
+
+    def summary(self) -> str:
+        """Linea final con lo repuntuado y lo que quedo fuera."""
+        return (
+            f"Final Tick {self.stage} repuntuado desde SQLite: "
+            + (", ".join(f"{status}={count}" for status, count in sorted(self.status_counts.items())) or "sin filas")
+            + f"; total={sum(self.status_counts.values())}; "
+            f"sin_tick={self.skipped_without_tick}; invalidos={self.invalid_metrics}"
+        )
+
+
+def _stored_final_tick_rows(memory: AgentMemory, final_tick_table: str) -> list:
+    """Filas con metricas OHLC guardadas, listas para repuntuar."""
+    return memory.conn.execute(
         f"""
         select
             c.*,
@@ -230,91 +248,114 @@ def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score
         order by ft.run_id, c.generation, c.id
         """
     ).fetchall()
-    status_counts: dict[str, int] = {}
-    invalid_metrics = 0
-    skipped_without_tick = 0
+
+
+def _record_stored_final_tick(
+    args: argparse.Namespace, memory: AgentMemory, row, status: str, ohlc_result,
+    real_result, details: str, history_quality: float | None, stage: str,
+) -> None:
+    """Guarda el estado repuntuado con los umbrales vigentes."""
+    ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
+    real_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
+    memory.record_candidate_final_tick(
+        int(row["id"]), int(row["ft_run_id"] or row["run_id"]), status,
+        ohlc_result, real_result,
+        Path(ohlc_report_raw) if ohlc_report_raw else None,
+        Path(real_report_raw) if real_report_raw else None,
+        details, history_quality,
+        float(args.final_tick_min_history_quality),
+        str(row["ft_from_date"] or ""), str(row["ft_to_date"] or ""),
+        float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
+        float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
+        final_tick_stage=stage,
+    )
+
+
+def _stored_final_tick_similarity(
+    args: argparse.Namespace, score_config: ScoreConfig, ohlc_result, real_result, is_six_month: bool
+) -> dict:
+    """Compara OHLC y Real Tick con los umbrales de la etapa."""
+    return final_tick_similarity(
+        ohlc_result,
+        real_result,
+        min_history_quality=float(args.final_tick_min_history_quality),
+        max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
+        max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0)
+        if is_six_month else float(args.final_tick_max_pf_delta_pct),
+        max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
+        max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+        min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
+        lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
+    )
+
+
+def _rescore_stored_final_tick_row(
+    args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig, row,
+    tally: _FinalTickStoredRescore, is_six_month: bool,
+) -> None:
+    """Repuntua una fila de final tick desde sus metricas guardadas."""
+    candidate_id = int(row["id"])
+    variant = variant_from_candidate_row(row)
+    config = score_config_for_variant(
+        score_config,
+        variant,
+        min_trades_w1=args.final_tick_min_trades_w1,
+        min_trades_mn=args.final_tick_min_trades_mn,
+    )
+    try:
+        ohlc_result = _rescore_metrics_json(row["ft_ohlc_metrics_json"], config)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        tally.invalid_metrics += 1
+        print(f"AVISO: metrics_json OHLC Final Tick invalido candidate #{candidate_id}: {exc}")
+        return
+    min_ohlc_trades = min_trades_for_period(
+        variant.target_period,
+        int(args.final_tick_min_ohlc_trades),
+        int(args.final_tick_min_trades_w1),
+        int(args.final_tick_min_trades_mn),
+    )
+    if ohlc_result.trades < min_ohlc_trades:
+        payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
+        _record_stored_final_tick(
+            args, memory, row, "pending_ohlc_trades", ohlc_result, None,
+            json.dumps(payload, ensure_ascii=True, sort_keys=True), None, tally.stage,
+        )
+        tally.count("pending_ohlc_trades")
+        return
+    real_raw = row["ft_real_tick_metrics_json"]
+    if real_raw is None or not str(real_raw).strip():
+        tally.skipped_without_tick += 1
+        return
+    try:
+        real_result = _rescore_metrics_json(real_raw, config)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        tally.invalid_metrics += 1
+        print(f"AVISO: metrics_json Real Tick invalido candidate #{candidate_id}: {exc}")
+        return
+    similarity = _stored_final_tick_similarity(
+        args, score_config, ohlc_result, real_result, is_six_month
+    )
+    status = final_tick_status_from_similarity(similarity) or "rejected"
+    _record_stored_final_tick(
+        args, memory, row, status, ohlc_result, real_result,
+        json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+        real_result.history_quality, tally.stage,
+    )
+    tally.count(status)
+
+
+@_batched_memory_updates
+def rescore_final_tick_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_final_tick_from_reports(args, memory, score_config)
+    final_tick_stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    memory.active_final_tick_stage = final_tick_stage
+    rows = _stored_final_tick_rows(memory, final_tick_table_for_stage(final_tick_stage))
+    tally = _FinalTickStoredRescore(final_tick_stage)
     is_six_month = final_tick_stage == "six_month"
     for row in rows:
-        candidate_id = int(row["id"])
-        variant = variant_from_candidate_row(row)
-        config = score_config_for_variant(
-            score_config,
-            variant,
-            min_trades_w1=args.final_tick_min_trades_w1,
-            min_trades_mn=args.final_tick_min_trades_mn,
-        )
-        try:
-            ohlc_result = _rescore_metrics_json(row["ft_ohlc_metrics_json"], config)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            invalid_metrics += 1
-            print(f"AVISO: metrics_json OHLC Final Tick invalido candidate #{candidate_id}: {exc}")
-            continue
-        ohlc_report_raw = str(row["ft_ohlc_report_path"] or "").strip()
-        real_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
-        ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
-        real_report = Path(real_report_raw) if real_report_raw else None
-        from_date = str(row["ft_from_date"] or "")
-        to_date = str(row["ft_to_date"] or "")
-        min_ohlc_trades = min_trades_for_period(
-            variant.target_period,
-            int(args.final_tick_min_ohlc_trades),
-            int(args.final_tick_min_trades_w1),
-            int(args.final_tick_min_trades_mn),
-        )
-        if ohlc_result.trades < min_ohlc_trades:
-            payload = final_tick_ohlc_trades_pending_payload(ohlc_result, min_ohlc_trades)
-            memory.record_candidate_final_tick(
-                candidate_id, int(row["ft_run_id"] or row["run_id"]), "pending_ohlc_trades",
-                ohlc_result, None, ohlc_report, real_report,
-                json.dumps(payload, ensure_ascii=True, sort_keys=True), None,
-                float(args.final_tick_min_history_quality), from_date, to_date,
-                float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
-                float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
-                final_tick_stage=final_tick_stage,
-            )
-            status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
-            continue
-        real_raw = row["ft_real_tick_metrics_json"]
-        if real_raw is None or not str(real_raw).strip():
-            skipped_without_tick += 1
-            continue
-        try:
-            real_result = _rescore_metrics_json(real_raw, config)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            invalid_metrics += 1
-            print(f"AVISO: metrics_json Real Tick invalido candidate #{candidate_id}: {exc}")
-            continue
-        similarity = final_tick_similarity(
-            ohlc_result,
-            real_result,
-            min_history_quality=float(args.final_tick_min_history_quality),
-            max_net_delta_pct=float(args.final_tick_max_net_delta_pct),
-            max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0)
-            if is_six_month else float(args.final_tick_max_pf_delta_pct),
-            max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
-            max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
-            min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
-            lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
-        )
-        status = final_tick_status_from_similarity(similarity) or "rejected"
-        memory.record_candidate_final_tick(
-            candidate_id, int(row["ft_run_id"] or row["run_id"]), status,
-            ohlc_result, real_result, ohlc_report, real_report,
-            json.dumps(similarity, ensure_ascii=True, sort_keys=True),
-            real_result.history_quality, float(args.final_tick_min_history_quality),
-            from_date, to_date,
-            float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
-            float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
-            final_tick_stage=final_tick_stage,
-        )
-        status_counts[status] = status_counts.get(status, 0) + 1
-
-    total = sum(status_counts.values())
-    print(
-        f"Final Tick {final_tick_stage} repuntuado desde SQLite: "
-        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
-        + f"; total={total}; sin_tick={skipped_without_tick}; invalidos={invalid_metrics}"
-    )
+        _rescore_stored_final_tick_row(args, memory, score_config, row, tally, is_six_month)
+    print(tally.summary())
     print(f"Memoria: {memory.path}")
     return 0
 
