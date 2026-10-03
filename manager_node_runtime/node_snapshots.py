@@ -238,6 +238,140 @@ def _workspace_path_exists(value: object, project: Path) -> bool:
     return False
 
 
+REGRESSION_RETRYABLE_PENDING = {
+    "no_report", "parse_error", "report_mismatch", "date_mismatch", "no_history",
+}
+FINAL_TICK_PENDING_STAGES = {
+    "final_tick", "final_tick_quality", "final_tick_6m", "final_tick_6m_quality",
+}
+
+
+def _result_pending_count(conn: sqlite3.Connection, project: Path, run_id: int) -> int:
+    """Candidatos sin reporte utilizable que el agente volveria a lanzar."""
+    rows = conn.execute(
+        "select set_path from candidates "
+        "where run_id=? and status in "
+        "('report_mismatch','no_report','pending_tester_context')",
+        (run_id,),
+    ).fetchall()
+    return sum(1 for row in rows if _workspace_path_exists(row["set_path"], project))
+
+
+def _robustness_pending_count(conn: sqlite3.Connection, project: Path, run_id: int) -> int:
+    """Aceptados sin robustez resuelta o con un estado reintentable."""
+    robust_join = (
+        "left join candidate_robustness cr on cr.candidate_id=c.id"
+        if _table_exists(conn, "candidate_robustness")
+        else ""
+    )
+    robust_status = "cr.status" if robust_join else "null"
+    rows = conn.execute(
+        f"select c.set_path,{robust_status} stage_status from candidates c "
+        f"{robust_join} where c.run_id=? and c.status='accepted'",
+        (run_id,),
+    ).fetchall()
+    return sum(
+        1 for row in rows
+        if _workspace_path_exists(row["set_path"], project)
+        and (not str(row["stage_status"] or "").strip()
+             or str(row["stage_status"] or "").strip() in ROBUST_RETRYABLE_STATUSES)
+    )
+
+
+def _regression_pending_count(conn: sqlite3.Connection, project: Path, run_id: int) -> int:
+    """Aceptados de seis meses sin regresiva resuelta."""
+    if not _table_exists(conn, "candidate_final_tick_6m"):
+        return 0
+    regression_join = (
+        "left join candidate_regression rg on rg.candidate_id=c.id"
+        if _table_exists(conn, "candidate_regression") else ""
+    )
+    status_expr = "rg.status" if regression_join else "null"
+    rows = conn.execute(
+        f"select c.set_path,{status_expr} stage_status from candidates c "
+        "join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted' "
+        f"{regression_join} where c.run_id=? and c.status='accepted'",
+        (run_id,),
+    ).fetchall()
+    return sum(
+        1 for row in rows
+        if _workspace_path_exists(row["set_path"], project)
+        and (not str(row["stage_status"] or "").strip()
+             or str(row["stage_status"] or "").strip() in REGRESSION_RETRYABLE_PENDING)
+    )
+
+
+def _final_tick_pending_rows(conn: sqlite3.Connection, run_id: int, six_month: bool) -> list:
+    """Candidatos elegibles de la etapa de final tick, con su estado guardado."""
+    table = "candidate_final_tick_6m" if six_month else "candidate_final_tick"
+    has_table = _table_exists(conn, table)
+    stage_join = f"left join {table} ft on ft.candidate_id=c.id" if has_table else ""
+    status_expr = "ft.status" if has_table else "null"
+    from_expr = "ft.from_date" if has_table else "null"
+    to_expr = "ft.to_date" if has_table else "null"
+    probe_join = (
+        "join candidate_final_tick probe_ft on probe_ft.candidate_id=c.id "
+        "and probe_ft.status in ('accepted','pending_ohlc_trades')"
+        if six_month else ""
+    )
+    return conn.execute(
+        f"select c.set_path,{status_expr} stage_status,{from_expr} stage_from,{to_expr} stage_to "
+        "from candidates c "
+        "join candidate_robustness cr on cr.candidate_id=c.id and cr.status='accepted' "
+        f"{probe_join} {stage_join} "
+        "where c.run_id=? and c.status='accepted'",
+        (run_id,),
+    ).fetchall()
+
+
+def _final_tick_row_pending(
+    row: sqlite3.Row, project: Path, *, six_month: bool, quality_only: bool,
+    main_dates: tuple[str, str], retry_dates: tuple[str, str],
+) -> bool:
+    """Si esta fila sigue pendiente para la etapa de final tick pedida."""
+    if not _workspace_path_exists(row["set_path"], project):
+        return False
+    status = str(row["stage_status"] or "").strip()
+    if quality_only:
+        return status == "pending_history_quality"
+    if not status or status in FINAL_TICK_RETRYABLE_STATUSES:
+        return True
+    if not six_month or status not in {"pending_history_quality", "pending_ohlc_trades"}:
+        return False
+    dates = retry_dates if status == "pending_ohlc_trades" and all(retry_dates) else main_dates
+    stored = (str(row["stage_from"] or "").strip(), str(row["stage_to"] or "").strip())
+    return stored != dates
+
+
+def _final_tick_pending_count(
+    conn: sqlite3.Connection, cfg, project: Path, run_id: int, stage: str
+) -> int:
+    """Pendientes de final tick corto o de seis meses, con o sin calidad."""
+    six_month = stage in {"final_tick_6m", "final_tick_6m_quality"}
+    quality_only = stage in {"final_tick_quality", "final_tick_6m_quality"}
+    if not _table_exists(conn, "candidate_robustness"):
+        return 0
+    if six_month and not _table_exists(conn, "candidate_final_tick"):
+        return 0
+    rows = _final_tick_pending_rows(conn, run_id, six_month)
+    prefix = "ubs_final_tick_6m" if six_month else "ubs_final_tick"
+    main_dates = (
+        setting(cfg, "General", f"{prefix}_from_date"),
+        setting(cfg, "General", f"{prefix}_to_date"),
+    )
+    retry_dates = (
+        setting(cfg, "General", f"{prefix}_ohlc_from_date"),
+        setting(cfg, "General", f"{prefix}_ohlc_to_date"),
+    )
+    return sum(
+        1 for row in rows
+        if _final_tick_row_pending(
+            row, project, six_month=six_month, quality_only=quality_only,
+            main_dates=main_dates, retry_dates=retry_dates,
+        )
+    )
+
+
 def pipeline_stage_pending_count(
     config: dict[str, Any], payload: dict[str, Any], stage: str, run_id: int
 ) -> int:
@@ -250,113 +384,18 @@ def pipeline_stage_pending_count(
     db_path = memory_path(config, cfg)
     if not db_path.is_file():
         raise ValueError(f"No existe la memoria SQLite: {db_path}")
-
     uri = db_path.resolve().as_uri() + "?mode=ro"
     with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn:
         conn.row_factory = sqlite3.Row
         if not _table_exists(conn, "candidates"):
             raise ValueError("La memoria SQLite no contiene la tabla candidates")
-
         if stage == "result":
-            rows = conn.execute(
-                "select set_path from candidates "
-                "where run_id=? and status in "
-                "('report_mismatch','no_report','pending_tester_context')",
-                (run_id,),
-            ).fetchall()
-            return sum(1 for row in rows if _workspace_path_exists(row["set_path"], project))
-
+            return _result_pending_count(conn, project, run_id)
         if stage == "robustness":
-            robust_join = (
-                "left join candidate_robustness cr on cr.candidate_id=c.id"
-                if _table_exists(conn, "candidate_robustness")
-                else ""
-            )
-            robust_status = "cr.status" if robust_join else "null"
-            rows = conn.execute(
-                f"select c.set_path,{robust_status} stage_status from candidates c "
-                f"{robust_join} where c.run_id=? and c.status='accepted'",
-                (run_id,),
-            ).fetchall()
-            return sum(
-                1 for row in rows
-                if _workspace_path_exists(row["set_path"], project)
-                and (not str(row["stage_status"] or "").strip()
-                     or str(row["stage_status"] or "").strip() in ROBUST_RETRYABLE_STATUSES)
-            )
-
+            return _robustness_pending_count(conn, project, run_id)
         if stage == "regression":
-            if not _table_exists(conn, "candidate_final_tick_6m"):
-                return 0
-            regression_join = (
-                "left join candidate_regression rg on rg.candidate_id=c.id"
-                if _table_exists(conn, "candidate_regression") else ""
-            )
-            status_expr = "rg.status" if regression_join else "null"
-            rows = conn.execute(
-                f"select c.set_path,{status_expr} stage_status from candidates c "
-                "join candidate_final_tick_6m ft6 on ft6.candidate_id=c.id and ft6.status='accepted' "
-                f"{regression_join} where c.run_id=? and c.status='accepted'",
-                (run_id,),
-            ).fetchall()
-            retryable = {"no_report", "parse_error", "report_mismatch", "date_mismatch", "no_history"}
-            return sum(
-                1 for row in rows
-                if _workspace_path_exists(row["set_path"], project)
-                and (not str(row["stage_status"] or "").strip()
-                     or str(row["stage_status"] or "").strip() in retryable)
-            )
-
-        if stage not in {"final_tick", "final_tick_quality", "final_tick_6m", "final_tick_6m_quality"}:
+            return _regression_pending_count(conn, project, run_id)
+        if stage not in FINAL_TICK_PENDING_STAGES:
             raise ValueError(f"Etapa de pipeline desconocida: {stage}")
+        return _final_tick_pending_count(conn, cfg, project, run_id, stage)
 
-        six_month = stage in {"final_tick_6m", "final_tick_6m_quality"}
-        quality_only = stage in {"final_tick_quality", "final_tick_6m_quality"}
-        if not _table_exists(conn, "candidate_robustness"):
-            return 0
-        if six_month and not _table_exists(conn, "candidate_final_tick"):
-            return 0
-        table = "candidate_final_tick_6m" if six_month else "candidate_final_tick"
-        has_table = _table_exists(conn, table)
-        stage_join = f"left join {table} ft on ft.candidate_id=c.id" if has_table else ""
-        status_expr = "ft.status" if has_table else "null"
-        from_expr = "ft.from_date" if has_table else "null"
-        to_expr = "ft.to_date" if has_table else "null"
-        probe_join = (
-            "join candidate_final_tick probe_ft on probe_ft.candidate_id=c.id "
-            "and probe_ft.status in ('accepted','pending_ohlc_trades')"
-            if six_month else ""
-        )
-        rows = conn.execute(
-            f"select c.set_path,{status_expr} stage_status,{from_expr} stage_from,{to_expr} stage_to "
-            "from candidates c "
-            "join candidate_robustness cr on cr.candidate_id=c.id and cr.status='accepted' "
-            f"{probe_join} {stage_join} "
-            "where c.run_id=? and c.status='accepted'",
-            (run_id,),
-        ).fetchall()
-        prefix = "ubs_final_tick_6m" if six_month else "ubs_final_tick"
-        main_dates = (
-            setting(cfg, "General", f"{prefix}_from_date"),
-            setting(cfg, "General", f"{prefix}_to_date"),
-        )
-        retry_dates = (
-            setting(cfg, "General", f"{prefix}_ohlc_from_date"),
-            setting(cfg, "General", f"{prefix}_ohlc_to_date"),
-        )
-
-        def pending(row: sqlite3.Row) -> bool:
-            if not _workspace_path_exists(row["set_path"], project):
-                return False
-            status = str(row["stage_status"] or "").strip()
-            if quality_only:
-                return status == "pending_history_quality"
-            if not status or status in FINAL_TICK_RETRYABLE_STATUSES:
-                return True
-            if not six_month or status not in {"pending_history_quality", "pending_ohlc_trades"}:
-                return False
-            dates = retry_dates if status == "pending_ohlc_trades" and all(retry_dates) else main_dates
-            stored = (str(row["stage_from"] or "").strip(), str(row["stage_to"] or "").strip())
-            return stored != dates
-
-        return sum(1 for row in rows if pending(row))
