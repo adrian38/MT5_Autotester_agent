@@ -47,7 +47,6 @@
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._save_pending_ubs_portfolio": 99,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._ubs_portfolio_worker": 114,
     "ui/ubs_portfolio_bundle.py::UBSPortfolioBundleMixin._insert_portfolio_bundle": 185,
-    "ui/ubs_portfolio_complete.py::UBSPortfolioCompleteMixin._complete_saved_ubs_portfolio_plan": 64,
     "ui/ubs_portfolio_complete.py::UBSPortfolioCompleteMixin._replace_saved_portfolio_result": 152,
     "ui/ubs_portfolio_inputs.py::UBSPortfolioInputsMixin._read_ubs_portfolio_inputs": 129,
     "ui/ubs_portfolio_insert.py::UBSPortfolioInsertMixin._insert_portfolio": 95,
