@@ -272,6 +272,28 @@ class LiveAuditTesterMixin:
             raise RuntimeError(f"Strategy Tester terminó con código {completed.returncode}: {tail}")
 
     @staticmethod
+    def _tester_wrapper(reports_dir: Path, configs_dir: Path, logs_dir: Path) -> str:
+        """Lanzador del runner con sus carpetas apuntando al area de la auditoria.
+
+        El runner esta partido en modulos y cada uno conserva su propia
+        referencia a REPORT_DIR/CONFIG_DIR/LOG_DIR, asi que reapuntar solo la
+        fachada `run_tests` dejaba los reportes y los INI del tester en las
+        carpetas del proyecto y la auditoria no encontraba ningun reporte.
+        """
+        return (
+            "import sys, run_tests; from pathlib import Path; "
+            f"_dirs = (('REPORT_DIR', Path({str(reports_dir)!r})), "
+            f"('CONFIG_DIR', Path({str(configs_dir)!r})), "
+            f"('LOG_DIR', Path({str(logs_dir)!r}))); "
+            "[setattr(module, name, value) "
+            "for key, module in list(sys.modules.items()) "
+            "if key == 'run_tests' or key.startswith('run_tests_') "
+            "for name, value in _dirs if hasattr(module, name)]; "
+            "sys.argv = ['run_tests.py'] + sys.argv[1:]; "
+            "raise SystemExit(run_tests.main())"
+        )
+
+    @staticmethod
     def _report_artifact(
         prepared: dict[str, Any], report: Any, report_path: Path, quality: float | None
     ) -> dict[str, Any]:
@@ -354,12 +376,7 @@ class LiveAuditTesterMixin:
             f"Variante {request['portfolio_type']} seleccionada con {len(members)} estrategias: {selected_summary}",
         )
         template_path = self._write_tester_template(request, detail, work, period_start, period_end)
-        wrapper = (
-            "import sys,run_tests; from pathlib import Path; "
-            f"run_tests.REPORT_DIR=Path({str(reports_dir)!r}); run_tests.CONFIG_DIR=Path({str(configs_dir)!r}); "
-            f"run_tests.LOG_DIR=Path({str(logs_dir)!r}); sys.argv=['run_tests.py']+sys.argv[1:]; "
-            "raise SystemExit(run_tests.main())"
-        )
+        wrapper = self._tester_wrapper(reports_dir, configs_dir, logs_dir)
         terminals = self._prepare_tester_terminals(request, set_files)
         terminal_config_path, terminal_names = self._write_terminal_config(request, work, terminals)
         tester_execution = {
