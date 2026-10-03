@@ -22,7 +22,6 @@
     "ubs_agent_targets.py::choose_diverse_target": 89,
     "ui/ubs_final_tick_logic.py::UBSFinalTickLogicMixin._run_ubs_final_tick_for_latest_run": 101,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._save_pending_ubs_portfolio": 99,
-    "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._ubs_portfolio_worker": 114,
     "ui/ubs_portfolio_insert.py::UBSPortfolioInsertMixin._insert_portfolio": 95,
     "ui/ubs_portfolio_optimize.py::UBSPortfolioOptimizeMixin._reoptimize_saved_ubs_portfolio_worker": 110,
     "ui/ubs_portfolio_result.py::UBSPortfolioResultMixin._export_ubs_portfolio_sets": 87,

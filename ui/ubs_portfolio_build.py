@@ -80,113 +80,142 @@ class UBSPortfolioBuildMixin:
         self.ubs_portfolio_status.set("Analizando sets Final Tick 6M accepted...")
         threading.Thread(target=self._ubs_portfolio_worker, args=(inputs,), daemon=True).start()
 
+    def _portfolio_rows_after_month_filter(self, rows: list, inputs: dict[str, object]):
+        """Aplica el filtro de 3 meses positivos; None si vacia la seleccion."""
+        if not bool(inputs.get("require_3_positive_months_6m")):
+            return rows, []
+        rows, month_warnings = filter_rows_by_recent_positive_months(
+            rows,
+            min_positive_months=3,
+            window_months=6,
+            progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
+        )
+        if not rows:
+            self._ubs_portfolio_failed(
+                "No quedan candidatos tras exigir 3 meses positivos en los ultimos 6."
+            )
+            return None, []
+        return rows, month_warnings
+
+    def _portfolio_rows_after_grid_filter(self, rows: list, inputs: dict[str, object]):
+        """Aplica el filtro Grid OFF; None si vacia la seleccion."""
+        if not bool(inputs.get("grid_off")):
+            return rows, []
+        rows, grid_warnings = filter_rows_grid_off(rows)
+        if not rows:
+            self._ubs_portfolio_failed("No quedan candidatos tras aplicar Grid OFF.")
+            return None, []
+        return rows, grid_warnings
+
+    def _portfolio_rows_after_group_filter(self, rows: list, allowed_groups: set[str]):
+        """Deja solo los grupos permitidos; None si vacia la seleccion."""
+        if not allowed_groups:
+            return rows, []
+        rows, row_group_counts = self._filter_portfolio_rows_by_allowed_groups(rows, allowed_groups)
+        group_warnings: list[str] = []
+        blocked_groups = {
+            group: count
+            for group, count in row_group_counts.items()
+            if group not in allowed_groups and count
+        }
+        if blocked_groups:
+            group_warnings.append(
+                "Filtro grupos activo: "
+                + ", ".join(sorted(allowed_groups))
+                + ". Excluidos: "
+                + ", ".join(f"{group}={count}" for group, count in sorted(blocked_groups.items()))
+                + "."
+            )
+        if not rows:
+            self._ubs_portfolio_failed("No quedan candidatos tras aplicar grupos permitidos.")
+            return None, group_warnings
+        return rows, group_warnings
+
+    def _ubs_portfolio_failed(self, error: str) -> None:
+        """Devuelve el error del hilo a la interfaz."""
+        self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": error})
+
+    def _portfolio_sets_from_rows(self, rows: list, inputs: dict[str, object], allowed_groups: set[str]):
+        """Carga las curvas de los candidatos filtrados y su disponibilidad."""
+        used = (
+            self._used_set_paths_all_risk_profiles()
+            if bool(inputs.get("exclude_used_sets", True))
+            else []
+        )
+        availability = summarize_robust_rows(rows, used)
+        raw_sets, load_warnings = load_robust_sets_from_rows(
+            rows,
+            used,
+            progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
+        )
+        if allowed_groups:
+            raw_sets, _set_group_counts = self._filter_portfolio_sets_by_allowed_groups(
+                raw_sets,
+                allowed_groups,
+            )
+        if not raw_sets:
+            detail = " ".join(load_warnings)
+            raise ValueError(
+                "No quedan sets cargados tras filtros, grupos y usados."
+                + (f" {detail}" if detail else "")
+            )
+        return raw_sets, availability, load_warnings
+
+    def _portfolio_build_proposals(self, raw_sets: list, inputs: dict[str, object], base_type):
+        """Calcula las tres variantes sobre la composicion comun."""
+        existing_curves_by_type = {
+            portfolio_type: self._saved_portfolio_curves_all_accounts(portfolio_type)
+            for _key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS
+        }
+        return self._optimize_locked_ubs_portfolio_variants(
+            raw_sets,
+            inputs,
+            base_type,
+            existing_curves_by_type,
+            progress=lambda proposal_label, index: self.after(
+                0,
+                self.ubs_portfolio_status.set,
+                (
+                    f"Seleccionando composicion base ({proposal_label})..."
+                    if index == 0
+                    else f"Calculando variante {index}/3 ({proposal_label}) con los mismos sets..."
+                ),
+            ),
+        )
+
     def _ubs_portfolio_worker(self, inputs: dict[str, object]) -> None:
         try:
             rows = self._final_tick_passed_candidates_all_accounts()
         except Exception as exc:
-            self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"No pude abrir la memoria UBS: {exc}"})
+            self._ubs_portfolio_failed(f"No pude abrir la memoria UBS: {exc}")
             return
         try:
             if not rows:
-                self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": "No hay candidatos con Final Tick 6M accepted en las memorias broker/cuenta."})
+                self._ubs_portfolio_failed(
+                    "No hay candidatos con Final Tick 6M accepted en las memorias broker/cuenta."
+                )
                 return
-            month_warnings: list[str] = []
-            if bool(inputs.get("require_3_positive_months_6m")):
-                rows, month_warnings = filter_rows_by_recent_positive_months(
-                    rows,
-                    min_positive_months=3,
-                    window_months=6,
-                    progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
-                )
-                if not rows:
-                    self.after(
-                        0,
-                        self._ubs_portfolio_finished,
-                        {"ok": False, "error": "No quedan candidatos tras exigir 3 meses positivos en los ultimos 6."},
-                    )
-                    return
-            grid_warnings: list[str] = []
-            if bool(inputs.get("grid_off")):
-                rows, grid_warnings = filter_rows_grid_off(rows)
-                if not rows:
-                    self.after(
-                        0,
-                        self._ubs_portfolio_finished,
-                        {"ok": False, "error": "No quedan candidatos tras aplicar Grid OFF."},
-                    )
-                    return
-            group_warnings: list[str] = []
+            rows, month_warnings = self._portfolio_rows_after_month_filter(rows, inputs)
+            if rows is None:
+                return
+            rows, grid_warnings = self._portfolio_rows_after_grid_filter(rows, inputs)
+            if rows is None:
+                return
             allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
-            if allowed_groups:
-                rows, row_group_counts = self._filter_portfolio_rows_by_allowed_groups(rows, allowed_groups)
-                blocked_groups = {
-                    group: count
-                    for group, count in row_group_counts.items()
-                    if group not in allowed_groups and count
-                }
-                if blocked_groups:
-                    group_warnings.append(
-                        "Filtro grupos activo: "
-                        + ", ".join(sorted(allowed_groups))
-                        + ". Excluidos: "
-                        + ", ".join(f"{group}={count}" for group, count in sorted(blocked_groups.items()))
-                        + "."
-                    )
-                if not rows:
-                    self.after(
-                        0,
-                        self._ubs_portfolio_finished,
-                        {"ok": False, "error": "No quedan candidatos tras aplicar grupos permitidos."},
-                    )
-                    return
+            rows, group_warnings = self._portfolio_rows_after_group_filter(rows, allowed_groups)
+            if rows is None:
+                return
             base_type = PortfolioType(str(inputs.get("portfolio_type") or PortfolioType.BALANCED.value))
-            used = (
-                self._used_set_paths_all_risk_profiles()
-                if bool(inputs.get("exclude_used_sets", True))
-                else []
+            raw_sets, availability, load_warnings = self._portfolio_sets_from_rows(
+                rows, inputs, allowed_groups
             )
-            availability = summarize_robust_rows(rows, used)
-            raw_sets, load_warnings = load_robust_sets_from_rows(
-                rows,
-                used,
-                progress=lambda msg: self.after(0, self.ubs_portfolio_status.set, msg),
-            )
-            if allowed_groups:
-                raw_sets, _set_group_counts = self._filter_portfolio_sets_by_allowed_groups(
-                    raw_sets,
-                    allowed_groups,
-                )
-            if not raw_sets:
-                detail = " ".join(load_warnings)
-                raise ValueError(
-                    "No quedan sets cargados tras filtros, grupos y usados."
-                    + (f" {detail}" if detail else "")
-                )
-            existing_curves_by_type = {
-                portfolio_type: self._saved_portfolio_curves_all_accounts(portfolio_type)
-                for _key, _label, portfolio_type in PORTFOLIO_TYPE_BATCH_SPECS
-            }
-            proposals = self._optimize_locked_ubs_portfolio_variants(
-                raw_sets,
-                inputs,
-                base_type,
-                existing_curves_by_type,
-                progress=lambda proposal_label, index: self.after(
-                    0,
-                    self.ubs_portfolio_status.set,
-                    (
-                        f"Seleccionando composicion base ({proposal_label})..."
-                        if index == 0
-                        else f"Calculando variante {index}/3 ({proposal_label}) con los mismos sets..."
-                    ),
-                ),
-            )
+            proposals = self._portfolio_build_proposals(raw_sets, inputs, base_type)
             for proposal in proposals:
                 proposal["result"].warnings[:0] = (
                     month_warnings + grid_warnings + group_warnings + load_warnings
                 )
         except Exception as exc:
-            self.after(0, self._ubs_portfolio_finished, {"ok": False, "error": f"Error generando portafolio: {exc}"})
+            self._ubs_portfolio_failed(f"Error generando portafolio: {exc}")
             return
         self.after(0, self._ubs_portfolio_finished, {
             "ok": True,
