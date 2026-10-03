@@ -74,39 +74,42 @@ def history_probe_latest_statuses(memory: AgentMemory, aliases: dict[str, str]) 
     return statuses
 
 
-def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+def _probe_history_preflight(args: argparse.Namespace) -> int | None:
+    """Rechaza una peticion de probe que no puede ejecutarse."""
     if not args.execute_backtests and not args.dry_run:
         print("ERROR: probe de historico requiere --execute-backtests o --dry-run")
         return 1
     if args.execute_backtests and not args.expert and not args.multi_terminal:
         print("ERROR: probe de historico requiere --expert o --multi-terminal")
         return 1
-
-    target_period = str(args.probe_history_timeframe or "H1").strip().upper()
-    if target_period not in TIMEFRAME_TO_ENUM:
-        print(f"ERROR: timeframe probe invalido: {target_period}")
+    if str(args.probe_history_timeframe or "H1").strip().upper() not in TIMEFRAME_TO_ENUM:
+        print(f"ERROR: timeframe probe invalido: {str(args.probe_history_timeframe or 'H1').strip().upper()}")
         return 1
+    return None
 
-    source_dir = resolve_workspace_path(args.source_dir)
-    output_root = resolve_workspace_path(args.output_dir)
+
+def _probe_template_seed(args: argparse.Namespace, memory: AgentMemory, symbol_map: dict[str, str]):
+    """Seed que sirve de plantilla del probe y seeds bloqueadas como fuente."""
     disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
     seed_enabled_when_disabled &= disabled_symbols
-    symbol_map = parse_symbol_map(args.symbol_map)
-
-    seeds = memory.apply_seed_overrides(load_seeds(source_dir, base_dir=BASE_DIR))
+    seeds = memory.apply_seed_overrides(
+        load_seeds(resolve_workspace_path(args.source_dir), base_dir=BASE_DIR)
+    )
     source_seeds, blocked_source_count = generation_source_seeds(
         seeds,
         symbol_map,
         disabled_symbols,
         seed_enabled_when_disabled,
     )
-    template_seed = select_history_probe_seed(source_seeds)
-    if template_seed is None:
-        print("ERROR: no hay una seed valida para usar como plantilla del probe")
-        return 1
+    return select_history_probe_seed(source_seeds), blocked_source_count, disabled_symbols
 
+
+def _probe_pending_symbols(
+    args: argparse.Namespace, memory: AgentMemory, symbol_map: dict[str, str], disabled_symbols: set
+):
+    """Simbolos GEN=si que aun no tienen un estado final de historico."""
     asset_groups, aliases = load_asset_universe(
         Path(args.assets).expanduser(),
         disabled_symbols=disabled_symbols,
@@ -121,13 +124,13 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
     )
     if args.probe_history_limit > 0:
         universe_symbols = universe_symbols[: args.probe_history_limit]
-    if not universe_symbols:
-        print("No hay simbolos GEN=si pendientes de probe historico.")
-        return 0
+    return universe_symbols, all_universe_symbols
 
-    run_dir = output_root / datetime.now().strftime("history_probe_%Y%m%d_%H%M%S")
-    probe_dir = recreate_work_dir(run_dir / "gen_001")
 
+def _probe_variants(
+    memory: AgentMemory, template_seed, universe_symbols: tuple, target_period: str, probe_dir: Path
+) -> list[Variant]:
+    """Crea un set de probe por simbolo, reemplazando el anterior."""
     variants: list[Variant] = []
     for index, symbol in enumerate(universe_symbols, start=1):
         variant = create_history_probe_variant(template_seed, symbol, target_period, probe_dir, index)
@@ -142,26 +145,14 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
         )
         memory.record_variant(0, 0, variant, status="history_probe")
         variants.append(variant)
+    return variants
 
-    print(
-        f"Probe historico universo: pendientes GEN=si={len(variants)} de {len(all_universe_symbols)} | "
-        f"TF={target_period} | seed plantilla={template_seed.path.name}"
-    )
-    if blocked_source_count:
-        print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
-    print(f"Directorio probe: {run_dir}")
-    if args.dry_run:
-        print("Dry-run: sets de probe generados, MT5 no se abre.")
-        return 0
 
-    batch_started_at = time.time()
-    code = run_backtests(args, probe_dir, model="1")
-    if code == RUNNING_TERMINAL_EXIT_CODE:
-        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza historico.")
-        return 1
-    if code != 0:
-        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
-
+def _probe_evaluate_reports(
+    args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig,
+    symbol_map: dict[str, str], variants: list[Variant], batch_started_at: float,
+) -> dict[str, int]:
+    """Puntua el reporte de cada simbolo del probe."""
     status_counts: dict[str, int] = {}
     for variant in variants:
         status, _ = evaluate_history_probe(
@@ -175,7 +166,50 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
             universe_symbols=broker_universe_symbols(args),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
+    return status_counts
 
+
+def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    invalid = _probe_history_preflight(args)
+    if invalid is not None:
+        return invalid
+    target_period = str(args.probe_history_timeframe or "H1").strip().upper()
+    symbol_map = parse_symbol_map(args.symbol_map)
+    template_seed, blocked_source_count, disabled_symbols = _probe_template_seed(
+        args, memory, symbol_map
+    )
+    if template_seed is None:
+        print("ERROR: no hay una seed valida para usar como plantilla del probe")
+        return 1
+    universe_symbols, all_universe_symbols = _probe_pending_symbols(
+        args, memory, symbol_map, disabled_symbols
+    )
+    if not universe_symbols:
+        print("No hay simbolos GEN=si pendientes de probe historico.")
+        return 0
+    run_dir = resolve_workspace_path(args.output_dir) / datetime.now().strftime("history_probe_%Y%m%d_%H%M%S")
+    probe_dir = recreate_work_dir(run_dir / "gen_001")
+    variants = _probe_variants(memory, template_seed, universe_symbols, target_period, probe_dir)
+    print(
+        f"Probe historico universo: pendientes GEN=si={len(variants)} de {len(all_universe_symbols)} | "
+        f"TF={target_period} | seed plantilla={template_seed.path.name}"
+    )
+    if blocked_source_count:
+        print(f"Seeds bloqueadas como fuente por GEN=no y SEEDS=no: {blocked_source_count}")
+    print(f"Directorio probe: {run_dir}")
+    if args.dry_run:
+        print("Dry-run: sets de probe generados, MT5 no se abre.")
+        return 0
+    batch_started_at = time.time()
+    code = run_backtests(args, probe_dir, model="1")
+    if code == RUNNING_TERMINAL_EXIT_CODE:
+        print("ERROR: run_tests.py no ejecuto backtests porque hay una terminal MT5 abierta. No se actualiza historico.")
+        return 1
+    if code != 0:
+        print(f"AVISO: run_tests.py termino con codigo {code}; se evaluaran los reportes disponibles")
+    status_counts = _probe_evaluate_reports(
+        args, memory, score_config, symbol_map, variants, batch_started_at
+    )
     print(
         "Probe historico terminado: "
         + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
