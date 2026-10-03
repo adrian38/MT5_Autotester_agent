@@ -36,7 +36,6 @@
     "ubs_agent_retry.py::retry_full_run": 104,
     "ubs_agent_retry.py::retry_seed": 155,
     "ubs_agent_targets.py::choose_diverse_target": 89,
-    "ubs_agent_targets.py::choose_target_symbol": 164,
     "ui/app_chrome.py::AppChromeMixin._configure_style": 124,
     "ui/app_process.py::AppProcessMixin._drain_output_queue": 116,
     "ui/ubs_final_tick_logic.py::UBSFinalTickLogicMixin._refresh_ubs_final_tick": 133,

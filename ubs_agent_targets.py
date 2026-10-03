@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import dataclass
 
 from run_tests import apply_symbol_map, normalize_set_symbol
 from ubs.account import axi_cash_future_family_targets
@@ -31,6 +32,204 @@ from ubs_agent_seeds_plan import (
 )
 
 
+@dataclass
+class _TargetSymbolScope:
+    """Candidatos de target ya filtrados por universo, alias y politica."""
+
+    seed: Seed
+    asset_feedback: dict[str, float]
+    aliases: dict[str, str]
+    symbol_map: dict[str, str]
+    disabled_symbols: set[str] | None
+    universe_symbols: tuple[str, ...]
+    group_by_symbol: dict[str, str] | None
+    current: str
+    resolved_current: str
+    current_targets: tuple[str, ...]
+    related: tuple[str, ...]
+    universe_choices: tuple[str, ...]
+    unseeded_choices: tuple[str, ...]
+
+    def weight(self, symbol: str) -> float:
+        """Realimentacion del activo, por su nombre canonico o literal."""
+        canonical = canonical_symbol(symbol, self.aliases).upper()
+        return self.asset_feedback.get(canonical, self.asset_feedback.get(symbol.upper(), 0.0))
+
+
+def _target_symbol_disabled(
+    symbol: str, universe_symbols: tuple[str, ...], aliases: dict[str, str],
+    symbol_map: dict[str, str], disabled_symbols: set[str] | None,
+) -> bool:
+    """Si el simbolo no puede usarse como target con la politica actual."""
+    return target_symbol_disabled(
+        symbol,
+        universe_symbols,
+        aliases,
+        symbol_map=symbol_map,
+        disabled_symbols=disabled_symbols,
+    )
+
+
+def _build_target_symbol_scope(
+    seed: Seed, asset_feedback: dict[str, float], universe_symbols: tuple[str, ...],
+    aliases: dict[str, str], symbol_map: dict[str, str], disabled_symbols: set[str] | None,
+    unseeded_universe_symbols: tuple[str, ...], group_by_symbol: dict[str, str] | None,
+) -> _TargetSymbolScope:
+    """Resuelve el simbolo actual y los conjuntos de candidatos posibles."""
+    current = seed.symbol or "UNKNOWN"
+    exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
+    for alias, target in aliases.items():
+        exact_by_key[str(alias).upper()] = target
+    normalized_current = normalize_set_symbol(current)
+    mapped_current = normalize_set_symbol(apply_symbol_map(current, symbol_map))
+    resolved_current = exact_by_key.get(mapped_current, exact_by_key.get(normalized_current, current))
+
+    def disabled(symbol: str) -> bool:
+        return _target_symbol_disabled(
+            symbol, universe_symbols, aliases, symbol_map, disabled_symbols
+        )
+
+    current_family_targets = tuple(
+        target
+        for target in dict.fromkeys(
+            (
+                *axi_cash_future_family_targets(current, universe_symbols),
+                *axi_cash_future_family_targets(mapped_current, universe_symbols),
+            )
+        )
+        if target and not disabled(target)
+    )
+    current_targets = current_family_targets or tuple(
+        target
+        for target in (resolved_current,)
+        if target and not disabled(target)
+    )
+    related = tuple(
+        symbol
+        for symbol in dict.fromkeys(
+            candidate
+            for source in related_assets(current)
+            for candidate in (
+                *axi_cash_future_family_targets(source, universe_symbols),
+                exact_by_key.get(source.upper(), source),
+            )
+        )
+        if not disabled(symbol)
+    )
+    return _TargetSymbolScope(
+        seed=seed,
+        asset_feedback=asset_feedback,
+        aliases=aliases,
+        symbol_map=symbol_map,
+        disabled_symbols=disabled_symbols,
+        universe_symbols=universe_symbols,
+        group_by_symbol=group_by_symbol,
+        current=current,
+        resolved_current=resolved_current,
+        current_targets=current_targets,
+        related=related,
+        universe_choices=tuple(
+            symbol for symbol in dict.fromkeys(universe_symbols)
+            if symbol.upper() != resolved_current.upper() and not disabled(symbol)
+        ),
+        unseeded_choices=tuple(
+            symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
+            if symbol.upper() != resolved_current.upper() and not disabled(symbol)
+        ),
+    )
+
+
+def _forced_unseeded_target(
+    scope: _TargetSymbolScope, rng: random.Random, asset_group_feedback: dict[str, float] | None
+) -> tuple[str, str]:
+    """Target sin seed previa, guiado por la realimentacion del grupo."""
+    unseen = [
+        symbol for symbol in scope.unseeded_choices
+        if symbol.upper() not in scope.asset_feedback
+    ]
+    forced_pool = tuple(unseen or scope.unseeded_choices)
+    if scope.group_by_symbol:
+        return (
+            choose_group_guided_unseeded_symbol(
+                forced_pool,
+                rng,
+                scope.aliases,
+                scope.group_by_symbol,
+                asset_group_feedback or {},
+            ),
+            "asset_unseeded_group_feedback",
+        )
+    return rng.choice(list(forced_pool)), "asset_unseeded_force"
+
+
+def _production_target_symbol(
+    scope: _TargetSymbolScope, rng: random.Random
+) -> tuple[str, str] | None:
+    """Target de produccion: explotar el actual o seguir la evidencia."""
+    current_choices, related_choices, same_group_choices = target_symbol_options_for_seed(
+        scope.seed,
+        scope.universe_symbols,
+        scope.aliases,
+        symbol_map=scope.symbol_map,
+        disabled_symbols=scope.disabled_symbols,
+        group_by_symbol=scope.group_by_symbol,
+    )
+    if scope.group_by_symbol:
+        feedback_scope = tuple(dict.fromkeys((*related_choices, *same_group_choices)))
+    else:
+        feedback_scope = scope.universe_choices
+    evidence_choices = tuple(
+        symbol for symbol in feedback_scope if scope.weight(symbol) > 0.0
+    )
+    if current_choices and rng.random() < PRODUCTION_CURRENT_SYMBOL_PROBABILITY:
+        return sorted(current_choices, key=scope.weight, reverse=True)[0], "production_exploit"
+    for choices, reason in (
+        (evidence_choices, "production_asset_feedback"),
+        (related_choices, "production_asset_related"),
+        (same_group_choices, "production_asset_group"),
+        (current_choices, "production_exploit"),
+    ):
+        if choices:
+            return sorted(choices, key=scope.weight, reverse=True)[0], reason
+    if scope.universe_choices and not scope.group_by_symbol:
+        return rng.choice(scope.universe_choices), "production_asset_fallback"
+    return None
+
+
+def _discovery_target_symbol(
+    scope: _TargetSymbolScope, rng: random.Random, current_target_probability: float,
+    universe_feedback_probability: float,
+) -> tuple[str, str] | None:
+    """Target de descubrimiento: explotar, explorar el universo o relacionados."""
+    asset_feedback = scope.asset_feedback
+    if scope.current_targets and rng.random() < current_target_probability:
+        ranked = sorted(scope.current_targets, key=scope.weight, reverse=True)
+        if ranked and rng.random() < 0.55:
+            return ranked[0], "exploit"
+        return rng.choice(scope.current_targets), "exploit"
+    if scope.universe_choices and rng.random() < 0.65:
+        ranked = sorted(
+            scope.universe_choices,
+            key=lambda item: asset_feedback.get(item.upper(), -999999.0),
+            reverse=True,
+        )
+        ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
+        if ranked_with_feedback and rng.random() < universe_feedback_probability:
+            return ranked_with_feedback[0], "asset_universe_feedback"
+        return rng.choice(scope.universe_choices), "asset_universe_explore"
+    choices = tuple(
+        symbol for symbol in scope.related if symbol.upper() != scope.current.upper()
+    )
+    if not choices:
+        if scope.universe_choices:
+            return rng.choice(scope.universe_choices), "asset_universe_fallback"
+        return scope.resolved_current, "exploit"
+    ranked = sorted(choices, key=lambda item: asset_feedback.get(item.upper(), 0.0), reverse=True)
+    if ranked and rng.random() < 0.50:
+        return ranked[0], "asset_feedback"
+    return rng.choice(choices), "asset_explore"
+
+
 def choose_target_symbol(
     seed: Seed,
     asset_feedback: dict[str, float],
@@ -49,152 +248,21 @@ def choose_target_symbol(
     universe_feedback_probability: float = DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
     current_target_probability: float = DISCOVERY_CURRENT_TARGET_DEFAULT,
 ) -> tuple[str, str] | None:
-    aliases = aliases or {}
-    symbol_map = symbol_map or {}
-    current = seed.symbol or "UNKNOWN"
-    exact_by_key = {symbol.upper(): symbol for symbol in universe_symbols}
-    for alias, target in aliases.items():
-        exact_by_key[str(alias).upper()] = target
-
-    normalized_current = normalize_set_symbol(current)
-    mapped_current = normalize_set_symbol(apply_symbol_map(current, symbol_map))
-    resolved_current = exact_by_key.get(mapped_current, exact_by_key.get(normalized_current, current))
-
-    def target_disabled(symbol: str) -> bool:
-        return target_symbol_disabled(
-            symbol,
-            universe_symbols,
-            aliases,
-            symbol_map=symbol_map,
-            disabled_symbols=disabled_symbols,
-        )
-
-    current_family_targets = tuple(
-        target
-        for target in dict.fromkeys(
-            (
-                *axi_cash_future_family_targets(current, universe_symbols),
-                *axi_cash_future_family_targets(mapped_current, universe_symbols),
-            )
-        )
-        if target and not target_disabled(target)
+    scope = _build_target_symbol_scope(
+        seed, asset_feedback, universe_symbols, aliases or {}, symbol_map or {},
+        disabled_symbols, unseeded_universe_symbols, group_by_symbol,
     )
-    current_targets = current_family_targets or tuple(
-        target
-        for target in (resolved_current,)
-        if target and not target_disabled(target)
-    )
-
-    related = tuple(
-        symbol
-        for symbol in dict.fromkeys(
-            candidate
-            for source in related_assets(current)
-            for candidate in (
-                *axi_cash_future_family_targets(source, universe_symbols),
-                exact_by_key.get(source.upper(), source),
-            )
-        )
-        if not target_disabled(symbol)
-    )
-    universe_choices = tuple(
-        symbol for symbol in dict.fromkeys(universe_symbols)
-        if symbol.upper() != resolved_current.upper() and not target_disabled(symbol)
-    )
-    unseeded_choices = tuple(
-        symbol for symbol in dict.fromkeys(unseeded_universe_symbols)
-        if symbol.upper() != resolved_current.upper() and not target_disabled(symbol)
-    )
-    if force_unseeded_universe and unseeded_choices and rng.random() < force_unseeded_probability:
-        unseen = [symbol for symbol in unseeded_choices if symbol.upper() not in asset_feedback]
-        forced_pool = tuple(unseen or unseeded_choices)
-        if group_by_symbol:
-            return (
-                choose_group_guided_unseeded_symbol(
-                    forced_pool,
-                    rng,
-                    aliases,
-                    group_by_symbol,
-                    asset_group_feedback or {},
-                ),
-                "asset_unseeded_group_feedback",
-            )
-        return rng.choice(list(forced_pool)), "asset_unseeded_force"
-
-    def asset_weight(symbol: str) -> float:
-        canonical = canonical_symbol(symbol, aliases).upper()
-        return asset_feedback.get(canonical, asset_feedback.get(symbol.upper(), 0.0))
-
+    if (
+        force_unseeded_universe
+        and scope.unseeded_choices
+        and rng.random() < force_unseeded_probability
+    ):
+        return _forced_unseeded_target(scope, rng, asset_group_feedback)
     if production_mode:
-        current_choices, related_choices, same_group_choices = target_symbol_options_for_seed(
-            seed,
-            universe_symbols,
-            aliases,
-            symbol_map=symbol_map,
-            disabled_symbols=disabled_symbols,
-            group_by_symbol=group_by_symbol,
-        )
-        if group_by_symbol:
-            feedback_scope = tuple(dict.fromkeys((*related_choices, *same_group_choices)))
-        else:
-            feedback_scope = universe_choices
-        evidence_choices = tuple(
-            symbol
-            for symbol in feedback_scope
-            if asset_weight(symbol) > 0.0
-        )
-        if current_choices and rng.random() < PRODUCTION_CURRENT_SYMBOL_PROBABILITY:
-            ranked = sorted(current_choices, key=asset_weight, reverse=True)
-            return ranked[0], "production_exploit"
-        if evidence_choices:
-            ranked = sorted(
-                evidence_choices,
-                key=asset_weight,
-                reverse=True,
-            )
-            return ranked[0], "production_asset_feedback"
-        if related_choices:
-            ranked = sorted(
-                related_choices,
-                key=asset_weight,
-                reverse=True,
-            )
-            return ranked[0], "production_asset_related"
-        if same_group_choices:
-            ranked = sorted(
-                same_group_choices,
-                key=asset_weight,
-                reverse=True,
-            )
-            return ranked[0], "production_asset_group"
-        if current_choices:
-            ranked = sorted(current_choices, key=asset_weight, reverse=True)
-            return ranked[0], "production_exploit"
-        if universe_choices and not group_by_symbol:
-            return rng.choice(universe_choices), "production_asset_fallback"
-        return None
-
-    if current_targets and rng.random() < current_target_probability:
-        ranked = sorted(current_targets, key=asset_weight, reverse=True)
-        if ranked and rng.random() < 0.55:
-            return ranked[0], "exploit"
-        return rng.choice(current_targets), "exploit"
-    if universe_choices and rng.random() < 0.65:
-        ranked = sorted(universe_choices, key=lambda item: asset_feedback.get(item.upper(), -999999.0), reverse=True)
-        ranked_with_feedback = [symbol for symbol in ranked if symbol.upper() in asset_feedback]
-        if ranked_with_feedback and rng.random() < universe_feedback_probability:
-            return ranked_with_feedback[0], "asset_universe_feedback"
-        return rng.choice(universe_choices), "asset_universe_explore"
-
-    choices = tuple(symbol for symbol in related if symbol.upper() != current.upper())
-    if not choices:
-        if universe_choices:
-            return rng.choice(universe_choices), "asset_universe_fallback"
-        return resolved_current, "exploit"
-    ranked = sorted(choices, key=lambda item: asset_feedback.get(item.upper(), 0.0), reverse=True)
-    if ranked and rng.random() < 0.50:
-        return ranked[0], "asset_feedback"
-    return rng.choice(choices), "asset_explore"
+        return _production_target_symbol(scope, rng)
+    return _discovery_target_symbol(
+        scope, rng, current_target_probability, universe_feedback_probability
+    )
 
 
 def choose_group_guided_unseeded_symbol(
