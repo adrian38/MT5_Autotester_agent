@@ -9,7 +9,10 @@ import re
 import statistics
 from types import SimpleNamespace
 
+from dataclasses import dataclass
+
 from portfolio_manager.mt5_report import StrategyReport, parse_report_metrics
+from ubs.normalization import net_profit_normalization
 
 
 GENERALIZATION_BOOTSTRAP_REPS = 2000
@@ -267,3 +270,164 @@ def _to_float(value: object) -> float:
         if all(len(part) == 3 for part in parts[1:]):
             cleaned = "".join(parts)
     return float(cleaned)
+
+# Share of the active months the scale-free concentration measure removes. 5% of
+# a 60-month construction window is the historical fixed top three, so both
+# measures agree there and only diverge on the shorter windows robustness uses.
+# Deliberately not part of ScoreConfig: putting it there would change the score
+# config hash of every stored row to express something no verdict depends on
+# outside the OOS risk route.
+RESIDUAL_TOP_MONTH_SHARE = 0.05
+
+
+def top_month_count(active_months: int, share: float) -> int | None:
+    """How many best months the concentration measure removes, half-up.
+
+    A fixed three months is 5% of a 60-month construction window but 18% of a
+    17-month OOS window, so the same number makes a categorically harsher test
+    on the shorter one. Scaling the count keeps the test comparable; it never
+    drops below one month, or there would be nothing to remove.
+    """
+
+    if active_months <= 0 or share <= 0:
+        return None
+    return max(1, int(active_months * share + 0.5))
+
+
+def residual_profit_ratio_after_top_months(
+    monthly_values: list[float], net_profit: float, count: int
+) -> float:
+    """Share of the net profit that survives removing the `count` best months."""
+
+    top = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:count])
+    return (net_profit - top) / net_profit if net_profit > 0 else -1.0
+
+
+@dataclass
+class _ReportMetrics:
+    """Metricas crudas de un reporte, antes de aplicar puntuacion y filtros."""
+
+    profits: list[float]
+    losses: list[float]
+    monthly_values: list[float]
+    net_profit: float
+    profit_factor: float
+    drawdown: float
+    drawdown_pct: float
+    recovery_factor: float
+    positive_month_ratio: float
+    max_month_concentration: float
+    top3_month_profit: float
+    residual_profit_after_top3: float
+    residual_profit_ratio: float
+    scaled_residual_top_months: int | None
+    scaled_residual_profit_ratio: float | None
+    trade_curve_stability: float | None
+    avg_trade: float
+    sqn: float
+    net_profit_factor: float
+    normalization_group: str
+    net_profit_basis: object
+    normalized_net_profit: float
+    history_quality: object
+    equity_drawdown: float | None
+    equity_drawdown_pct: float | None
+    equity_recovery_factor: float | None
+
+    @property
+    def trades(self) -> int:
+        """Operaciones cerradas del reporte."""
+        return len(self.profits)
+
+    @property
+    def active_months(self) -> int:
+        """Meses con actividad en el reporte."""
+        return len(self.monthly_values)
+
+    def risk_metrics(self) -> dict[str, object]:
+        """Lo que la politica de riesgo/beneficio necesita para decidir."""
+        return dict(
+            net_profit=self.net_profit, equity_drawdown=self.equity_drawdown,
+            equity_drawdown_pct=self.equity_drawdown_pct, profit_factor=self.profit_factor,
+            trades=self.trades, active_months=self.active_months,
+            positive_month_ratio=self.positive_month_ratio,
+            residual_profit_ratio=self.residual_profit_ratio,
+        )
+
+
+def _monthly_concentration(monthly_values: list[float], net_profit: float) -> tuple:
+    """Reparto mensual del beneficio y cuanto depende de los mejores meses."""
+    total_positive_months = sum(value for value in monthly_values if value > 0)
+    max_month = max((value for value in monthly_values if value > 0), default=0.0)
+    max_month_concentration = max_month / total_positive_months if total_positive_months else 1.0
+    top3_month_profit = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:3])
+    residual_profit_after_top3 = net_profit - top3_month_profit
+    residual_profit_ratio = residual_profit_after_top3 / net_profit if net_profit > 0 else -1.0
+    scaled_residual_top_months = top_month_count(len(monthly_values), RESIDUAL_TOP_MONTH_SHARE)
+    scaled_residual_profit_ratio = (
+        residual_profit_ratio_after_top_months(monthly_values, net_profit, scaled_residual_top_months)
+        if scaled_residual_top_months
+        else None
+    )
+    return (
+        max_month_concentration, top3_month_profit, residual_profit_after_top3,
+        residual_profit_ratio, scaled_residual_top_months, scaled_residual_profit_ratio,
+    )
+
+
+def _report_metrics(report: StrategyReport, broker: object) -> _ReportMetrics:
+    """Calcula todas las metricas que la puntuacion y los filtros necesitan."""
+    profits = [trade.profit_loss for trade in report.trades]
+    wins = [value for value in profits if value > 0]
+    losses = [value for value in profits if value < 0]
+    net_profit = round(sum(profits), 2)
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    drawdown = _drawdown_amount(report)
+    monthly_values = [value for months in report.monthly.values() for value in months.values()]
+    positive_month_ratio = (
+        len([value for value in monthly_values if value > 0]) / len(monthly_values)
+        if monthly_values
+        else 0.0
+    )
+    (
+        max_month_concentration, top3_month_profit, residual_profit_after_top3,
+        residual_profit_ratio, scaled_residual_top_months, scaled_residual_profit_ratio,
+    ) = _monthly_concentration(monthly_values, net_profit)
+    avg_trade = net_profit / len(profits) if profits else 0.0
+    deviation = statistics.pstdev(profits) if len(profits) > 1 else 0.0
+    net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(
+        report.symbol, broker=broker
+    )
+    equity_drawdown, equity_drawdown_pct = _equity_drawdown(report)
+    return _ReportMetrics(
+        profits=profits,
+        losses=losses,
+        monthly_values=monthly_values,
+        net_profit=net_profit,
+        profit_factor=round(gross_profit / gross_loss, 4) if gross_loss else (99.0 if gross_profit else 0.0),
+        drawdown=drawdown,
+        drawdown_pct=_drawdown_pct(report),
+        recovery_factor=round(net_profit / drawdown, 4) if drawdown else (99.0 if net_profit > 0 else 0.0),
+        positive_month_ratio=positive_month_ratio,
+        max_month_concentration=max_month_concentration,
+        top3_month_profit=top3_month_profit,
+        residual_profit_after_top3=residual_profit_after_top3,
+        residual_profit_ratio=residual_profit_ratio,
+        scaled_residual_top_months=scaled_residual_top_months,
+        scaled_residual_profit_ratio=scaled_residual_profit_ratio,
+        trade_curve_stability=_trade_curve_stability(profits),
+        avg_trade=avg_trade,
+        sqn=math.sqrt(len(profits)) * avg_trade / deviation if deviation else 0.0,
+        net_profit_factor=net_profit_factor,
+        normalization_group=normalization_group,
+        net_profit_basis=net_profit_basis,
+        normalized_net_profit=round(net_profit * net_profit_factor, 2),
+        history_quality=_history_quality(report),
+        equity_drawdown=equity_drawdown,
+        equity_drawdown_pct=equity_drawdown_pct,
+        equity_recovery_factor=(
+            net_profit / equity_drawdown
+            if equity_drawdown is not None and equity_drawdown > 0 else None
+        ),
+    )

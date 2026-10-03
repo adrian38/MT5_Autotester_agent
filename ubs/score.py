@@ -13,7 +13,7 @@ from portfolio_manager.mt5_report import StrategyReport, parse_report
 from ubs.account import DEFAULT_BROKER
 from ubs.normalization import net_profit_normalization
 from ubs.risk_profit import RiskProfitConfig, apply_base_profit_gate
-from ubs.score_metrics import (
+from ubs.score_metrics import (  # noqa: F401
     GENERALIZATION_BOOTSTRAP_MEAN_BLOCK,
     GENERALIZATION_BOOTSTRAP_REPS,
     _ascii_key,
@@ -27,18 +27,16 @@ from ubs.score_metrics import (
     _percentile,
     _to_float,
     _trade_curve_stability,
+    _ReportMetrics,
+    _report_metrics,
+    RESIDUAL_TOP_MONTH_SHARE,
     equity_drawdown_from_report_file,
+    residual_profit_ratio_after_top_months,
+    top_month_count,
 )
 
 
 SCORE_FORMULA_VERSION = "2"
-# Share of the active months the scale-free concentration measure removes. 5% of
-# a 60-month construction window is the historical fixed top three, so both
-# measures agree there and only diverge on the shorter windows robustness uses.
-# Deliberately not part of ScoreConfig: putting it there would change the score
-# config hash of every stored row to express something no verdict depends on
-# outside the OOS risk route.
-RESIDUAL_TOP_MONTH_SHARE = 0.05
 
 
 @dataclass(frozen=True)
@@ -176,6 +174,143 @@ def score_report_file(
     )
 
 
+def _absolute_gate_reasons(metrics: _ReportMetrics, config: ScoreConfig) -> list[str]:
+    """Filtros absolutos que un reporte no cumple."""
+    reasons = []
+    if metrics.normalized_net_profit <= config.min_net_profit:
+        reasons.append("net_profit")
+    if metrics.profit_factor < config.min_profit_factor:
+        reasons.append("profit_factor")
+    if metrics.trades < config.min_trades:
+        reasons.append("trades")
+    if metrics.drawdown_pct > config.max_drawdown_pct:
+        reasons.append("drawdown_pct")
+    if metrics.recovery_factor < config.min_recovery_factor:
+        reasons.append("recovery_factor")
+    if metrics.positive_month_ratio < config.min_positive_month_ratio:
+        reasons.append("positive_month_ratio")
+    return reasons
+
+
+def _passes_absolute_gates(
+    metrics: _ReportMetrics, config: ScoreConfig, preliminary_risk: dict[str, object]
+) -> bool:
+    """Si el reporte es candidato antes de medir su generalizacion."""
+    return (
+        (metrics.normalized_net_profit > config.min_net_profit
+         or (config.risk_profit.mode != "off" and preliminary_risk["eligible"]))
+        and metrics.profit_factor >= config.min_profit_factor
+        and metrics.trades >= config.min_trades
+        and metrics.drawdown_pct <= config.max_drawdown_pct
+        and metrics.recovery_factor >= config.min_recovery_factor
+        and metrics.positive_month_ratio >= config.min_positive_month_ratio
+    )
+
+
+def _report_bootstrap(
+    metrics: _ReportMetrics, config: ScoreConfig, risk_stage: str,
+    include_generalization_bootstrap: bool,
+) -> dict[str, object]:
+    """Bootstrap de generalizacion, solo para los que pasan los filtros."""
+    _, preliminary_risk = apply_base_profit_gate(
+        metrics.risk_metrics(), ["net_profit"], config.risk_profit, stage=risk_stage,
+        max_drawdown_pct=config.max_drawdown_pct, min_recovery_factor=config.min_recovery_factor,
+    )
+    if (
+        include_generalization_bootstrap
+        and metrics.profits
+        and _passes_absolute_gates(metrics, config, preliminary_risk)
+    ):
+        return _generalization_bootstrap(metrics.profits)
+    return {}
+
+
+def _report_score(metrics: _ReportMetrics, bootstrap: dict[str, object]) -> float:
+    """Puntuacion del reporte con la formula vigente."""
+    return _score_formula(
+        net_profit=metrics.normalized_net_profit,
+        profit_factor=metrics.profit_factor,
+        recovery_factor=metrics.recovery_factor,
+        drawdown_pct=metrics.drawdown_pct,
+        trades=metrics.trades,
+        positive_month_ratio=metrics.positive_month_ratio,
+        max_month_concentration=metrics.max_month_concentration,
+        sqn=metrics.sqn,
+        residual_profit_ratio=metrics.residual_profit_ratio,
+        trade_curve_stability=metrics.trade_curve_stability,
+        bootstrap_net_positive_probability=bootstrap.get("net_positive_probability"),
+        bootstrap_pf_p05=bootstrap.get("pf_p05"),
+    )
+
+
+def _bootstrap_fields(bootstrap: dict[str, object]) -> dict[str, object]:
+    """Campos del bootstrap tal y como se guardan en el resultado."""
+    return {
+        "bootstrap_reps": int(bootstrap["reps"]) if bootstrap else None,
+        "bootstrap_mean_block": float(bootstrap["mean_block"]) if bootstrap else None,
+        "bootstrap_net_positive_probability": (
+            round(float(bootstrap["net_positive_probability"]), 6) if bootstrap else None
+        ),
+        "bootstrap_net_p05": round(float(bootstrap["net_p05"]), 4) if bootstrap else None,
+        "bootstrap_pf_p05": round(float(bootstrap["pf_p05"]), 6) if bootstrap else None,
+    }
+
+
+def _build_score_result(
+    report: StrategyReport, config: ScoreConfig, metrics: _ReportMetrics,
+    score: float, reasons: list[str], risk_audit: object, bootstrap: dict[str, object],
+) -> ScoreResult:
+    """Arma el resultado persistible de puntuar un reporte."""
+    return ScoreResult(
+        report_path=str(report.path),
+        name=report.name,
+        symbol=report.symbol,
+        timeframe=report.timeframe,
+        score=round(score, 4),
+        accepted=not reasons,
+        net_profit=metrics.net_profit,
+        raw_net_profit=metrics.net_profit,
+        normalized_net_profit=metrics.normalized_net_profit,
+        net_profit_factor=round(metrics.net_profit_factor, 4),
+        net_profit_basis=metrics.net_profit_basis,
+        normalization_group=metrics.normalization_group,
+        history_quality=metrics.history_quality,
+        profit_factor=metrics.profit_factor,
+        recovery_factor=metrics.recovery_factor,
+        drawdown=round(metrics.drawdown, 2),
+        drawdown_pct=round(metrics.drawdown_pct, 4),
+        trades=metrics.trades,
+        positive_month_ratio=round(metrics.positive_month_ratio, 4),
+        max_month_concentration=round(metrics.max_month_concentration, 4),
+        avg_trade=round(metrics.avg_trade, 4),
+        sqn=round(metrics.sqn, 4),
+        reasons=tuple(reasons),
+        losing_trades=len(metrics.losses),
+        active_months=metrics.active_months,
+        top3_month_profit=round(metrics.top3_month_profit, 4),
+        residual_profit_after_top3=round(metrics.residual_profit_after_top3, 4),
+        residual_profit_ratio=round(metrics.residual_profit_ratio, 6),
+        trade_curve_stability=(
+            round(metrics.trade_curve_stability, 6)
+            if metrics.trade_curve_stability is not None else None
+        ),
+        **_bootstrap_fields(bootstrap),
+        score_formula_version=SCORE_FORMULA_VERSION,
+        score_config=config.to_dict(),
+        score_config_hash=config.stable_hash(),
+        equity_drawdown=metrics.equity_drawdown,
+        equity_drawdown_pct=metrics.equity_drawdown_pct,
+        equity_recovery_factor=metrics.equity_recovery_factor,
+        risk_profit_audit=risk_audit,
+        scaled_residual_profit_ratio=(
+            round(metrics.scaled_residual_profit_ratio, 6)
+            if metrics.scaled_residual_profit_ratio is not None
+            else None
+        ),
+        scaled_residual_top_months=metrics.scaled_residual_top_months,
+    )
+
+
 def score_report(
     report: StrategyReport,
     config: ScoreConfig | None = None,
@@ -185,156 +320,18 @@ def score_report(
     risk_stage: str = "base",
 ) -> ScoreResult:
     config = config or ScoreConfig()
-    profits = [trade.profit_loss for trade in report.trades]
-    wins = [value for value in profits if value > 0]
-    losses = [value for value in profits if value < 0]
-    net_profit = round(sum(profits), 2)
-    gross_profit = sum(wins)
-    gross_loss = abs(sum(losses))
-    profit_factor = round(gross_profit / gross_loss, 4) if gross_loss else (99.0 if gross_profit else 0.0)
-    drawdown = _drawdown_amount(report)
-    drawdown_pct = _drawdown_pct(report)
-    recovery_factor = round(net_profit / drawdown, 4) if drawdown else (99.0 if net_profit > 0 else 0.0)
-    monthly_values = [value for months in report.monthly.values() for value in months.values()]
-    positive_month_ratio = (
-        len([value for value in monthly_values if value > 0]) / len(monthly_values)
-        if monthly_values
-        else 0.0
+    metrics = _report_metrics(report, broker)
+    bootstrap = _report_bootstrap(
+        metrics, config, risk_stage, include_generalization_bootstrap
     )
-    total_positive_months = sum(value for value in monthly_values if value > 0)
-    max_month = max((value for value in monthly_values if value > 0), default=0.0)
-    max_month_concentration = max_month / total_positive_months if total_positive_months else 1.0
-    top3_month_profit = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:3])
-    residual_profit_after_top3 = net_profit - top3_month_profit
-    residual_profit_ratio = residual_profit_after_top3 / net_profit if net_profit > 0 else -1.0
-    scaled_residual_top_months = top_month_count(len(monthly_values), RESIDUAL_TOP_MONTH_SHARE)
-    scaled_residual_profit_ratio = (
-        residual_profit_ratio_after_top_months(monthly_values, net_profit, scaled_residual_top_months)
-        if scaled_residual_top_months
-        else None
-    )
-    trade_curve_stability = _trade_curve_stability(profits)
-    avg_trade = net_profit / len(profits) if profits else 0.0
-    deviation = statistics.pstdev(profits) if len(profits) > 1 else 0.0
-    sqn = math.sqrt(len(profits)) * avg_trade / deviation if deviation else 0.0
-    net_profit_factor, normalization_group, net_profit_basis = net_profit_normalization(report.symbol, broker=broker)
-    normalized_net_profit = round(net_profit * net_profit_factor, 2)
-    history_quality = _history_quality(report)
-    equity_drawdown, equity_drawdown_pct = _equity_drawdown(report)
-    equity_recovery_factor = (
-        net_profit / equity_drawdown
-        if equity_drawdown is not None and equity_drawdown > 0 else None
-    )
-    risk_metrics = dict(
-        net_profit=net_profit, equity_drawdown=equity_drawdown,
-        equity_drawdown_pct=equity_drawdown_pct, profit_factor=profit_factor,
-        trades=len(profits), active_months=len(monthly_values),
-        positive_month_ratio=positive_month_ratio, residual_profit_ratio=residual_profit_ratio,
-    )
-    _, preliminary_risk = apply_base_profit_gate(
-        risk_metrics, ["net_profit"], config.risk_profit, stage=risk_stage,
-        max_drawdown_pct=config.max_drawdown_pct, min_recovery_factor=config.min_recovery_factor,
-    )
-    absolute_gate_candidate = (
-        (normalized_net_profit > config.min_net_profit
-         or (config.risk_profit.mode != "off" and preliminary_risk["eligible"]))
-        and profit_factor >= config.min_profit_factor
-        and len(profits) >= config.min_trades
-        and drawdown_pct <= config.max_drawdown_pct
-        and recovery_factor >= config.min_recovery_factor
-        and positive_month_ratio >= config.min_positive_month_ratio
-    )
-    bootstrap = (
-        _generalization_bootstrap(profits)
-        if include_generalization_bootstrap and profits and absolute_gate_candidate
-        else {}
-    )
-
-    score = _score_formula(
-        net_profit=normalized_net_profit,
-        profit_factor=profit_factor,
-        recovery_factor=recovery_factor,
-        drawdown_pct=drawdown_pct,
-        trades=len(profits),
-        positive_month_ratio=positive_month_ratio,
-        max_month_concentration=max_month_concentration,
-        sqn=sqn,
-        residual_profit_ratio=residual_profit_ratio,
-        trade_curve_stability=trade_curve_stability,
-        bootstrap_net_positive_probability=bootstrap.get("net_positive_probability"),
-        bootstrap_pf_p05=bootstrap.get("pf_p05"),
-    )
-
-    reasons = []
-    if normalized_net_profit <= config.min_net_profit:
-        reasons.append("net_profit")
-    if profit_factor < config.min_profit_factor:
-        reasons.append("profit_factor")
-    if len(profits) < config.min_trades:
-        reasons.append("trades")
-    if drawdown_pct > config.max_drawdown_pct:
-        reasons.append("drawdown_pct")
-    if recovery_factor < config.min_recovery_factor:
-        reasons.append("recovery_factor")
-    if positive_month_ratio < config.min_positive_month_ratio:
-        reasons.append("positive_month_ratio")
+    score = _report_score(metrics, bootstrap)
     reasons, risk_audit = apply_base_profit_gate(
-        risk_metrics, reasons, config.risk_profit, stage=risk_stage,
-        max_drawdown_pct=config.max_drawdown_pct, min_recovery_factor=config.min_recovery_factor,
+        metrics.risk_metrics(), _absolute_gate_reasons(metrics, config), config.risk_profit,
+        stage=risk_stage, max_drawdown_pct=config.max_drawdown_pct,
+        min_recovery_factor=config.min_recovery_factor,
     )
-
-    return ScoreResult(
-        report_path=str(report.path),
-        name=report.name,
-        symbol=report.symbol,
-        timeframe=report.timeframe,
-        score=round(score, 4),
-        accepted=not reasons,
-        net_profit=net_profit,
-        raw_net_profit=net_profit,
-        normalized_net_profit=normalized_net_profit,
-        net_profit_factor=round(net_profit_factor, 4),
-        net_profit_basis=net_profit_basis,
-        normalization_group=normalization_group,
-        history_quality=history_quality,
-        profit_factor=profit_factor,
-        recovery_factor=recovery_factor,
-        drawdown=round(drawdown, 2),
-        drawdown_pct=round(drawdown_pct, 4),
-        trades=len(profits),
-        positive_month_ratio=round(positive_month_ratio, 4),
-        max_month_concentration=round(max_month_concentration, 4),
-        avg_trade=round(avg_trade, 4),
-        sqn=round(sqn, 4),
-        reasons=tuple(reasons),
-        losing_trades=len(losses),
-        active_months=len(monthly_values),
-        top3_month_profit=round(top3_month_profit, 4),
-        residual_profit_after_top3=round(residual_profit_after_top3, 4),
-        residual_profit_ratio=round(residual_profit_ratio, 6),
-        trade_curve_stability=(
-            round(trade_curve_stability, 6) if trade_curve_stability is not None else None
-        ),
-        bootstrap_reps=int(bootstrap["reps"]) if bootstrap else None,
-        bootstrap_mean_block=float(bootstrap["mean_block"]) if bootstrap else None,
-        bootstrap_net_positive_probability=(
-            round(float(bootstrap["net_positive_probability"]), 6) if bootstrap else None
-        ),
-        bootstrap_net_p05=round(float(bootstrap["net_p05"]), 4) if bootstrap else None,
-        bootstrap_pf_p05=round(float(bootstrap["pf_p05"]), 6) if bootstrap else None,
-        score_formula_version=SCORE_FORMULA_VERSION,
-        score_config=config.to_dict(),
-        score_config_hash=config.stable_hash(),
-        equity_drawdown=equity_drawdown,
-        equity_drawdown_pct=equity_drawdown_pct,
-        equity_recovery_factor=equity_recovery_factor,
-        risk_profit_audit=risk_audit,
-        scaled_residual_profit_ratio=(
-            round(scaled_residual_profit_ratio, 6)
-            if scaled_residual_profit_ratio is not None
-            else None
-        ),
-        scaled_residual_top_months=scaled_residual_top_months,
+    return _build_score_result(
+        report, config, metrics, score, reasons, risk_audit, bootstrap
     )
 
 
@@ -459,29 +456,6 @@ def _score_formula(
         - dd_penalty
         - concentration_penalty
     )
-
-
-def top_month_count(active_months: int, share: float) -> int | None:
-    """How many best months the concentration measure removes, half-up.
-
-    A fixed three months is 5% of a 60-month construction window but 18% of a
-    17-month OOS window, so the same number makes a categorically harsher test
-    on the shorter one. Scaling the count keeps the test comparable; it never
-    drops below one month, or there would be nothing to remove.
-    """
-
-    if active_months <= 0 or share <= 0:
-        return None
-    return max(1, int(active_months * share + 0.5))
-
-
-def residual_profit_ratio_after_top_months(
-    monthly_values: list[float], net_profit: float, count: int
-) -> float:
-    """Share of the net profit that survives removing the `count` best months."""
-
-    top = sum(sorted((value for value in monthly_values if value > 0), reverse=True)[:count])
-    return (net_profit - top) / net_profit if net_profit > 0 else -1.0
 
 
 def route_evidence_from_report_file(
