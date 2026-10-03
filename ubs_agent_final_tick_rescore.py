@@ -333,6 +333,53 @@ def _rescore_stage_variant(original_variant: Variant, report: Path, suffix: str)
     )
 
 
+def _rescore_ohlc_result(
+    args: argparse.Namespace, score_config: ScoreConfig, symbol_map: dict[str, str],
+    ohlc_variant: Variant, ohlc_report: Path, candidate_id: int, record,
+):
+    """Puntua el OHLC guardado; None si ya quedo resuelto por su estado."""
+    try:
+        ohlc_result = score_report_file(
+            ohlc_report,
+            config=score_config_for_variant(
+                score_config,
+                ohlc_variant,
+                min_trades_w1=args.final_tick_min_trades_w1,
+                min_trades_mn=args.final_tick_min_trades_mn,
+            ),
+            broker=args.broker,
+        )
+    except Exception as exc:
+        print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
+        record("parse_error")
+        return None
+    ohlc_matches, ohlc_mismatch = report_matches_variant(
+        ohlc_variant,
+        ohlc_result,
+        symbol_map,
+        args.symbol_suffix,
+        args.broker,
+    )
+    if not ohlc_matches:
+        print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
+        record("report_mismatch", ohlc_result, quality=ohlc_result.history_quality)
+        return None
+    period_min_ohlc_trades = min_trades_for_period(
+        ohlc_variant.target_period,
+        int(args.final_tick_min_ohlc_trades),
+        int(args.final_tick_min_trades_w1),
+        int(args.final_tick_min_trades_mn),
+    )
+    if ohlc_result.trades < period_min_ohlc_trades:
+        payload = final_tick_ohlc_trades_pending_payload(ohlc_result, period_min_ohlc_trades)
+        record(
+            "pending_ohlc_trades", ohlc_result,
+            details=json.dumps(payload, ensure_ascii=True, sort_keys=True),
+        )
+        return None
+    return ohlc_result
+
+
 def _rescore_final_tick_row(
     args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig,
     symbol_map: dict[str, str], row, status_counts: dict[str, int],
@@ -362,44 +409,10 @@ def _rescore_final_tick_row(
         )
         status_counts[status] = status_counts.get(status, 0) + 1
 
-    try:
-        ohlc_result = score_report_file(
-            ohlc_report,
-            config=score_config_for_variant(
-                score_config,
-                ohlc_variant,
-                min_trades_w1=args.final_tick_min_trades_w1,
-                min_trades_mn=args.final_tick_min_trades_mn,
-            ),
-            broker=args.broker,
-        )
-    except Exception as exc:
-        print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
-        record("parse_error")
-        return True
-    ohlc_matches, ohlc_mismatch = report_matches_variant(
-        ohlc_variant,
-        ohlc_result,
-        symbol_map,
-        args.symbol_suffix,
-        args.broker,
+    ohlc_result = _rescore_ohlc_result(
+        args, score_config, symbol_map, ohlc_variant, ohlc_report, candidate_id, record
     )
-    if not ohlc_matches:
-        print(f"AVISO: reporte OHLC Final Tick no coincide para candidate #{candidate_id}: {ohlc_mismatch}")
-        record("report_mismatch", ohlc_result, quality=ohlc_result.history_quality)
-        return True
-    period_min_ohlc_trades = min_trades_for_period(
-        ohlc_variant.target_period,
-        int(args.final_tick_min_ohlc_trades),
-        int(args.final_tick_min_trades_w1),
-        int(args.final_tick_min_trades_mn),
-    )
-    if ohlc_result.trades < period_min_ohlc_trades:
-        payload = final_tick_ohlc_trades_pending_payload(ohlc_result, period_min_ohlc_trades)
-        record(
-            "pending_ohlc_trades", ohlc_result,
-            details=json.dumps(payload, ensure_ascii=True, sort_keys=True),
-        )
+    if ohlc_result is None:
         return True
     if real_tick_report is None or not real_tick_report.exists():
         record(missing_report_status(ohlc_variant.target_symbol, args, symbol_map), ohlc_result)
