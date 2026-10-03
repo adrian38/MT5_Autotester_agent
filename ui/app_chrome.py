@@ -33,9 +33,15 @@ class AppChromeMixin:
         style = ttk.Style(self)
         style.theme_use("clam")
         base_font = ("Segoe UI", 10)
-        bold_font = ("Segoe UI", 10, "bold")
-
         style.configure(".", font=base_font, background=COLORS["bg"], foreground=COLORS["text"])
+        self._configure_frame_styles(style)
+        self._configure_label_styles(style)
+        self._configure_button_styles(style)
+        self._configure_input_styles(style)
+        self._configure_table_styles(style)
+
+    def _configure_frame_styles(self, style) -> None:
+        """Fondos de los contenedores de la ventana."""
         style.configure("TFrame", background=COLORS["bg"])
         style.configure("Panel.TFrame", background=COLORS["panel"])
         style.configure("Alt.TFrame", background=COLORS["panel_alt"])
@@ -45,13 +51,14 @@ class AppChromeMixin:
         style.configure("CardSoft.TFrame", background=COLORS["panel_alt"])
         style.configure("Log.TFrame", background=COLORS["log_bg"])
 
+    def _configure_label_styles(self, style) -> None:
+        """Tipografia y color de cada tipo de etiqueta."""
         style.configure("TLabel", background=COLORS["bg"], foreground=COLORS["text"])
         style.configure("Panel.TLabel", background=COLORS["panel"], foreground=COLORS["text"])
         style.configure("Sidebar.TLabel", background=COLORS["sidebar_bg"], foreground=COLORS["text"])
         style.configure("Topbar.TLabel", background=COLORS["topbar_bg"], foreground=COLORS["text"])
         style.configure("Muted.TLabel", background=COLORS["panel"], foreground=COLORS["muted"])
         style.configure("MutedBg.TLabel", background=COLORS["bg"], foreground=COLORS["muted"])
-
         style.configure("LabelCaps.TLabel", background=COLORS["panel"], foreground=COLORS["muted"], font=("Segoe UI", 9, "bold"))
         style.configure("Metric.TLabel", background=COLORS["panel"], foreground=COLORS["primary"], font=("Segoe UI", 26, "bold"))
         style.configure("MetricName.TLabel", background=COLORS["panel"], foreground=COLORS["muted"], font=("Segoe UI", 9, "bold"))
@@ -68,6 +75,9 @@ class AppChromeMixin:
         style.configure("Chip.TLabel", background=COLORS["panel_highest"], foreground=COLORS["primary"], font=("Segoe UI", 8, "bold"), padding=(8, 3))
         style.configure("ChipAccent.TLabel", background=COLORS["accent_soft"], foreground=COLORS["accent_soft_text"], font=("Segoe UI", 8, "bold"), padding=(8, 3))
 
+    def _configure_button_styles(self, style) -> None:
+        """Botones principales, de peligro y de accion."""
+        bold_font = ("Segoe UI", 10, "bold")
         style.configure("TButton", padding=(12, 8), borderwidth=0, background=COLORS["panel_alt"], foreground=COLORS["text"], font=bold_font)
         style.map("TButton", background=[("active", COLORS["panel_high"])])
         style.configure("Primary.TButton", background=COLORS["accent"], foreground="#ffffff", padding=(14, 9), font=bold_font)
@@ -84,6 +94,8 @@ class AppChromeMixin:
         style.configure("Action.TButton", background=COLORS["panel"], foreground=COLORS["text"], padding=(12, 10), borderwidth=1, font=bold_font, anchor="w")
         style.map("Action.TButton", background=[("active", COLORS["panel_alt"])])
 
+    def _configure_input_styles(self, style) -> None:
+        """Campos de texto, spinbox y desplegables."""
         style.configure("TEntry", fieldbackground=COLORS["entry_bg"], foreground=COLORS["text"],
                         insertcolor=COLORS["text"], bordercolor=COLORS["border"],
                         lightcolor=COLORS["border"], padding=7)
@@ -103,6 +115,9 @@ class AppChromeMixin:
         self.option_add("*TCombobox*Listbox.selectBackground", COLORS["accent"])
         self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         self.option_add("*TCombobox*Listbox.borderWidth", "0")
+
+    def _configure_table_styles(self, style) -> None:
+        """Tablas, casillas, radios y barras de progreso."""
         style.configure("Treeview", background=COLORS["tree_bg"], fieldbackground=COLORS["tree_bg"],
                         foreground=COLORS["text"], rowheight=26, borderwidth=0)
         style.map("Treeview", background=[("selected", COLORS["panel_highest"])], foreground=[("selected", COLORS["text"])])
