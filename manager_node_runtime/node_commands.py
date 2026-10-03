@@ -190,6 +190,178 @@ def build_generation_command(config: dict[str, Any], payload: dict[str, Any]) ->
     return filter_supported_options(args, script), project
 
 
+ROBUST_SCORE_OPTIONS = {
+    "ubs_robust_pass_min_net_profit": "--min-net-profit",
+    "ubs_robust_pass_min_profit_factor": "--min-profit-factor",
+    "ubs_robust_pass_min_trades": "--min-trades",
+    "ubs_robust_pass_max_drawdown_pct": "--max-drawdown-pct",
+    "ubs_robust_pass_min_recovery_factor": "--min-recovery-factor",
+    "ubs_robust_min_net_retention": "--robust-min-net-retention",
+    "ubs_robust_min_pf_edge_retention": "--robust-min-pf-edge-retention",
+    "ubs_robust_min_recovery_retention": "--robust-min-recovery-retention",
+    "ubs_robust_max_dd_inflation": "--robust-max-dd-inflation",
+    "ubs_long_tf_min_trades_w1": "--min-trades-w1",
+    "ubs_long_tf_min_trades_mn": "--min-trades-mn",
+}
+FINAL_TICK_OPTIONS = {
+    "ubs_final_tick_min_history_quality": "--final-tick-min-history-quality",
+    "ubs_final_tick_min_ohlc_trades": "--final-tick-min-ohlc-trades",
+    "ubs_final_tick_min_trades_w1": "--final-tick-min-trades-w1",
+    "ubs_final_tick_min_trades_mn": "--final-tick-min-trades-mn",
+    "ubs_final_tick_max_net_delta_pct": "--final-tick-max-net-delta-pct",
+    "ubs_final_tick_max_pf_delta_pct": "--final-tick-max-pf-delta-pct",
+    "ubs_final_tick_max_dd_delta_pct": "--final-tick-max-dd-delta-pct",
+    "ubs_final_tick_max_trades_delta_pct": "--final-tick-max-trades-delta-pct",
+}
+REGRESSION_OPTIONS = {
+    "ubs_regression_from_date": "--regression-from-date",
+    "ubs_regression_to_date": "--regression-to-date",
+    "ubs_regression_min_net_profit": "--regression-min-net-profit",
+    "ubs_regression_min_profit_factor": "--regression-min-profit-factor",
+    "ubs_regression_min_trades": "--regression-min-trades",
+    "ubs_regression_min_trades_w1": "--regression-min-trades-w1",
+    "ubs_regression_min_trades_mn": "--regression-min-trades-mn",
+    "ubs_regression_max_drawdown_pct": "--regression-max-drawdown-pct",
+    "ubs_regression_min_recovery_factor": "--regression-min-recovery-factor",
+    "ubs_regression_min_positive_month_ratio": "--regression-min-positive-month-ratio",
+    "ubs_regression_min_pf_efficiency": "--regression-min-pf-efficiency",
+    "ubs_regression_max_dd_ratio": "--regression-max-dd-ratio",
+    "ubs_regression_positive_points": "--regression-positive-points",
+    "ubs_regression_negative_points": "--regression-negative-points",
+}
+FINAL_TICK_STAGES = {"final_tick", "final_tick_quality", "final_tick_6m", "final_tick_6m_quality"}
+
+
+def _add_options(args: list[str], cfg, options: dict[str, str]) -> None:
+    """Anade cada opcion del mapa con el valor que tenga en ui_settings."""
+    for key, option in options.items():
+        _add(args, option, setting(cfg, "General", key))
+
+
+def _run_base_dates(config: dict[str, Any], cfg, run_id: int) -> tuple[str, str]:
+    """Fechas con las que nacio el run; sin ellas no se puede reintentar."""
+    db_path = memory_path(config, cfg)
+    if not db_path.is_file():
+        raise ValueError(f"No existe la memoria SQLite: {db_path}")
+    uri = db_path.resolve().as_uri() + "?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn:
+        conn.row_factory = sqlite3.Row
+        if not _table_exists(conn, "runs"):
+            raise ValueError("La memoria SQLite no contiene la tabla runs")
+        run = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
+    if run is None:
+        raise ValueError(f"No existe el run #{run_id} en memoria")
+    try:
+        run_config = json.loads(str(run["config_json"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"El run #{run_id} tiene config_json invalido") from exc
+    run_config = run_config if isinstance(run_config, dict) else {}
+    execution = run_config.get("execution") if isinstance(run_config.get("execution"), dict) else {}
+    run_args = run_config.get("args") if isinstance(run_config.get("args"), dict) else {}
+    from_date = str(execution.get("from_date") or run_args.get("from_date") or "").strip()
+    to_date = str(execution.get("to_date") or run_args.get("to_date") or "").strip()
+    if not from_date or not to_date:
+        raise ValueError(
+            f"El run #{run_id} no guarda sus fechas base; se cancela para no usar fechas actuales"
+        )
+    return from_date, to_date
+
+
+def _add_result_stage(args: list[str], config: dict[str, Any], cfg, run_id: int) -> None:
+    """Reintento de los resultados del run con sus fechas originales."""
+    from_date, to_date = _run_base_dates(config, cfg, run_id)
+    args.append("--retry-mismatch-run")
+    _add(args, "--retry-run-id", run_id)
+    _add(args, "--from-date", from_date)
+    _add(args, "--to-date", to_date)
+    _add_options(args, cfg, SCORE_OPTIONS)
+
+
+def _add_robustness_stage(args: list[str], cfg, run_id: int) -> None:
+    """Evaluacion OOS de los candidatos aceptados del run."""
+    args.extend(["--evaluate-robustness", "--robust-pending-only"])
+    _add(args, "--robust-run-id", run_id)
+    _add(args, "--robust-positive-bonus", setting(cfg, "General", "ubs_robust_positive_bonus", "70"))
+    _add(args, "--robust-negative-bonus", setting(cfg, "General", "ubs_robust_negative_bonus", "-70"))
+    _add(args, "--from-date", setting(cfg, "General", "ubs_robust_from_date"))
+    _add(args, "--to-date", setting(cfg, "General", "ubs_robust_to_date"))
+    _add_options(args, cfg, ROBUST_SCORE_OPTIONS)
+
+
+def _add_final_tick_stage(args: list[str], cfg, run_id: int, stage: str) -> None:
+    """Final tick corto o de seis meses, con o sin reintento de calidad."""
+    six_month = stage in {"final_tick_6m", "final_tick_6m_quality"}
+    retry_quality = stage in {"final_tick_quality", "final_tick_6m_quality"}
+    prefix = "ubs_final_tick_6m" if six_month else "ubs_final_tick"
+    args.extend(["--evaluate-final-tick", "--final-tick-pending-only"])
+    if retry_quality:
+        args.extend(["--final-tick-retry-pending-quality", "--final-tick-skip-ohlc"])
+    _add(args, "--final-tick-run-id", run_id)
+    _add(args, "--final-tick-stage", "six_month" if six_month else "probe")
+    _add(args, "--from-date", setting(cfg, "General", f"{prefix}_from_date"))
+    _add(args, "--to-date", setting(cfg, "General", f"{prefix}_to_date"))
+    _add(args, "--final-tick-ohlc-from-date", setting(cfg, "General", f"{prefix}_ohlc_from_date"))
+    _add(args, "--final-tick-ohlc-to-date", setting(cfg, "General", f"{prefix}_ohlc_to_date"))
+    _add_options(args, cfg, FINAL_TICK_OPTIONS)
+
+
+def _add_regression_stage(args: list[str], cfg, run_id: int) -> None:
+    """Prueba regresiva sobre los aceptados de seis meses."""
+    args.extend(["--evaluate-regression", "--regression-pending-only"])
+    _add(args, "--regression-run-id", run_id)
+    _add_options(args, cfg, REGRESSION_OPTIONS)
+
+
+def _add_stage_options(
+    args: list[str], config: dict[str, Any], cfg, stage: str, run_id: int
+) -> None:
+    """Opciones propias de la etapa pedida del pipeline."""
+    if stage == "result":
+        _add_result_stage(args, config, cfg, run_id)
+    elif stage == "robustness":
+        _add_robustness_stage(args, cfg, run_id)
+    elif stage in FINAL_TICK_STAGES:
+        _add_final_tick_stage(args, cfg, run_id, stage)
+    elif stage == "regression":
+        _add_regression_stage(args, cfg, run_id)
+    else:
+        raise ValueError(f"Etapa de pipeline desconocida: {stage}")
+
+
+def _add_terminal_options(
+    args: list[str], config: dict[str, Any], cfg, payload: dict[str, Any], settings_path: Path
+) -> None:
+    """Terminal o pool multiterminal con el que se ejecutara la etapa."""
+    if setting_bool(cfg, "Multiterminal", "enabled"):
+        args.extend(["--multi-terminal", "--terminals-config", str(settings_path)])
+        workers = safe_int(
+            payload.get("max_workers", setting(cfg, "Multiterminal", "workers", "1")),
+            1, minimum=1, maximum=64,
+        )
+        _add(args, "--max-workers", workers)
+        return
+    expert = str(config.get("expert") or setting(cfg, "Paths", "ubs_ex5_file"))
+    if not expert:
+        raise ValueError("Falta Paths.ubs_ex5_file y no hay multiterminal habilitado")
+    _add(args, "--expert", expert)
+    _add(args, "--mt5-path", setting(cfg, "Paths", "mt5_path"))
+    _add(args, "--data-dir", setting(cfg, "Paths", "mt5_data_root"))
+
+
+def _add_symbol_options(args: list[str], cfg, broker: str) -> None:
+    """Mapa de simbolos y sufijos del broker, si estan habilitados."""
+    broker_key = broker.lower().replace(" ", "")
+    if setting_bool(cfg, "General", "symbol_map_enabled"):
+        _add(
+            args, "--symbol-map",
+            setting(cfg, "General", f"symbol_map_{broker_key}") or setting(cfg, "General", "symbol_map"),
+        )
+    if setting_bool(cfg, "General", "symbol_suffix_enabled"):
+        _add(args, "--symbol-suffix", setting(cfg, "General", "symbol_suffix"))
+        _add(args, "--symbol-futures-suffix", setting(cfg, "General", "symbol_futures_suffix"))
+        _add(args, "--symbol-shares-suffix", setting(cfg, "General", "symbol_shares_suffix"))
+
+
 def build_pipeline_stage_command(
     config: dict[str, Any],
     payload: dict[str, Any],
@@ -213,127 +385,9 @@ def build_pipeline_stage_command(
     _add(args, "--account-type", account)
     _add(args, "--template", config.get("template") or setting(cfg, "Paths", "template_path", project / "tester_template.ini"))
     _add(args, "--delay", payload.get("delay", setting(cfg, "General", "delay", "5")))
-
-    if stage == "result":
-        db_path = memory_path(config, cfg)
-        if not db_path.is_file():
-            raise ValueError(f"No existe la memoria SQLite: {db_path}")
-        uri = db_path.resolve().as_uri() + "?mode=ro"
-        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn:
-            conn.row_factory = sqlite3.Row
-            if not _table_exists(conn, "runs"):
-                raise ValueError("La memoria SQLite no contiene la tabla runs")
-            run = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
-        if run is None:
-            raise ValueError(f"No existe el run #{run_id} en memoria")
-        try:
-            run_config = json.loads(str(run["config_json"] or "{}"))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError(f"El run #{run_id} tiene config_json invalido") from exc
-        run_config = run_config if isinstance(run_config, dict) else {}
-        execution = run_config.get("execution") if isinstance(run_config.get("execution"), dict) else {}
-        run_args = run_config.get("args") if isinstance(run_config.get("args"), dict) else {}
-        from_date = str(execution.get("from_date") or run_args.get("from_date") or "").strip()
-        to_date = str(execution.get("to_date") or run_args.get("to_date") or "").strip()
-        if not from_date or not to_date:
-            raise ValueError(
-                f"El run #{run_id} no guarda sus fechas base; se cancela para no usar fechas actuales"
-            )
-        args.append("--retry-mismatch-run")
-        _add(args, "--retry-run-id", run_id)
-        _add(args, "--from-date", from_date)
-        _add(args, "--to-date", to_date)
-        for key, option in SCORE_OPTIONS.items():
-            _add(args, option, setting(cfg, "General", key))
-    elif stage == "robustness":
-        args.extend(["--evaluate-robustness", "--robust-pending-only"])
-        _add(args, "--robust-run-id", run_id)
-        _add(args, "--robust-positive-bonus", setting(cfg, "General", "ubs_robust_positive_bonus", "70"))
-        _add(args, "--robust-negative-bonus", setting(cfg, "General", "ubs_robust_negative_bonus", "-70"))
-        _add(args, "--from-date", setting(cfg, "General", "ubs_robust_from_date"))
-        _add(args, "--to-date", setting(cfg, "General", "ubs_robust_to_date"))
-        robust_score_options = {
-            "ubs_robust_pass_min_net_profit": "--min-net-profit",
-            "ubs_robust_pass_min_profit_factor": "--min-profit-factor",
-            "ubs_robust_pass_min_trades": "--min-trades",
-            "ubs_robust_pass_max_drawdown_pct": "--max-drawdown-pct",
-            "ubs_robust_pass_min_recovery_factor": "--min-recovery-factor",
-            "ubs_robust_min_net_retention": "--robust-min-net-retention",
-            "ubs_robust_min_pf_edge_retention": "--robust-min-pf-edge-retention",
-            "ubs_robust_min_recovery_retention": "--robust-min-recovery-retention",
-            "ubs_robust_max_dd_inflation": "--robust-max-dd-inflation",
-            "ubs_long_tf_min_trades_w1": "--min-trades-w1",
-            "ubs_long_tf_min_trades_mn": "--min-trades-mn",
-        }
-        for key, option in robust_score_options.items():
-            _add(args, option, setting(cfg, "General", key))
-    elif stage in {"final_tick", "final_tick_quality", "final_tick_6m", "final_tick_6m_quality"}:
-        six_month = stage in {"final_tick_6m", "final_tick_6m_quality"}
-        retry_quality = stage in {"final_tick_quality", "final_tick_6m_quality"}
-        prefix = "ubs_final_tick_6m" if six_month else "ubs_final_tick"
-        args.extend(["--evaluate-final-tick", "--final-tick-pending-only"])
-        if retry_quality:
-            args.extend(["--final-tick-retry-pending-quality", "--final-tick-skip-ohlc"])
-        _add(args, "--final-tick-run-id", run_id)
-        _add(args, "--final-tick-stage", "six_month" if six_month else "probe")
-        _add(args, "--from-date", setting(cfg, "General", f"{prefix}_from_date"))
-        _add(args, "--to-date", setting(cfg, "General", f"{prefix}_to_date"))
-        _add(args, "--final-tick-ohlc-from-date", setting(cfg, "General", f"{prefix}_ohlc_from_date"))
-        _add(args, "--final-tick-ohlc-to-date", setting(cfg, "General", f"{prefix}_ohlc_to_date"))
-        final_options = {
-            "ubs_final_tick_min_history_quality": "--final-tick-min-history-quality",
-            "ubs_final_tick_min_ohlc_trades": "--final-tick-min-ohlc-trades",
-            "ubs_final_tick_min_trades_w1": "--final-tick-min-trades-w1",
-            "ubs_final_tick_min_trades_mn": "--final-tick-min-trades-mn",
-            "ubs_final_tick_max_net_delta_pct": "--final-tick-max-net-delta-pct",
-            "ubs_final_tick_max_pf_delta_pct": "--final-tick-max-pf-delta-pct",
-            "ubs_final_tick_max_dd_delta_pct": "--final-tick-max-dd-delta-pct",
-            "ubs_final_tick_max_trades_delta_pct": "--final-tick-max-trades-delta-pct",
-        }
-        for key, option in final_options.items():
-            _add(args, option, setting(cfg, "General", key))
-    elif stage == "regression":
-        args.extend(["--evaluate-regression", "--regression-pending-only"])
-        _add(args, "--regression-run-id", run_id)
-        regression_options = {
-            "ubs_regression_from_date": "--regression-from-date",
-            "ubs_regression_to_date": "--regression-to-date",
-            "ubs_regression_min_net_profit": "--regression-min-net-profit",
-            "ubs_regression_min_profit_factor": "--regression-min-profit-factor",
-            "ubs_regression_min_trades": "--regression-min-trades",
-            "ubs_regression_min_trades_w1": "--regression-min-trades-w1",
-            "ubs_regression_min_trades_mn": "--regression-min-trades-mn",
-            "ubs_regression_max_drawdown_pct": "--regression-max-drawdown-pct",
-            "ubs_regression_min_recovery_factor": "--regression-min-recovery-factor",
-            "ubs_regression_min_positive_month_ratio": "--regression-min-positive-month-ratio",
-            "ubs_regression_min_pf_efficiency": "--regression-min-pf-efficiency",
-            "ubs_regression_max_dd_ratio": "--regression-max-dd-ratio",
-            "ubs_regression_positive_points": "--regression-positive-points",
-            "ubs_regression_negative_points": "--regression-negative-points",
-        }
-        for key, option in regression_options.items():
-            _add(args, option, setting(cfg, "General", key))
-    else:
-        raise ValueError(f"Etapa de pipeline desconocida: {stage}")
-
+    _add_stage_options(args, config, cfg, stage, run_id)
     if bool(payload.get("dry_run", False)):
         args.append("--dry-run")
-    if setting_bool(cfg, "Multiterminal", "enabled"):
-        args.extend(["--multi-terminal", "--terminals-config", str(settings_path)])
-        workers = safe_int(payload.get("max_workers", setting(cfg, "Multiterminal", "workers", "1")), 1, minimum=1, maximum=64)
-        _add(args, "--max-workers", workers)
-    else:
-        expert = str(config.get("expert") or setting(cfg, "Paths", "ubs_ex5_file"))
-        if not expert:
-            raise ValueError("Falta Paths.ubs_ex5_file y no hay multiterminal habilitado")
-        _add(args, "--expert", expert)
-        _add(args, "--mt5-path", setting(cfg, "Paths", "mt5_path"))
-        _add(args, "--data-dir", setting(cfg, "Paths", "mt5_data_root"))
-    broker_key = broker.lower().replace(" ", "")
-    if setting_bool(cfg, "General", "symbol_map_enabled"):
-        _add(args, "--symbol-map", setting(cfg, "General", f"symbol_map_{broker_key}") or setting(cfg, "General", "symbol_map"))
-    if setting_bool(cfg, "General", "symbol_suffix_enabled"):
-        _add(args, "--symbol-suffix", setting(cfg, "General", "symbol_suffix"))
-        _add(args, "--symbol-futures-suffix", setting(cfg, "General", "symbol_futures_suffix"))
-        _add(args, "--symbol-shares-suffix", setting(cfg, "General", "symbol_shares_suffix"))
+    _add_terminal_options(args, config, cfg, payload, settings_path)
+    _add_symbol_options(args, cfg, broker)
     return filter_supported_options(args, script), project
