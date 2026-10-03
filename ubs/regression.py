@@ -59,6 +59,118 @@ class RegressionRuntime:
     write_stage_set: Callable[..., str] | None = None
 
 
+@dataclass
+class _RegressionTarget:
+    """Candidato concreto cuya regresiva se esta evaluando."""
+
+    memory: AgentMemory
+    args: Any
+    run_id: int
+    candidate_id: int
+    variant: Variant
+
+    def technical(self, status: str, report: Path | None, **extra) -> str:
+        """Registra un resultado tecnico de la regresiva de este candidato."""
+        return _record_technical(
+            self.memory,
+            self.args,
+            candidate_id=self.candidate_id,
+            run_id=self.run_id,
+            status=status,
+            report=report,
+            **extra,
+        )
+
+
+def _regression_missing_report(
+    target: _RegressionTarget, runtime: RegressionRuntime, watchdog_snapshot: Path | None
+) -> str:
+    """Sin reporte: lo deja como timeout del watchdog o como falta de reporte."""
+    if watchdog_snapshot is not None:
+        return target.technical(
+            "watchdog_timeout",
+            watchdog_snapshot,
+            reasons=("watchdog_timeout",),
+            metadata=_watchdog_snapshot_metadata(watchdog_snapshot, target.variant),
+        )
+    status = (
+        runtime.missing_report_status(target.variant.target_symbol)
+        if runtime.missing_report_status is not None
+        else "no_report"
+    )
+    return target.technical(status, None, reasons=(status,))
+
+
+def _regression_report_checks(
+    target: _RegressionTarget, runtime: RegressionRuntime, symbol_map: dict[str, str],
+    report: Path, result: ScoreResult,
+) -> str | None:
+    """Historico, contexto del tester y correspondencia con la variante."""
+    no_history = runtime.tester_log_no_history_metadata(report, target.variant)
+    if no_history:
+        return target.technical(
+            "no_history", report, result=result, reasons=("no_history",), metadata=no_history
+        )
+    if runtime.report_has_empty_tester_context(result):
+        return target.technical(
+            "report_mismatch", report, result=result, reasons=("empty_tester_context",)
+        )
+    matches, mismatch_reason = runtime.report_matches_variant(
+        target.variant,
+        result,
+        symbol_map,
+        target.args.symbol_suffix,
+    )
+    if not matches:
+        print(f"AVISO: reporte regresivo no coincide para candidate #{target.candidate_id}: {mismatch_reason}")
+        return target.technical(
+            "report_mismatch", report, result=result, reasons=("report_mismatch",),
+            metadata={"mismatch": mismatch_reason},
+        )
+    return None
+
+
+def _regression_dates(
+    target: _RegressionTarget, runtime: RegressionRuntime, report: Path, result: ScoreResult
+) -> tuple[tuple[str, str] | None, str | None]:
+    """Fechas reales del reporte y el estado si no son las pedidas."""
+    try:
+        actual_dates = runtime.read_report_dates(report)
+    except Exception as exc:
+        actual_dates = None
+        date_error = str(exc)
+    else:
+        date_error = ""
+    expected_dates = (
+        str(target.args.regression_from_date).strip(),
+        str(target.args.regression_to_date).strip(),
+    )
+    if actual_dates != expected_dates:
+        return actual_dates, target.technical(
+            "date_mismatch", report, result=result, reasons=("date_mismatch",),
+            actual_dates=actual_dates,
+            metadata={"date_error": date_error} if date_error else None,
+        )
+    return actual_dates, None
+
+
+def _regression_verdict(
+    args: Any, result: ScoreResult, base_metrics: dict[str, object] | None
+) -> tuple[str, tuple[str, ...], dict[str, float]]:
+    """Veredicto de la regresiva comparada con la ventana de construccion."""
+    if result.trades <= 0:
+        return "no_trades", tuple(result.reasons), {}
+    degradation_reasons, degradation_audit = regression_degradation(
+        base_metrics,
+        result.profit_factor,
+        result.drawdown_pct,
+        min_pf_efficiency=float(getattr(args, "regression_min_pf_efficiency", 0.0)),
+        max_dd_ratio=float(getattr(args, "regression_max_dd_ratio", 0.0)),
+    )
+    combined_reasons = tuple(result.reasons) + degradation_reasons
+    return ("accepted" if not combined_reasons else "rejected"), combined_reasons, degradation_audit
+
+
 def evaluate_regression_report(
     memory: AgentMemory,
     args: Any,
@@ -72,133 +184,24 @@ def evaluate_regression_report(
     base_metrics: dict[str, object] | None = None,
     watchdog_snapshot: Path | None = None,
 ) -> str:
+    target = _RegressionTarget(memory, args, run_id, candidate_id, variant)
     if report is None:
-        if watchdog_snapshot is not None:
-            return _record_technical(
-                memory,
-                args,
-                candidate_id=candidate_id,
-                run_id=run_id,
-                status="watchdog_timeout",
-                report=watchdog_snapshot,
-                reasons=("watchdog_timeout",),
-                metadata=_watchdog_snapshot_metadata(watchdog_snapshot, variant),
-            )
-        status = (
-            runtime.missing_report_status(variant.target_symbol)
-            if runtime.missing_report_status is not None
-            else "no_report"
-        )
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status=status,
-            report=None,
-            reasons=(status,),
-        )
-
+        return _regression_missing_report(target, runtime, watchdog_snapshot)
     period_config = _score_config_for_period(score_config, variant.target_period, args)
     try:
         result = score_report_file(report, config=period_config, broker=args.broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear regresiva {report}: {exc}")
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="parse_error",
-            report=report,
-            reasons=("parse_error",),
-            metadata={"error": str(exc)},
+        return target.technical(
+            "parse_error", report, reasons=("parse_error",), metadata={"error": str(exc)}
         )
-
-    no_history = runtime.tester_log_no_history_metadata(report, variant)
-    if no_history:
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="no_history",
-            report=report,
-            result=result,
-            reasons=("no_history",),
-            metadata=no_history,
-        )
-    if runtime.report_has_empty_tester_context(result):
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="report_mismatch",
-            report=report,
-            result=result,
-            reasons=("empty_tester_context",),
-        )
-
-    matches, mismatch_reason = runtime.report_matches_variant(
-        variant,
-        result,
-        symbol_map,
-        args.symbol_suffix,
-    )
-    if not matches:
-        print(f"AVISO: reporte regresivo no coincide para candidate #{candidate_id}: {mismatch_reason}")
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="report_mismatch",
-            report=report,
-            result=result,
-            reasons=("report_mismatch",),
-            metadata={"mismatch": mismatch_reason},
-        )
-
-    try:
-        actual_dates = runtime.read_report_dates(report)
-    except Exception as exc:
-        actual_dates = None
-        date_error = str(exc)
-    else:
-        date_error = ""
-    expected_dates = (
-        str(args.regression_from_date).strip(),
-        str(args.regression_to_date).strip(),
-    )
-    if actual_dates != expected_dates:
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="date_mismatch",
-            report=report,
-            result=result,
-            reasons=("date_mismatch",),
-            actual_dates=actual_dates,
-            metadata={"date_error": date_error} if date_error else None,
-        )
-
-    if result.trades <= 0:
-        status = "no_trades"
-        combined_reasons = tuple(result.reasons)
-        degradation_audit: dict[str, float] = {}
-    else:
-        degradation_reasons, degradation_audit = regression_degradation(
-            base_metrics,
-            result.profit_factor,
-            result.drawdown_pct,
-            min_pf_efficiency=float(getattr(args, "regression_min_pf_efficiency", 0.0)),
-            max_dd_ratio=float(getattr(args, "regression_max_dd_ratio", 0.0)),
-        )
-        combined_reasons = tuple(result.reasons) + degradation_reasons
-        status = "accepted" if not combined_reasons else "rejected"
+    technical = _regression_report_checks(target, runtime, symbol_map, report, result)
+    if technical is not None:
+        return technical
+    actual_dates, technical = _regression_dates(target, runtime, report, result)
+    if technical is not None:
+        return technical
+    status, combined_reasons, degradation_audit = _regression_verdict(args, result, base_metrics)
     details_json, points_applied = _details_payload(
         status,
         result,
