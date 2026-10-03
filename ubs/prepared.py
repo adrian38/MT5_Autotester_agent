@@ -2,6 +2,7 @@
 from __future__ import annotations
 import base64
 import json
+from dataclasses import dataclass, field
 import re
 from datetime import datetime
 from pathlib import Path
@@ -69,128 +70,217 @@ def _registered_parent_matches(source_raw, parent_raw, symbol_map, api):
     return source_symbols[0].casefold() == str(expected).strip().casefold()
 
 
-def load_prepared(args, memory, api):
-    path = Path(args.prepared_manifest).resolve()
-    data = json.loads(path.read_text(encoding='utf-8'))
-    directory = protocol.batch_dir(api.BASE_DIR,data['batch_id'])
-    if path!=directory/'batch.json' or data['broker']!=args.broker or data['account_type']!=args.account_type:
-        raise ValueError('Manifiesto fuera del inbox del broker/cuenta')
-    package = {k:data[k] for k in ('version','batch_id','broker','account_type')}
+@dataclass
+class _PreparedContext:
+    """Universo, mapas y caches con los que se valida un lote preparado."""
+
+    args: object
+    memory: object
+    api: object
+    universe: object
+    execution_universe: set
+    disabled: object
+    symbol_map: dict
+    timeframes: object
+    frozen: dict
+    globals_: dict
+    row_cache: dict = field(default_factory=dict)
+    parent_cache: dict = field(default_factory=dict)
+
+    def registered_row(self, item, recovery):
+        """Fila local del padre declarado, segun sea recuperacion o positivo."""
+        row_key = (recovery, item['parent_candidate_id'], item['period'] if recovery else None)
+        if row_key in self.row_cache:
+            return self.row_cache[row_key]
+        if recovery:
+            # Adapting partial progress has its own provenance: the parent is a
+            # candidate this node already evaluated for a prepared batch, on the
+            # same timeframe, that never reached an accepted final positive. The
+            # protocol already proved the child keeps its parent's instrument.
+            row = self.memory.conn.execute('''select c.set_path from candidates c join runs r on r.id=c.run_id
+                where c.id=? and c.period=? and json_extract(case when json_valid(r.config_json)
+                    then r.config_json else '{}' end,'$.prepared_batch_id') is not null
+                and not exists (select 1 from candidate_final_tick_6m f
+                                where f.candidate_id=c.id and f.status='accepted')''',
+                (item['parent_candidate_id'], item['period'])).fetchone()
+        else:
+            row = self.memory.conn.execute('''select c.set_path from candidates c join candidate_final_tick_6m f
+                on f.candidate_id=c.id where c.id=? and f.status='accepted' ''',
+                (item['parent_candidate_id'],)).fetchone()
+        self.row_cache[row_key] = row
+        return row
+
+    def verify_parent(self, row, parent) -> None:
+        """Comprueba que el padre recibido es el set local registrado.
+
+        Memories survive checkout moves (for example the RoboForex workspace
+        moved from C: to G:). Resolve only known workspace subtrees below the
+        current BASE_DIR, then keep the existing containment and byte checks.
+        """
+        api = self.api
+        source = api.resolve_workspace_path(row[0], base_dir=api.BASE_DIR).resolve()
+        if not source.is_relative_to(api.BASE_DIR.resolve()):
+            raise ValueError('El padre recibido no coincide con el set local registrado')
+        source_raw = self.parent_cache.get(source)
+        if source_raw is None:
+            source_raw = source.read_bytes()
+            self.parent_cache[source] = source_raw
+        if not _registered_parent_matches(source_raw, parent, self.symbol_map, api):
+            raise ValueError('El padre recibido no coincide con el set local registrado')
+
+    def check_destination(self, item) -> None:
+        """Rechaza destinos que el universo actual ya no permite."""
+        api = self.api
+        if item['period'] not in self.timeframes or api.target_symbol_disabled(
+            item['target_symbol'], self.universe,
+            symbol_map=self.symbol_map, disabled_symbols=self.disabled,
+        ):
+            raise ValueError('Destino bloqueado por el universo actual')
+        mapped = api.apply_symbol_map(item['target_symbol'], self.symbol_map)
+        if not any(api.normalize_set_symbol(s) == api.normalize_set_symbol(mapped) for s in self.universe):
+            raise ValueError('Instrumento fuera del universo del broker')
+
+    def check_frozen(self, values: dict) -> None:
+        """Rechaza un set que cambia un parametro hoy congelado."""
+        for key, value in self.frozen.items():
+            forced = self.globals_.get(key, value)
+            if forced and key in values and protocol.normalized(values[key]) != protocol.normalized(forced):
+                raise ValueError('El set difiere de un parámetro congelado actual')
+
+
+def _prepared_package(args, path: Path, data: dict, directory: Path):
+    """Paquete inmutable del lote, con los .set leidos del inbox."""
+    package = {k: data[k] for k in ('version', 'batch_id', 'broker', 'account_type')}
     package['candidates'] = []
     for item in data['candidates']:
-        if not re.fullmatch('[a-f0-9]{64}',str(item.get('fingerprint',''))):
+        if not re.fullmatch('[a-f0-9]{64}', str(item.get('fingerprint', ''))):
             raise ValueError('Nombre de candidato inválido')
         package['candidates'].append({**item,
-            'set_b64':base64.b64encode((directory/(item['fingerprint']+'.set')).read_bytes()).decode(),
-            'parent_b64':base64.b64encode((directory/(item['fingerprint']+'.parent.set')).read_bytes()).decode()})
-    decoded = protocol.validate_package(package,args.broker,args.account_type)
+            'set_b64': base64.b64encode((directory / (item['fingerprint'] + '.set')).read_bytes()).decode(),
+            'parent_b64': base64.b64encode((directory / (item['fingerprint'] + '.parent.set')).read_bytes()).decode()})
+    return protocol.validate_package(package, args.broker, args.account_type)
+
+
+def _prepared_context(args, memory, api) -> _PreparedContext:
+    """Reune universo, mapas y parametros congelados de este nodo."""
     universe = api.broker_universe_symbols(args)
     # Membership keys include aliases and are uppercased. They cannot be used as
     # MT5 names: read the actual instruments with broker spelling. Every broker
     # needs this — MT5 exits without opening the tester on a miscased symbol.
     groups, _ = api.load_asset_universe(Path(args.assets), include_disabled=True)
-    execution_universe = {symbol for symbols in groups.values() for symbol in symbols}
-    disabled = api.load_disabled_symbols(api.disabled_symbols_file_for_account(args.account_type,args.broker))
-    symbol_map = api.parse_symbol_map(args.symbol_map)
-    timeframes = api.target_timeframe_universe(bool(args.experimental_long_timeframes),base_dir=api.BASE_DIR,
-                                             broker=args.broker,account_type=args.account_type)
     frozen, _ = api.load_mutation_overrides()
-    globals_ = api.load_global_params()
-    validated = []
-    registered_row_cache = {}
-    registered_parent_cache = {}
-    for item, raw, parent in decoded:
-        recovery = item['mode']=='symbol_exploration' and item['mutation'].get('kind')=='symbol_recovery'
-        row_key=(recovery,item['parent_candidate_id'],item['period'] if recovery else None)
-        row=registered_row_cache.get(row_key)
-        if row_key not in registered_row_cache and recovery:
-            # Adapting partial progress has its own provenance: the parent is a
-            # candidate this node already evaluated for a prepared batch, on the
-            # same timeframe, that never reached an accepted final positive. The
-            # protocol already proved the child keeps its parent's instrument.
-            row = memory.conn.execute('''select c.set_path from candidates c join runs r on r.id=c.run_id
-                where c.id=? and c.period=? and json_extract(case when json_valid(r.config_json)
-                    then r.config_json else '{}' end,'$.prepared_batch_id') is not null
-                and not exists (select 1 from candidate_final_tick_6m f
-                                where f.candidate_id=c.id and f.status='accepted')''',
-                (item['parent_candidate_id'],item['period'])).fetchone()
-        elif row_key not in registered_row_cache:
-            row = memory.conn.execute('''select c.set_path from candidates c join candidate_final_tick_6m f
-                on f.candidate_id=c.id where c.id=? and f.status='accepted' ''',(item['parent_candidate_id'],)).fetchone()
-        registered_row_cache[row_key]=row
-        if not row:
-            if recovery:
-                raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
-            raise ValueError('El padre no es un positivo final de esta memoria')
-        # Memories survive checkout moves (for example the RoboForex workspace
-        # moved from C: to G:). Resolve only known workspace subtrees below the
-        # current BASE_DIR, then keep the existing containment and byte checks.
-        source = api.resolve_workspace_path(row[0], base_dir=api.BASE_DIR).resolve()
-        if not source.is_relative_to(api.BASE_DIR.resolve()):
-            raise ValueError('El padre recibido no coincide con el set local registrado')
-        source_raw = registered_parent_cache.get(source)
-        if source_raw is None:
-            source_raw = source.read_bytes()
-            registered_parent_cache[source] = source_raw
-        if not _registered_parent_matches(source_raw, parent, symbol_map, api):
-            raise ValueError('El padre recibido no coincide con el set local registrado')
-        values = protocol.set_params(raw)
-        strategy = values.get('Run_Strategy','').split('||')[0]
-        if item['period'] not in timeframes or api.target_symbol_disabled(item['target_symbol'],universe,
-                                                        symbol_map=symbol_map,disabled_symbols=disabled):
-            raise ValueError('Destino bloqueado por el universo actual')
-        mapped = api.apply_symbol_map(item['target_symbol'],symbol_map)
-        if not any(api.normalize_set_symbol(s)==api.normalize_set_symbol(mapped) for s in universe):
-            raise ValueError('Instrumento fuera del universo del broker')
-        execution_item = _broker_execution_item(
-            item, execution_universe, symbol_map, api,
-            strict=str(args.broker).strip().upper() == 'ICTRADING')
-        for key,value in frozen.items():
-            forced = globals_.get(key,value)
-            if forced and key in values and protocol.normalized(values[key])!=protocol.normalized(forced):
-                raise ValueError('El set difiere de un parámetro congelado actual')
-        key = item['mutation']['key']
-        lines = protocol.set_text(raw).splitlines()
-        timeframe_keys = api.replace_timeframe_keys(lines,strategy,item['period'])
-        # This verifies every strategy-specific timeframe before either kind
-        # of prepared candidate can enter the evaluator.
-        if protocol.set_params('\n'.join(lines).encode()) != values:
-            raise ValueError('Los timeframes del set no coinciden con el destino')
-        # Validate the immutable package first; only the execution copy gets the
-        # broker spelling. MT5 reads ForceSymbol, not the candidate metadata.
-        if values.get('ForceSymbol', '').split('||')[0] != execution_item['target_symbol']:
-            if not api.replace_existing_current_value(lines, 'ForceSymbol', execution_item['target_symbol']):
-                api.replace_or_add_plain_key(lines, 'ForceSymbol', execution_item['target_symbol'])
-            raw = '\n'.join(lines).encode('utf-8')
-        if item['mode']=='symbol_exploration':
-            # Exploration must reach new ground, so an instrument that already
-            # produced a final positive is refused. A rebuild is the opposite
-            # case on purpose: the destination is enabled and already proven,
-            # but no set of its own still passes today's safety rules, so
-            # without this the universe would keep it permanently closed.
-            if item['mutation'].get('kind')!='symbol_retarget':
-                existing = memory.conn.execute('''select 1 from candidates c join candidate_final_tick_6m f
-                    on f.candidate_id=c.id where upper(c.target_symbol)=upper(?) and f.status='accepted' limit 1''',
-                    (item['target_symbol'],)).fetchone()
-                if existing:
-                    raise ValueError('El símbolo de exploración ya tiene un positivo final')
-            # A recovery keeps symbol and timeframe, so its single numeric step
-            # falls through to the same rules any other mutation must satisfy.
-            if not recovery:
-                if key!='ForceSymbol':
-                    raise ValueError('La exploración de símbolo debe cambiar solo ForceSymbol')
-                validated.append((execution_item,raw,parent,strategy,timeframe_keys))
-                continue
-        choices = api.line_candidates(protocol.set_text(parent),strategy,{},excluded_keys=timeframe_keys)
-        if key not in choices:
-            raise ValueError('Mutación no permitida por las reglas actuales del agente')
-        _, parts, _ = choices[key]
-        from decimal import Decimal
-        old,new,step = Decimal(parts[0]),Decimal(str(item['mutation']['new'])),Decimal(parts[2])
-        if abs(new-old)!=step or not Decimal(parts[1])<=new<=Decimal(parts[3]):
-            raise ValueError('Mutación fuera del paso/rango permitido')
-        validated.append((execution_item,raw,parent,strategy,timeframe_keys))
-    return data,directory,validated
+    return _PreparedContext(
+        args=args,
+        memory=memory,
+        api=api,
+        universe=universe,
+        execution_universe={symbol for symbols in groups.values() for symbol in symbols},
+        disabled=api.load_disabled_symbols(
+            api.disabled_symbols_file_for_account(args.account_type, args.broker)
+        ),
+        symbol_map=api.parse_symbol_map(args.symbol_map),
+        timeframes=api.target_timeframe_universe(
+            bool(args.experimental_long_timeframes), base_dir=api.BASE_DIR,
+            broker=args.broker, account_type=args.account_type,
+        ),
+        frozen=frozen,
+        globals_=api.load_global_params(),
+    )
+
+
+def _prepared_execution_set(ctx: _PreparedContext, execution_item, item, raw, strategy, values):
+    """Copia de ejecucion con la grafia del broker y sus timeframes."""
+    api = ctx.api
+    lines = protocol.set_text(raw).splitlines()
+    timeframe_keys = api.replace_timeframe_keys(lines, strategy, item['period'])
+    # This verifies every strategy-specific timeframe before either kind
+    # of prepared candidate can enter the evaluator.
+    if protocol.set_params('\n'.join(lines).encode()) != values:
+        raise ValueError('Los timeframes del set no coinciden con el destino')
+    # Validate the immutable package first; only the execution copy gets the
+    # broker spelling. MT5 reads ForceSymbol, not the candidate metadata.
+    if values.get('ForceSymbol', '').split('||')[0] != execution_item['target_symbol']:
+        if not api.replace_existing_current_value(lines, 'ForceSymbol', execution_item['target_symbol']):
+            api.replace_or_add_plain_key(lines, 'ForceSymbol', execution_item['target_symbol'])
+        raw = '\n'.join(lines).encode('utf-8')
+    return raw, timeframe_keys
+
+
+def _check_symbol_exploration(ctx: _PreparedContext, item, recovery: bool, key: str) -> bool:
+    """Reglas propias de la exploracion de simbolo; True si ya esta validada."""
+    # Exploration must reach new ground, so an instrument that already
+    # produced a final positive is refused. A rebuild is the opposite
+    # case on purpose: the destination is enabled and already proven,
+    # but no set of its own still passes today's safety rules, so
+    # without this the universe would keep it permanently closed.
+    if item['mutation'].get('kind') != 'symbol_retarget':
+        existing = ctx.memory.conn.execute('''select 1 from candidates c join candidate_final_tick_6m f
+            on f.candidate_id=c.id where upper(c.target_symbol)=upper(?) and f.status='accepted' limit 1''',
+            (item['target_symbol'],)).fetchone()
+        if existing:
+            raise ValueError('El símbolo de exploración ya tiene un positivo final')
+    # A recovery keeps symbol and timeframe, so its single numeric step
+    # falls through to the same rules any other mutation must satisfy.
+    if recovery:
+        return False
+    if key != 'ForceSymbol':
+        raise ValueError('La exploración de símbolo debe cambiar solo ForceSymbol')
+    return True
+
+
+def _check_numeric_mutation(ctx: _PreparedContext, item, parent, strategy, timeframe_keys) -> None:
+    """Comprueba que el paso numerico cabe en las reglas vigentes."""
+    from decimal import Decimal
+
+    key = item['mutation']['key']
+    choices = ctx.api.line_candidates(
+        protocol.set_text(parent), strategy, {}, excluded_keys=timeframe_keys
+    )
+    if key not in choices:
+        raise ValueError('Mutación no permitida por las reglas actuales del agente')
+    _, parts, _ = choices[key]
+    old, new, step = Decimal(parts[0]), Decimal(str(item['mutation']['new'])), Decimal(parts[2])
+    if abs(new - old) != step or not Decimal(parts[1]) <= new <= Decimal(parts[3]):
+        raise ValueError('Mutación fuera del paso/rango permitido')
+
+
+def _validate_prepared_item(ctx: _PreparedContext, item, raw, parent):
+    """Valida un candidato del lote y devuelve su copia de ejecucion."""
+    recovery = item['mode'] == 'symbol_exploration' and item['mutation'].get('kind') == 'symbol_recovery'
+    row = ctx.registered_row(item, recovery)
+    if not row:
+        if recovery:
+            raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
+        raise ValueError('El padre no es un positivo final de esta memoria')
+    ctx.verify_parent(row, parent)
+    values = protocol.set_params(raw)
+    strategy = values.get('Run_Strategy', '').split('||')[0]
+    ctx.check_destination(item)
+    execution_item = _broker_execution_item(
+        item, ctx.execution_universe, ctx.symbol_map, ctx.api,
+        strict=str(ctx.args.broker).strip().upper() == 'ICTRADING')
+    ctx.check_frozen(values)
+    raw, timeframe_keys = _prepared_execution_set(
+        ctx, execution_item, item, raw, strategy, values
+    )
+    if item['mode'] == 'symbol_exploration' and _check_symbol_exploration(
+        ctx, item, recovery, item['mutation']['key']
+    ):
+        return execution_item, raw, parent, strategy, timeframe_keys
+    _check_numeric_mutation(ctx, item, parent, strategy, timeframe_keys)
+    return execution_item, raw, parent, strategy, timeframe_keys
+
+
+def load_prepared(args, memory, api):
+    path = Path(args.prepared_manifest).resolve()
+    data = json.loads(path.read_text(encoding='utf-8'))
+    directory = protocol.batch_dir(api.BASE_DIR, data['batch_id'])
+    if path != directory / 'batch.json' or data['broker'] != args.broker or data['account_type'] != args.account_type:
+        raise ValueError('Manifiesto fuera del inbox del broker/cuenta')
+    decoded = _prepared_package(args, path, data, directory)
+    ctx = _prepared_context(args, memory, api)
+    validated = [_validate_prepared_item(ctx, item, raw, parent) for item, raw, parent in decoded]
+    return data, directory, validated
 
 
 def _prepared_run(args, memory, api, directory, batch_id, candidate_count):
