@@ -341,6 +341,100 @@ class UBSPortfolioOptimizeMixin:
             daemon=True,
         ).start()
 
+    def _reoptimize_candidate_rows(self, inputs: dict[str, object], is_monthly: bool):
+        """Candidatas disponibles tras los filtros guardados del portafolio."""
+        rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=is_monthly)
+        if bool(inputs.get("require_3_positive_months_6m")):
+            rows, month_warnings = filter_rows_by_recent_positive_months(
+                rows,
+                min_positive_months=3,
+                window_months=6,
+            )
+        else:
+            month_warnings = []
+        grid_warnings: list[str] = []
+        if bool(inputs.get("grid_off")):
+            rows, grid_warnings = filter_rows_grid_off(rows)
+        allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
+        if allowed_groups:
+            rows = [
+                row for row in rows
+                if self._portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
+            ]
+        return rows, month_warnings, grid_warnings, allowed_groups
+
+    def _reoptimize_used_sets(
+        self, inputs: dict[str, object], portfolio_id: int, portfolio_type, is_monthly: bool
+    ) -> list:
+        """Sets ya comprometidos que esta reoptimizacion no puede reutilizar."""
+        if is_monthly:
+            if not bool(inputs.get("exclude_monthly_used")):
+                return []
+            return self._used_monthly_set_paths_all_accounts(exclude_portfolio_id=portfolio_id)
+        if not bool(inputs.get("exclude_used_sets", True)):
+            return []
+        return self._used_set_paths_all_accounts(portfolio_type, exclude_portfolio_id=portfolio_id)
+
+    def _reoptimize_existing_curves(
+        self, inputs: dict[str, object], portfolio_id: int, portfolio_type, is_monthly: bool
+    ) -> list:
+        """Curvas de las carteras guardadas con las que no debe correlacionar."""
+        if is_monthly:
+            if not bool(inputs.get("corr_with_monthly_portfolios")):
+                return []
+            return self._saved_monthly_portfolio_curves_all_accounts(
+                exclude_portfolio_id=portfolio_id,
+            )
+        return self._saved_portfolio_curves_all_accounts(
+            portfolio_type,
+            exclude_portfolio_id=portfolio_id,
+        )
+
+    def _reoptimize_saved_ubs_portfolio_plan(
+        self, portfolio_id: int, inputs: dict[str, object]
+    ) -> list[dict[str, object]]:
+        """Propuestas de reoptimizacion del portafolio guardado."""
+        portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
+        inputs["portfolio_type"] = portfolio_type.value
+        is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+        rows, month_warnings, grid_warnings, allowed_groups = self._reoptimize_candidate_rows(
+            inputs, is_monthly
+        )
+        used = self._reoptimize_used_sets(inputs, portfolio_id, portfolio_type, is_monthly)
+        raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+        if allowed_groups:
+            raw_sets = [
+                strategy for strategy in raw_sets
+                if self._portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
+            ]
+        full_sets_for_strict_validation = list(raw_sets)
+        raw_sets, scope_warnings = self._scope_portfolio_sets(raw_sets, inputs)
+        if not raw_sets:
+            raise ValueError("No quedan candidatos elegibles para reoptimizar.")
+        proposals = self._optimize_ubs_portfolio_proposals(
+            raw_sets,
+            inputs,
+            portfolio_type,
+            self._reoptimize_existing_curves(inputs, portfolio_id, portfolio_type, is_monthly),
+            strict_full_sets=full_sets_for_strict_validation if is_monthly else None,
+            progress=lambda label, index: self.after(
+                0,
+                self._set_ubs_portfolio_detail_running,
+                True,
+                f"Revalidando #{portfolio_id}: propuesta {index}/3 ({label})...",
+            ),
+        )
+        proposals = self._filter_strict_monthly_valid_proposals(
+            full_sets_for_strict_validation,
+            proposals,
+            inputs,
+        )
+        for proposal in proposals:
+            proposal["result"].warnings[:0] = (
+                month_warnings + grid_warnings + load_warnings + scope_warnings
+            )
+        return proposals
+
     def _reoptimize_saved_ubs_portfolio_worker(
         self,
         portfolio_id: int,
@@ -348,89 +442,7 @@ class UBSPortfolioOptimizeMixin:
         previous_members: list[dict[str, object]],
     ) -> None:
         try:
-            portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
-            inputs["portfolio_type"] = portfolio_type.value
-            is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
-            rows = self._final_tick_passed_candidates_all_accounts(
-                include_quarantined=is_monthly,
-            )
-            if bool(inputs.get("require_3_positive_months_6m")):
-                rows, month_warnings = filter_rows_by_recent_positive_months(
-                    rows,
-                    min_positive_months=3,
-                    window_months=6,
-                )
-            else:
-                month_warnings = []
-            grid_warnings: list[str] = []
-            if bool(inputs.get("grid_off")):
-                rows, grid_warnings = filter_rows_grid_off(rows)
-            allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
-            if allowed_groups:
-                rows = [
-                    row for row in rows
-                    if self._portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
-                ]
-            if is_monthly:
-                used = (
-                    self._used_monthly_set_paths_all_accounts(
-                        exclude_portfolio_id=portfolio_id,
-                    )
-                    if bool(inputs.get("exclude_monthly_used"))
-                    else []
-                )
-            else:
-                used = (
-                    self._used_set_paths_all_accounts(
-                        portfolio_type,
-                        exclude_portfolio_id=portfolio_id,
-                    )
-                    if bool(inputs.get("exclude_used_sets", True))
-                    else []
-                )
-            raw_sets, load_warnings = load_robust_sets_from_rows(rows, used)
-            if allowed_groups:
-                raw_sets = [
-                    strategy for strategy in raw_sets
-                    if self._portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
-                ]
-            full_sets_for_strict_validation = list(raw_sets)
-            raw_sets, scope_warnings = self._scope_portfolio_sets(raw_sets, inputs)
-            if not raw_sets:
-                raise ValueError("No quedan candidatos elegibles para reoptimizar.")
-            proposals = self._optimize_ubs_portfolio_proposals(
-                raw_sets,
-                inputs,
-                portfolio_type,
-                (
-                    self._saved_monthly_portfolio_curves_all_accounts(
-                        exclude_portfolio_id=portfolio_id,
-                    )
-                    if is_monthly and bool(inputs.get("corr_with_monthly_portfolios"))
-                    else self._saved_portfolio_curves_all_accounts(
-                        portfolio_type,
-                        exclude_portfolio_id=portfolio_id,
-                    )
-                    if not is_monthly
-                    else []
-                ),
-                strict_full_sets=full_sets_for_strict_validation if is_monthly else None,
-                progress=lambda label, index: self.after(
-                    0,
-                    self._set_ubs_portfolio_detail_running,
-                    True,
-                    f"Revalidando #{portfolio_id}: propuesta {index}/3 ({label})...",
-                ),
-            )
-            proposals = self._filter_strict_monthly_valid_proposals(
-                full_sets_for_strict_validation,
-                proposals,
-                inputs,
-            )
-            for proposal in proposals:
-                proposal["result"].warnings[:0] = (
-                    month_warnings + grid_warnings + load_warnings + scope_warnings
-                )
+            proposals = self._reoptimize_saved_ubs_portfolio_plan(portfolio_id, inputs)
         except Exception as exc:
             self.after(
                 0,
