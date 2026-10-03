@@ -8,8 +8,8 @@ from run_tests import REPORT_DIR
 
 
 class DashboardViewMixin:
-    def _build_dashboard(self, parent: ttk.Frame) -> None:
-        outer = parent
+    def _build_dashboard_scroll(self, outer):
+        """Lienzo desplazable que contiene todo el panel."""
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(0, weight=1)
 
@@ -45,7 +45,10 @@ class DashboardViewMixin:
 
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(2, weight=1)
+        return parent
 
+    def _build_dashboard_metrics(self, parent):
+        """Tarjetas de metricas y estado de la tarea activa."""
         metrics = ttk.Frame(parent)
         metrics.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         for column in range(4):
@@ -66,12 +69,10 @@ class DashboardViewMixin:
         self.progress_bar = ttk.Progressbar(active_task, mode="determinate", maximum=100,
                                              variable=self.progress_var, style="Horizontal.TProgressbar")
         self.progress_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(4, 18))
+        return None
 
-        body = ttk.Frame(parent)
-        body.grid(row=2, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=8)
-        body.columnconfigure(1, weight=4)
-
+    def _build_dashboard_actions(self, body):
+        """Tarjeta de acciones rapidas del panel."""
         actions_card = self._card(body, "Acciones")
         actions_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
         actions_card.columnconfigure(0, weight=1)
@@ -129,24 +130,8 @@ class DashboardViewMixin:
         )
         stop_btn.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 14))
 
-        config_card = self._card(body, "Configuration")
-        config_card.grid(row=0, column=1, sticky="nsew")
-        config_card.columnconfigure(0, weight=1)
-
-        rec_row = tk.Frame(config_card, bg=self.colors["panel"])
-        rec_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(6, 0))
-        rec_row.columnconfigure(0, weight=1)
-        rec_text = tk.Frame(rec_row, bg=self.colors["panel"])
-        rec_text.grid(row=0, column=0, sticky="w")
-        tk.Label(rec_text, text="Recursivo", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(rec_text, text="Procesar todos los archivos de la carpeta raiz", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
-        self._toggle_switch_cls(rec_row, variable=self.recursive, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
-
-        delay_lbl = tk.Frame(config_card, bg=self.colors["panel"])
-        delay_lbl.grid(row=2, column=0, sticky="ew", padx=20, pady=(18, 6))
-        tk.Label(delay_lbl, text="Pausa entre tests (s)", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(config_card, from_=0, to=120, textvariable=self.delay).grid(row=3, column=0, sticky="ew", padx=20)
-
+    def _build_dashboard_symbol_config(self, config_card):
+        """Sufijos y correspondencia de simbolos del panel."""
         suffix_lbl = tk.Frame(config_card, bg=self.colors["panel"])
         suffix_lbl.grid(row=4, column=0, sticky="ew", padx=20, pady=(18, 6))
         suffix_lbl.columnconfigure(0, weight=1)
@@ -179,6 +164,8 @@ class DashboardViewMixin:
         self._toggle_switch_cls(map_lbl, variable=self.symbol_map_enabled, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
         ttk.Entry(config_card, textvariable=self.symbol_map).grid(row=11, column=0, sticky="ew", padx=20)
 
+    def _build_dashboard_config_footer(self, config_card):
+        """Telegram, tema y botones de guardado y limpieza."""
         tg_row = tk.Frame(config_card, bg=self.colors["panel"])
         tg_row.grid(row=12, column=0, sticky="ew", padx=20, pady=(18, 0))
         tg_row.columnconfigure(0, weight=1)
@@ -218,5 +205,41 @@ class DashboardViewMixin:
             command=self._delete_historical_data,
         )
         del_btn.grid(row=15, column=0, sticky="ew", padx=20, pady=(0, 18))
+
+    def _build_dashboard_config(self, body):
+        """Tarjeta de configuracion rapida del panel."""
+        config_card = self._card(body, "Configuration")
+        config_card.grid(row=0, column=1, sticky="nsew")
+        config_card.columnconfigure(0, weight=1)
+
+        rec_row = tk.Frame(config_card, bg=self.colors["panel"])
+        rec_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(6, 0))
+        rec_row.columnconfigure(0, weight=1)
+        rec_text = tk.Frame(rec_row, bg=self.colors["panel"])
+        rec_text.grid(row=0, column=0, sticky="w")
+        tk.Label(rec_text, text="Recursivo", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(rec_text, text="Procesar todos los archivos de la carpeta raiz", bg=self.colors["panel"], fg=self.colors["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
+        self._toggle_switch_cls(rec_row, variable=self.recursive, bg=self.colors["panel"], width=34, height=18).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+
+        delay_lbl = tk.Frame(config_card, bg=self.colors["panel"])
+        delay_lbl.grid(row=2, column=0, sticky="ew", padx=20, pady=(18, 6))
+        tk.Label(delay_lbl, text="Pausa entre tests (s)", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(config_card, from_=0, to=120, textvariable=self.delay).grid(row=3, column=0, sticky="ew", padx=20)
+
+        self._build_dashboard_symbol_config(config_card)
+        self._build_dashboard_config_footer(config_card)
+
+    def _build_dashboard(self, parent: ttk.Frame) -> None:
+        outer = parent
+        parent = self._build_dashboard_scroll(outer)
+        self._build_dashboard_metrics(parent)
+
+        body = ttk.Frame(parent)
+        body.grid(row=2, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=8)
+        body.columnconfigure(1, weight=4)
+
+        self._build_dashboard_actions(body)
+        self._build_dashboard_config(body)
 
     # ------------------------------------------------------------------

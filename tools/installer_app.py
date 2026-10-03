@@ -223,6 +223,38 @@ class InstallerUI(tk.Tk):
         self._set_progress(0, "Preparando instalacion...")
         threading.Thread(target=self._install_thread, args=(target,), daemon=True).start()
 
+    def _deploy_payload(self, payload: Path, install_dir: Path) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="MT5AutotesterInstall_"))
+        try:
+            with zipfile.ZipFile(payload) as archive:
+                members = archive.infolist()
+                total = max(1, len(members))
+                for index, member in enumerate(members, start=1):
+                    archive.extract(member, temp_dir)
+                    # Extracción ocupa del 5% al 70%
+                    pct = 5 + (index / total) * 65
+                    self.after(
+                        0, lambda v=pct, n=member.filename:
+                        self._set_progress(v, f"Extrayendo: {n[:60]}"),
+                    )
+
+            install_dir.mkdir(parents=True, exist_ok=True)
+            items = list(temp_dir.iterdir())
+            total_items = max(1, len(items))
+            for index, item in enumerate(items, start=1):
+                destination = install_dir / item.name
+                if item.is_dir():
+                    shutil.copytree(item, destination, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, destination)
+                # Copia ocupa del 70% al 90%
+                pct = 70 + (index / total_items) * 20
+                self.after(
+                    0, lambda v=pct, n=item.name: self._set_progress(v, f"Copiando: {n}"),
+                )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def _install_thread(self, install_dir: Path) -> None:
         try:
             payload = resource_path("MT5AutotesterPayload.zip")
@@ -230,34 +262,7 @@ class InstallerUI(tk.Tk):
                 raise FileNotFoundError(f"No encuentro el payload del instalador: {payload}")
 
             self.after(0, lambda: self._set_progress(5, "Extrayendo archivos..."))
-
-            temp_dir = Path(tempfile.mkdtemp(prefix="MT5AutotesterInstall_"))
-            try:
-                with zipfile.ZipFile(payload) as archive:
-                    members = archive.infolist()
-                    total = max(1, len(members))
-                    for index, member in enumerate(members, start=1):
-                        archive.extract(member, temp_dir)
-                        # Extracción ocupa del 5% al 70%
-                        pct = 5 + (index / total) * 65
-                        self.after(0, lambda v=pct, n=member.filename:
-                                   self._set_progress(v, f"Extrayendo: {n[:60]}"))
-
-                install_dir.mkdir(parents=True, exist_ok=True)
-                items = list(temp_dir.iterdir())
-                total_items = max(1, len(items))
-                for index, item in enumerate(items, start=1):
-                    destination = install_dir / item.name
-                    if item.is_dir():
-                        shutil.copytree(item, destination, dirs_exist_ok=True)
-                    else:
-                        shutil.copy2(item, destination)
-                    # Copia ocupa del 70% al 90%
-                    pct = 70 + (index / total_items) * 20
-                    self.after(0, lambda v=pct, n=item.name:
-                               self._set_progress(v, f"Copiando: {n}"))
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            self._deploy_payload(payload, install_dir)
 
             self.after(0, lambda: self._set_progress(92, "Creando accesos directos..."))
 

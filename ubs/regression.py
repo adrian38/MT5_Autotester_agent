@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from functools import wraps
 import json
 from pathlib import Path
@@ -14,8 +14,18 @@ from ubs.path_utils import resolve_workspace_path
 from ubs.regression_rules import (
     REGRESSION_RETRYABLE_STATUSES,
     regression_degradation,
-    regression_points_breakdown,
     validate_regression_date_range,
+)
+from ubs.regression_rescore import (  # noqa: F401
+    _regression_verdict,
+    _rescore_regression_from_memory,
+)
+from ubs.regression_details import (
+    _base_metrics_from_row,
+    _details_payload,
+    _record_technical,
+    _score_config_for_period,
+    _watchdog_snapshot_metadata,
 )
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.set_utils import compact_safe_part, write_set_use_every_tick
@@ -53,125 +63,99 @@ class RegressionRuntime:
     write_stage_set: Callable[..., str] | None = None
 
 
-def _score_config_for_period(config: ScoreConfig, period: str, args: Any) -> ScoreConfig:
-    normalized = str(period or "").strip().upper()
-    if normalized == "W1":
-        return replace(config, min_trades=int(args.regression_min_trades_w1))
-    if normalized in {"MN", "MN1"}:
-        return replace(config, min_trades=int(args.regression_min_trades_mn))
-    return config
+@dataclass
+class _RegressionTarget:
+    """Candidato concreto cuya regresiva se esta evaluando."""
+
+    memory: AgentMemory
+    args: Any
+    run_id: int
+    candidate_id: int
+    variant: Variant
+
+    def technical(self, status: str, report: Path | None, **extra) -> str:
+        """Registra un resultado tecnico de la regresiva de este candidato."""
+        return _record_technical(
+            self.memory,
+            self.args,
+            candidate_id=self.candidate_id,
+            run_id=self.run_id,
+            status=status,
+            report=report,
+            **extra,
+        )
 
 
-def _details_payload(
-    status: str,
-    result: ScoreResult | None,
-    args: Any,
-    *,
-    reasons: tuple[str, ...] = (),
-    actual_dates: tuple[str, str] | None = None,
-    metadata: dict[str, object] | None = None,
-) -> tuple[str, float]:
-    reason_items = reasons or (tuple(result.reasons) if result is not None else ())
-    points = regression_points_breakdown(
-        status,
-        reason_items,
-        positive_points=float(args.regression_positive_points),
-        negative_points=float(args.regression_negative_points),
-    )
-    payload: dict[str, object] = {
-        "accepted": status == "accepted",
-        "reasons": list(reason_items),
-        "model": "1_minute_ohlc",
-        "expected_from_date": str(args.regression_from_date).strip(),
-        "expected_to_date": str(args.regression_to_date).strip(),
-        "actual_from_date": actual_dates[0] if actual_dates else "",
-        "actual_to_date": actual_dates[1] if actual_dates else "",
-        "points": points,
-    }
-    if metadata:
-        payload.update(metadata)
-    return json.dumps(payload, ensure_ascii=True, sort_keys=True), float(points["applied"])
-
-
-def _record_technical(
-    memory: AgentMemory,
-    args: Any,
-    *,
-    candidate_id: int,
-    run_id: int,
-    status: str,
-    report: Path | None,
-    result: ScoreResult | None = None,
-    reasons: tuple[str, ...] = (),
-    actual_dates: tuple[str, str] | None = None,
-    metadata: dict[str, object] | None = None,
+def _regression_missing_report(
+    target: _RegressionTarget, runtime: RegressionRuntime, watchdog_snapshot: Path | None
 ) -> str:
-    details_json, points_applied = _details_payload(
-        status,
+    """Sin reporte: lo deja como timeout del watchdog o como falta de reporte."""
+    if watchdog_snapshot is not None:
+        return target.technical(
+            "watchdog_timeout",
+            watchdog_snapshot,
+            reasons=("watchdog_timeout",),
+            metadata=_watchdog_snapshot_metadata(watchdog_snapshot, target.variant),
+        )
+    status = (
+        runtime.missing_report_status(target.variant.target_symbol)
+        if runtime.missing_report_status is not None
+        else "no_report"
+    )
+    return target.technical(status, None, reasons=(status,))
+
+
+def _regression_report_checks(
+    target: _RegressionTarget, runtime: RegressionRuntime, symbol_map: dict[str, str],
+    report: Path, result: ScoreResult,
+) -> str | None:
+    """Historico, contexto del tester y correspondencia con la variante."""
+    no_history = runtime.tester_log_no_history_metadata(report, target.variant)
+    if no_history:
+        return target.technical(
+            "no_history", report, result=result, reasons=("no_history",), metadata=no_history
+        )
+    if runtime.report_has_empty_tester_context(result):
+        return target.technical(
+            "report_mismatch", report, result=result, reasons=("empty_tester_context",)
+        )
+    matches, mismatch_reason = runtime.report_matches_variant(
+        target.variant,
         result,
-        args,
-        reasons=reasons,
-        actual_dates=actual_dates,
-        metadata=metadata,
+        symbol_map,
+        target.args.symbol_suffix,
     )
-    memory.record_candidate_regression(
-        candidate_id,
-        run_id,
-        status,
-        result,
-        report,
-        details_json,
-        args.regression_from_date,
-        args.regression_to_date,
-        args.regression_positive_points,
-        args.regression_negative_points,
-        points_applied,
-    )
-    return status
+    if not matches:
+        print(f"AVISO: reporte regresivo no coincide para candidate #{target.candidate_id}: {mismatch_reason}")
+        return target.technical(
+            "report_mismatch", report, result=result, reasons=("report_mismatch",),
+            metadata={"mismatch": mismatch_reason},
+        )
+    return None
 
 
-def _base_metrics_from_row(row: sqlite3.Row | None) -> dict[str, object] | None:
-    """Parse the candidate's base-window metrics for degradation comparison."""
-
-    if row is None:
-        return None
+def _regression_dates(
+    target: _RegressionTarget, runtime: RegressionRuntime, report: Path, result: ScoreResult
+) -> tuple[tuple[str, str] | None, str | None]:
+    """Fechas reales del reporte y el estado si no son las pedidas."""
     try:
-        raw = row["metrics_json"]
-    except (KeyError, IndexError):
-        return None
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _watchdog_snapshot_metadata(snapshot: Path, variant: Variant) -> dict[str, object]:
-    metadata: dict[str, object] = {"watchdog_snapshot": str(snapshot)}
-    try:
-        text = snapshot.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        metadata["watchdog_snapshot_error"] = str(exc)
-        return metadata
-
-    symbol = str(variant.target_symbol or "").strip().lower()
-    lines = text.splitlines()
-    old_tick_lines = sum(
-        1
-        for line in lines
-        if "old tick" in line.lower() and (not symbol or symbol in line.lower())
+        actual_dates = runtime.read_report_dates(report)
+    except Exception as exc:
+        actual_dates = None
+        date_error = str(exc)
+    else:
+        date_error = ""
+    expected_dates = (
+        str(target.args.regression_from_date).strip(),
+        str(target.args.regression_to_date).strip(),
     )
-    gmt_url_error_lines = sum(
-        1 for line in lines if "error when reading gmt url" in line.lower()
-    )
-    if old_tick_lines:
-        metadata["history_signal"] = "old_tick_seen"
-        metadata["old_tick_lines"] = old_tick_lines
-    if gmt_url_error_lines:
-        metadata["gmt_url_error_lines"] = gmt_url_error_lines
-    return metadata
+    if actual_dates != expected_dates:
+        return actual_dates, target.technical(
+            "date_mismatch", report, result=result, reasons=("date_mismatch",),
+            actual_dates=actual_dates,
+            metadata={"date_error": date_error} if date_error else None,
+        )
+    return actual_dates, None
 
 
 def evaluate_regression_report(
@@ -187,133 +171,24 @@ def evaluate_regression_report(
     base_metrics: dict[str, object] | None = None,
     watchdog_snapshot: Path | None = None,
 ) -> str:
+    target = _RegressionTarget(memory, args, run_id, candidate_id, variant)
     if report is None:
-        if watchdog_snapshot is not None:
-            return _record_technical(
-                memory,
-                args,
-                candidate_id=candidate_id,
-                run_id=run_id,
-                status="watchdog_timeout",
-                report=watchdog_snapshot,
-                reasons=("watchdog_timeout",),
-                metadata=_watchdog_snapshot_metadata(watchdog_snapshot, variant),
-            )
-        status = (
-            runtime.missing_report_status(variant.target_symbol)
-            if runtime.missing_report_status is not None
-            else "no_report"
-        )
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status=status,
-            report=None,
-            reasons=(status,),
-        )
-
+        return _regression_missing_report(target, runtime, watchdog_snapshot)
     period_config = _score_config_for_period(score_config, variant.target_period, args)
     try:
         result = score_report_file(report, config=period_config, broker=args.broker)
     except Exception as exc:
         print(f"AVISO: no pude parsear regresiva {report}: {exc}")
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="parse_error",
-            report=report,
-            reasons=("parse_error",),
-            metadata={"error": str(exc)},
+        return target.technical(
+            "parse_error", report, reasons=("parse_error",), metadata={"error": str(exc)}
         )
-
-    no_history = runtime.tester_log_no_history_metadata(report, variant)
-    if no_history:
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="no_history",
-            report=report,
-            result=result,
-            reasons=("no_history",),
-            metadata=no_history,
-        )
-    if runtime.report_has_empty_tester_context(result):
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="report_mismatch",
-            report=report,
-            result=result,
-            reasons=("empty_tester_context",),
-        )
-
-    matches, mismatch_reason = runtime.report_matches_variant(
-        variant,
-        result,
-        symbol_map,
-        args.symbol_suffix,
-    )
-    if not matches:
-        print(f"AVISO: reporte regresivo no coincide para candidate #{candidate_id}: {mismatch_reason}")
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="report_mismatch",
-            report=report,
-            result=result,
-            reasons=("report_mismatch",),
-            metadata={"mismatch": mismatch_reason},
-        )
-
-    try:
-        actual_dates = runtime.read_report_dates(report)
-    except Exception as exc:
-        actual_dates = None
-        date_error = str(exc)
-    else:
-        date_error = ""
-    expected_dates = (
-        str(args.regression_from_date).strip(),
-        str(args.regression_to_date).strip(),
-    )
-    if actual_dates != expected_dates:
-        return _record_technical(
-            memory,
-            args,
-            candidate_id=candidate_id,
-            run_id=run_id,
-            status="date_mismatch",
-            report=report,
-            result=result,
-            reasons=("date_mismatch",),
-            actual_dates=actual_dates,
-            metadata={"date_error": date_error} if date_error else None,
-        )
-
-    if result.trades <= 0:
-        status = "no_trades"
-        combined_reasons = tuple(result.reasons)
-        degradation_audit: dict[str, float] = {}
-    else:
-        degradation_reasons, degradation_audit = regression_degradation(
-            base_metrics,
-            result.profit_factor,
-            result.drawdown_pct,
-            min_pf_efficiency=float(getattr(args, "regression_min_pf_efficiency", 0.0)),
-            max_dd_ratio=float(getattr(args, "regression_max_dd_ratio", 0.0)),
-        )
-        combined_reasons = tuple(result.reasons) + degradation_reasons
-        status = "accepted" if not combined_reasons else "rejected"
+    technical = _regression_report_checks(target, runtime, symbol_map, report, result)
+    if technical is not None:
+        return technical
+    actual_dates, technical = _regression_dates(target, runtime, report, result)
+    if technical is not None:
+        return technical
+    status, combined_reasons, degradation_audit = _regression_verdict(args, result, base_metrics)
     details_json, points_applied = _details_payload(
         status,
         result,
@@ -338,12 +213,8 @@ def evaluate_regression_report(
     return status
 
 
-def evaluate_candidate_regression(
-    args: Any,
-    memory: AgentMemory,
-    score_config: ScoreConfig,
-    runtime: RegressionRuntime,
-) -> int:
+def _regression_preflight(args: Any) -> int | None:
+    """Rechaza de entrada un rango invalido o una ejecucion sin terminal."""
     date_error = validate_regression_date_range(args.regression_from_date, args.regression_to_date)
     if date_error:
         print(f"ERROR: rango regresivo invalido: {date_error}")
@@ -351,13 +222,13 @@ def evaluate_candidate_regression(
     if not args.expert and not args.multi_terminal and not args.dry_run:
         print("ERROR: prueba regresiva requiere --expert o --multi-terminal")
         return 1
+    return None
 
-    run = memory.run_by_id(args.regression_run_id) if args.regression_run_id else memory.latest_run()
-    if run is None:
-        print("ERROR: no hay run SQLite disponible para prueba regresiva")
-        return 1
-    run_id = int(run["id"])
-    run_dir = resolve_workspace_path(run["output_dir"])
+
+def _regression_candidate_rows(
+    args: Any, memory: AgentMemory, run_id: int
+) -> list[tuple[sqlite3.Row, Path]]:
+    """Candidatos elegibles con su .set existente, segun los filtros pedidos."""
     rows_with_paths = [
         (row, resolve_workspace_path(row["set_path"]))
         for row in memory.accepted_candidates_for_regression(run_id)
@@ -373,77 +244,84 @@ def evaluate_candidate_regression(
             if not str(row["regression_status"] or "").strip()
             or str(row["regression_status"] or "").strip().lower() in REGRESSION_RETRYABLE_STATUSES
         ]
-    # Un simbolo que el broker retiro no puede producir reporte: MT5 no abre el
-    # tester. Se aparta antes de copiar sets y lanzar backtests, pero hay que
-    # grabar el estado terminal o la seleccion (sin fila O retryable) lo volveria
-    # a encolar en cada pasada.
-    if runtime.missing_report_status is not None:
-        kept: list[tuple[sqlite3.Row, Path]] = []
-        retired: list[tuple[sqlite3.Row, str]] = []
-        for row, path in rows_with_paths:
-            status = runtime.missing_report_status(str(row["target_symbol"] or ""))
-            if status == "no_report":
-                kept.append((row, path))
-            else:
-                retired.append((row, status))
-        rows_with_paths = kept
-        for row, status in retired:
-            _record_technical(
-                memory,
-                args,
-                candidate_id=int(row["id"]),
-                run_id=run_id,
-                status=status,
-                report=None,
-                reasons=(status,),
-            )
-        if retired:
-            symbols = sorted({str(row["target_symbol"] or "") for row, _status in retired})
-            print(
-                f"Regresiva: {len(retired)} candidato(s) omitidos sin abrir MT5 por simbolo "
-                f"retirado del broker ({', '.join(symbols)})."
-            )
+    return rows_with_paths
 
-    if not rows_with_paths:
-        mode = "pendientes/retryables" if args.regression_pending_only else "Final Tick 6M accepted"
-        print(f"Regresiva run #{run_id}: no hay candidatos {mode} con .set existente.")
-        return 0
 
-    run_mode = "pending" if args.regression_pending_only else "all"
-    regression_dir = runtime.recreate_work_dir(run_dir / "regression_2017_2019" / f"run_{run_id}_{run_mode}")
-    copied: list[tuple[sqlite3.Row, Variant]] = []
-    for row, source_set in rows_with_paths:
-        set_label = compact_safe_part(source_set.stem, 72, fallback="candidate")
-        destination = regression_dir / f"regression_{int(row['id']):06d}_{set_label}.set"
-        original = runtime.variant_from_candidate_row(row)
-        # Un ForceSymbol mal escrito heredado del .set guardado cierra MT5 sin
-        # reporte, y no_report es retryable: la regresiva no avanzaria nunca.
-        if runtime.write_stage_set is not None:
-            target_symbol = runtime.write_stage_set(
-                source_set, destination, False, args, original.target_symbol
-            )
+def _drop_retired_symbols(
+    args: Any, memory: AgentMemory, runtime: RegressionRuntime, run_id: int,
+    rows_with_paths: list[tuple[sqlite3.Row, Path]],
+) -> list[tuple[sqlite3.Row, Path]]:
+    """Aparta los simbolos retirados dejando su estado terminal en memoria.
+
+    Un simbolo que el broker retiro no puede producir reporte: MT5 no abre el
+    tester. Se aparta antes de copiar sets y lanzar backtests, pero hay que
+    grabar el estado terminal o la seleccion (sin fila O retryable) lo volveria
+    a encolar en cada pasada.
+    """
+    if runtime.missing_report_status is None:
+        return rows_with_paths
+    kept: list[tuple[sqlite3.Row, Path]] = []
+    retired: list[tuple[sqlite3.Row, str]] = []
+    for row, path in rows_with_paths:
+        status = runtime.missing_report_status(str(row["target_symbol"] or ""))
+        if status == "no_report":
+            kept.append((row, path))
         else:
-            write_set_use_every_tick(source_set, destination, False)
-            target_symbol = original.target_symbol
-        if not args.dry_run:
-            runtime.remove_report_artifacts(destination)
-        copied.append(
-            (
-                row,
-                Variant(
-                    path=destination,
-                    seed=original.seed,
-                    target_symbol=target_symbol,
-                    target_period=original.target_period,
-                    mutated_keys=original.mutated_keys,
-                    missing_lot_keys=original.missing_lot_keys,
-                    policy=f"{original.policy}+regression_2017_2019",
-                    timeframe_keys=original.timeframe_keys,
-                    mutation_details=original.mutation_details,
-                ),
-            )
+            retired.append((row, status))
+    for row, status in retired:
+        _record_technical(
+            memory,
+            args,
+            candidate_id=int(row["id"]),
+            run_id=run_id,
+            status=status,
+            report=None,
+            reasons=(status,),
         )
+    if retired:
+        symbols = sorted({str(row["target_symbol"] or "") for row, _status in retired})
+        print(
+            f"Regresiva: {len(retired)} candidato(s) omitidos sin abrir MT5 por simbolo "
+            f"retirado del broker ({', '.join(symbols)})."
+        )
+    return kept
 
+
+def _regression_stage_set(
+    args: Any, runtime: RegressionRuntime, row: sqlite3.Row, source_set: Path, regression_dir: Path
+) -> Variant:
+    """Copia el .set del candidato al area de la regresiva y lo deja listo."""
+    set_label = compact_safe_part(source_set.stem, 72, fallback="candidate")
+    destination = regression_dir / f"regression_{int(row['id']):06d}_{set_label}.set"
+    original = runtime.variant_from_candidate_row(row)
+    # Un ForceSymbol mal escrito heredado del .set guardado cierra MT5 sin
+    # reporte, y no_report es retryable: la regresiva no avanzaria nunca.
+    if runtime.write_stage_set is not None:
+        target_symbol = runtime.write_stage_set(
+            source_set, destination, False, args, original.target_symbol
+        )
+    else:
+        write_set_use_every_tick(source_set, destination, False)
+        target_symbol = original.target_symbol
+    if not args.dry_run:
+        runtime.remove_report_artifacts(destination)
+    return Variant(
+        path=destination,
+        seed=original.seed,
+        target_symbol=target_symbol,
+        target_period=original.target_period,
+        mutated_keys=original.mutated_keys,
+        missing_lot_keys=original.missing_lot_keys,
+        policy=f"{original.policy}+regression_2017_2019",
+        timeframe_keys=original.timeframe_keys,
+        mutation_details=original.mutation_details,
+    )
+
+
+def _run_regression_backtests(
+    args: Any, runtime: RegressionRuntime, regression_dir: Path, run_id: int, copied: list
+) -> tuple[float, int | None]:
+    """Lanza los backtests regresivos; devuelve cuando empezaron y el corte."""
     print(
         f"Regresiva run #{run_id}: candidatos Final Tick 6M accepted={len(copied)}; "
         f"fechas={args.regression_from_date}->{args.regression_to_date}; Model=1 OHLC"
@@ -462,14 +340,21 @@ def evaluate_candidate_regression(
     )
     if code == runtime.running_terminal_exit_code:
         print("ERROR: run_tests.py no ejecuto la prueba regresiva porque hay una terminal MT5 abierta.")
-        return 1
+        return started_at, 1
     if code != 0:
         print(f"AVISO: prueba regresiva termino con codigo {code}; se evaluaran reportes disponibles")
         if args.dry_run:
-            return code
+            return started_at, code
     if args.dry_run:
-        return 0
+        return started_at, 0
+    return started_at, None
 
+
+def _evaluate_regression_reports(
+    args: Any, memory: AgentMemory, runtime: RegressionRuntime, score_config: ScoreConfig,
+    run_id: int, copied: list, started_at: float,
+) -> None:
+    """Puntua el reporte de cada candidato y resume los estados obtenidos."""
     symbol_map = runtime.parse_symbol_map(args.symbol_map)
     status_counts: dict[str, int] = {}
     for row, variant in copied:
@@ -499,6 +384,78 @@ def evaluate_candidate_regression(
         + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
         + f"; memoria={memory.path}"
     )
+
+
+def evaluate_candidate_regression(
+    args: Any,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+    runtime: RegressionRuntime,
+) -> int:
+    invalid = _regression_preflight(args)
+    if invalid is not None:
+        return invalid
+    run = memory.run_by_id(args.regression_run_id) if args.regression_run_id else memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para prueba regresiva")
+        return 1
+    run_id = int(run["id"])
+    rows_with_paths = _drop_retired_symbols(
+        args, memory, runtime, run_id, _regression_candidate_rows(args, memory, run_id)
+    )
+    if not rows_with_paths:
+        mode = "pendientes/retryables" if args.regression_pending_only else "Final Tick 6M accepted"
+        print(f"Regresiva run #{run_id}: no hay candidatos {mode} con .set existente.")
+        return 0
+    run_mode = "pending" if args.regression_pending_only else "all"
+    run_dir = resolve_workspace_path(run["output_dir"])
+    regression_dir = runtime.recreate_work_dir(
+        run_dir / "regression_2017_2019" / f"run_{run_id}_{run_mode}"
+    )
+    copied = [
+        (row, _regression_stage_set(args, runtime, row, source_set, regression_dir))
+        for row, source_set in rows_with_paths
+    ]
+    started_at, early_exit = _run_regression_backtests(
+        args, runtime, regression_dir, run_id, copied
+    )
+    if early_exit is not None:
+        return early_exit
+    _evaluate_regression_reports(
+        args, memory, runtime, score_config, run_id, copied, started_at
+    )
+    return 0
+
+
+def _rescore_regression_from_reports(
+    args: Any, memory: AgentMemory, score_config: ScoreConfig, runtime: RegressionRuntime
+) -> int:
+    """Vuelve a evaluar cada regresiva final desde su reporte guardado."""
+    rows = memory.regression_rows_for_rescore(args.regression_run_id or None)
+    if not rows:
+        print("Regresiva rescore: no hay filas finales con reporte guardado.")
+        return 0
+    symbol_map = runtime.parse_symbol_map(args.symbol_map)
+    counts: dict[str, int] = {}
+    for row in rows:
+        report = resolve_workspace_path(row["regression_report_path"])
+        status = evaluate_regression_report(
+            memory,
+            args,
+            runtime,
+            score_config,
+            symbol_map,
+            int(row["run_id"]),
+            int(row["id"]),
+            runtime.variant_from_candidate_row(row),
+            report if report.exists() else None,
+            _base_metrics_from_row(row),
+        )
+        counts[status] = counts.get(status, 0) + 1
+    print(
+        "Regresiva rescore terminado: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+    )
     return 0
 
 
@@ -510,136 +467,5 @@ def rescore_regression_only(
     runtime: RegressionRuntime,
 ) -> int:
     if not bool(getattr(args, "rescore_from_reports", False)):
-        rows = memory.conn.execute(
-            """
-            select
-                c.id,
-                c.run_id,
-                c.period,
-                c.metrics_json as base_metrics_json,
-                rg.status as regression_status,
-                rg.report_path as regression_report_path,
-                rg.metrics_json as regression_metrics_json,
-                rg.details_json as regression_details_json,
-                rg.from_date as regression_from_date,
-                rg.to_date as regression_to_date
-            from candidate_regression rg
-            join candidates c on c.id = rg.candidate_id
-            where rg.status in ('accepted', 'rejected', 'no_trades')
-              and coalesce(rg.metrics_json, '') != ''
-              and (? = 0 or c.run_id = ?)
-            order by c.run_id, c.generation, c.id
-            """,
-            (int(args.regression_run_id or 0), int(args.regression_run_id or 0)),
-        ).fetchall()
-        counts: dict[str, int] = {}
-        invalid_metrics = 0
-        window_mismatch = 0
-        expected_dates = (
-            str(args.regression_from_date).strip(),
-            str(args.regression_to_date).strip(),
-        )
-        for row in rows:
-            stored_dates = (
-                str(row["regression_from_date"] or "").strip(),
-                str(row["regression_to_date"] or "").strip(),
-            )
-            if stored_dates != expected_dates:
-                window_mismatch += 1
-                continue
-            try:
-                result = rescore_result(
-                    ScoreResult.from_json(str(row["regression_metrics_json"])),
-                    _score_config_for_period(score_config, str(row["period"] or ""), args),
-                )
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                invalid_metrics += 1
-                print(f"AVISO: metrics_json regresiva invalido candidate #{int(row['id'])}: {exc}")
-                continue
-            try:
-                base_metrics = json.loads(str(row["base_metrics_json"] or "{}"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                base_metrics = None
-            if not isinstance(base_metrics, dict):
-                base_metrics = None
-            if result.trades <= 0:
-                status = "no_trades"
-                combined_reasons = tuple(result.reasons)
-                degradation_audit: dict[str, float] = {}
-            else:
-                degradation_reasons, degradation_audit = regression_degradation(
-                    base_metrics,
-                    result.profit_factor,
-                    result.drawdown_pct,
-                    min_pf_efficiency=float(getattr(args, "regression_min_pf_efficiency", 0.0)),
-                    max_dd_ratio=float(getattr(args, "regression_max_dd_ratio", 0.0)),
-                )
-                combined_reasons = tuple(result.reasons) + degradation_reasons
-                status = "accepted" if not combined_reasons else "rejected"
-            try:
-                previous_details = json.loads(str(row["regression_details_json"] or "{}"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                previous_details = {}
-            actual_dates = None
-            if isinstance(previous_details, dict):
-                actual_from = str(previous_details.get("actual_from_date") or "").strip()
-                actual_to = str(previous_details.get("actual_to_date") or "").strip()
-                if actual_from and actual_to:
-                    actual_dates = (actual_from, actual_to)
-            details_json, points_applied = _details_payload(
-                status,
-                result,
-                args,
-                reasons=combined_reasons,
-                actual_dates=actual_dates or stored_dates,
-                metadata={"degradation": degradation_audit} if degradation_audit else None,
-            )
-            report_raw = str(row["regression_report_path"] or "").strip()
-            memory.record_candidate_regression(
-                int(row["id"]),
-                int(row["run_id"]),
-                status,
-                result,
-                Path(report_raw) if report_raw else None,
-                details_json,
-                expected_dates[0],
-                expected_dates[1],
-                args.regression_positive_points,
-                args.regression_negative_points,
-                points_applied,
-            )
-            counts[status] = counts.get(status, 0) + 1
-        print(
-            "Regresiva repuntuada desde SQLite: "
-            + (", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "sin filas")
-            + f"; total={sum(counts.values())}; ventana_distinta={window_mismatch}; invalidos={invalid_metrics}"
-        )
-        return 0
-
-    rows = memory.regression_rows_for_rescore(args.regression_run_id or None)
-    if not rows:
-        print("Regresiva rescore: no hay filas finales con reporte guardado.")
-        return 0
-    symbol_map = runtime.parse_symbol_map(args.symbol_map)
-    counts: dict[str, int] = {}
-    for row in rows:
-        report = resolve_workspace_path(row["regression_report_path"])
-        variant = runtime.variant_from_candidate_row(row)
-        status = evaluate_regression_report(
-            memory,
-            args,
-            runtime,
-            score_config,
-            symbol_map,
-            int(row["run_id"]),
-            int(row["id"]),
-            variant,
-            report if report.exists() else None,
-            _base_metrics_from_row(row),
-        )
-        counts[status] = counts.get(status, 0) + 1
-    print(
-        "Regresiva rescore terminado: "
-        + ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
-    )
-    return 0
+        return _rescore_regression_from_memory(args, memory, score_config)
+    return _rescore_regression_from_reports(args, memory, score_config, runtime)

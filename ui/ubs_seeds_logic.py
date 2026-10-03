@@ -1,25 +1,15 @@
 from __future__ import annotations
 
 import json
-
-from ubs.tester_diagnostics import execution_failure_reason
+from dataclasses import dataclass, field
 import sqlite3
 import sys
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
-import tkinter as tk
 from tkinter import messagebox
 
-import queue
-import threading
-import tkinter as tk
-from tkinter import filedialog
-from tkinter import ttk as _ttk
-from run_tests import KNOWN_TIMEFRAMES, apply_symbol_map, infer_tester_fields_from_set, load_set_files, normalize_set_symbol, parse_symbol_map
+from run_tests import KNOWN_TIMEFRAMES
 from ubs.db import connect_memory
-from ubs.manual_status import mark_seed_scores
-from ubs.memory import metrics_have_empty_tester_context
 from ubs.path_utils import resolve_workspace_path, workspace_path_exists
 
 
@@ -28,1456 +18,39 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
 
-class UBSSeedsLogicMixin:
-    def _refresh_ubs_seeds_panel(self) -> None:
-        for label, callback in (
-            ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
-            ("ubs_seeds", self._refresh_ubs_seeds),
-            ("ubs_universe", self._refresh_ubs_universe),
-        ):
-            self._safe_refresh(label, callback)
-
-    def _ubs_seed_reason(self, row: object, status: str) -> str:
-        if status in {"rejected", "no_trades"}:
-            try:
-                reason = execution_failure_reason(json.loads(row["metrics_json"] or "{}"))
-            except (TypeError, ValueError, KeyError, IndexError):
-                reason = ""
-            if reason:
-                return reason
-        if status == "report_mismatch":
-            return "mismatch symbol/TF"
-        if status == "pending_tester_context":
-            return "reporte MT5 vacio (symbol/TF); reintento pendiente"
-        if status == "invalid_seed":
-            try:
-                metrics_json = row["metrics_json"] if row is not None else None
-                data = json.loads(metrics_json) if metrics_json else {}
-                reasons = data.get("reasons") or []
-                if reasons:
-                    return " | ".join(str(reason) for reason in reasons)
-            except Exception:
-                pass
-            return "set invalido/deshabilitado"
-        if row is None:
-            return ""
-        if status == "parse_error":
-            return "error al parsear reporte"
-        if status == "no_report":
-            return "sin reporte"
-        if status == "no_trades":
-            return "reporte sin operaciones"
-        if status == "disabled_symbol":
-            return "symbol deshabilitado"
-        metrics_json = None
-        try:
-            metrics_json = row["metrics_json"]
-        except (TypeError, KeyError, IndexError):
-            pass
-        if not metrics_json:
-            return ""
-        try:
-            data = json.loads(metrics_json)
-            reasons = data.get("reasons") or []
-            if not reasons:
-                return ""
-            formats = {
-                "net_profit": ("net norm", ".0f", ""),
-                "profit_factor": ("PF", ".2f", ""),
-                "trades": ("trades", "d", ""),
-                "drawdown_pct": ("DD", ".1f", "%"),
-                "recovery_factor": ("RF", ".2f", ""),
-                "positive_month_ratio": ("meses+", ".0%", ""),
-            }
-            parts = []
-            for reason in reasons:
-                label, fmt, suffix = formats.get(reason, (reason, "", ""))
-                value = data.get("normalized_net_profit") if reason == "net_profit" else data.get(reason)
-                if value is None:
-                    parts.append(label)
-                    continue
-                try:
-                    parts.append(f"{label}: {value:{fmt}}{suffix}")
-                except (TypeError, ValueError):
-                    parts.append(f"{label}: {value}")
-            return " | ".join(parts)
-        except Exception:
-            return ""
-
-    def _count_ubs_seed_files(self) -> tuple[int, str]:
-        source_dir = self._ubs_generator_source_dir()
-        files = load_set_files(source_dir, None, recursive=True)
-        return len(files), str(source_dir)
-
-    def _active_ubs_symbol_map(self) -> dict[str, str]:
-        return parse_symbol_map(self._effective_ubs_symbol_map_text())
-
-    def _format_disabled_seed_counts(self, counts: Counter[tuple[str, str]]) -> str:
-        parts = []
-        shown_total = 0
-        for (raw, mapped), count in counts.most_common(5):
-            shown_total += count
-            label = raw if raw == mapped else f"{raw} -> {mapped}"
-            parts.append(f"{label}: {count}")
-        remaining = sum(counts.values()) - shown_total
-        if remaining > 0:
-            parts.append(f"otros: {remaining}")
-        return ", ".join(parts)
-
-    def _ubs_seed_eval_plan(self, seed_files: list[Path]) -> dict[str, object]:
-        """Estimate real MT5 jobs and skipped seed categories for the confirmation dialog."""
-        memory_path = self._ubs_memory_path()
-        disabled_symbols = self._load_disabled_ubs_symbols()
-        seed_enabled_when_disabled = self._load_seed_enabled_disabled_ubs_symbols()
-        seed_enabled_when_disabled &= disabled_symbols
-        symbol_map = self._active_ubs_symbol_map()
-        rows: dict[str, sqlite3.Row] = {}
-        overrides: dict[str, tuple[str, str]] = {}
-        if memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                conn.row_factory = sqlite3.Row
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    rows = {
-                        str(resolve_workspace_path(r["seed_path"])): r
-                        for r in conn.execute("select * from seed_scores").fetchall()
-                    }
-                if self._sqlite_table_exists(conn, "seed_overrides"):
-                    overrides = {
-                        str(resolve_workspace_path(r["seed_path"])): (
-                            str(r["symbol"] or "").strip().upper(),
-                            str(r["period"] or "").strip().upper(),
-                        )
-                        for r in conn.execute("select seed_path, symbol, period from seed_overrides").fetchall()
-                    }
-                conn.close()
-            except sqlite3.Error:
-                rows = {}
-                overrides = {}
-
-        stats: Counter[str] = Counter()
-        disabled_counts: Counter[tuple[str, str]] = Counter()
-        ready_statuses = {"accepted", "rejected", "invalid_seed", "report_mismatch", "trade_disabled"}
-        for path in seed_files:
-            path_text = str(path)
-            try:
-                stat = path.stat()
-            except OSError:
-                stats["missing"] += 1
-                continue
-            row = rows.get(path_text)
-            inferred_symbol, inferred_period = self._inferred_ubs_seed_fields(path)
-            ov_sym, ov_per = overrides.get(path_text, ("", ""))
-            symbol = ov_sym or inferred_symbol
-            period = ov_per or inferred_period
-
-            if not symbol or not period or symbol == "UNKNOWN" or period == "UNKNOWN":
-                stats["invalid"] += 1
-                continue
-
-            raw = normalize_set_symbol(symbol)
-            mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
-            symbol_disabled = raw in disabled_symbols or mapped in disabled_symbols
-            seed_allowed = raw in seed_enabled_when_disabled or mapped in seed_enabled_when_disabled
-            if symbol_disabled and not seed_allowed:
-                stats["disabled"] += 1
-                disabled_counts[(raw or symbol, mapped or raw or symbol)] += 1
-                continue
-
-            changed = (
-                row is None
-                or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
-                or int(row["seed_size"] or -1) != int(stat.st_size)
-                or str(row["status"] or "") not in ready_statuses
-                or (
-                    str(row["status"] or "") == "report_mismatch"
-                    and metrics_have_empty_tester_context(row["metrics_json"])
-                )
-                or str(row["symbol"] or "").strip().upper() != symbol.strip().upper()
-                or str(row["period"] or "").strip().upper() != period.strip().upper()
-            )
-            if changed:
-                stats["pending"] += 1
-            else:
-                stats["unchanged"] += 1
-
-        return {
-            "pending": int(stats["pending"]),
-            "unchanged": int(stats["unchanged"]),
-            "disabled": int(stats["disabled"]),
-            "invalid": int(stats["invalid"]),
-            "missing": int(stats["missing"]),
-            "disabled_counts": disabled_counts,
-        }
-
-    def _count_ubs_seed_pending(self, seed_files: list) -> int:
-        """Estimate how many seeds will actually run backtests."""
-        return int(self._ubs_seed_eval_plan(seed_files)["pending"])
-
-    def _ubs_seed_eval_args(self) -> list[str]:
-        source_dir = self._ubs_generator_source_dir()
-        output_dir = self._ubs_generation_output_dir()
-        args = [
-            "--evaluate-seeds",
-            "--source-dir", str(source_dir),
-            "--output-dir", str(output_dir),
-            "--memory", str(self._ubs_memory_path()),
-            "--broker", self._ubs_broker(),
-            "--account-type", self._ubs_account_type(),
-            "--template", self.template_path.get(),
-            "--delay", str(self.delay.get()),
-        ]
-        if self.ubs_seed_from_date.get().strip():
-            args.extend(["--from-date", self.ubs_seed_from_date.get().strip()])
-        if self.ubs_seed_to_date.get().strip():
-            args.extend(["--to-date", self.ubs_seed_to_date.get().strip()])
-        args.extend(self._ubs_seed_score_args())
-        if self.multiterminal_enabled.get():
-            args.extend(self._multiterminal_args(require_ubs=True))
-        else:
-            args.extend(["--expert", self._required_ubs_ex5_file()])
-            if self.mt5_path.get().strip():
-                args.extend(["--mt5-path", self.mt5_path.get()])
-            if self.mt5_data_root.get().strip():
-                args.extend(["--data-dir", self.mt5_data_root.get()])
-        symbol_map = self._effective_ubs_symbol_map_text()
-        if symbol_map:
-            args.extend(["--symbol-map", symbol_map])
-        args.extend(self._effective_symbol_suffix_args())
-        return args
-
-    def _run_ubs_seed_evaluation(self) -> None:
-        try:
-            args = self._ubs_seed_eval_args()
-            source_dir = self._ubs_generator_source_dir()
-            seed_files = load_set_files(source_dir, None, recursive=True)
-            total = len(seed_files)
-            target = str(source_dir)
-            plan = self._ubs_seed_eval_plan(seed_files)
-            pending = int(plan["pending"])
-            already_ok = int(plan["unchanged"])
-            disabled = int(plan["disabled"])
-            invalid = int(plan["invalid"])
-            missing = int(plan["missing"])
-            disabled_counts = plan["disabled_counts"]
-        except Exception as exc:
-            self._show_error("No se pudo preparar evaluacion de semillas", str(exc))
-            return
-        details = [
-            "Accion: Evaluar semillas UBS",
-            f"Carpeta seeds: {target}",
-            f"Seeds detectadas: {total}",
-            f"Backtests reales a ejecutar: {pending}",
-            f"No se ejecutan: {already_ok} ya listas/sin cambios, {disabled} por symbol deshabilitado, {invalid} por set invalido/Symbol-TF.",
-            "Corren solo seeds nuevas/modificadas o retryables con set y symbol/TF validos.",
-        ]
-        if disabled:
-            details.append(
-                "Symbols deshabilitados (Universo de la cuenta): "
-                f"{self._format_disabled_seed_counts(disabled_counts)}."
-            )
-            details.append("Ejemplo: XTIUSD cuenta como deshabilitado si el mapa activo lo traduce a WTI y WTI esta deshabilitado.")
-        if invalid:
-            details.append("Sets invalidos o sin Symbol/TF: se marcaran sin abrir MT5.")
-        if missing:
-            details.append(f"Archivos no accesibles y omitidos: {missing}.")
-        details.extend([
-            "Las semillas deshabilitadas solo aportan pesos si el activo tiene SEEDS=si en Universo.",
-            f"Pass Seeds: net>{self.ubs_seed_pass_min_net_profit.get().strip()} | PF>={self.ubs_seed_pass_min_profit_factor.get().strip()} | DD<={self.ubs_seed_pass_max_drawdown_pct.get().strip()}%",
-            f"Pass Seeds: trades>={self.ubs_seed_pass_min_trades.get()} | recovery>={self.ubs_seed_pass_min_recovery_factor.get().strip()}",
-        ])
-        details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar evaluacion de semillas", pending, details):
-            self.ubs_seed_eval_summary.set("Evaluando semillas UBS...")
-            self._run_script("ubs_agent.py", args)
-
-    def _refresh_ubs_seed_eval_summary(self) -> None:
-        if not hasattr(self, "ubs_seed_eval_summary"):
-            return
-        try:
-            source_dir = self._ubs_generator_source_dir()
-            seed_count = len(load_set_files(source_dir, None, recursive=True))
-        except Exception:
-            self.ubs_seed_eval_summary.set("Semillas: carpeta no valida")
-            return
-
-        memory_path = self._ubs_memory_path()
-        if not memory_path.exists():
-            self.ubs_seed_eval_summary.set(f"Semillas: {seed_count} | evaluadas 0 | pendientes {seed_count}")
-            return
-        try:
-            conn = connect_memory(memory_path)
-            conn.row_factory = sqlite3.Row
-            seed_table = conn.execute(
-                "select name from sqlite_master where type='table' and name='seed_scores'"
-            ).fetchone()
-            if not seed_table:
-                conn.close()
-                self.ubs_seed_eval_summary.set(f"Semillas: {seed_count} | evaluadas 0 | pendientes {seed_count}")
-                return
-            active_counts = conn.execute(
-                """
-                select
-                    count(*) as total,
-                    sum(case when status in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist', 'trade_disabled') then 1 else 0 end) as ready,
-                    sum(case
-                        when status in ('accepted', 'rejected') and score is null then 1
-                        when status not in ('accepted', 'rejected', 'report_mismatch', 'disabled_symbol', 'invalid_seed', 'symbol_not_exist', 'trade_disabled') then 1
-                        else 0
-                    end) as pending
-                from seed_scores
-                where active=1
-                """
-            ).fetchone()
-            inactive = int(conn.execute("select count(*) from seed_scores where active=0").fetchone()[0] or 0)
-            conn.close()
-        except sqlite3.Error as exc:
-            self.ubs_seed_eval_summary.set(f"Semillas: error SQLite ({exc})")
-            return
-
-        ready = int(active_counts["ready"] or 0) if active_counts else 0
-        pending = max(seed_count - ready, int(active_counts["pending"] or 0) if active_counts else seed_count)
-        self.ubs_seed_eval_summary.set(
-            f"Semillas: {seed_count} | listas {ready} | pendientes {pending} | obsoletas {inactive}"
-        )
-
-    def _sqlite_table_exists(self, conn: sqlite3.Connection, table: str) -> bool:
-        return bool(conn.execute("select name from sqlite_master where type='table' and name=?", (table,)).fetchone())
-
-    def _ensure_ubs_seed_override_schema(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            create table if not exists seed_overrides (
-                seed_path text primary key,
-                symbol text not null default '',
-                period text not null default '',
-                updated_at text not null
-            )
-            """
-        )
-        if self._sqlite_table_exists(conn, "seed_scores"):
-            conn.execute(
-                """
-                update seed_scores
-                set status='report_mismatch', accepted=null
-                where status in ('accepted', 'rejected')
-                  and (upper(symbol)='UNKNOWN' or upper(period)='UNKNOWN')
-                """
-            )
-        conn.commit()
-
-    def _current_ubs_seed_files(self) -> list[Path]:
-        return sorted(load_set_files(self._ubs_generator_source_dir(), None, recursive=True), key=lambda path: path.name.lower())
-
-    def _inferred_ubs_seed_fields(self, path: Path) -> tuple[str, str]:
-        try:
-            fields = infer_tester_fields_from_set(path)
-        except Exception:
-            fields = {}
-        symbol = str(fields.get("Symbol") or "UNKNOWN").strip().upper()
-        period = str(fields.get("Period") or "UNKNOWN").strip().upper()
-        return symbol, period
-
-    def _refresh_ubs_seeds(self) -> None:
-        if not hasattr(self, "ubs_seeds_tree"):
-            return
-        tree = self.ubs_seeds_tree
-        tree.delete(*tree.get_children(""))
-        self.ubs_seed_paths.clear()
-        current_checked = set(self.ubs_seed_checked)
-
-        try:
-            seed_files = self._current_ubs_seed_files()
-        except Exception as exc:
-            self.ubs_seed_detail.set(f"Carpeta de seeds no valida: {exc}")
-            return
-
-        score_rows: dict[str, sqlite3.Row] = {}
-        overrides: dict[str, tuple[str, str]] = {}
-        inactive_rows: list[sqlite3.Row] = []
-        memory_path = self._ubs_memory_path()
-        if memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                conn.row_factory = sqlite3.Row
-                self._ensure_ubs_seed_override_schema(conn)
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    rows = conn.execute("select * from seed_scores").fetchall()
-                    # SQLite may have been copied from another checkout.  Match
-                    # relocated workspace paths to the physical seed files so
-                    # evaluated seeds do not appear pending merely because the
-                    # repository root changed.
-                    score_rows = {
-                        str(resolve_workspace_path(row["seed_path"])): row
-                        for row in rows
-                    }
-                    inactive_rows = [row for row in rows if not int(row["active"] or 0)]
-                for row in conn.execute("select seed_path, symbol, period from seed_overrides").fetchall():
-                    overrides[str(resolve_workspace_path(row["seed_path"]))] = (
-                        str(row["symbol"] or "").strip().upper(),
-                        str(row["period"] or "").strip().upper(),
-                    )
-                conn.close()
-            except sqlite3.Error as exc:
-                self.ubs_seed_detail.set(f"Error SQLite semillas: {exc}")
-
-        current_paths = {str(path) for path in seed_files}
-        first_item = ""
-        for path in seed_files:
-            path_text = str(path)
-            row = score_rows.get(path_text)
-            stored_path_text = str(row["seed_path"]) if row else path_text
-            inferred_symbol, inferred_period = self._inferred_ubs_seed_fields(path)
-            override_symbol, override_period = overrides.get(path_text, ("", ""))
-            symbol = override_symbol or (str(row["symbol"] or "").strip().upper() if row else inferred_symbol)
-            period = override_period or (str(row["period"] or "").strip().upper() if row else inferred_period)
-            status = str(row["status"] or "pending") if row else "pending"
-            display_status = status
-            if (not symbol or not period or symbol == "UNKNOWN" or period == "UNKNOWN") and not override_symbol:
-                display_status = "invalid_seed"
-            accepted = ""
-            if row and row["accepted"] is not None:
-                accepted = "si" if int(row["accepted"]) else "no"
-            reason = self._ubs_seed_reason(row, display_status)
-            item = tree.insert(
-                "",
-                "end",
-                values=(
-                    self._checkbox_text(stored_path_text in current_checked),
-                    self._format_ubs_status(display_status),
-                    symbol,
-                    period,
-                    self._format_ubs_number(row["score"] if row else None),
-                    accepted,
-                    "si" if override_symbol or override_period else "no",
-                    reason,
-                    path.name,
-                ),
-                tags=(self._ubs_result_tag(display_status),),
-            )
-            self.ubs_seed_paths[item] = {"seed_path": stored_path_text, "active": "1", "status": display_status, "has_row": "1" if row else "0"}
-            if not first_item:
-                first_item = item
-
-        for row in inactive_rows:
-            path_text = str(row["seed_path"] or "")
-            if not path_text or str(resolve_workspace_path(path_text)) in current_paths:
-                continue
-            status = str(row["status"] or "obsoleta")
-            override_symbol, override_period = overrides.get(path_text, ("", ""))
-            symbol = override_symbol or str(row["symbol"] or "").strip().upper()
-            period = override_period or str(row["period"] or "").strip().upper()
-            reason = self._ubs_seed_reason(row, status)
-            item = tree.insert(
-                "",
-                "end",
-                values=(
-                    self._checkbox_text(path_text in current_checked),
-                    "obsoleta",
-                    symbol,
-                    period,
-                    self._format_ubs_number(row["score"]),
-                    "",
-                    "si" if override_symbol or override_period else "no",
-                    reason,
-                    Path(path_text).name,
-                ),
-                tags=("pending",),
-            )
-            self.ubs_seed_paths[item] = {"seed_path": path_text, "active": "0", "status": status}
-
-        valid_paths = {info["seed_path"] for info in self.ubs_seed_paths.values() if info.get("seed_path")}
-        self.ubs_seed_checked.intersection_update(valid_paths)
-
-        if first_item:
-            tree.selection_set(first_item)
-            tree.focus(first_item)
-            self._on_ubs_seed_select()
-        else:
-            self.ubs_seed_detail.set("No hay semillas .set en la carpeta UBS")
-            self.ubs_seed_override_symbol.set("")
-            self.ubs_seed_override_period.set("")
-
-    def _selected_ubs_seed_info(self) -> dict[str, str]:
-        if not hasattr(self, "ubs_seeds_tree"):
-            return {}
-        selected = self.ubs_seeds_tree.selection()
-        if not selected:
-            return {}
-        return self.ubs_seed_paths.get(selected[0], {})
-
-    def _checked_ubs_seed_infos(self, *, fallback_selected: bool = True) -> list[dict[str, str]]:
-        infos = [
-            info for info in self.ubs_seed_paths.values()
-            if info.get("seed_path") in self.ubs_seed_checked
-        ]
-        if infos or not fallback_selected:
-            return infos
-        selected = self._selected_ubs_seed_info()
-        return [selected] if selected else []
-
-    def _manual_mark_selected_ubs_seeds(self, status: str) -> None:
-        infos = self._checked_ubs_seed_infos()
-        seed_paths = [info.get("seed_path", "") for info in infos if info.get("active") == "1"]
-        if not seed_paths:
-            messagebox.showinfo("Estado manual", "Selecciona una o mas seeds activas primero.")
-            return
-        label = "aceptada" if status == "accepted" else "rechazada"
-        if not messagebox.askyesno(
-            "Estado manual",
-            f"Marcar {len(seed_paths)} seed(s) como {label} manual?\n\n"
-            "Si la seed no tiene score, se guarda el estado pero no aporta al peso.",
-        ):
-            return
-        try:
-            conn = connect_memory(self._ubs_memory_path())
-            conn.row_factory = sqlite3.Row
-            self._ensure_ubs_seed_override_schema(conn)
-            now = datetime.now().isoformat(timespec="seconds")
-            for seed_path in seed_paths:
-                if conn.execute("select 1 from seed_scores where seed_path=?", (seed_path,)).fetchone():
-                    continue
-                path = resolve_workspace_path(seed_path)
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                symbol, period = self._inferred_ubs_seed_fields(path)
-                conn.execute(
-                    """
-                    insert into seed_scores (
-                        seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
-                        status, active, last_seen
-                    ) values (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)
-                    """,
-                    (
-                        seed_path,
-                        float(stat.st_mtime),
-                        int(stat.st_size),
-                        symbol,
-                        period,
-                        path.parent.name or "manual",
-                        "manual",
-                        now,
-                    ),
-                )
-            updated = mark_seed_scores(conn, seed_paths, status)
-            conn.commit()
-            conn.close()
-        except sqlite3.Error as exc:
-            self._show_error("No se pudo aplicar estado manual", str(exc))
-            return
-        self.ubs_seed_checked.clear()
-        self.ubs_weights_locked.set(False)
-        self.status_text.set(f"Estado manual aplicado a {updated} seed(s)")
-        self._refresh_ubs_seeds_panel()
-
-    def _manual_accept_selected_ubs_seeds(self) -> None:
-        self._manual_mark_selected_ubs_seeds("accepted")
-
-    def _manual_reject_selected_ubs_seeds(self) -> None:
-        self._manual_mark_selected_ubs_seeds("rejected")
-
-    def _on_ubs_seed_tree_click(self, event: tk.Event) -> None:
-        item, column = self._tree_item_from_event(self.ubs_seeds_tree, event)
-        if not item or column != "#1":
-            return
-        info = self.ubs_seed_paths.get(item, {})
-        seed_path = info.get("seed_path", "")
-        if not seed_path:
-            return
-        if seed_path in self.ubs_seed_checked:
-            self.ubs_seed_checked.remove(seed_path)
-        else:
-            self.ubs_seed_checked.add(seed_path)
-        values = list(self.ubs_seeds_tree.item(item, "values"))
-        if values:
-            values[0] = self._checkbox_text(seed_path in self.ubs_seed_checked)
-            self.ubs_seeds_tree.item(item, values=values)
-        return "break"
-
-    def _on_ubs_seed_select(self) -> None:
-        info = self._selected_ubs_seed_info()
-        if not info:
-            return
-        item = self.ubs_seeds_tree.selection()[0]
-        values = self.ubs_seeds_tree.item(item, "values")
-        seed_path = info.get("seed_path", "")
-        symbol = str(values[2] if len(values) > 2 else "").strip().upper()
-        period = str(values[3] if len(values) > 3 else "").strip().upper()
-        self.ubs_seed_override_symbol.set("" if symbol == "UNKNOWN" else symbol)
-        self.ubs_seed_override_period.set("" if period == "UNKNOWN" else period)
-        self.ubs_seed_detail.set(f"{Path(seed_path).name} | estado: {values[1] if len(values) > 1 else '-'}")
-
-    def _open_selected_ubs_seed(self) -> None:
-        infos = self._checked_ubs_seed_infos()
-        if not infos:
-            self._show_error("Sin seleccion", "Selecciona una semilla.")
-            return
-        for info in infos:
-            seed_path = info.get("seed_path", "")
-            if seed_path:
-                self._open_local_file(resolve_workspace_path(seed_path))
-
-    def _open_selected_ubs_seed_report(self) -> None:
-        infos = self._checked_ubs_seed_infos()
-        if not infos:
-            return
-        memory_path = self._ubs_memory_path()
-        if not memory_path.exists():
-            messagebox.showinfo("Semillas UBS", "Sin memoria UBS. Evalua las semillas primero.")
-            return
-        try:
-            conn = connect_memory(memory_path)
-            conn.row_factory = sqlite3.Row
-            rows = []
-            for info in infos:
-                seed_path = info.get("seed_path", "")
-                if seed_path:
-                    row = conn.execute("select report_path from seed_scores where seed_path=?", (seed_path,)).fetchone()
-                    if row and row["report_path"]:
-                        rows.append(row)
-            conn.close()
-        except sqlite3.Error as exc:
-            self._show_error("Error SQLite", str(exc))
-            return
-        if not rows:
-            messagebox.showinfo("Semillas UBS", "Esta semilla no tiene reporte asociado.\nEjecuta 'Evaluar semillas' primero.")
-            return
-        for row in rows:
-            self._open_local_file(resolve_workspace_path(str(row["report_path"])))
-
-    def _retry_selected_ubs_seed(self) -> None:
-        infos = self._checked_ubs_seed_infos()
-        if not infos:
-            messagebox.showinfo("Semillas UBS", "Selecciona una semilla primero.")
-            return
-        active_infos = [info for info in infos if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))]
-        if not active_infos:
-            messagebox.showinfo("Semillas UBS", "No hay seeds activas/existentes entre las marcadas.")
-            return
-        paths = [resolve_workspace_path(info["seed_path"]) for info in active_infos]
-        try:
-            output_dir = self._ubs_generation_output_dir()
-            args = [
-                "--memory", str(self._ubs_memory_path()),
-                "--broker", self._ubs_broker(),
-                "--account-type", self._ubs_account_type(),
-                "--output-dir", str(output_dir),
-                "--template", self.template_path.get(),
-                "--delay", str(self.delay.get()),
-            ]
-            for path in paths:
-                args.extend(["--retry-seed-path", str(path)])
-            args.extend(self._ubs_seed_score_args())
-            if self.multiterminal_enabled.get():
-                args.extend(self._multiterminal_args(require_ubs=True))
-            else:
-                args.extend(["--expert", self._required_ubs_ex5_file()])
-                if self.mt5_path.get().strip():
-                    args.extend(["--mt5-path", self.mt5_path.get()])
-                if self.mt5_data_root.get().strip():
-                    args.extend(["--data-dir", self.mt5_data_root.get()])
-            symbol_map = self._effective_ubs_symbol_map_text()
-            if symbol_map:
-                args.extend(["--symbol-map", symbol_map])
-            args.extend(self._effective_symbol_suffix_args())
-        except Exception as exc:
-            self._show_error("No se pudo preparar retry seed", str(exc))
-            return
-
-        selected_items = self.ubs_seeds_tree.selection() if hasattr(self, "ubs_seeds_tree") else ()
-        values = self.ubs_seeds_tree.item(selected_items[0], "values") if selected_items else ()
-        details = [
-            "Accion: Repetir backtest seed UBS",
-            f"Seeds: {len(paths)}",
-            f"Primera: {paths[0].name}",
-            f"Estado actual: {values[1] if len(values) > 1 else active_infos[0].get('status', '-')}",
-            f"Backtests previstos: {len(paths)}",
-        ]
-        details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar retry seed", len(paths), details):
-            self.ubs_seed_checked.clear()
-            self._safe_refresh("ubs_seeds", self._refresh_ubs_seeds)
-            self._run_script("ubs_agent.py", args)
-
-    def _import_ubs_seeds(self) -> None:
-        """Importa una carpeta de .set, normaliza lote fijo, detecta duplicados y muestra progreso."""
-        source_str = filedialog.askdirectory(title="Carpeta origen con los .set a importar")
-        if not source_str:
-            return
-
-        source_dir = Path(source_str)
-        try:
-            output_dir = self._ubs_generator_source_dir()
-        except Exception:
-            output_dir = self._ubs_default_source_dir()
-
-        set_files = sorted(source_dir.rglob("*.set"))
-        total = len(set_files)
-        if total == 0:
-            messagebox.showinfo("Importar seeds", f"No se encontraron archivos .set en:\n{source_dir}")
-            return
-
-        if not messagebox.askyesno(
-            "Importar seeds",
-            f"Importar {total} .set desde:\n{source_dir}\n\n"
-            f"Destino: {output_dir}\n\n"
-            "Se normalizará el lotaje (lote fijo 0.01) y se omitirán las seeds\n"
-            "que ya existan en el destino, tanto idénticas como equivalentes\n"
-            "(mismo símbolo/TF que solo difieren en parámetros nuevos del EA).\n\n"
-            "¿Continuar?",
-        ):
-            return
-
-        q: queue.Queue = queue.Queue()
-
-        def _do_import() -> None:
-            from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-            from ubs.seed_dedup import DUPLICATE_EXACT, SeedDuplicateIndex, SeedFingerprint
-            from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, write_set_text
-            from ubs_prepare_sets import unique_target
-
-            index = SeedDuplicateIndex()
-            copied = 0
-            dup_exact = 0
-            dup_equivalent = 0
-            without_symbol: list[str] = []
-            errors: list[str] = []
-
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Indexar las seeds ya presentes: sin esto el dedup solo compara los
-            # ficheros del propio lote y reimporta todo el pool existente.
-            existing = sorted(output_dir.rglob("*.set"))
-            for idx, current in enumerate(existing):
-                q.put(("index", idx, len(existing), current.name))
-                try:
-                    text, _encoding = read_set_with_encoding(current)
-                    normalized, _found, _missing = force_fixed_lot_text(text)
-                    params = load_set_params(current)
-                    index.add(
-                        SeedFingerprint.from_text(
-                            current,
-                            normalized,
-                            infer_symbol_from_set(current, params) or "UNKNOWN",
-                            infer_period_from_set(current, params) or "UNKNOWN",
-                        )
-                    )
-                except Exception as exc:
-                    errors.append(f"[indexando] {current.name}: {exc}")
-
-            for idx, source in enumerate(set_files):
-                q.put(("progress", idx, total, source.name))
-                try:
-                    text, encoding = read_set_with_encoding(source)
-                    normalized, _found, _missing = force_fixed_lot_text(text)
-
-                    params = load_set_params(source)
-                    symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
-                    period = infer_period_from_set(source, params) or "UNKNOWN"
-
-                    fingerprint = SeedFingerprint.from_text(
-                        source, normalized, symbol, period
-                    )
-                    match = index.find_duplicate(fingerprint)
-                    if match is not None:
-                        _existing, reason = match
-                        if reason == DUPLICATE_EXACT:
-                            dup_exact += 1
-                        else:
-                            dup_equivalent += 1
-                        continue
-
-                    if symbol == "UNKNOWN" or period == "UNKNOWN":
-                        # Se importa igualmente: el usuario puede rescatarla
-                        # con "Guardar Symbol/TF". Hasta entonces la pestana
-                        # Seeds la marca `invalid_seed` y no se evalua.
-                        without_symbol.append(source.name)
-
-                    relative = source.relative_to(source_dir)
-                    target = unique_target(output_dir, relative, symbol, period)
-                    write_set_text(target, normalized, encoding)
-                    # Reindexar con la ruta final para que el resto del lote
-                    # compare tambien contra lo recien copiado.
-                    index.add(
-                        SeedFingerprint.from_text(target, normalized, symbol, period)
-                    )
-                    copied += 1
-                except Exception as exc:
-                    errors.append(f"{source.name}: {exc}")
-
-            q.put(("done", copied, dup_exact, dup_equivalent, without_symbol, errors))
-
-        def _finish(
-            copied: int,
-            dup_exact: int,
-            dup_equivalent: int,
-            without_symbol: list[str],
-            errors: list[str],
-        ) -> None:
-            summary = (
-                f"Importación completada\n\n"
-                f"  Seeds copiadas:    {copied}\n"
-                f"  Duplicados idénticos omitidos:   {dup_exact}\n"
-                f"  Duplicados equivalentes omitidos: {dup_equivalent}\n"
-                f"    (mismo símbolo/TF e idénticos en todas las claves\n"
-                f"     comunes; solo difieren en parámetros nuevos del EA)\n"
-                f"  Destino: {output_dir}"
-            )
-            if without_symbol:
-                shown = "\n    ".join(without_symbol[:5])
-                summary += (
-                    f"\n\n  ⚠ {len(without_symbol)} sin símbolo/TF resoluble → carpeta UNKNOWN\\.\n"
-                    f"    Quedan como 'invalid_seed' y no se evalúan hasta que les\n"
-                    f"    asignes símbolo con «Guardar Symbol/TF».\n"
-                    f"    {shown}"
-                )
-                if len(without_symbol) > 5:
-                    summary += f"\n    ... y {len(without_symbol) - 5} más"
-            if errors:
-                summary += f"\n\n  Errores: {len(errors)}\n  " + "\n  ".join(errors[:5])
-            messagebox.showinfo("Importar seeds — completado", summary)
-            self._refresh_ubs_seeds_panel()
-
-        dlg, poll = self._ubs_seed_progress_dialog(
-            "Importando seeds...",
-            "Importando y normalizando seeds",
-            str(source_dir),
-            total,
-            q,
-            lambda payload: _finish(*payload),
-        )
-        threading.Thread(target=_do_import, daemon=True).start()
-        dlg.after(40, poll)
-
-    def _ubs_seed_progress_dialog(
-        self,
-        title: str,
-        heading: str,
-        subtitle: str,
-        total: int,
-        q: "queue.Queue",
-        on_done,
-    ):
-        """Popup modal de progreso + su `poll`. Devuelve `(dialogo, poll)`.
-
-        El worker publica en `q`: `("progress"|"index", idx, total, nombre)`,
-        `("done", *payload)` o `("failed", mensaje)`. Al terminar cierra el
-        dialogo y llama a `on_done(payload)`.
-        """
-        dlg = tk.Toplevel(self)
-        dlg.title(title)
-        dlg.transient(self)
-        dlg.grab_set()
-        dlg.resizable(False, False)
-        dlg.configure(bg=self.colors["panel"])
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
-
-        body = tk.Frame(dlg, bg=self.colors["panel"], padx=28, pady=22)
-        body.pack()
-        tk.Label(body, text=heading,
-                 bg=self.colors["panel"], fg=self.colors["text"],
-                 font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        tk.Label(body, text=subtitle,
-                 bg=self.colors["panel"], fg=self.colors["muted"],
-                 font=("Segoe UI", 9), wraplength=440).pack(anchor="w", pady=(2, 16))
-
-        bar = _ttk.Progressbar(body, mode="determinate", maximum=100,
-                               style="Horizontal.TProgressbar", length=440)
-        bar.pack(fill="x")
-        count_var = tk.StringVar(value=f"0 / {total}")
-        status_var = tk.StringVar(value="Iniciando...")
-        tk.Label(body, textvariable=count_var,
-                 bg=self.colors["panel"], fg=self.colors["muted"],
-                 font=("Segoe UI", 9)).pack(anchor="e", pady=(4, 0))
-        tk.Label(body, textvariable=status_var,
-                 bg=self.colors["panel"], fg=self.colors["muted"],
-                 font=("Segoe UI", 9), wraplength=440, anchor="w").pack(fill="x", pady=(3, 0))
-
-        dlg.update_idletasks()
-        x = self.winfo_rootx() + max(0, (self.winfo_width() - dlg.winfo_width()) // 2)
-        y = self.winfo_rooty() + max(0, (self.winfo_height() - dlg.winfo_height()) // 2)
-        dlg.geometry(f"+{x}+{y}")
-
-        def _close() -> None:
-            dlg.grab_release()
-            dlg.destroy()
-
-        def _poll() -> None:
-            try:
-                while True:
-                    msg = q.get_nowait()
-                    if msg[0] in ("index", "progress"):
-                        _, idx, tot, name = msg
-                        bar["value"] = int((idx + 1) / max(tot, 1) * 100)
-                        count_var.set(f"{idx + 1} / {tot}")
-                        label = name[:55] + "..." if len(name) > 55 else name
-                        prefix = "Indexando seeds existentes" if msg[0] == "index" else "Procesando"
-                        status_var.set(f"{prefix}: {label}")
-                    elif msg[0] == "failed":
-                        _close()
-                        self._show_error(title, msg[1])
-                        return
-                    elif msg[0] == "done":
-                        payload = tuple(msg[1:])
-                        bar["value"] = 100
-                        status_var.set("Completado.")
-
-                        def _finish_now() -> None:
-                            _close()
-                            on_done(payload)
-
-                        dlg.after(400, _finish_now)
-                        return
-            except queue.Empty:
-                pass
-            dlg.after(40, _poll)
-
-        return dlg, _poll
-
-    # ── Revision de duplicados del pool ────────────────────────────────────
-    def _ubs_seed_score_index(self) -> dict[str, float | None]:
-        """`seed_path` normalizado -> score, para priorizar que seed se conserva."""
-        scores: dict[str, float | None] = {}
-        memory_path = self._ubs_memory_path()
-        if not memory_path.exists():
-            return scores
-        try:
-            conn = connect_memory(memory_path)
-            try:
-                rows = conn.execute("SELECT seed_path, score FROM seed_scores").fetchall()
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            return scores
-        for seed_path, score in rows:
-            if seed_path:
-                scores[str(seed_path).strip().lower()] = score
-        return scores
-
-    def _review_ubs_seed_duplicates(self) -> None:
-        """Audita el pool de seeds y ofrece retirar las duplicadas."""
-        try:
-            seeds_dir = self._ubs_generator_source_dir()
-        except Exception:
-            seeds_dir = self._ubs_default_source_dir()
-        if not seeds_dir.exists():
-            self._show_error("Revisar duplicados", f"No existe la carpeta de seeds:\n{seeds_dir}")
-            return
-
-        set_files = sorted(seeds_dir.rglob("*.set"))
-        if not set_files:
-            messagebox.showinfo("Revisar duplicados", f"No hay seeds en:\n{seeds_dir}")
-            return
-
-        scores = self._ubs_seed_score_index()
-        q: queue.Queue = queue.Queue()
-
-        def _do_scan() -> None:
-            from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-            from ubs.seed_dedup import SeedFingerprint, scan_duplicates
-            from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding
-
-            fingerprints = []
-            errors: list[str] = []
-            total = len(set_files)
-            for idx, path in enumerate(set_files):
-                q.put(("progress", idx, total, path.name))
-                try:
-                    text, _encoding = read_set_with_encoding(path)
-                    normalized, _found, _missing = force_fixed_lot_text(text)
-                    params = load_set_params(path)
-                    fingerprints.append(
-                        SeedFingerprint.from_text(
-                            path,
-                            normalized,
-                            infer_symbol_from_set(path, params) or "UNKNOWN",
-                            infer_period_from_set(path, params) or "UNKNOWN",
-                        )
-                    )
-                except Exception as exc:
-                    errors.append(f"{path.name}: {exc}")
-
-            def _priority(fingerprint) -> tuple:
-                # Conserva la seed ya evaluada; luego la del esquema mas
-                # completo; luego la ruta mas corta (desempate determinista).
-                score = scores.get(str(fingerprint.path).strip().lower())
-                return (
-                    0 if score is not None else 1,
-                    -len(fingerprint.params),
-                    len(str(fingerprint.path)),
-                )
-
-            try:
-                groups = scan_duplicates(fingerprints, priority=_priority)
-            except Exception as exc:
-                q.put(("failed", str(exc)))
-                return
-            q.put(("done", groups, errors))
-
-        dlg, poll = self._ubs_seed_progress_dialog(
-            "Revisando duplicados...",
-            "Analizando el pool de seeds",
-            str(seeds_dir),
-            len(set_files),
-            q,
-            lambda payload: self._show_ubs_seed_duplicates(seeds_dir, scores, *payload),
-        )
-        threading.Thread(target=_do_scan, daemon=True).start()
-        dlg.after(40, poll)
-
-    def _show_ubs_seed_duplicates(self, seeds_dir: Path, scores: dict, groups: list, errors: list[str]) -> None:
-        redundant_total = sum(len(group.redundant) for group in groups)
-        if not groups:
-            messagebox.showinfo(
-                "Revisar duplicados",
-                f"Sin duplicados.\n\n{len(list(seeds_dir.rglob('*.set')))} seeds revisadas en:\n{seeds_dir}"
-                + (f"\n\nErrores de lectura: {len(errors)}" if errors else ""),
-            )
-            return
-
-        win = tk.Toplevel(self)
-        win.title("Duplicados en el pool de seeds")
-        win.transient(self)
-        win.configure(bg=self.colors["panel"])
-        win.geometry("1180x560")
-        win.minsize(900, 480)
-        win.columnconfigure(0, weight=1)
-        win.rowconfigure(1, weight=1)
-
-        header = tk.Frame(win, bg=self.colors["panel"], padx=16, pady=12)
-        header.grid(row=0, column=0, sticky="ew")
-        tk.Label(
-            header,
-            text=f"{redundant_total} seeds redundantes en {len(groups)} grupos",
-            bg=self.colors["panel"], fg=self.colors["text"],
-            font=("Segoe UI", 12, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            header,
-            text="Una seed es duplicada si tiene el mismo símbolo/TF y valores idénticos en todas "
-                 "las claves que comparte con otra (≥100 comunes). Se conserva la evaluada y, a "
-                 "igualdad, la del esquema más completo.",
-            bg=self.colors["panel"], fg=self.colors["muted"],
-            font=("Segoe UI", 9), wraplength=1120, justify="left",
-        ).pack(anchor="w", pady=(4, 0))
-
-        table_frame = tk.Frame(win, bg=self.colors["panel"])
-        table_frame.grid(row=1, column=0, sticky="nsew", padx=16)
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
-        columns = ("retirar", "motivo", "score", "conservar")
-        tree = _ttk.Treeview(
-            table_frame,
-            columns=columns,
-            show="headings",
-            selectmode="none",
-            height=14,
-        )
-        for key, title, width in (
-            ("retirar", "Se retira", 430),
-            ("motivo", "Motivo", 110),
-            ("score", "Score", 80),
-            ("conservar", "Se conserva", 430),
-        ):
-            tree.heading(key, text=title)
-            tree.column(key, width=width, minwidth=42, anchor="w", stretch=False)
-        tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
-        tree.tag_configure("rejected", foreground=self.colors["danger"])
-        tree.tag_configure("pending", foreground=self.colors["muted"])
-        self._make_tree_sortable(tree)
-        self._attach_tree_scrollbars(
-            table_frame,
-            tree,
-            0,
-            vertical=True,
-            horizontal=True,
-        )
-
-        to_retire: list[Path] = []
-        for group in sorted(groups, key=lambda g: str(g.keeper.path)):
-            keeper_rel = group.keeper.path.relative_to(seeds_dir)
-            for fingerprint, reason in group.redundant:
-                score = scores.get(str(fingerprint.path).strip().lower())
-                tree.insert("", "end", values=(
-                    str(fingerprint.path.relative_to(seeds_dir)),
-                    "idéntica" if reason == "exact" else "equivalente",
-                    "-" if score is None else f"{score:.2f}",
-                    str(keeper_rel),
-                ))
-                to_retire.append(fingerprint.path)
-
-        footer = tk.Frame(win, bg=self.colors["panel_alt"], padx=16, pady=8)
-        footer.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        footer.columnconfigure(0, weight=1)
-        evaluated = sum(1 for p in to_retire if scores.get(str(p).strip().lower()) is not None)
-        tk.Label(
-            footer,
-            text=f"{evaluated} de las {len(to_retire)} redundantes ya están evaluadas: al "
-                 "retirarlas se borran sus filas de seed_scores/seed_overrides y se recalculan "
-                 "los pesos del Universo.",
-            bg=self.colors["panel_alt"], fg=self.colors["muted"],
-            font=("Segoe UI", 9), wraplength=680, justify="left",
-        ).grid(row=0, column=0, sticky="w", padx=(10, 16), pady=6)
-        tk.Button(
-            footer, text="Cerrar", bg=self.colors["panel"], fg=self.colors["muted"],
-            relief="solid", borderwidth=1, padx=10, pady=5,
-            font=("Segoe UI", 9), cursor="hand2", command=win.destroy,
-        ).grid(row=0, column=2, padx=(6, 10), pady=6)
-        tk.Button(
-            footer, text=f"Retirar redundantes ({len(to_retire)})",
-            bg=self.colors["danger"], fg="#ffffff", relief="flat", borderwidth=0,
-            padx=12, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2",
-            command=lambda: self._retire_ubs_seed_duplicates(win, seeds_dir, groups),
-        ).grid(row=0, column=1, pady=6)
-
-        if errors:
-            tk.Label(
-                footer, text=f"{len(errors)} ficheros ilegibles omitidos",
-                bg=self.colors["panel_alt"], fg=self.colors["danger"],
-                font=("Segoe UI", 9),
-            ).grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6))
-
-    def _retire_ubs_seed_duplicates(self, window: tk.Toplevel, seeds_dir: Path, groups: list) -> None:
-        import shutil
-
-        from ubs.account import account_retired_seeds_dir
-
-        pairs = [
-            (fingerprint.path, group.keeper.path, reason)
-            for group in groups
-            for fingerprint, reason in group.redundant
-        ]
-        if not pairs:
-            return
-        if not messagebox.askyesno(
-            "Retirar duplicadas",
-            f"Se moverán {len(pairs)} seeds fuera del pool y se borrarán sus registros\n"
-            f"de seed_scores / seed_overrides. Los pesos del Universo se recalcularán.\n\n"
-            f"Los ficheros NO se borran: quedan en outputs/seeds_retiradas/.\n\n¿Continuar?",
-        ):
-            return
-
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        retired_dir = account_retired_seeds_dir(
-            BASE_DIR, self._ubs_account_type(), self._ubs_broker()
-        ) / stamp
-        retired_dir.mkdir(parents=True, exist_ok=True)
-
-        moved: list[str] = []
-        errors: list[str] = []
-        log_lines = [
-            f"# Seeds duplicadas retiradas del pool el {stamp}",
-            f"# origen: {seeds_dir}",
-            "# formato: <retirada>\t<motivo>\t<seed conservada>",
-            "",
-        ]
-        for source, keeper, reason in pairs:
-            try:
-                relative = source.relative_to(seeds_dir)
-                target = retired_dir / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(target))
-                moved.append(str(source))
-                self.ubs_seed_checked.discard(str(source))
-                log_lines.append(f"{relative}\t{reason}\t{keeper.relative_to(seeds_dir)}")
-            except Exception as exc:
-                errors.append(f"{source.name}: {exc}")
-
-        (retired_dir / "_motivo.txt").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
-
-        memory_path = self._ubs_memory_path()
-        if moved and memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                try:
-                    self._cleanup_seed_db(conn, moved)  # ya hace commit
-                finally:
-                    conn.close()
-            except sqlite3.Error as exc:
-                errors.append(f"memoria: {exc}")
-
-        # Limpiar los directorios que hayan quedado vacios.
-        for path in sorted(seeds_dir.rglob("*"), key=lambda p: -len(p.parts)):
-            if path.is_dir() and not any(path.iterdir()):
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
-
-        window.destroy()
-        self._refresh_ubs_seeds_panel()
-        summary = (
-            f"Retiradas {len(moved)} seeds duplicadas.\n\n"
-            f"  Movidas a: {retired_dir}\n"
-            f"  Registros de memoria borrados y pesos del Universo recalculados."
-        )
-        if errors:
-            summary += f"\n\n  Errores: {len(errors)}\n  " + "\n  ".join(errors[:5])
-        messagebox.showinfo("Retirar duplicadas", summary)
-
-    def _cleanup_seed_db(self, conn, seed_paths: list[str]) -> None:
-        """Borra seed_scores y seed_overrides de esas seeds."""
-        if not seed_paths:
-            return
-        keys: set[str] = set()
-        normalized_keys: set[str] = set()
-
-        def _add_key(value: object) -> None:
-            text = str(value)
-            if not text:
-                return
-            keys.add(text)
-            normalized_keys.add(text.replace("\\", "/").lower())
-
-        for raw_path in seed_paths:
-            if not raw_path:
-                continue
-            path = resolve_workspace_path(raw_path)
-            _add_key(path)
-            if not path.is_absolute():
-                _add_key((BASE_DIR / path).resolve())
-            try:
-                resolved = path.resolve()
-                _add_key(resolved)
-                try:
-                    _add_key(resolved.relative_to(BASE_DIR))
-                except ValueError:
-                    pass
-            except OSError:
-                pass
-        if not keys and not normalized_keys:
-            return
-        if keys:
-            params = sorted(keys)
-            ph = ",".join("?" for _ in params)
-            conn.execute(f"delete from seed_scores   where seed_path in ({ph})", params)
-            conn.execute(f"delete from seed_overrides where seed_path in ({ph})", params)
-        if normalized_keys:
-            params = sorted(normalized_keys)
-            ph = ",".join("?" for _ in params)
-            conn.execute(f"delete from seed_scores   where lower(replace(seed_path, '\\', '/')) in ({ph})", params)
-            conn.execute(f"delete from seed_overrides where lower(replace(seed_path, '\\', '/')) in ({ph})", params)
-        conn.execute("delete from seed_overrides where seed_path not in (select seed_path from seed_scores)")
-        conn.commit()
-
-    def _cleanup_obsolete_seed_db(self, conn) -> int:
-        rows = conn.execute("select seed_path from seed_scores where active=0").fetchall()
-        obsolete_paths = [str(row[0]) for row in rows]
-        if obsolete_paths:
-            self._cleanup_seed_db(conn, obsolete_paths)
-        return len(obsolete_paths)
-
-    def _cleanup_all_seed_db(self, conn) -> None:
-        conn.execute("delete from seed_scores")
-        conn.execute("delete from seed_overrides")
-        conn.commit()
-
-    def _delete_selected_ubs_seed(self) -> None:
-        infos = self._checked_ubs_seed_infos()
-        if not infos:
-            self._show_error("Sin seleccion", "Selecciona una semilla para eliminar.")
-            return
-        selected_paths = [info.get("seed_path", "") for info in infos if info.get("seed_path")]
-        existing = [resolve_workspace_path(path) for path in selected_paths if workspace_path_exists(path)]
-        missing = len(selected_paths) - len(existing)
-        if not selected_paths:
-            messagebox.showinfo("Eliminar semilla", "No hay rutas asociadas a las seeds marcadas.")
-            return
-        if not messagebox.askyesno(
-            "Eliminar semilla",
-            f"Eliminar {len(existing)} seed(s) del disco y {missing} registro(s) obsoleto(s) de memoria?\n"
-            "Esta accion no se puede deshacer.",
-        ):
-            return
-        deleted_paths: list[str] = []
-        errors: list[str] = []
-        for path in existing:
-            try:
-                path.unlink()
-                deleted_paths.append(str(path))
-                self.ubs_seed_checked.discard(str(path))
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
-        memory_path = self._ubs_memory_path()
-        if selected_paths and memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                self._cleanup_seed_db(conn, selected_paths)
-                conn.close()
-            except sqlite3.Error:
-                pass
-        if errors:
-            self._show_error("Errores al eliminar", "\n".join(errors))
-        self._refresh_ubs_seeds()
-        self._refresh_ubs_seed_eval_summary()
-        self._refresh_ubs_universe()
-
-    def _delete_rejected_ubs_seeds(self) -> None:
-        if not hasattr(self, "ubs_seeds_tree"):
-            return
-        selected_infos = self._checked_ubs_seed_infos()
-        if selected_infos:
-            rejected_infos = [
-                info for info in selected_infos
-                if str(info.get("status", "")).lower() in {"rejected", "rechazado"}
-            ]
-        else:
-            rejected_infos = []
-            for iid in self.ubs_seeds_tree.get_children(""):
-                values = self.ubs_seeds_tree.item(iid, "values")
-                if len(values) < 9:
-                    continue
-                status = str(values[1]).strip().lower()
-                if status != "rechazado":
-                    continue
-                info = self.ubs_seed_paths.get(iid, {})
-                if info:
-                    rejected_infos.append(info)
-        existing = [
-            resolve_workspace_path(info.get("seed_path", ""))
-            for info in rejected_infos
-            if workspace_path_exists(info.get("seed_path", ""))
-        ]
-        if not existing:
-            messagebox.showinfo("Eliminar rechazadas", "No hay seeds rechazadas existentes para eliminar.")
-            return
-        if not messagebox.askyesno(
-            "Eliminar rechazadas",
-            f"Eliminar {len(existing)} seed(s) rechazada(s) del disco?\nEsta accion no se puede deshacer.",
-        ):
-            return
-        deleted_paths: list[str] = []
-        errors: list[str] = []
-        for path in existing:
-            try:
-                path.unlink()
-                deleted_paths.append(str(path))
-                self.ubs_seed_checked.discard(str(path))
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
-        memory_path = self._ubs_memory_path()
-        if deleted_paths and memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                self._cleanup_seed_db(conn, deleted_paths)
-                conn.close()
-            except sqlite3.Error:
-                pass
-        if errors:
-            self._show_error("Errores al eliminar", "\n".join(errors))
-        self._refresh_ubs_seeds()
-        self._refresh_ubs_seed_eval_summary()
-        self._refresh_ubs_universe()
-
-    def _delete_all_ubs_seeds(self) -> None:
-        try:
-            source_dir = self._ubs_generator_source_dir()
-            all_paths = load_set_files(source_dir, None, recursive=True)
-        except Exception as exc:
-            self._show_error("Sin carpeta de seeds", str(exc))
-            return
-        obsolete_count = 0
-        memory_path = self._ubs_memory_path()
-        if memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    obsolete_count = int(conn.execute("select count(*) from seed_scores where active=0").fetchone()[0] or 0)
-                conn.close()
-            except sqlite3.Error:
-                obsolete_count = 0
-        if not all_paths and not obsolete_count:
-            messagebox.showinfo("Eliminar todas", "No hay seeds en la carpeta configurada ni registros obsoletos.")
-            return
-        if not messagebox.askyesno(
-            "Eliminar TODAS las seeds",
-            f"Eliminar {len(all_paths)} seed(s) del disco y limpiar toda la memoria de seeds?\n"
-            f"Registros obsoletos detectados: {obsolete_count}\n\n"
-            f"Carpeta: {source_dir}\n\n"
-            "Esta acción no se puede deshacer.",
-        ):
-            return
-        deleted: list[str] = []
-        errors: list[str] = []
-        for path in all_paths:
-            try:
-                path.unlink()
-                deleted.append(str(path))
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
-        if memory_path.exists():
-            try:
-                conn = connect_memory(memory_path)
-                self._cleanup_all_seed_db(conn)
-                conn.close()
-            except sqlite3.Error:
-                pass
-        self.ubs_seed_checked.clear()
-        self.status_text.set(f"Seeds eliminadas: {len(deleted)}")
-        if errors:
-            self._show_error("Errores al eliminar", "\n".join(errors))
-        self._refresh_ubs_seeds()
-        self._refresh_ubs_seed_eval_summary()
-        self._refresh_ubs_universe()
-
-    def _reset_ubs_seed_evaluation(self) -> None:
-        """Delete all seed reports from disk and reset seed_scores to pending."""
-        memory_path = self._ubs_memory_path()
-        if not memory_path.exists():
-            messagebox.showinfo("Resetear evaluación", "Sin memoria UBS. No hay nada que resetear.")
-            return
-        try:
-            conn = connect_memory(memory_path)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("select seed_path, report_path from seed_scores where active=1").fetchall()
-            conn.close()
-        except sqlite3.Error as exc:
-            self._show_error("Error SQLite", str(exc))
-            return
-        count = len(rows)
-        if not messagebox.askyesno(
-            "Resetear evaluación de semillas",
-            f"¿Eliminar los reportes y resetear {count} semilla(s) a pendiente?\n\n"
-            "Los archivos .set no se borran. Los pesos del Universo quedarán\n"
-            "bloqueados hasta que uses 'Calcular pesos' tras la nueva evaluación.",
-        ):
-            return
-        deleted_reports = 0
-        for row in rows:
-            rp = row["report_path"]
-            if rp:
-                try:
-                    p = resolve_workspace_path(str(rp))
-                    if p.exists():
-                        p.unlink()
-                        deleted_reports += 1
-                except OSError:
-                    pass
-        try:
-            conn = connect_memory(memory_path)
-            conn.execute("""
-                update seed_scores
-                set status='pending', score=null, accepted=null,
-                    metrics_json=null, report_path=null, evaluated_at=null
-                where active=1
-            """)
-            conn.commit()
-            conn.close()
-        except sqlite3.Error as exc:
-            self._show_error("Error al resetear DB", str(exc))
-            return
-        self.ubs_weights_locked.set(True)
-        self._refresh_ubs_seeds()
-        self._refresh_ubs_seed_eval_summary()
-        self._refresh_ubs_universe()
-        messagebox.showinfo(
-            "Resetear evaluación",
-            f"{count} semilla(s) reseteadas a pendiente.\n{deleted_reports} reporte(s) eliminados del disco.\n\n"
-            "Ejecuta 'Evaluar semillas' y luego usa 'Calcular pesos' en el Universo.",
-        )
-
+from ui.ubs_seeds_cleanup import UBSSeedsCleanupMixin
+from ui.ubs_seeds_duplicates import UBSSeedsDuplicatesMixin
+from ui.ubs_seeds_eval import UBSSeedsEvalMixin
+from ui.ubs_seeds_import import UBSSeedsImportMixin
+from ui.ubs_seeds_table import UBSSeedsTableMixin
+
+
+@dataclass
+class _SeedRepairTally:
+    """Resultado de reparar una tanda de .set de seeds."""
+
+    repaired: int = 0
+    unchanged: int = 0
+    still_invalid: int = 0
+    failed: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        """Linea de estado con el reparto de la reparacion."""
+        parts = [f"reparadas={self.repaired}", f"sin cambios={self.unchanged}"]
+        if self.still_invalid:
+            parts.append(f"aun invalidas={self.still_invalid}")
+        if self.failed:
+            parts.append(f"fallos={len(self.failed)}")
+        return "Reparar sets: " + " | ".join(parts)
+
+
+class UBSSeedsLogicMixin(
+    UBSSeedsEvalMixin,
+    UBSSeedsTableMixin,
+    UBSSeedsImportMixin,
+    UBSSeedsDuplicatesMixin,
+    UBSSeedsCleanupMixin,
+):
     def _ubs_apply_weights(self) -> None:
         """Check all seeds are evaluated, then unlock and show weights."""
         memory_path = self._ubs_memory_path()
@@ -1529,143 +102,184 @@ class UBSSeedsLogicMixin:
         self._refresh_ubs_universe()
         messagebox.showinfo("Calcular pesos", "Pesos calculados y aplicados al Universo.")
 
-    def _save_ubs_seed_override(self) -> None:
-        infos = self._checked_ubs_seed_infos()
-        if not infos:
-            self._show_error("Sin seleccion", "Selecciona una o mas semillas.")
-            return
+    def _ubs_seed_override_target(self) -> tuple[str, str] | None:
+        """Symbol y timeframe pedidos para el override, ya validados."""
         symbol = self.ubs_seed_override_symbol.get().strip().upper()
         period = self.ubs_seed_override_period.get().strip().upper()
         valid_periods = set(KNOWN_TIMEFRAMES)
         if not symbol:
             self._show_error("Symbol invalido", "Indica el symbol correcto.")
-            return
+            return None
         if period not in valid_periods:
-            self._show_error("Timeframe invalido", f"El timeframe debe ser uno de: {', '.join(sorted(valid_periods))}.")
+            self._show_error(
+                "Timeframe invalido",
+                f"El timeframe debe ser uno de: {', '.join(sorted(valid_periods))}.",
+            )
+            return None
+        return symbol, period
+
+    def _apply_seed_override_row(
+        self, conn: sqlite3.Connection, seed_path: str, symbol: str, period: str, now: str
+    ) -> bool:
+        """Guarda el override de una seed; True si cambia algo de verdad.
+
+        Un override que no cambia symbol/TF ni ForceSymbol no debe invalidar
+        evaluaciones existentes: solo se resetean los seeds con cambio real.
+        """
+        from ubs_agent import load_set_params, write_set_force_symbol
+
+        row = None
+        if self._sqlite_table_exists(conn, "seed_scores"):
+            row = conn.execute(
+                "select symbol, period from seed_scores where seed_path=?",
+                (seed_path,),
+            ).fetchone()
+        same_target = (
+            row is not None
+            and str(row["symbol"] or "").strip().upper() == symbol
+            and str(row["period"] or "").strip().upper() == period
+        )
+        try:
+            physical_seed_path = resolve_workspace_path(seed_path)
+            params = load_set_params(physical_seed_path)
+        except OSError:
+            params = {}
+        force_ok = str(params.get("ForceSymbol", "")).strip().upper() == symbol
+        if not force_ok:
+            write_set_force_symbol(physical_seed_path, physical_seed_path, symbol)
+        conn.execute(
+            """
+            insert into seed_overrides (seed_path, symbol, period, updated_at)
+            values (?, ?, ?, ?)
+            on conflict(seed_path) do update set
+                symbol=excluded.symbol,
+                period=excluded.period,
+                updated_at=excluded.updated_at
+            """,
+            (seed_path, symbol, period, now),
+        )
+        return not (same_target and force_ok)
+
+    @staticmethod
+    def _reset_seed_scores_for_override(
+        conn: sqlite3.Connection, seed_paths: list[str], symbol: str, period: str
+    ) -> None:
+        """Deja pendientes las evaluaciones de las seeds que cambiaron."""
+        placeholders = ",".join("?" for _ in seed_paths)
+        conn.execute(
+            f"""
+            update seed_scores
+            set symbol=?,
+                period=?,
+                report_path=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else report_path end,
+                score=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else score end,
+                accepted=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else accepted end,
+                metrics_json=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else metrics_json end,
+                status=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then 'pending' else status end
+            where seed_path in ({placeholders})
+            """,
+            (symbol, period, *seed_paths),
+        )
+
+    @staticmethod
+    def _revalidate_overridden_seed(
+        conn: sqlite3.Connection, seed_path: str, symbol: str, period: str, now: str
+    ) -> None:
+        """Comprueba el .set tras el override y fija su estado resultante."""
+        from ubs_agent import validate_seed_backtest_set
+        from ubs.models import Seed
+
+        row = conn.execute(
+            "select family, run_strategy from seed_scores where seed_path=?",
+            (seed_path,),
+        ).fetchone()
+        seed = Seed(
+            resolve_workspace_path(seed_path),
+            symbol,
+            period,
+            str(row["family"] or "") if row else "",
+            str(row["run_strategy"] or "") if row else "",
+        )
+        reasons = validate_seed_backtest_set(seed)
+        if reasons:
+            conn.execute(
+                """
+                update seed_scores
+                set status='invalid_seed',
+                    report_path=null,
+                    score=null,
+                    accepted=null,
+                    metrics_json=?,
+                    evaluated_at=?
+                where seed_path=?
+                """,
+                (json.dumps({"reasons": reasons}, ensure_ascii=False), now, seed_path),
+            )
             return
-        seed_paths = [info.get("seed_path", "") for info in infos if info.get("seed_path")]
+        conn.execute(
+            """
+            update seed_scores
+            set status='pending',
+                report_path=null,
+                score=null,
+                accepted=null,
+                metrics_json=null,
+                evaluated_at=null
+            where seed_path=?
+              and status not in ('accepted', 'rejected')
+            """,
+            (seed_path,),
+        )
+
+    def _write_ubs_seed_overrides(
+        self, seed_paths: list[str], symbol: str, period: str
+    ) -> list[str] | None:
+        """Aplica el override a todas las seeds; None si la memoria falla."""
         memory_path = self._ubs_memory_path()
         memory_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             conn = connect_memory(memory_path)
             self._ensure_ubs_seed_override_schema(conn)
             now = datetime.now().isoformat(timespec="seconds")
-            from ubs_agent import load_set_params, write_set_force_symbol
-
-            # Un override que no cambia symbol/TF ni ForceSymbol no debe invalidar
-            # evaluaciones existentes: solo se resetean los seeds con cambio real.
-            changed_paths: list[str] = []
-            for seed_path in seed_paths:
-                row = None
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    row = conn.execute(
-                        "select symbol, period from seed_scores where seed_path=?",
-                        (seed_path,),
-                    ).fetchone()
-                same_target = (
-                    row is not None
-                    and str(row["symbol"] or "").strip().upper() == symbol
-                    and str(row["period"] or "").strip().upper() == period
-                )
-                try:
-                    physical_seed_path = resolve_workspace_path(seed_path)
-                    params = load_set_params(physical_seed_path)
-                except OSError:
-                    params = {}
-                force_ok = str(params.get("ForceSymbol", "")).strip().upper() == symbol
-                if not force_ok:
-                    write_set_force_symbol(physical_seed_path, physical_seed_path, symbol)
-                if not (same_target and force_ok):
-                    changed_paths.append(seed_path)
-                conn.execute(
-                    """
-                    insert into seed_overrides (seed_path, symbol, period, updated_at)
-                    values (?, ?, ?, ?)
-                    on conflict(seed_path) do update set
-                        symbol=excluded.symbol,
-                        period=excluded.period,
-                        updated_at=excluded.updated_at
-                    """,
-                    (seed_path, symbol, period, now),
-                )
-            unchanged_count = len(seed_paths) - len(changed_paths)
-            seed_paths = changed_paths
-            if self._sqlite_table_exists(conn, "seed_scores") and seed_paths:
-                placeholders = ",".join("?" for _ in seed_paths)
-                conn.execute(
-                    f"""
-                    update seed_scores
-                    set symbol=?,
-                        period=?,
-                        report_path=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else report_path end,
-                        score=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else score end,
-                        accepted=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else accepted end,
-                        metrics_json=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then null else metrics_json end,
-                        status=case when status in ('accepted', 'rejected', 'no_trades', 'report_mismatch') then 'pending' else status end
-                    where seed_path in ({placeholders})
-                    """,
-                    (symbol, period, *seed_paths),
-                )
-                from ubs_agent import validate_seed_backtest_set
-                from ubs.models import Seed
-
-                for seed_path in seed_paths:
-                    row = conn.execute(
-                        "select family, run_strategy from seed_scores where seed_path=?",
-                        (seed_path,),
-                    ).fetchone()
-                    seed = Seed(
-                        resolve_workspace_path(seed_path),
-                        symbol,
-                        period,
-                        str(row["family"] or "") if row else "",
-                        str(row["run_strategy"] or "") if row else "",
-                    )
-                    reasons = validate_seed_backtest_set(seed)
-                    if reasons:
-                        conn.execute(
-                            """
-                            update seed_scores
-                            set status='invalid_seed',
-                                report_path=null,
-                                score=null,
-                                accepted=null,
-                                metrics_json=?,
-                                evaluated_at=?
-                            where seed_path=?
-                            """,
-                            (
-                                json.dumps({"reasons": reasons}, ensure_ascii=False),
-                                now,
-                                seed_path,
-                            ),
-                        )
-                    else:
-                        conn.execute(
-                            """
-                            update seed_scores
-                            set status='pending',
-                                report_path=null,
-                                score=null,
-                                accepted=null,
-                                metrics_json=null,
-                                evaluated_at=null
-                            where seed_path=?
-                              and status not in ('accepted', 'rejected')
-                            """,
-                            (seed_path,),
-                        )
+            changed_paths = [
+                seed_path for seed_path in seed_paths
+                if self._apply_seed_override_row(conn, seed_path, symbol, period, now)
+            ]
+            if self._sqlite_table_exists(conn, "seed_scores") and changed_paths:
+                self._reset_seed_scores_for_override(conn, changed_paths, symbol, period)
+                for seed_path in changed_paths:
+                    self._revalidate_overridden_seed(conn, seed_path, symbol, period, now)
             conn.commit()
             conn.close()
         except (sqlite3.Error, OSError) as exc:
             self._show_error("Error guardando seed", str(exc))
+            return None
+        return changed_paths
+
+    def _save_ubs_seed_override(self) -> None:
+        infos = self._checked_ubs_seed_infos()
+        if not infos:
+            self._show_error("Sin seleccion", "Selecciona una o mas semillas.")
             return
+        target = self._ubs_seed_override_target()
+        if target is None:
+            return
+        symbol, period = target
+        seed_paths = [info.get("seed_path", "") for info in infos if info.get("seed_path")]
+        changed_paths = self._write_ubs_seed_overrides(seed_paths, symbol, period)
+        if changed_paths is None:
+            return
+        unchanged_count = len(seed_paths) - len(changed_paths)
         self.ubs_seed_checked.clear()
-        if seed_paths:
+        if changed_paths:
             extra = f" ({unchanged_count} sin cambios, evaluacion conservada)" if unchanged_count else ""
-            self.status_text.set(f"Override aplicado a {len(seed_paths)} seed(s); estado recalculado{extra}")
+            self.status_text.set(
+                f"Override aplicado a {len(changed_paths)} seed(s); estado recalculado{extra}"
+            )
         else:
-            self.status_text.set(f"Override sin cambios en {unchanged_count} seed(s); evaluacion conservada")
+            self.status_text.set(
+                f"Override sin cambios en {unchanged_count} seed(s); evaluacion conservada"
+            )
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 
@@ -1692,6 +306,112 @@ class UBSSeedsLogicMixin:
             confirm_label="activa(s)",
         )
 
+    def _store_repaired_seed(
+        self, conn: sqlite3.Connection, seed_path: Path, symbol: str, period: str,
+        result: dict, row, changed: list, now: str, tally: _SeedRepairTally,
+    ) -> None:
+        """Guarda el estado de una seed reparada y si sigue siendo invalida."""
+        from ubs.models import Seed
+        from ubs_agent import validate_seed_backtest_set
+
+        stat = seed_path.stat()
+        seed = Seed(
+            seed_path,
+            symbol,
+            period,
+            str(row["family"] or "") if row else "",
+            str(result.get("run_strategy") or (row["run_strategy"] if row else "") or ""),
+        )
+        reasons = validate_seed_backtest_set(seed)
+        if reasons:
+            tally.still_invalid += 1
+            status = "invalid_seed"
+            metrics_json = json.dumps({"reasons": reasons, "repair": changed}, ensure_ascii=False)
+            evaluated_at = now
+        else:
+            status = "pending"
+            metrics_json = None
+            evaluated_at = None
+        if not self._sqlite_table_exists(conn, "seed_scores"):
+            return
+        conn.execute(
+            """
+            update seed_scores
+            set seed_mtime=?,
+                seed_size=?,
+                symbol=?,
+                period=?,
+                run_strategy=?,
+                report_path=null,
+                score=null,
+                accepted=null,
+                metrics_json=?,
+                status=?,
+                evaluated_at=?
+            where seed_path=?
+            """,
+            (
+                float(stat.st_mtime),
+                int(stat.st_size),
+                symbol,
+                period,
+                str(result.get("run_strategy") or ""),
+                metrics_json,
+                status,
+                evaluated_at,
+                str(seed_path),
+            ),
+        )
+
+    def _repair_one_ubs_seed_set(
+        self, conn: sqlite3.Connection, info: dict[str, str], now: str, tally: _SeedRepairTally
+    ) -> None:
+        """Rellena ForceSymbol y Run_Strategy de una seed y anota el resultado."""
+        from ubs_agent import repair_seed_backtest_set
+
+        seed_path = resolve_workspace_path(info.get("seed_path", ""))
+        symbol, period = self._inferred_ubs_seed_fields(seed_path)
+        if symbol in {"", "UNKNOWN"} or period in {"", "UNKNOWN"}:
+            tally.failed.append(f"{seed_path.name}: no pude inferir Symbol/TF")
+            return
+        row = None
+        if self._sqlite_table_exists(conn, "seed_scores"):
+            row = conn.execute(
+                "select family, run_strategy from seed_scores where seed_path=?",
+                (str(seed_path),),
+            ).fetchone()
+        try:
+            result = repair_seed_backtest_set(seed_path, symbol, period)
+        except OSError as exc:
+            tally.failed.append(f"{seed_path.name}: {exc}")
+            return
+        changed = list(result.get("changed") or [])
+        if not changed:
+            tally.unchanged += 1
+            return
+        tally.repaired += 1
+        self._store_repaired_seed(conn, seed_path, symbol, period, result, row, changed, now, tally)
+
+    def _confirm_seed_repair(
+        self, infos: list[dict[str, str]], title: str, empty_message: str, confirm_label: str
+    ) -> list[dict[str, str]]:
+        """Seeds activas a reparar, ya confirmadas por el usuario."""
+        active_infos = [
+            info for info in infos
+            if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))
+        ]
+        if not active_infos:
+            messagebox.showinfo(title, empty_message)
+            return []
+        if not messagebox.askyesno(
+            title,
+            f"Reparar {len(active_infos)} seed(s) {confirm_label}?\n\n"
+            "Se rellenara ForceSymbol y, si se puede inferir, Run_Strategy. "
+            "Las seeds modificadas quedaran pendientes para reevaluar.",
+        ):
+            return []
+        return active_infos
+
     def _repair_ubs_seed_sets(
         self,
         infos: list[dict[str, str]],
@@ -1700,120 +420,27 @@ class UBSSeedsLogicMixin:
         empty_message: str,
         confirm_label: str,
     ) -> None:
-        active_infos = [
-            info for info in infos
-            if info.get("active") != "0" and workspace_path_exists(info.get("seed_path", ""))
-        ]
+        active_infos = self._confirm_seed_repair(infos, title, empty_message, confirm_label)
         if not active_infos:
-            messagebox.showinfo(title, empty_message)
             return
-        if not messagebox.askyesno(
-            title,
-            f"Reparar {len(active_infos)} seed(s) {confirm_label}?\n\n"
-            "Se rellenara ForceSymbol y, si se puede inferir, Run_Strategy. "
-            "Las seeds modificadas quedaran pendientes para reevaluar.",
-        ):
-            return
-
         memory_path = self._ubs_memory_path()
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        repaired = 0
-        unchanged = 0
-        failed: list[str] = []
-        still_invalid = 0
+        tally = _SeedRepairTally()
         now = datetime.now().isoformat(timespec="seconds")
         try:
             conn = connect_memory(memory_path)
             self._ensure_ubs_seed_override_schema(conn)
-            from ubs.models import Seed
-            from ubs_agent import repair_seed_backtest_set, validate_seed_backtest_set
-
             for info in active_infos:
-                seed_path_text = info.get("seed_path", "")
-                seed_path = resolve_workspace_path(seed_path_text)
-                symbol, period = self._inferred_ubs_seed_fields(seed_path)
-                if symbol in {"", "UNKNOWN"} or period in {"", "UNKNOWN"}:
-                    failed.append(f"{seed_path.name}: no pude inferir Symbol/TF")
-                    continue
-                row = None
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    row = conn.execute(
-                        "select family, run_strategy from seed_scores where seed_path=?",
-                        (str(seed_path),),
-                    ).fetchone()
-                try:
-                    result = repair_seed_backtest_set(seed_path, symbol, period)
-                except OSError as exc:
-                    failed.append(f"{seed_path.name}: {exc}")
-                    continue
-                changed = list(result.get("changed") or [])
-                if not changed:
-                    unchanged += 1
-                    continue
-
-                repaired += 1
-                stat = seed_path.stat()
-                seed = Seed(
-                    seed_path,
-                    symbol,
-                    period,
-                    str(row["family"] or "") if row else "",
-                    str(result.get("run_strategy") or (row["run_strategy"] if row else "") or ""),
-                )
-                reasons = validate_seed_backtest_set(seed)
-                if reasons:
-                    still_invalid += 1
-                    status = "invalid_seed"
-                    metrics_json = json.dumps({"reasons": reasons, "repair": changed}, ensure_ascii=False)
-                    evaluated_at = now
-                else:
-                    status = "pending"
-                    metrics_json = None
-                    evaluated_at = None
-                if self._sqlite_table_exists(conn, "seed_scores"):
-                    conn.execute(
-                        """
-                        update seed_scores
-                        set seed_mtime=?,
-                            seed_size=?,
-                            symbol=?,
-                            period=?,
-                            run_strategy=?,
-                            report_path=null,
-                            score=null,
-                            accepted=null,
-                            metrics_json=?,
-                            status=?,
-                            evaluated_at=?
-                        where seed_path=?
-                        """,
-                        (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                            symbol,
-                            period,
-                            str(result.get("run_strategy") or ""),
-                            metrics_json,
-                            status,
-                            evaluated_at,
-                            str(seed_path),
-                        ),
-                    )
+                self._repair_one_ubs_seed_set(conn, info, now, tally)
             conn.commit()
             conn.close()
         except (sqlite3.Error, OSError) as exc:
             self._show_error("Error reparando sets", str(exc))
             return
-
         self.ubs_seed_checked.clear()
-        parts = [f"reparadas={repaired}", f"sin cambios={unchanged}"]
-        if still_invalid:
-            parts.append(f"aun invalidas={still_invalid}")
-        if failed:
-            parts.append(f"fallos={len(failed)}")
-        self.status_text.set("Reparar sets: " + " | ".join(parts))
-        if failed:
-            messagebox.showwarning(title, "\n".join(failed[:12]))
+        self.status_text.set(tally.summary())
+        if tally.failed:
+            messagebox.showwarning(title, "\n".join(tally.failed[:12]))
         self._refresh_ubs_seed_eval_summary()
         self._refresh_ubs_seeds()
 

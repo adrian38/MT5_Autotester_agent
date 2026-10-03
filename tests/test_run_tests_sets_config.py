@@ -1,0 +1,442 @@
+import tempfile
+import unittest
+import configparser
+from unittest.mock import patch
+
+import run_tests
+import run_tests_runner
+import run_tests_reports
+from tests.run_tests_report_fixtures import ListLogger
+
+
+class RunTestsSetAndConfigTests(unittest.TestCase):
+    def setUp(self):
+        # Process inventory is covered separately; report tests never query MT5.
+        release = patch.object(run_tests_runner, "wait_for_terminal_release")
+        self.release = release.start()
+        self.addCleanup(release.stop)
+
+
+    def test_removes_copied_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            reports_dir = root / "reports"
+            terminal_dir = root / "terminal"
+            reports_dir.mkdir()
+            terminal_dir.mkdir()
+            source = terminal_dir / "sample.htm"
+            source.write_text("report", encoding="utf-8")
+            logger = ListLogger()
+
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
+                copied = run_tests.copy_reports_to_project([source], logger)
+
+            destination = reports_dir / source.name
+            self.assertEqual(copied, [destination])
+            self.assertEqual(destination.read_text(encoding="utf-8"), "report")
+            self.assertFalse(source.exists())
+            self.assertTrue(any("Reporte origen eliminado" in message for message in logger.messages))
+
+    def test_keeps_local_project_report_when_it_was_generated_there(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports_dir = run_tests.Path(temp_dir) / "reports"
+            reports_dir.mkdir()
+            source = reports_dir / "sample.htm"
+            source.write_text("report", encoding="utf-8")
+            logger = ListLogger()
+
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
+                copied = run_tests.copy_reports_to_project([source], logger)
+
+            self.assertEqual(copied, [source])
+            self.assertTrue(source.exists())
+            self.assertEqual(source.read_text(encoding="utf-8"), "report")
+            self.assertTrue(any("Reporte ya estaba en reports" in message for message in logger.messages))
+
+    def test_keeps_destination_when_external_report_overwrites_local_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            reports_dir = root / "reports"
+            terminal_dir = root / "terminal"
+            reports_dir.mkdir()
+            terminal_dir.mkdir()
+            local_source = reports_dir / "sample.htm"
+            external_source = terminal_dir / "sample.htm"
+            local_source.write_text("old", encoding="utf-8")
+            external_source.write_text("new", encoding="utf-8")
+            logger = ListLogger()
+
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
+                copied = run_tests.copy_reports_to_project([local_source, external_source], logger)
+
+            self.assertEqual(copied, [local_source])
+            self.assertTrue(local_source.exists())
+            self.assertEqual(local_source.read_text(encoding="utf-8"), "new")
+            self.assertFalse(external_source.exists())
+
+    def test_delete_existing_reports_keeps_active_tester_set_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            reports_dir = root / "reports"
+            data_dir = root / "data"
+            tester_dir = data_dir / "tester"
+            reports_dir.mkdir()
+            tester_dir.mkdir(parents=True)
+            report_path = reports_dir / "sample"
+            active_set = tester_dir / "sample.set"
+            old_report = tester_dir / "sample.htm"
+            active_set.write_text("params", encoding="utf-8")
+            old_report.write_text("old", encoding="utf-8")
+            logger = ListLogger()
+
+            with patch.object(run_tests_reports, "REPORT_DIR", reports_dir):
+                run_tests.delete_existing_report_files(
+                    report_path,
+                    [data_dir],
+                    root / "terminal64.exe",
+                    logger,
+                    protected_set_name=active_set.name,
+                )
+
+            self.assertTrue(active_set.exists())
+            self.assertFalse(old_report.exists())
+            self.assertTrue(any("Set activo conservado" in message for message in logger.messages))
+
+    def test_recursive_set_loading_skips_run_auxiliary_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = run_tests.Path(temp_dir)
+            wanted = run_dir / "gen_001" / "XAUUSD" / "H1" / "candidate.set"
+            skipped_paths = [
+                run_dir / "accepted_gen_001" / "score_10__candidate.set",
+                run_dir / "retry_mismatch" / "run_1_all" / "candidate.set",
+                run_dir / "robustness" / "run_1_pending" / "candidate.set",
+                run_dir / "final_tick" / "run_1" / "real_tick_sets" / "candidate.set",
+            ]
+            for path in [wanted, *skipped_paths]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("set", encoding="utf-8")
+
+            loaded = run_tests.load_set_files(run_dir, None, recursive=True)
+
+            self.assertEqual(loaded, [wanted])
+
+    def test_create_ini_can_override_tester_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            configs_dir = root / "configs"
+            reports_dir = root / "reports"
+            configs_dir.mkdir()
+            reports_dir.mkdir()
+            template = configparser.ConfigParser(interpolation=None)
+            template.optionxform = str
+            template.read_dict({"Tester": {"Expert": "", "Symbol": "XAUUSD", "Period": "H1", "Model": "1"}})
+
+            with patch.object(run_tests, "CONFIG_DIR", configs_dir), patch.object(run_tests, "REPORT_DIR", reports_dir):
+                ini_path, _report_path = run_tests.create_ini(
+                    "Ultimate Breakout System_4.3.ex5",
+                    1,
+                    template,
+                    tester_model="4",
+                )
+
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.optionxform = str
+            parser.read(ini_path, encoding="utf-8")
+            self.assertEqual(parser["Tester"]["Model"], "4")
+
+    def test_mapped_set_text_applies_symbol_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            set_file = root / "seed.set"
+            set_file.write_text(
+                "\n".join([
+                    "ForceSymbol=XAUUSD||1||0||2||N",
+                    "Symbol=EURUSD",
+                ]),
+                encoding="utf-8",
+            )
+
+            text, changes = run_tests.mapped_set_text_for_tester(set_file, {}, ".sa")
+
+            self.assertIsNotNone(text)
+            self.assertIn("ForceSymbol=XAUUSD.sa||1||0||2||N", text)
+            self.assertIn("Symbol=EURUSD.sa", text)
+            self.assertIn("ForceSymbol: XAUUSD -> XAUUSD.sa", changes)
+            self.assertIn("Symbol: EURUSD -> EURUSD.sa", changes)
+
+    def test_mapped_set_text_uses_universe_specific_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            assets = root / "axi_assets.ini"
+            assets.write_text(
+                "\n".join([
+                    "[Indices]",
+                    "symbols=DAX40.fs,US500.sa",
+                    "[Stocks]",
+                    "symbols=Apple+",
+                ]),
+                encoding="utf-8",
+            )
+            set_file = root / "seed.set"
+            set_file.write_text(
+                "\n".join([
+                    "ForceSymbol=DAX40||1||0||2||N",
+                    "Symbol=Apple",
+                ]),
+                encoding="utf-8",
+            )
+            suffix_universe = run_tests.load_symbol_suffix_universe(assets, ".sa", ".fs", "+")
+
+            text, changes = run_tests.mapped_set_text_for_tester(
+                set_file,
+                {},
+                ".sa",
+                ".fs",
+                "+",
+                suffix_universe,
+            )
+
+            self.assertIsNotNone(text)
+            self.assertIn("ForceSymbol=DAX40.fs||1||0||2||N", text)
+            self.assertIn("Symbol=Apple+", text)
+            self.assertIn("ForceSymbol: DAX40 -> DAX40.fs", changes)
+            self.assertIn("Symbol: Apple -> Apple+", changes)
+
+    def test_axi_universe_repairs_case_of_explicit_share_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            assets = root / "axi_assets.ini"
+            assets.write_text(
+                "[Stocks]\nsymbols=Apple+,MongoDB+,NationGrid+,PlugPower+\n",
+                encoding="utf-8",
+            )
+            set_file = root / "seed.set"
+            set_file.write_text("ForceSymbol=APPLE+||1||0||2||N\n", encoding="utf-8")
+            suffix_universe = run_tests.load_symbol_suffix_universe(
+                assets,
+                ".sa",
+                ".fs",
+                "+",
+            )
+
+            text, changes = run_tests.mapped_set_text_for_tester(
+                set_file,
+                {},
+                ".sa",
+                ".fs",
+                "+",
+                suffix_universe,
+            )
+
+            self.assertIsNotNone(text)
+            self.assertIn("ForceSymbol=Apple+||1||0||2||N", text)
+            self.assertIn("ForceSymbol: APPLE+ -> Apple+", changes)
+            self.assertEqual(
+                run_tests.apply_symbol_suffix("MONGODB+", ".sa", ".fs", "+", suffix_universe),
+                "MongoDB+",
+            )
+
+    def test_symbol_map_preserves_explicit_broker_suffix(self) -> None:
+        symbol_map = run_tests.parse_symbol_map("NAS100=USTECH,WTI=USOIL")
+
+        self.assertEqual(run_tests.apply_symbol_map("NAS100.fs", symbol_map), "NAS100.fs")
+        self.assertEqual(run_tests.apply_symbol_map("WTI.fs", symbol_map), "WTI.fs")
+        self.assertEqual(run_tests.apply_symbol_map("Apple+", symbol_map), "Apple+")
+
+    def test_axi_ustec_alias_resolves_to_cash_symbol(self) -> None:
+        from ubs.account import default_symbol_map_for_broker
+
+        symbol_map = run_tests.parse_symbol_map(default_symbol_map_for_broker("AXI"))
+        suffix_universe = run_tests.load_symbol_suffix_universe(
+            run_tests.Path("assets/axi_assets.ini"),
+            ".sa",
+            ".fs",
+            "+",
+        )
+
+        mapped = run_tests.apply_symbol_map("USTEC", symbol_map)
+        resolved = run_tests.apply_symbol_suffix(mapped, ".sa", ".fs", "+", suffix_universe)
+
+        self.assertEqual(mapped, "USTECH")
+        self.assertEqual(resolved, "USTECH.sa")
+
+    def test_create_ini_fills_required_tester_defaults_when_template_has_blanks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            configs_dir = root / "configs"
+            reports_dir = root / "reports"
+            configs_dir.mkdir()
+            reports_dir.mkdir()
+            template = configparser.ConfigParser(interpolation=None)
+            template.optionxform = str
+            template.read_dict({
+                "Tester": {
+                    "Expert": "",
+                    "Symbol": "XAUUSD",
+                    "Period": "H1",
+                    "Model": "1",
+                    "Deposit": "",
+                    "Currency": "",
+                    "Leverage": "",
+                    "Optimization": "",
+                    "Visual": "",
+                    "ReplaceReport": "",
+                    "ShutdownTerminal": "",
+                }
+            })
+
+            with patch.object(run_tests, "CONFIG_DIR", configs_dir), patch.object(run_tests, "REPORT_DIR", reports_dir):
+                ini_path, _report_path = run_tests.create_ini(
+                    "Ultimate Breakout System_4.3.ex5",
+                    1,
+                    template,
+                )
+
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.optionxform = str
+            parser.read(ini_path, encoding="utf-8")
+            self.assertEqual(parser["Tester"]["Deposit"], "1000")
+            self.assertEqual(parser["Tester"]["Currency"], "EUR")
+            self.assertEqual(parser["Tester"]["Leverage"], "1:500")
+            self.assertEqual(parser["Tester"]["Optimization"], "0")
+            self.assertEqual(parser["Tester"]["Visual"], "0")
+            self.assertEqual(parser["Tester"]["ReplaceReport"], "1")
+            self.assertEqual(parser["Tester"]["ShutdownTerminal"], "1")
+
+    def test_multiterminal_ubs_profile_accepts_ubs_name_without_exact_expected_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            profile = run_tests.TerminalProfile(
+                name="MT5",
+                mt5_path=root / "terminal64.exe",
+                data_dir=None,
+                experts_root=root / "MQL5" / "Experts",
+                ubs_ex5_file=root / "MQL5" / "Experts" / "Advisors" / "UBS" / "Ultimate Breakout System_4.3.ex5",
+                portable=False,
+            )
+            errors = run_tests.validate_terminal_profiles(
+                [profile],
+                [run_tests.BacktestJob(1, "", root / "candidate.set")],
+                set_mode=True,
+                dry_run=True,
+            )
+
+            self.assertEqual(errors, [])
+
+    def test_multiterminal_ubs_profile_allows_same_relative_expert_in_different_terminal_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            profile = run_tests.TerminalProfile(
+                name="MT5",
+                mt5_path=root / "TerminalB" / "terminal64.exe",
+                data_dir=None,
+                experts_root=root / "TerminalB" / "MQL5" / "Experts",
+                ubs_ex5_file=(
+                    root
+                    / "TerminalB"
+                    / "MQL5"
+                    / "Experts"
+                    / "Advisors"
+                    / "Ultimate Breakout System_4.3_fix @LifeInDreamsWorld.ex5"
+                ),
+                portable=False,
+            )
+
+            errors = run_tests.validate_terminal_profiles(
+                [profile],
+                [run_tests.BacktestJob(1, "", root / "candidate.set")],
+                set_mode=True,
+                dry_run=True,
+            )
+
+            self.assertEqual(errors, [])
+
+    def test_multiterminal_config_loads_only_selected_broker_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            config = root / "ui_settings.ini"
+            config.write_text(
+                "\n".join(
+                    [
+                        "[Multiterminal]",
+                        "broker=AXI",
+                        "[Terminal.1]",
+                        "enabled=1",
+                        "broker=ROBOFOREX",
+                        "name=Robo",
+                        f"mt5_path={root / 'Robo' / 'terminal64.exe'}",
+                        f"experts_root={root / 'Robo' / 'MQL5' / 'Experts'}",
+                        "[Terminal.2]",
+                        "enabled=1",
+                        "broker=AXI",
+                        "name=Axi",
+                        f"mt5_path={root / 'Axi' / 'terminal64.exe'}",
+                        f"experts_root={root / 'Axi' / 'MQL5' / 'Experts'}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = run_tests.load_terminal_profiles(config)
+
+            self.assertEqual([profile.name for profile in profiles], ["Axi"])
+
+    def test_runner_tuning_loads_general_watchdog_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = run_tests.Path(temp_dir) / "ui_settings.ini"
+            config.write_text(
+                "\n".join(
+                    [
+                        "[Multiterminal]",
+                        "tester_kick_after=45",
+                        "tester_stall_after=420",
+                        "tester_max_runtime=2400",
+                        "terminal_cooldown=2",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            values = run_tests.load_runner_tuning(
+                config,
+                tester_kick_after=None,
+                tester_stall_after=None,
+                tester_max_runtime=None,
+                terminal_cooldown=None,
+            )
+
+            self.assertEqual(values, (45, 420, 2400, 2))
+
+    def test_multiterminal_config_never_loads_disabled_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            config = root / "ui_settings.ini"
+            config.write_text(
+                "\n".join(
+                    [
+                        "[Multiterminal]",
+                        "broker=ICTRADING",
+                        "[Terminal.1]",
+                        "enabled=1",
+                        "broker=ICTRADING",
+                        "name=IC enabled",
+                        f"mt5_path={root / 'IC1' / 'terminal64.exe'}",
+                        f"experts_root={root / 'IC1' / 'MQL5' / 'Experts'}",
+                        "[Terminal.2]",
+                        "enabled=0",
+                        "broker=ICTRADING",
+                        "name=IC disabled",
+                        f"mt5_path={root / 'IC2' / 'terminal64.exe'}",
+                        f"experts_root={root / 'IC2' / 'MQL5' / 'Experts'}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = run_tests.load_terminal_profiles(config)
+
+            self.assertEqual([profile.name for profile in profiles], ["IC enabled"])
+
+
+if __name__ == "__main__":
+    unittest.main()

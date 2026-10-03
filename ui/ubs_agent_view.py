@@ -7,10 +7,12 @@ from tkinter import ttk
 from ubs.account import BROKERS, account_types_for_broker
 
 from run_tests import REPORT_DIR
+from ui.ubs_agent_view_cards import UBSAgentViewCardsMixin
 
 
-class UBSAgentViewMixin:
-    def _build_ubs_agent(self, parent: ttk.Frame) -> None:
+class UBSAgentViewMixin(UBSAgentViewCardsMixin):
+    def _build_ubs_agent_scroll(self, parent):
+        """Lienzo desplazable que contiene las tarjetas del agente."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -35,8 +37,10 @@ class UBSAgentViewMixin:
         canvas.bind("<Configure>", _on_canvas_resize)
         canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_scroll))
         canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        return inner
 
-        # ── Rutas ───────────────────────────────────────────────────────────
+    def _build_ubs_agent_paths(self, inner):
+        """Tarjeta de cuenta, rutas y evaluacion de semillas."""
         paths = self._card(inner, "Rutas Agente UBS")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
@@ -89,28 +93,8 @@ class UBSAgentViewMixin:
             command=self._run_ubs_seed_evaluation,
         ).grid(row=0, column=1, sticky="e")
 
-        # ── Configuracion ───────────────────────────────────────────────────
-        agent = self._card(inner, "Configuracion Agente UBS")
-        agent.grid(row=1, column=0, sticky="ew")
-        for column in (1, 3, 5):
-            agent.columnconfigure(column, weight=1)
-
-        gen_fields = [
-            ("Generaciones", self.ubs_generation_count, 1, 100),
-            ("Variantes por set", self.ubs_variants_per_seed, 1, 100),
-            ("Max seeds/gen", self.ubs_max_seeds, 0, 5000),
-        ]
-        for index, (label, variable, from_value, to_value) in enumerate(gen_fields):
-            column = index * 2
-            left_pad = 20 if index == 0 else 10
-            right_pad = 10 if index < len(gen_fields) - 1 else 20
-            ttk.Label(agent, text=label, style="Panel.TLabel").grid(
-                row=1, column=column, sticky="w", padx=(left_pad, 10), pady=7
-            )
-            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=8).grid(
-                row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
-            )
-
+    def _build_ubs_agent_dates(self, agent):
+        """Fechas base del agente y su relleno desde la plantilla."""
         dates_row = ttk.Frame(agent, style="Panel.TFrame")
         dates_row.grid(row=2, column=0, columnspan=6, sticky="ew", padx=20, pady=(4, 0))
         _date_tip = (
@@ -137,6 +121,8 @@ class UBSAgentViewMixin:
         self.after(200, _fill_agent_dates)
         self.template_path.trace_add("write", lambda *_: self.after(300, _fill_agent_dates))
 
+    def _build_ubs_agent_mode(self, agent):
+        """Ejecutar backtests y modo de generacion."""
         exec_row = tk.Frame(agent, bg=self.colors["panel"])
         exec_row.grid(row=3, column=0, columnspan=6, sticky="ew", padx=20, pady=(12, 6))
         exec_row.columnconfigure(0, weight=1)
@@ -173,6 +159,8 @@ class UBSAgentViewMixin:
             width=12,
         ).grid(row=0, column=1, sticky="e", pady=(4, 0))
 
+    def _build_ubs_agent_long_timeframes(self, agent):
+        """Umbrales y activacion de los timeframes W1 y MN."""
         long_tf_row = tk.Frame(agent, bg=self.colors["panel"])
         long_tf_row.grid(row=5, column=0, columnspan=6, sticky="ew", padx=20, pady=(6, 6))
         long_tf_row.columnconfigure(0, weight=1)
@@ -220,8 +208,8 @@ class UBSAgentViewMixin:
             height=18,
         ).grid(row=0, column=2, sticky="ne", pady=(4, 0))
 
-        self._build_ubs_multiterminal_row(agent, row=6)
-
+    def _build_ubs_agent_buttons(self, agent):
+        """Guardar, lanzar y continuar el agente."""
         buttons = ttk.Frame(agent, style="Panel.TFrame")
         buttons.grid(row=7, column=0, columnspan=6, sticky="ew", padx=20, pady=(14, 22))
         buttons.columnconfigure(0, weight=1)
@@ -257,358 +245,39 @@ class UBSAgentViewMixin:
             row=8, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 14)
         )
 
-        # ── Filtros ─────────────────────────────────────────────────────────
-        pass_config = self._card(inner, "Filtros de aceptacion")
-        pass_config.grid(row=2, column=0, sticky="ew", pady=(16, 24))
+    def _build_ubs_agent_config(self, inner):
+        """Tarjeta de configuracion del agente y sus botones."""
+        agent = self._card(inner, "Configuracion Agente UBS")
+        agent.grid(row=1, column=0, sticky="ew")
         for column in (1, 3, 5):
-            pass_config.columnconfigure(column, weight=1)
-        pass_fields = [
-            ("Profit neto min", self.ubs_pass_min_net_profit, "entry"),
-            ("Profit factor min", self.ubs_pass_min_profit_factor, "entry"),
-            ("Trades min", self.ubs_pass_min_trades, "spin"),
-            ("DD max %", self.ubs_pass_max_drawdown_pct, "entry"),
-            ("Recovery min", self.ubs_pass_min_recovery_factor, "entry"),
+            agent.columnconfigure(column, weight=1)
+
+        gen_fields = [
+            ("Generaciones", self.ubs_generation_count, 1, 100),
+            ("Variantes por set", self.ubs_variants_per_seed, 1, 100),
+            ("Max seeds/gen", self.ubs_max_seeds, 0, 5000),
         ]
-        for index, (label, variable, kind) in enumerate(pass_fields):
-            row = 1 + index // 3
-            column = (index % 3) * 2
-            left_pad = 20 if column == 0 else 10
-            right_pad = 10 if column < 4 else 20
-            ttk.Label(pass_config, text=label, style="Panel.TLabel").grid(
-                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+        for index, (label, variable, from_value, to_value) in enumerate(gen_fields):
+            column = index * 2
+            left_pad = 20 if index == 0 else 10
+            right_pad = 10 if index < len(gen_fields) - 1 else 20
+            ttk.Label(agent, text=label, style="Panel.TLabel").grid(
+                row=1, column=column, sticky="w", padx=(left_pad, 10), pady=7
             )
-            if kind == "spin":
-                ttk.Spinbox(pass_config, from_=0, to=100000, textvariable=variable, width=8).grid(
-                    row=row, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
-                )
-            else:
-                ttk.Entry(pass_config, textvariable=variable).grid(
-                    row=row, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
-                )
-        ttk.Label(
-            pass_config,
-            text="Profit neto min es moneda de la cuenta. Con deposito 1000, default 100 = 10%. Estabilidad mensual: score, no filtro hard.",
-            style="Muted.TLabel",
-        ).grid(row=3, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
-        ttk.Button(
-            pass_config,
-            text="Guardar configuracion Agente UBS",
-            style="Primary.TButton",
-            command=self._save_ubs_agent_clicked,
-        ).grid(row=3, column=5, sticky="e", padx=20, pady=(4, 14))
-
-        robust = self._card(inner, "Robustez OOS")
-        robust.grid(row=3, column=0, sticky="ew", pady=(0, 24))
-        for column in (1, 3, 5):
-            robust.columnconfigure(column, weight=1)
-
-        robust_date_tip = (
-            "Formato: YYYY.MM.DD.\n"
-            "Ventana fuera de muestra para candidatos accepted del agente.\n"
-            "Dejar vacio para usar las fechas del template tester."
-        )
-        ttk.Label(robust, text="Desde", style="Panel.TLabel").grid(
-            row=1, column=0, sticky="w", padx=(20, 10), pady=7
-        )
-        robust_from = ttk.Entry(robust, textvariable=self.ubs_robust_from_date, width=14)
-        robust_from.grid(row=1, column=1, sticky="ew", padx=(0, 10), pady=7)
-        self._tooltip_cls(robust_from, robust_date_tip)
-        ttk.Label(robust, text="Hasta", style="Panel.TLabel").grid(
-            row=1, column=2, sticky="w", padx=(10, 10), pady=7
-        )
-        robust_to = ttk.Entry(robust, textvariable=self.ubs_robust_to_date, width=14)
-        robust_to.grid(row=1, column=3, sticky="ew", padx=(0, 10), pady=7)
-        self._tooltip_cls(robust_to, robust_date_tip)
-
-        auto_row = tk.Frame(robust, bg=self.colors["panel"])
-        auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
-        auto_row.columnconfigure(0, weight=1)
-        tk.Label(
-            auto_row,
-            text="Auto robustez",
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        self._toggle_switch_cls(
-            auto_row,
-            variable=self.ubs_robust_auto,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="e")
-
-        robust_fields = [
-            ("Net min", self.ubs_robust_pass_min_net_profit, "entry"),
-            ("PF min", self.ubs_robust_pass_min_profit_factor, "entry"),
-            ("Trades min", self.ubs_robust_pass_min_trades, "spin"),
-            ("DD max %", self.ubs_robust_pass_max_drawdown_pct, "entry"),
-            ("Recovery min", self.ubs_robust_pass_min_recovery_factor, "entry"),
-            ("Ret. net >=", self.ubs_robust_min_net_retention, "entry"),
-            ("Ret. edge PF >=", self.ubs_robust_min_pf_edge_retention, "entry"),
-            ("Ret. recovery >=", self.ubs_robust_min_recovery_retention, "entry"),
-            ("Inflacion DD <= x", self.ubs_robust_max_dd_inflation, "entry"),
-            ("Bonus OK legacy", self.ubs_robust_positive_bonus, "entry"),
-            ("Bonus FAIL legacy", self.ubs_robust_negative_bonus, "entry"),
-        ]
-        for index, (label, variable, kind) in enumerate(robust_fields):
-            row = 2 + index // 3
-            column = (index % 3) * 2
-            left_pad = 20 if column == 0 else 10
-            ttk.Label(robust, text=label, style="Panel.TLabel").grid(
-                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
+            ttk.Spinbox(agent, from_=from_value, to=to_value, textvariable=variable, width=8).grid(
+                row=1, column=column + 1, sticky="ew", padx=(0, right_pad), pady=7
             )
-            if kind == "spin":
-                ttk.Spinbox(robust, from_=0, to=100000, textvariable=variable, width=8).grid(
-                    row=row, column=column + 1, sticky="ew", padx=(0, 10), pady=7
-                )
-            else:
-                ttk.Entry(robust, textvariable=variable, width=8).grid(
-                    row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7
-                )
 
-        ttk.Label(
-            robust,
-            text="Pasa si cumple los limites OOS absolutos y conserva el edge frente a Resultados. 0 desactiva cada limite relativo; datos no disponibles quedan neutros.",
-            style="Muted.TLabel",
-        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
-        ttk.Button(
-            robust,
-            text="Guardar robustez",
-            style="Primary.TButton",
-            command=self._save_ubs_agent_clicked,
-        ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))
+        self._build_ubs_agent_dates(agent)
+        self._build_ubs_agent_mode(agent)
+        self._build_ubs_agent_long_timeframes(agent)
+        self._build_ubs_multiterminal_row(agent, row=6)
+        self._build_ubs_agent_buttons(agent)
+        return None
 
-        final_tick = self._card(inner, "Final Tick (Every Tick)")
-        final_tick.grid(row=4, column=0, sticky="ew", pady=(0, 24))
-        for column in (1, 3, 5):
-            final_tick.columnconfigure(column, weight=1)
+    def _build_ubs_agent(self, parent: ttk.Frame) -> None:
+        inner = self._build_ubs_agent_scroll(parent)
+        self._build_ubs_agent_paths(inner)
+        self._build_ubs_agent_config(inner)
 
-        ft_date_tip = (
-            "Formato: YYYY.MM.DD.\n"
-            "Mismo tramo para OHLC (Model=1) y Every Tick real (Model=4)."
-        )
-        ttk.Label(final_tick, text="Desde", style="Panel.TLabel").grid(
-            row=1, column=0, sticky="w", padx=(20, 10), pady=7
-        )
-        ft_from = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_from_date, width=14)
-        ft_from.grid(row=1, column=1, sticky="ew", padx=(0, 10), pady=7)
-        self._tooltip_cls(ft_from, ft_date_tip)
-        ttk.Label(final_tick, text="Hasta", style="Panel.TLabel").grid(
-            row=1, column=2, sticky="w", padx=(10, 10), pady=7
-        )
-        ft_to = ttk.Entry(final_tick, textvariable=self.ubs_final_tick_to_date, width=14)
-        ft_to.grid(row=1, column=3, sticky="ew", padx=(0, 10), pady=7)
-        self._tooltip_cls(ft_to, ft_date_tip)
-
-        ft_auto_row = tk.Frame(final_tick, bg=self.colors["panel"])
-        ft_auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
-        ft_auto_row.columnconfigure(0, weight=1)
-        tk.Label(
-            ft_auto_row,
-            text="Auto Final Tick",
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        self._toggle_switch_cls(
-            ft_auto_row,
-            variable=self.ubs_final_tick_auto,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="e")
-        self._tooltip_cls(
-            ft_auto_row,
-            "Al terminar la robustez OOS, lanza Final Tick automaticamente\nsobre los robust accepted pendientes.",
-        )
-
-        final_tick_fields = [
-            ("HQ min %", self.ubs_final_tick_min_history_quality, "entry"),
-            ("Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, "spin"),
-            ("Net delta %", self.ubs_final_tick_max_net_delta_pct, "entry"),
-            ("PF delta %", self.ubs_final_tick_max_pf_delta_pct, "entry"),
-            ("DD delta %", self.ubs_final_tick_max_dd_delta_pct, "entry"),
-            ("Trades delta %", self.ubs_final_tick_max_trades_delta_pct, "entry"),
-        ]
-        for index, (label, variable, kind) in enumerate(final_tick_fields):
-            row = 2 + index // 3
-            column = (index % 3) * 2
-            left_pad = 20 if column == 0 else 10
-            ttk.Label(final_tick, text=label, style="Panel.TLabel").grid(
-                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
-            )
-            if kind == "spin":
-                ttk.Spinbox(final_tick, from_=0, to=100000, textvariable=variable, width=8).grid(
-                    row=row, column=column + 1, sticky="ew", padx=(0, 10), pady=7
-                )
-            else:
-                ttk.Entry(final_tick, textvariable=variable, width=8).grid(
-                    row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7
-                )
-
-        ttk.Label(
-            final_tick,
-            text="Compara OHLC vs Every Tick real en el mismo tramo. PF/DD/trades son los criterios activos; net es informativo. Accepted +120 al peso; rejected -160 menos causas.",
-            style="Muted.TLabel",
-        ).grid(row=5, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
-        ttk.Button(
-            final_tick,
-            text="Guardar Final Tick",
-            style="Primary.TButton",
-            command=self._save_ubs_agent_clicked,
-        ).grid(row=5, column=5, sticky="e", padx=20, pady=(4, 14))
-
-        final_tick_6m = self._card(inner, "Final Tick 6M")
-        final_tick_6m.grid(row=5, column=0, sticky="ew", pady=(0, 24))
-        for column in (1, 3, 5):
-            final_tick_6m.columnconfigure(column, weight=1)
-
-        ft6_date_tip = (
-            "Formato: YYYY.MM.DD.\n"
-            "Tramo principal de 6M para OHLC vs Every Tick real.\n"
-            "Ops bajas desde/hasta solo se usan para reintentar filas con pocas operaciones OHLC."
-        )
-        ft6_auto_row = tk.Frame(final_tick_6m, bg=self.colors["panel"])
-        ft6_auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
-        ft6_auto_row.columnconfigure(0, weight=1)
-        tk.Label(
-            ft6_auto_row,
-            text="Auto Final Tick 6M",
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        self._toggle_switch_cls(
-            ft6_auto_row,
-            variable=self.ubs_final_tick_6m_auto,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="e")
-        self._tooltip_cls(
-            ft6_auto_row,
-            "Al terminar Final Tick corto, lanza Final Tick 6M automaticamente\nsobre los corto accepted y pending_ohlc_trades pendientes.",
-        )
-        final_tick_6m_fields = [
-            ("Desde", self.ubs_final_tick_6m_from_date, "date"),
-            ("Hasta", self.ubs_final_tick_6m_to_date, "date"),
-            ("Ops bajas desde", self.ubs_final_tick_6m_ohlc_from_date, "date"),
-            ("Ops bajas hasta", self.ubs_final_tick_6m_ohlc_to_date, "date"),
-            ("HQ min %", self.ubs_final_tick_min_history_quality, "entry"),
-            ("Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, "spin"),
-            ("Net delta %", self.ubs_final_tick_max_net_delta_pct, "entry"),
-            ("PF delta %", self.ubs_final_tick_max_pf_delta_pct, "entry"),
-            ("DD delta %", self.ubs_final_tick_max_dd_delta_pct, "entry"),
-            ("Trades delta %", self.ubs_final_tick_max_trades_delta_pct, "entry"),
-            ("W1 FT ops", self.ubs_final_tick_min_trades_w1, "spin"),
-            ("MN FT ops", self.ubs_final_tick_min_trades_mn, "spin"),
-        ]
-        for index, (label, variable, kind) in enumerate(final_tick_6m_fields):
-            if index < 2:
-                row = 1
-                column = index * 2
-            else:
-                row = 2 + (index - 2) // 3
-                column = ((index - 2) % 3) * 2
-            left_pad = 20 if column == 0 else 10
-            ttk.Label(final_tick_6m, text=label, style="Panel.TLabel").grid(
-                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
-            )
-            if kind == "spin":
-                widget = ttk.Spinbox(final_tick_6m, from_=0, to=100000, textvariable=variable, width=8)
-            else:
-                widget = ttk.Entry(final_tick_6m, textvariable=variable, width=14 if kind == "date" else 8)
-            widget.grid(row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7)
-            if kind == "date":
-                self._tooltip_cls(widget, ft6_date_tip)
-
-        ttk.Label(
-            final_tick_6m,
-            text="Valida el tramo largo para uso real. Portfolio solo usa Final Tick 6M accepted. Ops bajas reintenta solo pendientes por pocas operaciones OHLC.",
-            style="Muted.TLabel",
-        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
-        ttk.Button(
-            final_tick_6m,
-            text="Guardar Final Tick 6M",
-            style="Primary.TButton",
-            command=self._save_ubs_agent_clicked,
-        ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))
-
-        regression = self._card(inner, "Prueba Regresiva")
-        regression.grid(row=6, column=0, sticky="ew", pady=(0, 24))
-        for column in (1, 3, 5):
-            regression.columnconfigure(column, weight=1)
-
-        reg_date_tip = (
-            "Formato: YYYY.MM.DD.\n"
-            "Holdout historico OHLC 1 minuto (Model=1) hacia atras.\n"
-            "El reporte debe cubrir exactamente el rango configurado."
-        )
-        reg_auto_row = tk.Frame(regression, bg=self.colors["panel"])
-        reg_auto_row.grid(row=1, column=4, columnspan=2, sticky="ew", padx=(10, 20), pady=7)
-        reg_auto_row.columnconfigure(0, weight=1)
-        tk.Label(
-            reg_auto_row,
-            text="Auto Regresiva",
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        self._toggle_switch_cls(
-            reg_auto_row,
-            variable=self.ubs_regression_auto,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="e")
-        self._tooltip_cls(
-            reg_auto_row,
-            "Al terminar Final Tick 6M, lanza la prueba regresiva automaticamente\nsobre los 6M accepted pendientes.",
-        )
-        regression_fields = [
-            ("Desde", self.ubs_regression_from_date, "date"),
-            ("Hasta", self.ubs_regression_to_date, "date"),
-            ("Net >", self.ubs_regression_min_net_profit, "entry"),
-            ("PF >=", self.ubs_regression_min_profit_factor, "entry"),
-            ("Ops >=", self.ubs_regression_min_trades, "spin"),
-            ("DD % <=", self.ubs_regression_max_drawdown_pct, "entry"),
-            ("Recovery >=", self.ubs_regression_min_recovery_factor, "entry"),
-            ("Meses + >=", self.ubs_regression_min_positive_month_ratio, "entry"),
-            ("PF ef >=", self.ubs_regression_min_pf_efficiency, "entry"),
-            ("DD x <=", self.ubs_regression_max_dd_ratio, "entry"),
-            ("Puntos OK", self.ubs_regression_positive_points, "entry"),
-            ("Puntos FAIL", self.ubs_regression_negative_points, "entry"),
-            ("W1 REG ops", self.ubs_regression_min_trades_w1, "spin"),
-            ("MN REG ops", self.ubs_regression_min_trades_mn, "spin"),
-        ]
-        for index, (label, variable, kind) in enumerate(regression_fields):
-            if index < 2:
-                row = 1
-                column = index * 2
-            else:
-                row = 2 + (index - 2) // 3
-                column = ((index - 2) % 3) * 2
-            left_pad = 20 if column == 0 else 10
-            ttk.Label(regression, text=label, style="Panel.TLabel").grid(
-                row=row, column=column, sticky="w", padx=(left_pad, 10), pady=7
-            )
-            if kind == "spin":
-                widget = ttk.Spinbox(regression, from_=0, to=100000, textvariable=variable, width=8)
-            else:
-                widget = ttk.Entry(regression, textvariable=variable, width=14 if kind == "date" else 8)
-            widget.grid(row=row, column=column + 1, sticky="ew", padx=(0, 10 if column < 4 else 20), pady=7)
-            if kind == "date":
-                self._tooltip_cls(widget, reg_date_tip)
-
-        ttk.Label(
-            regression,
-            text="Holdout OHLC historico sobre Final Tick 6M accepted. Fallos tecnicos (historico, reporte, fechas) son neutros: 0 puntos.",
-            style="Muted.TLabel",
-        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=20, pady=(4, 14))
-        ttk.Button(
-            regression,
-            text="Guardar Regresiva",
-            style="Primary.TButton",
-            command=self._save_ubs_agent_clicked,
-        ).grid(row=6, column=5, sticky="e", padx=20, pady=(4, 14))
+        self._build_ubs_agent_filter_cards(inner)

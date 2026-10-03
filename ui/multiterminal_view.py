@@ -42,30 +42,8 @@ class MultiterminalViewMixin:
             style="Tool.TButton",
             command=lambda: self._show_section("multiterminal"),
         ).grid(row=0, column=4, sticky="e", padx=(0, 12), pady=8)
-    def _build_multiterminal(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        panel = self._card(parent, "Multiterminales MT5")
-        panel.grid(row=0, column=0, sticky="nsew")
-        panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(2, weight=1)
-
-        top = tk.Frame(panel, bg=self.colors["panel_alt"])
-        top.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 12))
-        top.columnconfigure(1, weight=1)
-        tk.Label(top, text="Modo multiterminal", bg=self.colors["panel_alt"], fg=self.colors["text"],
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(10, 10), pady=8)
-        tk.Label(top, textvariable=self.multiterminal_summary, bg=self.colors["panel_alt"], fg=self.colors["muted"],
-                 font=("Segoe UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 10), pady=8)
-        self._toggle_switch_cls(
-            top,
-            variable=self.multiterminal_enabled,
-            command=self._on_multiterminal_changed,
-            bg=self.colors["panel_alt"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
+    def _build_multiterminal_top_actions(self, top):
+        """Cantidad de terminales y acciones de la barra superior."""
         ttk.Label(top, text="Terminales a usar", style="MutedBg.TLabel").grid(row=0, column=3, sticky="e", padx=(8, 6), pady=8)
         worker_spin = ttk.Spinbox(
             top,
@@ -105,11 +83,36 @@ class MultiterminalViewMixin:
         )
         self.multiterminal_cleanup_button.grid(row=0, column=7, sticky="e", padx=(0, 10), pady=5)
 
-        # ── PanedWindow: tabla izquierda | editor derecho (arrastra el divisor) ──
-        paned = ttk.PanedWindow(panel, orient="horizontal")
-        paned.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+    def _build_multiterminal_panel(self, parent):
+        """Panel de la pantalla y su barra de modo multiterminal."""
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
 
-        # ── Panel izquierdo: tabla + botones ─────────────────────────────────
+        panel = self._card(parent, "Multiterminales MT5")
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(2, weight=1)
+
+        top = tk.Frame(panel, bg=self.colors["panel_alt"])
+        top.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 12))
+        top.columnconfigure(1, weight=1)
+        tk.Label(top, text="Modo multiterminal", bg=self.colors["panel_alt"], fg=self.colors["text"],
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(10, 10), pady=8)
+        tk.Label(top, textvariable=self.multiterminal_summary, bg=self.colors["panel_alt"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 10), pady=8)
+        self._toggle_switch_cls(
+            top,
+            variable=self.multiterminal_enabled,
+            command=self._on_multiterminal_changed,
+            bg=self.colors["panel_alt"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
+        self._build_multiterminal_top_actions(top)
+        return panel
+
+    def _build_multiterminal_table(self, paned):
+        """Tabla de perfiles de terminal y sus botones."""
         left = ttk.Frame(paned, style="Panel.TFrame")
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
@@ -161,38 +164,8 @@ class MultiterminalViewMixin:
         ttk.Button(table_buttons, text="Validar",   style="Tool.TButton",        command=self._validate_multiterminal_profiles).grid(row=0, column=3, sticky="ew", padx=(0, 4))
         ttk.Button(table_buttons, text="Guardar",   style="Primary.TButton",     command=self._save_multiterminal_clicked).grid(row=0, column=4, sticky="ew")
 
-        # ── Panel derecho: editor con scroll horizontal ───────────────────────
-        right = tk.Frame(paned, bg=self.colors["panel"],
-                         highlightthickness=1, highlightbackground=self.colors["border"])
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(1, weight=1)
-        paned.add(right, weight=6)
-
-        tk.Label(right, text="Editor de terminal",
-                 bg=self.colors["panel"], fg=self.colors["text"],
-                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 6))
-
-        # Canvas que sincroniza su ancho con el editor para que los entries llenen el espacio
-        e_canvas = tk.Canvas(right, bg=self.colors["panel"], highlightthickness=0)
-        h_scroll = ttk.Scrollbar(right, orient="horizontal", command=e_canvas.xview)
-        e_canvas.configure(xscrollcommand=h_scroll.set)
-        e_canvas.grid(row=1, column=0, sticky="nsew")
-        h_scroll.grid(row=2, column=0, sticky="ew")
-
-        editor = tk.Frame(e_canvas, bg=self.colors["panel"])
-        editor.columnconfigure(1, weight=1)
-        win_id = e_canvas.create_window((0, 0), window=editor, anchor="nw")
-
-        def _sync_scroll(event=None):
-            e_canvas.configure(scrollregion=e_canvas.bbox("all"))
-
-        def _fit_editor(event=None):
-            # Fuerza el editor a llenar el ancho del canvas → entries tan anchos como Nombre
-            e_canvas.itemconfig(win_id, width=event.width, height=event.height)
-
-        editor.bind("<Configure>", _sync_scroll)
-        e_canvas.bind("<Configure>", _fit_editor)
-
+    def _build_multiterminal_editor_fields(self, editor):
+        """Campos del perfil: estado, nombre, broker y rutas."""
         state_row = tk.Frame(editor, bg=self.colors["panel"])
         state_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=16, pady=(4, 8))
         state_row.columnconfigure(0, weight=1)
@@ -225,6 +198,50 @@ class MultiterminalViewMixin:
                   text="La cantidad es un límite: se usan hasta N terminales habilitadas. Compilar sigue siendo secuencial.",
                   style="Muted.TLabel", wraplength=380, justify="left",
                   ).grid(row=8, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 14))
+
+    def _build_multiterminal_editor(self, paned):
+        """Editor desplazable del perfil de terminal seleccionado."""
+        right = tk.Frame(paned, bg=self.colors["panel"],
+                         highlightthickness=1, highlightbackground=self.colors["border"])
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        paned.add(right, weight=6)
+
+        tk.Label(right, text="Editor de terminal",
+                 bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 6))
+
+        # Canvas que sincroniza su ancho con el editor para que los entries llenen el espacio
+        e_canvas = tk.Canvas(right, bg=self.colors["panel"], highlightthickness=0)
+        h_scroll = ttk.Scrollbar(right, orient="horizontal", command=e_canvas.xview)
+        e_canvas.configure(xscrollcommand=h_scroll.set)
+        e_canvas.grid(row=1, column=0, sticky="nsew")
+        h_scroll.grid(row=2, column=0, sticky="ew")
+
+        editor = tk.Frame(e_canvas, bg=self.colors["panel"])
+        editor.columnconfigure(1, weight=1)
+        win_id = e_canvas.create_window((0, 0), window=editor, anchor="nw")
+
+        def _sync_scroll(event=None):
+            e_canvas.configure(scrollregion=e_canvas.bbox("all"))
+
+        def _fit_editor(event=None):
+            # Fuerza el editor a llenar el ancho del canvas → entries tan anchos como Nombre
+            e_canvas.itemconfig(win_id, width=event.width, height=event.height)
+
+        editor.bind("<Configure>", _sync_scroll)
+        e_canvas.bind("<Configure>", _fit_editor)
+
+        self._build_multiterminal_editor_fields(editor)
+
+    def _build_multiterminal(self, parent: ttk.Frame) -> None:
+        panel = self._build_multiterminal_panel(parent)
+
+        paned = ttk.PanedWindow(panel, orient="horizontal")
+        paned.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 18))
+
+        self._build_multiterminal_table(paned)
+        self._build_multiterminal_editor(paned)
 
         self._refresh_multiterminal_tree()
         self._update_multiterminal_summary()

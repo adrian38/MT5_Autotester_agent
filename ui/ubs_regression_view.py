@@ -5,7 +5,8 @@ from tkinter import ttk
 
 
 class UBSRegressionViewMixin:
-    def _build_ubs_regression(self, parent: ttk.Frame) -> None:
+    def _build_ubs_regression_panel(self, parent):
+        """Panel de la pantalla y su barra de resumen."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -17,6 +18,10 @@ class UBSRegressionViewMixin:
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         bar.columnconfigure(0, weight=1)
+        return panel, bar
+
+    def _build_ubs_regression_actions(self, bar):
+        """Resumen y acciones de la barra superior."""
         tk.Label(
             bar,
             textvariable=self.ubs_regression_summary,
@@ -46,6 +51,8 @@ class UBSRegressionViewMixin:
                 command=command,
             ).grid(row=0, column=column, sticky="e", padx=(0, 6), pady=(5, 3))
 
+    def _build_ubs_regression_run_row(self, bar):
+        """Selector de run, accesos y continuacion automatica."""
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
         row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(1, weight=1)
@@ -83,6 +90,8 @@ class UBSRegressionViewMixin:
             row=0, column=7, sticky="e", padx=(8, 0)
         )
 
+    def _build_ubs_regression_criteria(self, panel):
+        """Estado y criterios de aceptacion de la regresiva."""
         ttk.Label(panel, textvariable=self.ubs_regression_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="ew", padx=20, pady=(6, 6)
         )
@@ -124,6 +133,8 @@ class UBSRegressionViewMixin:
             style="Muted.TLabel",
         ).grid(row=2, column=4, columnspan=8, sticky="w", padx=(8, 0))
 
+    def _build_ubs_regression_table(self, panel):
+        """Tabla de candidatos con sus columnas y etiquetas."""
         table_frame = ttk.Frame(panel, style="Panel.TFrame")
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
         table_frame.columnconfigure(0, weight=1)
@@ -158,3 +169,10 @@ class UBSRegressionViewMixin:
         self.ubs_regression_tree.bind("<Button-1>", self._on_ubs_regression_tree_click)
         self.ubs_regression_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_regression_report())
         self._attach_tree_scrollbars(table_frame, self.ubs_regression_tree, 0, vertical=True)
+
+    def _build_ubs_regression(self, parent: ttk.Frame) -> None:
+        panel, bar = self._build_ubs_regression_panel(parent)
+        self._build_ubs_regression_actions(bar)
+        self._build_ubs_regression_run_row(bar)
+        self._build_ubs_regression_criteria(panel)
+        self._build_ubs_regression_table(panel)
