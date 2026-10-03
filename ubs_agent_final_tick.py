@@ -367,6 +367,21 @@ def _final_tick_similarity_verdict(
     )
 
 
+def _final_tick_missing_history(
+    args: argparse.Namespace, symbol_map: dict[str, str], real_tick_variant: Variant,
+    real_tick_report: Path, real_tick_result: ScoreResult,
+) -> dict[str, object] | None:
+    """Evidencia de que la descarga de ticks dejo el reporte sin contexto."""
+    if not report_has_empty_tester_context(real_tick_result):
+        return None
+    return tester_log_no_history_metadata(
+        real_tick_report,
+        real_tick_variant,
+        symbol_map,
+        getattr(args, "symbol_suffix", ""),
+    )
+
+
 def _evaluate_final_tick_tick_report(
     memory: AgentMemory,
     args: argparse.Namespace,
@@ -408,14 +423,9 @@ def _evaluate_final_tick_tick_report(
             return False
         print(f"AVISO: no pude parsear Real Tick Final Tick candidate #{candidate_id}: {exc}")
         return record.write("parse_error")
-    no_tick_history = None
-    if report_has_empty_tester_context(real_tick_result):
-        no_tick_history = tester_log_no_history_metadata(
-            real_tick_report,
-            real_tick_variant,
-            symbol_map,
-            getattr(args, "symbol_suffix", ""),
-        )
+    no_tick_history = _final_tick_missing_history(
+        args, symbol_map, real_tick_variant, real_tick_report, real_tick_result
+    )
     if no_tick_history:
         if reconcile:
             return False
