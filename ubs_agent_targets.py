@@ -30,6 +30,7 @@ from ubs_agent_policy import (
 from ubs_agent_seeds_plan import (
     TargetDiversityLimiter,
 )
+from ubs_agent_target_types import DiverseTargetOptions
 
 
 @dataclass
@@ -502,6 +503,54 @@ def diverse_target_fallback(
     return symbol, period
 
 
+def _rerolled_diverse_target(
+    seed: Seed, asset_feedback: dict[str, float], timeframe_feedback: dict[str, float],
+    rng: random.Random, limiter: TargetDiversityLimiter, universe_symbols: tuple[str, ...],
+    aliases: dict[str, str] | None, options: DiverseTargetOptions,
+) -> tuple[str, str, str] | None:
+    last_symbol, last_period, last_policy = seed.symbol, seed.period, "exploit+tf_exploit"
+    attempts = PRODUCTION_DIVERSITY_REROLL_ATTEMPTS if options.production_mode else DIVERSITY_REROLL_ATTEMPTS
+    for attempt in range(attempts + 1):
+        symbol_choice = choose_target_symbol(
+            seed, asset_feedback, rng, universe_symbols, aliases,
+            symbol_map=options.symbol_map, disabled_symbols=options.disabled_symbols,
+            force_unseeded_universe=options.force_unseeded_universe,
+            unseeded_universe_symbols=options.unseeded_universe_symbols,
+            force_unseeded_probability=options.asset_unseeded_probability,
+            production_mode=options.production_mode, group_by_symbol=options.group_by_symbol,
+            asset_group_feedback=options.asset_group_feedback,
+            universe_feedback_probability=options.universe_feedback_probability,
+            current_target_probability=options.current_target_probability,
+        )
+        if symbol_choice is None:
+            continue
+        target_symbol, policy = symbol_choice
+        target_period, period_policy = choose_target_period(
+            seed, timeframe_feedback, rng, timeframe_universe=options.timeframe_universe,
+            force_unseeded_timeframes=options.force_unseeded_universe,
+            unseeded_timeframes=options.unseeded_timeframes,
+            force_unseeded_probability=options.timeframe_unseeded_probability,
+            production_mode=options.production_mode,
+            current_timeframe_probability=options.current_timeframe_probability,
+        )
+        last_symbol, last_period = target_symbol, target_period
+        last_policy = f"{policy}+{period_policy}"
+        if limiter.allows(target_symbol, target_period):
+            suffix = "+diversity_reroll" if attempt else ""
+            return target_symbol, target_period, f"{last_policy}{suffix}"
+    fallback = diverse_target_fallback(
+        seed, asset_feedback, timeframe_feedback, rng, limiter, universe_symbols, aliases,
+        timeframe_universe=options.timeframe_universe, symbol_map=options.symbol_map,
+        disabled_symbols=options.disabled_symbols, production_mode=options.production_mode,
+        group_by_symbol=options.group_by_symbol,
+    )
+    if fallback is not None:
+        return fallback[0], fallback[1], "diversity_fallback"
+    if options.production_mode:
+        return None
+    return last_symbol, last_period, f"{last_policy}+diversity_overflow"
+
+
 def choose_diverse_target(
     seed: Seed,
     asset_feedback: dict[str, float],
@@ -526,68 +575,14 @@ def choose_diverse_target(
     current_target_probability: float = DISCOVERY_CURRENT_TARGET_DEFAULT,
     current_timeframe_probability: float = DISCOVERY_CURRENT_TIMEFRAME_DEFAULT,
 ) -> tuple[str, str, str] | None:
-    last_symbol = seed.symbol
-    last_period = seed.period
-    last_policy = "exploit+tf_exploit"
-    reroll_attempts = PRODUCTION_DIVERSITY_REROLL_ATTEMPTS if production_mode else DIVERSITY_REROLL_ATTEMPTS
-    for attempt in range(reroll_attempts + 1):
-        symbol_choice = choose_target_symbol(
-            seed,
-            asset_feedback,
-            rng,
-            universe_symbols,
-            aliases,
-            symbol_map=symbol_map,
-            disabled_symbols=disabled_symbols,
-            force_unseeded_universe=force_unseeded_universe,
-            unseeded_universe_symbols=unseeded_universe_symbols,
-            force_unseeded_probability=asset_unseeded_probability,
-            production_mode=production_mode,
-            group_by_symbol=group_by_symbol,
-            asset_group_feedback=asset_group_feedback,
-            universe_feedback_probability=universe_feedback_probability,
-            current_target_probability=current_target_probability,
-        )
-        if symbol_choice is None:
-            continue
-        target_symbol, policy = symbol_choice
-        target_period, period_policy = choose_target_period(
-            seed,
-            timeframe_feedback,
-            rng,
-            timeframe_universe=timeframe_universe,
-            force_unseeded_timeframes=force_unseeded_universe,
-            unseeded_timeframes=unseeded_timeframes,
-            force_unseeded_probability=timeframe_unseeded_probability,
-            production_mode=production_mode,
-            current_timeframe_probability=current_timeframe_probability,
-        )
-        full_policy = f"{policy}+{period_policy}"
-        last_symbol = target_symbol
-        last_period = target_period
-        last_policy = full_policy
-        if limiter.allows(target_symbol, target_period):
-            if attempt:
-                full_policy = f"{full_policy}+diversity_reroll"
-            return target_symbol, target_period, full_policy
-
-    fallback = diverse_target_fallback(
-        seed,
-        asset_feedback,
-        timeframe_feedback,
-        rng,
-        limiter,
-        universe_symbols,
-        aliases,
-        timeframe_universe=timeframe_universe,
-        symbol_map=symbol_map,
-        disabled_symbols=disabled_symbols,
-        production_mode=production_mode,
-        group_by_symbol=group_by_symbol,
+    options = DiverseTargetOptions(
+        timeframe_universe, symbol_map, disabled_symbols, force_unseeded_universe,
+        unseeded_universe_symbols, unseeded_timeframes, asset_unseeded_probability,
+        timeframe_unseeded_probability, production_mode, group_by_symbol,
+        asset_group_feedback, universe_feedback_probability,
+        current_target_probability, current_timeframe_probability,
     )
-    if fallback is not None:
-        target_symbol, target_period = fallback
-        return target_symbol, target_period, "diversity_fallback"
-    if production_mode:
-        return None
-    return last_symbol, last_period, f"{last_policy}+diversity_overflow"
+    return _rerolled_diverse_target(
+        seed, asset_feedback, timeframe_feedback, rng, limiter,
+        universe_symbols, aliases, options,
+    )
