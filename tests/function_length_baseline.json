@@ -18,7 +18,6 @@
     "tests/test_ubs_score.py::UBSScoreTests.test_axi_normalization_keeps_cash_suffix_rules_off_futures_and_shares": 77,
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
     "ubs/prepared.py::load_prepared": 122,
-    "ubs/regression.py::rescore_regression_only": 141,
     "ubs_agent_final_tick_rescore.py::reconcile_final_tick_reports": 133,
     "ubs_agent_final_tick_rescore.py::rescore_final_tick_only": 112,
     "ubs_agent_history.py::probe_universe_history": 108,
