@@ -5,7 +5,6 @@
     "portfolio_manager/ubs_portfolio_monthly.py::_strict_monthly_candidate_variants": 100,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_repair_allocations_to_strict_monthly": 122,
     "portfolio_manager/ubs_portfolio_monthly_repair.py::_strict_monthly_safe_refill_allocations": 143,
-    "portfolio_manager/ubs_portfolio_optimize.py::optimize_portfolio": 195,
     "portfolio_manager/ubs_portfolio_phases.py::_deep_refinement_phase": 77,
     "portfolio_manager/ubs_portfolio_phases.py::_greedy_and_local_search": 84,
     "portfolio_manager/ubs_portfolio_phases.py::_relax_group_cap": 103,
