@@ -2,19 +2,16 @@
 from __future__ import annotations
 
 import argparse
-import json
-import sys
-import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
-from run_tests import RUNNING_TERMINAL_EXIT_CODE, parse_symbol_map
+from run_tests import (
+    parse_symbol_map,
+)
 from ubs.memory import AgentMemory
-from ubs.models import Variant
-from ubs.path_utils import resolve_workspace_path
-from ubs.score import ScoreConfig, ScoreResult
-from ubs.risk_profit import RiskProfitConfig
+from ubs.score import (
+    ScoreConfig,
+)
 from ubs.seeds import load_seeds
 from ubs.universe import (
     augment_aliases_with_symbol_map,
@@ -24,52 +21,20 @@ from ubs.universe import (
 )
 from ubs_agent_config import (
     BASE_DIR,
-    diag_log,
-    generation_random_stream,
 )
-from ubs_agent_evaluate import (
-    copy_accepted,
-    evaluate_variants,
-    generation_feedback_terminal_stage,
-    generation_fitness_target,
-    generation_seed_fitness_predictions,
-    select_next_generation_survivors,
-    select_survivors,
-)
-from ubs_agent_run_modes import run_standalone_mode
 from ubs_agent_policy import (
     apply_discovery_target_policy_schedule,
-    discovery_ranked_seed_selection,
     discovery_source_mix_feedback,
     discovery_target_policy_feedback,
-    production_viable_source_seeds,
-    unseeded_universe_targets,
 )
 from ubs_agent_run_config import build_run_config
 from ubs_agent_seeds_plan import (
-    TargetDiversityLimiter,
-    apply_reserved_timeframe,
     asset_group_map,
-    configured_unseeded_force_probabilities,
     disabled_symbols_file_for_account,
-    format_group_cap_summary,
     generation_source_seeds,
-    next_generation_seed_pool,
-    ranked_seed_selection,
-    reserved_timeframe_plan,
-    seed_symbol_cap_ratio,
-    seeds_from_survivors,
-    target_symbol_cap_ratio,
-    timeframe_plan_summary,
-    variant_as_next_seed,
 )
-from ubs_agent_targets import (
-    choose_diverse_target,
-)
-from ubs_agent_universe import broker_universe_symbols, target_timeframe_universe
-from ubs_agent_variants import (
-    create_variant,
-    run_backtests,
+from ubs_agent_universe import (
+    target_timeframe_universe,
 )
 
 @dataclass
@@ -95,6 +60,26 @@ class _AgentSetup:
     discovery_source_mix: object = None
     discovery_target_policy_mix: object = None
     run_id: int = 0
+
+    @property
+    def exploitable_ratio(self) -> float:
+        """Proporcion minima de seeds explotables al elegir fuente."""
+        return self.discovery_source_mix.exploitable_ratio
+
+    @property
+    def universe_feedback_probability(self) -> float:
+        """Probabilidad de volver a un activo ya conocido."""
+        return self.discovery_target_policy_mix.universe_feedback_probability
+
+    @property
+    def current_target_probability(self) -> float:
+        """Probabilidad de quedarse en el simbolo de la seed."""
+        return self.discovery_target_policy_mix.current_target_probability
+
+    @property
+    def current_timeframe_probability(self) -> float:
+        """Probabilidad de mantener el marco temporal de la seed."""
+        return self.discovery_target_policy_mix.current_timeframe_probability
 
 
 def _build_setup(

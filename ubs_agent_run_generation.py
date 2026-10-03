@@ -1,29 +1,13 @@
 """Una generacion del agente: seleccion, variantes, backtests y relevo."""
 from __future__ import annotations
 
-import argparse
-import json
-import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from run_tests import RUNNING_TERMINAL_EXIT_CODE, parse_symbol_map
-from ubs.memory import AgentMemory
 from ubs.models import Variant
-from ubs.path_utils import resolve_workspace_path
-from ubs.score import ScoreConfig, ScoreResult
-from ubs.risk_profit import RiskProfitConfig
-from ubs.seeds import load_seeds
-from ubs.universe import (
-    augment_aliases_with_symbol_map,
-    load_asset_universe,
-    load_disabled_symbols,
-    load_seed_enabled_disabled_symbols,
-)
 from ubs_agent_config import (
-    BASE_DIR,
     diag_log,
     generation_random_stream,
 )
@@ -36,24 +20,16 @@ from ubs_agent_evaluate import (
     select_next_generation_survivors,
     select_survivors,
 )
-from ubs_agent_run_modes import run_standalone_mode
 from ubs_agent_policy import (
-    apply_discovery_target_policy_schedule,
     discovery_ranked_seed_selection,
-    discovery_source_mix_feedback,
-    discovery_target_policy_feedback,
     production_viable_source_seeds,
     unseeded_universe_targets,
 )
-from ubs_agent_run_config import build_run_config
 from ubs_agent_seeds_plan import (
     TargetDiversityLimiter,
     apply_reserved_timeframe,
-    asset_group_map,
     configured_unseeded_force_probabilities,
-    disabled_symbols_file_for_account,
     format_group_cap_summary,
-    generation_source_seeds,
     next_generation_seed_pool,
     ranked_seed_selection,
     reserved_timeframe_plan,
@@ -66,7 +42,9 @@ from ubs_agent_seeds_plan import (
 from ubs_agent_targets import (
     choose_diverse_target,
 )
-from ubs_agent_universe import broker_universe_symbols, target_timeframe_universe
+from ubs_agent_universe import (
+    broker_universe_symbols,
+)
 from ubs_agent_variants import (
     create_variant,
     run_backtests,
@@ -166,7 +144,7 @@ def _select_seeds(
             disabled_symbols=setup.disabled_symbols,
             group_by_symbol=setup.group_by_symbol,
             fitness_feedback=feedback.fitness,
-            exploitable_min_ratio=setup.discovery_source_mix.exploitable_ratio,
+            exploitable_min_ratio=setup.exploitable_ratio,
         )
     return ranked_seed_selection(
         selection_pool,
@@ -259,7 +237,6 @@ def _choose_target(
 ):
     """Elige simbolo, marco y politica del siguiente target."""
     args = setup.args
-    policy_mix = setup.discovery_target_policy_mix
     return choose_diverse_target(
         seed,
         feedback.asset,
@@ -279,9 +256,9 @@ def _choose_target(
         production_mode=not args.force_unseeded_universe,
         group_by_symbol=setup.group_by_symbol,
         asset_group_feedback=feedback.asset_group,
-        universe_feedback_probability=policy_mix.universe_feedback_probability,
-        current_target_probability=policy_mix.current_target_probability,
-        current_timeframe_probability=policy_mix.current_timeframe_probability,
+        universe_feedback_probability=setup.universe_feedback_probability,
+        current_target_probability=setup.current_target_probability,
+        current_timeframe_probability=setup.current_timeframe_probability,
     )
 
 
