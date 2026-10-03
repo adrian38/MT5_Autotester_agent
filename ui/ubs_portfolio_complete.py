@@ -59,6 +59,225 @@ class UBSPortfolioCompleteMixin:
             daemon=True,
         ).start()
 
+    @staticmethod
+    def _completion_required_rows(members: list[dict[str, object]]) -> list[dict[str, object]]:
+        """Filas de los miembros actuales, que la reparacion debe conservar."""
+        return [
+            {
+                "candidate_id": member.get("candidate_id"),
+                "set_path": member.get("set_path") or member.get("set_id"),
+                "symbol": member.get("symbol"),
+                "target_symbol": member.get("symbol"),
+                "period": member.get("timeframe") or member.get("period"),
+                "family": "",
+                "is_report_path": member.get("is_report_path"),
+                "oos_report_path": member.get("oos_report_path"),
+            }
+            for member in members
+        ]
+
+    def _completion_candidate_rows(
+        self, inputs: dict[str, object], is_monthly: bool
+    ) -> tuple[list[dict[str, object]], list[str], list[str], set[str]]:
+        """Candidatas disponibles tras los filtros guardados del portafolio."""
+        rows = self._final_tick_passed_candidates_all_accounts(include_quarantined=is_monthly)
+        if bool(inputs.get("require_3_positive_months_6m")):
+            rows, month_warnings = filter_rows_by_recent_positive_months(
+                rows,
+                min_positive_months=3,
+                window_months=6,
+            )
+        else:
+            month_warnings = []
+        grid_warnings: list[str] = []
+        if bool(inputs.get("grid_off")):
+            rows, grid_warnings = filter_rows_grid_off(rows)
+        allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
+        if allowed_groups:
+            rows = [
+                row for row in rows
+                if self._portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
+            ]
+        return rows, month_warnings, grid_warnings, allowed_groups
+
+    def _completion_candidate_sets(
+        self, rows: list[dict[str, object]], used: list, allowed_groups: set[str]
+    ) -> tuple[list, list[str]]:
+        """Estrategias candidatas reconstruidas y filtradas por grupo."""
+        candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
+        if allowed_groups:
+            candidate_sets = [
+                strategy for strategy in candidate_sets
+                if self._portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
+            ]
+        return candidate_sets, load_warnings
+
+    def _completion_used_sets(
+        self, inputs: dict[str, object], is_monthly: bool, portfolio_type, portfolio_id: int
+    ) -> list:
+        """Sets ya comprometidos en otros portafolios de la misma variante."""
+        if is_monthly or not bool(inputs.get("exclude_used_sets", True)):
+            return []
+        return self._used_set_paths_all_accounts(
+            portfolio_type,
+            exclude_portfolio_id=portfolio_id,
+        )
+
+    @staticmethod
+    def _completion_margin_balance(inputs: dict[str, object]) -> bool:
+        """Si la variante guardada pide validar margen con el broker."""
+        return bool(
+            inputs.get("validate_margin")
+            or inputs.get("validate_roboforex_margin")
+            or inputs.get("validate_ttp_margin")
+        )
+
+    def _completion_optimize(
+        self, inputs: dict[str, object], portfolio_type, raw_sets: list,
+        required_set_ids: list[str], required_initial_allocations: dict[str, int],
+        existing_curves, target_strategies: int,
+    ):
+        """Optimiza conservando las estrategias actuales y sus unidades."""
+        use_correlation = inputs.get("use_correlation", True)
+        validate_margin = self._completion_margin_balance(inputs)
+        return optimize_portfolio(
+            raw_sets=raw_sets,
+            capital=float(inputs["capital"]),
+            valley_dd_pct=float(inputs["valley_dd_pct"]),
+            point_dd_pct=float(inputs["point_dd_pct"]),
+            portfolio_type=portfolio_type,
+            min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
+            top_k_per_symbol=int(inputs["top_k_per_symbol"]),
+            max_total_candidates=int(inputs["max_total_candidates"]),
+            max_units_per_set=inputs.get("max_units_per_set"),  # type: ignore[arg-type]
+            max_total_units=inputs.get("max_total_units"),  # type: ignore[arg-type]
+            max_units_per_symbol=inputs.get("max_units_per_symbol"),  # type: ignore[arg-type]
+            max_sets_per_symbol=inputs.get("max_sets_per_symbol"),  # type: ignore[arg-type]
+            run_local_search=bool(inputs.get("run_local_search", True)),
+            max_pair_corr=inputs.get("max_pair_corr") if use_correlation else None,  # type: ignore[arg-type]
+            max_downside_corr=inputs.get("max_downside_corr") if use_correlation else None,  # type: ignore[arg-type]
+            max_dd_overlap=inputs.get("max_dd_overlap") if use_correlation else None,  # type: ignore[arg-type]
+            existing_portfolio_curves=existing_curves,
+            max_portfolio_corr=inputs.get("max_portfolio_corr") if use_correlation else None,  # type: ignore[arg-type]
+            required_set_ids=required_set_ids,
+            minimum_active_strategies=target_strategies,
+            maximum_active_strategies=target_strategies,
+            required_initial_allocations=required_initial_allocations,
+            preserve_required_allocations=True,
+            dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
+            search_restarts=int(inputs.get("search_restarts") or 0),
+            margin_balance=float(inputs["capital"]) if validate_margin else None,
+            max_margin_pct=float(inputs.get("max_margin_pct") or 100.0) if validate_margin else None,
+            margin_profile=str(inputs.get("margin_profile") or "roboforex"),
+            stock_leverage=20.0,
+            default_leverage=500.0,
+            stock_contract_size=100.0,
+            default_contract_size=1.0,
+            max_daily_dd=inputs.get("max_daily_dd"),  # type: ignore[arg-type]
+            enforce_point_dd=bool(inputs.get("enforce_point_dd", True)),
+            daily_dd_full_history=bool(inputs.get("daily_dd_full_history", False)),
+            use_deep_refinement=bool(inputs.get("deep_optimization")),
+        )
+
+    @staticmethod
+    def _completion_seasonal_coverage(result, raw_sets: list) -> dict:
+        """Cobertura mensual de cada estrategia asignada en el resultado."""
+        raw_by_id = {strategy.set_id: strategy for strategy in raw_sets}
+        return {
+            allocation.set_id: {
+                "target_month": raw_by_id[allocation.set_id].target_month,
+                "years": list(raw_by_id[allocation.set_id].month_years),
+                "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
+                "year_count": len(raw_by_id[allocation.set_id].month_years),
+                "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
+                "trades": raw_by_id[allocation.set_id].trades_2020_2026,
+            }
+            for allocation in result.allocations
+            if allocation.set_id in raw_by_id
+            and raw_by_id[allocation.set_id].target_month is not None
+        }
+
+    def _completion_strict_validation(self, result, full_sets: list, inputs: dict[str, object]):
+        """Pasa la propuesta por la auditoria mensual estricta si se pidio."""
+        validated = self._filter_strict_monthly_valid_proposals(
+            full_sets,
+            [
+                {
+                    "key": "complete",
+                    "label": "Completar portafolio",
+                    "result": result,
+                    "inputs": inputs,
+                }
+            ],
+            inputs,
+        )
+        return validated[0]["result"]
+
+    def _complete_saved_ubs_portfolio_plan(
+        self, portfolio_id: int, portfolio: dict[str, object],
+        members: list[dict[str, object]], target_strategies: int,
+    ):
+        """Propuesta que completa el portafolio guardado sin tocar lo que ya tiene."""
+        inputs = self._saved_portfolio_inputs(portfolio)  # type: ignore[arg-type]
+        portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
+        inputs["portfolio_type"] = portfolio_type.value
+        is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
+        used = self._completion_used_sets(inputs, is_monthly, portfolio_type, portfolio_id)
+        required_rows = self._completion_required_rows(members)
+        required_sets, required_warnings = load_robust_sets_from_rows(required_rows, [])
+        if len(required_sets) != len(required_rows):
+            raise ValueError("No se pudieron reconstruir todas las estrategias que deben conservarse.")
+        rows, month_warnings, grid_warnings, allowed_groups = self._completion_candidate_rows(
+            inputs, is_monthly
+        )
+        candidate_sets, load_warnings = self._completion_candidate_sets(rows, used, allowed_groups)
+        full_sets_for_strict_validation = list(required_sets) + list(candidate_sets)
+        required_sets, required_scope_warnings = self._scope_portfolio_sets(required_sets, inputs)
+        candidate_sets, candidate_scope_warnings = self._scope_portfolio_sets(candidate_sets, inputs)
+        # Existing members are the fixed base of a repair. They may now be
+        # locked by a newer portfolio or have a changed pipeline status;
+        # neither condition is allowed to evict them implicitly. Only the
+        # replacement candidates pass through today's eligibility gates.
+        raw_by_id = {strategy.set_id: strategy for strategy in candidate_sets}
+        raw_by_id.update({strategy.set_id: strategy for strategy in required_sets})
+        raw_sets = list(raw_by_id.values())
+        saved_units = {
+            str(member.get("set_path") or member.get("set_id") or ""): int(member.get("units") or 0)
+            for member in members
+        }
+        result = self._completion_optimize(
+            inputs,
+            portfolio_type,
+            raw_sets,
+            [strategy.set_id for strategy in required_sets],
+            {strategy.set_id: saved_units[strategy.set_id] for strategy in required_sets},
+            self._saved_portfolio_curves_all_accounts(
+                portfolio_type,
+                exclude_portfolio_id=portfolio_id,
+                portfolio_scope="monthly" if is_monthly else "full_history",
+                target_month=int(inputs.get("target_month") or 0) if is_monthly else None,
+            ),
+            target_strategies,
+        )
+        result.seasonal_coverage = self._completion_seasonal_coverage(result, raw_sets)
+        if bool(inputs.get("strict_yearly_month_validation")):
+            result = self._completion_strict_validation(
+                result, full_sets_for_strict_validation, inputs
+            )
+        result.warnings[:0] = (
+            required_warnings
+            + required_scope_warnings
+            + month_warnings
+            + grid_warnings
+            + load_warnings
+            + candidate_scope_warnings
+        )
+        if result.active_strategies < target_strategies:
+            raise ValueError(
+                f"No existe una sustituta compatible: quedaron {result.active_strategies}/{target_strategies} estrategias."
+            )
+        return result, inputs
+
     def _complete_saved_ubs_portfolio_worker(
         self,
         portfolio_id: int,
@@ -67,167 +286,9 @@ class UBSPortfolioCompleteMixin:
         target_strategies: int,
     ) -> None:
         try:
-            inputs = self._saved_portfolio_inputs(portfolio)  # type: ignore[arg-type]
-            portfolio_type = self._portfolio_type_from_label(inputs["portfolio_type"])
-            inputs["portfolio_type"] = portfolio_type.value
-            is_monthly = str(inputs.get("portfolio_scope") or "full_history") == "monthly"
-            rows = self._final_tick_passed_candidates_all_accounts(
-                include_quarantined=is_monthly,
+            result, inputs = self._complete_saved_ubs_portfolio_plan(
+                portfolio_id, portfolio, members, target_strategies
             )
-            used = (
-                []
-                if is_monthly or not bool(inputs.get("exclude_used_sets", True))
-                else self._used_set_paths_all_accounts(
-                    portfolio_type,
-                    exclude_portfolio_id=portfolio_id,
-                )
-            )
-            required_rows = [
-                {
-                    "candidate_id": member.get("candidate_id"),
-                    "set_path": member.get("set_path") or member.get("set_id"),
-                    "symbol": member.get("symbol"),
-                    "target_symbol": member.get("symbol"),
-                    "period": member.get("timeframe") or member.get("period"),
-                    "family": "",
-                    "is_report_path": member.get("is_report_path"),
-                    "oos_report_path": member.get("oos_report_path"),
-                }
-                for member in members
-            ]
-            required_sets, required_warnings = load_robust_sets_from_rows(required_rows, [])
-            if len(required_sets) != len(required_rows):
-                raise ValueError("No se pudieron reconstruir todas las estrategias que deben conservarse.")
-            if bool(inputs.get("require_3_positive_months_6m")):
-                rows, month_warnings = filter_rows_by_recent_positive_months(
-                    rows,
-                    min_positive_months=3,
-                    window_months=6,
-                )
-            else:
-                month_warnings = []
-            grid_warnings: list[str] = []
-            if bool(inputs.get("grid_off")):
-                rows, grid_warnings = filter_rows_grid_off(rows)
-            allowed_groups = {str(group) for group in (inputs.get("allowed_asset_groups") or [])}
-            if allowed_groups:
-                rows = [
-                    row for row in rows
-                    if self._portfolio_group_key(str(row.get("target_symbol") or row.get("symbol") or "")) in allowed_groups
-                ]
-            candidate_sets, load_warnings = load_robust_sets_from_rows(rows, used)
-            if allowed_groups:
-                candidate_sets = [
-                    strategy for strategy in candidate_sets
-                    if self._portfolio_group_key(str(getattr(strategy, "symbol", ""))) in allowed_groups
-                ]
-            full_sets_for_strict_validation = list(required_sets) + list(candidate_sets)
-            required_sets, required_scope_warnings = self._scope_portfolio_sets(required_sets, inputs)
-            candidate_sets, candidate_scope_warnings = self._scope_portfolio_sets(candidate_sets, inputs)
-            # Existing members are the fixed base of a repair. They may now be
-            # locked by a newer portfolio or have a changed pipeline status;
-            # neither condition is allowed to evict them implicitly. Only the
-            # replacement candidates pass through today's eligibility gates.
-            raw_by_id = {strategy.set_id: strategy for strategy in candidate_sets}
-            raw_by_id.update({strategy.set_id: strategy for strategy in required_sets})
-            raw_sets = list(raw_by_id.values())
-            required_set_ids = [strategy.set_id for strategy in required_sets]
-            saved_units = {
-                str(member.get("set_path") or member.get("set_id") or ""): int(member.get("units") or 0)
-                for member in members
-            }
-            required_initial_allocations = {
-                strategy.set_id: saved_units[strategy.set_id]
-                for strategy in required_sets
-            }
-            existing_curves = self._saved_portfolio_curves_all_accounts(
-                portfolio_type,
-                exclude_portfolio_id=portfolio_id,
-                portfolio_scope="monthly" if is_monthly else "full_history",
-                target_month=int(inputs.get("target_month") or 0) if is_monthly else None,
-            )
-            result = optimize_portfolio(
-                raw_sets=raw_sets,
-                capital=float(inputs["capital"]),
-                valley_dd_pct=float(inputs["valley_dd_pct"]),
-                point_dd_pct=float(inputs["point_dd_pct"]),
-                portfolio_type=portfolio_type,
-                min_trades_2020_2026=int(inputs["min_trades_2020_2026"]),
-                top_k_per_symbol=int(inputs["top_k_per_symbol"]),
-                max_total_candidates=int(inputs["max_total_candidates"]),
-                max_units_per_set=inputs.get("max_units_per_set"),  # type: ignore[arg-type]
-                max_total_units=inputs.get("max_total_units"),  # type: ignore[arg-type]
-                max_units_per_symbol=inputs.get("max_units_per_symbol"),  # type: ignore[arg-type]
-                max_sets_per_symbol=inputs.get("max_sets_per_symbol"),  # type: ignore[arg-type]
-                run_local_search=bool(inputs.get("run_local_search", True)),
-                max_pair_corr=inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                max_downside_corr=inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                max_dd_overlap=inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                existing_portfolio_curves=existing_curves,
-                max_portfolio_corr=inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,  # type: ignore[arg-type]
-                required_set_ids=required_set_ids,
-                minimum_active_strategies=target_strategies,
-                maximum_active_strategies=target_strategies,
-                required_initial_allocations=required_initial_allocations,
-                preserve_required_allocations=True,
-                dd_reserve_pct=float(inputs.get("dd_reserve_pct") or 0),
-                search_restarts=int(inputs.get("search_restarts") or 0),
-                margin_balance=float(inputs["capital"])
-                if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
-                else None,
-                max_margin_pct=float(inputs.get("max_margin_pct") or 100.0)
-                if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
-                else None,
-                margin_profile=str(inputs.get("margin_profile") or "roboforex"),
-                stock_leverage=20.0,
-                default_leverage=500.0,
-                stock_contract_size=100.0,
-                default_contract_size=1.0,
-                max_daily_dd=inputs.get("max_daily_dd"),  # type: ignore[arg-type]
-                enforce_point_dd=bool(inputs.get("enforce_point_dd", True)),
-                daily_dd_full_history=bool(inputs.get("daily_dd_full_history", False)),
-                use_deep_refinement=bool(inputs.get("deep_optimization")),
-            )
-            raw_by_id = {strategy.set_id: strategy for strategy in raw_sets}
-            result.seasonal_coverage = {
-                allocation.set_id: {
-                    "target_month": raw_by_id[allocation.set_id].target_month,
-                    "years": list(raw_by_id[allocation.set_id].month_years),
-                    "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
-                    "year_count": len(raw_by_id[allocation.set_id].month_years),
-                    "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
-                    "trades": raw_by_id[allocation.set_id].trades_2020_2026,
-                }
-                for allocation in result.allocations
-                if allocation.set_id in raw_by_id
-                and raw_by_id[allocation.set_id].target_month is not None
-            }
-            if bool(inputs.get("strict_yearly_month_validation")):
-                validated = self._filter_strict_monthly_valid_proposals(
-                    full_sets_for_strict_validation,
-                    [
-                        {
-                            "key": "complete",
-                            "label": "Completar portafolio",
-                            "result": result,
-                            "inputs": inputs,
-                        }
-                    ],
-                    inputs,
-                )
-                result = validated[0]["result"]  # type: ignore[assignment]
-            result.warnings[:0] = (
-                required_warnings
-                + required_scope_warnings
-                + month_warnings
-                + grid_warnings
-                + load_warnings
-                + candidate_scope_warnings
-            )
-            if result.active_strategies < target_strategies:
-                raise ValueError(
-                    f"No existe una sustituta compatible: quedaron {result.active_strategies}/{target_strategies} estrategias."
-                )
         except Exception as exc:
             self.after(
                 0,
