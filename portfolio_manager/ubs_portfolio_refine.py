@@ -1,6 +1,7 @@
 """Refinado profundo de las asignaciones ya construidas."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 from .ubs_portfolio import (
@@ -25,216 +26,253 @@ from .ubs_portfolio_utils import (
 )
 
 
-def _deep_refine_allocations(
-    sets: list[RobustStrategySet],
-    allocations: dict[str, int],
-    current: PortfolioEvaluation,
-    *,
-    minimum_active_strategies: int | None,
-    max_units_per_set: int | None,
-    max_total_units: int | None,
-    max_units_per_symbol: int | None,
-    max_sets_per_symbol: int | None,
-    max_sets_per_group: int | None,
-    max_units_per_group_pct: float | None,
-    group_unit_cap_bootstrap: int,
-    max_pair_corr: float | None,
-    max_downside_corr: float | None,
-    max_dd_overlap: float | None,
-    existing_portfolio_curves: Sequence[Sequence[float]] | None,
-    max_portfolio_corr: float | None,
-    margin_balance: float | None,
-    max_margin_pct: float | None,
-    margin_profile: str | None,
-    stock_leverage: float,
-    default_leverage: float,
-    stock_contract_size: float,
-    default_contract_size: float,
-    max_daily_dd: float | None,
-    enforce_point_dd: bool,
-    daily_dd_full_history: bool,
-    max_iterations: int = 160,
-) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
-    working_sets = list({strategy.set_id: strategy for strategy in sets}.values())
-    allocations = {
-        strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
-        for strategy in working_sets
-    }
-    decision_log: list[OptimizationDecision] = []
-    attempts = 0
+@dataclass
+class _DeepRefineConfig:
+    """Limites con los que la optimizacion profunda puede mover unidades."""
 
-    for iteration in range(1, max_iterations + 1):
-        best_move: dict[str, object] | None = None
-        ordered_targets = sorted(
-            working_sets,
-            key=lambda item: score_set_for_portfolio(item, max(int(allocations.get(item.set_id, 0)), 1)),
-            reverse=True,
+    minimum_active_strategies: int | None
+    max_units_per_set: int | None
+    max_total_units: int | None
+    max_units_per_symbol: int | None
+    max_sets_per_symbol: int | None
+    max_sets_per_group: int | None
+    max_units_per_group_pct: float | None
+    group_unit_cap_bootstrap: int
+    max_pair_corr: float | None
+    max_downside_corr: float | None
+    max_dd_overlap: float | None
+    existing_portfolio_curves: Sequence[Sequence[float]] | None
+    max_portfolio_corr: float | None
+    margin_balance: float | None
+    max_margin_pct: float | None
+    margin_profile: str | None
+    stock_leverage: float
+    default_leverage: float
+    stock_contract_size: float
+    default_contract_size: float
+    max_daily_dd: float | None
+    enforce_point_dd: bool
+    daily_dd_full_history: bool
+    max_iterations: int = 160
+
+
+class _DeepRefiner:
+    """Busca altas y permutas de unidades que mejoren el beneficio sin romper limites."""
+
+    def __init__(
+        self, sets: list[RobustStrategySet], allocations: dict[str, int],
+        current: PortfolioEvaluation, config: _DeepRefineConfig,
+    ) -> None:
+        self.config = config
+        self.working_sets = list({strategy.set_id: strategy for strategy in sets}.values())
+        self.allocations = {
+            strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
+            for strategy in self.working_sets
+        }
+        self.current = current
+        self.decision_log: list[OptimizationDecision] = []
+        self.attempts = 0
+        self.best_move: dict[str, object] | None = None
+
+    def _evaluate(self, allocations: dict[str, int]) -> PortfolioEvaluation:
+        """Evalua una asignacion con los objetivos de DD de la cartera actual."""
+        config = self.config
+        return evaluate_portfolio(
+            self.working_sets,
+            allocations,
+            self.current.target_valley_dd,
+            self.current.target_point_dd,
+            config.max_daily_dd,
+            config.enforce_point_dd,
+            config.daily_dd_full_history,
         )
 
-        for target in ordered_targets:
-            attempts += 1
-            if can_add_unit(
-                target_set=target,
-                sets=working_sets,
-                allocations=allocations,
-                max_units_per_set=max_units_per_set,
-                max_total_units=max_total_units,
-                max_units_per_symbol=max_units_per_symbol,
-                max_sets_per_symbol=max_sets_per_symbol,
-                max_units_per_group_pct=max_units_per_group_pct,
-                max_sets_per_group=max_sets_per_group,
-                group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-                margin_balance=margin_balance,
-                max_margin_pct=max_margin_pct,
-                margin_profile=margin_profile,
-                stock_leverage=stock_leverage,
-                default_leverage=default_leverage,
-                stock_contract_size=stock_contract_size,
-                default_contract_size=default_contract_size,
-            ):
-                if allocations.get(target.set_id, 0) <= 0:
-                    rejected_by_corr, _reason = violates_correlation_limits(
-                        target,
-                        working_sets,
-                        allocations,
-                        max_pair_corr,
-                        max_downside_corr,
-                        max_dd_overlap,
-                    )
-                    if rejected_by_corr:
-                        continue
-                temp_allocations = allocations.copy()
-                temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
-                temp = evaluate_portfolio(
-                    working_sets,
-                    temp_allocations,
-                    current.target_valley_dd,
-                    current.target_point_dd,
-                    max_daily_dd,
-                    enforce_point_dd,
-                    daily_dd_full_history,
-                )
-                gain = temp.total_net_profit - current.total_net_profit
-                if (
-                    gain > 1e-9
-                    and not _evaluation_violates_dd_limits(temp)
-                    and _portfolio_corr_allowed(temp, existing_portfolio_curves, max_portfolio_corr)
-                    and (best_move is None or gain > float(best_move["gain"]))
-                ):
-                    best_move = {
-                        "action": "deep_add_unit",
-                        "from_set": None,
-                        "to_set": target,
-                        "allocations": temp_allocations,
-                        "evaluation": temp,
-                        "gain": gain,
-                    }
+    def _correlation_rejected(self, target: RobustStrategySet, allocations: dict[str, int]) -> bool:
+        """Correlacion de una estrategia que entraria nueva en la cartera."""
+        config = self.config
+        rejected_by_corr, _reason = violates_correlation_limits(
+            target,
+            self.working_sets,
+            allocations,
+            config.max_pair_corr,
+            config.max_downside_corr,
+            config.max_dd_overlap,
+        )
+        return rejected_by_corr
 
+    def _consider(
+        self, action: str, from_set: RobustStrategySet | None, to_set: RobustStrategySet,
+        temp_allocations: dict[str, int], temp: PortfolioEvaluation,
+    ) -> None:
+        """Guarda el movimiento si gana mas que el mejor encontrado hasta ahora."""
+        config = self.config
+        gain = temp.total_net_profit - self.current.total_net_profit
+        if (
+            gain > 1e-9
+            and not _evaluation_violates_dd_limits(temp)
+            and _portfolio_corr_allowed(temp, config.existing_portfolio_curves, config.max_portfolio_corr)
+            and (self.best_move is None or gain > float(self.best_move["gain"]))
+        ):
+            self.best_move = {
+                "action": action,
+                "from_set": from_set,
+                "to_set": to_set,
+                "allocations": temp_allocations,
+                "evaluation": temp,
+                "gain": gain,
+            }
+
+    def _can_add_unit(self, target: RobustStrategySet) -> bool:
+        """Si cabe una unidad mas de esta estrategia dentro de los cupos."""
+        config = self.config
+        return can_add_unit(
+            target_set=target,
+            sets=self.working_sets,
+            allocations=self.allocations,
+            max_units_per_set=config.max_units_per_set,
+            max_total_units=config.max_total_units,
+            max_units_per_symbol=config.max_units_per_symbol,
+            max_sets_per_symbol=config.max_sets_per_symbol,
+            max_units_per_group_pct=config.max_units_per_group_pct,
+            max_sets_per_group=config.max_sets_per_group,
+            group_unit_cap_bootstrap=config.group_unit_cap_bootstrap,
+            margin_balance=config.margin_balance,
+            max_margin_pct=config.max_margin_pct,
+            margin_profile=config.margin_profile,
+            stock_leverage=config.stock_leverage,
+            default_leverage=config.default_leverage,
+            stock_contract_size=config.stock_contract_size,
+            default_contract_size=config.default_contract_size,
+        )
+
+    def _try_add(self, target: RobustStrategySet) -> None:
+        """Prueba a anadir una unidad de la estrategia objetivo."""
+        if not self._can_add_unit(target):
+            return
+        if self.allocations.get(target.set_id, 0) <= 0 and self._correlation_rejected(
+            target, self.allocations
+        ):
+            return
+        temp_allocations = self.allocations.copy()
+        temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
+        self._consider(
+            "deep_add_unit", None, target, temp_allocations, self._evaluate(temp_allocations)
+        )
+
+    def _swap_allowed(self, target: RobustStrategySet, temp_allocations: dict[str, int]) -> bool:
+        """Comprueba cupos, minimo de activas y correlacion de la permuta."""
+        config = self.config
+        if (
+            config.minimum_active_strategies is not None
+            and _portfolio_active_count(temp_allocations) < config.minimum_active_strategies
+        ):
+            return False
+        if not _allocations_respect_constraints(
+            self.working_sets,
+            temp_allocations,
+            config.max_units_per_set,
+            config.max_total_units,
+            config.max_units_per_symbol,
+            config.max_sets_per_symbol,
+            config.max_sets_per_group,
+            config.margin_balance,
+            config.max_margin_pct,
+            config.margin_profile,
+            config.stock_leverage,
+            config.default_leverage,
+            config.stock_contract_size,
+            config.default_contract_size,
+        ):
+            return False
+        if not _target_group_units_pct_allowed(
+            target,
+            self.working_sets,
+            temp_allocations,
+            config.max_units_per_group_pct,
+            config.group_unit_cap_bootstrap,
+        ):
+            return False
+        if self.allocations.get(target.set_id, 0) <= 0:
+            corr_allocations = temp_allocations.copy()
+            corr_allocations[target.set_id] = 0
+            if self._correlation_rejected(target, corr_allocations):
+                return False
+        return True
+
+    def _try_swap(self, target: RobustStrategySet, source: RobustStrategySet) -> None:
+        """Prueba a mover una unidad de la estrategia origen a la objetivo."""
+        temp_allocations = self.allocations.copy()
+        temp_allocations[source.set_id] -= 1
+        temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
+        if not self._swap_allowed(target, temp_allocations):
+            return
+        self._consider(
+            "deep_swap_unit", source, target, temp_allocations, self._evaluate(temp_allocations)
+        )
+
+    def _scan(self) -> None:
+        """Recorre las estrategias por atractivo y busca el mejor movimiento."""
+        self.best_move = None
+        ordered_targets = sorted(
+            self.working_sets,
+            key=lambda item: score_set_for_portfolio(item, max(int(self.allocations.get(item.set_id, 0)), 1)),
+            reverse=True,
+        )
+        for target in ordered_targets:
+            self.attempts += 1
+            self._try_add(target)
             active_sources = [
-                source for source in working_sets if allocations.get(source.set_id, 0) > 0
+                source for source in self.working_sets if self.allocations.get(source.set_id, 0) > 0
             ]
             for source in active_sources:
                 if source.set_id == target.set_id:
                     continue
-                attempts += 1
-                temp_allocations = allocations.copy()
-                temp_allocations[source.set_id] -= 1
-                temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
-                if (
-                    minimum_active_strategies is not None
-                    and _portfolio_active_count(temp_allocations) < minimum_active_strategies
-                ):
-                    continue
-                if not _allocations_respect_constraints(
-                    working_sets,
-                    temp_allocations,
-                    max_units_per_set,
-                    max_total_units,
-                    max_units_per_symbol,
-                    max_sets_per_symbol,
-                    max_sets_per_group,
-                    margin_balance,
-                    max_margin_pct,
-                    margin_profile,
-                    stock_leverage,
-                    default_leverage,
-                    stock_contract_size,
-                    default_contract_size,
-                ):
-                    continue
-                if not _target_group_units_pct_allowed(
-                    target,
-                    working_sets,
-                    temp_allocations,
-                    max_units_per_group_pct,
-                    group_unit_cap_bootstrap,
-                ):
-                    continue
-                if allocations.get(target.set_id, 0) <= 0:
-                    corr_allocations = temp_allocations.copy()
-                    corr_allocations[target.set_id] = 0
-                    rejected_by_corr, _reason = violates_correlation_limits(
-                        target,
-                        working_sets,
-                        corr_allocations,
-                        max_pair_corr,
-                        max_downside_corr,
-                        max_dd_overlap,
-                    )
-                    if rejected_by_corr:
-                        continue
-                temp = evaluate_portfolio(
-                    working_sets,
-                    temp_allocations,
-                    current.target_valley_dd,
-                    current.target_point_dd,
-                    max_daily_dd,
-                    enforce_point_dd,
-                    daily_dd_full_history,
-                )
-                gain = temp.total_net_profit - current.total_net_profit
-                if (
-                    gain > 1e-9
-                    and not _evaluation_violates_dd_limits(temp)
-                    and _portfolio_corr_allowed(temp, existing_portfolio_curves, max_portfolio_corr)
-                    and (best_move is None or gain > float(best_move["gain"]))
-                ):
-                    best_move = {
-                        "action": "deep_swap_unit",
-                        "from_set": source,
-                        "to_set": target,
-                        "allocations": temp_allocations,
-                        "evaluation": temp,
-                        "gain": gain,
-                    }
+                self.attempts += 1
+                self._try_swap(target, source)
 
-        if best_move is None:
-            break
-
-        previous = current
+    def _apply_best_move(self, iteration: int) -> None:
+        """Aplica el movimiento elegido y lo anota en la bitacora."""
+        best_move = self.best_move
+        assert best_move is not None
+        previous = self.current
         from_set = best_move["from_set"]
         to_set = best_move["to_set"]
         assert to_set is not None and isinstance(to_set, RobustStrategySet)
-        allocations = best_move["allocations"]  # type: ignore[assignment]
-        current = best_move["evaluation"]  # type: ignore[assignment]
-        decision_log.append(
+        self.allocations = best_move["allocations"]  # type: ignore[assignment]
+        self.current = best_move["evaluation"]  # type: ignore[assignment]
+        self.decision_log.append(
             OptimizationDecision(
                 step=iteration,
                 action=str(best_move["action"]),
                 set_id=to_set.set_id,
                 from_set_id=from_set.set_id if isinstance(from_set, RobustStrategySet) else None,
                 to_set_id=to_set.set_id,
-                gain=current.total_net_profit - previous.total_net_profit,
-                valley_cost=current.valley_dd - previous.valley_dd,
-                point_cost=current.point_dd - previous.point_dd,
+                gain=self.current.total_net_profit - previous.total_net_profit,
+                valley_cost=self.current.valley_dd - previous.valley_dd,
+                point_cost=self.current.point_dd - previous.point_dd,
                 score=float(best_move["gain"]),
-                portfolio_net_profit_after=current.total_net_profit,
-                portfolio_valley_dd_after=current.valley_dd,
-                portfolio_point_dd_after=current.point_dd,
+                portfolio_net_profit_after=self.current.total_net_profit,
+                portfolio_valley_dd_after=self.current.valley_dd,
+                portfolio_point_dd_after=self.current.point_dd,
                 reason="Optimizacion profunda: movimiento validado contra DD, margen y correlacion",
             )
         )
 
-    return allocations, current, decision_log, attempts
+    def run(self) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
+        """Itera hasta que ningun movimiento mejore el beneficio."""
+        for iteration in range(1, self.config.max_iterations + 1):
+            self._scan()
+            if self.best_move is None:
+                break
+            self._apply_best_move(iteration)
+        return self.allocations, self.current, self.decision_log, self.attempts
 
 
+def _deep_refine_allocations(
+    sets: list[RobustStrategySet],
+    allocations: dict[str, int],
+    current: PortfolioEvaluation,
+    **limits: object,
+) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
+    """Mejora el beneficio con altas y permutas de unidades ya validadas."""
+    return _DeepRefiner(sets, allocations, current, _DeepRefineConfig(**limits)).run()
