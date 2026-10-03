@@ -168,6 +168,104 @@ class AppProcessMixin:
         code = self.process.wait()
         self.output_queue.put(("DONE", code))
 
+    def _finish_progress_state(self) -> None:
+        """Deja la barra y el estado en su posicion final del proceso."""
+        self.running_text.set("Sin proceso activo")
+        self.engine_status_text.set("Engine Ready")
+        self._progress_running = False
+        try:
+            self.progress_bar.stop()
+        except Exception:
+            pass
+
+    def _finish_stopped_by_user(self, code: int, current_pct: int) -> None:
+        """Cierre de un proceso que detuvo el usuario."""
+        self._set_progress_color("danger")
+        self.status_text.set("Proceso detenido")
+        self._append_console(f"\nProceso detenido por el usuario. Codigo: {code}\n", tag="error")
+        self.active_task_text.set("Detenido")
+        self.active_task_detail.set(f"Detenido en {current_pct}%")
+        self.stop_requested = False
+        self._refresh_all()
+
+    def _finish_process_report(self, code: int, current_pct: int) -> None:
+        """Estado, consola y terminal tras terminar un proceso."""
+        if code == 0:
+            self._set_progress_color("accent")
+            self._progress_target = 100.0
+            try:
+                self.progress_var.set(100.0)
+            except Exception:
+                pass
+            self.active_task_text.set("Finalizado")
+            self.active_task_detail.set("100%")
+        else:
+            self._set_progress_color("danger")
+            self.active_task_text.set("Error")
+            self.active_task_detail.set(f"Fallo en {current_pct}%")
+        self.status_text.set(f"Proceso terminado con codigo {code}")
+        self._append_console(
+            f"\nProceso terminado con codigo {code}\n", tag="info" if code == 0 else "error"
+        )
+        if hasattr(self, "term_status_text"):
+            self.term_status_text.set(f"Process finished with code {code}")
+            self.term_status_icon.configure(fg=COLORS["log_info"] if code == 0 else COLORS["log_error"])
+            self.idle_label.configure(text="IDLE")
+        self._refresh_all()
+
+    def _auto_followup_started(self, script_name: str, script_args: list[str], code: int) -> bool:
+        """Lanza la siguiente etapa automatica, si alguna corresponde."""
+        if code != 0:
+            return False
+        for hook in (
+            "_maybe_auto_run_ubs_robustness",
+            "_maybe_auto_run_ubs_final_tick",
+            "_maybe_auto_run_ubs_regression",
+        ):
+            if hasattr(self, hook) and getattr(self, hook)(script_name, script_args, code):
+                return True
+        return False
+
+    def _notify_process_end(self, code: int, message: str, auto_followup_started: bool) -> None:
+        """Avisa por Telegram y por dialogo del final del proceso."""
+        self._notify_telegram(message)
+        if code == 0:
+            if not auto_followup_started:
+                messagebox.showinfo("Proceso terminado", "El proceso termino correctamente.")
+            return
+        if code == RUNNING_TERMINAL_EXIT_CODE:
+            messagebox.showerror(
+                "MT5 ya esta abierto",
+                "El proceso se cancelo porque una terminal MT5 ya estaba abierta.\n\n"
+                "Cierra las terminales MT5 usadas por el proceso y vuelve a ejecutar.",
+            )
+            return
+        self._show_error(
+            "Proceso terminado con error",
+            f"El proceso termino con codigo {code}.",
+            self._console_tail(),
+        )
+
+    def _handle_process_done(self, code: int) -> None:
+        """Cierra la ejecucion terminada y encadena lo que proceda."""
+        finished_script_name = getattr(self, "_running_script_name", "")
+        finished_script_args = list(getattr(self, "_running_script_args", []))
+        self._finish_progress_state()
+        current_pct = int(round(float(self.progress_var.get())))
+        if self.stop_requested:
+            self._finish_stopped_by_user(code, current_pct)
+            return
+        self._finish_process_report(code, current_pct)
+        notification_message = self._completion_notification_message(
+            finished_script_name,
+            finished_script_args,
+            code,
+        )
+        auto_followup_started = self._auto_followup_started(
+            finished_script_name, finished_script_args, code
+        )
+        self._notify_process_end(code, notification_message, auto_followup_started)
+
     def _drain_output_queue(self) -> None:
         deadline = time.perf_counter() + OUTPUT_DRAIN_TIME_BUDGET_SECONDS
         processed = 0
@@ -179,98 +277,7 @@ class AppProcessMixin:
                 if isinstance(item, tuple) and item[0] == "DONE":
                     self._append_console_batch(console_batch)
                     console_batch = []
-                    code = item[1]
-                    finished_script_name = getattr(self, "_running_script_name", "")
-                    finished_script_args = list(getattr(self, "_running_script_args", []))
-                    self.running_text.set("Sin proceso activo")
-                    self.engine_status_text.set("Engine Ready")
-                    self._progress_running = False
-                    try:
-                        self.progress_bar.stop()
-                    except Exception:
-                        pass
-                    current_pct = int(round(float(self.progress_var.get())))
-                    if self.stop_requested:
-                        self._set_progress_color("danger")
-                        self.status_text.set("Proceso detenido")
-                        self._append_console(f"\nProceso detenido por el usuario. Codigo: {code}\n", tag="error")
-                        self.active_task_text.set("Detenido")
-                        self.active_task_detail.set(f"Detenido en {current_pct}%")
-                        self.stop_requested = False
-                        self._refresh_all()
-                        continue
-
-                    if code == 0:
-                        self._set_progress_color("accent")
-                        self._progress_target = 100.0
-                        try:
-                            self.progress_var.set(100.0)
-                        except Exception:
-                            pass
-                        self.active_task_text.set("Finalizado")
-                        self.active_task_detail.set("100%")
-                    else:
-                        self._set_progress_color("danger")
-                        self.active_task_text.set("Error")
-                        self.active_task_detail.set(f"Fallo en {current_pct}%")
-                    self.status_text.set(f"Proceso terminado con codigo {code}")
-                    tag = "info" if code == 0 else "error"
-                    self._append_console(f"\nProceso terminado con codigo {code}\n", tag=tag)
-                    if hasattr(self, "term_status_text"):
-                        self.term_status_text.set(f"Process finished with code {code}")
-                        self.term_status_icon.configure(fg=COLORS["log_info"] if code == 0 else COLORS["log_error"])
-                        self.idle_label.configure(text="IDLE")
-                    self._refresh_all()
-                    notification_message = self._completion_notification_message(
-                        finished_script_name,
-                        finished_script_args,
-                        code,
-                    )
-                    auto_followup_started = False
-                    if code == 0 and hasattr(self, "_maybe_auto_run_ubs_robustness"):
-                        auto_followup_started = self._maybe_auto_run_ubs_robustness(
-                            finished_script_name,
-                            finished_script_args,
-                            code,
-                        )
-                    if (
-                        code == 0
-                        and not auto_followup_started
-                        and hasattr(self, "_maybe_auto_run_ubs_final_tick")
-                    ):
-                        auto_followup_started = self._maybe_auto_run_ubs_final_tick(
-                            finished_script_name,
-                            finished_script_args,
-                            code,
-                        )
-                    if (
-                        code == 0
-                        and not auto_followup_started
-                        and hasattr(self, "_maybe_auto_run_ubs_regression")
-                    ):
-                        auto_followup_started = self._maybe_auto_run_ubs_regression(
-                            finished_script_name,
-                            finished_script_args,
-                            code,
-                        )
-                    if code == 0:
-                        self._notify_telegram(notification_message)
-                        if not auto_followup_started:
-                            messagebox.showinfo("Proceso terminado", "El proceso termino correctamente.")
-                    elif code == RUNNING_TERMINAL_EXIT_CODE:
-                        self._notify_telegram(notification_message)
-                        messagebox.showerror(
-                            "MT5 ya esta abierto",
-                            "El proceso se cancelo porque una terminal MT5 ya estaba abierta.\n\n"
-                            "Cierra las terminales MT5 usadas por el proceso y vuelve a ejecutar.",
-                        )
-                    else:
-                        self._notify_telegram(notification_message)
-                        self._show_error(
-                            "Proceso terminado con error",
-                            f"El proceso termino con codigo {code}.",
-                            self._console_tail(),
-                        )
+                    self._handle_process_done(item[1])
                 else:
                     line = str(item)
                     console_batch.append((line, self._tag_for_line(line)))
