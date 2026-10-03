@@ -70,6 +70,46 @@ def _target_symbol_disabled(
     )
 
 
+def _current_target_candidates(
+    current: str, mapped_current: str, resolved_current: str,
+    universe_symbols: tuple[str, ...], disabled,
+) -> tuple[str, ...]:
+    """Targets de la familia del simbolo actual, o el propio simbolo."""
+    current_family_targets = tuple(
+        target
+        for target in dict.fromkeys(
+            (
+                *axi_cash_future_family_targets(current, universe_symbols),
+                *axi_cash_future_family_targets(mapped_current, universe_symbols),
+            )
+        )
+        if target and not disabled(target)
+    )
+    return current_family_targets or tuple(
+        target
+        for target in (resolved_current,)
+        if target and not disabled(target)
+    )
+
+
+def _related_target_candidates(
+    current: str, universe_symbols: tuple[str, ...], exact_by_key: dict[str, str], disabled,
+) -> tuple[str, ...]:
+    """Targets relacionados con el simbolo actual que siguen habilitados."""
+    return tuple(
+        symbol
+        for symbol in dict.fromkeys(
+            candidate
+            for source in related_assets(current)
+            for candidate in (
+                *axi_cash_future_family_targets(source, universe_symbols),
+                exact_by_key.get(source.upper(), source),
+            )
+        )
+        if not disabled(symbol)
+    )
+
+
 def _build_target_symbol_scope(
     seed: Seed, asset_feedback: dict[str, float], universe_symbols: tuple[str, ...],
     aliases: dict[str, str], symbol_map: dict[str, str], disabled_symbols: set[str] | None,
@@ -89,33 +129,6 @@ def _build_target_symbol_scope(
             symbol, universe_symbols, aliases, symbol_map, disabled_symbols
         )
 
-    current_family_targets = tuple(
-        target
-        for target in dict.fromkeys(
-            (
-                *axi_cash_future_family_targets(current, universe_symbols),
-                *axi_cash_future_family_targets(mapped_current, universe_symbols),
-            )
-        )
-        if target and not disabled(target)
-    )
-    current_targets = current_family_targets or tuple(
-        target
-        for target in (resolved_current,)
-        if target and not disabled(target)
-    )
-    related = tuple(
-        symbol
-        for symbol in dict.fromkeys(
-            candidate
-            for source in related_assets(current)
-            for candidate in (
-                *axi_cash_future_family_targets(source, universe_symbols),
-                exact_by_key.get(source.upper(), source),
-            )
-        )
-        if not disabled(symbol)
-    )
     return _TargetSymbolScope(
         seed=seed,
         asset_feedback=asset_feedback,
@@ -126,8 +139,10 @@ def _build_target_symbol_scope(
         group_by_symbol=group_by_symbol,
         current=current,
         resolved_current=resolved_current,
-        current_targets=current_targets,
-        related=related,
+        current_targets=_current_target_candidates(
+            current, mapped_current, resolved_current, universe_symbols, disabled
+        ),
+        related=_related_target_candidates(current, universe_symbols, exact_by_key, disabled),
         universe_choices=tuple(
             symbol for symbol in dict.fromkeys(universe_symbols)
             if symbol.upper() != resolved_current.upper() and not disabled(symbol)
