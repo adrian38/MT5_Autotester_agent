@@ -18,6 +18,38 @@ from manager_node_runtime.mt5_native_history_report import (
 from tests.manager_node_live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
 
 
+def _history_deal(ticket: int, position: int, entry: int, moment: datetime, deal_type: int) -> SimpleNamespace:
+    timestamp = int(moment.timestamp())
+    return SimpleNamespace(
+        ticket=ticket, position_id=position, entry=entry, type=deal_type,
+        time=timestamp, time_msc=timestamp * 1000, magic=11008,
+        symbol="EURUSD", volume=.01, price=1.1, profit=1.0,
+        commission=0.0, swap=0.0, fee=0.0, comment="",
+    )
+
+
+class _HistorySyncMt5:
+    def __init__(self, prior_deals, period_deals) -> None:
+        self.prior_deals = prior_deals
+        self.period_deals = period_deals
+        self.period_calls = 0
+        self.shutdown_called = False
+
+    account_info = staticmethod(lambda: SimpleNamespace(login=111, server="IC-Real", currency="USD"))
+    terminal_info = staticmethod(lambda: SimpleNamespace(connected=True))
+    symbol_info = staticmethod(lambda _symbol: SimpleNamespace(point=.00001))
+    last_error = staticmethod(lambda: (1, "Success"))
+
+    def history_deals_get(self, *_args, **kwargs):
+        if "position" in kwargs:
+            return self.prior_deals if kwargs["position"] == 10 else []
+        self.period_calls += 1
+        return [] if self.period_calls == 1 else self.period_deals
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
 class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
     def test_credentials_are_required_and_never_enter_public_state(self) -> None:
         payload = request()
@@ -171,53 +203,12 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
             controller.history_sync_delay_seconds = 0
             period_end = datetime.now(timezone.utc)
             period_start = period_end - timedelta(days=7)
-
-            def deal(ticket: int, position: int, entry: int, moment: datetime, deal_type: int) -> SimpleNamespace:
-                timestamp = int(moment.timestamp())
-                return SimpleNamespace(
-                    ticket=ticket, position_id=position, entry=entry, type=deal_type,
-                    time=timestamp, time_msc=timestamp * 1000, magic=11008,
-                    symbol="EURUSD", volume=.01, price=1.1, profit=1.0,
-                    commission=0.0, swap=0.0, fee=0.0, comment="",
-                )
-
-            prior_open = deal(1, 10, 0, period_start - timedelta(days=1), 0)
-            prior_close = deal(2, 10, 1, period_start + timedelta(hours=1), 1)
-            current_open = deal(3, 20, 0, period_start + timedelta(days=1), 0)
-            current_close = deal(4, 20, 1, period_start + timedelta(days=1, hours=1), 1)
+            prior_open = _history_deal(1, 10, 0, period_start - timedelta(days=1), 0)
+            prior_close = _history_deal(2, 10, 1, period_start + timedelta(hours=1), 1)
+            current_open = _history_deal(3, 20, 0, period_start + timedelta(days=1), 0)
+            current_close = _history_deal(4, 20, 1, period_start + timedelta(days=1, hours=1), 1)
             period_deals = [prior_close, current_open, current_close]
-
-            class FakeMt5:
-                def __init__(self) -> None:
-                    self.period_calls = 0
-                    self.shutdown_called = False
-
-                @staticmethod
-                def account_info() -> SimpleNamespace:
-                    return SimpleNamespace(login=111, server="IC-Real", currency="USD")
-
-                @staticmethod
-                def terminal_info() -> SimpleNamespace:
-                    return SimpleNamespace(connected=True)
-
-                def history_deals_get(self, *_args, **kwargs):
-                    if "position" in kwargs:
-                        return [prior_open, prior_close] if kwargs["position"] == 10 else []
-                    self.period_calls += 1
-                    return [] if self.period_calls == 1 else period_deals
-
-                @staticmethod
-                def symbol_info(_symbol: str) -> SimpleNamespace:
-                    return SimpleNamespace(point=.00001)
-
-                @staticmethod
-                def last_error() -> tuple[int, str]:
-                    return 1, "Success"
-
-                def shutdown(self) -> None:
-                    self.shutdown_called = True
-
-            mt5 = FakeMt5()
+            mt5 = _HistorySyncMt5([prior_open, prior_close], period_deals)
             controller._login_terminal = lambda *_args, **_kwargs: (
                 mt5, "Terminal.2", {"name": "MT5_IC_1"}, set()
             )
