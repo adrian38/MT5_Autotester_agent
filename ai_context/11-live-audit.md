@@ -313,3 +313,17 @@ only when their bytes are identical, choosing the first case-insensitively
 sorted path. Different contents remain a hard, explicit ambiguity error. The
 embedded `manager_node_runtime/live_audit.py` calls this resolver, so this is
 the path executed by the broker application rather than the manager reference.
+
+## Símbolos sin `.sa` en Axi-US50-Live (2026-10-03)
+
+La auditoría AXI `20261003_133402_915651` confirmó el login tester `60357303`
+en `Axi-US50-Live`, pero el set importado conservaba `ForceSymbol=ETHUSD.sa`.
+El runner infirió ese valor literalmente para el INI y MT5 abortó porque dicho
+servidor publica `ETHUSD` sin el sufijo estándar.
+
+`manager_node_runtime/live_audit_symbols.py` normaliza únicamente las copias
+temporales usadas por la auditoría: en `Axi-US50-Live` retira un `.sa` final de
+`ForceSymbol` y `Symbol`. No modifica el set fuente, otros servidores, sufijos
+de futuros `.fs`, ni shares `+`. `manager_node_runtime/live_audit.py`, que es
+el proceso embebido realmente ejecutado por el agente, aplica la normalización
+antes de invocar `run_tests.py`.
