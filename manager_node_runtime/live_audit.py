@@ -18,6 +18,8 @@ from run_tests_parallel import runner_failure_summary
 
 from .common import load_json, save_json, utc_now
 # `live_audit_price` conserva brokers antiguos; aquí la tolerancia vive en el manager.
+from .live_audit_sets import resolve_portfolio_set
+from .live_audit_symbols import normalize_live_audit_set_symbols
 from .mt5_native_history_report import NativeHistoryReportError, export_native_history_report
 
 
@@ -1584,25 +1586,12 @@ class LiveAuditController:
 
     def _resolve_set(self, raw: str) -> Path:
         project = Path(str(self.owner.config["project_dir"])).expanduser().resolve()
-        path = Path(raw)
-        if path.is_file():
-            return path
-        normalized = raw.replace("\\", "/")
-        for prefix in ("/data/ic/", "/data/axi/", "/data/roboforex/"):
-            if normalized.casefold().startswith(prefix):
-                candidate = project / normalized[len(prefix):]
-                if candidate.is_file():
-                    return candidate
-        matches = list(project.rglob(path.name)) if path.name else []
-        if len(matches) == 1:
-            return matches[0]
-        raise FileNotFoundError(f"No se encontró el set del portafolio: {path.name or raw}")
+        return resolve_portfolio_set(project, raw)
 
     def _run_tester(
         self, request: dict[str, Any], audit_id: str, period_start: datetime, period_end: datetime
     ) -> tuple[list[dict[str, Any]], list[float], dict[str, int], list[dict[str, Any]], dict[str, Any]]:
         from portfolio_manager.mt5_report import parse_report
-
         detail, members = self._portfolio_members(request["portfolio_id"], request["portfolio_type"])
         if not members:
             raise ValueError("El portafolio no contiene estrategias")
@@ -1618,6 +1607,7 @@ class LiveAuditController:
             text, set_encoding = _read_set_text(source)
             portfolio_lot, tester_lot, volume_min, volume_step, units = self._tester_lot(member, volume_rules)
             text = self._set_value(text, "StartLots", f"{tester_lot:.8f}".rstrip("0").rstrip("."))
+            text = normalize_live_audit_set_symbols(text, request["tester_server"])
             target = sets_dir / f"audit_{index:03d}_{source.name}"
             target.write_text(text, encoding=set_encoding, newline="\n")
             runtime_text, _runtime_encoding = _read_set_text(target)

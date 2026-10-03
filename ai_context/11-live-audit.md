@@ -297,3 +297,33 @@ ocupada. Si el failover también falla, el resultado continúa siendo fallo.
 El error publicado por la auditoría resume ahora las líneas `ERROR`, el job que
 falló y el failover; el inventario `PARALLEL_AFTER` permanece completo en
 `runner.log`, pero ya no oculta la causa en la interfaz.
+
+## Duplicate saved set basenames (2026-10-03)
+
+AXI audit `20261003_130834_877490` for portfolio 106 failed after extracting
+the real account with `No se encontró el set del portafolio` for
+`ETHUSD.sa_H4_Client_sets_Nio_M30_Client_e333ccb6_g002_s004_v002.set`. The file
+was present twice under runs `20260818_013024` and `20260818_023204`; both
+copies had SHA-256 `d5358ddf...e1515b`. The saved portfolio member carried only
+the basename, and the old fallback treated every result count other than one
+as missing.
+
+`manager_node_runtime/live_audit_sets.py` now accepts multiple basename matches
+only when their bytes are identical, choosing the first case-insensitively
+sorted path. Different contents remain a hard, explicit ambiguity error. The
+embedded `manager_node_runtime/live_audit.py` calls this resolver, so this is
+the path executed by the broker application rather than the manager reference.
+
+## Símbolos sin `.sa` en Axi-US50-Live (2026-10-03)
+
+La auditoría AXI `20261003_133402_915651` confirmó el login tester `60357303`
+en `Axi-US50-Live`, pero el set importado conservaba `ForceSymbol=ETHUSD.sa`.
+El runner infirió ese valor literalmente para el INI y MT5 abortó porque dicho
+servidor publica `ETHUSD` sin el sufijo estándar.
+
+`manager_node_runtime/live_audit_symbols.py` normaliza únicamente las copias
+temporales usadas por la auditoría: en `Axi-US50-Live` retira un `.sa` final de
+`ForceSymbol` y `Symbol`. No modifica el set fuente, otros servidores, sufijos
+de futuros `.fs`, ni shares `+`. `manager_node_runtime/live_audit.py`, que es
+el proceso embebido realmente ejecutado por el agente, aplica la normalización
+antes de invocar `run_tests.py`.
