@@ -30,6 +30,89 @@ from .ubs_portfolio_utils import (
 )
 
 
+@dataclass
+class _StrictRepair:
+    """Reduce unidades hasta que la cartera pasa la validacion mensual."""
+
+    monthly_sets: list[RobustStrategySet]
+    full_by_id: dict[str, RobustStrategySet]
+    target_month: int
+    target_valley_dd: float
+    target_point_dd: float
+    max_daily_dd: float | None
+    enforce_point_dd: bool
+    daily_dd_full_history: bool
+
+    def evaluate(self, allocations: dict[str, int]) -> PortfolioEvaluation:
+        """Evalua una asignacion con los objetivos de DD de la reparacion."""
+        return evaluate_portfolio(
+            self.monthly_sets,
+            allocations,
+            self.target_valley_dd,
+            self.target_point_dd,
+            self.max_daily_dd,
+            self.enforce_point_dd,
+            self.daily_dd_full_history,
+        )
+
+    def validate(self, allocations: dict[str, int]) -> dict[str, object]:
+        """Auditoria estricta del mes para una asignacion concreta."""
+        return _strict_validation_for_allocations(
+            self.full_by_id,
+            allocations,
+            target_month=self.target_month,
+            target_valley_dd=self.target_valley_dd,
+            target_point_dd=self.target_point_dd,
+            enforce_point_dd=self.enforce_point_dd,
+        )
+
+    def best_reduction(self, current_allocations: dict[str, int]):
+        """Quita de cada estrategia una unidad y se queda con la mejor opcion."""
+        best_choice = None
+        for strategy in self.monthly_sets:
+            if current_allocations.get(strategy.set_id, 0) <= 0:
+                continue
+            trial_allocations = current_allocations.copy()
+            trial_allocations[strategy.set_id] -= 1
+            trial_eval = self.evaluate(trial_allocations)
+            trial_validation = self.validate(trial_allocations)
+            choice = (
+                _strict_monthly_violation_score(trial_validation),
+                -trial_eval.total_net_profit,
+                -trial_eval.active_strategies,
+                strategy.set_id,
+                strategy,
+                trial_allocations,
+                trial_eval,
+                trial_validation,
+            )
+            if best_choice is None or choice[:4] < best_choice[:4]:
+                best_choice = choice
+        return best_choice
+
+
+def _strict_repair_decision(
+    step: int, reduced_set: RobustStrategySet, score: float,
+    previous_eval: PortfolioEvaluation, current_eval: PortfolioEvaluation,
+) -> OptimizationDecision:
+    """Entrada de bitacora de una unidad retirada para cumplir el mes."""
+    return OptimizationDecision(
+        step=step,
+        action="strict_monthly_reduce_unit",
+        set_id=reduced_set.set_id,
+        from_set_id=reduced_set.set_id,
+        to_set_id=None,
+        gain=-reduced_set.net_profit_2020_2026_001,
+        valley_cost=current_eval.valley_dd - previous_eval.valley_dd,
+        point_cost=current_eval.point_dd - previous_eval.point_dd,
+        score=-float(score),
+        portfolio_net_profit_after=current_eval.total_net_profit,
+        portfolio_valley_dd_after=current_eval.valley_dd,
+        portfolio_point_dd_after=current_eval.point_dd,
+        reason="Reduccion necesaria para cumplir validacion mensual estricta 5A/DD",
+    )
+
+
 def _repair_allocations_to_strict_monthly(
     monthly_sets: list[RobustStrategySet],
     full_by_id: dict[str, RobustStrategySet],
@@ -42,111 +125,32 @@ def _repair_allocations_to_strict_monthly(
     enforce_point_dd: bool = True,
     daily_dd_full_history: bool = False,
 ) -> tuple[dict[str, int], PortfolioEvaluation, dict[str, object], list[OptimizationDecision]]:
+    repair = _StrictRepair(
+        monthly_sets, full_by_id, target_month, target_valley_dd, target_point_dd,
+        max_daily_dd, enforce_point_dd, daily_dd_full_history,
+    )
     current_allocations = {
         strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
         for strategy in monthly_sets
     }
-    current_eval = evaluate_portfolio(
-        monthly_sets,
-        current_allocations,
-        target_valley_dd,
-        target_point_dd,
-        max_daily_dd,
-        enforce_point_dd,
-        daily_dd_full_history,
-    )
-    current_validation = _strict_validation_for_allocations(
-        full_by_id,
-        current_allocations,
-        target_month=target_month,
-        target_valley_dd=target_valley_dd,
-        target_point_dd=target_point_dd,
-        enforce_point_dd=enforce_point_dd,
-    )
+    current_eval = repair.evaluate(current_allocations)
+    current_validation = repair.validate(current_allocations)
     decision_log: list[OptimizationDecision] = []
     if bool(current_validation.get("passed")):
         return current_allocations, current_eval, current_validation, decision_log
-
     step = 0
     while sum(current_allocations.values()) > 0:
         current_score = _strict_monthly_violation_score(current_validation)
-        best_choice: tuple[
-            float,
-            float,
-            float,
-            str,
-            RobustStrategySet,
-            dict[str, int],
-            PortfolioEvaluation,
-            dict[str, object],
-        ] | None = None
-        for strategy in monthly_sets:
-            if current_allocations.get(strategy.set_id, 0) <= 0:
-                continue
-            trial_allocations = current_allocations.copy()
-            trial_allocations[strategy.set_id] -= 1
-            trial_eval = evaluate_portfolio(
-                monthly_sets,
-                trial_allocations,
-                target_valley_dd,
-                target_point_dd,
-                max_daily_dd,
-                enforce_point_dd,
-                daily_dd_full_history,
-            )
-            trial_validation = _strict_validation_for_allocations(
-                full_by_id,
-                trial_allocations,
-                target_month=target_month,
-                target_valley_dd=target_valley_dd,
-                target_point_dd=target_point_dd,
-                enforce_point_dd=enforce_point_dd,
-            )
-            trial_score = _strict_monthly_violation_score(trial_validation)
-            choice = (
-                trial_score,
-                -trial_eval.total_net_profit,
-                -trial_eval.active_strategies,
-                strategy.set_id,
-                strategy,
-                trial_allocations,
-                trial_eval,
-                trial_validation,
-            )
-            if best_choice is None or choice[:4] < best_choice[:4]:
-                best_choice = choice
+        best_choice = repair.best_reduction(current_allocations)
         if best_choice is None or best_choice[0] >= current_score - 1e-9:
             break
-        (
-            _score,
-            _negative_net,
-            _negative_active,
-            _set_id,
-            reduced_set,
-            next_allocations,
-            next_eval,
-            next_validation,
-        ) = best_choice
         previous_eval = current_eval
-        current_allocations = next_allocations
-        current_eval = next_eval
-        current_validation = next_validation
+        reduced_set = best_choice[4]
+        current_allocations, current_eval, current_validation = best_choice[5:]
         step += 1
         decision_log.append(
-            OptimizationDecision(
-                step=step,
-                action="strict_monthly_reduce_unit",
-                set_id=reduced_set.set_id,
-                from_set_id=reduced_set.set_id,
-                to_set_id=None,
-                gain=-reduced_set.net_profit_2020_2026_001,
-                valley_cost=current_eval.valley_dd - previous_eval.valley_dd,
-                point_cost=current_eval.point_dd - previous_eval.point_dd,
-                score=-float(best_choice[0]),
-                portfolio_net_profit_after=current_eval.total_net_profit,
-                portfolio_valley_dd_after=current_eval.valley_dd,
-                portfolio_point_dd_after=current_eval.point_dd,
-                reason="Reduccion necesaria para cumplir validacion mensual estricta 5A/DD",
+            _strict_repair_decision(
+                step, reduced_set, best_choice[0], previous_eval, current_eval
             )
         )
         if bool(current_validation.get("passed")):
