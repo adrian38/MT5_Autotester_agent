@@ -11,7 +11,6 @@
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_applies_degradation_gate_and_persists_audit": 83,
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_preserves_invalid_stops_rejection": 76,
     "tests/test_ubs_final_tick_6m.py::UBSFinalTick6MEligibilityTests.test_legacy_tick_sync_rejections_are_migrated_without_touching_real_rejections": 83,
-    "tests/test_ubs_score.py::UBSScoreTests.test_axi_normalization_keeps_cash_suffix_rules_off_futures_and_shares": 77,
     "ui/ubs_final_tick_logic.py::UBSFinalTickLogicMixin._run_ubs_final_tick_for_latest_run": 101,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._save_pending_ubs_portfolio": 99,
     "ui/ubs_portfolio_insert.py::UBSPortfolioInsertMixin._insert_portfolio": 95,
