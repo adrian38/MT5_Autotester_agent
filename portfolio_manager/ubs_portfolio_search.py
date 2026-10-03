@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from typing import Sequence
 
 from .ubs_portfolio import (
@@ -175,178 +176,249 @@ def improve_with_local_search(
     return allocations, current, decision_log
 
 
+@dataclass
+class _MultiStartConfig:
+    """Limites con los que se perturba y se vuelve a optimizar la cartera."""
+
+    target_valley_dd: float
+    target_point_dd: float
+    restarts: int
+    perturbations: int = 2
+    max_units_per_set: int | None = None
+    max_total_units: int | None = None
+    max_units_per_symbol: int | None = None
+    max_sets_per_symbol: int | None = None
+    max_pair_corr: float | None = None
+    max_downside_corr: float | None = None
+    max_dd_overlap: float | None = None
+    existing_portfolio_curves: Sequence[Sequence[float]] | None = None
+    max_portfolio_corr: float | None = None
+    max_units_per_group_pct: float | None = None
+    max_sets_per_group: int | None = None
+    group_unit_cap_bootstrap: int = 10
+    margin_balance: float | None = None
+    max_margin_pct: float | None = None
+    margin_profile: str | None = "roboforex"
+    stock_leverage: float = 20.0
+    default_leverage: float = 500.0
+    stock_contract_size: float = 100.0
+    default_contract_size: float = 1.0
+    max_daily_dd: float | None = None
+    enforce_point_dd: bool = True
+    daily_dd_full_history: bool = False
+
+
+class _MultiStartSearch:
+    """Reinicia la busqueda desde carteras perturbadas y se queda con la mejor."""
+
+    def __init__(
+        self, sets: list[RobustStrategySet], allocations: dict[str, int],
+        current: PortfolioEvaluation, config: _MultiStartConfig,
+    ) -> None:
+        self.sets = sets
+        self.allocations = allocations
+        self.current = current
+        self.config = config
+        self.portfolio_curves = list(config.existing_portfolio_curves or [])
+
+    def _evaluate(self, allocations: dict[str, int]) -> PortfolioEvaluation:
+        """Evalua una asignacion con los objetivos de DD de la busqueda."""
+        config = self.config
+        return evaluate_portfolio(
+            self.sets,
+            allocations,
+            config.target_valley_dd,
+            config.target_point_dd,
+            config.max_daily_dd,
+            config.enforce_point_dd,
+            config.daily_dd_full_history,
+        )
+
+    def _move_allowed(
+        self, target: RobustStrategySet, trial_allocations: dict[str, int],
+        temp_allocations: dict[str, int],
+    ) -> bool:
+        """Cupos, grupo y correlacion de un movimiento de una unidad."""
+        config = self.config
+        if not _allocations_respect_constraints(
+            self.sets,
+            temp_allocations,
+            config.max_units_per_set,
+            config.max_total_units,
+            config.max_units_per_symbol,
+            config.max_sets_per_symbol,
+            config.max_sets_per_group,
+            config.margin_balance,
+            config.max_margin_pct,
+            config.margin_profile,
+            config.stock_leverage,
+            config.default_leverage,
+            config.stock_contract_size,
+            config.default_contract_size,
+        ):
+            return False
+        if not _target_group_units_pct_allowed(
+            target,
+            self.sets,
+            temp_allocations,
+            config.max_units_per_group_pct,
+            config.group_unit_cap_bootstrap,
+        ):
+            return False
+        if trial_allocations.get(target.set_id, 0) > 0:
+            return True
+        corr_allocations = temp_allocations.copy()
+        corr_allocations[target.set_id] = 0
+        rejected, _reason = violates_correlation_limits(
+            target,
+            self.sets,
+            corr_allocations,
+            config.max_pair_corr,
+            config.max_downside_corr,
+            config.max_dd_overlap,
+        )
+        return not rejected
+
+    def _portfolio_corr_blocked(self, temp: PortfolioEvaluation) -> bool:
+        """Correlacion de la cartera perturbada contra las ya existentes."""
+        config = self.config
+        if config.max_portfolio_corr is None or not self.portfolio_curves:
+            return False
+        worst = max(
+            curve_increment_correlation(temp.equity_curve_2020_2026, curve)
+            for curve in self.portfolio_curves
+        )
+        return worst > config.max_portfolio_corr
+
+    @staticmethod
+    def _perturbation_decision(
+        restart: int, perturbation: int, source: RobustStrategySet, target: RobustStrategySet,
+        trial: PortfolioEvaluation, temp: PortfolioEvaluation,
+    ) -> OptimizationDecision:
+        """Entrada de bitacora de una perturbacion aceptada."""
+        return OptimizationDecision(
+            step=perturbation + 1,
+            action="multi_start_perturb",
+            set_id=None,
+            from_set_id=source.set_id,
+            to_set_id=target.set_id,
+            gain=temp.total_net_profit - trial.total_net_profit,
+            valley_cost=temp.valley_dd - trial.valley_dd,
+            point_cost=temp.point_dd - trial.point_dd,
+            score=temp.total_net_profit - trial.total_net_profit,
+            portfolio_net_profit_after=temp.total_net_profit,
+            portfolio_valley_dd_after=temp.valley_dd,
+            portfolio_point_dd_after=temp.point_dd,
+            reason=f"Multi-start perturbation {restart + 1}",
+        )
+
+    def _perturb_once(
+        self, rng: random.Random, restart: int, perturbation: int,
+        trial_allocations: dict[str, int], trial: PortfolioEvaluation,
+        perturb_log: list[OptimizationDecision],
+    ):
+        """Mueve una unidad al azar entre dos estrategias validas."""
+        active = [item for item in self.sets if trial_allocations.get(item.set_id, 0) > 0]
+        moves = [
+            (source, target) for source in active for target in self.sets
+            if source.set_id != target.set_id
+        ]
+        rng.shuffle(moves)
+        for source, target in moves:
+            temp_allocations = trial_allocations.copy()
+            temp_allocations[source.set_id] -= 1
+            temp_allocations[target.set_id] += 1
+            if not self._move_allowed(target, trial_allocations, temp_allocations):
+                continue
+            temp = self._evaluate(temp_allocations)
+            if _evaluation_violates_dd_limits(temp) or self._portfolio_corr_blocked(temp):
+                continue
+            perturb_log.append(
+                self._perturbation_decision(restart, perturbation, source, target, trial, temp)
+            )
+            return temp_allocations, temp
+        return None
+
+    def _perturbed_start(self, restart: int):
+        """Cartera de arranque de un reinicio, con su bitacora de perturbaciones."""
+        rng = random.Random(104729 + restart * 7919 + len(self.sets) * 17)
+        trial_allocations = self.allocations.copy()
+        trial = self.current
+        perturb_log: list[OptimizationDecision] = []
+        for perturbation in range(self.config.perturbations):
+            moved = self._perturb_once(
+                rng, restart, perturbation, trial_allocations, trial, perturb_log
+            )
+            if moved is None:
+                break
+            trial_allocations, trial = moved
+        return trial_allocations, trial, perturb_log
+
+    def _local_search(self, trial_allocations: dict[str, int], trial: PortfolioEvaluation):
+        """Optimizacion local sobre la cartera perturbada."""
+        config = self.config
+        return improve_with_local_search(
+            sets=self.sets,
+            allocations=trial_allocations,
+            current=trial,
+            target_valley_dd=config.target_valley_dd,
+            target_point_dd=config.target_point_dd,
+            max_units_per_set=config.max_units_per_set,
+            max_total_units=config.max_total_units,
+            max_units_per_symbol=config.max_units_per_symbol,
+            max_sets_per_symbol=config.max_sets_per_symbol,
+            max_pair_corr=config.max_pair_corr,
+            max_downside_corr=config.max_downside_corr,
+            max_dd_overlap=config.max_dd_overlap,
+            existing_portfolio_curves=self.portfolio_curves,
+            max_portfolio_corr=config.max_portfolio_corr,
+            max_units_per_group_pct=config.max_units_per_group_pct,
+            max_sets_per_group=config.max_sets_per_group,
+            group_unit_cap_bootstrap=config.group_unit_cap_bootstrap,
+            max_iterations=200,
+            margin_balance=config.margin_balance,
+            max_margin_pct=config.max_margin_pct,
+            margin_profile=config.margin_profile,
+            stock_leverage=config.stock_leverage,
+            default_leverage=config.default_leverage,
+            stock_contract_size=config.stock_contract_size,
+            default_contract_size=config.default_contract_size,
+            max_daily_dd=config.max_daily_dd,
+            enforce_point_dd=config.enforce_point_dd,
+            daily_dd_full_history=config.daily_dd_full_history,
+        )
+
+    def run(self) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
+        """Recorre los reinicios y devuelve la mejor cartera encontrada."""
+        best_allocations = self.allocations.copy()
+        best = self.current
+        best_log: list[OptimizationDecision] = []
+        valid_restarts = 0
+        for restart in range(self.config.restarts):
+            trial_allocations, trial, perturb_log = self._perturbed_start(restart)
+            if not perturb_log:
+                continue
+            valid_restarts += 1
+            trial_allocations, trial, local_log = self._local_search(trial_allocations, trial)
+            if trial.total_net_profit > best.total_net_profit + 1e-9:
+                best_allocations = trial_allocations
+                best = trial
+                best_log = perturb_log + local_log
+        return best_allocations, best, best_log, valid_restarts
+
+
 def improve_with_multi_start_search(
     sets: list[RobustStrategySet],
     allocations: dict[str, int],
     current: PortfolioEvaluation,
     target_valley_dd: float,
     target_point_dd: float,
-    *,
-    restarts: int,
-    perturbations: int = 2,
-    max_units_per_set: int | None = None,
-    max_total_units: int | None = None,
-    max_units_per_symbol: int | None = None,
-    max_sets_per_symbol: int | None = None,
-    max_pair_corr: float | None = None,
-    max_downside_corr: float | None = None,
-    max_dd_overlap: float | None = None,
-    existing_portfolio_curves: Sequence[Sequence[float]] | None = None,
-    max_portfolio_corr: float | None = None,
-    max_units_per_group_pct: float | None = None,
-    max_sets_per_group: int | None = None,
-    group_unit_cap_bootstrap: int = 10,
-    margin_balance: float | None = None,
-    max_margin_pct: float | None = None,
-    margin_profile: str | None = "roboforex",
-    stock_leverage: float = 20.0,
-    default_leverage: float = 500.0,
-    stock_contract_size: float = 100.0,
-    default_contract_size: float = 1.0,
-    max_daily_dd: float | None = None,
-    enforce_point_dd: bool = True,
-    daily_dd_full_history: bool = False,
+    **limits: object,
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
-    if restarts <= 0 or perturbations <= 0 or len(sets) < 2:
+    """Busca desde varias carteras perturbadas y se queda con la mejor."""
+    config = _MultiStartConfig(
+        target_valley_dd=target_valley_dd, target_point_dd=target_point_dd, **limits
+    )
+    if config.restarts <= 0 or config.perturbations <= 0 or len(sets) < 2:
         return allocations, current, [], 0
-
-    best_allocations = allocations.copy()
-    best = current
-    best_log: list[OptimizationDecision] = []
-    valid_restarts = 0
-    portfolio_curves = list(existing_portfolio_curves or [])
-
-    for restart in range(restarts):
-        rng = random.Random(104729 + restart * 7919 + len(sets) * 17)
-        trial_allocations = allocations.copy()
-        trial = current
-        perturb_log: list[OptimizationDecision] = []
-
-        for perturbation in range(perturbations):
-            active = [item for item in sets if trial_allocations.get(item.set_id, 0) > 0]
-            targets = list(sets)
-            moves = [(source, target) for source in active for target in targets if source.set_id != target.set_id]
-            rng.shuffle(moves)
-            accepted_move = False
-            for source, target in moves:
-                temp_allocations = trial_allocations.copy()
-                temp_allocations[source.set_id] -= 1
-                temp_allocations[target.set_id] += 1
-                if not _allocations_respect_constraints(
-                    sets,
-                    temp_allocations,
-                    max_units_per_set,
-                    max_total_units,
-                    max_units_per_symbol,
-                    max_sets_per_symbol,
-                    max_sets_per_group,
-                    margin_balance,
-                    max_margin_pct,
-                    margin_profile,
-                    stock_leverage,
-                    default_leverage,
-                    stock_contract_size,
-                    default_contract_size,
-                ):
-                    continue
-                if not _target_group_units_pct_allowed(
-                    target,
-                    sets,
-                    temp_allocations,
-                    max_units_per_group_pct,
-                    group_unit_cap_bootstrap,
-                ):
-                    continue
-                if trial_allocations.get(target.set_id, 0) <= 0:
-                    corr_allocations = temp_allocations.copy()
-                    corr_allocations[target.set_id] = 0
-                    rejected, _reason = violates_correlation_limits(
-                        target,
-                        sets,
-                        corr_allocations,
-                        max_pair_corr,
-                        max_downside_corr,
-                        max_dd_overlap,
-                    )
-                    if rejected:
-                        continue
-                temp = evaluate_portfolio(
-                    sets,
-                    temp_allocations,
-                    target_valley_dd,
-                    target_point_dd,
-                    max_daily_dd,
-                    enforce_point_dd,
-                    daily_dd_full_history,
-                )
-                if _evaluation_violates_dd_limits(temp):
-                    continue
-                if max_portfolio_corr is not None and portfolio_curves:
-                    if max(
-                        curve_increment_correlation(temp.equity_curve_2020_2026, curve)
-                        for curve in portfolio_curves
-                    ) > max_portfolio_corr:
-                        continue
-                perturb_log.append(
-                    OptimizationDecision(
-                        step=perturbation + 1,
-                        action="multi_start_perturb",
-                        set_id=None,
-                        from_set_id=source.set_id,
-                        to_set_id=target.set_id,
-                        gain=temp.total_net_profit - trial.total_net_profit,
-                        valley_cost=temp.valley_dd - trial.valley_dd,
-                        point_cost=temp.point_dd - trial.point_dd,
-                        score=temp.total_net_profit - trial.total_net_profit,
-                        portfolio_net_profit_after=temp.total_net_profit,
-                        portfolio_valley_dd_after=temp.valley_dd,
-                        portfolio_point_dd_after=temp.point_dd,
-                        reason=f"Multi-start perturbation {restart + 1}",
-                    )
-                )
-                trial_allocations = temp_allocations
-                trial = temp
-                accepted_move = True
-                break
-            if not accepted_move:
-                break
-
-        if not perturb_log:
-            continue
-        valid_restarts += 1
-        trial_allocations, trial, local_log = improve_with_local_search(
-            sets=sets,
-            allocations=trial_allocations,
-            current=trial,
-            target_valley_dd=target_valley_dd,
-            target_point_dd=target_point_dd,
-            max_units_per_set=max_units_per_set,
-            max_total_units=max_total_units,
-            max_units_per_symbol=max_units_per_symbol,
-            max_sets_per_symbol=max_sets_per_symbol,
-            max_pair_corr=max_pair_corr,
-            max_downside_corr=max_downside_corr,
-            max_dd_overlap=max_dd_overlap,
-            existing_portfolio_curves=portfolio_curves,
-            max_portfolio_corr=max_portfolio_corr,
-            max_units_per_group_pct=max_units_per_group_pct,
-            max_sets_per_group=max_sets_per_group,
-            group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-            max_iterations=200,
-            margin_balance=margin_balance,
-            max_margin_pct=max_margin_pct,
-            margin_profile=margin_profile,
-            stock_leverage=stock_leverage,
-            default_leverage=default_leverage,
-            stock_contract_size=stock_contract_size,
-            default_contract_size=default_contract_size,
-            max_daily_dd=max_daily_dd,
-            enforce_point_dd=enforce_point_dd,
-            daily_dd_full_history=daily_dd_full_history,
-        )
-        if trial.total_net_profit > best.total_net_profit + 1e-9:
-            best_allocations = trial_allocations
-            best = trial
-            best_log = perturb_log + local_log
-
-    return best_allocations, best, best_log, valid_restarts
+    return _MultiStartSearch(sets, allocations, current, config).run()
