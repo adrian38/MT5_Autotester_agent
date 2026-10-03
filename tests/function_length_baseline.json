@@ -4,7 +4,6 @@
     "portfolio_manager/ubs_portfolio_phases.py::_greedy_and_local_search": 84,
     "portfolio_manager/ubs_portfolio_phases.py::_relax_group_cap": 103,
     "portfolio_manager/ubs_portfolio_phases.py::_search_phases": 73,
-    "tests/test_audit_generalization_v2.py::create_memory": 79,
     "tests/test_manager_node_live_audit.py::LiveAuditEngineTests.test_real_history_waits_for_sync_and_recovers_open_before_period": 71,
     "tests/test_ubs_agent_files.py::UBSSetsFileTests.test_final_tick_reconcile_uses_explicit_broker_context": 70,
     "tests/test_ubs_agent_rescore.py::UBSAgentRescoreTests.test_rescore_robustness_applies_degradation_gate_and_persists_audit": 83,

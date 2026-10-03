@@ -7,34 +7,25 @@ from pathlib import Path
 from tools.audit_generalization_v2 import DEGRADATION_VERSION, FORMULA_VERSION, build_audit
 
 
+AUDIT_SCHEMA = """
+create table candidates (
+    id integer primary key, run_id integer not null, symbol text,
+    period text, set_path text, status text
+);
+create table candidate_robustness (
+    candidate_id integer primary key, run_id integer not null, status text not null,
+    accepted integer, score real, report_path text, metrics_json text, degradation_json text
+);
+create table candidate_final_tick (candidate_id integer primary key, status text);
+create table candidate_final_tick_6m (candidate_id integer primary key, status text);
+create table candidate_regression (candidate_id integer primary key, status text);
+create table portfolio_members (candidate_id integer);
+"""
+
+
 def create_memory(path: Path, *, current: bool) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
-    conn.executescript(
-        """
-        create table candidates (
-            id integer primary key,
-            run_id integer not null,
-            symbol text,
-            period text,
-            set_path text,
-            status text
-        );
-        create table candidate_robustness (
-            candidate_id integer primary key,
-            run_id integer not null,
-            status text not null,
-            accepted integer,
-            score real,
-            report_path text,
-            metrics_json text,
-            degradation_json text
-        );
-        create table candidate_final_tick (candidate_id integer primary key, status text);
-        create table candidate_final_tick_6m (candidate_id integer primary key, status text);
-        create table candidate_regression (candidate_id integer primary key, status text);
-        create table portfolio_members (candidate_id integer);
-        """
-    )
+    conn.executescript(AUDIT_SCHEMA)
     metrics = {"score_formula_version": FORMULA_VERSION if current else "1"}
     degradation = {}
     if current:
