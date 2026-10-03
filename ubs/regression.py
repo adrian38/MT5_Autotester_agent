@@ -226,12 +226,8 @@ def evaluate_regression_report(
     return status
 
 
-def evaluate_candidate_regression(
-    args: Any,
-    memory: AgentMemory,
-    score_config: ScoreConfig,
-    runtime: RegressionRuntime,
-) -> int:
+def _regression_preflight(args: Any) -> int | None:
+    """Rechaza de entrada un rango invalido o una ejecucion sin terminal."""
     date_error = validate_regression_date_range(args.regression_from_date, args.regression_to_date)
     if date_error:
         print(f"ERROR: rango regresivo invalido: {date_error}")
@@ -239,13 +235,13 @@ def evaluate_candidate_regression(
     if not args.expert and not args.multi_terminal and not args.dry_run:
         print("ERROR: prueba regresiva requiere --expert o --multi-terminal")
         return 1
+    return None
 
-    run = memory.run_by_id(args.regression_run_id) if args.regression_run_id else memory.latest_run()
-    if run is None:
-        print("ERROR: no hay run SQLite disponible para prueba regresiva")
-        return 1
-    run_id = int(run["id"])
-    run_dir = resolve_workspace_path(run["output_dir"])
+
+def _regression_candidate_rows(
+    args: Any, memory: AgentMemory, run_id: int
+) -> list[tuple[sqlite3.Row, Path]]:
+    """Candidatos elegibles con su .set existente, segun los filtros pedidos."""
     rows_with_paths = [
         (row, resolve_workspace_path(row["set_path"]))
         for row in memory.accepted_candidates_for_regression(run_id)
@@ -261,77 +257,84 @@ def evaluate_candidate_regression(
             if not str(row["regression_status"] or "").strip()
             or str(row["regression_status"] or "").strip().lower() in REGRESSION_RETRYABLE_STATUSES
         ]
-    # Un simbolo que el broker retiro no puede producir reporte: MT5 no abre el
-    # tester. Se aparta antes de copiar sets y lanzar backtests, pero hay que
-    # grabar el estado terminal o la seleccion (sin fila O retryable) lo volveria
-    # a encolar en cada pasada.
-    if runtime.missing_report_status is not None:
-        kept: list[tuple[sqlite3.Row, Path]] = []
-        retired: list[tuple[sqlite3.Row, str]] = []
-        for row, path in rows_with_paths:
-            status = runtime.missing_report_status(str(row["target_symbol"] or ""))
-            if status == "no_report":
-                kept.append((row, path))
-            else:
-                retired.append((row, status))
-        rows_with_paths = kept
-        for row, status in retired:
-            _record_technical(
-                memory,
-                args,
-                candidate_id=int(row["id"]),
-                run_id=run_id,
-                status=status,
-                report=None,
-                reasons=(status,),
-            )
-        if retired:
-            symbols = sorted({str(row["target_symbol"] or "") for row, _status in retired})
-            print(
-                f"Regresiva: {len(retired)} candidato(s) omitidos sin abrir MT5 por simbolo "
-                f"retirado del broker ({', '.join(symbols)})."
-            )
+    return rows_with_paths
 
-    if not rows_with_paths:
-        mode = "pendientes/retryables" if args.regression_pending_only else "Final Tick 6M accepted"
-        print(f"Regresiva run #{run_id}: no hay candidatos {mode} con .set existente.")
-        return 0
 
-    run_mode = "pending" if args.regression_pending_only else "all"
-    regression_dir = runtime.recreate_work_dir(run_dir / "regression_2017_2019" / f"run_{run_id}_{run_mode}")
-    copied: list[tuple[sqlite3.Row, Variant]] = []
-    for row, source_set in rows_with_paths:
-        set_label = compact_safe_part(source_set.stem, 72, fallback="candidate")
-        destination = regression_dir / f"regression_{int(row['id']):06d}_{set_label}.set"
-        original = runtime.variant_from_candidate_row(row)
-        # Un ForceSymbol mal escrito heredado del .set guardado cierra MT5 sin
-        # reporte, y no_report es retryable: la regresiva no avanzaria nunca.
-        if runtime.write_stage_set is not None:
-            target_symbol = runtime.write_stage_set(
-                source_set, destination, False, args, original.target_symbol
-            )
+def _drop_retired_symbols(
+    args: Any, memory: AgentMemory, runtime: RegressionRuntime, run_id: int,
+    rows_with_paths: list[tuple[sqlite3.Row, Path]],
+) -> list[tuple[sqlite3.Row, Path]]:
+    """Aparta los simbolos retirados dejando su estado terminal en memoria.
+
+    Un simbolo que el broker retiro no puede producir reporte: MT5 no abre el
+    tester. Se aparta antes de copiar sets y lanzar backtests, pero hay que
+    grabar el estado terminal o la seleccion (sin fila O retryable) lo volveria
+    a encolar en cada pasada.
+    """
+    if runtime.missing_report_status is None:
+        return rows_with_paths
+    kept: list[tuple[sqlite3.Row, Path]] = []
+    retired: list[tuple[sqlite3.Row, str]] = []
+    for row, path in rows_with_paths:
+        status = runtime.missing_report_status(str(row["target_symbol"] or ""))
+        if status == "no_report":
+            kept.append((row, path))
         else:
-            write_set_use_every_tick(source_set, destination, False)
-            target_symbol = original.target_symbol
-        if not args.dry_run:
-            runtime.remove_report_artifacts(destination)
-        copied.append(
-            (
-                row,
-                Variant(
-                    path=destination,
-                    seed=original.seed,
-                    target_symbol=target_symbol,
-                    target_period=original.target_period,
-                    mutated_keys=original.mutated_keys,
-                    missing_lot_keys=original.missing_lot_keys,
-                    policy=f"{original.policy}+regression_2017_2019",
-                    timeframe_keys=original.timeframe_keys,
-                    mutation_details=original.mutation_details,
-                ),
-            )
+            retired.append((row, status))
+    for row, status in retired:
+        _record_technical(
+            memory,
+            args,
+            candidate_id=int(row["id"]),
+            run_id=run_id,
+            status=status,
+            report=None,
+            reasons=(status,),
         )
+    if retired:
+        symbols = sorted({str(row["target_symbol"] or "") for row, _status in retired})
+        print(
+            f"Regresiva: {len(retired)} candidato(s) omitidos sin abrir MT5 por simbolo "
+            f"retirado del broker ({', '.join(symbols)})."
+        )
+    return kept
 
+
+def _regression_stage_set(
+    args: Any, runtime: RegressionRuntime, row: sqlite3.Row, source_set: Path, regression_dir: Path
+) -> Variant:
+    """Copia el .set del candidato al area de la regresiva y lo deja listo."""
+    set_label = compact_safe_part(source_set.stem, 72, fallback="candidate")
+    destination = regression_dir / f"regression_{int(row['id']):06d}_{set_label}.set"
+    original = runtime.variant_from_candidate_row(row)
+    # Un ForceSymbol mal escrito heredado del .set guardado cierra MT5 sin
+    # reporte, y no_report es retryable: la regresiva no avanzaria nunca.
+    if runtime.write_stage_set is not None:
+        target_symbol = runtime.write_stage_set(
+            source_set, destination, False, args, original.target_symbol
+        )
+    else:
+        write_set_use_every_tick(source_set, destination, False)
+        target_symbol = original.target_symbol
+    if not args.dry_run:
+        runtime.remove_report_artifacts(destination)
+    return Variant(
+        path=destination,
+        seed=original.seed,
+        target_symbol=target_symbol,
+        target_period=original.target_period,
+        mutated_keys=original.mutated_keys,
+        missing_lot_keys=original.missing_lot_keys,
+        policy=f"{original.policy}+regression_2017_2019",
+        timeframe_keys=original.timeframe_keys,
+        mutation_details=original.mutation_details,
+    )
+
+
+def _run_regression_backtests(
+    args: Any, runtime: RegressionRuntime, regression_dir: Path, run_id: int, copied: list
+) -> tuple[float, int | None]:
+    """Lanza los backtests regresivos; devuelve cuando empezaron y el corte."""
     print(
         f"Regresiva run #{run_id}: candidatos Final Tick 6M accepted={len(copied)}; "
         f"fechas={args.regression_from_date}->{args.regression_to_date}; Model=1 OHLC"
@@ -350,14 +353,21 @@ def evaluate_candidate_regression(
     )
     if code == runtime.running_terminal_exit_code:
         print("ERROR: run_tests.py no ejecuto la prueba regresiva porque hay una terminal MT5 abierta.")
-        return 1
+        return started_at, 1
     if code != 0:
         print(f"AVISO: prueba regresiva termino con codigo {code}; se evaluaran reportes disponibles")
         if args.dry_run:
-            return code
+            return started_at, code
     if args.dry_run:
-        return 0
+        return started_at, 0
+    return started_at, None
 
+
+def _evaluate_regression_reports(
+    args: Any, memory: AgentMemory, runtime: RegressionRuntime, score_config: ScoreConfig,
+    run_id: int, copied: list, started_at: float,
+) -> None:
+    """Puntua el reporte de cada candidato y resume los estados obtenidos."""
     symbol_map = runtime.parse_symbol_map(args.symbol_map)
     status_counts: dict[str, int] = {}
     for row, variant in copied:
@@ -386,6 +396,46 @@ def evaluate_candidate_regression(
         "Regresiva terminada: "
         + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
         + f"; memoria={memory.path}"
+    )
+
+
+def evaluate_candidate_regression(
+    args: Any,
+    memory: AgentMemory,
+    score_config: ScoreConfig,
+    runtime: RegressionRuntime,
+) -> int:
+    invalid = _regression_preflight(args)
+    if invalid is not None:
+        return invalid
+    run = memory.run_by_id(args.regression_run_id) if args.regression_run_id else memory.latest_run()
+    if run is None:
+        print("ERROR: no hay run SQLite disponible para prueba regresiva")
+        return 1
+    run_id = int(run["id"])
+    rows_with_paths = _drop_retired_symbols(
+        args, memory, runtime, run_id, _regression_candidate_rows(args, memory, run_id)
+    )
+    if not rows_with_paths:
+        mode = "pendientes/retryables" if args.regression_pending_only else "Final Tick 6M accepted"
+        print(f"Regresiva run #{run_id}: no hay candidatos {mode} con .set existente.")
+        return 0
+    run_mode = "pending" if args.regression_pending_only else "all"
+    run_dir = resolve_workspace_path(run["output_dir"])
+    regression_dir = runtime.recreate_work_dir(
+        run_dir / "regression_2017_2019" / f"run_{run_id}_{run_mode}"
+    )
+    copied = [
+        (row, _regression_stage_set(args, runtime, row, source_set, regression_dir))
+        for row, source_set in rows_with_paths
+    ]
+    started_at, early_exit = _run_regression_backtests(
+        args, runtime, regression_dir, run_id, copied
+    )
+    if early_exit is not None:
+        return early_exit
+    _evaluate_regression_reports(
+        args, memory, runtime, score_config, run_id, copied, started_at
     )
     return 0
 
