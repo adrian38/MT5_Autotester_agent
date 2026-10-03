@@ -3,7 +3,6 @@
     "portfolio_manager/ubs_portfolio_phases.py::_deep_refinement_phase": 77,
     "portfolio_manager/ubs_portfolio_phases.py::_greedy_and_local_search": 84,
     "portfolio_manager/ubs_portfolio_phases.py::_relax_group_cap": 103,
-    "portfolio_manager/ubs_portfolio_phases.py::_search_phases": 73,
-    "ui/ubs_portfolio_tables.py::UBSPortfolioTablesMixin._quarantine_selected_ubs_portfolio_member_impl": 93
+    "portfolio_manager/ubs_portfolio_phases.py::_search_phases": 73
   }
 }

@@ -376,6 +376,59 @@ class UBSPortfolioTablesMixin:
                 self._refresh_ubs_monthly_portfolios(select_id=portfolio_id)
             self._populate_ubs_portfolio_detail(portfolio_id)
 
+    def _record_portfolio_member_quarantine(self, member, portfolio_id, set_path) -> None:
+        account_type, memory_path, candidate_id = self._resolve_portfolio_member_source(member)
+        conn = self._ubs_portfolio_conn_for_memory(memory_path)
+        try:
+            conn.execute(
+                """insert into portfolio_quarantine (
+                    account_type, candidate_id, set_path, symbol, timeframe,
+                    reason, source_portfolio_id, quarantined_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(set_path) do update set
+                    account_type=excluded.account_type, candidate_id=excluded.candidate_id,
+                    symbol=excluded.symbol, timeframe=excluded.timeframe,
+                    reason=excluded.reason, source_portfolio_id=excluded.source_portfolio_id,
+                    quarantined_at=excluded.quarantined_at""",
+                (
+                    account_type, candidate_id, set_path, str(member.get("symbol") or ""),
+                    str(member.get("timeframe") or member.get("period") or ""),
+                    "Retirada manualmente de un portafolio guardado", portfolio_id,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _remove_quarantined_portfolio_member(self, member, portfolio_id, set_path) -> None:
+        conn = self._ubs_portfolio_conn()
+        try:
+            portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
+            if portfolio is None:
+                raise ValueError("El portafolio ya no existe.")
+            target = max(int(portfolio["target_strategies"] or 0), int(portfolio["active_strategies"] or 0))
+            conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
+            deleted = conn.execute(
+                "delete from portfolio_allocations where portfolio_id=? and set_path=?",
+                (portfolio_id, set_path),
+            )
+            if deleted.rowcount == 0 and member.get("id") is not None:
+                deleted = conn.execute(
+                    "delete from portfolio_allocations where portfolio_id=? and id=?",
+                    (portfolio_id, int(member["id"])),
+                )
+            conn.execute("delete from portfolio_members where portfolio_id=? and set_path=?", (portfolio_id, set_path))
+            if deleted.rowcount == 0:
+                raise ValueError("No se encontro la asignacion seleccionada dentro del portafolio.")
+            self._recalculate_saved_portfolio(conn, portfolio_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _quarantine_selected_ubs_portfolio_member_impl(self, portfolio_id: int) -> None:
         member = self._selected_ubs_portfolio_detail_member()
         if not member:
@@ -399,71 +452,8 @@ class UBSPortfolioTablesMixin:
             "Despues podras usar 'Completar portafolio' para buscar una sustituta y recalcular lotes.",
         ):
             return
-        account_type, memory_path, candidate_id = self._resolve_portfolio_member_source(member)
-        source_conn = self._ubs_portfolio_conn_for_memory(memory_path)
-        try:
-            source_conn.execute(
-                """
-                insert into portfolio_quarantine (
-                    account_type, candidate_id, set_path, symbol, timeframe,
-                    reason, source_portfolio_id, quarantined_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(set_path) do update set
-                    account_type=excluded.account_type,
-                    candidate_id=excluded.candidate_id,
-                    symbol=excluded.symbol,
-                    timeframe=excluded.timeframe,
-                    reason=excluded.reason,
-                    source_portfolio_id=excluded.source_portfolio_id,
-                    quarantined_at=excluded.quarantined_at
-                """,
-                (
-                    account_type,
-                    candidate_id,
-                    set_path,
-                    str(member.get("symbol") or ""),
-                    str(member.get("timeframe") or member.get("period") or ""),
-                    "Retirada manualmente de un portafolio guardado",
-                    portfolio_id,
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-            source_conn.commit()
-        finally:
-            source_conn.close()
-
-        conn = self._ubs_portfolio_conn()
-        try:
-            portfolio = conn.execute("select * from portfolios where id=?", (portfolio_id,)).fetchone()
-            if portfolio is None:
-                raise ValueError("El portafolio ya no existe.")
-            target = max(
-                int(portfolio["target_strategies"] or 0),
-                int(portfolio["active_strategies"] or 0),
-            )
-            conn.execute("update portfolios set target_strategies=? where id=?", (target, portfolio_id))
-            allocation_delete = conn.execute(
-                "delete from portfolio_allocations where portfolio_id=? and set_path=?",
-                (portfolio_id, set_path),
-            )
-            if allocation_delete.rowcount == 0 and member.get("id") is not None:
-                allocation_delete = conn.execute(
-                    "delete from portfolio_allocations where portfolio_id=? and id=?",
-                    (portfolio_id, int(member["id"])),
-                )
-            conn.execute(
-                "delete from portfolio_members where portfolio_id=? and set_path=?",
-                (portfolio_id, set_path),
-            )
-            if allocation_delete.rowcount == 0:
-                raise ValueError("No se encontro la asignacion seleccionada dentro del portafolio.")
-            self._recalculate_saved_portfolio(conn, portfolio_id)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        self._record_portfolio_member_quarantine(member, portfolio_id, set_path)
+        self._remove_quarantined_portfolio_member(member, portfolio_id, set_path)
         self._refresh_ubs_portfolios(select_id=portfolio_id)
         if hasattr(self, "_refresh_ubs_monthly_portfolios"):
             self._refresh_ubs_monthly_portfolios(select_id=portfolio_id)
