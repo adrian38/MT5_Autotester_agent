@@ -26,7 +26,6 @@
     "ubs_agent_history.py::probe_universe_history": 108,
     "ubs_agent_rescore.py::rescore_robustness_only": 104,
     "ubs_agent_retry.py::retry_full_run": 104,
-    "ubs_agent_retry.py::retry_seed": 155,
     "ubs_agent_targets.py::choose_diverse_target": 89,
     "ui/app_chrome.py::AppChromeMixin._configure_style": 124,
     "ui/app_process.py::AppProcessMixin._drain_output_queue": 116,
