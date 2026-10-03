@@ -189,6 +189,115 @@ class UBSPortfolioTablesMixin:
         self._create_ubs_portfolio_detail_window(portfolio_id)
         self._populate_ubs_portfolio_detail(portfolio_id)
 
+    @staticmethod
+    def _portfolio_detail_month_label(inputs: dict, is_monthly: bool, month_no: int) -> str:
+        """Nombre del mes objetivo de un portafolio mensual."""
+        month_label = str(inputs.get("target_month_label") or "").strip()
+        if not is_monthly or month_label or not 1 <= month_no <= 12:
+            return month_label
+        month_names = (
+            "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+            "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+        )
+        return f"{month_no:02d} - {month_names[month_no - 1]}"
+
+    @staticmethod
+    def _portfolio_detail_headline(
+        portfolio, portfolio_id: int, metrics: dict, members: list, profile_label: str,
+        is_bundle: bool,
+    ) -> str:
+        """Primera linea del estado: composicion y unidades del portafolio."""
+        target = max(int(portfolio["target_strategies"] or 0), int(portfolio["active_strategies"] or 0))
+        if not is_bundle:
+            return (
+                f"Portafolio #{portfolio_id}: {len(members)}/{target} estrategias | "
+                f"{int(portfolio['total_units'] or 0)} unidades | lote {float(portfolio['total_lot'] or 0):.2f}"
+            )
+        common_set_ids = metrics.get("common_set_ids") if isinstance(metrics, dict) else []
+        variant_order = metrics.get("variant_order") if isinstance(metrics, dict) else []
+        common_count = len(common_set_ids) if isinstance(common_set_ids, list) else target
+        variant_count = len(variant_order) if isinstance(variant_order, list) else len({
+            str(member.get("variant_key") or member.get("variant_label") or "")
+            for member in members
+            if member.get("variant_key") or member.get("variant_label")
+        })
+        return (
+            f"Portafolio #{portfolio_id} A/M/C: {common_count} sets | {variant_count} variantes | "
+            f"vista {profile_label or 'seleccionada'}: {int(portfolio['total_units'] or 0)} unidades, "
+            f"lote {float(portfolio['total_lot'] or 0):.2f}"
+        )
+
+    def _portfolio_detail_status(
+        self, portfolio, portfolio_id: int, metrics: dict, members: list,
+        inputs: dict, is_bundle: bool, is_monthly: bool, month_label: str,
+    ) -> str:
+        """Linea de estado completa de la ventana de detalle."""
+        profile_label = str(inputs.get("optimization_profile_label") or "").strip()
+        status_parts = [
+            self._portfolio_detail_headline(
+                portfolio, portfolio_id, metrics, members, profile_label, is_bundle
+            )
+        ]
+        if is_monthly and month_label:
+            status_parts.append(f"Mensual {month_label}")
+        if profile_label:
+            status_parts.append(f"Perfil {profile_label}")
+        status_parts.append(
+            f"DD valle {float(portfolio['actual_valley_dd'] or 0):,.2f}/{float(portfolio['target_valley_dd'] or 0):,.2f}"
+        )
+        status_parts.append(
+            f"DD puntual {float(portfolio['actual_point_dd'] or 0):,.2f}/{float(portfolio['target_point_dd'] or 0):,.2f}"
+        )
+        stress = metrics.get("stress_bootstrap") if isinstance(metrics.get("stress_bootstrap"), dict) else {}
+        if stress:
+            stress_state = "ALERTA stress" if bool(stress.get("alert")) else "stress OK"
+            status_parts.append(
+                f"{stress_state} P95 {float(stress.get('valley_dd_p95') or 0):,.2f}"
+            )
+        return " | ".join(status_parts)
+
+    @staticmethod
+    def _portfolio_member_coverage(member: dict, seasonal_coverage: dict) -> tuple[int, list, list]:
+        """Mes objetivo y anos cubiertos por una estrategia del portafolio."""
+        coverage = {}
+        for coverage_key in (
+            str(member.get("set_id") or ""),
+            str(member.get("set_path") or ""),
+        ):
+            if coverage_key and coverage_key in seasonal_coverage:
+                coverage = seasonal_coverage[coverage_key]
+                break
+        coverage_month = int(coverage.get("target_month") or 0) if isinstance(coverage, dict) else 0
+        years = coverage.get("years") if isinstance(coverage, dict) else []
+        positive_years = coverage.get("positive_years") if isinstance(coverage, dict) else []
+        if not isinstance(years, list):
+            years = []
+        if not isinstance(positive_years, list):
+            positive_years = []
+        return coverage_month, years, positive_years
+
+    def _portfolio_member_values(self, member: dict, seasonal_coverage: dict) -> tuple:
+        """Columnas de una estrategia en la tabla de detalle."""
+        coverage_month, years, positive_years = self._portfolio_member_coverage(
+            member, seasonal_coverage
+        )
+        return (
+            self._ubs_portfolio_member_variant_label(member),
+            Path(str(member.get("set_path") or member.get("set_id") or "")).name,
+            self._ubs_portfolio_member_account(member),
+            self._ubs_portfolio_member_candidate_label(member),
+            member.get("symbol") or "",
+            member.get("timeframe") or member.get("period") or "",
+            f"{coverage_month:02d}" if coverage_month else "",
+            ",".join(str(year) for year in years),
+            f"{len(positive_years)}/{len(years)}" if years else "",
+            int(member.get("units") or 0),
+            f"{float(member.get('lot') or 0):.2f}",
+            f"{float(member.get('net_profit_contribution') or 0):,.0f}",
+            f"{float(member.get('standalone_valley_dd') or 0):,.2f}",
+            f"{float(member.get('standalone_point_dd') or 0):,.2f}",
+        )
+
     def _populate_ubs_portfolio_detail(self, portfolio_id: int) -> None:
         window = getattr(self, "ubs_portfolio_detail_window", None)
         if window is None or not window.winfo_exists():
@@ -218,93 +327,24 @@ class UBSPortfolioTablesMixin:
             if isinstance(metrics.get("seasonal_coverage"), dict)
             else {}
         )
-        stress = metrics.get("stress_bootstrap") if isinstance(metrics.get("stress_bootstrap"), dict) else {}
         is_bundle = self._portfolio_is_bundle(portfolio)
         is_monthly = str(portfolio["portfolio_scope"] or inputs.get("portfolio_scope") or "full_history") == "monthly"
         month_no = int(portfolio["target_month"] or inputs.get("target_month") or 0)
-        month_label = str(inputs.get("target_month_label") or "").strip()
-        if is_monthly and not month_label and 1 <= month_no <= 12:
-            month_names = (
-                "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
-            )
-            month_label = f"{month_no:02d} - {month_names[month_no - 1]}"
-        profile_label = str(inputs.get("optimization_profile_label") or "").strip()
+        month_label = self._portfolio_detail_month_label(inputs, is_monthly, month_no)
         title_suffix = f" - Mensual {month_label}" if is_monthly and month_label else ""
         bundle_suffix = " - A/M/C" if is_bundle else ""
         window.title(f"Portafolio #{portfolio_id}{bundle_suffix}{title_suffix}")
-        target = max(int(portfolio["target_strategies"] or 0), int(portfolio["active_strategies"] or 0))
-        if is_bundle:
-            common_set_ids = metrics.get("common_set_ids") if isinstance(metrics, dict) else []
-            variant_order = metrics.get("variant_order") if isinstance(metrics, dict) else []
-            common_count = len(common_set_ids) if isinstance(common_set_ids, list) else target
-            variant_count = len(variant_order) if isinstance(variant_order, list) else len({
-                str(member.get("variant_key") or member.get("variant_label") or "")
-                for member in members
-                if member.get("variant_key") or member.get("variant_label")
-            })
-            status_parts = [
-                f"Portafolio #{portfolio_id} A/M/C: {common_count} sets | {variant_count} variantes | "
-                f"vista {profile_label or 'seleccionada'}: {int(portfolio['total_units'] or 0)} unidades, "
-                f"lote {float(portfolio['total_lot'] or 0):.2f}"
-            ]
-        else:
-            status_parts = [
-                f"Portafolio #{portfolio_id}: {len(members)}/{target} estrategias | "
-                f"{int(portfolio['total_units'] or 0)} unidades | lote {float(portfolio['total_lot'] or 0):.2f}"
-            ]
-        if is_monthly and month_label:
-            status_parts.append(f"Mensual {month_label}")
-        if profile_label:
-            status_parts.append(f"Perfil {profile_label}")
-        status_parts.append(
-            f"DD valle {float(portfolio['actual_valley_dd'] or 0):,.2f}/{float(portfolio['target_valley_dd'] or 0):,.2f}"
-        )
-        status_parts.append(
-            f"DD puntual {float(portfolio['actual_point_dd'] or 0):,.2f}/{float(portfolio['target_point_dd'] or 0):,.2f}"
-        )
-        if stress:
-            stress_state = "ALERTA stress" if bool(stress.get("alert")) else "stress OK"
-            status_parts.append(
-                f"{stress_state} P95 {float(stress.get('valley_dd_p95') or 0):,.2f}"
+        self.ubs_portfolio_detail_status.set(
+            self._portfolio_detail_status(
+                portfolio, portfolio_id, metrics, members, inputs, is_bundle, is_monthly, month_label
             )
-        self.ubs_portfolio_detail_status.set(" | ".join(status_parts))
+        )
         for index, member in enumerate(members):
-            coverage = {}
-            for coverage_key in (
-                str(member.get("set_id") or ""),
-                str(member.get("set_path") or ""),
-            ):
-                if coverage_key and coverage_key in seasonal_coverage:
-                    coverage = seasonal_coverage[coverage_key]
-                    break
-            coverage_month = int(coverage.get("target_month") or 0) if isinstance(coverage, dict) else 0
-            years = coverage.get("years") if isinstance(coverage, dict) else []
-            positive_years = coverage.get("positive_years") if isinstance(coverage, dict) else []
-            if not isinstance(years, list):
-                years = []
-            if not isinstance(positive_years, list):
-                positive_years = []
             item = tree.insert(
                 "",
                 "end",
                 iid=f"member:{index}",
-                values=(
-                    self._ubs_portfolio_member_variant_label(member),
-                    Path(str(member.get("set_path") or member.get("set_id") or "")).name,
-                    self._ubs_portfolio_member_account(member),
-                    self._ubs_portfolio_member_candidate_label(member),
-                    member.get("symbol") or "",
-                    member.get("timeframe") or member.get("period") or "",
-                    f"{coverage_month:02d}" if coverage_month else "",
-                    ",".join(str(year) for year in years),
-                    f"{len(positive_years)}/{len(years)}" if years else "",
-                    int(member.get("units") or 0),
-                    f"{float(member.get('lot') or 0):.2f}",
-                    f"{float(member.get('net_profit_contribution') or 0):,.0f}",
-                    f"{float(member.get('standalone_valley_dd') or 0):,.2f}",
-                    f"{float(member.get('standalone_point_dd') or 0):,.2f}",
-                ),
+                values=self._portfolio_member_values(member, seasonal_coverage),
                 tags=("accepted",),
             )
             self.ubs_portfolio_detail_members[item] = member
