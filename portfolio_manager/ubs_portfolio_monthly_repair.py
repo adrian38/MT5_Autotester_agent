@@ -154,157 +154,11 @@ def _repair_allocations_to_strict_monthly(
     return current_allocations, current_eval, current_validation, decision_log
 
 
-def _strict_monthly_safe_refill_allocations(
-    candidate_pool: list[RobustStrategySet],
-    full_by_id: dict[str, RobustStrategySet],
-    allocations: dict[str, int],
-    current: PortfolioEvaluation,
-    *,
-    target_month: int,
-    max_units_per_set: int | None,
-    max_total_units: int | None,
-    max_units_per_symbol: int | None,
-    max_sets_per_symbol: int | None,
-    max_sets_per_group: int | None,
-    max_units_per_group_pct: float | None,
-    group_unit_cap_bootstrap: int,
-    max_pair_corr: float | None,
-    max_downside_corr: float | None,
-    max_dd_overlap: float | None,
-    existing_portfolio_curves: Sequence[Sequence[float]] | None,
-    max_portfolio_corr: float | None,
-    margin_balance: float | None,
-    max_margin_pct: float | None,
-    margin_profile: str | None,
-    stock_leverage: float,
-    default_leverage: float,
-    stock_contract_size: float,
-    default_contract_size: float,
-    max_daily_dd: float | None,
-    enforce_point_dd: bool,
-    daily_dd_full_history: bool,
-    max_iterations: int = 160,
-) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
-    sets = list({strategy.set_id: strategy for strategy in candidate_pool}.values())
-    allocations = {
-        strategy.set_id: max(int(allocations.get(strategy.set_id, 0)), 0)
-        for strategy in sets
-    }
-    decision_log: list[OptimizationDecision] = []
-    attempts = 0
-
-    for iteration in range(1, max_iterations + 1):
-        best_move: dict[str, object] | None = None
-        ordered_targets = sorted(
-            sets,
-            key=lambda item: score_set_for_portfolio(item, 1),
-            reverse=True,
-        )
-        for target in ordered_targets:
-            attempts += 1
-            if not can_add_unit(
-                target_set=target,
-                sets=sets,
-                allocations=allocations,
-                max_units_per_set=max_units_per_set,
-                max_total_units=max_total_units,
-                max_units_per_symbol=max_units_per_symbol,
-                max_sets_per_symbol=max_sets_per_symbol,
-                max_units_per_group_pct=max_units_per_group_pct,
-                max_sets_per_group=max_sets_per_group,
-                group_unit_cap_bootstrap=group_unit_cap_bootstrap,
-                margin_balance=margin_balance,
-                max_margin_pct=max_margin_pct,
-                margin_profile=margin_profile,
-                stock_leverage=stock_leverage,
-                default_leverage=default_leverage,
-                stock_contract_size=stock_contract_size,
-                default_contract_size=default_contract_size,
-            ):
-                continue
-            if allocations.get(target.set_id, 0) <= 0:
-                rejected_by_corr, _reason = violates_correlation_limits(
-                    target,
-                    sets,
-                    allocations,
-                    max_pair_corr,
-                    max_downside_corr,
-                    max_dd_overlap,
-                )
-                if rejected_by_corr:
-                    continue
-            trial_allocations = allocations.copy()
-            trial_allocations[target.set_id] = trial_allocations.get(target.set_id, 0) + 1
-            trial = evaluate_portfolio(
-                sets,
-                trial_allocations,
-                current.target_valley_dd,
-                current.target_point_dd,
-                max_daily_dd,
-                enforce_point_dd,
-                daily_dd_full_history,
-            )
-            if _evaluation_violates_dd_limits(trial):
-                continue
-            if not _portfolio_corr_allowed(trial, existing_portfolio_curves, max_portfolio_corr):
-                continue
-            validation = _strict_validation_for_allocations(
-                full_by_id,
-                trial_allocations,
-                target_month=target_month,
-                target_valley_dd=current.target_valley_dd,
-                target_point_dd=current.target_point_dd,
-                enforce_point_dd=enforce_point_dd,
-            )
-            if not bool(validation.get("passed")):
-                continue
-            gain = trial.total_net_profit - current.total_net_profit
-            if gain <= 1e-9:
-                continue
-            choice = {
-                "target": target,
-                "allocations": trial_allocations,
-                "evaluation": trial,
-                "gain": gain,
-            }
-            if best_move is None or gain > float(best_move["gain"]):
-                best_move = choice
-
-        if best_move is None:
-            break
-
-        previous = current
-        target = best_move["target"]
-        assert isinstance(target, RobustStrategySet)
-        allocations = best_move["allocations"]  # type: ignore[assignment]
-        current = best_move["evaluation"]  # type: ignore[assignment]
-        decision_log.append(
-            OptimizationDecision(
-                step=iteration,
-                action="strict_monthly_safe_add_unit",
-                set_id=target.set_id,
-                from_set_id=None,
-                to_set_id=target.set_id,
-                gain=current.total_net_profit - previous.total_net_profit,
-                valley_cost=current.valley_dd - previous.valley_dd,
-                point_cost=current.point_dd - previous.point_dd,
-                score=float(best_move["gain"]),
-                portfolio_net_profit_after=current.total_net_profit,
-                portfolio_valley_dd_after=current.valley_dd,
-                portfolio_point_dd_after=current.point_dd,
-                reason="Relleno seguro: unidad anadida sin romper DD, margen, correlacion ni 5A",
-            )
-        )
-
-    return allocations, current, decision_log, attempts
-
-
 @dataclass
 class _StrictDeepRefineConfig:
     """Limites de la optimizacion profunda con validacion mensual estricta."""
 
     target_month: int
-    minimum_active_strategies: int
     max_units_per_set: int | None
     max_total_units: int | None
     max_units_per_symbol: int | None
@@ -327,11 +181,15 @@ class _StrictDeepRefineConfig:
     max_daily_dd: float | None
     enforce_point_dd: bool
     daily_dd_full_history: bool
+    minimum_active_strategies: int = 0
     max_iterations: int = 120
 
 
 class _StrictDeepRefiner:
     """Altas y permutas que mejoran el beneficio sin romper la regla mensual."""
+
+    ADD_ACTION = "deep_add_unit"
+    DECISION_REASON = "Optimizacion profunda: movimiento validado contra DD, margen, correlacion y 5A"
 
     def __init__(
         self, candidate_pool: list[RobustStrategySet], full_by_id: dict[str, RobustStrategySet],
@@ -445,7 +303,7 @@ class _StrictDeepRefiner:
         temp_allocations = self.allocations.copy()
         temp_allocations[target.set_id] = temp_allocations.get(target.set_id, 0) + 1
         self._consider(
-            "deep_add_unit", None, target, temp_allocations, self._evaluate(temp_allocations)
+            self.ADD_ACTION, None, target, temp_allocations, self._evaluate(temp_allocations)
         )
 
     def _swap_allowed(self, target: RobustStrategySet, temp_allocations: dict[str, int]) -> bool:
@@ -540,7 +398,7 @@ class _StrictDeepRefiner:
                 portfolio_net_profit_after=self.current.total_net_profit,
                 portfolio_valley_dd_after=self.current.valley_dd,
                 portfolio_point_dd_after=self.current.point_dd,
-                reason="Optimizacion profunda: movimiento validado contra DD, margen, correlacion y 5A",
+                reason=self.DECISION_REASON,
             )
         )
 
@@ -563,5 +421,38 @@ def _strict_monthly_deep_refine_allocations(
 ) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
     """Refina la cartera manteniendo la validacion mensual estricta."""
     return _StrictDeepRefiner(
+        candidate_pool, full_by_id, allocations, current, _StrictDeepRefineConfig(**limits)
+    ).run()
+
+
+class _SafeRefiller(_StrictDeepRefiner):
+    """Solo anade unidades: nunca mueve las que la cartera ya tiene."""
+
+    ADD_ACTION = "strict_monthly_safe_add_unit"
+    DECISION_REASON = "Relleno seguro: unidad anadida sin romper DD, margen, correlacion ni 5A"
+
+    def _scan(self) -> None:
+        """Busca la unidad que mas sube el beneficio sin romper nada."""
+        self.best_move = None
+        ordered_targets = sorted(
+            self.sets,
+            key=lambda item: score_set_for_portfolio(item, 1),
+            reverse=True,
+        )
+        for target in ordered_targets:
+            self.attempts += 1
+            self._try_add(target)
+
+
+def _strict_monthly_safe_refill_allocations(
+    candidate_pool: list[RobustStrategySet],
+    full_by_id: dict[str, RobustStrategySet],
+    allocations: dict[str, int],
+    current: PortfolioEvaluation,
+    **limits: object,
+) -> tuple[dict[str, int], PortfolioEvaluation, list[OptimizationDecision], int]:
+    """Rellena la cartera con unidades que mantienen la validacion mensual."""
+    limits.setdefault("max_iterations", 160)
+    return _SafeRefiller(
         candidate_pool, full_by_id, allocations, current, _StrictDeepRefineConfig(**limits)
     ).run()
