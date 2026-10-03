@@ -280,18 +280,10 @@ class UBSPortfolioCompleteMixin(UBSPortfolioCompletionPlanMixin):
         if portfolio_id is not None:
             self._populate_ubs_portfolio_detail(int(portfolio_id))
 
-    def _replace_saved_portfolio_result(
-        self,
-        conn: sqlite3.Connection,
-        portfolio_id: int,
-        inputs: dict[str, object],
-        result: PortfolioResult,
-        target_strategies: int,
-    ) -> None:
-        active_symbols = len(
-            {portfolio_symbol_key(item.symbol) for item in result.allocations if item.units > 0}
-        )
-        metrics = {
+    @staticmethod
+    def _replacement_metrics(inputs: dict[str, object], result: PortfolioResult) -> dict[str, object]:
+        """Metricas que se guardan junto al portafolio recalculado."""
+        return {
             "inputs": inputs,
             "warnings": result.warnings,
             "group_summary": result.group_summary,
@@ -308,6 +300,15 @@ class UBSPortfolioCompleteMixin(UBSPortfolioCompletionPlanMixin):
             "enforce_point_dd": result.enforce_point_dd,
             "last_completed_at": datetime.now().isoformat(timespec="seconds"),
         }
+
+    def _update_portfolio_row(
+        self, conn: sqlite3.Connection, portfolio_id: int, inputs: dict[str, object],
+        result: PortfolioResult, target_strategies: int,
+    ) -> None:
+        """Actualiza la cabecera del portafolio con el resultado recalculado."""
+        active_symbols = len(
+            {portfolio_symbol_key(item.symbol) for item in result.allocations if item.units > 0}
+        )
         conn.execute(
             """
             update portfolios
@@ -340,95 +341,125 @@ class UBSPortfolioCompleteMixin(UBSPortfolioCompletionPlanMixin):
                 "valley"
                 if (not result.enforce_point_dd or result.valley_usage_pct >= result.point_usage_pct)
                 else "point",
-                json.dumps(metrics, ensure_ascii=True),
+                json.dumps(self._replacement_metrics(inputs, result), ensure_ascii=True),
                 portfolio_id,
             ),
         )
+
+    @staticmethod
+    def _insert_replacement_allocation(
+        conn: sqlite3.Connection, portfolio_id: int, allocation
+    ) -> None:
+        """Guarda la asignacion recalculada de una estrategia."""
+        conn.execute(
+            """
+            insert into portfolio_allocations (
+                portfolio_id, set_id, candidate_id, symbol, units, lot,
+                net_profit_contribution, standalone_valley_dd, standalone_point_dd,
+                set_path, timeframe, lot_size_step, margin_required, margin_pct,
+                margin_leverage, margin_contract_size, margin_price,
+                is_report_path, oos_report_path
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                portfolio_id,
+                allocation.set_id,
+                allocation.candidate_id,
+                allocation.symbol,
+                allocation.units,
+                allocation.lot,
+                allocation.net_profit_contribution,
+                allocation.standalone_valley_dd,
+                allocation.standalone_point_dd,
+                allocation.set_path or allocation.set_id,
+                allocation.timeframe or "",
+                allocation.lot_size_step,
+                allocation.margin_required,
+                allocation.margin_pct,
+                allocation.margin_leverage,
+                allocation.margin_contract_size,
+                allocation.margin_price,
+                allocation.is_report_path,
+                allocation.oos_report_path,
+            ),
+        )
+
+    @staticmethod
+    def _insert_replacement_member(
+        conn: sqlite3.Connection, portfolio_id: int, allocation
+    ) -> None:
+        """Guarda la ficha de miembro de una estrategia recalculada."""
+        candidate_text = str(allocation.candidate_id)
+        conn.execute(
+            """
+            insert into portfolio_members (
+                portfolio_id, candidate_id, set_path, symbol, period, lot_multiplier,
+                lot, lot_size_step, standalone_dd, quality_score, combined_net_profit,
+                is_report_path, oos_report_path
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                portfolio_id,
+                int(candidate_text) if candidate_text.isdigit() else None,
+                allocation.set_path or allocation.set_id,
+                allocation.symbol,
+                allocation.timeframe or "",
+                allocation.units,
+                allocation.lot,
+                allocation.lot_size_step,
+                allocation.standalone_valley_dd,
+                0.0,
+                allocation.net_profit_contribution,
+                allocation.is_report_path,
+                allocation.oos_report_path,
+            ),
+        )
+
+    @staticmethod
+    def _insert_replacement_decision(
+        conn: sqlite3.Connection, portfolio_id: int, decision
+    ) -> None:
+        """Guarda una entrada de la bitacora del portafolio recalculado."""
+        conn.execute(
+            """
+            insert into portfolio_decision_log (
+                portfolio_id, step, action, set_id, from_set_id, to_set_id,
+                gain, valley_cost, point_cost, score, portfolio_net_profit_after,
+                portfolio_valley_dd_after, portfolio_point_dd_after, reason
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                portfolio_id,
+                decision.step,
+                decision.action,
+                decision.set_id,
+                decision.from_set_id,
+                decision.to_set_id,
+                decision.gain,
+                decision.valley_cost,
+                decision.point_cost,
+                decision.score,
+                decision.portfolio_net_profit_after,
+                decision.portfolio_valley_dd_after,
+                decision.portfolio_point_dd_after,
+                decision.reason,
+            ),
+        )
+
+    def _replace_saved_portfolio_result(
+        self,
+        conn: sqlite3.Connection,
+        portfolio_id: int,
+        inputs: dict[str, object],
+        result: PortfolioResult,
+        target_strategies: int,
+    ) -> None:
+        self._update_portfolio_row(conn, portfolio_id, inputs, result, target_strategies)
         conn.execute("delete from portfolio_decision_log where portfolio_id=?", (portfolio_id,))
         conn.execute("delete from portfolio_allocations where portfolio_id=?", (portfolio_id,))
         conn.execute("delete from portfolio_members where portfolio_id=?", (portfolio_id,))
         for allocation in result.allocations:
-            conn.execute(
-                """
-                insert into portfolio_allocations (
-                    portfolio_id, set_id, candidate_id, symbol, units, lot,
-                    net_profit_contribution, standalone_valley_dd, standalone_point_dd,
-                    set_path, timeframe, lot_size_step, margin_required, margin_pct,
-                    margin_leverage, margin_contract_size, margin_price,
-                    is_report_path, oos_report_path
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    portfolio_id,
-                    allocation.set_id,
-                    allocation.candidate_id,
-                    allocation.symbol,
-                    allocation.units,
-                    allocation.lot,
-                    allocation.net_profit_contribution,
-                    allocation.standalone_valley_dd,
-                    allocation.standalone_point_dd,
-                    allocation.set_path or allocation.set_id,
-                    allocation.timeframe or "",
-                    allocation.lot_size_step,
-                    allocation.margin_required,
-                    allocation.margin_pct,
-                    allocation.margin_leverage,
-                    allocation.margin_contract_size,
-                    allocation.margin_price,
-                    allocation.is_report_path,
-                    allocation.oos_report_path,
-                ),
-            )
-            candidate_text = str(allocation.candidate_id)
-            legacy_candidate_id = int(candidate_text) if candidate_text.isdigit() else None
-            conn.execute(
-                """
-                insert into portfolio_members (
-                    portfolio_id, candidate_id, set_path, symbol, period, lot_multiplier,
-                    lot, lot_size_step, standalone_dd, quality_score, combined_net_profit,
-                    is_report_path, oos_report_path
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    portfolio_id,
-                    legacy_candidate_id,
-                    allocation.set_path or allocation.set_id,
-                    allocation.symbol,
-                    allocation.timeframe or "",
-                    allocation.units,
-                    allocation.lot,
-                    allocation.lot_size_step,
-                    allocation.standalone_valley_dd,
-                    0.0,
-                    allocation.net_profit_contribution,
-                    allocation.is_report_path,
-                    allocation.oos_report_path,
-                ),
-            )
+            self._insert_replacement_allocation(conn, portfolio_id, allocation)
+            self._insert_replacement_member(conn, portfolio_id, allocation)
         for decision in result.decision_log:
-            conn.execute(
-                """
-                insert into portfolio_decision_log (
-                    portfolio_id, step, action, set_id, from_set_id, to_set_id,
-                    gain, valley_cost, point_cost, score, portfolio_net_profit_after,
-                    portfolio_valley_dd_after, portfolio_point_dd_after, reason
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    portfolio_id,
-                    decision.step,
-                    decision.action,
-                    decision.set_id,
-                    decision.from_set_id,
-                    decision.to_set_id,
-                    decision.gain,
-                    decision.valley_cost,
-                    decision.point_cost,
-                    decision.score,
-                    decision.portfolio_net_profit_after,
-                    decision.portfolio_valley_dd_after,
-                    decision.portfolio_point_dd_after,
-                    decision.reason,
-                ),
-            )
+            self._insert_replacement_decision(conn, portfolio_id, decision)
