@@ -402,12 +402,7 @@ class UBSPortfolioBuildMixin:
             + (f" Aviso: {group_warning}" if group_warning else "")
         )
 
-    def _save_pending_ubs_portfolio(self) -> None:
-        result: PortfolioResult | None = getattr(self, "ubs_portfolio_pending_result", None)
-        inputs: dict[str, object] | None = getattr(self, "ubs_portfolio_pending_inputs", None)
-        if result is None or inputs is None:
-            messagebox.showinfo("Guardar portafolio", "Genera un portafolio valido antes de guardarlo.")
-            return
+    def _portfolio_save_items(self, inputs, result):
         pending_proposals = list(getattr(self, "ubs_portfolio_pending_proposals", []) or [])
         if not pending_proposals:
             pending_proposals = [{"label": inputs.get("optimization_profile_label", "Portafolio"), "inputs": inputs, "result": result}]
@@ -430,16 +425,9 @@ class UBSPortfolioBuildMixin:
                     "result": typed_result,
                 }
             )
-        if not save_items:
-            messagebox.showinfo("Guardar portafolio", "No hay propuestas validas para guardar.")
-            return
-        empty_labels = [label for label, _proposal_inputs, proposal_result in save_items if not proposal_result.allocations]
-        if empty_labels:
-            messagebox.showwarning(
-                "Guardar portafolio",
-                "Estas propuestas no tienen asignaciones: " + ", ".join(empty_labels),
-            )
-            return
+        return save_items, valid_proposals
+
+    def _persist_pending_portfolios(self, valid_proposals, save_items, result):
         conn = self._ubs_portfolio_conn()
         saved_ids: list[int] = []
         selected_id: int | None = None
@@ -471,6 +459,9 @@ class UBSPortfolioBuildMixin:
             return
         finally:
             conn.close()
+        return saved_ids, selected_id
+
+    def _finish_pending_portfolio_save(self, saved_ids, selected_id, valid_proposals, result) -> None:
         if selected_id is None and saved_ids:
             selected_id = saved_ids[-1]
         self.ubs_portfolio_pending_result = None
@@ -501,6 +492,32 @@ class UBSPortfolioBuildMixin:
             + f"seleccion net {result.total_net_profit:,.2f}, lote {result.total_lot:.2f}, "
             + f"{result.active_strategies} estrategias."
         )
+
+    def _save_pending_ubs_portfolio(self) -> None:
+        result: PortfolioResult | None = getattr(self, "ubs_portfolio_pending_result", None)
+        inputs: dict[str, object] | None = getattr(self, "ubs_portfolio_pending_inputs", None)
+        if result is None or inputs is None:
+            messagebox.showinfo("Guardar portafolio", "Genera un portafolio valido antes de guardarlo.")
+            return
+        save_items, valid_proposals = self._portfolio_save_items(inputs, result)
+        if not save_items:
+            messagebox.showinfo("Guardar portafolio", "No hay propuestas validas para guardar.")
+            return
+        empty_labels = [
+            label for label, _proposal_inputs, proposal_result in save_items
+            if not proposal_result.allocations
+        ]
+        if empty_labels:
+            messagebox.showwarning(
+                "Guardar portafolio",
+                "Estas propuestas no tienen asignaciones: " + ", ".join(empty_labels),
+            )
+            return
+        persisted = self._persist_pending_portfolios(valid_proposals, save_items, result)
+        if persisted is None:
+            return
+        saved_ids, selected_id = persisted
+        self._finish_pending_portfolio_save(saved_ids, selected_id, valid_proposals, result)
 
     def _notify_ubs_portfolio_event(self, message: str) -> None:
         notifier = getattr(self, "_notify_telegram", None)
