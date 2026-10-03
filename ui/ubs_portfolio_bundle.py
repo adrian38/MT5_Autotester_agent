@@ -13,66 +13,60 @@ from ui.ubs_portfolio_base import PORTFOLIO_BUNDLE_DISPLAY, PORTFOLIO_TYPE_DISPL
 class UBSPortfolioBundleMixin:
     """Lotes A/M/C y consulta de los portafolios guardados."""
 
-    def _insert_portfolio_bundle(
-        self,
-        conn: sqlite3.Connection,
-        proposals: list[dict[str, object]],
-        selected_result: PortfolioResult,
-        *,
-        commit: bool = True,
-    ) -> int:
-        if not proposals:
-            raise ValueError("No hay variantes para guardar.")
-        selected_proposal = next(
-            (
-                proposal for proposal in proposals
-                if proposal.get("result") is selected_result
-            ),
-            proposals[0],
-        )
-        selected_inputs: dict[str, object] = selected_proposal["inputs"]  # type: ignore[assignment]
-        selected_result = selected_proposal["result"]  # type: ignore[assignment]
-        common_set_ids = self._active_set_ids_from_result(selected_result)
-        if not common_set_ids:
-            raise ValueError("La composicion seleccionada no tiene asignaciones.")
-        common_set_id_set = set(common_set_ids)
+    @staticmethod
+    def _bundle_variant_key(proposal: dict[str, object], proposal_inputs: dict[str, object], order: int) -> str:
+        """Clave con la que se guarda una variante dentro del bundle."""
+        key = str(proposal.get("key") or proposal_inputs.get("optimization_profile") or "").strip()
+        return key or str(proposal_inputs.get("portfolio_type") or order)
+
+    @staticmethod
+    def _bundle_variant_label(proposal: dict[str, object], proposal_inputs: dict[str, object], key: str) -> str:
+        """Etiqueta visible de una variante del bundle."""
+        return str(proposal.get("label") or proposal_inputs.get("optimization_profile_label") or key)
+
+    @staticmethod
+    def _bundle_variant_summary(result: PortfolioResult) -> dict[str, object]:
+        """Cifras de cabecera de una variante del bundle."""
+        return {
+            "total_net_profit": result.total_net_profit,
+            "actual_valley_dd": result.actual_valley_dd,
+            "actual_point_dd": result.actual_point_dd,
+            "actual_closed_valley_dd": result.actual_closed_valley_dd,
+            "floating_dd_buffer": result.floating_dd_buffer,
+            "valley_usage_pct": result.valley_usage_pct,
+            "point_usage_pct": result.point_usage_pct,
+            "total_lot": result.total_lot,
+            "total_units": result.total_units,
+            "active_strategies": result.active_strategies,
+        }
+
+    def _bundle_variant_payloads(
+        self, proposals: list[dict[str, object]], common_set_id_set: set[str]
+    ) -> tuple[dict[str, object], list[str]]:
+        """Payload de cada variante, exigiendo que compartan composicion."""
         variant_payloads: dict[str, object] = {}
         variant_order: list[str] = []
         for proposal in proposals:
             result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
             proposal_inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
-            variant_set_ids = set(self._active_set_ids_from_result(result))
-            if variant_set_ids != common_set_id_set:
+            if set(self._active_set_ids_from_result(result)) != common_set_id_set:
                 label = str(proposal.get("label") or proposal_inputs.get("optimization_profile_label") or "")
                 raise ValueError(
                     "Las variantes no comparten la misma composicion de sets. "
                     f"Rechazada variante {label or 'sin etiqueta'}."
                 )
-            key = str(proposal.get("key") or proposal_inputs.get("optimization_profile") or "").strip()
-            if not key:
-                key = str(proposal_inputs.get("portfolio_type") or len(variant_order) + 1)
-            label = str(proposal.get("label") or proposal_inputs.get("optimization_profile_label") or key)
+            key = self._bundle_variant_key(proposal, proposal_inputs, len(variant_order) + 1)
             variant_order.append(key)
             payload = self._portfolio_result_metrics(proposal_inputs, result)
-            payload["label"] = label
-            payload["summary"] = {
-                "total_net_profit": result.total_net_profit,
-                "actual_valley_dd": result.actual_valley_dd,
-                "actual_point_dd": result.actual_point_dd,
-                "actual_closed_valley_dd": result.actual_closed_valley_dd,
-                "floating_dd_buffer": result.floating_dd_buffer,
-                "valley_usage_pct": result.valley_usage_pct,
-                "point_usage_pct": result.point_usage_pct,
-                "total_lot": result.total_lot,
-                "total_units": result.total_units,
-                "active_strategies": result.active_strategies,
-            }
+            payload["label"] = self._bundle_variant_label(proposal, proposal_inputs, key)
+            payload["summary"] = self._bundle_variant_summary(result)
             payload["allocations"] = [asdict(allocation) for allocation in result.allocations]
             variant_payloads[key] = payload
+        return variant_payloads, variant_order
 
-        created_at = datetime.now().isoformat(timespec="seconds")
-        portfolio_scope = str(selected_inputs.get("portfolio_scope") or "full_history")
-        target_month = int(selected_inputs["target_month"]) if selected_inputs.get("target_month") else None
+    @staticmethod
+    def _bundle_composition_labels(selected_inputs: dict[str, object]) -> tuple[str, str]:
+        """Tipo de cartera que define la composicion y su nombre visible."""
         composition_type = str(
             selected_inputs.get("composition_portfolio_type")
             or selected_inputs.get("base_portfolio_type")
@@ -83,16 +77,15 @@ class UBSPortfolioBundleMixin:
             selected_inputs.get("composition_portfolio_type_label")
             or PORTFOLIO_TYPE_DISPLAY.get(composition_type, composition_type)
         )
-        selected_label = str(
-            selected_proposal.get("label")
-            or selected_inputs.get("optimization_profile_label")
-            or PORTFOLIO_BUNDLE_DISPLAY
-        )
-        active_symbols = len({
-            portfolio_symbol_key(allocation.symbol)
-            for allocation in selected_result.allocations
-            if allocation.units > 0
-        })
+        return composition_type, composition_label
+
+    def _bundle_metrics(
+        self, selected_proposal: dict[str, object], selected_inputs: dict[str, object],
+        selected_result: PortfolioResult, variant_payloads: dict[str, object],
+        variant_order: list[str], common_set_ids: list[str],
+    ) -> tuple[dict[str, object], str]:
+        """Metricas del bundle y la etiqueta de la composicion elegida."""
+        composition_type, composition_label = self._bundle_composition_labels(selected_inputs)
         metrics = self._portfolio_result_metrics(selected_inputs, selected_result)
         metrics.update(
             {
@@ -106,11 +99,19 @@ class UBSPortfolioBundleMixin:
                 "common_set_ids": common_set_ids,
             }
         )
-        name = (
-            f"{PORTFOLIO_BUNDLE_DISPLAY} | Base {composition_label} | "
-            + (f"Mes {target_month:02d} | " if target_month else "")
-            + f"{len(common_set_ids)} sets | {datetime.now():%d.%m.%Y %H:%M}"
-        )
+        return metrics, composition_label
+
+    def _insert_bundle_row(
+        self, conn: sqlite3.Connection, selected_inputs: dict[str, object],
+        selected_result: PortfolioResult, metrics: dict[str, object], name: str,
+        selected_label: str, common_set_ids: list[str], created_at: str, target_month: int | None,
+    ) -> int:
+        """Guarda la fila del bundle y devuelve su identificador."""
+        active_symbols = len({
+            portfolio_symbol_key(allocation.symbol)
+            for allocation in selected_result.allocations
+            if allocation.units > 0
+        })
         cur = conn.execute(
             """
             insert into portfolios (
@@ -150,12 +151,17 @@ class UBSPortfolioBundleMixin:
                 "valley"
                 if (not selected_result.enforce_point_dd or selected_result.valley_usage_pct >= selected_result.point_usage_pct)
                 else "point",
-                portfolio_scope,
+                str(selected_inputs.get("portfolio_scope") or "full_history"),
                 target_month,
                 json.dumps(metrics, ensure_ascii=True),
             ),
         )
-        portfolio_id = int(cur.lastrowid)
+        return int(cur.lastrowid)
+
+    def _insert_bundle_allocations(
+        self, conn: sqlite3.Connection, portfolio_id: int, proposals: list[dict[str, object]]
+    ) -> None:
+        """Guarda las asignaciones de cada variante del bundle."""
         for proposal in proposals:
             result: PortfolioResult = proposal["result"]  # type: ignore[assignment]
             proposal_inputs: dict[str, object] = proposal["inputs"]  # type: ignore[assignment]
@@ -169,6 +175,13 @@ class UBSPortfolioBundleMixin:
                     variant_key=variant_key,
                     variant_label=variant_label,
                 )
+
+    @staticmethod
+    def _insert_bundle_decisions(
+        conn: sqlite3.Connection, portfolio_id: int, selected_result: PortfolioResult,
+        selected_label: str,
+    ) -> None:
+        """Guarda la bitacora de decisiones de la variante seleccionada."""
         for decision in selected_result.decision_log:
             conn.execute(
                 """
@@ -195,6 +208,54 @@ class UBSPortfolioBundleMixin:
                     f"{selected_label}: {decision.reason}",
                 ),
             )
+
+    def _insert_portfolio_bundle(
+        self,
+        conn: sqlite3.Connection,
+        proposals: list[dict[str, object]],
+        selected_result: PortfolioResult,
+        *,
+        commit: bool = True,
+    ) -> int:
+        if not proposals:
+            raise ValueError("No hay variantes para guardar.")
+        selected_proposal = next(
+            (
+                proposal for proposal in proposals
+                if proposal.get("result") is selected_result
+            ),
+            proposals[0],
+        )
+        selected_inputs: dict[str, object] = selected_proposal["inputs"]  # type: ignore[assignment]
+        selected_result = selected_proposal["result"]  # type: ignore[assignment]
+        common_set_ids = self._active_set_ids_from_result(selected_result)
+        if not common_set_ids:
+            raise ValueError("La composicion seleccionada no tiene asignaciones.")
+        variant_payloads, variant_order = self._bundle_variant_payloads(
+            proposals, set(common_set_ids)
+        )
+        metrics, composition_label = self._bundle_metrics(
+            selected_proposal, selected_inputs, selected_result, variant_payloads,
+            variant_order, common_set_ids,
+        )
+        selected_label = str(
+            selected_proposal.get("label")
+            or selected_inputs.get("optimization_profile_label")
+            or PORTFOLIO_BUNDLE_DISPLAY
+        )
+        created_at = datetime.now().isoformat(timespec="seconds")
+        target_month = int(selected_inputs["target_month"]) if selected_inputs.get("target_month") else None
+        name = (
+            f"{PORTFOLIO_BUNDLE_DISPLAY} | Base {composition_label} | "
+            + (f"Mes {target_month:02d} | " if target_month else "")
+            + f"{len(common_set_ids)} sets | {datetime.now():%d.%m.%Y %H:%M}"
+        )
+        portfolio_id = self._insert_bundle_row(
+            conn, selected_inputs, selected_result, metrics, name, selected_label,
+            common_set_ids, created_at, target_month,
+        )
+        self._insert_bundle_allocations(conn, portfolio_id, proposals)
+        self._insert_bundle_decisions(conn, portfolio_id, selected_result, selected_label)
         if commit:
             conn.commit()
         return portfolio_id
