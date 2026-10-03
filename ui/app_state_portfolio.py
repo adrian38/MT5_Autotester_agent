@@ -146,7 +146,9 @@ class AppPortfolioStateMixin:
             value=saved_general.get(f"{monthly_prefix}target_month", MONTH_LABELS[0])
         )
         self.ubs_monthly_portfolio_type = tk.StringVar(
-            value=_display_portfolio_type(saved_general.get(f"{monthly_prefix}type", saved_portfolio_type))
+            value=_display_portfolio_type(
+                saved_general.get(f"{monthly_prefix}type", self.ubs_portfolio_type.get())
+            )
         )
         self.ubs_monthly_portfolio_valley_pct = tk.StringVar(
             value=saved_general.get(f"{monthly_prefix}valley_pct", "10")
