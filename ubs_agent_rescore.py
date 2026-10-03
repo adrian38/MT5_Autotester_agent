@@ -209,7 +209,131 @@ def _rescore_candidate_scores_from_reports(
     return 0
 
 
+def _stored_robustness_rows(memory: AgentMemory) -> list:
+    """Filas de robustez resueltas con metricas guardadas para repuntuar."""
+    return memory.conn.execute(
+        """
+        select
+            c.*,
+            cr.metrics_json as robust_metrics_json,
+            cr.degradation_json as robust_degradation_json,
+            cr.report_path as robust_report_path,
+            cr.from_date as robust_from_date,
+            cr.to_date as robust_to_date,
+            cr.positive_bonus as robust_positive_bonus,
+            cr.negative_bonus as robust_negative_bonus,
+            r.config_json as run_config_json
+        from candidate_robustness cr
+        join candidates c on c.id = cr.candidate_id
+        join runs r on r.id = cr.run_id
+        where cr.status in ('accepted', 'rejected', 'no_trades', 'pending_risk_evidence')
+          and coalesce(cr.metrics_json, '') != ''
+        order by cr.run_id, c.generation, c.id
+        """
+    ).fetchall()
+
+
+def _stored_degradation(row) -> dict:
+    """Degradacion ya guardada de una fila de robustez."""
+    try:
+        stored = json.loads(str(row["robust_degradation_json"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def _stored_robustness_verdict(args: argparse.Namespace, row, result, degradation_config):
+    """Estado y degradacion de una fila repuntuada desde sus metricas."""
+    stored_degradation = _stored_degradation(row)
+    degradation: dict[str, object] = {}
+    if result.trades > 0:
+        result, degradation = apply_robustness_degradation(
+            result,
+            base_metrics_raw=row["metrics_json"],
+            run_config_raw=row["run_config_json"],
+            oos_from_date=row["robust_from_date"],
+            oos_to_date=row["robust_to_date"],
+            config=degradation_config,
+        )
+    elif stored_degradation.get("failure_type") in {"invalid_stops", "incompatible_volume"}:
+        degradation = stored_degradation
+    status = (
+        "rejected"
+        if result.trades <= 0 and degradation.get("failure_type") in {"invalid_stops", "incompatible_volume"}
+        else "no_trades"
+        if result.trades <= 0
+        else robustness_result_status(result)
+    )
+    return result, status, degradation
+
+
+def _apply_stored_robustness_updates(memory: AgentMemory, updates: list[tuple]) -> None:
+    """Guarda los estados repuntuados e invalida las etapas posteriores."""
+    if not updates:
+        return
+    memory.conn.executemany(
+        """
+        update candidate_robustness
+        set status=?, accepted=?, score=?, metrics_json=?, degradation_json=?, evaluated_at=?
+        where candidate_id=?
+        """,
+        updates,
+    )
+    removed = memory.cleanup_stale_stage_rows()
+    if any(removed.values()):
+        print(
+            "Etapas posteriores invalidadas: "
+            + ", ".join(f"{stage}={count}" for stage, count in removed.items() if count)
+        )
+
+
 @_batched_memory_updates
+def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
+    if bool(getattr(args, "rescore_from_reports", False)):
+        return _rescore_robustness_from_reports(args, memory, score_config)
+    status_counts: dict[str, int] = {}
+    invalid_metrics = 0
+    updates: list[tuple[object, ...]] = []
+    degradation_config = robustness_degradation_config(args)
+    for row in _stored_robustness_rows(memory):
+        candidate_id = int(row["id"])
+        config = score_config_for_variant(
+            score_config,
+            variant_from_candidate_row(row),
+            min_trades_w1=args.min_trades_w1,
+            min_trades_mn=args.min_trades_mn,
+        )
+        try:
+            result = _rescore_metrics_json(row["robust_metrics_json"], config, risk_stage="oos")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            invalid_metrics += 1
+            print(f"AVISO: metrics_json robustez invalido candidate #{candidate_id}: {exc}")
+            continue
+        result, status, degradation = _stored_robustness_verdict(
+            args, row, result, degradation_config
+        )
+        updates.append(
+            (
+                status,
+                int(status == "accepted" and result.accepted),
+                result.score,
+                result.to_json(),
+                json.dumps(degradation, ensure_ascii=True, sort_keys=True),
+                datetime.now().isoformat(timespec="seconds"),
+                candidate_id,
+            )
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+    _apply_stored_robustness_updates(memory, updates)
+    print(
+        "Robustez repuntuada desde SQLite: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())) or "sin filas")
+        + f"; total={sum(status_counts.values())}; invalidos={invalid_metrics}"
+    )
+    print(f"Memoria: {memory.path}")
+    return 0
+
+
 def rescore_robustness_only(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     if bool(getattr(args, "rescore_from_reports", False)):
         return _rescore_robustness_from_reports(args, memory, score_config)
