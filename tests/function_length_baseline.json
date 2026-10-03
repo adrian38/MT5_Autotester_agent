@@ -15,7 +15,6 @@
     "tests/test_ubs_manual_status.py::memory_conn": 103,
     "tests/test_ubs_score.py::UBSScoreTests.test_axi_normalization_keeps_cash_suffix_rules_off_futures_and_shares": 77,
     "ubs/normalization_gen.py::build_symbol_specs_payload": 98,
-    "ubs_agent_retry.py::retry_full_run": 104,
     "ubs_agent_targets.py::choose_diverse_target": 89,
     "ui/ubs_final_tick_logic.py::UBSFinalTickLogicMixin._run_ubs_final_tick_for_latest_run": 101,
     "ui/ubs_portfolio_build.py::UBSPortfolioBuildMixin._save_pending_ubs_portfolio": 99,
