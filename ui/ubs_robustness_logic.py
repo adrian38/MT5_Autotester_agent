@@ -347,18 +347,45 @@ class UBSRobustnessLogicMixin(UBSRobustnessRowsMixin):
         self._append_console("\n[Robustez auto] Lanzando robustez OOS sobre accepted pendientes sin OOS.\n", tag="info")
         return self._run_ubs_robustness_for_latest_run(confirm=False, auto=True, pending_only=True)
 
-    def _refresh_ubs_robustness(self) -> None:
-        tree_state = self._capture_ubs_robust_tree_state()
-        if hasattr(self, "ubs_robust_tree"):
-            for item in self.ubs_robust_tree.get_children():
-                self.ubs_robust_tree.delete(item)
-        self.ubs_robust_paths.clear()
+    def _ubs_robust_run_rows(self, conn: sqlite3.Connection, run_id: int) -> list:
+        """Candidatos aceptados del run con su resultado de robustez."""
+        return conn.execute(
+            """
+            select
+                c.id, c.run_id, c.generation, c.target_symbol, c.symbol, c.period,
+                c.score as train_score, c.set_path,
+                cr.status as robust_status,
+                cr.report_path as robust_report_path,
+                cr.score as robust_score,
+                cr.metrics_json as robust_metrics_json,
+                cr.degradation_json as robust_degradation_json,
+                cr.from_date, cr.to_date,
+                cr.positive_bonus, cr.negative_bonus,
+                cr.evaluated_at
+            from candidates c
+            left join candidate_robustness cr on cr.candidate_id = c.id
+            where c.run_id=? and c.status='accepted'
+            order by
+                case
+                    when cr.status='accepted' then 0
+                    when cr.status='rejected' then 1
+                    when cr.status is null then 2
+                    else 3
+                end,
+                cr.score desc,
+                c.score desc,
+                c.id desc
+            """,
+            (run_id,),
+        ).fetchall()
 
+    def _load_ubs_robustness_rows(self):
+        """Run visible y sus filas; None si no hay memoria, run o la consulta falla."""
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             self.ubs_robust_summary.set("Robustez: sin memoria UBS")
             self.ubs_robust_status.set(f"No existe memoria: {memory_path}")
-            return
+            return None
         try:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
@@ -366,106 +393,86 @@ class UBSRobustnessLogicMixin(UBSRobustnessRowsMixin):
             run_options = self._ubs_robust_run_options(conn)
             selected_run_id = self._selected_ubs_robust_run_id(run_options)
             self._update_ubs_robust_run_combo(run_options, selected_run_id)
-            if selected_run_id <= 0:
-                conn.close()
-                self.ubs_robust_summary.set("Robustez: sin run visible")
-                self.ubs_robust_status.set("Limpiaste la vista de resultados; el historico conserva la memoria.")
-                return
-            run = conn.execute("select * from runs where id=?", (selected_run_id,)).fetchone()
+            run = (
+                conn.execute("select * from runs where id=?", (selected_run_id,)).fetchone()
+                if selected_run_id > 0
+                else None
+            )
             if run is None:
                 conn.close()
                 self.ubs_robust_summary.set("Robustez: sin run visible")
                 self.ubs_robust_status.set("Limpiaste la vista de resultados; el historico conserva la memoria.")
-                return
-            rows = conn.execute(
-                """
-                select
-                    c.id, c.run_id, c.generation, c.target_symbol, c.symbol, c.period,
-                    c.score as train_score, c.set_path,
-                    cr.status as robust_status,
-                    cr.report_path as robust_report_path,
-                    cr.score as robust_score,
-                    cr.metrics_json as robust_metrics_json,
-                    cr.degradation_json as robust_degradation_json,
-                    cr.from_date, cr.to_date,
-                    cr.positive_bonus, cr.negative_bonus,
-                    cr.evaluated_at
-                from candidates c
-                left join candidate_robustness cr on cr.candidate_id = c.id
-                where c.run_id=? and c.status='accepted'
-                order by
-                    case
-                        when cr.status='accepted' then 0
-                        when cr.status='rejected' then 1
-                        when cr.status is null then 2
-                        else 3
-                    end,
-                    cr.score desc,
-                    c.score desc,
-                    c.id desc
-                """,
-                (run["id"],),
-            ).fetchall()
+                return None
+            rows = self._ubs_robust_run_rows(conn, run["id"])
             conn.close()
         except sqlite3.Error as exc:
             self.ubs_robust_summary.set("Robustez: error SQLite")
             self.ubs_robust_status.set(str(exc))
-            return
+            return None
+        return run, rows
 
+    def _set_ubs_robustness_summary(self, run, rows: list) -> None:
+        """Cabecera del panel: resueltos, pendientes y fechas configuradas."""
         total = len(rows)
         accepted = sum(1 for row in rows if row["robust_status"] == "accepted")
         rejected = sum(1 for row in rows if row["robust_status"] == "rejected")
         no_trades = sum(1 for row in rows if row["robust_status"] == "no_trades")
         settled = accepted + rejected
-        neutral = total - settled - no_trades
         self.ubs_robust_summary.set(
-            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | OK {accepted} | FAIL {rejected} | 0 ops/no aceptado {no_trades}"
+            f"Run #{run['id']} | candidatos accepted {total} | robust resueltos {settled} | "
+            f"OK {accepted} | FAIL {rejected} | 0 ops/no aceptado {no_trades}"
         )
         self.ubs_robust_status.set(
-            f"Pendientes/neutros sin bonus: {neutral} | Fechas config: {self.ubs_robust_from_date.get().strip() or '(template)'} -> {self.ubs_robust_to_date.get().strip() or '(template)'}"
+            f"Pendientes/neutros sin bonus: {total - settled - no_trades} | Fechas config: "
+            f"{self.ubs_robust_from_date.get().strip() or '(template)'} -> "
+            f"{self.ubs_robust_to_date.get().strip() or '(template)'}"
         )
-        if not hasattr(self, "ubs_robust_tree"):
-            return
 
+    def _ubs_robust_row_values(self, row, status: str, cid: str) -> tuple:
+        """Columnas de una fila del arbol de robustez."""
+        metrics = self._parse_ubs_metrics(row["robust_metrics_json"])
+        degradation = self._parse_ubs_metrics(row["robust_degradation_json"])
+        bonus = self._robustness_bonus_for_status(status, row["positive_bonus"], row["negative_bonus"])
+        date_range = ""
+        if row["from_date"] or row["to_date"]:
+            date_range = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}"
+        return (
+            self._checkbox_text(cid in self.ubs_robust_checked),
+            row["run_id"],
+            row["id"],
+            row["generation"],
+            self._format_ubs_robustness_status(status),
+            self._ubs_robust_reason(status, metrics, degradation),
+            row["target_symbol"] or row["symbol"],
+            row["period"],
+            self._format_ubs_number(row["train_score"]),
+            self._format_ubs_number(row["robust_score"]),
+            self._format_ubs_number(bonus),
+            self._format_ubs_number(metrics.get("net_profit")),
+            self._format_ubs_number(metrics.get("normalized_net_profit")),
+            self._format_ubs_number(metrics.get("profit_factor")),
+            self._format_ubs_number(metrics.get("drawdown_pct")),
+            self._format_ubs_int(metrics.get("trades")),
+            self._format_ubs_degradation_value(degradation, "net_retention", percentage=True),
+            self._format_ubs_degradation_value(degradation, "pf_edge_retention", percentage=True),
+            self._format_ubs_degradation_value(degradation, "recovery_retention", percentage=True),
+            self._format_ubs_degradation_value(degradation, "dd_inflation", percentage=False),
+            date_range,
+            Path(str(row["set_path"] or "")).name,
+        )
+
+    def _fill_ubs_robustness_tree(self, rows: list) -> tuple[set[str], dict[str, str]]:
+        """Pinta las filas y devuelve los candidatos visibles y sus items."""
         valid_ids: set[str] = set()
         item_by_id: dict[str, str] = {}
         for index, row in enumerate(rows):
             status = str(row["robust_status"] or "pending")
-            metrics = self._parse_ubs_metrics(row["robust_metrics_json"])
-            degradation = self._parse_ubs_metrics(row["robust_degradation_json"])
-            bonus = self._robustness_bonus_for_status(status, row["positive_bonus"], row["negative_bonus"])
-            date_range = ""
-            if row["from_date"] or row["to_date"]:
-                date_range = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}"
             cid = str(row["id"] or "")
             valid_ids.add(cid)
             item = self.ubs_robust_tree.insert(
                 "",
                 "end",
-                values=(
-                    self._checkbox_text(cid in self.ubs_robust_checked),
-                    row["run_id"],
-                    row["id"],
-                    row["generation"],
-                    self._format_ubs_robustness_status(status),
-                    self._ubs_robust_reason(status, metrics, degradation),
-                    row["target_symbol"] or row["symbol"],
-                    row["period"],
-                    self._format_ubs_number(row["train_score"]),
-                    self._format_ubs_number(row["robust_score"]),
-                    self._format_ubs_number(bonus),
-                    self._format_ubs_number(metrics.get("net_profit")),
-                    self._format_ubs_number(metrics.get("normalized_net_profit")),
-                    self._format_ubs_number(metrics.get("profit_factor")),
-                    self._format_ubs_number(metrics.get("drawdown_pct")),
-                    self._format_ubs_int(metrics.get("trades")),
-                    self._format_ubs_degradation_value(degradation, "net_retention", percentage=True),
-                    self._format_ubs_degradation_value(degradation, "pf_edge_retention", percentage=True),
-                    self._format_ubs_degradation_value(degradation, "recovery_retention", percentage=True),
-                    self._format_ubs_degradation_value(degradation, "dd_inflation", percentage=False),
-                    date_range,
-                    Path(str(row["set_path"] or "")).name,
-                ),
+                values=self._ubs_robust_row_values(row, status, cid),
                 tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
             )
             self.ubs_robust_paths[item] = {
@@ -476,6 +483,22 @@ class UBSRobustnessLogicMixin(UBSRobustnessRowsMixin):
             }
             if cid:
                 item_by_id[cid] = item
+        return valid_ids, item_by_id
+
+    def _refresh_ubs_robustness(self) -> None:
+        tree_state = self._capture_ubs_robust_tree_state()
+        if hasattr(self, "ubs_robust_tree"):
+            for item in self.ubs_robust_tree.get_children():
+                self.ubs_robust_tree.delete(item)
+        self.ubs_robust_paths.clear()
+        loaded = self._load_ubs_robustness_rows()
+        if loaded is None:
+            return
+        run, rows = loaded
+        self._set_ubs_robustness_summary(run, rows)
+        if not hasattr(self, "ubs_robust_tree"):
+            return
+        valid_ids, item_by_id = self._fill_ubs_robustness_tree(rows)
         self.ubs_robust_checked.intersection_update(valid_ids)
         self._restore_ubs_robust_tree_state(tree_state, item_by_id)
 
