@@ -180,166 +180,322 @@ class LiveAuditController(
             time.sleep(0.25)
         raise TimeoutError("El pipeline no confirmó la pausa dentro del tiempo permitido")
 
+    def _pause_active_job(self, audit_key: str) -> bool:
+        """Pausa el pipeline si estaba corriendo; True si lo pauso la auditoria."""
+        with self.owner.lock:
+            job_status = str(self.owner.state.get("status") or "idle")
+            has_process = self.owner.process is not None
+        if has_process and job_status in {"running", "stopping"}:
+            self._update(audit_key, "pausing", "Pausando el proceso activo.", "Pausa solicitada al pipeline activo")
+            self.owner.pause()
+            paused_by_auditor = self._wait_for_pause()
+            if not paused_by_auditor:
+                raise RuntimeError("El proceso terminó sin confirmar la pausa; la auditoría no ocupó sus terminales")
+            return paused_by_auditor
+        if job_status in {"paused", "interrupted"}:
+            self._update(audit_key, "queued", "El pipeline ya estaba pausado; se conservará así.", "Pausa previa del usuario detectada")
+        return False
+
+    def _log_real_account_sync(
+        self, audit_key: str, account: dict[str, Any],
+        real_account_report: dict[str, Any], real_history_detail: dict[str, Any],
+    ) -> None:
+        """Deja constancia de la cuenta, el historial y el HTML nativo capturados."""
+        self._update(
+            audit_key, "extracting", "Historial de la cuenta real sincronizado.",
+            f"Cuenta MT5 verificada: login {account.get('login')}, servidor {account.get('server')}, "
+            f"terminal {account.get('terminal_profile')}; "
+            f"{real_history_detail.get('period_raw_deals', 0)} deals brutos, "
+            f"{real_history_detail.get('closing_deals', 0)} cierres y "
+            f"{real_history_detail.get('positions_recovered', 0)} apertura(s) anterior(es) recuperada(s) "
+            f"tras {real_history_detail.get('sync_attempts', 0)} consulta(s). "
+            f"HTML nativo {real_account_report.get('filename')} capturado por "
+            f"{real_account_report.get('capture_terminal_profile') or account.get('terminal_profile')} "
+            f"con periodo {real_account_report.get('period_mode')} "
+            f"{real_account_report.get('period_start_date')} a {real_account_report.get('period_end_date')}, "
+            f"{real_account_report.get('bytes', 0)} bytes, sha256 "
+            f"{str(real_account_report.get('sha256') or '')[:16]}...",
+        )
+
+    def _extract_real_account(
+        self, request: dict[str, Any], audit_id: str, period_start: datetime, period_end: datetime
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Trae de MT5 el historial real del periodo junto con su HTML nativo."""
+        audit_key = request["audit_key"]
+        reports_dir = self.runtime_dir / f"audit_{audit_key}" / audit_id / "reports"
+        native_report_path = reports_dir / "real_account_mt5_report.html"
+        real_trades, symbol_points, account = self._extract_real(
+            request, period_start, period_end, native_report_path,
+        )
+        real_account_report = dict(account.pop("native_report", {}) or {})
+        if not real_account_report.get("native_terminal_report"):
+            raise RuntimeError("MT5 no entregó el HTML nativo del historial de la cuenta real")
+        real_history_detail = dict(account.pop("history_detail", {}) or {})
+        self._log_real_account_sync(audit_key, account, real_account_report, real_history_detail)
+        return real_trades, symbol_points, account, real_account_report, real_history_detail
+
+    @staticmethod
+    def _symbols_by_strategy(
+        tester_trades: list[dict[str, Any]], strategy_artifacts: list[dict[str, Any]]
+    ) -> dict[str, set[str]]:
+        """Simbolos que el tester asocio a cada estrategia del portafolio."""
+        symbols_by_strategy: dict[str, set[str]] = {}
+        pairs = [(row.get("strategy"), row.get("symbol")) for row in tester_trades]
+        pairs += [(row.get("strategy"), row.get("report_symbol")) for row in strategy_artifacts]
+        for raw_strategy, raw_symbol in pairs:
+            strategy = str(raw_strategy or "")
+            symbol = str(raw_symbol or "").casefold()
+            if strategy and symbol:
+                symbols_by_strategy.setdefault(strategy, set()).add(symbol)
+        return symbols_by_strategy
+
+    def _portfolio_trade_signatures(
+        self, request: dict[str, Any], selected_members: list[dict[str, Any]],
+        tester_trades: list[dict[str, Any]], strategy_artifacts: list[dict[str, Any]],
+    ) -> set[tuple[str, float]]:
+        """Pares simbolo/lote con los que la variante opera en la cuenta real."""
+        volume_rules = self._broker_volume_rules()
+        symbols_by_strategy = self._symbols_by_strategy(tester_trades, strategy_artifacts)
+        real_strategy_lots = request.get("real_strategy_lots") or {}
+        signatures: set[tuple[str, float]] = set()
+        for member in selected_members:
+            strategy = _member_strategy_id(member)
+            try:
+                _configured_lot, effective_lot, _volume_min, _volume_step, _units = self._tester_lot(
+                    member, volume_rules,
+                )
+            except (TypeError, ValueError):
+                continue
+            real_lot = float(real_strategy_lots.get(strategy, effective_lot))
+            symbols = symbols_by_strategy.get(strategy) or {
+                str(member.get("symbol") or "").casefold()
+            }
+            signatures.update(
+                (symbol, round(real_lot, 8)) for symbol in symbols if symbol and real_lot > 0
+            )
+        return signatures
+
+    def _filter_real_trades(
+        self, audit_key: str, real_trades: list[dict[str, Any]],
+        signatures: set[tuple[str, float]], real_history_detail: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Deja solo los cierres reales que corresponden a la variante auditada."""
+        if not signatures:
+            return real_trades
+        before_filter = len(real_trades)
+        filtered = [
+            trade for trade in real_trades
+            if (
+                str(trade.get("symbol") or "").casefold(),
+                round(float(trade.get("volume") or 0), 8),
+            ) in signatures
+        ]
+        ignored = before_filter - len(filtered)
+        self._update(
+            audit_key, "extracting", "Filtrando operaciones de la variante seleccionada.",
+            f"Filtro por símbolo/lote real configurado: {len(filtered)} cierres del portafolio, "
+            f"{ignored} cierres ajenos ignorados; firmas {sorted(signatures)}",
+        )
+        real_history_detail["portfolio_closures"] = len(filtered)
+        real_history_detail["foreign_closures_ignored"] = ignored
+        return filtered
+
+    def _not_comparable_result(
+        self, request: dict[str, Any], period_start: datetime, period_end: datetime,
+        real_trades: list[dict[str, Any]], tester_trades: list[dict[str, Any]], quality: float | None,
+    ) -> dict[str, Any]:
+        """Resultado cuando la calidad del historial no permite comparar."""
+        result = self._result_base(request, period_start, period_end, real_trades, tester_trades, quality)
+        result.update(
+            status="not_comparable", status_label="NO COMPARABLE", matched_trades=0,
+            discrepancies=0, stalled_strategies=0,
+            summary=("MT5 no informó History Quality." if quality is None else
+                     f"History Quality {quality:.2f}% inferior al mínimo {request['min_tick_history_quality_pct']:.2f}%.")
+        )
+        return result
+
+    def _compared_result(
+        self, request: dict[str, Any], period_start: datetime, period_end: datetime,
+        real_trades: list[dict[str, Any]], tester_trades: list[dict[str, Any]], quality: float | None,
+        symbol_points: dict[str, Any], strategies: dict[str, int],
+    ) -> dict[str, Any]:
+        """Resultado de la comparacion completa entre cuenta real y tester."""
+        comparison = self._compare(real_trades, tester_trades, symbol_points, request, strategies)
+        result = self._result_base(request, period_start, period_end, real_trades, tester_trades, quality)
+        result.update(comparison)
+        invalid_tester = sum((comparison.get("comparison_detail") or {}).get("tester_data_issues", {}).values())
+        result["summary"] = (
+            f"{comparison['matched_trades']} parejas alineadas, "
+            f"{comparison['within_tolerance_trades']} dentro de todas las tolerancias y "
+            f"{comparison['discrepancies']} discrepancias; "
+            f"{comparison['stalled_strategies']} estrategia(s) sin continuidad"
+            + (f"; {invalid_tester} operación(es) tester con tiempos inválidos." if invalid_tester else ".")
+        )
+        result["status"] = result["status_label"] = "completed"
+        result["status_label"] = "COMPLETADA"
+        return result
+
+    @staticmethod
+    def _comparison_detail_log(result: dict[str, Any]) -> str:
+        """Resumen en una linea del detalle por estrategia de la comparacion."""
+        detail = result.get("comparison_detail") or {}
+        return "; ".join(
+            f"{key}={detail[key]}" for key in (
+                "matched_by_strategy", "within_tolerance_by_strategy", "deviating_by_strategy",
+                "missing_by_strategy", "unmatched_real", "deviation_reasons", "tester_data_issues",
+            ) if detail.get(key)
+        )
+
+    def _restore_terminals(self, request: dict[str, Any]) -> list[dict[str, Any]]:
+        """Devuelve cada terminal tocada a su cuenta de restauracion."""
+        try:
+            return self._restore_tester_login(request)
+        except Exception as exc:
+            # Un fallo aquí no puede tapar el resultado de la auditoría.
+            return [{
+                "terminal": "desconocido", "mt5_path": "", "section": "",
+                "expected_login": str(request.get("restore_login") or ""),
+                "expected_server": str(request.get("restore_server") or ""),
+                "login": None, "server": None, "restored": False,
+                "error": _redact_runner_output(
+                    str(exc), str(request.get("tester_password") or ""),
+                    str(request.get("source_password") or ""),
+                    str(request.get("restore_password") or ""),
+                ),
+            }]
+
+    def _record_restore(
+        self, audit_key: str, audit_id: str, restored: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Anota la cuenta en que quedo cada terminal y devuelve las no restauradas."""
+        self._log(audit_key, "Cuenta dejada en cada terminal: " + "; ".join(
+            f"{row['terminal']} → {row['expected_login']} ({row['expected_server']})"
+            if row["restored"] else
+            f"{row['terminal']} → SIN RESTAURAR: {row['error']}"
+            for row in restored
+        ))
+        with self.lock:
+            raw = self.states[audit_key]
+            raw["terminal_restore"] = restored
+            last_result = raw.get("last_result")
+            if isinstance(last_result, dict) and str(last_result.get("audit_id") or "") == audit_id:
+                last_result["terminal_restore"] = restored
+            self._persist()
+        return [row for row in restored if not row["restored"]]
+
+    def _close_audit_state(
+        self, request: dict[str, Any], terminal_status: str, unrestored: list[dict[str, Any]]
+    ) -> None:
+        """Fija el estado final de la auditoria y avisa de terminales sin restaurar."""
+        audit_key = request["audit_key"]
+        with self.lock:
+            raw = self.states[audit_key]
+            if str(raw.get("status")) in {"finalizing", "resuming"}:
+                raw.update(
+                    status=terminal_status,
+                    progress_text=str(
+                        (raw.get("last_result") or {}).get("summary")
+                        or raw.get("error") or "Auditoría finalizada."
+                    ),
+                )
+            if unrestored:
+                # No cambia el veredicto de la comparación, pero el usuario tiene
+                # que enterarse sin abrir los logs: el terminal quedó en otra cuenta.
+                raw["progress_text"] = str(raw.get("progress_text") or "") + (
+                    " ⚠ "
+                    + ", ".join(str(row["terminal"]) for row in unrestored)
+                    + f" no quedó en la cuenta configurada {request['restore_login']}."
+                )
+            raw["finished_at"] = utc_now()
+            self._persist()
+
+    def _finish_run(
+        self, request: dict[str, Any], audit_id: str, terminal_status: str, paused_by_auditor: bool
+    ) -> None:
+        """Restaura terminales, reanuda el pipeline y cierra el estado."""
+        audit_key = request["audit_key"]
+        # La cuenta activa de un terminal es estado persistente de MT5. Cada
+        # terminal que tocó la auditoría se devuelve a la cuenta independiente
+        # configurada para restauración antes de reanudar el pipeline.
+        restored = self._restore_terminals(request)
+        with self.lock:
+            self.real_account_terminals.pop(audit_key, None)
+        unrestored = self._record_restore(audit_key, audit_id, restored) if restored else []
+        if paused_by_auditor:
+            try:
+                self._update(audit_key, "resuming", "Reanudando el proceso que pausó el auditor.", "Reanudación solicitada")
+                self.owner.resume()
+            except Exception as exc:
+                self._update(audit_key, "failed", f"La auditoría terminó, pero no se pudo reanudar: {exc}", str(exc), error=str(exc))
+        self._close_audit_state(request, terminal_status, unrestored)
+        if getattr(self.owner, "queue", None):
+            self.owner._schedule_queue_drain()
+
+    def _audit(self, request: dict[str, Any], audit_id: str) -> str:
+        """Ejecuta la auditoria completa y devuelve su estado terminal."""
+        audit_key = request["audit_key"]
+        self._update(audit_key, "extracting", "Extrayendo operaciones de la cuenta real.", "Conectando la cuenta real")
+        period_start, period_end = _audit_period(request)
+        real_trades, symbol_points, account, real_account_report, real_history_detail = (
+            self._extract_real_account(request, audit_id, period_start, period_end)
+        )
+        self._update(
+            audit_key, "testing", "Ejecutando el portafolio con ticks reales en el nodo.",
+            f"{len(real_trades)} cierres reales reconstruidos antes del filtro del portafolio.",
+        )
+        tester_trades, qualities, strategies, strategy_artifacts, tester_execution = self._run_tester(
+            request, audit_id, period_start, period_end
+        )
+        _detail, selected_members = self._portfolio_members(
+            request["portfolio_id"], request["portfolio_type"]
+        )
+        signatures = self._portfolio_trade_signatures(
+            request, selected_members, tester_trades, strategy_artifacts
+        )
+        real_trades = self._filter_real_trades(audit_key, real_trades, signatures, real_history_detail)
+        tester_groups: dict[str, int] = {}
+        for trade in tester_trades:
+            key = f"{trade.get('symbol') or '?'} / {trade.get('strategy') or '?'}"
+            tester_groups[key] = tester_groups.get(key, 0) + 1
+        tester_summary = ", ".join(f"{key}: {count}" for key, count in sorted(tester_groups.items())) or "sin operaciones"
+        self._update(
+            audit_key, "comparing", "Comparando cuenta real y Strategy Tester.",
+            f"{len(tester_trades)} operaciones del tester ({tester_summary})",
+        )
+        quality = min(qualities) if qualities else None
+        if quality is None or quality < request["min_tick_history_quality_pct"]:
+            result = self._not_comparable_result(
+                request, period_start, period_end, real_trades, tester_trades, quality
+            )
+        else:
+            result = self._compared_result(
+                request, period_start, period_end, real_trades, tester_trades, quality,
+                symbol_points, strategies,
+            )
+        result["account"] = account
+        result["real_history_detail"] = real_history_detail
+        result["audit_key"] = audit_key
+        result["audit_id"] = audit_id
+        result["portfolio_type"] = request["portfolio_type"]
+        result["strategy_artifacts"] = strategy_artifacts
+        result["tester_execution"] = tester_execution
+        result["real_account_report"] = real_account_report
+        detail_log = self._comparison_detail_log(result)
+        self._update(
+            audit_key, "finalizing", "Restaurando las cuentas de todas las terminales utilizadas.",
+            f"Comparación finalizada" + (f": {detail_log}" if detail_log else ""), last_result=result,
+        )
+        return str(result["status"])
+
     def _run(self, request: dict[str, Any], audit_id: str) -> None:
-        portfolio_id = request["portfolio_id"]
         audit_key = request["audit_key"]
         paused_by_auditor = False
         terminal_status = "failed"
-        unrestored: list[dict[str, Any]] = []
         with self.lock:
             self.real_account_terminals[audit_key] = []
         try:
-            with self.owner.lock:
-                job_status = str(self.owner.state.get("status") or "idle")
-                has_process = self.owner.process is not None
-            if has_process and job_status in {"running", "stopping"}:
-                self._update(audit_key, "pausing", "Pausando el proceso activo.", "Pausa solicitada al pipeline activo")
-                self.owner.pause()
-                paused_by_auditor = self._wait_for_pause()
-                if not paused_by_auditor:
-                    raise RuntimeError("El proceso terminó sin confirmar la pausa; la auditoría no ocupó sus terminales")
-            elif job_status in {"paused", "interrupted"}:
-                self._update(audit_key, "queued", "El pipeline ya estaba pausado; se conservará así.", "Pausa previa del usuario detectada")
-
-            self._update(audit_key, "extracting", "Extrayendo operaciones de la cuenta real.", "Conectando la cuenta real")
-            period_start, period_end = _audit_period(request)
-            reports_dir = self.runtime_dir / f"audit_{audit_key}" / audit_id / "reports"
-            native_report_path = reports_dir / "real_account_mt5_report.html"
-            real_trades, symbol_points, account = self._extract_real(
-                request, period_start, period_end, native_report_path,
-            )
-            real_account_report = dict(account.pop("native_report", {}) or {})
-            if not real_account_report.get("native_terminal_report"):
-                raise RuntimeError("MT5 no entregó el HTML nativo del historial de la cuenta real")
-            real_history_detail = dict(account.pop("history_detail", {}) or {})
-            self._update(
-                audit_key, "extracting", "Historial de la cuenta real sincronizado.",
-                f"Cuenta MT5 verificada: login {account.get('login')}, servidor {account.get('server')}, "
-                f"terminal {account.get('terminal_profile')}; "
-                f"{real_history_detail.get('period_raw_deals', 0)} deals brutos, "
-                f"{real_history_detail.get('closing_deals', 0)} cierres y "
-                f"{real_history_detail.get('positions_recovered', 0)} apertura(s) anterior(es) recuperada(s) "
-                f"tras {real_history_detail.get('sync_attempts', 0)} consulta(s). "
-                f"HTML nativo {real_account_report.get('filename')} capturado por "
-                f"{real_account_report.get('capture_terminal_profile') or account.get('terminal_profile')} "
-                f"con periodo {real_account_report.get('period_mode')} "
-                f"{real_account_report.get('period_start_date')} a {real_account_report.get('period_end_date')}, "
-                f"{real_account_report.get('bytes', 0)} bytes, sha256 "
-                f"{str(real_account_report.get('sha256') or '')[:16]}...",
-            )
-            self._update(
-                audit_key, "testing", "Ejecutando el portafolio con ticks reales en el nodo.",
-                f"{len(real_trades)} cierres reales reconstruidos antes del filtro del portafolio.",
-            )
-            tester_trades, qualities, strategies, strategy_artifacts, tester_execution = self._run_tester(
-                request, audit_id, period_start, period_end
-            )
-            _detail, selected_members = self._portfolio_members(portfolio_id, request["portfolio_type"])
-            volume_rules = self._broker_volume_rules()
-            symbols_by_strategy: dict[str, set[str]] = {}
-            for trade in tester_trades:
-                strategy = str(trade.get("strategy") or "")
-                symbol = str(trade.get("symbol") or "").casefold()
-                if strategy and symbol:
-                    symbols_by_strategy.setdefault(strategy, set()).add(symbol)
-            for artifact in strategy_artifacts:
-                strategy = str(artifact.get("strategy") or "")
-                symbol = str(artifact.get("report_symbol") or "").casefold()
-                if strategy and symbol:
-                    symbols_by_strategy.setdefault(strategy, set()).add(symbol)
-            real_strategy_lots = request.get("real_strategy_lots") or {}
-            signatures: set[tuple[str, float]] = set()
-            for member in selected_members:
-                strategy = _member_strategy_id(member)
-                try:
-                    _configured_lot, effective_lot, _volume_min, _volume_step, _units = self._tester_lot(
-                        member, volume_rules,
-                    )
-                except (TypeError, ValueError):
-                    continue
-                real_lot = float(real_strategy_lots.get(strategy, effective_lot))
-                symbols = symbols_by_strategy.get(strategy) or {
-                    str(member.get("symbol") or "").casefold()
-                }
-                signatures.update(
-                    (symbol, round(real_lot, 8)) for symbol in symbols if symbol and real_lot > 0
-                )
-            if signatures:
-                before_filter = len(real_trades)
-                real_trades = [
-                    trade for trade in real_trades
-                    if (
-                        str(trade.get("symbol") or "").casefold(),
-                        round(float(trade.get("volume") or 0), 8),
-                    ) in signatures
-                ]
-                ignored = before_filter - len(real_trades)
-                self._update(
-                    audit_key, "extracting", "Filtrando operaciones de la variante seleccionada.",
-                    f"Filtro por símbolo/lote real configurado: {len(real_trades)} cierres del portafolio, "
-                    f"{ignored} cierres ajenos ignorados; firmas {sorted(signatures)}",
-                )
-                real_history_detail["portfolio_closures"] = len(real_trades)
-                real_history_detail["foreign_closures_ignored"] = ignored
-            real_groups: dict[str, int] = {}
-            for trade in real_trades:
-                key = f"{trade.get('symbol') or '?'} / lote {float(trade.get('volume') or 0):g}"
-                real_groups[key] = real_groups.get(key, 0) + 1
-            real_summary = ", ".join(f"{key}: {count}" for key, count in sorted(real_groups.items())) or "sin cierres"
-            tester_groups: dict[str, int] = {}
-            for trade in tester_trades:
-                key = f"{trade.get('symbol') or '?'} / {trade.get('strategy') or '?'}"
-                tester_groups[key] = tester_groups.get(key, 0) + 1
-            tester_summary = ", ".join(f"{key}: {count}" for key, count in sorted(tester_groups.items())) or "sin operaciones"
-            self._update(
-                audit_key, "comparing", "Comparando cuenta real y Strategy Tester.",
-                f"{len(tester_trades)} operaciones del tester ({tester_summary})",
-            )
-            quality = min(qualities) if qualities else None
-            if quality is None or quality < request["min_tick_history_quality_pct"]:
-                result = self._result_base(request, period_start, period_end, real_trades, tester_trades, quality)
-                result.update(
-                    status="not_comparable", status_label="NO COMPARABLE", matched_trades=0,
-                    discrepancies=0, stalled_strategies=0,
-                    summary=("MT5 no informó History Quality." if quality is None else
-                             f"History Quality {quality:.2f}% inferior al mínimo {request['min_tick_history_quality_pct']:.2f}%.")
-                )
-                final_status = "not_comparable"
-            else:
-                comparison = self._compare(real_trades, tester_trades, symbol_points, request, strategies)
-                result = self._result_base(request, period_start, period_end, real_trades, tester_trades, quality)
-                result.update(comparison)
-                invalid_tester = sum((comparison.get("comparison_detail") or {}).get("tester_data_issues", {}).values())
-                result["summary"] = (
-                    f"{comparison['matched_trades']} parejas alineadas, "
-                    f"{comparison['within_tolerance_trades']} dentro de todas las tolerancias y "
-                    f"{comparison['discrepancies']} discrepancias; "
-                    f"{comparison['stalled_strategies']} estrategia(s) sin continuidad"
-                    + (f"; {invalid_tester} operación(es) tester con tiempos inválidos." if invalid_tester else ".")
-                )
-                result["status"] = result["status_label"] = "completed"
-                result["status_label"] = "COMPLETADA"
-                final_status = "completed"
-            result["account"] = account
-            result["real_history_detail"] = real_history_detail
-            result["audit_key"] = audit_key
-            result["audit_id"] = audit_id
-            result["portfolio_type"] = request["portfolio_type"]
-            result["strategy_artifacts"] = strategy_artifacts
-            result["tester_execution"] = tester_execution
-            result["real_account_report"] = real_account_report
-            detail = result.get("comparison_detail") or {}
-            detail_log = "; ".join(
-                f"{key}={detail[key]}" for key in (
-                    "matched_by_strategy", "within_tolerance_by_strategy", "deviating_by_strategy",
-                    "missing_by_strategy", "unmatched_real", "deviation_reasons", "tester_data_issues",
-                ) if detail.get(key)
-            )
-            terminal_status = final_status
-            self._update(
-                audit_key, "finalizing", "Restaurando las cuentas de todas las terminales utilizadas.",
-                f"Comparación finalizada" + (f": {detail_log}" if detail_log else ""), last_result=result,
-            )
+            paused_by_auditor = self._pause_active_job(audit_key)
+            terminal_status = self._audit(request, audit_id)
         except Exception as exc:
             terminal_status = "failed"
             self._update(
@@ -347,66 +503,4 @@ class LiveAuditController(
                 error=str(exc),
             )
         finally:
-            # La cuenta activa de un terminal es estado persistente de MT5. Cada
-            # terminal que tocó la auditoría se devuelve a la cuenta independiente
-            # configurada para restauración antes de reanudar el pipeline.
-            try:
-                restored = self._restore_tester_login(request)
-            except Exception as exc:
-                # Un fallo aquí no puede tapar el resultado de la auditoría.
-                restored = [{
-                    "terminal": "desconocido", "mt5_path": "", "section": "",
-                    "expected_login": str(request.get("restore_login") or ""),
-                    "expected_server": str(request.get("restore_server") or ""),
-                    "login": None, "server": None, "restored": False,
-                    "error": _redact_runner_output(
-                        str(exc), str(request.get("tester_password") or ""),
-                        str(request.get("source_password") or ""),
-                        str(request.get("restore_password") or ""),
-                    ),
-                }]
-            with self.lock:
-                self.real_account_terminals.pop(audit_key, None)
-            if restored:
-                unrestored = [row for row in restored if not row["restored"]]
-                self._log(audit_key, "Cuenta dejada en cada terminal: " + "; ".join(
-                    f"{row['terminal']} → {row['expected_login']} ({row['expected_server']})"
-                    if row["restored"] else
-                    f"{row['terminal']} → SIN RESTAURAR: {row['error']}"
-                    for row in restored
-                ))
-                with self.lock:
-                    raw = self.states[audit_key]
-                    raw["terminal_restore"] = restored
-                    last_result = raw.get("last_result")
-                    if isinstance(last_result, dict) and str(last_result.get("audit_id") or "") == audit_id:
-                        last_result["terminal_restore"] = restored
-                    self._persist()
-            if paused_by_auditor:
-                try:
-                    self._update(audit_key, "resuming", "Reanudando el proceso que pausó el auditor.", "Reanudación solicitada")
-                    self.owner.resume()
-                except Exception as exc:
-                    self._update(audit_key, "failed", f"La auditoría terminó, pero no se pudo reanudar: {exc}", str(exc), error=str(exc))
-            with self.lock:
-                raw = self.states[audit_key]
-                if str(raw.get("status")) in {"finalizing", "resuming"}:
-                    raw.update(
-                        status=terminal_status,
-                        progress_text=str(
-                            (raw.get("last_result") or {}).get("summary")
-                            or raw.get("error") or "Auditoría finalizada."
-                        ),
-                    )
-                if unrestored:
-                    # No cambia el veredicto de la comparación, pero el usuario tiene
-                    # que enterarse sin abrir los logs: el terminal quedó en otra cuenta.
-                    raw["progress_text"] = str(raw.get("progress_text") or "") + (
-                        " ⚠ "
-                        + ", ".join(str(row["terminal"]) for row in unrestored)
-                        + f" no quedó en la cuenta configurada {request['restore_login']}."
-                    )
-                raw["finished_at"] = utc_now()
-                self._persist()
-            if getattr(self.owner, "queue", None):
-                self.owner._schedule_queue_drain()
+            self._finish_run(request, audit_id, terminal_status, paused_by_auditor)
