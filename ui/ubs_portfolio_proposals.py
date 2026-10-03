@@ -9,7 +9,11 @@ from portfolio_manager.ubs_portfolio import (
     optimize_portfolio,
     optimize_strict_monthly_portfolio,
 )
-from ui.ubs_portfolio_base import PORTFOLIO_TYPE_DISPLAY
+from ui.ubs_portfolio_base import (
+    PORTFOLIO_TYPE_DISPLAY,
+    portfolio_seasonal_coverage,
+    portfolio_validates_margin,
+)
 
 
 def _portfolio_proposal_comparison_row(
@@ -60,6 +64,87 @@ def _portfolio_proposal_comparison_row(
 class UBSPortfolioProposalsMixin:
     """Propuestas alternativas del portafolio y su vista previa."""
 
+    @staticmethod
+    def _proposal_optimizer_kwargs(
+        inputs: dict[str, object], objective_type: PortfolioType, existing_curves: list,
+        reserve: float, enforce_point_dd: bool,
+    ) -> dict[str, object]:
+        """Parametros comunes a cualquier variante de la propuesta."""
+        use_correlation = inputs.get("use_correlation", True)
+        validate_margin = portfolio_validates_margin(inputs)
+        return {
+            "capital": float(inputs["capital"]),
+            "valley_dd_pct": float(inputs["valley_dd_pct"]),
+            "point_dd_pct": float(inputs["point_dd_pct"]),
+            "portfolio_type": objective_type,
+            "min_trades_2020_2026": int(inputs["min_trades_2020_2026"]),
+            "top_k_per_symbol": int(inputs["top_k_per_symbol"]),
+            "max_total_candidates": int(inputs["max_total_candidates"]),
+            "max_units_per_set": inputs.get("max_units_per_set"),
+            "max_total_units": inputs.get("max_total_units"),
+            "max_units_per_symbol": inputs.get("max_units_per_symbol"),
+            "max_sets_per_symbol": inputs.get("max_sets_per_symbol"),
+            "run_local_search": bool(inputs.get("run_local_search", True)),
+            "max_pair_corr": inputs.get("max_pair_corr") if use_correlation else None,
+            "max_downside_corr": inputs.get("max_downside_corr") if use_correlation else None,
+            "max_dd_overlap": inputs.get("max_dd_overlap") if use_correlation else None,
+            "existing_portfolio_curves": existing_curves,
+            "max_portfolio_corr": inputs.get("max_portfolio_corr") if use_correlation else None,
+            "dd_reserve_pct": reserve,
+            "search_restarts": int(inputs.get("search_restarts") or 0),
+            "margin_balance": float(inputs["capital"]) if validate_margin else None,
+            "max_margin_pct": float(inputs.get("max_margin_pct") or 100.0) if validate_margin else None,
+            "margin_profile": str(inputs.get("margin_profile") or "roboforex"),
+            "stock_leverage": 20.0,
+            "default_leverage": 500.0,
+            "stock_contract_size": 100.0,
+            "default_contract_size": 1.0,
+            "max_daily_dd": inputs.get("max_daily_dd"),
+            "enforce_point_dd": enforce_point_dd,
+            "daily_dd_full_history": bool(inputs.get("daily_dd_full_history", False)),
+        }
+
+    @staticmethod
+    def _proposal_inputs(
+        inputs: dict[str, object], key: str, label: str, objective_type: PortfolioType, reserve: float
+    ) -> dict[str, object]:
+        """Entradas guardadas con una variante concreta de la propuesta."""
+        proposal_inputs = dict(inputs)
+        proposal_inputs["optimization_profile"] = key
+        proposal_inputs["optimization_profile_label"] = label
+        proposal_inputs["portfolio_type"] = objective_type.value
+        proposal_inputs["portfolio_type_label"] = PORTFOLIO_TYPE_DISPLAY[objective_type.value]
+        proposal_inputs["dd_reserve_pct"] = reserve
+        return proposal_inputs
+
+    def _proposal_result(
+        self, raw_sets: list, inputs: dict[str, object], objective_type: PortfolioType,
+        existing_curves: list, reserve: float, enforce_point_dd: bool,
+        strict_full_sets: list | None, is_monthly_scope: bool,
+    ):
+        """Optimiza una variante, con o sin la regla mensual estricta."""
+        optimizer_kwargs = self._proposal_optimizer_kwargs(
+            inputs, objective_type, existing_curves, reserve, enforce_point_dd
+        )
+        strict_monthly = (
+            bool(inputs.get("strict_yearly_month_validation"))
+            and is_monthly_scope
+            and strict_full_sets is not None
+        )
+        if strict_monthly:
+            return optimize_strict_monthly_portfolio(
+                monthly_sets=raw_sets,
+                full_sets=strict_full_sets or [],
+                target_month=int(inputs.get("target_month") or 0),
+                use_deep_refinement=bool(inputs.get("use_deep_candidate_engine")),
+                **optimizer_kwargs,  # type: ignore[arg-type]
+            )
+        return optimize_portfolio(
+            raw_sets=raw_sets,
+            use_deep_refinement=bool(inputs.get("deep_optimization")),
+            **optimizer_kwargs,  # type: ignore[arg-type]
+        )
+
     def _optimize_ubs_portfolio_proposals(
         self,
         raw_sets: list,
@@ -84,91 +169,24 @@ class UBSPortfolioProposalsMixin:
         for index, (key, label, objective_type, reserve) in enumerate(proposal_specs, start=1):
             if callable(progress):
                 progress(label, index)
-            proposal_inputs = dict(inputs)
-            proposal_inputs["optimization_profile"] = key
-            proposal_inputs["optimization_profile_label"] = label
-            proposal_inputs["portfolio_type"] = objective_type.value
-            proposal_inputs["portfolio_type_label"] = PORTFOLIO_TYPE_DISPLAY[objective_type.value]
-            proposal_inputs["dd_reserve_pct"] = reserve
             try:
-                strict_monthly = (
-                    bool(inputs.get("strict_yearly_month_validation"))
-                    and is_monthly_scope
-                    and strict_full_sets is not None
+                result = self._proposal_result(
+                    raw_sets, inputs, objective_type, existing_curves, reserve,
+                    enforce_point_dd, strict_full_sets, is_monthly_scope,
                 )
-                optimizer_kwargs = {
-                    "capital": float(inputs["capital"]),
-                    "valley_dd_pct": float(inputs["valley_dd_pct"]),
-                    "point_dd_pct": float(inputs["point_dd_pct"]),
-                    "portfolio_type": objective_type,
-                    "min_trades_2020_2026": int(inputs["min_trades_2020_2026"]),
-                    "top_k_per_symbol": int(inputs["top_k_per_symbol"]),
-                    "max_total_candidates": int(inputs["max_total_candidates"]),
-                    "max_units_per_set": inputs.get("max_units_per_set"),
-                    "max_total_units": inputs.get("max_total_units"),
-                    "max_units_per_symbol": inputs.get("max_units_per_symbol"),
-                    "max_sets_per_symbol": inputs.get("max_sets_per_symbol"),
-                    "run_local_search": bool(inputs.get("run_local_search", True)),
-                    "max_pair_corr": inputs.get("max_pair_corr") if inputs.get("use_correlation", True) else None,
-                    "max_downside_corr": inputs.get("max_downside_corr") if inputs.get("use_correlation", True) else None,
-                    "max_dd_overlap": inputs.get("max_dd_overlap") if inputs.get("use_correlation", True) else None,
-                    "existing_portfolio_curves": existing_curves,
-                    "max_portfolio_corr": inputs.get("max_portfolio_corr") if inputs.get("use_correlation", True) else None,
-                    "dd_reserve_pct": reserve,
-                    "search_restarts": int(inputs.get("search_restarts") or 0),
-                    "margin_balance": float(inputs["capital"])
-                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
-                    else None,
-                    "max_margin_pct": float(inputs.get("max_margin_pct") or 100.0)
-                    if bool(inputs.get("validate_margin") or inputs.get("validate_roboforex_margin") or inputs.get("validate_ttp_margin"))
-                    else None,
-                    "margin_profile": str(inputs.get("margin_profile") or "roboforex"),
-                    "stock_leverage": 20.0,
-                    "default_leverage": 500.0,
-                    "stock_contract_size": 100.0,
-                    "default_contract_size": 1.0,
-                    "max_daily_dd": inputs.get("max_daily_dd"),
-                    "enforce_point_dd": enforce_point_dd,
-                    "daily_dd_full_history": bool(inputs.get("daily_dd_full_history", False)),
-                }
-                if strict_monthly:
-                    result = optimize_strict_monthly_portfolio(
-                        monthly_sets=raw_sets,
-                        full_sets=strict_full_sets or [],
-                        target_month=int(inputs.get("target_month") or 0),
-                        use_deep_refinement=bool(inputs.get("use_deep_candidate_engine")),
-                        **optimizer_kwargs,  # type: ignore[arg-type]
-                    )
-                else:
-                    result = optimize_portfolio(
-                        raw_sets=raw_sets,
-                        use_deep_refinement=bool(inputs.get("deep_optimization")),
-                        **optimizer_kwargs,  # type: ignore[arg-type]
-                    )
             except Exception as exc:
                 errors.append(f"{label}: {exc}")
                 continue
-            raw_by_id = {strategy.set_id: strategy for strategy in raw_sets}
-            result.seasonal_coverage = {
-                allocation.set_id: {
-                    "target_month": raw_by_id[allocation.set_id].target_month,
-                    "years": list(raw_by_id[allocation.set_id].month_years),
-                    "positive_years": list(raw_by_id[allocation.set_id].positive_month_years),
-                    "year_count": len(raw_by_id[allocation.set_id].month_years),
-                    "positive_year_count": len(raw_by_id[allocation.set_id].positive_month_years),
-                    "trades": raw_by_id[allocation.set_id].trades_2020_2026,
-                }
-                for allocation in result.allocations
-                if allocation.set_id in raw_by_id
-                and raw_by_id[allocation.set_id].target_month is not None
-            }
+            result.seasonal_coverage = portfolio_seasonal_coverage(
+                result, {strategy.set_id: strategy for strategy in raw_sets}
+            )
             proposals.append(
                 {
                     "key": key,
                     "label": label,
                     "reserve_pct": reserve,
                     "result": result,
-                    "inputs": proposal_inputs,
+                    "inputs": self._proposal_inputs(inputs, key, label, objective_type, reserve),
                 }
             )
         if not proposals:
