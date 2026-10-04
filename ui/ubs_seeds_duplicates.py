@@ -153,7 +153,7 @@ class UBSSeedsDuplicatesMixin:
         ).pack(anchor="w", pady=(4, 0))
         tree = self._ubs_duplicate_tree(win)
         to_retire = self._fill_ubs_duplicate_rows(tree, groups, scores, seeds_dir)
-        self._ubs_duplicate_footer(win, to_retire, scores, errors)
+        self._ubs_duplicate_footer(win, to_retire, scores, errors, seeds_dir, groups)
 
     def _ubs_duplicate_tree(self, win):
         """Tabla de semillas redundantes y la que se conserva."""
@@ -206,7 +206,10 @@ class UBSSeedsDuplicatesMixin:
                 to_retire.append(fingerprint.path)
         return to_retire
 
-    def _ubs_duplicate_footer(self, win, to_retire: list[Path], scores: dict, errors: list[str]) -> None:
+    def _ubs_duplicate_footer(
+        self, win, to_retire: list[Path], scores: dict, errors: list[str],
+        seeds_dir: Path, groups,
+    ) -> None:
         """Resumen y botones de la ventana de duplicados."""
         footer = tk.Frame(win, bg=self.colors["panel_alt"], padx=16, pady=8)
         footer.grid(row=2, column=0, sticky="ew", pady=(8, 0))

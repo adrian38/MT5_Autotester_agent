@@ -41,10 +41,10 @@ class UBSPortfolioWindowsMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
-        self._build_ubs_portfolio_detail_buttons(bar)
+        self._build_ubs_portfolio_detail_buttons(bar, portfolio_id)
         self._build_ubs_portfolio_detail_tree(window)
 
-    def _build_ubs_portfolio_detail_buttons(self, bar) -> None:
+    def _build_ubs_portfolio_detail_buttons(self, bar, portfolio_id: int) -> None:
         """Cuarentena, completar, reoptimizar y deshacer de la ventana de detalle."""
         quarantine_btn = tk.Button(
             bar,
@@ -74,10 +74,16 @@ class UBSPortfolioWindowsMixin:
             command=lambda: self._complete_saved_ubs_portfolio(portfolio_id),
         )
         complete_btn.grid(row=0, column=2, padx=(0, 6), pady=6)
-        self._build_ubs_portfolio_detail_rework_buttons(bar)
-        self._build_ubs_portfolio_detail_open_button(bar)
+        rework_buttons = self._build_ubs_portfolio_detail_rework_buttons(bar, portfolio_id)
+        open_btn = self._build_ubs_portfolio_detail_open_button(bar)
+        self.ubs_portfolio_detail_buttons = [
+            quarantine_btn,
+            complete_btn,
+            *rework_buttons,
+            open_btn,
+        ]
 
-    def _build_ubs_portfolio_detail_rework_buttons(self, bar) -> None:
+    def _build_ubs_portfolio_detail_rework_buttons(self, bar, portfolio_id: int) -> list:
         """Botones de reoptimizar y deshacer de la ventana de detalle."""
         reoptimize_btn = tk.Button(
             bar,
@@ -107,10 +113,10 @@ class UBSPortfolioWindowsMixin:
             command=lambda: self._undo_latest_ubs_portfolio_completion(portfolio_id),
         )
         undo_btn.grid(row=0, column=4, padx=(0, 6), pady=6)
-        self._build_ubs_portfolio_detail_open_button(bar)
+        return [reoptimize_btn, undo_btn]
 
-    def _build_ubs_portfolio_detail_open_button(self, bar) -> None:
-        """Boton de abrir carpeta y registro de los botones de la ventana."""
+    def _build_ubs_portfolio_detail_open_button(self, bar):
+        """Boton de abrir reporte de la ventana de detalle."""
         open_btn = tk.Button(
             bar,
             text="Abrir reporte",
@@ -125,13 +131,7 @@ class UBSPortfolioWindowsMixin:
             command=self._open_selected_ubs_portfolio_detail_member,
         )
         open_btn.grid(row=0, column=5, padx=(0, 10), pady=6)
-        self.ubs_portfolio_detail_buttons = [
-            quarantine_btn,
-            complete_btn,
-            reoptimize_btn,
-            undo_btn,
-            open_btn,
-        ]
+        return open_btn
 
     def _build_ubs_portfolio_detail_tree(self, window) -> None:
         """Arbol de asignaciones de la ventana de detalle."""
@@ -196,7 +196,7 @@ class UBSPortfolioWindowsMixin:
             wraplength=700,
         ).grid(row=0, column=0, sticky="ew", padx=10, pady=6)
         self._build_ubs_portfolio_preview_buttons(bar)
-        self._build_ubs_portfolio_preview_tree(window)
+        self._build_ubs_portfolio_preview_tree(window, rows)
 
     def _build_ubs_portfolio_preview_buttons(self, bar) -> None:
         """Botones de aplicar y cancelar de la vista previa."""
@@ -229,7 +229,7 @@ class UBSPortfolioWindowsMixin:
         )
         cancel_btn.grid(row=0, column=2, padx=(0, 10), pady=6)
 
-    def _build_ubs_portfolio_preview_tree(self, window) -> None:
+    def _build_ubs_portfolio_preview_tree(self, window, rows) -> None:
         """Arbol de la vista previa de completado."""
         frame = ttk.Frame(window, style="Panel.TFrame")
         frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -299,11 +299,11 @@ class UBSPortfolioWindowsMixin:
         window.columnconfigure(0, weight=1)
         window.rowconfigure(2, weight=1)
         window.protocol("WM_DELETE_WINDOW", self._cancel_ubs_portfolio_proposals_preview)
-        self._build_ubs_portfolio_proposals_bar(window)
-        self._build_ubs_portfolio_proposals_compare(window)
+        self._build_ubs_portfolio_proposals_bar(window, mode)
+        self._build_ubs_portfolio_proposals_compare(window, comparison_rows)
         self._build_ubs_portfolio_proposals_diff(window)
 
-    def _build_ubs_portfolio_proposals_bar(self, window) -> None:
+    def _build_ubs_portfolio_proposals_bar(self, window, mode: str) -> None:
         """Barra de resumen y acciones de la ventana de propuestas."""
         bar = tk.Frame(window, bg=self.colors["panel_alt"])
         bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
@@ -353,7 +353,7 @@ class UBSPortfolioWindowsMixin:
             command=self._cancel_ubs_portfolio_proposals_preview,
         ).grid(row=0, column=2, padx=(0, 10), pady=6)
 
-    def _build_ubs_portfolio_proposals_compare(self, window) -> None:
+    def _build_ubs_portfolio_proposals_compare(self, window, comparison_rows) -> None:
         """Tabla comparativa de las propuestas."""
         compare_frame = ttk.Frame(window, style="Panel.TFrame")
         compare_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))

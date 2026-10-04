@@ -72,6 +72,7 @@ class UBSSeedsImportMixin:
         from ubs_prepare_sets import unique_target
 
         index = SeedDuplicateIndex()
+        total = len(set_files)
         copied = 0
         dup_exact = 0
         dup_equivalent = 0

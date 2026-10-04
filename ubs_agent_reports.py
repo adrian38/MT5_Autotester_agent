@@ -17,7 +17,7 @@ from ubs.account import DEFAULT_BROKER, strip_broker_identity_suffix
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
-from ubs.tester_diagnostics import execution_failure_metadata
+from ubs.tester_diagnostics import execution_failure_metadata, journal_symbol_missing
 from ubs_agent_config import (
     BASE_DIR,
 )
@@ -124,6 +124,36 @@ def find_watchdog_snapshot_for_set(
     if not candidates:
         return None
     return max(candidates, key=lambda path: (path.stat().st_mtime, path.name))
+
+
+def set_symbol_missing_in_terminal(
+    set_path: Path,
+    symbol: str,
+    *,
+    min_mtime: float | None = None,
+) -> bool:
+    """True si algun journal guardado del .set dice que el simbolo no existe.
+
+    Cuando MT5 no llega a abrir el tester no hay reporte, pero el runner si deja
+    el journal (`.tester_abort_attempt_N` o `.watchdog_attempt_N`). Es la unica
+    evidencia de primera mano: el fichero de activos se mantiene a mano y sigue
+    listando futuros ya vencidos.
+    """
+    if not str(symbol or "").strip():
+        return False
+    reports_dir = BASE_DIR / "reports"
+    _reports_index, watchdog_index = _reports_name_index(reports_dir)
+    for name in _indexed_names_with_prefix(watchdog_index, f"{set_path.stem.lower()}."):
+        journal = reports_dir / name
+        if not _report_is_fresh(journal, min_mtime):
+            continue
+        try:
+            text = journal.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if journal_symbol_missing(text, symbol):
+            return True
+    return False
 
 
 def report_matches_variant(
