@@ -165,6 +165,16 @@ def fix_leverage(
     return data, changes, kept, clamped
 
 
+def _broker_paths(args, broker: str) -> tuple[Path, Path]:
+    specs = Path(args.specs) if args.specs else BASE_DIR / "assets" / f"{broker.lower()}_symbol_specs.json"
+    leverage = (
+        Path(args.leverage)
+        if args.leverage
+        else BASE_DIR / "assets" / f"{broker.lower()}_max_product_leverage.json"
+    )
+    return specs, leverage
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Express a broker spec dump in the account currency.")
     parser.add_argument("--broker", default="AXI")
@@ -174,10 +184,7 @@ def main() -> int:
     args = parser.parse_args()
 
     broker = normalize_broker(args.broker)
-    specs_path = Path(args.specs) if args.specs else BASE_DIR / "assets" / f"{broker.lower()}_symbol_specs.json"
-    leverage_path = (
-        Path(args.leverage) if args.leverage else BASE_DIR / "assets" / f"{broker.lower()}_max_product_leverage.json"
-    )
+    specs_path, leverage_path = _broker_paths(args, broker)
     if not specs_path.is_file():
         print(f"ERROR: no spec dump at {specs_path}", file=sys.stderr)
         return 2

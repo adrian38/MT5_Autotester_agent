@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import app_ui
+from ui import app_process
 
 
 class DrainHarness:
@@ -35,7 +36,7 @@ class OutputQueueDrainTests(unittest.TestCase):
     def test_drain_yields_after_configured_batch_limit(self) -> None:
         harness = DrainHarness(app_ui.OUTPUT_DRAIN_MAX_ITEMS + 50)
 
-        with patch.object(app_ui.time, "perf_counter", return_value=0.0):
+        with patch.object(app_process.time, "perf_counter", return_value=0.0):
             app_ui.MT5AutotesterUI._drain_output_queue(harness)
 
         self.assertEqual(len(harness.progress_lines), app_ui.OUTPUT_DRAIN_MAX_ITEMS)

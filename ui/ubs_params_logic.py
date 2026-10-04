@@ -24,6 +24,19 @@ from ubs.set_utils import read_set_with_encoding
 PARAM_DIALOG_BG = "#1f2937"
 
 
+def _ubs_param_info_parts(param: dict) -> list[str]:
+    info_parts = []
+    if param["range"]:
+        info_parts.append(f"Rango: {param['range']}")
+    if param["step"]:
+        info_parts.append(f"Paso: {fmt_num_str(param['step'])}")
+    if param["default"]:
+        info_parts.append(f"Default: {param['default']}")
+    if param["optimizable"]:
+        info_parts.append(f"Optimizable: {param['optimizable']}")
+    return info_parts
+
+
 class UBSParamsLogicMixin:
     def _ubs_params_auto_load(self) -> None:
         """Load global params from ubs_global_params.json, bootstrapping from the first seed if needed."""
@@ -247,15 +260,7 @@ class UBSParamsLogicMixin:
             ttk.Label(dlg, text=desc, style="Muted.TLabel", wraplength=380).grid(
                 row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 8))
 
-        info_parts = []
-        if param["range"]:
-            info_parts.append(f"Rango: {param['range']}")
-        if param["step"]:
-            info_parts.append(f"Paso: {fmt_num_str(param['step'])}")
-        if param["default"]:
-            info_parts.append(f"Default: {param['default']}")
-        if param["optimizable"]:
-            info_parts.append(f"Optimizable: {param['optimizable']}")
+        info_parts = _ubs_param_info_parts(param)
         if info_parts:
             ttk.Label(dlg, text="  ".join(info_parts), style="Muted.TLabel").grid(
                 row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
@@ -272,25 +277,7 @@ class UBSParamsLogicMixin:
         btn_frame.columnconfigure(0, weight=1)
 
         def apply() -> None:
-            new_val = val_var.get().strip()
-            param["value"] = new_val
-            # Always persist to global params file
-            try:
-                gp = load_global_params()
-                gp[key] = new_val
-                save_global_params(gp)
-            except Exception:
-                pass
-            # Update the value column in the tree
-            for iid in self.ubs_params_tree.get_children(""):
-                row = self.ubs_params_tree.item(iid, "values")
-                if row and str(row[0]) == key:
-                    self.ubs_params_tree.set(iid, "value", new_val)
-                    break
-            self.ubs_params_modified = True
-            name = self.ubs_params_current_path.name if self.ubs_params_current_path else "?"
-            self.ubs_params_file_label.set(f"{name}  *")
-            dlg.destroy()
+            self._ubs_params_apply_edit(param, key, val_var.get().strip(), dlg)
 
         ttk.Button(btn_frame, text="Cancelar", style="TButton", command=dlg.destroy).grid(row=0, column=0, sticky="e", padx=(0, 8))
         ttk.Button(btn_frame, text="Aplicar", style="Primary.TButton", command=apply).grid(row=0, column=1, sticky="e")
@@ -301,6 +288,24 @@ class UBSParamsLogicMixin:
         x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
         y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
         dlg.geometry(f"+{x}+{y}")
+
+    def _ubs_params_apply_edit(self, param: dict, key: str, new_val: str, dlg) -> None:
+        param["value"] = new_val
+        try:
+            gp = load_global_params()
+            gp[key] = new_val
+            save_global_params(gp)
+        except Exception:
+            pass
+        for iid in self.ubs_params_tree.get_children(""):
+            row = self.ubs_params_tree.item(iid, "values")
+            if row and str(row[0]) == key:
+                self.ubs_params_tree.set(iid, "value", new_val)
+                break
+        self.ubs_params_modified = True
+        name = self.ubs_params_current_path.name if self.ubs_params_current_path else "?"
+        self.ubs_params_file_label.set(f"{name}  *")
+        dlg.destroy()
 
     def _ubs_params_save(self) -> None:
         if not self.ubs_params_data:

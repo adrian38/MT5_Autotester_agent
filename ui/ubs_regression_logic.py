@@ -98,6 +98,56 @@ class UBSRegressionLogicMixin:
     def _refresh_ubs_regression_panel(self) -> None:
         self._refresh_ubs_regression()
 
+    def _set_ubs_regression_summary(self, run_id: int, rows: list) -> None:
+        ok = sum(1 for row in rows if row["regression_status"] == "accepted")
+        fail = sum(1 for row in rows if row["regression_status"] in {"rejected", "no_trades"})
+        technical = sum(
+            1 for row in rows
+            if row["regression_status"] and row["regression_status"] not in {"accepted", "rejected", "no_trades"}
+        )
+        pending = sum(1 for row in rows if not row["regression_status"])
+        points = sum(float(row["points_applied"] or 0.0) for row in rows)
+        self.ubs_regression_summary.set(
+            f"Run #{run_id} | 6M accepted {len(rows)} | REG OK {ok} | FAIL {fail} | "
+            f"tecnicos {technical} | sin evaluar {pending} | puntos {points:+.0f}"
+        )
+        self.ubs_regression_status.set(
+            f"OHLC 1 minuto | {self.ubs_regression_from_date.get()} -> {self.ubs_regression_to_date} | "
+            "los fallos tecnicos no suman ni restan"
+        )
+
+    def _populate_ubs_regression_rows(self, rows: list) -> None:
+        for row in rows:
+            status = str(row["regression_status"] or "")
+            metrics = self._regression_json(row["metrics_json"])
+            details = self._regression_json(row["details_json"])
+            dates = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}" if status else ""
+            item = self.ubs_regression_tree.insert(
+                "", "end",
+                values=(
+                    self._checkbox_text(str(row["id"]) in self.ubs_regression_checked),
+                    row["run_id"], row["id"], row["generation"], self._format_ubs_status(status or "pending"),
+                    self._regression_reason(status, details, metrics),
+                    f"{float(row['points_applied'] or 0.0):+.0f}" if status else "",
+                    row["target_symbol"] or row["symbol"], row["period"],
+                    self._format_ubs_number(row["score"]),
+                    self._format_ubs_number(metrics.get("net_profit")),
+                    self._format_ubs_number(metrics.get("profit_factor")),
+                    self._format_ubs_number(metrics.get("drawdown_pct")),
+                    self._format_ubs_int(metrics.get("trades")),
+                    self._format_ubs_number(metrics.get("recovery_factor")),
+                    f"{self._format_ubs_number(metrics.get('positive_month_ratio', 0) * 100)}%" if metrics else "",
+                    dates, Path(str(row["set_path"])).name,
+                ),
+                tags=("accepted" if status == "accepted" else "rejected" if status in {"rejected", "no_trades"} else "pending",),
+            )
+            self.ubs_regression_paths[item] = {
+                "id": str(row["id"]), "set": str(row["set_path"] or ""),
+                "report": str(row["report_path"] or ""),
+            }
+        valid_ids = {record["id"] for record in self.ubs_regression_paths.values()}
+        self.ubs_regression_checked.intersection_update(valid_ids)
+
     def _refresh_ubs_regression(self) -> None:
         if hasattr(self, "ubs_regression_tree"):
             for item in self.ubs_regression_tree.get_children():
@@ -138,55 +188,10 @@ class UBSRegressionLogicMixin:
             self.ubs_regression_status.set(str(exc))
             return
 
-        ok = sum(1 for row in rows if row["regression_status"] == "accepted")
-        fail = sum(1 for row in rows if row["regression_status"] in {"rejected", "no_trades"})
-        technical = sum(
-            1 for row in rows
-            if row["regression_status"] and row["regression_status"] not in {"accepted", "rejected", "no_trades"}
-        )
-        pending = sum(1 for row in rows if not row["regression_status"])
-        points = sum(float(row["points_applied"] or 0.0) for row in rows)
-        self.ubs_regression_summary.set(
-            f"Run #{run_id} | 6M accepted {len(rows)} | REG OK {ok} | FAIL {fail} | "
-            f"tecnicos {technical} | sin evaluar {pending} | puntos {points:+.0f}"
-        )
-        self.ubs_regression_status.set(
-            f"OHLC 1 minuto | {self.ubs_regression_from_date.get()} -> {self.ubs_regression_to_date} | "
-            "los fallos tecnicos no suman ni restan"
-        )
+        self._set_ubs_regression_summary(run_id, rows)
         if not hasattr(self, "ubs_regression_tree"):
             return
-        for row in rows:
-            status = str(row["regression_status"] or "")
-            metrics = self._regression_json(row["metrics_json"])
-            details = self._regression_json(row["details_json"])
-            dates = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}" if status else ""
-            item = self.ubs_regression_tree.insert(
-                "", "end",
-                values=(
-                    self._checkbox_text(str(row["id"]) in self.ubs_regression_checked),
-                    row["run_id"], row["id"], row["generation"], self._format_ubs_status(status or "pending"),
-                    self._regression_reason(status, details, metrics),
-                    f"{float(row['points_applied'] or 0.0):+.0f}" if status else "",
-                    row["target_symbol"] or row["symbol"], row["period"],
-                    self._format_ubs_number(row["score"]),
-                    self._format_ubs_number(metrics.get("net_profit")),
-                    self._format_ubs_number(metrics.get("profit_factor")),
-                    self._format_ubs_number(metrics.get("drawdown_pct")),
-                    self._format_ubs_int(metrics.get("trades")),
-                    self._format_ubs_number(metrics.get("recovery_factor")),
-                    f"{self._format_ubs_number(metrics.get('positive_month_ratio', 0) * 100)}%" if metrics else "",
-                    dates, Path(str(row["set_path"])).name,
-                ),
-                tags=("accepted" if status == "accepted" else "rejected" if status in {"rejected", "no_trades"} else "pending",),
-            )
-            self.ubs_regression_paths[item] = {
-                "id": str(row["id"]),
-                "set": str(row["set_path"] or ""),
-                "report": str(row["report_path"] or ""),
-            }
-        valid_ids = {record["id"] for record in self.ubs_regression_paths.values()}
-        self.ubs_regression_checked.intersection_update(valid_ids)
+        self._populate_ubs_regression_rows(rows)
 
     def _on_ubs_regression_tree_click(self, event) -> str | None:
         if not hasattr(self, "ubs_regression_tree"):
@@ -335,6 +340,20 @@ class UBSRegressionLogicMixin:
         args.extend(self._effective_symbol_suffix_args())
         return args
 
+    def _ubs_regression_confirmation_details(
+        self, run_id: int, candidate_count: int, values: dict[str, object]
+    ) -> list[str]:
+        details = [
+            f"Run #{run_id} | candidatos: {candidate_count}",
+            f"Rango: {self.ubs_regression_from_date.get()} -> {self.ubs_regression_to_date.get()}",
+            "Modelo: OHLC 1 minuto (Model=1)",
+            f"Net > {values['net']} | PF >= {values['pf']} | ops >= {values['trades']}",
+            f"DD <= {values['dd']}% | recovery >= {values['recovery']} | meses + >= {values['months']}",
+            f"Puntos: OK {float(values['positive']):+.0f}; FAIL base {float(values['negative']):+.0f}, hasta -60 extra por causas",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        return details
+
     def _run_ubs_regression_for_latest_run(
         self,
         *,
@@ -381,15 +400,7 @@ class UBSRegressionLogicMixin:
             else:
                 self._show_error("No se pudo preparar la prueba regresiva", str(exc))
             return False
-        details = [
-            f"Run #{run_id} | candidatos: {len(rows)}",
-            f"Rango: {self.ubs_regression_from_date.get()} -> {self.ubs_regression_to_date.get()}",
-            "Modelo: OHLC 1 minuto (Model=1)",
-            f"Net > {values['net']} | PF >= {values['pf']} | ops >= {values['trades']}",
-            f"DD <= {values['dd']}% | recovery >= {values['recovery']} | meses + >= {values['months']}",
-            f"Puntos: OK {float(values['positive']):+.0f}; FAIL base {float(values['negative']):+.0f}, hasta -60 extra por causas",
-        ]
-        details.extend(self._multiterminal_execution_details())
+        details = self._ubs_regression_confirmation_details(run_id, len(rows), values)
         if confirm and not self._confirm_execution_start("Confirmar prueba regresiva UBS", len(rows), details):
             return False
         self._show_section("ubs_regression")

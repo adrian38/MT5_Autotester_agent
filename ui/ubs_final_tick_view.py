@@ -5,7 +5,8 @@ from tkinter import ttk
 
 
 class UBSFinalTickViewMixin:
-    def _build_ubs_final_tick(self, parent: ttk.Frame) -> None:
+    def _build_ubs_final_tick_panel(self, parent):
+        """Panel de la pantalla y su barra de resumen."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -17,6 +18,30 @@ class UBSFinalTickViewMixin:
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         bar.columnconfigure(0, weight=1)
+        return panel, bar
+
+    def _add_ubs_final_tick_action(
+        self, bar, text: str, command, column: int, *, primary: bool = False, last: bool = False,
+    ) -> None:
+        tk.Button(
+            bar,
+            text=text,
+            bg=self.colors["accent"] if primary else self.colors["panel"],
+            fg="#ffffff" if primary else self.colors["muted"],
+            relief="flat" if primary else "solid",
+            borderwidth=0 if primary else 1,
+            padx=10 if primary else 8,
+            pady=5,
+            font=("Segoe UI", 9, "bold") if primary else ("Segoe UI", 9),
+            cursor="hand2",
+            command=command,
+        ).grid(
+            row=0, column=column, sticky="e",
+            padx=(0, 10 if last else 6), pady=(5, 3),
+        )
+
+    def _build_ubs_final_tick_actions(self, bar):
+        """Resumen y botones de accion de la barra superior."""
         tk.Label(
             bar,
             textvariable=self.ubs_final_tick_summary,
@@ -24,72 +49,37 @@ class UBSFinalTickViewMixin:
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
         ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
-        tk.Button(
-            bar,
-            text="Continuar Final Tick",
-            bg=self.colors["accent"],
-            fg="#ffffff",
-            relief="flat",
-            borderwidth=0,
-            padx=10,
-            pady=5,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            command=self._run_ubs_final_tick_for_latest_run,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Reprobar Final Tick",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._rerun_ubs_final_tick_for_latest_run,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Reintentar calidad baja",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._retry_ubs_final_tick_pending_quality,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Guardar config",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._save_config_clicked,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Actualizar",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._refresh_ubs_final_tick_panel,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
+        self._add_ubs_final_tick_action(
+            bar, "Continuar Final Tick", self._run_ubs_final_tick_for_latest_run, 1, primary=True,
+        )
+        self._add_ubs_final_tick_action(
+            bar, "Reprobar Final Tick", self._rerun_ubs_final_tick_for_latest_run, 2,
+        )
+        self._add_ubs_final_tick_action(
+            bar, "Reintentar calidad baja", self._retry_ubs_final_tick_pending_quality, 3,
+        )
+        self._add_ubs_final_tick_action(bar, "Guardar config", self._save_config_clicked, 4)
+        self._add_ubs_final_tick_action(
+            bar, "Actualizar", self._refresh_ubs_final_tick_panel, 5, last=True,
+        )
 
+    def _add_ubs_final_tick_run_action(self, row, text: str, command, column: int) -> None:
+        tk.Button(
+            row,
+            text=text,
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=command,
+        ).grid(row=0, column=column, sticky="e", padx=(0, 4))
+
+    def _build_ubs_final_tick_run_row(self, bar):
+        """Selector de run y accesos a los artefactos del candidato."""
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
         row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(1, weight=1)
@@ -108,72 +98,18 @@ class UBSFinalTickViewMixin:
         )
         self.ubs_final_tick_run_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
         self.ubs_final_tick_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_final_tick())
-        tk.Button(
-            row1,
-            text="Abrir set",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_final_tick_set,
-        ).grid(row=0, column=3, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Abrir OHLC",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_final_tick_ohlc_report,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Abrir Real Tick",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._open_selected_ubs_final_tick_real_report,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Manual OK",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._manual_accept_selected_ubs_final_tick,
-        ).grid(row=0, column=6, sticky="e", padx=(0, 4))
-        tk.Button(
-            row1,
-            text="Manual FAIL",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._manual_reject_selected_ubs_final_tick,
-        ).grid(row=0, column=7, sticky="e", padx=(0, 4))
+        actions = (
+            ("Abrir set", self._open_selected_ubs_final_tick_set),
+            ("Abrir OHLC", self._open_selected_ubs_final_tick_ohlc_report),
+            ("Abrir Real Tick", self._open_selected_ubs_final_tick_real_report),
+            ("Manual OK", self._manual_accept_selected_ubs_final_tick),
+            ("Manual FAIL", self._manual_reject_selected_ubs_final_tick),
+        )
+        for column, (text, command) in enumerate(actions, start=3):
+            self._add_ubs_final_tick_run_action(row1, text, command, column)
 
+    def _build_ubs_final_tick_criteria(self, panel):
+        """Estado y criterios de aceptacion del Final Tick."""
         ttk.Label(panel, textvariable=self.ubs_final_tick_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(4, 4)
         )
@@ -204,18 +140,12 @@ class UBSFinalTickViewMixin:
                 row=row, column=col_index * 2, sticky="w", padx=(0, 12), pady=(0, 2)
             )
 
-        table_frame = ttk.Frame(panel, style="Panel.TFrame")
-        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+    def _ubs_final_tick_table_spec(self):
         columns = (
             "mark", "run", "id", "gen", "status", "cause", "symbol", "period",
             "quality", "ohlc_score", "tick_score", "net_ohlc", "net_tick",
             "pf_ohlc", "pf_tick", "dd_ohlc", "dd_tick", "trades_ohlc",
             "trades_tick", "dates", "set",
-        )
-        self.ubs_final_tick_tree = ttk.Treeview(
-            table_frame, columns=columns, show="headings", height=10, selectmode="extended"
         )
         headings = {
             "mark": "SEL",
@@ -263,6 +193,18 @@ class UBSFinalTickViewMixin:
             "dates": 170,
             "set": 260,
         }
+        return columns, headings, widths
+
+    def _build_ubs_final_tick_table(self, panel):
+        """Tabla de candidatos con sus columnas y etiquetas."""
+        table_frame = ttk.Frame(panel, style="Panel.TFrame")
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns, headings, widths = self._ubs_final_tick_table_spec()
+        self.ubs_final_tick_tree = ttk.Treeview(
+            table_frame, columns=columns, show="headings", height=10, selectmode="extended"
+        )
         for column in columns:
             self.ubs_final_tick_tree.heading(column, text=headings[column])
             self.ubs_final_tick_tree.column(column, width=widths[column], minwidth=42, anchor="center", stretch=False)
@@ -273,3 +215,10 @@ class UBSFinalTickViewMixin:
         self.ubs_final_tick_tree.bind("<Button-1>", self._on_ubs_final_tick_tree_click)
         self.ubs_final_tick_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_final_tick_real_report())
         self._attach_tree_scrollbars(table_frame, self.ubs_final_tick_tree, 0, vertical=True)
+
+    def _build_ubs_final_tick(self, parent: ttk.Frame) -> None:
+        panel, bar = self._build_ubs_final_tick_panel(parent)
+        self._build_ubs_final_tick_actions(bar)
+        self._build_ubs_final_tick_run_row(bar)
+        self._build_ubs_final_tick_criteria(panel)
+        self._build_ubs_final_tick_table(panel)

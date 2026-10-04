@@ -1,3 +1,4 @@
+import ubs_agent_evaluate
 import argparse
 import json
 import tempfile
@@ -65,7 +66,7 @@ class InvalidStopsDiagnosticsTests(unittest.TestCase):
 
     def test_base_evaluation_persists_reason_and_rescore_without_journal_keeps_it(self):
         memory, seed, variant = self.memory()
-        with patch("ubs_agent.score_report_file", return_value=score(-55, symbol="KNDI.NAS", timeframe="M30", trades=0)):
+        with patch("ubs_agent_evaluate.score_report_file", return_value=score(-55, symbol="KNDI.NAS", timeframe="M30", trades=0)):
             status, result = evaluate_variant_report(memory, variant, self.report, ScoreConfig(), {}, "ICTRADING")
         self.assertEqual(status, "rejected")
         self.sidecar.unlink()
@@ -81,7 +82,7 @@ class InvalidStopsDiagnosticsTests(unittest.TestCase):
     def test_real_trades_and_report_mismatch_keep_existing_semantics(self):
         memory, seed, variant = self.memory()
         for symbol, trades, expected in (("KNDI.NAS", 50, "accepted"), ("OTHER.NAS", 0, "report_mismatch")):
-            with self.subTest(symbol=symbol), patch("ubs_agent.score_report_file", return_value=score(-55, symbol=symbol, timeframe="M30", trades=trades)):
+            with self.subTest(symbol=symbol), patch("ubs_agent_evaluate.score_report_file", return_value=score(-55, symbol=symbol, timeframe="M30", trades=trades)):
                 status, result = evaluate_variant_report(memory, variant, self.report, ScoreConfig(), {}, "ICTRADING")
                 self.assertEqual(status, expected)
                 payload = json.loads(memory.conn.execute("select metrics_json from candidates").fetchone()[0])

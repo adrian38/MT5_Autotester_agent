@@ -88,8 +88,8 @@ class SyncMt5UniverseSymbolsTests(unittest.TestCase):
     def run_sync(self, removed: tuple[str, ...]) -> UniverseSyncHarness:
         harness = UniverseSyncHarness(self.policy, removed)
         with (
-            patch("ui.ubs_universe_logic.messagebox.showinfo") as info,
-            patch("ui.ubs_universe_logic.messagebox.showerror") as error,
+            patch("ui.ubs_universe_mt5.messagebox.showinfo") as info,
+            patch("ui.ubs_universe_mt5.messagebox.showerror") as error,
         ):
             harness._sync_mt5_universe_symbols()
         harness.info_messages = [call.args[1] for call in info.call_args_list]
@@ -187,8 +187,8 @@ class TradeDisabledPolicyTests(unittest.TestCase):
             )
 
             with (
-                patch("ui.ubs_universe_logic.extract_symbols_from_mt5", return_value=extraction) as extract,
-                patch("ui.ubs_universe_logic.messagebox.askyesno", return_value=True) as confirm,
+                patch("ui.ubs_universe_mt5.extract_symbols_from_mt5", return_value=extraction) as extract,
+                patch("ui.ubs_universe_actions.messagebox.askyesno", return_value=True) as confirm,
             ):
                 harness._disable_trade_disabled_universe_symbols()
 

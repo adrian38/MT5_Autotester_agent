@@ -11,11 +11,7 @@ from ubs.manual_status import (
 from ubs.weights import ASSET_ACCEPTED_BONUS, feedback_weight
 
 
-def memory_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
+MEMORY_SCHEMA = """
         create table candidates (
             id integer primary key,
             run_id integer not null,
@@ -111,8 +107,13 @@ def memory_conn() -> sqlite3.Connection:
             points_applied real not null default 0.0,
             evaluated_at text not null
         );
-        """
-    )
+"""
+
+
+def memory_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(MEMORY_SCHEMA)
     return conn
 
 

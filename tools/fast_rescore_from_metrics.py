@@ -266,6 +266,54 @@ def _stored_degradation(
     )
 
 
+def _robustness_row_update(row, gates: Gates, broker: str):
+    candidate_id, run_id, old_status, old_score, metrics_raw, degradation_raw, base_raw = row
+    try:
+        metrics = json.loads(metrics_raw)
+        base_metrics = json.loads(base_raw or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(metrics, dict) or not isinstance(base_metrics, dict):
+        return None
+    result = _renormalize(metrics, broker)
+    if result is None:
+        return None
+    updated, normalized, score = result
+    base_result = _renormalize(base_metrics, broker)
+    if base_result is not None:
+        base_metrics = base_result[0]
+    absolute_reasons = _reasons(updated, normalized, gates, stage="oos")
+    degradation = _stored_degradation(degradation_raw, base_metrics, updated)
+    degradation_reasons = degradation.get("reasons", []) if degradation else []
+    if not isinstance(degradation_reasons, list):
+        degradation_reasons = []
+    degradation_accepted = bool(degradation.get("accepted", True)) if degradation else True
+    policy = RiskProfitConfig.from_dict((updated.get("score_config") or {}).get("risk_profit"))
+    cfg = RobustnessDegradationConfig(**{
+        key: value for key, value in (degradation.get("config") or {}).items()
+        if key in RobustnessDegradationConfig.__dataclass_fields__
+    })
+    reasons, risk_audit, degradation = combine_robustness_profit_gate(
+        base_metrics, updated, absolute_reasons, degradation, policy,
+        max_drawdown_pct=gates.max_dd, min_recovery_factor=gates.min_recovery,
+        degradation_config=cfg,
+    )
+    updated["risk_profit_audit"] = risk_audit
+    accepted = not reasons and (degradation_accepted or risk_audit["selected_route"] == "risk_adjusted")
+    status = ("accepted" if accepted else "pending_risk_evidence"
+              if risk_audit["selected_route"] == "pending_evidence" else "rejected")
+    updated["reasons"] = reasons
+    updated["accepted"] = accepted
+    if degradation:
+        degradation["absolute_accepted"] = not absolute_reasons
+        degradation["final_accepted"] = accepted
+    update = (
+        status, int(accepted), None if old_score is None else score,
+        _dump(updated), _dump(degradation), candidate_id, run_id,
+    )
+    return update, old_status, accepted
+
+
 def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None:
     """Re-score OOS absolute gates while retaining/recomputing its degradation gate."""
     rows = conn.execute(
@@ -281,66 +329,20 @@ def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None
     ).fetchall()
     updates = []
     changed = to_accept = to_reject = skipped = 0
-    for candidate_id, run_id, old_status, old_score, metrics_raw, degradation_raw, base_raw in rows:
-        try:
-            metrics = json.loads(metrics_raw)
-            base_metrics = json.loads(base_raw or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            skipped += 1
-            continue
-        if not isinstance(metrics, dict) or not isinstance(base_metrics, dict):
-            skipped += 1
-            continue
-        result = _renormalize(metrics, broker)
+    for row in rows:
+        result = _robustness_row_update(row, gates, broker)
         if result is None:
             skipped += 1
             continue
-        updated, normalized, score = result
-        base_result = _renormalize(base_metrics, broker)
-        if base_result is not None:
-            base_metrics = base_result[0]
-        absolute_reasons = _reasons(updated, normalized, gates, stage="oos")
-        degradation = _stored_degradation(degradation_raw, base_metrics, updated)
-        degradation_reasons = degradation.get("reasons", []) if degradation else []
-        if not isinstance(degradation_reasons, list):
-            degradation_reasons = []
-        degradation_accepted = bool(degradation.get("accepted", True)) if degradation else True
-        policy = RiskProfitConfig.from_dict((updated.get("score_config") or {}).get("risk_profit"))
-        cfg = RobustnessDegradationConfig(**{
-            key: value for key, value in (degradation.get("config") or {}).items()
-            if key in RobustnessDegradationConfig.__dataclass_fields__
-        })
-        reasons, risk_audit, degradation = combine_robustness_profit_gate(
-            base_metrics, updated, absolute_reasons, degradation, policy,
-            max_drawdown_pct=gates.max_dd, min_recovery_factor=gates.min_recovery,
-            degradation_config=cfg,
-        )
-        updated["risk_profit_audit"] = risk_audit
-        accepted = not reasons and (degradation_accepted or risk_audit["selected_route"] == "risk_adjusted")
-        status = ("accepted" if accepted else "pending_risk_evidence"
-                  if risk_audit["selected_route"] == "pending_evidence" else "rejected")
-        updated["reasons"] = reasons
-        updated["accepted"] = accepted
-        if degradation:
-            degradation["absolute_accepted"] = not absolute_reasons
-            degradation["final_accepted"] = accepted
+        update, old_status, accepted = result
+        status = update[0]
         if status != old_status:
             changed += 1
             if accepted:
                 to_accept += 1
             else:
                 to_reject += 1
-        updates.append(
-            (
-                status,
-                int(accepted),
-                None if old_score is None else score,
-                _dump(updated),
-                _dump(degradation),
-                candidate_id,
-                run_id,
-            )
-        )
+        updates.append(update)
 
     if not dry and updates:
         conn.executemany(
@@ -356,6 +358,49 @@ def rescore_robustness_stage(conn, gates: Gates, broker: str, dry: bool) -> None
         f"[candidate_robustness] scored={len(rows)} skipped={skipped} changed={changed} "
         f"(->accepted {to_accept}, ->rejected {to_reject}){' [DRY-RUN]' if dry else ''}"
     )
+
+
+def _stage_row_update(
+    row,
+    table: str,
+    key_cols: list[str],
+    selected: list[str],
+    columns: list[tuple[str, str]],
+    broker: str,
+) -> tuple[str, list[object]] | None:
+    keys = list(row[: len(key_cols)])
+    values = dict(zip(selected, row[len(key_cols):]))
+    assignments: list[str] = []
+    params: list[object] = []
+    for metrics_col, score_col in columns:
+        raw = values.get(metrics_col)
+        if not raw:
+            continue
+        try:
+            metrics = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metrics, dict):
+            continue
+        result = _renormalize(metrics, broker)
+        if result is None:
+            continue
+        updated, _normalized, score = result
+        if _dump(updated) == _dump(metrics):
+            continue
+        assignments.append(f"{metrics_col}=?")
+        params.append(_dump(updated))
+        # A NULL score is a state, not a missing value: the UI clears it to
+        # drop a row out of the universe weights, and rows that were never
+        # scored (no_history, history_ok) carry NULL by construction. Only
+        # refresh a score that is already there.
+        if score_col and values.get(score_col) is not None:
+            assignments.append(f"{score_col}=?")
+            params.append(score)
+    if not assignments:
+        return None
+    where = " and ".join(f"{key}=?" for key in key_cols)
+    return f"update {table} set {', '.join(assignments)} where {where}", params + keys
 
 
 def refresh_stage(
@@ -393,39 +438,10 @@ def refresh_stage(
     updates: list[tuple] = []
     refreshed = untouched = 0
     for row in rows:
-        keys = list(row[: len(key_cols)])
-        values = dict(zip(selected, row[len(key_cols):]))
-        assignments: list[str] = []
-        params: list[object] = []
-        for metrics_col, score_col in columns:
-            raw = values.get(metrics_col)
-            if not raw:
-                continue
-            try:
-                metrics = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(metrics, dict):
-                continue
-            result = _renormalize(metrics, broker)
-            if result is None:
-                continue
-            updated, _normalized, score = result
-            if _dump(updated) == _dump(metrics):
-                continue
-            assignments.append(f"{metrics_col}=?")
-            params.append(_dump(updated))
-            # A NULL score is a state, not a missing value: the UI clears it to
-            # drop a row out of the universe weights, and rows that were never
-            # scored (no_history, history_ok) carry NULL by construction. Only
-            # refresh a score that is already there.
-            if score_col and values.get(score_col) is not None:
-                assignments.append(f"{score_col}=?")
-                params.append(score)
-        if assignments:
+        update = _stage_row_update(row, table, key_cols, selected, columns, broker)
+        if update is not None:
             refreshed += 1
-            where = " and ".join(f"{key}=?" for key in key_cols)
-            updates.append((f"update {table} set {', '.join(assignments)} where {where}", params + keys))
+            updates.append(update)
         else:
             untouched += 1
 

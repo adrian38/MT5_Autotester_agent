@@ -139,6 +139,17 @@ def read_compile_log(compile_log: Path) -> str:
     return compile_log.read_text(errors="ignore")
 
 
+def _log_compile_process(logger: CompileLogger, process, elapsed: float) -> None:
+    logger.write(f"MetaEditor termino con codigo: {process.returncode}")
+    logger.write(f"Duracion: {elapsed:.1f} segundos")
+    if process.stdout.strip():
+        logger.write("STDOUT:")
+        logger.write(process.stdout.strip())
+    if process.stderr.strip():
+        logger.write("STDERR:")
+        logger.write(process.stderr.strip())
+
+
 def compile_source(metaeditor_path: Path, source_path: Path, logger: CompileLogger, dry_run: bool) -> bool:
     compile_log = LOG_DIR / f"{source_path.stem}_compile.log"
     output_path = source_path.with_suffix(".ex5")
@@ -169,15 +180,7 @@ def compile_source(metaeditor_path: Path, source_path: Path, logger: CompileLogg
     )
     elapsed = time.time() - start
 
-    logger.write(f"MetaEditor termino con codigo: {process.returncode}")
-    logger.write(f"Duracion: {elapsed:.1f} segundos")
-
-    if process.stdout.strip():
-        logger.write("STDOUT:")
-        logger.write(process.stdout.strip())
-    if process.stderr.strip():
-        logger.write("STDERR:")
-        logger.write(process.stderr.strip())
+    _log_compile_process(logger, process, elapsed)
 
     if compile_log.exists():
         logger.write(f"Log compilacion: {compile_log}")
@@ -200,6 +203,24 @@ def compile_source(metaeditor_path: Path, source_path: Path, logger: CompileLogg
     if process.returncode != 0:
         logger.write(f"Aviso: MetaEditor devolvio codigo {process.returncode}, pero el .ex5 fue generado.")
     return True
+
+
+def _log_no_sources(logger: CompileLogger, source_dir: Path, args) -> None:
+    logger.write("")
+    logger.write("ERROR: no se encontraron archivos .mq5 para compilar.")
+    logger.write(f"  Carpeta buscada: {source_dir}")
+    logger.write(f"  Modo recursivo: {'si' if args.recursive else 'no'}")
+    if args.source_file:
+        logger.write(f"  Filtro --source-file: {args.source_file}")
+    logger.write("  Revisa que la ruta sea correcta y que existan archivos .mq5.")
+    try:
+        subdirs = [directory for directory in source_dir.iterdir() if directory.is_dir()][:10]
+        if subdirs:
+            logger.write(f"  Subcarpetas detectadas en la raiz ({len(subdirs)}):")
+            for directory in subdirs:
+                logger.write(f"    - {directory.name}")
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -238,21 +259,7 @@ def main() -> int:
     logger.write(f"Archivos .mq5 encontrados: {len(sources)}")
 
     if not sources:
-        logger.write("")
-        logger.write("ERROR: no se encontraron archivos .mq5 para compilar.")
-        logger.write(f"  Carpeta buscada: {source_dir}")
-        logger.write(f"  Modo recursivo: {'si' if args.recursive else 'no'}")
-        if args.source_file:
-            logger.write(f"  Filtro --source-file: {args.source_file}")
-        logger.write("  Revisa que la ruta sea correcta y que existan archivos .mq5.")
-        try:
-            subdirs = [d for d in source_dir.iterdir() if d.is_dir()][:10]
-            if subdirs:
-                logger.write(f"  Subcarpetas detectadas en la raiz ({len(subdirs)}):")
-                for d in subdirs:
-                    logger.write(f"    - {d.name}")
-        except OSError:
-            pass
+        _log_no_sources(logger, source_dir, args)
         return 1
 
     failures = 0

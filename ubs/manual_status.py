@@ -163,6 +163,47 @@ def sync_manual_accepted_candidate_copies(
     return copied
 
 
+def _upsert_candidate_robustness(
+    conn: sqlite3.Connection,
+    row,
+    status: str,
+    from_date: str,
+    to_date: str,
+    positive_bonus: float,
+    negative_bonus: float,
+    evaluated_at: str,
+) -> None:
+    conn.execute(
+        """
+        insert into candidate_robustness (
+            candidate_id, run_id, status, report_path, score, accepted,
+            metrics_json, from_date, to_date, positive_bonus, negative_bonus, evaluated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(candidate_id) do update set
+            run_id=excluded.run_id,
+            status=excluded.status,
+            accepted=excluded.accepted,
+            report_path=excluded.report_path,
+            score=excluded.score,
+            metrics_json=excluded.metrics_json,
+            from_date=excluded.from_date,
+            to_date=excluded.to_date,
+            positive_bonus=excluded.positive_bonus,
+            negative_bonus=excluded.negative_bonus,
+            evaluated_at=excluded.evaluated_at
+        """,
+        (
+            int(row["candidate_id"]), int(row["run_id"]), status,
+            row["report_path"], row["score"], _accepted_value(status), row["metrics_json"],
+            str(row["from_date"] or from_date or ""),
+            str(row["to_date"] or to_date or ""),
+            float(row["positive_bonus"] if row["positive_bonus"] is not None else positive_bonus),
+            float(row["negative_bonus"] if row["negative_bonus"] is not None else negative_bonus),
+            evaluated_at,
+        ),
+    )
+
+
 def mark_candidate_robustness(
     conn: sqlite3.Connection,
     candidate_ids: Iterable[object],
@@ -197,39 +238,8 @@ def mark_candidate_robustness(
     ).fetchall()
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
-        conn.execute(
-            """
-            insert into candidate_robustness (
-                candidate_id, run_id, status, report_path, score, accepted,
-                metrics_json, from_date, to_date, positive_bonus, negative_bonus, evaluated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(candidate_id) do update set
-                run_id=excluded.run_id,
-                status=excluded.status,
-                accepted=excluded.accepted,
-                report_path=excluded.report_path,
-                score=excluded.score,
-                metrics_json=excluded.metrics_json,
-                from_date=excluded.from_date,
-                to_date=excluded.to_date,
-                positive_bonus=excluded.positive_bonus,
-                negative_bonus=excluded.negative_bonus,
-                evaluated_at=excluded.evaluated_at
-            """,
-            (
-                int(row["candidate_id"]),
-                int(row["run_id"]),
-                status,
-                row["report_path"],
-                row["score"],
-                _accepted_value(status),
-                row["metrics_json"],
-                str(row["from_date"] or from_date or ""),
-                str(row["to_date"] or to_date or ""),
-                float(row["positive_bonus"] if row["positive_bonus"] is not None else positive_bonus),
-                float(row["negative_bonus"] if row["negative_bonus"] is not None else negative_bonus),
-                now,
-            ),
+        _upsert_candidate_robustness(
+            conn, row, status, from_date, to_date, positive_bonus, negative_bonus, now,
         )
     if status != "accepted":
         placeholders = _placeholders(len(ids))
@@ -240,26 +250,10 @@ def mark_candidate_robustness(
     return len(rows)
 
 
-def mark_candidate_final_tick(
-    conn: sqlite3.Connection,
-    candidate_ids: Iterable[object],
-    status: str,
-    *,
-    final_tick_stage: str = "probe",
-    min_history_quality: float = 80.0,
-    from_date: str = "",
-    to_date: str = "",
-    max_net_delta_pct: float = 35.0,
-    max_pf_delta_pct: float = 35.0,
-    max_dd_delta_pct: float = 35.0,
-    max_trades_delta_pct: float = 35.0,
-) -> int:
-    status = _normalize_status(status)
-    ids = _ids(candidate_ids)
-    if not ids:
-        return 0
-    table = _final_tick_table(final_tick_stage)
-    rows = conn.execute(
+def _final_tick_rows(
+    conn: sqlite3.Connection, table: str, ids: list[int],
+) -> list[sqlite3.Row]:
+    return conn.execute(
         f"""
         select
             c.id as candidate_id,
@@ -285,63 +279,68 @@ def mark_candidate_final_tick(
         """,
         tuple(ids),
     ).fetchall()
-    now = datetime.now().isoformat(timespec="seconds")
-    for row in rows:
-        conn.execute(
-            f"""
-            insert into {table} (
-                candidate_id, run_id, status, accepted,
-                ohlc_report_path, real_tick_report_path,
-                ohlc_score, real_tick_score,
-                ohlc_metrics_json, real_tick_metrics_json, similarity_json,
-                history_quality, min_history_quality, from_date, to_date,
-                max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
-                evaluated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(candidate_id) do update set
-                run_id=excluded.run_id,
-                status=excluded.status,
-                accepted=excluded.accepted,
-                ohlc_report_path=excluded.ohlc_report_path,
-                real_tick_report_path=excluded.real_tick_report_path,
-                ohlc_score=excluded.ohlc_score,
-                real_tick_score=excluded.real_tick_score,
-                ohlc_metrics_json=excluded.ohlc_metrics_json,
-                real_tick_metrics_json=excluded.real_tick_metrics_json,
-                similarity_json=excluded.similarity_json,
-                history_quality=excluded.history_quality,
-                min_history_quality=excluded.min_history_quality,
-                from_date=excluded.from_date,
-                to_date=excluded.to_date,
-                max_net_delta_pct=excluded.max_net_delta_pct,
-                max_pf_delta_pct=excluded.max_pf_delta_pct,
-                max_dd_delta_pct=excluded.max_dd_delta_pct,
-                max_trades_delta_pct=excluded.max_trades_delta_pct,
-                evaluated_at=excluded.evaluated_at
-            """,
-            (
-                int(row["candidate_id"]),
-                int(row["run_id"]),
-                status,
-                _accepted_value(status),
-                row["ohlc_report_path"],
-                row["real_tick_report_path"],
-                row["ohlc_score"],
-                row["real_tick_score"],
-                row["ohlc_metrics_json"],
-                row["real_tick_metrics_json"],
-                row["similarity_json"],
-                row["history_quality"],
-                float(row["min_history_quality"] if row["min_history_quality"] is not None else min_history_quality),
-                str(row["from_date"] or from_date or ""),
-                str(row["to_date"] or to_date or ""),
-                float(row["max_net_delta_pct"] if row["max_net_delta_pct"] is not None else max_net_delta_pct),
-                float(row["max_pf_delta_pct"] if row["max_pf_delta_pct"] is not None else max_pf_delta_pct),
-                float(row["max_dd_delta_pct"] if row["max_dd_delta_pct"] is not None else max_dd_delta_pct),
-                float(row["max_trades_delta_pct"] if row["max_trades_delta_pct"] is not None else max_trades_delta_pct),
-                now,
-            ),
-        )
+
+
+def _final_tick_values(
+    row: sqlite3.Row, status: str, min_history_quality: float,
+    from_date: str, to_date: str, max_net_delta_pct: float,
+    max_pf_delta_pct: float, max_dd_delta_pct: float,
+    max_trades_delta_pct: float, now: str,
+) -> tuple[object, ...]:
+    def existing_or(key: str, default: object) -> object:
+        return row[key] if row[key] is not None else default
+
+    return (
+        int(row["candidate_id"]), int(row["run_id"]), status, _accepted_value(status),
+        row["ohlc_report_path"], row["real_tick_report_path"],
+        row["ohlc_score"], row["real_tick_score"],
+        row["ohlc_metrics_json"], row["real_tick_metrics_json"], row["similarity_json"],
+        row["history_quality"], float(existing_or("min_history_quality", min_history_quality)),
+        str(row["from_date"] or from_date or ""), str(row["to_date"] or to_date or ""),
+        float(existing_or("max_net_delta_pct", max_net_delta_pct)),
+        float(existing_or("max_pf_delta_pct", max_pf_delta_pct)),
+        float(existing_or("max_dd_delta_pct", max_dd_delta_pct)),
+        float(existing_or("max_trades_delta_pct", max_trades_delta_pct)), now,
+    )
+
+
+def _upsert_candidate_final_tick(
+    conn: sqlite3.Connection, table: str, values: tuple[object, ...],
+) -> None:
+    conn.execute(
+        f"""
+        insert into {table} (
+            candidate_id, run_id, status, accepted,
+            ohlc_report_path, real_tick_report_path, ohlc_score, real_tick_score,
+            ohlc_metrics_json, real_tick_metrics_json, similarity_json,
+            history_quality, min_history_quality, from_date, to_date,
+            max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
+            evaluated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(candidate_id) do update set
+            run_id=excluded.run_id, status=excluded.status, accepted=excluded.accepted,
+            ohlc_report_path=excluded.ohlc_report_path,
+            real_tick_report_path=excluded.real_tick_report_path,
+            ohlc_score=excluded.ohlc_score, real_tick_score=excluded.real_tick_score,
+            ohlc_metrics_json=excluded.ohlc_metrics_json,
+            real_tick_metrics_json=excluded.real_tick_metrics_json,
+            similarity_json=excluded.similarity_json,
+            history_quality=excluded.history_quality,
+            min_history_quality=excluded.min_history_quality,
+            from_date=excluded.from_date, to_date=excluded.to_date,
+            max_net_delta_pct=excluded.max_net_delta_pct,
+            max_pf_delta_pct=excluded.max_pf_delta_pct,
+            max_dd_delta_pct=excluded.max_dd_delta_pct,
+            max_trades_delta_pct=excluded.max_trades_delta_pct,
+            evaluated_at=excluded.evaluated_at
+        """,
+        values,
+    )
+
+
+def _clear_final_tick_dependants(
+    conn: sqlite3.Connection, table: str, status: str, ids: list[int],
+) -> None:
     if table == "candidate_final_tick" and status not in {"accepted", "pending_ohlc_trades"}:
         if _table_exists(conn, "candidate_regression"):
             conn.execute(
@@ -358,26 +357,42 @@ def mark_candidate_final_tick(
                 f"delete from candidate_regression where candidate_id in ({_placeholders(len(ids))})",
                 tuple(ids),
             )
-    return len(rows)
 
 
-def mark_candidate_regression(
+def mark_candidate_final_tick(
     conn: sqlite3.Connection,
     candidate_ids: Iterable[object],
     status: str,
     *,
-    from_date: str = DEFAULT_REGRESSION_FROM_DATE,
-    to_date: str = DEFAULT_REGRESSION_TO_DATE,
-    positive_points: float = DEFAULT_REGRESSION_POSITIVE_POINTS,
-    negative_points: float = DEFAULT_REGRESSION_NEGATIVE_POINTS,
+    final_tick_stage: str = "probe",
+    min_history_quality: float = 80.0,
+    from_date: str = "",
+    to_date: str = "",
+    max_net_delta_pct: float = 35.0,
+    max_pf_delta_pct: float = 35.0,
+    max_dd_delta_pct: float = 35.0,
+    max_trades_delta_pct: float = 35.0,
 ) -> int:
-    """Apply an auditable manual verdict without inventing report metrics."""
-
     status = _normalize_status(status)
     ids = _ids(candidate_ids)
     if not ids:
         return 0
-    rows = conn.execute(
+    table = _final_tick_table(final_tick_stage)
+    rows = _final_tick_rows(conn, table, ids)
+    now = datetime.now().isoformat(timespec="seconds")
+    for row in rows:
+        values = _final_tick_values(
+            row, status, min_history_quality, from_date, to_date,
+            max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
+            max_trades_delta_pct, now,
+        )
+        _upsert_candidate_final_tick(conn, table, values)
+    _clear_final_tick_dependants(conn, table, status, ids)
+    return len(rows)
+
+
+def _regression_rows(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
+    return conn.execute(
         f"""
         select
             c.id as candidate_id,
@@ -397,59 +412,86 @@ def mark_candidate_regression(
         """,
         tuple(ids),
     ).fetchall()
+
+
+def _manual_regression_details(status: str, applied: float) -> str:
+    return json.dumps(
+        {
+            "accepted": status == "accepted",
+            "manual": True,
+            "model": "1_minute_ohlc",
+            "reasons": ["manual_verdict"],
+            "points": {"base": applied, "reason_penalty": 0.0, "applied": applied},
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+
+
+def _regression_values(
+    row: sqlite3.Row, status: str, from_date: str, to_date: str,
+    positive_points: float, negative_points: float, now: str,
+) -> tuple[object, ...]:
+    positive = float(row["positive_points"] if row["positive_points"] is not None else positive_points)
+    negative = float(row["negative_points"] if row["negative_points"] is not None else negative_points)
+    applied = regression_points(status, positive_points=positive, negative_points=negative)
+    return (
+        int(row["candidate_id"]), int(row["run_id"]), status, _accepted_value(status),
+        row["report_path"], row["score"], row["metrics_json"],
+        _manual_regression_details(status, applied),
+        str(row["from_date"] or from_date), str(row["to_date"] or to_date),
+        positive, negative, applied, now,
+    )
+
+
+def _upsert_candidate_regression(conn: sqlite3.Connection, values: tuple[object, ...]) -> None:
+    conn.execute(
+        """
+        insert into candidate_regression (
+            candidate_id, run_id, status, accepted, report_path, score,
+            metrics_json, details_json, from_date, to_date,
+            positive_points, negative_points, points_applied, evaluated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(candidate_id) do update set
+            run_id=excluded.run_id,
+            status=excluded.status,
+            accepted=excluded.accepted,
+            report_path=excluded.report_path,
+            score=excluded.score,
+            metrics_json=excluded.metrics_json,
+            details_json=excluded.details_json,
+            from_date=excluded.from_date,
+            to_date=excluded.to_date,
+            positive_points=excluded.positive_points,
+            negative_points=excluded.negative_points,
+            points_applied=excluded.points_applied,
+            evaluated_at=excluded.evaluated_at
+        """,
+        values,
+    )
+
+
+def mark_candidate_regression(
+    conn: sqlite3.Connection,
+    candidate_ids: Iterable[object],
+    status: str,
+    *,
+    from_date: str = DEFAULT_REGRESSION_FROM_DATE,
+    to_date: str = DEFAULT_REGRESSION_TO_DATE,
+    positive_points: float = DEFAULT_REGRESSION_POSITIVE_POINTS,
+    negative_points: float = DEFAULT_REGRESSION_NEGATIVE_POINTS,
+) -> int:
+    """Apply an auditable manual verdict without inventing report metrics."""
+
+    status = _normalize_status(status)
+    ids = _ids(candidate_ids)
+    if not ids:
+        return 0
+    rows = _regression_rows(conn, ids)
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
-        positive = float(row["positive_points"] if row["positive_points"] is not None else positive_points)
-        negative = float(row["negative_points"] if row["negative_points"] is not None else negative_points)
-        applied = regression_points(status, positive_points=positive, negative_points=negative)
-        details = json.dumps(
-            {
-                "accepted": status == "accepted",
-                "manual": True,
-                "model": "1_minute_ohlc",
-                "reasons": ["manual_verdict"],
-                "points": {"base": applied, "reason_penalty": 0.0, "applied": applied},
-            },
-            ensure_ascii=True,
-            sort_keys=True,
+        values = _regression_values(
+            row, status, from_date, to_date, positive_points, negative_points, now,
         )
-        conn.execute(
-            """
-            insert into candidate_regression (
-                candidate_id, run_id, status, accepted, report_path, score,
-                metrics_json, details_json, from_date, to_date,
-                positive_points, negative_points, points_applied, evaluated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(candidate_id) do update set
-                run_id=excluded.run_id,
-                status=excluded.status,
-                accepted=excluded.accepted,
-                report_path=excluded.report_path,
-                score=excluded.score,
-                metrics_json=excluded.metrics_json,
-                details_json=excluded.details_json,
-                from_date=excluded.from_date,
-                to_date=excluded.to_date,
-                positive_points=excluded.positive_points,
-                negative_points=excluded.negative_points,
-                points_applied=excluded.points_applied,
-                evaluated_at=excluded.evaluated_at
-            """,
-            (
-                int(row["candidate_id"]),
-                int(row["run_id"]),
-                status,
-                _accepted_value(status),
-                row["report_path"],
-                row["score"],
-                row["metrics_json"],
-                details,
-                str(row["from_date"] or from_date),
-                str(row["to_date"] or to_date),
-                positive,
-                negative,
-                applied,
-                now,
-            ),
-        )
+        _upsert_candidate_regression(conn, values)
     return len(rows)

@@ -1,27 +1,21 @@
 from __future__ import annotations
 
 import configparser
-import os
-import sqlite3
-import subprocess
 import sys
-import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import telegram_notify
 from mt5_env import ENV_FILE
-from run_tests import EXPERTS_ROOT_FILE, REPORT_DIR, TESTER_DEFAULTS
+from run_tests import EXPERTS_ROOT_FILE, TESTER_DEFAULTS
 from ubs.account import (
     BROKERS,
-    BROKER_ACCOUNT_TYPES,
     DEFAULT_BROKER,
-    account_memory_path,
     default_symbol_map_for_broker,
     normalize_broker,
     symbol_map_setting_key,
 )
-from ubs.db import connect_memory
+from ui.settings_cleanup import SettingsCleanupMixin
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,8 +24,6 @@ if getattr(sys, "frozen", False):
 
 COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
-NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-REPORT_SUFFIXES = {".htm", ".html", ".xml", ".png", ".gif", ".set"}
 TEMPLATE_FIELD_DEFAULTS = {
     "Symbol": "XAUUSD",
     "Period": "M30",
@@ -42,7 +34,7 @@ TEMPLATE_FIELD_DEFAULTS = {
 }
 
 
-class SettingsLogicMixin:
+class SettingsLogicMixin(SettingsCleanupMixin):
     def _load_template(self) -> None:
         template_text = self.template_path.get().strip()
         if not template_text:
@@ -178,42 +170,6 @@ class SettingsLogicMixin:
             chat_id=chat_id,
             on_result=on_result,
         )
-    def _delete_historical_data(self) -> None:
-        if self.process and self.process.poll() is None:
-            messagebox.showwarning("Proceso activo", "Hay un proceso en ejecucion. Detenlo antes de limpiar.")
-            return
-        scripts = self._find_clean_scripts()
-        if not scripts:
-            messagebox.showerror(
-                "Scripts no encontrados",
-                "No se encontraron cleanOldTest.ps1 / cleanOlddata.ps1 en la carpeta scripts/."
-            )
-            return
-        if not messagebox.askyesno(
-            "Eliminar datos historicos",
-            "Esto cerrara MetaTrader y borrara cache de tester/bases/history y reportes "
-            "en las carpetas de datos de TODAS las terminales.\n\n"
-            f"No borrara las copias locales del proyecto en:\n{REPORT_DIR}\n\n"
-            f"Se ejecutaran en orden:\n  - {scripts[0].name}\n  - {scripts[1].name}\n\nContinuar?"
-        ):
-            return
-        self.status_text.set("Limpiando datos historicos...")
-        self._append_console("\n=== Limpieza de datos historicos ===\n", tag="warn")
-        # Inicializa la barra de progreso para esta tarea
-        self.active_task_text.set("Limpiando datos historicos")
-        self.active_task_detail.set("0%")
-        self._set_progress_color("accent")
-        self._progress_running = True
-        self._progress_total = len(scripts)
-        self._progress_done = 0
-        self._progress_target = 2.0
-        try:
-            self.progress_bar.stop()
-            self.progress_bar.configure(mode="determinate", maximum=100)
-            self.progress_var.set(0.0)
-        except Exception:
-            pass
-        threading.Thread(target=self._run_clean_scripts, args=(scripts,), daemon=True).start()
 
     def _browse_file(self, variable) -> None:
         path = filedialog.askopenfilename(initialdir=str(BASE_DIR))
@@ -327,6 +283,275 @@ class SettingsLogicMixin:
         import mt5_env
         mt5_env._PROJECT_ENV = None
 
+    def _general_agent_settings(self, symbol_maps) -> dict[str, str]:
+        """Ajustes del agente: generacion, cuenta y umbrales base."""
+        return {
+        "recursive": "1" if self.recursive.get() else "0",
+        "delay": str(self.delay.get()),
+        "ubs_generation_count": str(self.ubs_generation_count.get()),
+        "ubs_variants_per_seed": str(self.ubs_variants_per_seed.get()),
+        "ubs_max_seeds": str(self.ubs_max_seeds.get()),
+        "ubs_agent_execute": "1" if self.ubs_agent_execute.get() else "0",
+        "ubs_generation_mode": self.ubs_generation_mode.get().strip().lower(),
+        "ubs_force_unseeded_universe": "1" if self.ubs_generation_mode.get().strip().lower() == "discovery" else "0",
+        "ubs_experimental_long_timeframes": "1" if self.ubs_experimental_long_timeframes.get() else "0",
+        "ubs_long_tf_min_trades_w1": self.ubs_long_tf_min_trades_w1.get().strip(),
+        "ubs_long_tf_min_trades_mn": self.ubs_long_tf_min_trades_mn.get().strip(),
+        "ubs_broker": self.ubs_broker.get().strip().upper(),
+        "ubs_account_type": self.ubs_account_type.get().strip().upper(),
+        "ubs_pass_min_net_profit": self.ubs_pass_min_net_profit.get().strip(),
+        "ubs_pass_min_profit_factor": self.ubs_pass_min_profit_factor.get().strip(),
+        "ubs_pass_min_trades": str(self.ubs_pass_min_trades.get()),
+        "ubs_pass_max_drawdown_pct": self.ubs_pass_max_drawdown_pct.get().strip(),
+        "ubs_pass_min_recovery_factor": self.ubs_pass_min_recovery_factor.get().strip(),
+        }
+
+    def _general_stage_settings(self, symbol_maps) -> dict[str, str]:
+        """Umbrales de semillas, robustez, Final Tick y regresiva."""
+        return {
+        "ubs_seed_pass_min_net_profit": self.ubs_seed_pass_min_net_profit.get().strip(),
+        "ubs_seed_pass_min_profit_factor": self.ubs_seed_pass_min_profit_factor.get().strip(),
+        "ubs_seed_pass_min_trades": str(self.ubs_seed_pass_min_trades.get()),
+        "ubs_seed_pass_max_drawdown_pct": self.ubs_seed_pass_max_drawdown_pct.get().strip(),
+        "ubs_seed_pass_min_recovery_factor": self.ubs_seed_pass_min_recovery_factor.get().strip(),
+        "ubs_robust_pass_min_net_profit": self.ubs_robust_pass_min_net_profit.get().strip(),
+        "ubs_robust_pass_min_profit_factor": self.ubs_robust_pass_min_profit_factor.get().strip(),
+        "ubs_robust_pass_min_trades": str(self.ubs_robust_pass_min_trades.get()),
+        "ubs_robust_pass_max_drawdown_pct": self.ubs_robust_pass_max_drawdown_pct.get().strip(),
+        "ubs_robust_pass_min_recovery_factor": self.ubs_robust_pass_min_recovery_factor.get().strip(),
+        "ubs_robust_min_net_retention": self.ubs_robust_min_net_retention.get().strip(),
+        "ubs_robust_min_pf_edge_retention": self.ubs_robust_min_pf_edge_retention.get().strip(),
+        "ubs_robust_min_recovery_retention": self.ubs_robust_min_recovery_retention.get().strip(),
+        "ubs_robust_max_dd_inflation": self.ubs_robust_max_dd_inflation.get().strip(),
+        "ubs_robust_positive_bonus": self.ubs_robust_positive_bonus.get().strip(),
+        "ubs_robust_negative_bonus": self.ubs_robust_negative_bonus.get().strip(),
+        "ubs_robust_auto": "1" if self.ubs_robust_auto.get() else "0",
+        "ubs_final_tick_auto": "1" if self.ubs_final_tick_auto.get() else "0",
+        "ubs_final_tick_6m_auto": "1" if self.ubs_final_tick_6m_auto.get() else "0",
+        "ubs_regression_auto": "1" if self.ubs_regression_auto.get() else "0",
+        "ubs_agent_from_date": self.ubs_agent_from_date.get().strip(),
+        "ubs_agent_to_date": self.ubs_agent_to_date.get().strip(),
+        "ubs_seed_from_date": self.ubs_seed_from_date.get().strip(),
+        "ubs_seed_to_date": self.ubs_seed_to_date.get().strip(),
+        "ubs_robust_from_date": self.ubs_robust_from_date.get().strip(),
+        "ubs_robust_to_date": self.ubs_robust_to_date.get().strip(),
+        "ubs_final_tick_from_date": self.ubs_final_tick_from_date.get().strip(),
+        "ubs_final_tick_to_date": self.ubs_final_tick_to_date.get().strip(),
+        "ubs_final_tick_ohlc_from_date": self.ubs_final_tick_ohlc_from_date.get().strip(),
+        "ubs_final_tick_ohlc_to_date": self.ubs_final_tick_ohlc_to_date.get().strip(),
+        "ubs_final_tick_6m_from_date": self.ubs_final_tick_6m_from_date.get().strip(),
+        "ubs_final_tick_6m_to_date": self.ubs_final_tick_6m_to_date.get().strip(),
+        "ubs_final_tick_6m_ohlc_from_date": self.ubs_final_tick_6m_ohlc_from_date.get().strip(),
+        "ubs_final_tick_6m_ohlc_to_date": self.ubs_final_tick_6m_ohlc_to_date.get().strip(),
+        "ubs_regression_from_date": self.ubs_regression_from_date.get().strip(),
+        "ubs_regression_to_date": self.ubs_regression_to_date.get().strip(),
+        "ubs_regression_min_net_profit": self.ubs_regression_min_net_profit.get().strip(),
+        "ubs_regression_min_profit_factor": self.ubs_regression_min_profit_factor.get().strip(),
+        "ubs_regression_min_trades": self.ubs_regression_min_trades.get().strip(),
+        "ubs_regression_min_trades_w1": self.ubs_regression_min_trades_w1.get().strip(),
+        "ubs_regression_min_trades_mn": self.ubs_regression_min_trades_mn.get().strip(),
+        "ubs_regression_max_drawdown_pct": self.ubs_regression_max_drawdown_pct.get().strip(),
+        "ubs_regression_min_recovery_factor": self.ubs_regression_min_recovery_factor.get().strip(),
+        "ubs_regression_min_positive_month_ratio": self.ubs_regression_min_positive_month_ratio.get().strip(),
+        "ubs_regression_min_pf_efficiency": self.ubs_regression_min_pf_efficiency.get().strip(),
+        "ubs_regression_max_dd_ratio": self.ubs_regression_max_dd_ratio.get().strip(),
+        "ubs_regression_positive_points": self.ubs_regression_positive_points.get().strip(),
+        "ubs_regression_negative_points": self.ubs_regression_negative_points.get().strip(),
+        "ubs_final_tick_min_history_quality": self.ubs_final_tick_min_history_quality.get().strip(),
+        "ubs_final_tick_min_ohlc_trades": self.ubs_final_tick_min_ohlc_trades.get().strip(),
+        "ubs_final_tick_min_trades_w1": self.ubs_final_tick_min_trades_w1.get().strip(),
+        "ubs_final_tick_min_trades_mn": self.ubs_final_tick_min_trades_mn.get().strip(),
+        "ubs_final_tick_max_net_delta_pct": self.ubs_final_tick_max_net_delta_pct.get().strip(),
+        "ubs_final_tick_max_pf_delta_pct": self.ubs_final_tick_max_pf_delta_pct.get().strip(),
+        "ubs_final_tick_max_dd_delta_pct": self.ubs_final_tick_max_dd_delta_pct.get().strip(),
+        "ubs_final_tick_max_trades_delta_pct": self.ubs_final_tick_max_trades_delta_pct.get().strip(),
+        }
+
+    def _general_symbol_settings(self, symbol_maps) -> dict[str, str]:
+        """Sufijos, correspondencia de simbolos y avisos."""
+        return {
+        "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
+        "symbol_suffix": self.symbol_suffix.get().strip(),
+        "symbol_futures_suffix": self.symbol_futures_suffix.get().strip(),
+        "symbol_shares_suffix": self.symbol_shares_suffix.get().strip(),
+        "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
+        "symbol_map": symbol_maps.get(DEFAULT_BROKER, default_symbol_map_for_broker(DEFAULT_BROKER)),
+        "telegram_enabled": "1" if self.telegram_enabled.get() else "0",
+        }
+
+    def _general_portfolio_settings(self, symbol_maps) -> dict[str, str]:
+        """Entradas del portafolio UBS normal."""
+        return {
+        "portfolio_threshold": self.portfolio_threshold.get().strip(),
+        "ubs_portfolio_num_symbols": str(self.ubs_portfolio_num_symbols.get()),
+        "ubs_portfolio_type": self.ubs_portfolio_type.get().strip(),
+        "ubs_portfolio_valley_pct": self.ubs_portfolio_valley_pct.get().strip(),
+        "ubs_portfolio_point_pct": self.ubs_portfolio_point_pct.get().strip(),
+        "ubs_portfolio_capital": self.ubs_portfolio_capital.get().strip(),
+        "ubs_portfolio_top_k": str(self.ubs_portfolio_top_k.get()),
+        "ubs_portfolio_max_candidates": str(self.ubs_portfolio_max_candidates.get()),
+        "ubs_portfolio_min_trades": str(self.ubs_portfolio_min_trades.get()),
+        "ubs_portfolio_max_units_per_set": self.ubs_portfolio_max_units_per_set.get().strip(),
+        "ubs_portfolio_max_total_units": self.ubs_portfolio_max_total_units.get().strip(),
+        "ubs_portfolio_max_units_per_symbol": self.ubs_portfolio_max_units_per_symbol.get().strip(),
+        "ubs_portfolio_max_sets_per_symbol": str(self.ubs_portfolio_max_sets_per_symbol.get()),
+        "ubs_portfolio_run_local_search": "1" if self.ubs_portfolio_run_local_search.get() else "0",
+        "ubs_portfolio_deep_optimization": "1" if self.ubs_portfolio_deep_optimization.get() else "0",
+        "ubs_portfolio_use_correlation": "1" if self.ubs_portfolio_use_correlation.get() else "0",
+        "ubs_portfolio_require_3_positive_months_6m": (
+            "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"
+        ),
+        "ubs_portfolio_grid_off": "1" if self.ubs_portfolio_grid_off.get() else "0",
+        "ubs_portfolio_exclude_used_sets": (
+            "1" if self.ubs_portfolio_exclude_used_sets.get() else "0"
+        ),
+        "ubs_portfolio_margin_profile": self.ubs_portfolio_margin_profile.get().strip().upper(),
+        "ubs_portfolio_max_margin_pct": self.ubs_portfolio_max_margin_pct.get().strip(),
+        "ubs_portfolio_allow_forex": "1" if self.ubs_portfolio_allow_forex.get() else "0",
+        "ubs_portfolio_allow_metals": "1" if self.ubs_portfolio_allow_metals.get() else "0",
+        "ubs_portfolio_allow_indices": "1" if self.ubs_portfolio_allow_indices.get() else "0",
+        "ubs_portfolio_allow_energies": "1" if self.ubs_portfolio_allow_energies.get() else "0",
+        "ubs_portfolio_allow_crypto": "1" if self.ubs_portfolio_allow_crypto.get() else "0",
+        "ubs_portfolio_allow_stocks": "1" if self.ubs_portfolio_allow_stocks.get() else "0",
+        "ubs_portfolio_allow_bonds": "1" if self.ubs_portfolio_allow_bonds.get() else "0",
+        "ubs_portfolio_allow_softs": "1" if self.ubs_portfolio_allow_softs.get() else "0",
+        "ubs_portfolio_dd_reserve_pct": self.ubs_portfolio_dd_reserve_pct.get().strip(),
+        "ubs_portfolio_search_restarts": str(self.ubs_portfolio_search_restarts.get()),
+        "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
+        "ubs_portfolio_max_downside_corr": self.ubs_portfolio_max_downside_corr.get().strip(),
+        "ubs_portfolio_max_dd_overlap": self.ubs_portfolio_max_dd_overlap.get().strip(),
+        "ubs_portfolio_max_portfolio_corr": self.ubs_portfolio_max_portfolio_corr.get().strip(),
+        }
+
+    def _general_monthly_filters(self) -> dict[str, str]:
+        """Filtros por activo, margen y correlacion del portafolio mensual."""
+        return {
+        "ubs_monthly_portfolio_allow_forex": (
+            "1" if self.ubs_monthly_portfolio_allow_forex.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_metals": (
+            "1" if self.ubs_monthly_portfolio_allow_metals.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_indices": (
+            "1" if self.ubs_monthly_portfolio_allow_indices.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_energies": (
+            "1" if self.ubs_monthly_portfolio_allow_energies.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_crypto": (
+            "1" if self.ubs_monthly_portfolio_allow_crypto.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_stocks": (
+            "1" if self.ubs_monthly_portfolio_allow_stocks.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_bonds": (
+            "1" if self.ubs_monthly_portfolio_allow_bonds.get() else "0"
+        ),
+        "ubs_monthly_portfolio_allow_softs": (
+            "1" if self.ubs_monthly_portfolio_allow_softs.get() else "0"
+        ),
+        "ubs_monthly_portfolio_exclude_monthly_used": (
+            "1" if self.ubs_monthly_portfolio_exclude_monthly_used.get() else "0"
+        ),
+        "ubs_monthly_portfolio_corr_with_monthly_portfolios": (
+            "1" if self.ubs_monthly_portfolio_corr_with_monthly_portfolios.get() else "0"
+        ),
+        "ubs_monthly_portfolio_strict_yearly_month_validation": (
+            "1" if self.ubs_monthly_portfolio_strict_yearly_month_validation.get() else "0"
+        ),
+        "ubs_monthly_portfolio_deep_optimization": (
+            "1" if self.ubs_monthly_portfolio_deep_optimization.get() else "0"
+        ),
+        "ubs_monthly_portfolio_validate_roboforex_margin": (
+            "1" if self.ubs_monthly_portfolio_validate_roboforex_margin.get() else "0"
+        ),
+        "ubs_monthly_portfolio_validate_ttp_margin": (
+            "1" if self.ubs_monthly_portfolio_validate_ttp_margin.get() else "0"
+        ),
+        "ubs_monthly_portfolio_max_margin_pct": self.ubs_monthly_portfolio_max_margin_pct.get().strip(),
+        "ubs_monthly_portfolio_dd_reserve_pct": self.ubs_monthly_portfolio_dd_reserve_pct.get().strip(),
+        "ubs_monthly_portfolio_search_restarts": str(self.ubs_monthly_portfolio_search_restarts.get()),
+        "ubs_monthly_portfolio_max_pair_corr": self.ubs_monthly_portfolio_max_pair_corr.get().strip(),
+        "ubs_monthly_portfolio_max_downside_corr": self.ubs_monthly_portfolio_max_downside_corr.get().strip(),
+        "ubs_monthly_portfolio_max_dd_overlap": self.ubs_monthly_portfolio_max_dd_overlap.get().strip(),
+        "ubs_monthly_portfolio_max_portfolio_corr": self.ubs_monthly_portfolio_max_portfolio_corr.get().strip(),
+        "theme": self.theme_mode.get(),
+        }
+
+    def _general_monthly_settings(self, symbol_maps) -> dict[str, str]:
+        """Entradas del portafolio UBS mensual y el tema."""
+        return {
+        "ubs_monthly_portfolio_target_month": self.ubs_monthly_portfolio_target_month.get().strip(),
+        "ubs_monthly_portfolio_type": self.ubs_monthly_portfolio_type.get().strip(),
+        "ubs_monthly_portfolio_valley_pct": self.ubs_monthly_portfolio_valley_pct.get().strip(),
+        "ubs_monthly_portfolio_point_pct": self.ubs_monthly_portfolio_point_pct.get().strip(),
+        "ubs_monthly_portfolio_max_daily_dd": self.ubs_monthly_portfolio_max_daily_dd.get().strip(),
+        "ubs_monthly_portfolio_daily_dd_full_history": (
+            "1" if self.ubs_monthly_portfolio_daily_dd_full_history.get() else "0"
+        ),
+        "ubs_monthly_portfolio_capital": self.ubs_monthly_portfolio_capital.get().strip(),
+        "ubs_monthly_portfolio_top_k": str(self.ubs_monthly_portfolio_top_k.get()),
+        "ubs_monthly_portfolio_max_candidates": str(self.ubs_monthly_portfolio_max_candidates.get()),
+        "ubs_monthly_portfolio_min_trades": str(self.ubs_monthly_portfolio_min_trades.get()),
+        "ubs_monthly_portfolio_max_units_per_set": self.ubs_monthly_portfolio_max_units_per_set.get().strip(),
+        "ubs_monthly_portfolio_max_total_units": self.ubs_monthly_portfolio_max_total_units.get().strip(),
+        "ubs_monthly_portfolio_max_units_per_symbol": self.ubs_monthly_portfolio_max_units_per_symbol.get().strip(),
+        "ubs_monthly_portfolio_max_sets_per_symbol": str(self.ubs_monthly_portfolio_max_sets_per_symbol.get()),
+        "ubs_monthly_portfolio_run_local_search": "1" if self.ubs_monthly_portfolio_run_local_search.get() else "0",
+        "ubs_monthly_portfolio_use_correlation": "1" if self.ubs_monthly_portfolio_use_correlation.get() else "0",
+        "ubs_monthly_portfolio_require_3_positive_months_6m": (
+            "1" if self.ubs_monthly_portfolio_require_3_positive_months_6m.get() else "0"
+        ),
+        "ubs_monthly_portfolio_grid_off": "1" if self.ubs_monthly_portfolio_grid_off.get() else "0",
+            **self._general_monthly_filters(),
+        }
+
+    def _write_general_settings(self, parser) -> None:
+        """Seccion General completa, con el mapa de simbolos por broker."""
+        symbol_maps = getattr(self, "_ubs_symbol_maps_by_broker", {})
+        if symbol_maps is None:
+            symbol_maps = {}
+        active_symbol_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", self.ubs_broker.get()))
+        symbol_maps[active_symbol_broker] = self.symbol_map.get().strip()
+        for broker in BROKERS:
+            symbol_maps.setdefault(broker, default_symbol_map_for_broker(broker))
+        self._ubs_symbol_maps_by_broker = symbol_maps
+        parser["General"] = {
+            **self._general_agent_settings(symbol_maps),
+            **self._general_stage_settings(symbol_maps),
+            **self._general_symbol_settings(symbol_maps),
+            **self._general_portfolio_settings(symbol_maps),
+            **self._general_monthly_settings(symbol_maps),
+        }
+        for broker in BROKERS:
+            parser["General"][symbol_map_setting_key(broker)] = symbol_maps.get(
+                broker,
+                default_symbol_map_for_broker(broker),
+            )
+
+    def _write_multiterminal_settings(self, parser, saved_multiterminal_tuning):
+        """Seccion Multiterminal y un bloque por perfil de terminal."""
+        parser["Multiterminal"] = {
+            "enabled": "1" if self.multiterminal_enabled.get() else "0",
+            "broker": self._active_multiterminal_broker() if hasattr(self, "_active_multiterminal_broker") else "ROBOFOREX",
+            "workers": str(self._multiterminal_worker_limit()),
+            "terminal_cooldown": saved_multiterminal_tuning["terminal_cooldown"],
+            "tester_kick_after": saved_multiterminal_tuning["tester_kick_after"],
+            "tester_stall_after": saved_multiterminal_tuning["tester_stall_after"],
+            "tester_max_runtime": saved_multiterminal_tuning["tester_max_runtime"],
+        }
+        for index, profile in enumerate(self.multiterminal_profiles, start=1):
+            parser[f"Terminal.{index}"] = {
+                "enabled": "1" if bool(profile.get("enabled")) else "0",
+                "broker": str(profile.get("broker") or "ROBOFOREX").strip().upper(),
+                "name": str(profile.get("name") or f"Terminal {index}").strip(),
+                "mt5_path": str(profile.get("mt5_path") or "").strip(),
+                "data_dir": str(profile.get("data_dir") or "").strip(),
+                "experts_root": str(profile.get("experts_root") or "").strip(),
+                "ubs_ex5_file": str(profile.get("ubs_ex5_file") or "").strip(),
+                "portable": "1" if bool(profile.get("portable")) else "0",
+            }
+
     def _write_ui_settings(self) -> None:
         self._save_current_multiterminal_editor()
         saved_multiterminal_tuning = {
@@ -359,504 +584,11 @@ class SettingsLogicMixin:
             "portfolio_input": self.portfolio_input.get().strip(),
             "portfolio_output": self.portfolio_output.get().strip(),
         }
-        symbol_maps = getattr(self, "_ubs_symbol_maps_by_broker", {})
-        if symbol_maps is None:
-            symbol_maps = {}
-        active_symbol_broker = normalize_broker(getattr(self, "_ubs_symbol_map_active_broker", self.ubs_broker.get()))
-        symbol_maps[active_symbol_broker] = self.symbol_map.get().strip()
-        for broker in BROKERS:
-            symbol_maps.setdefault(broker, default_symbol_map_for_broker(broker))
-        self._ubs_symbol_maps_by_broker = symbol_maps
-        parser["General"] = {
-            "recursive": "1" if self.recursive.get() else "0",
-            "delay": str(self.delay.get()),
-            "ubs_generation_count": str(self.ubs_generation_count.get()),
-            "ubs_variants_per_seed": str(self.ubs_variants_per_seed.get()),
-            "ubs_max_seeds": str(self.ubs_max_seeds.get()),
-            "ubs_agent_execute": "1" if self.ubs_agent_execute.get() else "0",
-            "ubs_generation_mode": self.ubs_generation_mode.get().strip().lower(),
-            "ubs_force_unseeded_universe": "1" if self.ubs_generation_mode.get().strip().lower() == "discovery" else "0",
-            "ubs_experimental_long_timeframes": "1" if self.ubs_experimental_long_timeframes.get() else "0",
-            "ubs_long_tf_min_trades_w1": self.ubs_long_tf_min_trades_w1.get().strip(),
-            "ubs_long_tf_min_trades_mn": self.ubs_long_tf_min_trades_mn.get().strip(),
-            "ubs_broker": self.ubs_broker.get().strip().upper(),
-            "ubs_account_type": self.ubs_account_type.get().strip().upper(),
-            "ubs_pass_min_net_profit": self.ubs_pass_min_net_profit.get().strip(),
-            "ubs_pass_min_profit_factor": self.ubs_pass_min_profit_factor.get().strip(),
-            "ubs_pass_min_trades": str(self.ubs_pass_min_trades.get()),
-            "ubs_pass_max_drawdown_pct": self.ubs_pass_max_drawdown_pct.get().strip(),
-            "ubs_pass_min_recovery_factor": self.ubs_pass_min_recovery_factor.get().strip(),
-            "ubs_seed_pass_min_net_profit": self.ubs_seed_pass_min_net_profit.get().strip(),
-            "ubs_seed_pass_min_profit_factor": self.ubs_seed_pass_min_profit_factor.get().strip(),
-            "ubs_seed_pass_min_trades": str(self.ubs_seed_pass_min_trades.get()),
-            "ubs_seed_pass_max_drawdown_pct": self.ubs_seed_pass_max_drawdown_pct.get().strip(),
-            "ubs_seed_pass_min_recovery_factor": self.ubs_seed_pass_min_recovery_factor.get().strip(),
-            "ubs_robust_pass_min_net_profit": self.ubs_robust_pass_min_net_profit.get().strip(),
-            "ubs_robust_pass_min_profit_factor": self.ubs_robust_pass_min_profit_factor.get().strip(),
-            "ubs_robust_pass_min_trades": str(self.ubs_robust_pass_min_trades.get()),
-            "ubs_robust_pass_max_drawdown_pct": self.ubs_robust_pass_max_drawdown_pct.get().strip(),
-            "ubs_robust_pass_min_recovery_factor": self.ubs_robust_pass_min_recovery_factor.get().strip(),
-            "ubs_robust_min_net_retention": self.ubs_robust_min_net_retention.get().strip(),
-            "ubs_robust_min_pf_edge_retention": self.ubs_robust_min_pf_edge_retention.get().strip(),
-            "ubs_robust_min_recovery_retention": self.ubs_robust_min_recovery_retention.get().strip(),
-            "ubs_robust_max_dd_inflation": self.ubs_robust_max_dd_inflation.get().strip(),
-            "ubs_robust_positive_bonus": self.ubs_robust_positive_bonus.get().strip(),
-            "ubs_robust_negative_bonus": self.ubs_robust_negative_bonus.get().strip(),
-            "ubs_robust_auto": "1" if self.ubs_robust_auto.get() else "0",
-            "ubs_final_tick_auto": "1" if self.ubs_final_tick_auto.get() else "0",
-            "ubs_final_tick_6m_auto": "1" if self.ubs_final_tick_6m_auto.get() else "0",
-            "ubs_regression_auto": "1" if self.ubs_regression_auto.get() else "0",
-            "ubs_agent_from_date": self.ubs_agent_from_date.get().strip(),
-            "ubs_agent_to_date": self.ubs_agent_to_date.get().strip(),
-            "ubs_seed_from_date": self.ubs_seed_from_date.get().strip(),
-            "ubs_seed_to_date": self.ubs_seed_to_date.get().strip(),
-            "ubs_robust_from_date": self.ubs_robust_from_date.get().strip(),
-            "ubs_robust_to_date": self.ubs_robust_to_date.get().strip(),
-            "ubs_final_tick_from_date": self.ubs_final_tick_from_date.get().strip(),
-            "ubs_final_tick_to_date": self.ubs_final_tick_to_date.get().strip(),
-            "ubs_final_tick_ohlc_from_date": self.ubs_final_tick_ohlc_from_date.get().strip(),
-            "ubs_final_tick_ohlc_to_date": self.ubs_final_tick_ohlc_to_date.get().strip(),
-            "ubs_final_tick_6m_from_date": self.ubs_final_tick_6m_from_date.get().strip(),
-            "ubs_final_tick_6m_to_date": self.ubs_final_tick_6m_to_date.get().strip(),
-            "ubs_final_tick_6m_ohlc_from_date": self.ubs_final_tick_6m_ohlc_from_date.get().strip(),
-            "ubs_final_tick_6m_ohlc_to_date": self.ubs_final_tick_6m_ohlc_to_date.get().strip(),
-            "ubs_regression_from_date": self.ubs_regression_from_date.get().strip(),
-            "ubs_regression_to_date": self.ubs_regression_to_date.get().strip(),
-            "ubs_regression_min_net_profit": self.ubs_regression_min_net_profit.get().strip(),
-            "ubs_regression_min_profit_factor": self.ubs_regression_min_profit_factor.get().strip(),
-            "ubs_regression_min_trades": self.ubs_regression_min_trades.get().strip(),
-            "ubs_regression_min_trades_w1": self.ubs_regression_min_trades_w1.get().strip(),
-            "ubs_regression_min_trades_mn": self.ubs_regression_min_trades_mn.get().strip(),
-            "ubs_regression_max_drawdown_pct": self.ubs_regression_max_drawdown_pct.get().strip(),
-            "ubs_regression_min_recovery_factor": self.ubs_regression_min_recovery_factor.get().strip(),
-            "ubs_regression_min_positive_month_ratio": self.ubs_regression_min_positive_month_ratio.get().strip(),
-            "ubs_regression_min_pf_efficiency": self.ubs_regression_min_pf_efficiency.get().strip(),
-            "ubs_regression_max_dd_ratio": self.ubs_regression_max_dd_ratio.get().strip(),
-            "ubs_regression_positive_points": self.ubs_regression_positive_points.get().strip(),
-            "ubs_regression_negative_points": self.ubs_regression_negative_points.get().strip(),
-            "ubs_final_tick_min_history_quality": self.ubs_final_tick_min_history_quality.get().strip(),
-            "ubs_final_tick_min_ohlc_trades": self.ubs_final_tick_min_ohlc_trades.get().strip(),
-            "ubs_final_tick_min_trades_w1": self.ubs_final_tick_min_trades_w1.get().strip(),
-            "ubs_final_tick_min_trades_mn": self.ubs_final_tick_min_trades_mn.get().strip(),
-            "ubs_final_tick_max_net_delta_pct": self.ubs_final_tick_max_net_delta_pct.get().strip(),
-            "ubs_final_tick_max_pf_delta_pct": self.ubs_final_tick_max_pf_delta_pct.get().strip(),
-            "ubs_final_tick_max_dd_delta_pct": self.ubs_final_tick_max_dd_delta_pct.get().strip(),
-            "ubs_final_tick_max_trades_delta_pct": self.ubs_final_tick_max_trades_delta_pct.get().strip(),
-            "symbol_suffix_enabled": "1" if self.symbol_suffix_enabled.get() else "0",
-            "symbol_suffix": self.symbol_suffix.get().strip(),
-            "symbol_futures_suffix": self.symbol_futures_suffix.get().strip(),
-            "symbol_shares_suffix": self.symbol_shares_suffix.get().strip(),
-            "symbol_map_enabled": "1" if self.symbol_map_enabled.get() else "0",
-            "symbol_map": symbol_maps.get(DEFAULT_BROKER, default_symbol_map_for_broker(DEFAULT_BROKER)),
-            "telegram_enabled": "1" if self.telegram_enabled.get() else "0",
-            "portfolio_threshold": self.portfolio_threshold.get().strip(),
-            "ubs_portfolio_num_symbols": str(self.ubs_portfolio_num_symbols.get()),
-            "ubs_portfolio_type": self.ubs_portfolio_type.get().strip(),
-            "ubs_portfolio_valley_pct": self.ubs_portfolio_valley_pct.get().strip(),
-            "ubs_portfolio_point_pct": self.ubs_portfolio_point_pct.get().strip(),
-            "ubs_portfolio_capital": self.ubs_portfolio_capital.get().strip(),
-            "ubs_portfolio_top_k": str(self.ubs_portfolio_top_k.get()),
-            "ubs_portfolio_max_candidates": str(self.ubs_portfolio_max_candidates.get()),
-            "ubs_portfolio_min_trades": str(self.ubs_portfolio_min_trades.get()),
-            "ubs_portfolio_max_units_per_set": self.ubs_portfolio_max_units_per_set.get().strip(),
-            "ubs_portfolio_max_total_units": self.ubs_portfolio_max_total_units.get().strip(),
-            "ubs_portfolio_max_units_per_symbol": self.ubs_portfolio_max_units_per_symbol.get().strip(),
-            "ubs_portfolio_max_sets_per_symbol": str(self.ubs_portfolio_max_sets_per_symbol.get()),
-            "ubs_portfolio_run_local_search": "1" if self.ubs_portfolio_run_local_search.get() else "0",
-            "ubs_portfolio_deep_optimization": "1" if self.ubs_portfolio_deep_optimization.get() else "0",
-            "ubs_portfolio_use_correlation": "1" if self.ubs_portfolio_use_correlation.get() else "0",
-            "ubs_portfolio_require_3_positive_months_6m": (
-                "1" if self.ubs_portfolio_require_3_positive_months_6m.get() else "0"
-            ),
-            "ubs_portfolio_grid_off": "1" if self.ubs_portfolio_grid_off.get() else "0",
-            "ubs_portfolio_exclude_used_sets": (
-                "1" if self.ubs_portfolio_exclude_used_sets.get() else "0"
-            ),
-            "ubs_portfolio_margin_profile": self.ubs_portfolio_margin_profile.get().strip().upper(),
-            "ubs_portfolio_max_margin_pct": self.ubs_portfolio_max_margin_pct.get().strip(),
-            "ubs_portfolio_allow_forex": "1" if self.ubs_portfolio_allow_forex.get() else "0",
-            "ubs_portfolio_allow_metals": "1" if self.ubs_portfolio_allow_metals.get() else "0",
-            "ubs_portfolio_allow_indices": "1" if self.ubs_portfolio_allow_indices.get() else "0",
-            "ubs_portfolio_allow_energies": "1" if self.ubs_portfolio_allow_energies.get() else "0",
-            "ubs_portfolio_allow_crypto": "1" if self.ubs_portfolio_allow_crypto.get() else "0",
-            "ubs_portfolio_allow_stocks": "1" if self.ubs_portfolio_allow_stocks.get() else "0",
-            "ubs_portfolio_allow_bonds": "1" if self.ubs_portfolio_allow_bonds.get() else "0",
-            "ubs_portfolio_allow_softs": "1" if self.ubs_portfolio_allow_softs.get() else "0",
-            "ubs_portfolio_dd_reserve_pct": self.ubs_portfolio_dd_reserve_pct.get().strip(),
-            "ubs_portfolio_search_restarts": str(self.ubs_portfolio_search_restarts.get()),
-            "ubs_portfolio_max_pair_corr": self.ubs_portfolio_max_pair_corr.get().strip(),
-            "ubs_portfolio_max_downside_corr": self.ubs_portfolio_max_downside_corr.get().strip(),
-            "ubs_portfolio_max_dd_overlap": self.ubs_portfolio_max_dd_overlap.get().strip(),
-            "ubs_portfolio_max_portfolio_corr": self.ubs_portfolio_max_portfolio_corr.get().strip(),
-            "ubs_monthly_portfolio_target_month": self.ubs_monthly_portfolio_target_month.get().strip(),
-            "ubs_monthly_portfolio_type": self.ubs_monthly_portfolio_type.get().strip(),
-            "ubs_monthly_portfolio_valley_pct": self.ubs_monthly_portfolio_valley_pct.get().strip(),
-            "ubs_monthly_portfolio_point_pct": self.ubs_monthly_portfolio_point_pct.get().strip(),
-            "ubs_monthly_portfolio_max_daily_dd": self.ubs_monthly_portfolio_max_daily_dd.get().strip(),
-            "ubs_monthly_portfolio_daily_dd_full_history": (
-                "1" if self.ubs_monthly_portfolio_daily_dd_full_history.get() else "0"
-            ),
-            "ubs_monthly_portfolio_capital": self.ubs_monthly_portfolio_capital.get().strip(),
-            "ubs_monthly_portfolio_top_k": str(self.ubs_monthly_portfolio_top_k.get()),
-            "ubs_monthly_portfolio_max_candidates": str(self.ubs_monthly_portfolio_max_candidates.get()),
-            "ubs_monthly_portfolio_min_trades": str(self.ubs_monthly_portfolio_min_trades.get()),
-            "ubs_monthly_portfolio_max_units_per_set": self.ubs_monthly_portfolio_max_units_per_set.get().strip(),
-            "ubs_monthly_portfolio_max_total_units": self.ubs_monthly_portfolio_max_total_units.get().strip(),
-            "ubs_monthly_portfolio_max_units_per_symbol": self.ubs_monthly_portfolio_max_units_per_symbol.get().strip(),
-            "ubs_monthly_portfolio_max_sets_per_symbol": str(self.ubs_monthly_portfolio_max_sets_per_symbol.get()),
-            "ubs_monthly_portfolio_run_local_search": "1" if self.ubs_monthly_portfolio_run_local_search.get() else "0",
-            "ubs_monthly_portfolio_use_correlation": "1" if self.ubs_monthly_portfolio_use_correlation.get() else "0",
-            "ubs_monthly_portfolio_require_3_positive_months_6m": (
-                "1" if self.ubs_monthly_portfolio_require_3_positive_months_6m.get() else "0"
-            ),
-            "ubs_monthly_portfolio_grid_off": "1" if self.ubs_monthly_portfolio_grid_off.get() else "0",
-            "ubs_monthly_portfolio_allow_forex": (
-                "1" if self.ubs_monthly_portfolio_allow_forex.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_metals": (
-                "1" if self.ubs_monthly_portfolio_allow_metals.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_indices": (
-                "1" if self.ubs_monthly_portfolio_allow_indices.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_energies": (
-                "1" if self.ubs_monthly_portfolio_allow_energies.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_crypto": (
-                "1" if self.ubs_monthly_portfolio_allow_crypto.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_stocks": (
-                "1" if self.ubs_monthly_portfolio_allow_stocks.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_bonds": (
-                "1" if self.ubs_monthly_portfolio_allow_bonds.get() else "0"
-            ),
-            "ubs_monthly_portfolio_allow_softs": (
-                "1" if self.ubs_monthly_portfolio_allow_softs.get() else "0"
-            ),
-            "ubs_monthly_portfolio_exclude_monthly_used": (
-                "1" if self.ubs_monthly_portfolio_exclude_monthly_used.get() else "0"
-            ),
-            "ubs_monthly_portfolio_corr_with_monthly_portfolios": (
-                "1" if self.ubs_monthly_portfolio_corr_with_monthly_portfolios.get() else "0"
-            ),
-            "ubs_monthly_portfolio_strict_yearly_month_validation": (
-                "1" if self.ubs_monthly_portfolio_strict_yearly_month_validation.get() else "0"
-            ),
-            "ubs_monthly_portfolio_deep_optimization": (
-                "1" if self.ubs_monthly_portfolio_deep_optimization.get() else "0"
-            ),
-            "ubs_monthly_portfolio_validate_roboforex_margin": (
-                "1" if self.ubs_monthly_portfolio_validate_roboforex_margin.get() else "0"
-            ),
-            "ubs_monthly_portfolio_validate_ttp_margin": (
-                "1" if self.ubs_monthly_portfolio_validate_ttp_margin.get() else "0"
-            ),
-            "ubs_monthly_portfolio_max_margin_pct": self.ubs_monthly_portfolio_max_margin_pct.get().strip(),
-            "ubs_monthly_portfolio_dd_reserve_pct": self.ubs_monthly_portfolio_dd_reserve_pct.get().strip(),
-            "ubs_monthly_portfolio_search_restarts": str(self.ubs_monthly_portfolio_search_restarts.get()),
-            "ubs_monthly_portfolio_max_pair_corr": self.ubs_monthly_portfolio_max_pair_corr.get().strip(),
-            "ubs_monthly_portfolio_max_downside_corr": self.ubs_monthly_portfolio_max_downside_corr.get().strip(),
-            "ubs_monthly_portfolio_max_dd_overlap": self.ubs_monthly_portfolio_max_dd_overlap.get().strip(),
-            "ubs_monthly_portfolio_max_portfolio_corr": self.ubs_monthly_portfolio_max_portfolio_corr.get().strip(),
-            "theme": self.theme_mode.get(),
-        }
-        for broker in BROKERS:
-            parser["General"][symbol_map_setting_key(broker)] = symbol_maps.get(
-                broker,
-                default_symbol_map_for_broker(broker),
-            )
-        parser["Multiterminal"] = {
-            "enabled": "1" if self.multiterminal_enabled.get() else "0",
-            "broker": self._active_multiterminal_broker() if hasattr(self, "_active_multiterminal_broker") else "ROBOFOREX",
-            "workers": str(self._multiterminal_worker_limit()),
-            "terminal_cooldown": saved_multiterminal_tuning["terminal_cooldown"],
-            "tester_kick_after": saved_multiterminal_tuning["tester_kick_after"],
-            "tester_stall_after": saved_multiterminal_tuning["tester_stall_after"],
-            "tester_max_runtime": saved_multiterminal_tuning["tester_max_runtime"],
-        }
-        for index, profile in enumerate(self.multiterminal_profiles, start=1):
-            parser[f"Terminal.{index}"] = {
-                "enabled": "1" if bool(profile.get("enabled")) else "0",
-                "broker": str(profile.get("broker") or "ROBOFOREX").strip().upper(),
-                "name": str(profile.get("name") or f"Terminal {index}").strip(),
-                "mt5_path": str(profile.get("mt5_path") or "").strip(),
-                "data_dir": str(profile.get("data_dir") or "").strip(),
-                "experts_root": str(profile.get("experts_root") or "").strip(),
-                "ubs_ex5_file": str(profile.get("ubs_ex5_file") or "").strip(),
-                "portable": "1" if bool(profile.get("portable")) else "0",
-            }
+        self._write_general_settings(parser)
+        self._write_multiterminal_settings(parser, saved_multiterminal_tuning)
         with UI_SETTINGS_FILE.open("w", encoding="utf-8", newline="\n") as file:
             parser.write(file, space_around_delimiters=False)
         self._update_multiterminal_summary()
 
     def _write_single_path(self, path: Path, value: str, comment: str) -> None:
         text = f"# {comment}\n{value.strip()}\n" if value.strip() else f"# {comment}\n"
-        path.write_text(text, encoding="utf-8")
-
-    def _delete_old_reports(self) -> None:
-        files = self._project_report_files()
-        if not files:
-            messagebox.showinfo("Sin reportes", "No hay reportes generados para borrar.")
-            return
-        protected = self._protected_ubs_report_files()
-        delete_files = [path for path in files if self._norm_report_path(path) not in protected]
-        skipped = len(files) - len(delete_files)
-        if not messagebox.askyesno(
-            "Borrar reportes antiguos",
-            f"Se borraran {len(delete_files)} archivo(s) de reportes de la carpeta {REPORT_DIR}.\n"
-            f"Se conservaran {skipped} reporte(s) protegidos por UBS.\n\nContinuar?"
-        ):
-            return
-
-        deleted = 0
-        failures: list[str] = []
-        for path in delete_files:
-            try:
-                path.unlink()
-                deleted += 1
-            except OSError as exc:
-                failures.append(f"{path.name}: {exc}")
-
-        self._refresh_reports()
-        self.status_text.set(f"Reportes borrados: {deleted} | protegidos: {skipped}")
-        self._append_console(f"\nReportes borrados: {deleted} | protegidos UBS: {skipped}\n", tag="warn")
-        if failures:
-            details = "\n".join(failures[:12])
-            self._show_error("No se pudieron borrar todos los reportes", details)
-        else:
-            messagebox.showinfo(
-                "Reportes borrados",
-                f"Se borraron {deleted} reporte(s).\nSe conservaron {skipped} reporte(s) protegidos por UBS.",
-            )
-
-    def _project_report_files(self) -> list[Path]:
-        if not REPORT_DIR.exists():
-            return []
-        return [
-            path for path in REPORT_DIR.iterdir()
-            if path.is_file() and path.suffix.lower() in REPORT_SUFFIXES
-        ]
-
-    def _delete_project_reports_for_clean(self) -> tuple[int, int, list[str]]:
-        deleted = 0
-        skipped = 0
-        failures: list[str] = []
-        protected = self._protected_ubs_report_files()
-        for path in self._project_report_files():
-            if self._norm_report_path(path) in protected:
-                skipped += 1
-                continue
-            try:
-                path.unlink()
-                deleted += 1
-            except OSError as exc:
-                failures.append(f"{path.name}: {exc}")
-        return deleted, skipped, failures
-
-    def _protected_ubs_report_files(self) -> set[str]:
-        protected: set[str] = set()
-        for broker, account_type in BROKER_ACCOUNT_TYPES:
-            memory_path = account_memory_path(BASE_DIR, account_type, broker)
-            if not memory_path.exists():
-                continue
-            try:
-                conn = connect_memory(memory_path)
-                conn.row_factory = sqlite3.Row
-                try:
-                    self._ensure_ubs_memory_schema(conn)
-                    rows = conn.execute(
-                        """
-                        select c.report_path as base_report,
-                               cr.report_path as robust_report,
-                               ft.ohlc_report_path as final_ohlc_report,
-                               ft.real_tick_report_path as final_tick_report,
-                               ft6.ohlc_report_path as final_ohlc_6m_report,
-                               ft6.real_tick_report_path as final_tick_6m_report,
-                               rg.report_path as regression_report
-                        from candidates c
-                        left join candidate_robustness cr on cr.candidate_id = c.id
-                        left join candidate_final_tick ft on ft.candidate_id = c.id
-                        left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
-                        left join candidate_regression rg on rg.candidate_id = c.id
-                        where c.status = 'accepted'
-                           or cr.status = 'accepted'
-                           or ft.status = 'accepted'
-                           or ft6.status = 'accepted'
-                           or rg.status in ('accepted', 'rejected', 'no_trades')
-                        """
-                    ).fetchall()
-                except sqlite3.Error:
-                    rows = []
-                finally:
-                    conn.close()
-            except Exception:
-                continue
-            for row in rows:
-                for key in (
-                    "base_report",
-                    "robust_report",
-                    "final_ohlc_report",
-                    "final_tick_report",
-                    "final_ohlc_6m_report",
-                    "final_tick_6m_report",
-                    "regression_report",
-                ):
-                    value = str(row[key] or "").strip()
-                    if not value:
-                        continue
-                    report_path = Path(value)
-                    protected.add(self._norm_report_path(report_path))
-                    for sibling in report_path.parent.glob(f"{report_path.stem}.*"):
-                        if sibling.suffix.lower() in REPORT_SUFFIXES:
-                            protected.add(self._norm_report_path(sibling))
-        return protected
-
-    def _norm_report_path(self, path: Path) -> str:
-        try:
-            return str(path.resolve()).casefold()
-        except OSError:
-            return str(path).casefold()
-
-    def _find_clean_scripts(self) -> list[Path]:
-        candidates_dirs = [BASE_DIR / "scripts", BASE_DIR]
-        if getattr(sys, "_MEIPASS", None):
-            candidates_dirs.insert(0, Path(sys._MEIPASS) / "scripts")
-        order = ("cleanOldTest.ps1", "cleanOlddata.ps1")
-        for d in candidates_dirs:
-            paths = [d / name for name in order]
-            if all(p.exists() for p in paths):
-                return paths
-        return []
-
-    def _historical_data_roots(self) -> list[Path]:
-        roots: list[Path] = []
-
-        def add_root(value: object) -> None:
-            text = str(value or "").strip()
-            if not text:
-                return
-            root = Path(text).expanduser().resolve(strict=False)
-            if root not in roots:
-                roots.append(root)
-
-        if hasattr(self, "mt5_data_root"):
-            add_root(self.mt5_data_root.get())
-        for profile in getattr(self, "multiterminal_profiles", []):
-            add_root(profile.get("data_dir"))
-
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            global_tester = Path(appdata) / "MetaQuotes" / "Tester"
-            if global_tester.is_dir():
-                add_root(global_tester)
-            terminal_base = Path(appdata) / "MetaQuotes" / "Terminal"
-            if terminal_base.is_dir():
-                for child in terminal_base.iterdir():
-                    if child.is_dir():
-                        add_root(child)
-        return roots
-
-    def _historical_data_leftovers(self) -> list[tuple[Path, int, int]]:
-        leftovers: list[tuple[Path, int, int]] = []
-        for root in self._historical_data_roots():
-            subdirs = (".",) if root.name.casefold() == "tester" else ("Tester", "tester", "bases", "history")
-            for subdir in subdirs:
-                path = root / subdir
-                if not path.exists() or not path.is_dir():
-                    continue
-                file_count = 0
-                total_bytes = 0
-                try:
-                    for item in path.rglob("*"):
-                        if not item.is_file():
-                            continue
-                        file_count += 1
-                        try:
-                            total_bytes += item.stat().st_size
-                        except OSError:
-                            pass
-                except OSError:
-                    file_count += 1
-                if file_count > 0 or total_bytes > 0:
-                    leftovers.append((path, file_count, total_bytes))
-        unique: dict[str, tuple[Path, int, int]] = {}
-        for path, file_count, total_bytes in leftovers:
-            unique[str(path).casefold()] = (path, file_count, total_bytes)
-        return sorted(unique.values(), key=lambda item: item[2], reverse=True)
-
-    def _run_clean_scripts(self, scripts: list[Path]) -> None:
-        total = max(1, len(scripts))
-        failures = 0
-        for index, script in enumerate(scripts):
-            self.output_queue.put(f"\n>>> Ejecutando {script.name}\n")
-            slot_start = 100.0 * index / total
-            self.after(0, lambda v=slot_start + 100.0 / total * 0.15: self._set_clean_progress(v))
-            try:
-                proc = subprocess.Popen(
-                    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, encoding="utf-8", errors="replace",
-                    creationflags=NO_WINDOW,
-                )
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    self.output_queue.put(line)
-                proc.wait()
-                if proc.returncode != 0:
-                    failures += 1
-                self.output_queue.put(f"\n>>> {script.name} termino con codigo {proc.returncode}\n")
-            except Exception as exc:
-                failures += 1
-                self.output_queue.put(f"\nERROR ejecutando {script.name}: {exc}\n")
-            slot_end = 100.0 * (index + 1) / total
-            self.after(0, lambda v=slot_end: self._set_clean_progress(v))
-        leftovers = self._historical_data_leftovers()
-        if leftovers:
-            failures += 1
-            self.output_queue.put("\nAVISO: quedan datos historicos despues de limpiar:\n")
-            for path, file_count, total_bytes in leftovers[:20]:
-                self.output_queue.put(
-                    f" - {path} | {file_count:,} archivos | {total_bytes / (1024 ** 3):.2f} GB\n"
-                )
-            if len(leftovers) > 20:
-                self.output_queue.put(f" - ... {len(leftovers) - 20} carpeta(s) mas\n")
-        self.after(0, lambda: self._set_clean_progress(100.0))
-        self.output_queue.put("\n=== Limpieza terminada ===\n")
-        self.after(0, self._finish_clean, failures)
-
-    def _set_clean_progress(self, value: float) -> None:
-        value = max(0.0, min(100.0, float(value)))
-        self._progress_target = value
-        try:
-            self.progress_var.set(value)
-        except Exception:
-            pass
-        self.active_task_detail.set(f"{int(round(value))}%")
-
-    def _finish_clean(self, failures: int) -> None:
-        self._progress_running = False
-        if failures:
-            self._set_progress_color("danger")
-            self.active_task_text.set("Limpieza con errores")
-            self.status_text.set(f"Limpieza terminada con {failures} problema(s)")
-            messagebox.showwarning(
-                "Limpieza con errores",
-                f"La limpieza termino con {failures} problema(s).\n"
-                "Revisa la consola en la pestana Logs para ver scripts fallidos o carpetas restantes."
-            )
-        else:
-            self._set_progress_color("accent")
-            try:
-                self.progress_var.set(100.0)
-            except Exception:
-                pass
-            self.active_task_text.set("Limpieza completada")
-            self.active_task_detail.set("100%")
-            self.status_text.set("Limpieza terminada correctamente")
-            messagebox.showinfo(
-                "Limpieza completada",
-                "Se eliminaron los datos historicos de MT5 correctamente "
-                "(tester, bases, history, reports de terminal, .fxt, .tick)."
-            )
-        self._refresh_all()

@@ -8,7 +8,8 @@ from run_tests import KNOWN_TIMEFRAMES, REPORT_DIR
 
 
 class UBSSeedsViewMixin:
-    def _build_ubs_seeds(self, parent: ttk.Frame) -> None:
+    def _build_ubs_seeds_card(self, parent):
+        """Tarjeta de la pantalla y su barra de herramientas."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -21,8 +22,10 @@ class UBSSeedsViewMixin:
         toolbar = tk.Frame(card, bg=self.colors["panel_alt"])
         toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         toolbar.columnconfigure(0, weight=1)
+        return card, toolbar
 
-        # Fila 0: resumen + acciones principales
+    def _build_ubs_seeds_toolbar(self, toolbar):
+        """Resumen, importacion y acciones sobre la seed marcada."""
         tk.Label(toolbar, textvariable=self.ubs_seed_eval_summary,
                  bg=self.colors["panel_alt"], fg=self.colors["muted"],
                  font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
@@ -70,6 +73,8 @@ class UBSSeedsViewMixin:
                       font=("Segoe UI", 9, "bold"), cursor="hand2", command=cmd,
                       ).grid(row=0, column=col, sticky="e", padx=padx)
 
+    def _build_ubs_seeds_criteria(self, card):
+        """Criterios de aceptacion de las semillas."""
         criteria_bar = ttk.Frame(card, style="Panel.TFrame")
         criteria_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
         for column in (2, 4, 6, 8, 10):
@@ -107,6 +112,8 @@ class UBSSeedsViewMixin:
             command=self._apply_seed_criteria_clicked,
         ).grid(row=0, column=12, sticky="e")
 
+    def _build_ubs_seeds_dates(self, card):
+        """Fechas de evaluacion de las semillas."""
         _seed_date_tip = (
             "Formato: YYYY.MM.DD  (ej. 2020.01.01)\n"
             "Sobreescribe FromDate/ToDate del template solo para la evaluacion de seeds.\n"
@@ -140,6 +147,8 @@ class UBSSeedsViewMixin:
             command=self._save_seed_criteria_clicked,
         ).grid(row=0, column=6, sticky="e")
 
+    def _build_ubs_seeds_table(self, card):
+        """Tabla de semillas con sus columnas y etiquetas."""
         table_frame = ttk.Frame(card, style="Panel.TFrame")
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 10))
         table_frame.columnconfigure(0, weight=1)
@@ -176,6 +185,8 @@ class UBSSeedsViewMixin:
         self.ubs_seeds_tree.bind("<Button-1>", self._on_ubs_seed_tree_click)
         self.ubs_seeds_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_seed_report())
 
+    def _build_ubs_seeds_editor(self, card):
+        """Correccion manual del simbolo y el timeframe de una seed."""
         editor = ttk.Frame(card, style="Panel.TFrame")
         editor.grid(row=5, column=0, sticky="ew", padx=20, pady=(0, 18))
         editor.columnconfigure(1, weight=1)
@@ -198,3 +209,11 @@ class UBSSeedsViewMixin:
         ttk.Button(editor, text="Guardar override", style="Primary.TButton", command=self._save_ubs_seed_override).grid(
             row=1, column=4, sticky="e"
         )
+
+    def _build_ubs_seeds(self, parent: ttk.Frame) -> None:
+        card, toolbar = self._build_ubs_seeds_card(parent)
+        self._build_ubs_seeds_toolbar(toolbar)
+        self._build_ubs_seeds_criteria(card)
+        self._build_ubs_seeds_dates(card)
+        self._build_ubs_seeds_table(card)
+        self._build_ubs_seeds_editor(card)

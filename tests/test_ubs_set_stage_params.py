@@ -1,3 +1,4 @@
+import ubs_agent_config
 import random
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ from ubs_generate_sets import mutate_text
 
 class UBSSetStageParameterTests(unittest.TestCase):
     def test_use_every_tick_cannot_be_made_agent_mutable(self) -> None:
-        with patch("ubs_agent.load_mutation_overrides", return_value=({}, {"UseEveryTick"})):
+        with patch("ubs_agent_config.load_mutation_overrides", return_value=({}, {"UseEveryTick"})):
             self.assertFalse(is_agent_mutable_key("UseEveryTick"))
 
     def test_existing_use_every_tick_keeps_set_metadata(self) -> None:
@@ -88,7 +89,7 @@ class UBSSetStageParameterTests(unittest.TestCase):
             )
             seed = Seed(seed_path, "EURUSD", "H1", "family", "1")
 
-            with patch("ubs_agent.load_mutation_overrides", return_value=({}, set())):
+            with patch("ubs_agent_config.load_mutation_overrides", return_value=({}, set())):
                 variant = create_variant(
                     seed,
                     "EURUSD",

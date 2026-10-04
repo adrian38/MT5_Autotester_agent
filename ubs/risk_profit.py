@@ -143,6 +143,29 @@ def _duration_normalized(
     return updated, details
 
 
+def _risk_profit_checks(
+    metrics: Mapping[str, object], thresholds: dict[str, float],
+    values: dict[str, float | None], details: dict[str, dict[str, object]],
+    max_drawdown_pct: float,
+) -> dict[str, dict[str, object]]:
+    checks = {
+        key: {"value": value, "threshold": thresholds[key], "available": value is not None,
+              "accepted": value is not None and value >= thresholds[key], **details.get(key, {})}
+        for key, value in values.items()
+    }
+    net = finite_number(metrics.get("net_profit"))
+    dd_pct = finite_number(metrics.get("equity_drawdown_pct"))
+    checks["positive_net"] = {
+        "value": net, "threshold": 0, "available": net is not None,
+        "accepted": net is not None and net > 0,
+    }
+    checks["equity_drawdown_pct"] = {
+        "value": dd_pct, "threshold": max_drawdown_pct, "available": dd_pct is not None,
+        "accepted": dd_pct is not None and 0 <= dd_pct <= max_drawdown_pct,
+    }
+    return checks
+
+
 def evaluate_risk_profit(
     metrics: Mapping[str, object],
     config: RiskProfitConfig,
@@ -171,22 +194,7 @@ def evaluate_risk_profit(
         # The base threshold is a total over its own window, so the balance-based
         # floor of the normal gate is comparable and still applies.
         thresholds["recovery"] = max(thresholds["recovery"], min_recovery_factor)
-    checks = {
-        key: {"value": value, "threshold": thresholds[key], "available": value is not None,
-              "accepted": value is not None and value >= thresholds[key],
-              **details.get(key, {})}
-        for key, value in values.items()
-    }
-    net = finite_number(metrics.get("net_profit"))
-    dd_pct = finite_number(metrics.get("equity_drawdown_pct"))
-    checks["positive_net"] = {
-        "value": net, "threshold": 0, "available": net is not None,
-        "accepted": net is not None and net > 0,
-    }
-    checks["equity_drawdown_pct"] = {
-        "value": dd_pct, "threshold": max_drawdown_pct, "available": dd_pct is not None,
-        "accepted": dd_pct is not None and 0 <= dd_pct <= max_drawdown_pct,
-    }
+    checks = _risk_profit_checks(metrics, thresholds, values, details, max_drawdown_pct)
     missing = [name for name, check in checks.items() if not check["available"]]
     insufficient = [name for name in ("trades", "active_months") if not checks[name]["accepted"]]
     failed = [name for name, check in checks.items()
@@ -228,6 +236,33 @@ def apply_base_profit_gate(
     return updated, audit
 
 
+def _equity_comparison_evidence(
+    base: Mapping[str, object], oos: Mapping[str, object],
+    degradation: dict[str, object], config: RobustnessDegradationConfig,
+) -> tuple[dict[str, object], list[str]]:
+    base_window = degradation.get("base_window", {})
+    oos_window = degradation.get("oos_window", {})
+    equity_degradation = evaluate_robustness_degradation(
+        base, oos, base_from_date=base_window.get("from_date"),
+        base_to_date=base_window.get("to_date"),
+        oos_from_date=oos_window.get("from_date"), oos_to_date=oos_window.get("to_date"),
+        config=config, risk_basis="equity",
+    )
+    unavailable = [name for name, check in equity_degradation["checks"].items()
+                   if check["enabled"] and not check["available"]]
+    base_days = finite_number(base_window.get("days"))
+    oos_days = finite_number(oos_window.get("days"))
+    dates_valid = bool(base_days and base_days > 0 and oos_days and oos_days > 0)
+    risk_valid = equity_recovery(base) is not None and equity_recovery(base) > 0
+    base_dd_pct = finite_number(base.get("equity_drawdown_pct"))
+    risk_valid = risk_valid and base_dd_pct is not None and base_dd_pct >= 0
+    if not dates_valid:
+        unavailable.append("comparison_dates")
+    if not risk_valid:
+        unavailable.append("base_equity")
+    return equity_degradation, unavailable
+
+
 def combine_robustness_profit_gate(
     base: Mapping[str, object], oos: Mapping[str, object], reasons: list[str],
     degradation: dict[str, object], config: RiskProfitConfig,
@@ -238,27 +273,9 @@ def combine_robustness_profit_gate(
     audit = evaluate_risk_profit(oos, config, stage="oos",
                                 max_drawdown_pct=max_drawdown_pct,
                                 min_recovery_factor=min_recovery_factor)
-    base_window = degradation.get("base_window", {})
-    oos_window = degradation.get("oos_window", {})
-    equity_degradation = evaluate_robustness_degradation(
-        base, oos, base_from_date=base_window.get("from_date"),
-        base_to_date=base_window.get("to_date"),
-        oos_from_date=oos_window.get("from_date"), oos_to_date=oos_window.get("to_date"),
-        config=degradation_config, risk_basis="equity",
+    equity_degradation, unavailable = _equity_comparison_evidence(
+        base, oos, degradation, degradation_config
     )
-    unavailable = [name for name, check in equity_degradation["checks"].items()
-                   if check["enabled"] and not check["available"]]
-    base_days = finite_number(base_window.get("days"))
-    oos_days = finite_number(oos_window.get("days"))
-    dates_valid = bool(base_days and base_days > 0 and oos_days and oos_days > 0)
-    # Require valid equity on both sides even if a relative check is disabled.
-    risk_valid = equity_recovery(base) is not None and equity_recovery(base) > 0
-    base_dd_pct = finite_number(base.get("equity_drawdown_pct"))
-    risk_valid = risk_valid and base_dd_pct is not None and base_dd_pct >= 0
-    if not dates_valid:
-        unavailable.append("comparison_dates")
-    if not risk_valid:
-        unavailable.append("base_equity")
     audit["equity_degradation"] = equity_degradation
     audit["missing_comparisons"] = unavailable
     if equity_degradation["reasons"]:

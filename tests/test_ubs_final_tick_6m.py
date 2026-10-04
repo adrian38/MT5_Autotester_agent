@@ -6,6 +6,47 @@ from pathlib import Path
 from ubs.memory import AgentMemory
 
 
+def _insert_tick_sync_migration_rows(memory: AgentMemory) -> None:
+    legacy = {
+        "accepted": False,
+        "reasons": ["real_tick_no_history"],
+        "history": {"message": "no history data, stop testing", "tick_download_failed": True},
+    }
+    for table, candidate_id in (("candidate_final_tick", 11), ("candidate_final_tick_6m", 12)):
+        memory.conn.execute(
+            f"""insert into {table} (
+                candidate_id, run_id, status, accepted, real_tick_score,
+                real_tick_metrics_json, similarity_json, history_quality,
+                min_history_quality, evaluated_at
+            ) values (?, 1, 'rejected', 0, -55.0, '{{"trades": 0}}', ?, 0.0, 80.0, 'now')""",
+            (candidate_id, json.dumps(legacy)),
+        )
+    ordinary = {"accepted": False, "reasons": ["pf_delta"], "history": {"tick_download_failed": False}}
+    memory.conn.execute(
+        """insert into candidate_final_tick_6m (
+            candidate_id, run_id, status, accepted, real_tick_score,
+            real_tick_metrics_json, similarity_json, history_quality,
+            min_history_quality, evaluated_at
+        ) values (13, 1, 'rejected', 0, 17.0, '{"trades": 10}', ?, 99.0, 80.0, 'now')""",
+        (json.dumps(ordinary),),
+    )
+    memory.conn.commit()
+
+
+def _assert_tick_sync_row_migrated(test: unittest.TestCase, memory: AgentMemory, table: str, candidate_id: int) -> None:
+    row = memory.conn.execute(f"select * from {table} where candidate_id=?", (candidate_id,)).fetchone()
+    test.assertEqual(row["status"], "pending_history_quality")
+    test.assertEqual(row["accepted"], 0)
+    test.assertIsNone(row["real_tick_score"])
+    test.assertIsNone(row["real_tick_metrics_json"])
+    context = json.loads(row["similarity_json"])
+    test.assertTrue(context["technical_failure"])
+    test.assertTrue(context["history"]["retryable"])
+    test.assertEqual(context["history"]["failure_type"], "tick_history_sync")
+    test.assertEqual(context["status_audit"]["classification"], "transient_tick_sync_failure")
+    test.assertEqual(context["status_audit"]["migrated_from_status"], "rejected")
+
+
 class UBSFinalTick6MEligibilityTests(unittest.TestCase):
     def test_six_month_accepts_short_accepted_and_pending_ohlc_trades(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -62,47 +103,8 @@ class UBSFinalTick6MEligibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "memory.sqlite"
             memory = AgentMemory(db_path)
-            legacy_context = {
-                "accepted": False,
-                "reasons": ["real_tick_no_history"],
-                "history": {
-                    "message": "no history data, stop testing",
-                    "tick_download_failed": True,
-                },
-            }
-            ordinary_context = {
-                "accepted": False,
-                "reasons": ["pf_delta"],
-                "history": {"tick_download_failed": False},
-            }
             try:
-                for table, candidate_id in (
-                    ("candidate_final_tick", 11),
-                    ("candidate_final_tick_6m", 12),
-                ):
-                    memory.conn.execute(
-                        f"""
-                        insert into {table} (
-                            candidate_id, run_id, status, accepted,
-                            real_tick_score, real_tick_metrics_json,
-                            similarity_json, history_quality,
-                            min_history_quality, evaluated_at
-                        ) values (?, 1, 'rejected', 0, -55.0, '{{"trades": 0}}', ?, 0.0, 80.0, 'now')
-                        """,
-                        (candidate_id, json.dumps(legacy_context)),
-                    )
-                memory.conn.execute(
-                    """
-                    insert into candidate_final_tick_6m (
-                        candidate_id, run_id, status, accepted,
-                        real_tick_score, real_tick_metrics_json,
-                        similarity_json, history_quality,
-                        min_history_quality, evaluated_at
-                    ) values (13, 1, 'rejected', 0, 17.0, '{"trades": 10}', ?, 99.0, 80.0, 'now')
-                    """,
-                    (json.dumps(ordinary_context),),
-                )
-                memory.conn.commit()
+                _insert_tick_sync_migration_rows(memory)
             finally:
                 memory.close()
 
@@ -112,26 +114,7 @@ class UBSFinalTick6MEligibilityTests(unittest.TestCase):
                     ("candidate_final_tick", 11),
                     ("candidate_final_tick_6m", 12),
                 ):
-                    row = migrated_memory.conn.execute(
-                        f"select * from {table} where candidate_id=?",
-                        (candidate_id,),
-                    ).fetchone()
-                    self.assertEqual(row["status"], "pending_history_quality")
-                    self.assertEqual(row["accepted"], 0)
-                    self.assertIsNone(row["real_tick_score"])
-                    self.assertIsNone(row["real_tick_metrics_json"])
-                    context = json.loads(row["similarity_json"])
-                    self.assertTrue(context["technical_failure"])
-                    self.assertTrue(context["history"]["retryable"])
-                    self.assertEqual(context["history"]["failure_type"], "tick_history_sync")
-                    self.assertEqual(
-                        context["status_audit"]["classification"],
-                        "transient_tick_sync_failure",
-                    )
-                    self.assertEqual(
-                        context["status_audit"]["migrated_from_status"],
-                        "rejected",
-                    )
+                    _assert_tick_sync_row_migrated(self, migrated_memory, table, candidate_id)
 
                 ordinary = migrated_memory.conn.execute(
                     "select * from candidate_final_tick_6m where candidate_id=13"

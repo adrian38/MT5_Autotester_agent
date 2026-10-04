@@ -1,36 +1,32 @@
-import json
-import math
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
 
+from tests.ubs_selection_fixtures import metrics
 from ubs.memory import AgentMemory
 from ubs.selection import (
-    SelectionFitnessModel,
-    _batch_logistic_gradients,
-    _sigmoid,
     descendant_fitness_predictions,
-    finalized_six_month_label,
-    finalized_robustness_label,
     estimate_discovery_source_mix,
     estimate_discovery_target_policy_mix,
 )
 
 
-def metrics(*, profit_factor: float = 1.6, recovery: float = 5.0, drawdown: float = 5.0) -> str:
-    return json.dumps(
-        {
-            "profit_factor": profit_factor,
-            "recovery_factor": recovery,
-            "drawdown_pct": drawdown,
-            "trades": 300,
-            "positive_month_ratio": 0.65,
-            "max_month_concentration": 0.08,
-            "sqn": 3.0,
-        }
+def insert_selection_candidate(
+    memory: AgentMemory, run_id: int, generation: int, seed_path: str, set_path: str
+) -> int:
+    cursor = memory.conn.execute(
+        """
+        insert into candidates (
+            run_id, generation, seed_path, set_path, symbol,
+            target_symbol, period, family, run_strategy,
+            mutated_keys, missing_lot_keys, policy, status, created_at
+        ) values (?, ?, ?, ?, 'XAUUSD', 'XAUUSD', 'H1',
+                  'test', '1', '', '', 'exploit', 'accepted', 'now')
+        """,
+        (run_id, generation, seed_path, set_path),
     )
+    return int(cursor.lastrowid)
+
 
 
 class UBSSelectionFitnessTests(unittest.TestCase):
@@ -172,22 +168,12 @@ class UBSSelectionFitnessTests(unittest.TestCase):
                     (run_id,),
                 )
 
-                def candidate(generation: int, seed_path: str, set_path: str) -> int:
-                    cursor = memory.conn.execute(
-                        """
-                        insert into candidates (
-                            run_id, generation, seed_path, set_path, symbol,
-                            target_symbol, period, family, run_strategy,
-                            mutated_keys, missing_lot_keys, policy, status, created_at
-                        ) values (?, ?, ?, ?, 'XAUUSD', 'XAUUSD', 'H1',
-                                  'test', '1', '', '', 'exploit', 'accepted', 'now')
-                        """,
-                        (run_id, generation, seed_path, set_path),
-                    )
-                    return int(cursor.lastrowid)
-
-                parent_id = candidate(1, "root.set", "generation_1.set")
-                child_id = candidate(2, "generation_1.set", "generation_2.set")
+                parent_id = insert_selection_candidate(
+                    memory, run_id, 1, "root.set", "generation_1.set"
+                )
+                child_id = insert_selection_candidate(
+                    memory, run_id, 2, "generation_1.set", "generation_2.set"
+                )
                 memory.conn.execute(
                     "insert into candidate_robustness (candidate_id, run_id, status, evaluated_at) values (?, ?, 'rejected', 'now')",
                     (parent_id, run_id),
@@ -502,224 +488,3 @@ class UBSSelectionFitnessTests(unittest.TestCase):
         )
 
         self.assertEqual(mix.cross_asset_trials, 0)
-        self.assertEqual(mix.cross_asset_successes, 0)
-
-    def test_selection_feature_rows_batch_latest_candidates_then_seed_scores(self) -> None:
-        connection = sqlite3.connect(":memory:")
-        connection.row_factory = sqlite3.Row
-        connection.executescript(
-            """
-            create table candidates (
-                id integer primary key,
-                set_path text,
-                score real,
-                metrics_json text,
-                period text
-            );
-            create table seed_scores (
-                seed_path text primary key,
-                active integer,
-                score real,
-                metrics_json text,
-                period text
-            );
-            """
-        )
-        connection.executemany(
-            "insert into candidates values (?, ?, ?, ?, ?)",
-            [
-                (1, "candidate.set", 10.0, metrics(), "H1"),
-                (2, "candidate.set", 20.0, metrics(), "H4"),
-                (3, "invalid_latest.set", 30.0, metrics(), "M30"),
-                (4, "invalid_latest.set", None, metrics(), "D1"),
-            ],
-        )
-        connection.executemany(
-            "insert into seed_scores values (?, ?, ?, ?, ?)",
-            [
-                ("seed.set", 1, 40.0, metrics(), "D1"),
-                ("inactive.set", 0, 50.0, metrics(), "M15"),
-            ],
-        )
-        memory = AgentMemory.__new__(AgentMemory)
-        memory.conn = connection
-
-        rows = memory._selection_feature_rows(
-            ["candidate.set", "invalid_latest.set", "seed.set", "inactive.set", "missing.set"]
-        )
-
-        self.assertEqual(rows["candidate.set"]["score"], 20.0)
-        self.assertEqual(rows["candidate.set"]["period"], "H4")
-        self.assertEqual(rows["invalid_latest.set"]["score"], 30.0)
-        self.assertEqual(rows["seed.set"]["score"], 40.0)
-        self.assertNotIn("inactive.set", rows)
-        self.assertNotIn("missing.set", rows)
-        connection.close()
-
-    def test_sparse_batch_gradient_matches_standardized_reference(self) -> None:
-        samples = [
-            ((1.0, 3.0, 0.0, 1.0, 2.0, 0.0, 4.0, 1.0, 0.0, 1.0), 1),
-            ((2.0, 1.0, 1.0, 0.0, 3.0, 2.0, 0.0, 2.0, 1.0, 0.0), 0),
-            ((4.0, 2.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0, 0.0, 0.0), 1),
-        ]
-        feature_count = len(samples[0][0])
-        means = [
-            sum(features[index] for features, _label in samples) / len(samples)
-            for index in range(feature_count)
-        ]
-        scales = [
-            max(
-                math.sqrt(
-                    sum((features[index] - means[index]) ** 2 for features, _label in samples)
-                    / len(samples)
-                ),
-                1e-6,
-            )
-            for index in range(feature_count)
-        ]
-        coefficients = [-0.4, 0.2, -0.1, 0.3, -0.25, 0.15, -0.05, 0.4, -0.2, 0.1, -0.3]
-        sparse = [
-            tuple((index, features[index]) for index in range(8, feature_count) if features[index])
-            for features, _label in samples
-        ]
-
-        optimized = _batch_logistic_gradients(samples, sparse, means, scales, coefficients)
-
-        reference = [0.0] * len(coefficients)
-        for features, label in samples:
-            standardized = [
-                (features[index] - means[index]) / scales[index]
-                for index in range(len(features))
-            ]
-            prediction = _sigmoid(
-                coefficients[0]
-                + sum(value * coefficient for value, coefficient in zip(standardized, coefficients[1:]))
-            )
-            error = label - prediction
-            reference[0] += error
-            for index, value in enumerate(standardized, start=1):
-                reference[index] += error * value
-
-        for actual, expected in zip(optimized, reference):
-            self.assertAlmostEqual(actual, expected, places=10)
-
-    def test_fitness_model_uses_only_runs_strictly_before_excluded_run(self) -> None:
-        connection = Mock()
-        connection.execute.return_value.fetchall.return_value = []
-        memory = AgentMemory.__new__(AgentMemory)
-        memory.conn = connection
-        memory._selection_fitness_models = {}
-
-        model = memory.selection_fitness_model(exclude_run_id=7)
-
-        self.assertIsNone(model)
-        query, params = connection.execute.call_args.args
-        self.assertIn("and c.run_id < ?", query)
-        self.assertNotIn("and c.run_id != ?", query)
-        self.assertEqual(params, (7,))
-
-    def test_final_label_accepts_probe_pending_operations_when_six_month_passes(self) -> None:
-        row = {
-            "status": "accepted",
-            "robust_status": "accepted",
-            "final_tick_status": "pending_ohlc_trades",
-            "final_tick_6m_status": "accepted",
-        }
-        self.assertEqual(finalized_six_month_label(row), 1)
-
-    def test_final_label_excludes_unresolved_technical_rows(self) -> None:
-        row = {
-            "status": "accepted",
-            "robust_status": "accepted",
-            "final_tick_status": "parse_error",
-            "final_tick_6m_status": "",
-        }
-        self.assertIsNone(finalized_six_month_label(row))
-
-    def test_robustness_label_uses_only_statistical_terminal_rows(self) -> None:
-        accepted = {"status": "accepted", "robust_status": "accepted"}
-        rejected = {"status": "accepted", "robust_status": "rejected"}
-        technical = {"status": "accepted", "robust_status": "report_mismatch"}
-
-        self.assertEqual(finalized_robustness_label(accepted), 1)
-        self.assertEqual(finalized_robustness_label(rejected), 0)
-        self.assertIsNone(finalized_robustness_label(technical))
-
-    def test_robustness_model_trains_without_waiting_for_six_month_positives(self) -> None:
-        rows = []
-        for index in range(80):
-            rows.append(
-                {
-                    "status": "accepted",
-                    "robust_status": "accepted",
-                    "final_tick_status": "",
-                    "final_tick_6m_status": "",
-                    "score": 150.0 + index % 10,
-                    "metrics_json": metrics(recovery=12.0),
-                    "period": "H4",
-                }
-            )
-        for index in range(240):
-            rows.append(
-                {
-                    "status": "accepted",
-                    "robust_status": "rejected",
-                    "final_tick_status": "",
-                    "final_tick_6m_status": "",
-                    "score": 90.0 + index % 10,
-                    "metrics_json": metrics(recovery=3.0),
-                    "period": "H4",
-                }
-            )
-
-        model = SelectionFitnessModel.train(rows, target="robustness")
-
-        self.assertIsNotNone(model)
-        assert model is not None
-        self.assertEqual(model.target, "robustness")
-        self.assertEqual(model.training_rows, 320)
-        self.assertEqual(model.positive_rows, 80)
-        self.assertGreater(
-            model.predict(155.0, metrics(recovery=12.0), "H4").probability,
-            model.predict(95.0, metrics(recovery=3.0), "H4").probability,
-        )
-
-    def test_model_learns_final_fitness_separately_from_raw_score(self) -> None:
-        rows = []
-        for index in range(100):
-            rows.append(
-                {
-                    "status": "accepted",
-                    "robust_status": "accepted",
-                    "final_tick_status": "accepted",
-                    "final_tick_6m_status": "accepted",
-                    "score": 80.0 + index % 10,
-                    "metrics_json": metrics(),
-                    "period": "H4",
-                }
-            )
-        for index in range(300):
-            rows.append(
-                {
-                    "status": "accepted",
-                    "robust_status": "rejected",
-                    "final_tick_status": "",
-                    "final_tick_6m_status": "",
-                    "score": 190.0 + index % 10,
-                    "metrics_json": metrics(profit_factor=3.5, recovery=15.0, drawdown=1.0),
-                    "period": "H4",
-                }
-            )
-
-        model = SelectionFitnessModel.train(rows)
-
-        self.assertIsNotNone(model)
-        assert model is not None
-        compatible = model.predict(85.0, metrics(), "H4")
-        extreme = model.predict(195.0, metrics(profit_factor=3.5, recovery=15.0, drawdown=1.0), "H4")
-        self.assertGreater(compatible.probability, extreme.probability)
-        self.assertGreater(compatible.weight, extreme.weight)
-
-
-if __name__ == "__main__":
-    unittest.main()

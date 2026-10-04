@@ -75,7 +75,8 @@ class UBSFinalTick6MLogicMixin:
     def _refresh_ubs_final_tick_6m_panel(self) -> None:
         self._refresh_ubs_final_tick_6m()
 
-    def _refresh_ubs_final_tick_6m(self) -> None:
+    def _ubs_final_tick_6m_view_state(self) -> tuple:
+        """Guarda scroll y seleccion y deja el arbol vacio para repintarlo."""
         previous_yview: tuple[float, float] | None = None
         previous_xview: tuple[float, float] | None = None
         previous_selected_ids: set[str] = set()
@@ -95,12 +96,54 @@ class UBSFinalTick6MLogicMixin:
             for item in self.ubs_final_tick_6m_tree.get_children():
                 self.ubs_final_tick_6m_tree.delete(item)
         self.ubs_final_tick_6m_paths.clear()
+        return previous_yview, previous_xview, previous_selected_ids
 
+    def _ubs_final_tick_6m_run_rows(self, conn: sqlite3.Connection, run_id: int) -> list:
+        """Candidatos del run con su resultado de Final Tick 6M, si lo tienen."""
+        return conn.execute(
+            """
+            select
+                c.id, c.run_id, c.generation, c.target_symbol, c.symbol, c.period,
+                c.set_path,
+                ft6.status as final_status,
+                ft6.ohlc_report_path,
+                ft6.real_tick_report_path,
+                ft6.ohlc_score,
+                ft6.real_tick_score,
+                ft6.ohlc_metrics_json,
+                ft6.real_tick_metrics_json,
+                ft6.similarity_json,
+                ft6.history_quality,
+                ft6.min_history_quality,
+                ft6.from_date,
+                ft6.to_date
+            from candidates c
+            join candidate_robustness cr on cr.candidate_id = c.id
+            join candidate_final_tick probe
+                on probe.candidate_id = c.id
+               and probe.status in ('accepted', 'pending_ohlc_trades')
+            left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
+            where c.run_id=? and c.status='accepted' and cr.status='accepted'
+            order by
+                case
+                    when ft6.status='accepted' then 0
+                    when ft6.status='rejected' then 1
+                    when ft6.status is null then 2
+                    else 3
+                end,
+                ft6.real_tick_score desc,
+                c.id desc
+            """,
+            (run_id,),
+        ).fetchall()
+
+    def _load_ubs_final_tick_6m_rows(self):
+        """Run visible y sus filas; None si no hay memoria, run o la consulta falla."""
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             self.ubs_final_tick_6m_summary.set("Final Tick 6M: sin memoria UBS")
             self.ubs_final_tick_6m_status.set(f"No existe memoria: {memory_path}")
-            return
+            return None
         try:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
@@ -108,59 +151,26 @@ class UBSFinalTick6MLogicMixin:
             run_options = self._ubs_final_tick_6m_run_options(conn)
             selected_run_id = self._selected_ubs_final_tick_6m_run_id(run_options)
             self._update_ubs_final_tick_6m_run_combo(run_options, selected_run_id)
-            if selected_run_id <= 0:
-                conn.close()
-                self.ubs_final_tick_6m_summary.set("Final Tick 6M: sin run visible")
-                self.ubs_final_tick_6m_status.set("No hay run seleccionado.")
-                return
-            run = conn.execute("select * from runs where id=?", (selected_run_id,)).fetchone()
+            run = (
+                conn.execute("select * from runs where id=?", (selected_run_id,)).fetchone()
+                if selected_run_id > 0
+                else None
+            )
             if run is None:
                 conn.close()
                 self.ubs_final_tick_6m_summary.set("Final Tick 6M: sin run visible")
                 self.ubs_final_tick_6m_status.set("No hay run seleccionado.")
-                return
-            rows = conn.execute(
-                """
-                select
-                    c.id, c.run_id, c.generation, c.target_symbol, c.symbol, c.period,
-                    c.set_path,
-                    ft6.status as final_status,
-                    ft6.ohlc_report_path,
-                    ft6.real_tick_report_path,
-                    ft6.ohlc_score,
-                    ft6.real_tick_score,
-                    ft6.ohlc_metrics_json,
-                    ft6.real_tick_metrics_json,
-                    ft6.similarity_json,
-                    ft6.history_quality,
-                    ft6.min_history_quality,
-                    ft6.from_date,
-                    ft6.to_date
-                from candidates c
-                join candidate_robustness cr on cr.candidate_id = c.id
-                join candidate_final_tick probe
-                    on probe.candidate_id = c.id
-                   and probe.status in ('accepted', 'pending_ohlc_trades')
-                left join candidate_final_tick_6m ft6 on ft6.candidate_id = c.id
-                where c.run_id=? and c.status='accepted' and cr.status='accepted'
-                order by
-                    case
-                        when ft6.status='accepted' then 0
-                        when ft6.status='rejected' then 1
-                        when ft6.status is null then 2
-                        else 3
-                    end,
-                    ft6.real_tick_score desc,
-                    c.id desc
-                """,
-                (run["id"],),
-            ).fetchall()
+                return None
+            rows = self._ubs_final_tick_6m_run_rows(conn, run["id"])
             conn.close()
         except sqlite3.Error as exc:
             self.ubs_final_tick_6m_summary.set("Final Tick 6M: error SQLite")
             self.ubs_final_tick_6m_status.set(str(exc))
-            return
+            return None
+        return run, rows
 
+    def _set_ubs_final_tick_6m_summary(self, run, rows: list) -> None:
+        """Cabecera del panel: recuento por estado y fechas configuradas."""
         total = len(rows)
         accepted = sum(1 for row in rows if row["final_status"] == "accepted")
         rejected = sum(1 for row in rows if row["final_status"] == "rejected")
@@ -179,63 +189,73 @@ class UBSFinalTick6MLogicMixin:
         self.ubs_final_tick_6m_status.set(
             f"Fechas 6M config: {from_date} -> {to_date}{retry_label}"
         )
-        if not hasattr(self, "ubs_final_tick_6m_tree"):
-            return
 
+    def _ubs_final_tick_6m_row_values(self, row, status: str) -> tuple:
+        """Columnas de una fila del arbol de Final Tick 6M."""
+        similarity = self._parse_ubs_final_tick_similarity(row["similarity_json"])
+        date_range = ""
+        if row["from_date"] or row["to_date"]:
+            date_range = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}"
+        return (
+            row["run_id"],
+            row["id"],
+            row["generation"],
+            self._format_ubs_status(status),
+            self._ubs_final_tick_reason(
+                status,
+                similarity,
+                history_quality=row["history_quality"],
+                min_history_quality=row["min_history_quality"],
+            ),
+            row["target_symbol"] or row["symbol"],
+            row["period"],
+            f"{self._format_ubs_number(row['history_quality'])}%" if row["history_quality"] is not None else "",
+            self._format_ubs_number(row["ohlc_score"]),
+            self._format_ubs_number(row["real_tick_score"]),
+            self._format_ubs_number(self._metric_from_json(row["ohlc_metrics_json"], "net_profit")),
+            self._format_ubs_number(self._metric_from_json(row["real_tick_metrics_json"], "net_profit")),
+            self._format_ubs_number(self._metric_from_json(row["ohlc_metrics_json"], "profit_factor")),
+            self._format_ubs_number(self._metric_from_json(row["real_tick_metrics_json"], "profit_factor")),
+            self._format_ubs_number(self._metric_from_json(row["ohlc_metrics_json"], "drawdown_pct")),
+            self._format_ubs_number(self._metric_from_json(row["real_tick_metrics_json"], "drawdown_pct")),
+            self._format_ubs_int(self._metric_from_json(row["ohlc_metrics_json"], "trades")),
+            self._format_ubs_int(self._metric_from_json(row["real_tick_metrics_json"], "trades")),
+            date_range,
+            Path(str(row["set_path"] or "")).name,
+        )
+
+    def _ubs_final_tick_6m_row_paths(self, row, status: str) -> dict[str, str]:
+        """Rutas y datos que el panel guarda para cada fila."""
+        ohlc_trades = self._metric_from_json(row["ohlc_metrics_json"], "trades")
+        return {
+            "id": str(row["id"] or ""),
+            "set": str(row["set_path"] or ""),
+            "ohlc_report": str(row["ohlc_report_path"] or ""),
+            "real_report": str(row["real_tick_report_path"] or ""),
+            "status": status,
+            "ohlc_trades": "" if ohlc_trades is None else str(ohlc_trades),
+        }
+
+    def _fill_ubs_final_tick_6m_tree(self, rows: list) -> dict[str, str]:
+        """Pinta las filas y devuelve el item de cada candidato."""
         id_to_item: dict[str, str] = {}
         for index, row in enumerate(rows):
             status = str(row["final_status"] or "missing_6m")
-            similarity = self._parse_ubs_final_tick_similarity(row["similarity_json"])
-            date_range = ""
-            if row["from_date"] or row["to_date"]:
-                date_range = f"{row['from_date'] or '?'} -> {row['to_date'] or '?'}"
             item = self.ubs_final_tick_6m_tree.insert(
                 "",
                 "end",
-                values=(
-                    row["run_id"],
-                    row["id"],
-                    row["generation"],
-                    self._format_ubs_status(status),
-                    self._ubs_final_tick_reason(
-                        status,
-                        similarity,
-                        history_quality=row["history_quality"],
-                        min_history_quality=row["min_history_quality"],
-                    ),
-                    row["target_symbol"] or row["symbol"],
-                    row["period"],
-                    f"{self._format_ubs_number(row['history_quality'])}%" if row["history_quality"] is not None else "",
-                    self._format_ubs_number(row["ohlc_score"]),
-                    self._format_ubs_number(row["real_tick_score"]),
-                    self._format_ubs_number(self._metric_from_json(row["ohlc_metrics_json"], "net_profit")),
-                    self._format_ubs_number(self._metric_from_json(row["real_tick_metrics_json"], "net_profit")),
-                    self._format_ubs_number(self._metric_from_json(row["ohlc_metrics_json"], "profit_factor")),
-                    self._format_ubs_number(self._metric_from_json(row["real_tick_metrics_json"], "profit_factor")),
-                    self._format_ubs_number(self._metric_from_json(row["ohlc_metrics_json"], "drawdown_pct")),
-                    self._format_ubs_number(self._metric_from_json(row["real_tick_metrics_json"], "drawdown_pct")),
-                    self._format_ubs_int(self._metric_from_json(row["ohlc_metrics_json"], "trades")),
-                    self._format_ubs_int(self._metric_from_json(row["real_tick_metrics_json"], "trades")),
-                    date_range,
-                    Path(str(row["set_path"] or "")).name,
-                ),
+                values=self._ubs_final_tick_6m_row_values(row, status),
                 tags=(self._ubs_result_tag(status), "odd" if index % 2 else "even"),
             )
-            self.ubs_final_tick_6m_paths[item] = {
-                "id": str(row["id"] or ""),
-                "set": str(row["set_path"] or ""),
-                "ohlc_report": str(row["ohlc_report_path"] or ""),
-                "real_report": str(row["real_tick_report_path"] or ""),
-                "status": status,
-                "ohlc_trades": (
-                    "" if self._metric_from_json(row["ohlc_metrics_json"], "trades") is None
-                    else str(self._metric_from_json(row["ohlc_metrics_json"], "trades"))
-                ),
-            }
+            self.ubs_final_tick_6m_paths[item] = self._ubs_final_tick_6m_row_paths(row, status)
             candidate_id = str(row["id"] or "")
             if candidate_id:
                 id_to_item[candidate_id] = item
+        return id_to_item
 
+    def _restore_ubs_final_tick_6m_view(self, state: tuple, id_to_item: dict[str, str]) -> None:
+        """Devuelve el arbol al scroll y la seleccion que tenia antes."""
+        previous_yview, previous_xview, previous_selected_ids = state
         if previous_selected_ids:
             restored_items = [id_to_item[candidate_id] for candidate_id in previous_selected_ids if candidate_id in id_to_item]
             if restored_items:
@@ -250,6 +270,17 @@ class UBSFinalTick6MLogicMixin:
                 self.ubs_final_tick_6m_tree.yview_moveto(previous_yview[0])
             except Exception:
                 pass
+
+    def _refresh_ubs_final_tick_6m(self) -> None:
+        state = self._ubs_final_tick_6m_view_state()
+        loaded = self._load_ubs_final_tick_6m_rows()
+        if loaded is None:
+            return
+        run, rows = loaded
+        self._set_ubs_final_tick_6m_summary(run, rows)
+        if not hasattr(self, "ubs_final_tick_6m_tree"):
+            return
+        self._restore_ubs_final_tick_6m_view(state, self._fill_ubs_final_tick_6m_tree(rows))
 
     def _selected_ubs_final_tick_6m_infos(self) -> list[dict[str, str]]:
         if not hasattr(self, "ubs_final_tick_6m_tree"):

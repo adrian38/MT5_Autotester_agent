@@ -71,6 +71,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _print_universe_dry_run(args, universe_path: Path, symbols) -> None:
+    existing_groups, _aliases = _load_existing_asset_universe(universe_path)
+    groups, added, removed = sync_asset_universe_groups(
+        existing_groups,
+        symbols,
+        preserve_existing_groups=args.preserve_groups,
+    )
+    total = sum(len(values) for values in groups.values())
+    print(f"DRY-RUN total={total} agregados={len(added)} eliminados={len(removed)}")
+    print(f"  grupos: {({group: len(values) for group, values in groups.items()})}")
+    print(f"  eliminados: {', '.join(removed) if removed else '(ninguno)'}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     terminal_path = Path(args.terminal).expanduser() if args.terminal.strip() else None
@@ -97,16 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Universo: {universe_path}")
 
     if args.dry_run:
-        existing_groups, _aliases = _load_existing_asset_universe(universe_path)
-        groups, added, removed = sync_asset_universe_groups(
-            existing_groups,
-            extraction.symbols,
-            preserve_existing_groups=args.preserve_groups,
-        )
-        total = sum(len(values) for values in groups.values())
-        print(f"DRY-RUN total={total} agregados={len(added)} eliminados={len(removed)}")
-        print(f"  grupos: {({group: len(values) for group, values in groups.items()})}")
-        print(f"  eliminados: {', '.join(removed) if removed else '(ninguno)'}")
+        _print_universe_dry_run(args, universe_path, extraction.symbols)
         return 0
 
     result = write_asset_universe_from_symbols(

@@ -14,6 +14,27 @@ from ubs.score import (
 )
 
 
+AXI_ASSETS_TEXT = (
+    "[Indices]\nsymbols=US30.sa,IT40.sa,NAS100.fs\n\n"
+    "[Energies]\nsymbols=USOIL.sa,WTI.fs,EnergySPDR+\n\n"
+    "[Stocks]\nsymbols=NasdaqInc+\n\n"
+    "[Crypto]\nsymbols=BTCUSD.sa,BCHUSD.sa\n"
+)
+AXI_NORMALIZATION = {
+    "basis": "axi_seed_report_lot_audit",
+    "default_net_profit_factor": 1.0,
+    "group_net_profit_factors": {
+        "Indices": 1.0, "Energies": 1.0, "Stocks": 1.0, "Crypto": 1.0,
+    },
+    "group_suffix_net_profit_factors": {
+        "Indices": {".sa": 0.01, ".fs": 1.0},
+        "Energies": {".sa": 0.1, ".fs": 1.0},
+        "Stocks": {"+": 0.01},
+    },
+    "symbol_net_profit_factors": {"BCHUSD.SA": 0.02, "IT40.SA": 0.1},
+}
+
+
 class UBSScoreTests(unittest.TestCase):
     def test_score_result_accepts_legacy_json_without_version_metadata(self) -> None:
         payload = {
@@ -249,78 +270,22 @@ class UBSScoreTests(unittest.TestCase):
             base = Path(temp_dir)
             assets = base / "assets"
             assets.mkdir()
-            (assets / "axi_assets.ini").write_text(
-                "[Indices]\nsymbols=US30.sa,IT40.sa,NAS100.fs\n\n"
-                "[Energies]\nsymbols=USOIL.sa,WTI.fs,EnergySPDR+\n\n"
-                "[Stocks]\nsymbols=NasdaqInc+\n\n"
-                "[Crypto]\nsymbols=BTCUSD.sa,BCHUSD.sa\n",
-                encoding="utf-8",
-            )
+            (assets / "axi_assets.ini").write_text(AXI_ASSETS_TEXT, encoding="utf-8")
             (assets / "axi_normalization.json").write_text(
-                json.dumps(
-                    {
-                        "basis": "axi_seed_report_lot_audit",
-                        "default_net_profit_factor": 1.0,
-                        "group_net_profit_factors": {
-                            "Indices": 1.0,
-                            "Energies": 1.0,
-                            "Stocks": 1.0,
-                            "Crypto": 1.0,
-                        },
-                        "group_suffix_net_profit_factors": {
-                            "Indices": {
-                                ".sa": 0.01,
-                                ".fs": 1.0,
-                            },
-                            "Energies": {
-                                ".sa": 0.1,
-                                ".fs": 1.0,
-                            },
-                            "Stocks": {
-                                "+": 0.01,
-                            },
-                        },
-                        "symbol_net_profit_factors": {
-                            "BCHUSD.SA": 0.02,
-                            "IT40.SA": 0.1,
-                        },
-                    }
-                ),
-                encoding="utf-8",
+                json.dumps(AXI_NORMALIZATION), encoding="utf-8",
             )
-
-            self.assertEqual(
-                net_profit_normalization("US30.sa", broker="AXI", base_dir=base),
-                (0.01, "Indices", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("IT40.sa", broker="AXI", base_dir=base),
-                (0.1, "Indices", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("USOIL.sa", broker="AXI", base_dir=base),
-                (0.1, "Energies", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("NAS100.fs", broker="AXI", base_dir=base),
-                (1.0, "Indices", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("EnergySPDR+", broker="AXI", base_dir=base),
-                (1.0, "Energies", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("NasdaqInc+", broker="AXI", base_dir=base),
-                (0.01, "Stocks", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("BTCUSD.sa", broker="AXI", base_dir=base),
-                (1.0, "Crypto", "axi_seed_report_lot_audit"),
-            )
-            self.assertEqual(
-                net_profit_normalization("BCHUSD.sa", broker="AXI", base_dir=base),
-                (0.02, "Crypto", "axi_seed_report_lot_audit"),
-            )
+            cases = {
+                "US30.sa": (0.01, "Indices"), "IT40.sa": (0.1, "Indices"),
+                "USOIL.sa": (0.1, "Energies"), "NAS100.fs": (1.0, "Indices"),
+                "EnergySPDR+": (1.0, "Energies"), "NasdaqInc+": (0.01, "Stocks"),
+                "BTCUSD.sa": (1.0, "Crypto"), "BCHUSD.sa": (0.02, "Crypto"),
+            }
+            for symbol, (factor, group) in cases.items():
+                with self.subTest(symbol=symbol):
+                    self.assertEqual(
+                        net_profit_normalization(symbol, broker="AXI", base_dir=base),
+                        (factor, group, "axi_seed_report_lot_audit"),
+                    )
 
 
 if __name__ == "__main__":
