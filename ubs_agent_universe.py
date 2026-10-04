@@ -8,9 +8,11 @@ from pathlib import Path
 
 from run_tests import apply_symbol_map, normalize_set_symbol, parse_symbol_map
 from ubs.account import DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER, load_account_timeframe_universe
+from ubs.memory import AgentMemory
 from ubs.models import Variant
 from ubs.score import ScoreConfig
 from ubs.universe import load_asset_universe
+from ubs_agent_reports import set_symbol_missing_in_terminal
 from ubs_agent_config import (
     EXPERIMENTAL_LONG_TIMEFRAMES,
     SYMBOL_NOT_EXIST_STATUS,
@@ -108,6 +110,45 @@ def variant_symbol_not_offered(
     return symbol_not_offered(getattr(variant, "target_symbol", ""), universe_symbols, symbol_map)
 
 
+def variant_missing_report_status(
+    memory: AgentMemory,
+    variant: Variant,
+    symbol_map: dict[str, str],
+    universe_symbols: set[str] | None,
+    min_report_mtime: float | None,
+) -> str:
+    """Estado de un candidato sin reporte: fallo tecnico o simbolo retirado.
+
+    Sin reporte hay dos causas distintas: un fallo tecnico, que admite
+    reintento, o que el broker ya no ofrezca el simbolo, en cuyo caso MT5 ni
+    abre el tester y reintentar no puede cambiar nada. Un simbolo deshabilitado
+    a mano no entra aqui: sigue en el universo y su candidato se repara con
+    normalidad.
+    """
+    if variant_symbol_not_offered(variant, universe_symbols, symbol_map):
+        print(
+            f"AVISO: {variant.target_symbol} no esta en el universo del broker; "
+            f"marcado como {SYMBOL_NOT_EXIST_STATUS} sin reintento."
+        )
+        memory.record_score(variant.path, None, SYMBOL_NOT_EXIST_STATUS, None)
+        return SYMBOL_NOT_EXIST_STATUS
+    # El universo se configura a mano y se queda viejo: un futuro vencido sigue
+    # listado y su candidato caia en no_report, que es retryable, asi que cada
+    # reparacion lo reencolaba para que MT5 volviera a no abrir el tester. El
+    # journal del propio terminal lo dice sin ambiguedad.
+    if set_symbol_missing_in_terminal(
+        variant.path, variant.target_symbol, min_mtime=min_report_mtime,
+    ):
+        print(
+            f"AVISO: MT5 no encuentra {variant.target_symbol} en el servidor del "
+            f"broker; marcado como {SYMBOL_NOT_EXIST_STATUS} sin reintento."
+        )
+        memory.record_score(variant.path, None, SYMBOL_NOT_EXIST_STATUS, None)
+        return SYMBOL_NOT_EXIST_STATUS
+    memory.record_score(variant.path, None, "no_report", None)
+    return "no_report"
+
+
 def _row_target_symbol(row: sqlite3.Row) -> str:
     try:
         return str(row["target_symbol"] or "")
@@ -164,19 +205,30 @@ def missing_report_status(
     symbol: str,
     args: argparse.Namespace,
     symbol_map: dict[str, str] | None = None,
+    *,
+    set_path: Path | None = None,
+    min_mtime: float | None = None,
 ) -> str:
     """Estado a grabar cuando una etapa no encuentra reporte.
 
     ``no_report`` es retryable y lo reencolan tanto las rutas de retry como el
     manager; para un simbolo que el broker retiro eso es un bucle infinito,
     porque MT5 no llega a abrir el tester. Devuelve el estado terminal solo en
-    ese caso, asi que un fallo tecnico transitorio sigue siendo reparable."""
+    ese caso, asi que un fallo tecnico transitorio sigue siendo reparable.
+
+    Con ``set_path`` se consulta ademas el journal que dejo el terminal. El
+    universo se mantiene a mano y se queda viejo —un futuro vencido sigue
+    listado—, y entonces solo MT5 sabe que el simbolo ya no esta."""
     if symbol_map is None:
         try:
             symbol_map = parse_symbol_map(getattr(args, "symbol_map", "") or "")
         except ValueError:
             symbol_map = {}
     if symbol_not_offered(symbol, broker_universe_symbols(args), symbol_map):
+        return SYMBOL_NOT_EXIST_STATUS
+    if set_path is not None and set_symbol_missing_in_terminal(
+        set_path, symbol, min_mtime=min_mtime,
+    ):
         return SYMBOL_NOT_EXIST_STATUS
     return "no_report"
 

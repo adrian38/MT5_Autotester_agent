@@ -220,7 +220,10 @@ def _evaluate_final_tick_rows(
         ohlc_report, ohlc_result = ohlc_results[candidate_id]
         real_tick_report = find_report_for_set(real_tick_variant.path, min_mtime=real_tick_min_report_mtime)
         if not real_tick_report:
-            status = missing_report_status(real_tick_variant.target_symbol, args)
+            status = missing_report_status(
+                real_tick_variant.target_symbol, args,
+                set_path=real_tick_variant.path,
+            )
             memory.record_candidate_final_tick(
                 candidate_id,
                 run_id,

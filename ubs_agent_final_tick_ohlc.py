@@ -86,7 +86,9 @@ def _fresh_ohlc_result(
     if not ohlc_report:
         recorder.write(
             candidate_id,
-            missing_report_status(ohlc_variant.target_symbol, args),
+            missing_report_status(
+                ohlc_variant.target_symbol, args, set_path=ohlc_variant.path,
+            ),
             ohlc_report=ohlc_report,
         )
         return None

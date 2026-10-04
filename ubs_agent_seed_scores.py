@@ -274,7 +274,9 @@ def _score_seed_reports(args, memory, score_config, batch_started_at, copied, st
     for seed, copied_set in copied:
         report = find_report_for_set(copied_set, min_mtime=batch_started_at - 1.0)
         if not report:
-            status = missing_report_status(seed.symbol, args, symbol_map)
+            status = missing_report_status(
+                seed.symbol, args, symbol_map, set_path=seed.path,
+            )
             memory.record_seed_score(seed, None, status, None)
             status_counts[status] = status_counts.get(status, 0) + 1
             handled_issues += 1

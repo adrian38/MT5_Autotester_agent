@@ -51,7 +51,9 @@ def robust_status_pending_for_retry(status: object) -> bool:
 
 def _record_robustness_missing_report(args, memory, run_id, status_counts, variant, candidate_id) -> None:
     """Deja constancia del candidato que no dejo informe OOS."""
-    status = missing_report_status(variant.target_symbol, args)
+    status = missing_report_status(
+        variant.target_symbol, args, set_path=variant.path,
+    )
     memory.record_candidate_robustness(
         candidate_id,
         run_id,
