@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -102,7 +101,7 @@ def _score_config_from_args(args: argparse.Namespace) -> ScoreConfig:
     )
 
 
-def run_agent(args: argparse.Namespace) -> int:
+def run_agent(args: argparse.Namespace, api=None) -> int:
     """Ciclo completo del agente sobre el universo y las seeds configuradas."""
     score_config = _score_config_from_args(args)
     source_dir = resolve_workspace_path(args.source_dir)
@@ -112,7 +111,9 @@ def run_agent(args: argparse.Namespace) -> int:
     if getattr(args, "prepared_manifest", None):
         try:
             from ubs.prepared import run_prepared
-            return run_prepared(args, memory, score_config, sys.modules[__name__])
+            if api is None:
+                raise RuntimeError("Prepared mode requires the ubs_agent facade API")
+            return run_prepared(args, memory, score_config, api)
         finally:
             memory.close()
     standalone_code = run_standalone_mode(args, memory, score_config)
