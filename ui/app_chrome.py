@@ -358,6 +358,14 @@ class AppChromeMixin:
         self.section_frames.clear()
         self._configure_style()
         self._build_ui()
+        # _build_ui vuelve a crear los StringVar del Tester vacios. Sin recargar
+        # el template, Configuracion se queda en blanco y las pantallas que leen
+        # tester_vars (Symbol, FromDate, ToDate) pierden sus fechas, igual que
+        # hace el arranque justo despues de construir la interfaz.
+        try:
+            self._load_template()
+        except Exception:
+            self.status_text.set("Template tester no cargado")
         self._refresh_all()
         self._show_section(section)
         try:

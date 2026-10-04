@@ -31,6 +31,7 @@ from ubs_agent_seeds_plan import (
 )
 from ubs_agent_universe import (
     score_config_for_variant,
+    variant_missing_report_status,
     variant_symbol_not_offered,
 )
 
@@ -260,19 +261,9 @@ def evaluate_variant(
 ) -> tuple[str, ScoreResult | None]:
     report = find_report_for_set(variant.path, min_mtime=min_report_mtime)
     if not report:
-        # Sin reporte hay dos causas distintas: un fallo tecnico (retryable) o
-        # que el broker ya no ofrezca el simbolo, en cuyo caso MT5 ni abre el
-        # tester.  Un simbolo deshabilitado a mano no entra aqui: sigue en el
-        # universo, asi que su candidato se repara con normalidad.
-        if variant_symbol_not_offered(variant, universe_symbols, symbol_map):
-            print(
-                f"AVISO: {variant.target_symbol} no esta en el universo del broker; "
-                f"marcado como {SYMBOL_NOT_EXIST_STATUS} sin reintento."
-            )
-            memory.record_score(variant.path, None, SYMBOL_NOT_EXIST_STATUS, None)
-            return SYMBOL_NOT_EXIST_STATUS, None
-        memory.record_score(variant.path, None, "no_report", None)
-        return "no_report", None
+        return variant_missing_report_status(
+            memory, variant, symbol_map, universe_symbols, min_report_mtime,
+        ), None
     return evaluate_variant_report(
         memory,
         variant,

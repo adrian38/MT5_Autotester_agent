@@ -112,7 +112,9 @@ class UBSUniverseStatsMixin:
         asset_weight = feedback_weight(row, accepted_bonus=ASSET_ACCEPTED_BONUS)
         tf_weight = feedback_weight(row, accepted_bonus=TIMEFRAME_ACCEPTED_BONUS)
         if asset_weight is None and tf_weight is None:
-            asset_stat["pending"] = int(asset_stat["pending"]) + 1
+            for canonical in eligible_canonicals:
+                asset_stat = asset_stats.setdefault(canonical, self._empty_ubs_stat())
+                asset_stat["pending"] = int(asset_stat["pending"]) + 1
             tf_stat["pending"] = int(tf_stat["pending"]) + 1
             counters["total_seed_pending"] += 1
             return

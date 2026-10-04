@@ -31,6 +31,27 @@ _TRADE_RESTRICTIONS: tuple[tuple[str, int, tuple[re.Pattern[str], ...]], ...] = 
 )
 
 
+_SYMBOL_NOT_EXIST = re.compile(r"\bsymbol\s+(?P<symbol>\S+)\s+not\s+exist", re.IGNORECASE)
+
+
+def journal_symbol_missing(text: str, symbol: str) -> bool:
+    """True cuando el journal de MT5 dice que el broker ya no lista ``symbol``.
+
+    Es la unica fuente que sabe la verdad: el fichero de activos se configura a
+    mano y se queda viejo cuando vence un futuro o el broker retira un simbolo.
+    Se exige que el nombre coincida porque el journal diario recoge todos los
+    tests del terminal, y heredar la evidencia de otro simbolo marcaria como
+    retirado algo que si existe (el estado que deriva de esto es terminal).
+    """
+    target = str(symbol or "").strip().strip(",;.").casefold()
+    if not target:
+        return False
+    for match in _SYMBOL_NOT_EXIST.finditer(text or ""):
+        if match.group("symbol").strip().strip(",;.").casefold() == target:
+            return True
+    return False
+
+
 def tester_journal_sidecar(report_path: Path) -> Path:
     """Return the journal sidecar path without importing the MT5 runner."""
 

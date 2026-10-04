@@ -299,7 +299,7 @@ class UBSResultsLogicMixin(
             from candidates
             where run_id = ?
             """,
-            (latest_run["id"],),
+            (selected_run_id,),
         ).fetchone()
         rows = conn.execute(
             """
@@ -315,7 +315,7 @@ class UBSResultsLogicMixin(
                 score desc,
                 id desc
             """,
-            (latest_run["id"],),
+            (selected_run_id,),
         ).fetchall()
         return counts, rows
 

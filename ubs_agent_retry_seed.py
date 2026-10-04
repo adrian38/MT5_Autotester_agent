@@ -125,7 +125,7 @@ def _evaluate_retry_seed(
     """Puntua el reporte de una seed reintentada."""
     report = find_report_for_set(retry_set, min_mtime=batch_started_at - 1.0)
     if not report:
-        status = missing_report_status(seed.symbol, args)
+        status = missing_report_status(seed.symbol, args, set_path=seed.path)
         memory.record_seed_score(seed, None, status, None)
         return status, None
     return evaluate_seed_report(
@@ -200,7 +200,9 @@ def _retry_single_seed(
         return early_exit
     report = find_report_for_set(retry_set, min_mtime=batch_started_at - 1.0)
     if not report:
-        memory.record_seed_score(seed, None, missing_report_status(seed.symbol, args), None)
+        memory.record_seed_score(
+            seed, None, missing_report_status(seed.symbol, args, set_path=seed.path), None,
+        )
         print("Retry seed terminado sin reporte fresco.")
         return 1
     status, result = evaluate_seed_report(

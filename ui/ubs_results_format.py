@@ -93,6 +93,8 @@ class UBSResultsFormatMixin:
             return "error al parsear reporte"
         if status == "no_report":
             return "sin reporte"
+        if status == "symbol_not_exist":
+            return "el broker ya no ofrece este simbolo"
         if status == "no_trades":
             return "reporte sin operaciones"
         if status == "trade_disabled":

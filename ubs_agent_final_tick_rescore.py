@@ -490,7 +490,13 @@ def _rescore_final_tick_row(
     if ohlc_result is None:
         return True
     if real_tick_report is None or not real_tick_report.exists():
-        record(missing_report_status(ohlc_variant.target_symbol, args, symbol_map), ohlc_result)
+        record(
+            missing_report_status(
+                ohlc_variant.target_symbol, args, symbol_map,
+                set_path=ohlc_variant.path,
+            ),
+            ohlc_result,
+        )
         return True
     _evaluate_final_tick_tick_report(
         memory,

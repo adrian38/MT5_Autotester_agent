@@ -132,8 +132,8 @@ class UBSSearchAuditWindowMixin:
         status_index = header_index.get("STATUS") if "STATUS" in header_index else header_index.get("ESTADO")
         for line in data_lines:
             parts = line.split("\t")
-            if len(parts) < len(columns):
-                parts = [*parts, *([""] * (len(columns) - len(parts)))]
+            if len(parts) < len(header_labels):
+                parts = [*parts, *([""] * (len(header_labels) - len(parts)))]
             check_value = str(parts[check_index]).strip().upper() if check_index is not None and len(parts) > check_index else ""
             status_value = str(parts[status_index]).strip().casefold() if status_index is not None and len(parts) > status_index else ""
             text = "\t".join(parts).casefold()
@@ -149,7 +149,7 @@ class UBSSearchAuditWindowMixin:
                 tag = "rejected"
             else:
                 tag = "pending"
-            inserted_items.append(detail_tree.insert("", "end", values=parts[: len(columns)], tags=(tag,)))
+            inserted_items.append(detail_tree.insert("", "end", values=parts[: len(header_labels)], tags=(tag,)))
         return inserted_items, header_index
 
     def _show_ubs_audit_detail_window(self, title: str, detail: str) -> None:
@@ -207,7 +207,7 @@ class UBSSearchAuditWindowMixin:
             summary.append(f"Final Tick 6M: {len(stage_ids['final_tick_6m'])} candidato(s)")
         return summary
 
-    def _audit_reset_stage_ids(self, detail_tree, selected_items, header_index):
+    def _audit_reset_stage_ids(self, detail_tree, selected_items, title):
         """Identificadores por etapa de las filas seleccionadas."""
         stage_ids: dict[str, set[int]] = {"base": set(), "robust": set(), "final_tick": set(), "final_tick_6m": set()}
         for item in selected_items:
@@ -274,7 +274,7 @@ class UBSSearchAuditWindowMixin:
             messagebox.showinfo("Auditoria run UBS", "No hay filas para poner pendientes.")
             return
 
-        stage_ids = self._audit_reset_stage_ids(detail_tree, selected_items, header_index)
+        stage_ids = self._audit_reset_stage_ids(detail_tree, selected_items, title)
         total_ids = sum(len(ids) for ids in stage_ids.values())
         if total_ids == 0:
             messagebox.showinfo("Auditoria run UBS", "No pude identificar la prueba de esas filas.")
@@ -335,12 +335,7 @@ class UBSSearchAuditWindowMixin:
                     (candidate_id, int(run_id), now),
                 )
             return len(valid_ids)
-        return (
-            scoped, delete_stage, mark_stage_pending,
-            mark_robust_pending, mark_regression_pending,
-        )
-        return mark_stage_pending, mark_robust_pending, mark_regression_pending
-        return mark_robust_pending, mark_regression_pending
+
         return mark_regression_pending
 
     def _stage_pending_extra(self, conn, run_id, scoped):
@@ -373,6 +368,7 @@ class UBSSearchAuditWindowMixin:
             return len(valid_ids)
 
         mark_regression_pending = self._stage_regression_pending(conn, run_id, scoped)
+        return mark_robust_pending, mark_regression_pending
 
     def _stage_pending_helpers(self, conn, run_id, scoped):
         """Marcado pendiente de Final Tick, robustez y regresiva."""
@@ -416,6 +412,7 @@ class UBSSearchAuditWindowMixin:
         mark_robust_pending, mark_regression_pending = (
             self._stage_pending_extra(conn, run_id, scoped)
         )
+        return mark_stage_pending, mark_robust_pending, mark_regression_pending
 
     def _stage_reset_helpers(self, conn, run_id, stage_ids):
         """Los cinco pasos que reinician una etapa guardada."""
@@ -442,6 +439,10 @@ class UBSSearchAuditWindowMixin:
 
         mark_stage_pending, mark_robust_pending, mark_regression_pending = (
             self._stage_pending_helpers(conn, run_id, scoped)
+        )
+        return (
+            scoped, delete_stage, mark_stage_pending,
+            mark_robust_pending, mark_regression_pending,
         )
 
     def _reset_base_stage_rows(self, conn, run_id, stage_ids, scoped, changed):
