@@ -60,6 +60,10 @@ class Trade:
     close_price: float
     profit_loss: float
     comment: str
+    # Los de la orden de entrada, tal como la coloco la estrategia. El auditor
+    # real los compara con los de la cuenta: son la huella de la operacion.
+    sl: float = 0.0
+    tp: float = 0.0
 
 
 @dataclass
@@ -324,12 +328,15 @@ def _matching_stop_slot(
 def _completed_trade(
     ticket: str, open_type: str, open_time: datetime, weighted_open_price: float,
     matched_volume: float, deal: RawDeal, entry_net: float, close_net: float,
+    stops: dict[str, float] | None = None,
 ) -> Trade:
+    stops = stops or {}
     return Trade(
         ticket=ticket, trade_type=open_type.capitalize(), open_time=open_time,
         open_price=weighted_open_price / matched_volume, size=matched_volume,
         close_time=deal.timestamp, close_price=deal.price,
         profit_loss=entry_net + close_net, comment=deal.comment,
+        sl=float(stops.get("sl") or 0.0), tp=float(stops.get("tp") or 0.0),
     )
 
 
@@ -346,6 +353,7 @@ def _match_close_deal(
     close_net = 0.0
     open_time: datetime | None = None
     ticket = ""
+    entry_order = ""
     while queue and remaining_close > 1e-9:
         preferred_index = _matching_stop_slot(queue, deal, order_stops)
         slot_index = preferred_index if preferred_index is not None else 0
@@ -369,6 +377,7 @@ def _match_close_deal(
             open_time = opened.timestamp
         if not ticket:
             ticket = opened.ticket
+            entry_order = opened.order
         slot["remaining"] = available - volume
         remaining_close -= volume
         if float(slot["remaining"]) <= 1e-9:
@@ -377,7 +386,7 @@ def _match_close_deal(
         return None
     return _completed_trade(
         ticket, open_type, open_time, weighted_open_price, matched_volume,
-        deal, entry_net, close_net,
+        deal, entry_net, close_net, order_stops.get(entry_order),
     )
 
 

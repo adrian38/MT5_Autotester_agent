@@ -34,6 +34,7 @@ class _HistorySyncMt5:
         self.period_deals = period_deals
         self.period_calls = 0
         self.shutdown_called = False
+        self.position_order_calls: list[int] = []
 
     account_info = staticmethod(lambda: SimpleNamespace(login=111, server="IC-Real", currency="USD"))
     terminal_info = staticmethod(lambda: SimpleNamespace(connected=True))
@@ -45,6 +46,19 @@ class _HistorySyncMt5:
             return self.prior_deals if kwargs["position"] == 10 else []
         self.period_calls += 1
         return [] if self.period_calls == 1 else self.period_deals
+
+    def history_orders_get(self, *_args, **kwargs):
+        # La orden que abrio la posicion 10 es anterior al periodo, asi que solo
+        # aparece al preguntar por su posicion; la de cierre no declara niveles.
+        if "position" in kwargs:
+            self.position_order_calls.append(kwargs["position"])
+            if kwargs["position"] != 10:
+                return []
+            return [SimpleNamespace(position_id=10, sl=1.09, tp=1.12, time_setup_msc=1)]
+        return [
+            SimpleNamespace(position_id=20, sl=1.05, tp=1.15, time_setup_msc=20),
+            SimpleNamespace(position_id=20, sl=0.0, tp=0.0, time_setup_msc=30),
+        ]
 
     def shutdown(self) -> None:
         self.shutdown_called = True
@@ -242,6 +256,14 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
         self.assertEqual(detail["positions_recovered"], 1)
         self.assertEqual(detail["trades_reconstructed"], 2)
         self.assertTrue(mt5.shutdown_called)
+        # El auditor compara SL/TP, asi que el nodo tiene que publicar los de la
+        # orden que abrio cada posicion, tambien cuando es anterior al periodo.
+        stops = {
+            int(trade["position_id"]): (trade.get("sl"), trade.get("tp"))
+            for trade in trades
+        }
+        self.assertEqual(stops, {10: (1.09, 1.12), 20: (1.05, 1.15)})
+        self.assertEqual(mt5.position_order_calls, [10])
 
     def test_portfolio_variant_is_required_and_selects_only_that_variant(self) -> None:
         payload = request()
