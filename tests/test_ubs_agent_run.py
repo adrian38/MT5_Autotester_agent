@@ -5,9 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import ubs_agent_run
+import ubs_agent_robustness
 
 
 class AgentRunTests(unittest.TestCase):
+    def test_empty_robustness_report_batch_finishes_without_stale_status(self):
+        result = ubs_agent_robustness._evaluate_robustness_reports(
+            None, None, None, None, [], None, None, 466, {}, {})
+        self.assertIsNone(result)
+
     def test_prepared_mode_receives_the_facade_api(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

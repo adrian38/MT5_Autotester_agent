@@ -5,6 +5,10 @@ The `ubs_agent.py` facade must pass its own module API into
 such as `load_mutation_overrides`; passing the split runner module breaks every
 prepared batch before a run is created.
 
+The robustness report loop mutates `status_counts` through each row evaluator;
+it has no aggregate `status` return value. Returning a row-local name after the
+loop crashes the stage after its MT5 reports have already been produced.
+
 Lab sends immutable candidates through manager to `manager_node_runtime/node.py`,
 embedded in the app. The manager reference node is not the live broker process.
 

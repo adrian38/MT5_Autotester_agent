@@ -183,7 +183,6 @@ def _evaluate_robustness_reports(args, memory, score_config, batch_started_at, c
             args, memory, score_config, batch_started_at, degradation_config,
             run, run_id, status_counts, symbol_map, row, variant,
         )
-    return status
 
 def _print_robustness_header(args, copied, robust_dir, run_id):
     """Cabecera con el modo, el directorio, las fechas y los umbrales."""
@@ -321,7 +320,7 @@ def evaluate_candidate_robustness(args: argparse.Namespace, memory: AgentMemory,
 
     symbol_map = parse_symbol_map(args.symbol_map)
     status_counts: dict[str, int] = {}
-    status = _evaluate_robustness_reports(args, memory, score_config, batch_started_at, copied, degradation_config, run, run_id, status_counts, symbol_map)
+    _evaluate_robustness_reports(args, memory, score_config, batch_started_at, copied, degradation_config, run, run_id, status_counts, symbol_map)
 
     print(
         "Robustez terminada: "
