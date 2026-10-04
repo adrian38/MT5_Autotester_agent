@@ -459,6 +459,37 @@ def _may_need_seed_path_migration(
     return not new_marker or new_marker in normalized
 
 
+def _migrate_seed_path_table(
+    conn: sqlite3.Connection, table: str, column: str, base_dir: Path,
+    account: str, broker_key: str, old_prefix: str, base_prefix: str, new_marker: str,
+) -> int:
+    columns = {str(row["name"]) for row in conn.execute(f"pragma table_info({table})")}
+    if column not in columns:
+        return 0
+    changed = 0
+    for row in conn.execute(f"select rowid as _rowid, {column} from {table}"):
+        stored = str(row[column] or "")
+        if not stored or not _may_need_seed_path_migration(
+            stored, old_prefix, base_prefix, new_marker
+        ):
+            continue
+        new_path = _legacy_seed_path_to_broker_path(base_dir, row[column], account, broker_key)
+        if not new_path or new_path == str(row[column]):
+            continue
+        if table in {"seed_scores", "seed_overrides"}:
+            conflict = conn.execute(
+                f"select 1 from {table} where {column}=? and rowid<>?",
+                (new_path, row["_rowid"]),
+            ).fetchone()
+            if conflict:
+                continue
+        cursor = conn.execute(
+            f"update {table} set {column}=? where rowid=?", (new_path, row["_rowid"])
+        )
+        changed += int(cursor.rowcount or 0)
+    return changed
+
+
 def migrate_legacy_seed_paths_in_memory(base_dir: Path, account_type: object, broker: object = DEFAULT_BROKER) -> int:
     broker_key = normalize_broker(broker)
     account = normalize_account_type(account_type, broker_key)
@@ -488,34 +519,10 @@ def migrate_legacy_seed_paths_in_memory(base_dir: Path, account_type: object, br
             for table, column in SEED_PATH_COLUMNS:
                 if table not in tables:
                     continue
-                columns = {
-                    str(row["name"])
-                    for row in conn.execute(f"pragma table_info({table})")
-                }
-                if column not in columns:
-                    continue
-                rowid_column = "rowid"
-                for row in conn.execute(f"select rowid as _rowid, {column} from {table}"):
-                    stored = str(row[column] or "")
-                    if not stored or not _may_need_seed_path_migration(
-                        stored, old_prefix, base_prefix, new_marker
-                    ):
-                        continue
-                    new_path = _legacy_seed_path_to_broker_path(base_dir, row[column], account, broker_key)
-                    if not new_path or new_path == str(row[column]):
-                        continue
-                    if table in {"seed_scores", "seed_overrides"}:
-                        conflict = conn.execute(
-                            f"select 1 from {table} where {column}=? and rowid<>?",
-                            (new_path, row["_rowid"]),
-                        ).fetchone()
-                        if conflict:
-                            continue
-                    cursor = conn.execute(
-                        f"update {table} set {column}=? where {rowid_column}=?",
-                        (new_path, row["_rowid"]),
-                    )
-                    changed += int(cursor.rowcount or 0)
+                changed += _migrate_seed_path_table(
+                    conn, table, column, base_dir, account, broker_key,
+                    old_prefix, base_prefix, new_marker,
+                )
             conn.commit()
         finally:
             conn.close()

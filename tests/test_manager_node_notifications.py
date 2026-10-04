@@ -71,7 +71,7 @@ class ManagerNodeNotificationTests(unittest.TestCase):
             )
             controller.state = {"log_path": str(project / "job.log"), "telegram_notifications": []}
 
-            with patch("manager_node_runtime.node.telegram_notify.send_async") as send_async:
+            with patch("manager_node_runtime.node_jobs_queue.telegram_notify.send_async") as send_async:
                 controller._send_telegram("cycle_1_generation", "mensaje")
                 controller._send_telegram("cycle_1_generation", "mensaje repetido")
 

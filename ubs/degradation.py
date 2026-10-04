@@ -100,35 +100,26 @@ def _check(
     }
 
 
-def evaluate_robustness_degradation(
-    base_metrics: Mapping[str, object] | None,
-    oos_metrics: Mapping[str, object] | None,
-    *,
-    base_from_date: object,
-    base_to_date: object,
-    oos_from_date: object,
-    oos_to_date: object,
-    config: RobustnessDegradationConfig | None = None,
-    risk_basis: str = "balance",
-) -> dict[str, object]:
-    """Measure how much of the construction-window edge survives OOS.
+#: Causa que se apunta en el informe cuando una comprobacion no pasa.
+REASON_BY_CHECK = {
+    "net_retention": "degradation_net",
+    "pf_edge_retention": "degradation_profit_factor",
+    "recovery_retention": "degradation_recovery",
+    "dd_inflation": "degradation_drawdown",
+    "trade_rate_retention": "degradation_trade_rate",
+    "residual_profit_ratio": "generalization_residual_profit",
+    "oos_positive_month_ratio": "generalization_month_breadth",
+    "trade_curve_stability": "generalization_stability",
+    "stability_retention": "generalization_stability_retention",
+    "bootstrap_net_positive_probability": "generalization_bootstrap_net",
+    "bootstrap_pf_p05": "generalization_bootstrap_pf",
+}
 
-    Missing or sentinel metrics are recorded as unavailable and remain neutral.
-    The caller still applies the normal absolute OOS gates independently.
-    """
 
-    cfg = config or RobustnessDegradationConfig()
-    if risk_basis not in {"balance", "equity"}:
-        raise ValueError("risk_basis must be balance or equity")
-    base = base_metrics or {}
-    oos = oos_metrics or {}
-    base_window = _window(base_from_date, base_to_date)
-    oos_window = _window(oos_from_date, oos_to_date)
-
+def _profit_ratios(base, oos, base_days, oos_days) -> dict[str, float | None]:
+    """Neto anualizado y ventaja de profit factor que sobrevive fuera de muestra."""
     base_net = _number(base.get("normalized_net_profit"))
     oos_net = _number(oos.get("normalized_net_profit"))
-    base_days = _number(base_window.get("days"))
-    oos_days = _number(oos_window.get("days"))
     base_net_annual = (
         base_net * 365.25 / base_days
         if base_net is not None and base_net > 0 and base_days is not None and base_days > 0
@@ -155,7 +146,18 @@ def evaluate_robustness_degradation(
         and oos_pf < PF_SENTINEL_CAP
         else None
     )
+    return {
+        "base_net_annual": base_net_annual,
+        "oos_net_annual": oos_net_annual,
+        "net_retention": net_retention,
+        "base_pf": base_pf,
+        "oos_pf": oos_pf,
+        "pf_edge_retention": pf_edge_retention,
+    }
 
+
+def _recovery_ratios(base, oos, base_days, oos_days, risk_basis) -> dict[str, float | None]:
+    """Recovery factor anualizado en la base de riesgo elegida y su retencion."""
     base_recovery = _number(base.get("recovery_factor"))
     oos_recovery = _number(oos.get("recovery_factor"))
     if risk_basis == "equity":
@@ -205,7 +207,53 @@ def evaluate_robustness_degradation(
         and oos_recovery_annual is not None
         else None
     )
+    return {
+        "base_recovery": base_recovery,
+        "oos_recovery": oos_recovery,
+        "base_recovery_annual": base_recovery_annual,
+        "oos_recovery_annual": oos_recovery_annual,
+        "recovery_retention": recovery_retention,
+    }
 
+
+def _quality_ratios(base, oos, risk_basis) -> dict[str, float | None]:
+    """Concentracion del beneficio, estabilidad y bootstrap fuera de muestra."""
+    # The concentration measure removes the best months of the OOS window. The
+    # equity basis (the risk-adjusted route) reads the scaled one, which removes
+    # a share of the months instead of a fixed three: on a window a third as
+    # long as the construction one, a fixed three is a categorically harsher
+    # test. The balance basis keeps the historical measure untouched.
+    residual_profit_ratio = _number(oos.get("residual_profit_ratio"))
+    residual_top_months = 3
+    if risk_basis == "equity":
+        scaled = _number(oos.get("scaled_residual_profit_ratio"))
+        if scaled is not None:
+            residual_profit_ratio = scaled
+            residual_top_months = _number(oos.get("scaled_residual_top_months"))
+    base_stability = _number(base.get("trade_curve_stability"))
+    oos_stability = _number(oos.get("trade_curve_stability"))
+    stability_retention = (
+        oos_stability / base_stability
+        if base_stability is not None
+        and base_stability > 0
+        and oos_stability is not None
+        else None
+    )
+    bootstrap_net_probability = _number(oos.get("bootstrap_net_positive_probability"))
+    bootstrap_pf_p05 = _number(oos.get("bootstrap_pf_p05"))
+    return {
+        "residual_profit_ratio": residual_profit_ratio,
+        "residual_top_months": residual_top_months,
+        "base_stability": base_stability,
+        "oos_stability": oos_stability,
+        "stability_retention": stability_retention,
+        "bootstrap_net_probability": bootstrap_net_probability,
+        "bootstrap_pf_p05": bootstrap_pf_p05,
+    }
+
+
+def _risk_ratios(base, oos, base_days, oos_days, risk_basis) -> dict[str, float | None]:
+    """Drawdown, ritmo de operaciones, meses positivos, concentracion y estabilidad."""
     dd_key = "equity_drawdown_pct" if risk_basis == "equity" else "drawdown_pct"
     base_dd = _number(base.get(dd_key))
     oos_dd = _number(oos.get(dd_key))
@@ -233,130 +281,188 @@ def evaluate_robustness_degradation(
     positive_month_delta = (
         oos_months - base_months if base_months is not None and oos_months is not None else None
     )
-    # The concentration measure removes the best months of the OOS window. The
-    # equity basis (the risk-adjusted route) reads the scaled one, which removes
-    # a share of the months instead of a fixed three: on a window a third as
-    # long as the construction one, a fixed three is a categorically harsher
-    # test. The balance basis keeps the historical measure untouched.
-    residual_profit_ratio = _number(oos.get("residual_profit_ratio"))
-    residual_top_months = 3
-    if risk_basis == "equity":
-        scaled = _number(oos.get("scaled_residual_profit_ratio"))
-        if scaled is not None:
-            residual_profit_ratio = scaled
-            residual_top_months = _number(oos.get("scaled_residual_top_months"))
-    base_stability = _number(base.get("trade_curve_stability"))
-    oos_stability = _number(oos.get("trade_curve_stability"))
-    stability_retention = (
-        oos_stability / base_stability
-        if base_stability is not None
-        and base_stability > 0
-        and oos_stability is not None
-        else None
-    )
-    bootstrap_net_probability = _number(oos.get("bootstrap_net_positive_probability"))
-    bootstrap_pf_p05 = _number(oos.get("bootstrap_pf_p05"))
+    quality = _quality_ratios(base, oos, risk_basis)
+    return {
+        "base_dd": base_dd,
+        "oos_dd": oos_dd,
+        "dd_inflation": dd_inflation,
+        "base_trades": base_trades,
+        "oos_trades": oos_trades,
+        "trade_rate_retention": trade_rate_retention,
+        "oos_months": oos_months,
+        "positive_month_delta": positive_month_delta,
+        **quality,
+    }
 
-    checks = {
-        "net_retention": _check(
-            net_retention,
-            cfg.min_net_retention,
-            comparison="minimum",
-            details={
-                "base_annualized": round(base_net_annual, 6) if base_net_annual is not None else None,
-                "oos_annualized": round(oos_net_annual, 6) if oos_net_annual is not None else None,
-            },
-        ),
-        "pf_edge_retention": _check(
-            pf_edge_retention,
-            cfg.min_pf_edge_retention,
-            comparison="minimum",
-            details={"base": base_pf, "oos": oos_pf, "neutral_point": 1.0},
-        ),
-        "recovery_retention": _check(
-            recovery_retention,
-            cfg.min_recovery_retention,
-            comparison="minimum",
-            details={
-                "base": base_recovery,
-                "oos": oos_recovery,
-                "base_annualized": (
-                    round(base_recovery_annual, 6) if base_recovery_annual is not None else None
-                ),
-                "oos_annualized": (
-                    round(oos_recovery_annual, 6) if oos_recovery_annual is not None else None
-                ),
-            },
-        ),
-        "dd_inflation": _check(
-            dd_inflation,
-            cfg.max_dd_inflation,
-            comparison="maximum",
-            details={"base": base_dd, "oos": oos_dd, "base_floor_pct": DD_RATIO_FLOOR_PCT},
-        ),
-        "trade_rate_retention": _check(
-            trade_rate_retention,
-            cfg.min_trade_rate_retention,
-            comparison="minimum",
-            details={"base_trades": base_trades, "oos_trades": oos_trades},
-        ),
+
+@dataclass(frozen=True)
+class _DegradationRatios:
+    """Razones entre la ventana de construccion y la de fuera de muestra."""
+
+    base_net_annual: float | None
+    oos_net_annual: float | None
+    net_retention: float | None
+    base_pf: float | None
+    oos_pf: float | None
+    pf_edge_retention: float | None
+    base_recovery: float | None
+    oos_recovery: float | None
+    base_recovery_annual: float | None
+    oos_recovery_annual: float | None
+    recovery_retention: float | None
+    base_dd: float | None
+    oos_dd: float | None
+    dd_inflation: float | None
+    base_trades: float | None
+    oos_trades: float | None
+    trade_rate_retention: float | None
+    oos_months: float | None
+    positive_month_delta: float | None
+    residual_profit_ratio: float | None
+    residual_top_months: float | None
+    base_stability: float | None
+    oos_stability: float | None
+    stability_retention: float | None
+    bootstrap_net_probability: float | None
+    bootstrap_pf_p05: float | None
+
+
+def _degradation_ratios(base, oos, base_window, oos_window, risk_basis) -> _DegradationRatios:
+    """Anualiza y compara cada metrica de las dos ventanas."""
+    base_days = _number(base_window.get("days"))
+    oos_days = _number(oos_window.get("days"))
+    return _DegradationRatios(
+        **_profit_ratios(base, oos, base_days, oos_days),
+        **_recovery_ratios(base, oos, base_days, oos_days, risk_basis),
+        **_risk_ratios(base, oos, base_days, oos_days, risk_basis),
+    )
+
+
+def _generalization_checks(ratios: _DegradationRatios, oos, cfg) -> dict:
+    """Comprobaciones de generalizacion sobre la ventana fuera de muestra."""
+    return {
         "residual_profit_ratio": _check(
-            residual_profit_ratio,
+            ratios.residual_profit_ratio,
             cfg.min_residual_profit_ratio,
             comparison="minimum",
             details={
                 "oos_net": _number(oos.get("net_profit")),
                 "top3_month_profit": _number(oos.get("top3_month_profit")),
                 "residual_profit_after_top3": _number(oos.get("residual_profit_after_top3")),
-                "top_months_removed": residual_top_months,
+                "top_months_removed": ratios.residual_top_months,
             },
         ),
         "oos_positive_month_ratio": _check(
-            oos_months,
+            ratios.oos_months,
             cfg.min_oos_positive_month_ratio,
             comparison="minimum",
             details={"oos_active_months": _number(oos.get("active_months"))},
         ),
         "trade_curve_stability": _check(
-            oos_stability,
+            ratios.oos_stability,
             cfg.min_trade_curve_stability,
             comparison="minimum",
-            details={"oos": oos_stability},
+            details={"oos": ratios.oos_stability},
         ),
         "stability_retention": _check(
-            stability_retention,
+            ratios.stability_retention,
             cfg.min_stability_retention,
             comparison="minimum",
-            details={"base": base_stability, "oos": oos_stability},
+            details={"base": ratios.base_stability, "oos": ratios.oos_stability},
         ),
         "bootstrap_net_positive_probability": _check(
-            bootstrap_net_probability,
+            ratios.bootstrap_net_probability,
             cfg.min_bootstrap_net_positive_probability,
             comparison="minimum",
             details={"bootstrap_reps": _number(oos.get("bootstrap_reps"))},
         ),
         "bootstrap_pf_p05": _check(
-            bootstrap_pf_p05,
+            ratios.bootstrap_pf_p05,
             cfg.min_bootstrap_pf_p05,
             comparison="minimum",
             details={"bootstrap_reps": _number(oos.get("bootstrap_reps"))},
         ),
     }
-    reason_by_check = {
-        "net_retention": "degradation_net",
-        "pf_edge_retention": "degradation_profit_factor",
-        "recovery_retention": "degradation_recovery",
-        "dd_inflation": "degradation_drawdown",
-        "trade_rate_retention": "degradation_trade_rate",
-        "residual_profit_ratio": "generalization_residual_profit",
-        "oos_positive_month_ratio": "generalization_month_breadth",
-        "trade_curve_stability": "generalization_stability",
-        "stability_retention": "generalization_stability_retention",
-        "bootstrap_net_positive_probability": "generalization_bootstrap_net",
-        "bootstrap_pf_p05": "generalization_bootstrap_pf",
+
+
+def _degradation_checks(ratios: _DegradationRatios, oos, cfg) -> dict:
+    """Comprobaciones de degradacion frente a la ventana de construccion."""
+    return {
+        "net_retention": _check(
+            ratios.net_retention,
+            cfg.min_net_retention,
+            comparison="minimum",
+            details={
+                "base_annualized": round(ratios.base_net_annual, 6) if ratios.base_net_annual is not None else None,
+                "oos_annualized": round(ratios.oos_net_annual, 6) if ratios.oos_net_annual is not None else None,
+            },
+        ),
+        "pf_edge_retention": _check(
+            ratios.pf_edge_retention,
+            cfg.min_pf_edge_retention,
+            comparison="minimum",
+            details={"base": ratios.base_pf, "oos": ratios.oos_pf, "neutral_point": 1.0},
+        ),
+        "recovery_retention": _check(
+            ratios.recovery_retention,
+            cfg.min_recovery_retention,
+            comparison="minimum",
+            details={
+                "base": ratios.base_recovery,
+                "oos": ratios.oos_recovery,
+                "base_annualized": (
+                    round(ratios.base_recovery_annual, 6) if ratios.base_recovery_annual is not None else None
+                ),
+                "oos_annualized": (
+                    round(ratios.oos_recovery_annual, 6) if ratios.oos_recovery_annual is not None else None
+                ),
+            },
+        ),
+        "dd_inflation": _check(
+            ratios.dd_inflation,
+            cfg.max_dd_inflation,
+            comparison="maximum",
+            details={"base": ratios.base_dd, "oos": ratios.oos_dd, "base_floor_pct": DD_RATIO_FLOOR_PCT},
+        ),
+        "trade_rate_retention": _check(
+            ratios.trade_rate_retention,
+            cfg.min_trade_rate_retention,
+            comparison="minimum",
+            details={"base_trades": ratios.base_trades, "oos_trades": ratios.oos_trades},
+        ),
+        **_generalization_checks(ratios, oos, cfg),
     }
+
+
+def evaluate_robustness_degradation(
+    base_metrics: Mapping[str, object] | None,
+    oos_metrics: Mapping[str, object] | None,
+    *,
+    base_from_date: object,
+    base_to_date: object,
+    oos_from_date: object,
+    oos_to_date: object,
+    config: RobustnessDegradationConfig | None = None,
+    risk_basis: str = "balance",
+) -> dict[str, object]:
+    """Measure how much of the construction-window edge survives OOS.
+
+    Missing or sentinel metrics are recorded as unavailable and remain neutral.
+    The caller still applies the normal absolute OOS gates independently.
+    """
+
+    cfg = config or RobustnessDegradationConfig()
+    if risk_basis not in {"balance", "equity"}:
+        raise ValueError("risk_basis must be balance or equity")
+    base = base_metrics or {}
+    oos = oos_metrics or {}
+    base_window = _window(base_from_date, base_to_date)
+    oos_window = _window(oos_from_date, oos_to_date)
+
+    ratios = _degradation_ratios(base, oos, base_window, oos_window, risk_basis)
+    checks = _degradation_checks(ratios, oos, cfg)
     reasons = tuple(
-        reason_by_check[name]
+        REASON_BY_CHECK[name]
         for name, check in checks.items()
         if check["enabled"] and check["available"] and not check["accepted"]
     )
@@ -372,7 +478,7 @@ def evaluate_robustness_degradation(
         "oos_window": oos_window,
         "checks": checks,
         "diagnostics": {
-            "positive_month_ratio_delta": round(positive_month_delta, 6) if positive_month_delta is not None else None,
+            "positive_month_ratio_delta": round(ratios.positive_month_delta, 6) if ratios.positive_month_delta is not None else None,
             "enabled_checks": enabled_checks,
             "available_checks": available_checks,
             "complete": enabled_checks == available_checks,

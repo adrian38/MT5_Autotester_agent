@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import ubs_agent
+import ubs_agent_reports
 from ubs_agent import find_report_for_set, find_watchdog_snapshot_for_set
 
 
@@ -16,11 +17,11 @@ class ReportLookupTests(unittest.TestCase):
         self.base = Path(self._tmp.name)
         self.reports = self.base / "reports"
         self.reports.mkdir()
-        patcher = mock.patch.object(ubs_agent, "BASE_DIR", self.base)
+        patcher = mock.patch.object(ubs_agent_reports, "BASE_DIR", self.base)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
-        ubs_agent._REPORTS_NAME_INDEX["signature"] = None
+        ubs_agent_reports._REPORTS_NAME_INDEX["signature"] = None
 
     def _touch(self, name: str) -> Path:
         path = self.reports / name
@@ -88,7 +89,7 @@ class ReportLookupTests(unittest.TestCase):
         for entry in self.reports.iterdir():
             entry.unlink()
         self.reports.rmdir()
-        ubs_agent._REPORTS_NAME_INDEX["signature"] = None
+        ubs_agent_reports._REPORTS_NAME_INDEX["signature"] = None
 
         self.assertIsNone(find_report_for_set(Path("a/seed.set")))
         self.assertIsNone(find_watchdog_snapshot_for_set(Path("a/seed.set")))

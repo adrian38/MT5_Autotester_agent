@@ -1,3 +1,5 @@
+import ubs_agent_rescore
+import ubs_agent_evaluate
 import argparse
 import json
 import sqlite3
@@ -11,6 +13,37 @@ from ubs.memory import AgentMemory
 from ubs.risk_profit import RiskProfitConfig
 from ubs.score import ScoreConfig, ScoreResult
 from ubs_agent import _stored_score_config, rescore_candidate_scores_only, rescore_robustness_only
+
+
+def _store_robustness_candidate(memory: AgentMemory, result: ScoreResult, symbol="EURUSD", config_json="{}") -> None:
+    memory.conn.execute(
+        """insert into runs (
+            id, created_at, source_dir, output_dir, generations,
+            variants_per_seed, max_seeds, execute_backtests, dry_run, config_json
+        ) values (1, 'now', 'src', 'out', 1, 1, 1, 1, 0, ?)""",
+        (config_json,),
+    )
+    memory.conn.execute(
+        """insert into candidates (
+            id, run_id, generation, seed_path, set_path, symbol, target_symbol,
+            period, family, run_strategy, mutated_keys, missing_lot_keys, policy,
+            score, accepted, metrics_json, status, created_at
+        ) values (1, 1, 1, 'seed.set', 'candidate.set', ?, ?, 'H1', 'fam',
+            'strat', '', '', 'test', 50, 1, ?, 'accepted', 'now')""",
+        (symbol, symbol, result.to_json()),
+    )
+
+
+def _robustness_rescore_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        min_trades_w1=12,
+        min_trades_mn=4,
+        rescore_from_reports=False,
+        robust_min_net_retention=0.5,
+        robust_min_pf_edge_retention=0.5,
+        robust_min_recovery_retention=0.5,
+        robust_max_dd_inflation=2.0,
+    )
 
 
 class UBSAgentRescoreTests(unittest.TestCase):
@@ -119,8 +152,8 @@ class UBSAgentRescoreTests(unittest.TestCase):
             )
 
             with (
-                patch("ubs_agent.evaluate_history_probe", return_value=("history_ok", None)) as history_probe,
-                patch("ubs_agent.evaluate_variant_report", return_value=("accepted", None)) as candidate_score,
+                patch("ubs_agent_rescore.evaluate_history_probe", return_value=("history_ok", None)) as history_probe,
+                patch("ubs_agent_rescore.evaluate_variant_report", return_value=("accepted", None)) as candidate_score,
             ):
                 self.assertEqual(rescore_candidate_scores_only(args, memory, ScoreConfig()), 0)
 
@@ -149,45 +182,15 @@ class UBSAgentRescoreTests(unittest.TestCase):
                 config_json = json.dumps(
                     {"execution": {"from_date": "2020.01.01", "to_date": "2024.12.31"}}
                 )
-                memory.conn.execute(
-                    """
-                    insert into runs (
-                        id, created_at, source_dir, output_dir, generations,
-                        variants_per_seed, max_seeds, execute_backtests, dry_run, config_json
-                    ) values (1, 'now', 'src', 'out', 1, 1, 1, 1, 0, ?)
-                    """,
-                    (config_json,),
-                )
-                memory.conn.execute(
-                    """
-                    insert into candidates (
-                        id, run_id, generation, seed_path, set_path, symbol, target_symbol,
-                        period, family, run_strategy, mutated_keys, missing_lot_keys, policy,
-                        score, accepted, metrics_json, status, created_at
-                    ) values (
-                        1, 1, 1, 'seed.set', 'candidate.set', 'EURUSD', 'EURUSD',
-                        'H1', 'fam', 'strat', '', '', 'test', 50, 1, ?, 'accepted', 'now'
-                    )
-                    """,
-                    (base.to_json(),),
-                )
+                _store_robustness_candidate(memory, base, config_json=config_json)
                 memory.record_candidate_robustness(
                     1, 1, oos, "accepted", None,
                     "2025.01.01", "2026.06.01", 70.0, -70.0,
                 )
-                args = argparse.Namespace(
-                    min_trades_w1=12,
-                    min_trades_mn=4,
-                    rescore_from_reports=False,
-                    robust_min_net_retention=0.5,
-                    robust_min_pf_edge_retention=0.5,
-                    robust_min_recovery_retention=0.5,
-                    robust_max_dd_inflation=2.0,
-                )
 
                 self.assertEqual(
                     rescore_robustness_only(
-                        args,
+                        _robustness_rescore_args(),
                         memory,
                         ScoreConfig(
                             min_net_profit=0.0,
@@ -223,27 +226,7 @@ class UBSAgentRescoreTests(unittest.TestCase):
                     accepted=False,
                     trades=0,
                 )
-                memory.conn.execute(
-                    """
-                    insert into runs (
-                        id, created_at, source_dir, output_dir, generations,
-                        variants_per_seed, max_seeds, execute_backtests, dry_run, config_json
-                    ) values (1, 'now', 'src', 'out', 1, 1, 1, 1, 0, '{}')
-                    """
-                )
-                memory.conn.execute(
-                    """
-                    insert into candidates (
-                        id, run_id, generation, seed_path, set_path, symbol, target_symbol,
-                        period, family, run_strategy, mutated_keys, missing_lot_keys, policy,
-                        score, accepted, metrics_json, status, created_at
-                    ) values (
-                        1, 1, 1, 'seed.set', 'candidate.set', 'PlugPower+', 'PlugPower+',
-                        'H1', 'fam', 'strat', '', '', 'test', 50, 1, ?, 'accepted', 'now'
-                    )
-                    """,
-                    (base.to_json(),),
-                )
+                _store_robustness_candidate(memory, base, symbol="PlugPower+")
                 invalid_stops = {
                     "failure_type": "invalid_stops",
                     "reasons": ["invalid_stops"],
@@ -262,18 +245,8 @@ class UBSAgentRescoreTests(unittest.TestCase):
                     -70.0,
                     degradation=invalid_stops,
                 )
-                args = argparse.Namespace(
-                    min_trades_w1=12,
-                    min_trades_mn=4,
-                    rescore_from_reports=False,
-                    robust_min_net_retention=0.5,
-                    robust_min_pf_edge_retention=0.5,
-                    robust_min_recovery_retention=0.5,
-                    robust_max_dd_inflation=2.0,
-                )
-
                 self.assertEqual(
-                    rescore_robustness_only(args, memory, ScoreConfig()),
+                    rescore_robustness_only(_robustness_rescore_args(), memory, ScoreConfig()),
                     0,
                 )
 

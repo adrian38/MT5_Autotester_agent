@@ -5,7 +5,8 @@ from tkinter import ttk
 
 
 class UBSRobustnessViewMixin:
-    def _build_ubs_robustness(self, parent: ttk.Frame) -> None:
+    def _build_ubs_robustness_panel(self, parent):
+        """Panel de la pantalla y su barra de resumen."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -17,13 +18,10 @@ class UBSRobustnessViewMixin:
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         bar.columnconfigure(0, weight=1)
-        tk.Label(
-            bar,
-            textvariable=self.ubs_robust_summary,
-            bg=self.colors["panel_alt"],
-            fg=self.colors["muted"],
-            font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
+        return panel, bar
+
+    def _build_ubs_robustness_stage_actions(self, bar):
+        """Continuar o reprobar robustez, seguir al Final Tick y refrescar."""
         tk.Button(
             bar,
             text="Continuar robustez",
@@ -77,24 +75,19 @@ class UBSRobustnessViewMixin:
             command=self._refresh_ubs_robustness_panel,
         ).grid(row=0, column=4, sticky="e", padx=(0, 10), pady=(5, 3))
 
-        row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
-        row1.columnconfigure(2, weight=1)
+    def _build_ubs_robustness_actions(self, bar):
+        """Resumen y botones de accion de la barra superior."""
         tk.Label(
-            row1,
-            text="Run:",
+            bar,
+            textvariable=self.ubs_robust_summary,
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=(0, 4))
-        self.ubs_robust_run_combo = ttk.Combobox(
-            row1,
-            textvariable=self.ubs_robust_run_id,
-            state="readonly",
-            width=36,
-        )
-        self.ubs_robust_run_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
-        self.ubs_robust_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_robustness())
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
+        self._build_ubs_robustness_stage_actions(bar)
+
+    def _build_ubs_robustness_row_actions(self, row1):
+        """Accesos al set, al reporte OOS y al veredicto manual."""
         tk.Button(
             row1,
             text="Abrir set",
@@ -148,6 +141,30 @@ class UBSRobustnessViewMixin:
             command=self._manual_reject_selected_ubs_robust,
         ).grid(row=0, column=6, sticky="e", padx=(0, 4))
 
+    def _build_ubs_robustness_run_row(self, bar):
+        """Selector de run y accesos a los artefactos del candidato."""
+        row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
+        row1.grid(row=1, column=0, columnspan=5, sticky="ew", padx=10, pady=(0, 5))
+        row1.columnconfigure(2, weight=1)
+        tk.Label(
+            row1,
+            text="Run:",
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self.ubs_robust_run_combo = ttk.Combobox(
+            row1,
+            textvariable=self.ubs_robust_run_id,
+            state="readonly",
+            width=36,
+        )
+        self.ubs_robust_run_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ubs_robust_run_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_ubs_robustness())
+        self._build_ubs_robustness_row_actions(row1)
+
+    def _build_ubs_robustness_criteria(self, panel):
+        """Estado y criterios absolutos y de degradacion."""
         ttk.Label(panel, textvariable=self.ubs_robust_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=20, pady=(4, 4)
         )
@@ -183,16 +200,8 @@ class UBSRobustnessViewMixin:
                     row=row_index, column=col * 2, sticky="w", padx=(0, 12), pady=2
                 )
 
-        table_frame = ttk.Frame(panel, style="Panel.TFrame")
-        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
-        columns = (
-            "mark", "run", "id", "gen", "status", "cause", "symbol", "period", "train_score",
-            "robust_score", "bonus", "profit", "profit_norm", "pf", "dd", "trades",
-            "net_ret", "pf_edge_ret", "recovery_ret", "dd_inflation", "dates", "set",
-        )
-        self.ubs_robust_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
+    def _style_ubs_robustness_columns(self, table_frame, columns):
+        """Titulos, anchos y etiquetas de color de la tabla de robustez."""
         headings = {
             "mark": "SEL",
             "run": "RUN",
@@ -251,3 +260,24 @@ class UBSRobustnessViewMixin:
         self.ubs_robust_tree.bind("<Button-1>", self._on_ubs_robust_tree_click)
         self.ubs_robust_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_robust_report())
         self._attach_tree_scrollbars(table_frame, self.ubs_robust_tree, 0, vertical=True)
+
+    def _build_ubs_robustness_table(self, panel):
+        """Tabla de candidatos con sus columnas y etiquetas."""
+        table_frame = ttk.Frame(panel, style="Panel.TFrame")
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = (
+            "mark", "run", "id", "gen", "status", "cause", "symbol", "period", "train_score",
+            "robust_score", "bonus", "profit", "profit_norm", "pf", "dd", "trades",
+            "net_ret", "pf_edge_ret", "recovery_ret", "dd_inflation", "dates", "set",
+        )
+        self.ubs_robust_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10, selectmode="extended")
+        self._style_ubs_robustness_columns(table_frame, columns)
+
+    def _build_ubs_robustness(self, parent: ttk.Frame) -> None:
+        panel, bar = self._build_ubs_robustness_panel(parent)
+        self._build_ubs_robustness_actions(bar)
+        self._build_ubs_robustness_run_row(bar)
+        self._build_ubs_robustness_criteria(panel)
+        self._build_ubs_robustness_table(panel)

@@ -5,7 +5,8 @@ from tkinter import ttk
 
 
 class UBSFinalTick6MViewMixin:
-    def _build_ubs_final_tick_6m(self, parent: ttk.Frame) -> None:
+    def _build_ubs_final_tick_6m_panel(self, parent):
+        """Panel de la pantalla y su barra de resumen."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -17,13 +18,39 @@ class UBSFinalTick6MViewMixin:
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 0))
         bar.columnconfigure(0, weight=1)
-        tk.Label(
+        return panel, bar
+
+    def _build_ubs_final_tick_6m_config_actions(self, bar):
+        """Guardar la configuracion y refrescar la tabla."""
+        tk.Button(
             bar,
-            textvariable=self.ubs_final_tick_6m_summary,
-            bg=self.colors["panel_alt"],
+            text="Guardar config",
+            bg=self.colors["panel"],
             fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
             font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
+            cursor="hand2",
+            command=self._save_config_clicked,
+        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(5, 3))
+        tk.Button(
+            bar,
+            text="Actualizar",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._refresh_ubs_final_tick_6m_panel,
+        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
+
+    def _build_ubs_final_tick_6m_stage_actions(self, bar):
+        """Continuar, reprobar, reintentar calidad, guardar y refrescar."""
         tk.Button(
             bar,
             text="Continuar 6M",
@@ -63,33 +90,21 @@ class UBSFinalTick6MViewMixin:
             cursor="hand2",
             command=self._retry_ubs_final_tick_6m_pending_quality,
         ).grid(row=0, column=3, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Guardar config",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._save_config_clicked,
-        ).grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(5, 3))
-        tk.Button(
-            bar,
-            text="Actualizar",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=self._refresh_ubs_final_tick_6m_panel,
-        ).grid(row=0, column=5, sticky="e", padx=(0, 10), pady=(5, 3))
+        self._build_ubs_final_tick_6m_config_actions(bar)
 
+    def _build_ubs_final_tick_6m_actions(self, bar):
+        """Resumen y botones de accion de la barra superior."""
+        tk.Label(
+            bar,
+            textvariable=self.ubs_final_tick_6m_summary,
+            bg=self.colors["panel_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
+        self._build_ubs_final_tick_6m_stage_actions(bar)
+
+    def _build_ubs_final_tick_6m_run_row(self, bar):
+        """Selector de run y accesos a los artefactos del candidato."""
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
         row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(1, weight=1)
@@ -132,6 +147,8 @@ class UBSFinalTick6MViewMixin:
                 command=command,
             ).grid(row=0, column=col, sticky="e", padx=(0, 4))
 
+    def _build_ubs_final_tick_6m_criteria(self, panel):
+        """Estado y criterios de aceptacion del Final Tick 6M."""
         ttk.Label(panel, textvariable=self.ubs_final_tick_6m_status, style="Muted.TLabel").grid(
             row=2, column=0, sticky="ew", padx=20, pady=(6, 6)
         )
@@ -164,19 +181,8 @@ class UBSFinalTick6MViewMixin:
                 row=row, column=col_index * 2, sticky="w", padx=(0, 12), pady=(0, 2)
             )
 
-        table_frame = ttk.Frame(panel, style="Panel.TFrame")
-        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
-        columns = (
-            "run", "id", "gen", "status", "cause", "symbol", "period",
-            "quality", "ohlc_score", "tick_score", "net_ohlc", "net_tick",
-            "pf_ohlc", "pf_tick", "dd_ohlc", "dd_tick", "trades_ohlc",
-            "trades_tick", "dates", "set",
-        )
-        self.ubs_final_tick_6m_tree = ttk.Treeview(
-            table_frame, columns=columns, show="headings", height=12, selectmode="extended"
-        )
+    def _style_ubs_final_tick_6m_columns(self, table_frame, columns):
+        """Titulos, anchos y etiquetas de color de la tabla 6M."""
         headings = {
             "run": "RUN",
             "id": "ID",
@@ -230,3 +236,27 @@ class UBSFinalTick6MViewMixin:
         self._make_tree_sortable(self.ubs_final_tick_6m_tree)
         self.ubs_final_tick_6m_tree.bind("<Double-1>", lambda _event: self._open_selected_ubs_final_tick_6m_real_report())
         self._attach_tree_scrollbars(table_frame, self.ubs_final_tick_6m_tree, 0, vertical=True)
+
+    def _build_ubs_final_tick_6m_table(self, panel):
+        """Tabla de candidatos con sus columnas y etiquetas."""
+        table_frame = ttk.Frame(panel, style="Panel.TFrame")
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = (
+            "run", "id", "gen", "status", "cause", "symbol", "period",
+            "quality", "ohlc_score", "tick_score", "net_ohlc", "net_tick",
+            "pf_ohlc", "pf_tick", "dd_ohlc", "dd_tick", "trades_ohlc",
+            "trades_tick", "dates", "set",
+        )
+        self.ubs_final_tick_6m_tree = ttk.Treeview(
+            table_frame, columns=columns, show="headings", height=12, selectmode="extended"
+        )
+        self._style_ubs_final_tick_6m_columns(table_frame, columns)
+
+    def _build_ubs_final_tick_6m(self, parent: ttk.Frame) -> None:
+        panel, bar = self._build_ubs_final_tick_6m_panel(parent)
+        self._build_ubs_final_tick_6m_actions(bar)
+        self._build_ubs_final_tick_6m_run_row(bar)
+        self._build_ubs_final_tick_6m_criteria(panel)
+        self._build_ubs_final_tick_6m_table(panel)

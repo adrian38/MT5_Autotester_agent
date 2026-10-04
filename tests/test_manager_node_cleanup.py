@@ -51,7 +51,7 @@ class ManagerNodeCleanupTests(unittest.TestCase):
             command = [sys.executable, str(project / "worker.py")]
 
             with patch(
-                "manager_node_runtime.node.build_generation_command",
+                "manager_node_runtime.node_commands.build_generation_command",
                 return_value=(command, project),
             ), patch.object(controller, "_launch_step"):
                 state = controller.start({"cycles": 2})
@@ -69,7 +69,7 @@ class ManagerNodeCleanupTests(unittest.TestCase):
             controller = self._controller(project)
 
             with patch(
-                "manager_node_runtime.node.stored_run_generation_mode",
+                "manager_node_runtime.node_settings.stored_run_generation_mode",
                 return_value="production",
             ), patch.object(controller, "_launch_next_runnable", return_value=True):
                 repair = controller.start_repair({

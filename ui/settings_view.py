@@ -8,7 +8,8 @@ from run_tests import REPORT_DIR
 
 
 class SettingsViewMixin:
-    def _build_settings(self, parent: ttk.Frame) -> None:
+    def _build_settings_scroll(self, parent):
+        """Lienzo desplazable que contiene las tarjetas de ajustes."""
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -43,7 +44,10 @@ class SettingsViewMixin:
         for widget in (canvas, parent, content):
             widget.bind("<Enter>", _bind_wheel)
             widget.bind("<Leave>", _unbind_wheel)
+        return content
 
+    def _build_settings_paths(self, content):
+        """Tarjeta de rutas de compilacion, sets y plantilla."""
         paths = self._card(content, "Rutas")
         paths.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         paths.columnconfigure(1, weight=1)
@@ -61,6 +65,8 @@ class SettingsViewMixin:
             command=self._save_paths_clicked,
         ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 18))
 
+    def _build_settings_tester(self, content):
+        """Tarjeta con los campos del tester_template.ini."""
         tester = self._card(content, "Tester")
         tester.grid(row=1, column=0, sticky="ew")
         for column in (1, 3):
@@ -106,38 +112,8 @@ class SettingsViewMixin:
             command=self._save_template_clicked,
         ).grid(row=8, column=0, columnspan=4, sticky="ew", padx=20, pady=(8, 18))
 
-        telegram = self._card(content, "Telegram")
-        telegram.grid(row=2, column=0, sticky="ew", pady=(16, 0))
-        telegram.columnconfigure(1, weight=1)
-
-        tg_row = tk.Frame(telegram, bg=self.colors["panel"])
-        tg_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 6))
-        tg_row.columnconfigure(0, weight=1)
-        tg_text = tk.Frame(tg_row, bg=self.colors["panel"])
-        tg_text.grid(row=0, column=0, sticky="w")
-        tk.Label(
-            tg_text,
-            text="Notificaciones Telegram",
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            tg_text,
-            text="Se guardan en .env como TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            font=("Segoe UI", 9),
-        ).grid(row=1, column=0, sticky="w")
-        self._toggle_switch_cls(
-            tg_row,
-            variable=self.telegram_enabled,
-            command=self._write_ui_settings,
-            bg=self.colors["panel"],
-            width=34,
-            height=18,
-        ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
-
+    def _build_settings_telegram_fields(self, telegram):
+        """Credenciales de Telegram y sus botones de prueba."""
         ttk.Label(telegram, text="Bot token", style="Panel.TLabel").grid(
             row=2, column=0, sticky="w", padx=(20, 10), pady=7
         )
@@ -179,3 +155,45 @@ class SettingsViewMixin:
             parent_bg=self.colors["panel"],
             command=self._save_telegram_clicked,
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+    def _build_settings_telegram(self, content):
+        """Tarjeta de credenciales y pruebas de Telegram."""
+        telegram = self._card(content, "Telegram")
+        telegram.grid(row=2, column=0, sticky="ew", pady=(16, 0))
+        telegram.columnconfigure(1, weight=1)
+
+        tg_row = tk.Frame(telegram, bg=self.colors["panel"])
+        tg_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 6))
+        tg_row.columnconfigure(0, weight=1)
+        tg_text = tk.Frame(tg_row, bg=self.colors["panel"])
+        tg_text.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            tg_text,
+            text="Notificaciones Telegram",
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            tg_text,
+            text="Se guardan en .env como TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w")
+        self._toggle_switch_cls(
+            tg_row,
+            variable=self.telegram_enabled,
+            command=self._write_ui_settings,
+            bg=self.colors["panel"],
+            width=34,
+            height=18,
+        ).grid(row=0, column=1, sticky="ne", pady=(4, 0))
+
+        self._build_settings_telegram_fields(telegram)
+
+    def _build_settings(self, parent: ttk.Frame) -> None:
+        content = self._build_settings_scroll(parent)
+        self._build_settings_paths(content)
+        self._build_settings_tester(content)
+        self._build_settings_telegram(content)

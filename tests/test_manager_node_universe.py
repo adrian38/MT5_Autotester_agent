@@ -191,6 +191,27 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         self.assertIn("--execute-backtests", command)
         self.assertNotIn("--dry-run", command)
 
+    def test_split_agent_facade_still_builds_the_probe_command(self):
+        # El parser vive en `ubs_agent_cli.py`: la fachada no declara ni un
+        # literal `--opcion` y no se le puede exigir el del sondeo.
+        (self.root / "ubs_agent.py").write_text(
+            "from ubs_agent_cli import main\n", encoding="utf-8",
+        )
+
+        command, _cwd = build_history_command(self.config, self.service.history_dates())
+
+        self.assertIn("--probe-universe-history", command)
+        self.assertIn("--execute-backtests", command)
+        self.assertEqual(command[command.index("--memory") + 1], str(self.memory))
+
+    def test_legacy_agent_without_the_probe_is_still_rejected(self):
+        (self.root / "ubs_agent.py").write_text(
+            'OPTIONS = ["--memory", "--generations", "--execute-backtests"]\n', encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "--probe-universe-history"):
+            build_history_command(self.config, self.service.history_dates())
+
     def test_outside_project_memory_is_rejected_before_launch(self):
         config = {**self.config, "memory_path": str(self.root.parent / "foreign.sqlite")}
         with self.assertRaisesRegex(ValueError, "fuera del proyecto"):
