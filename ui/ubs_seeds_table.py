@@ -116,8 +116,7 @@ class UBSSeedsTableMixin:
             tags=(self._ubs_result_tag(display_status),),
         )
         self.ubs_seed_paths[item] = {"seed_path": stored_path_text, "active": "1", "status": display_status, "has_row": "1" if row else "0"}
-        if not first_item:
-            first_item = item
+        return item
 
     def _refresh_ubs_seeds(self) -> None:
         if not hasattr(self, "ubs_seeds_tree"):

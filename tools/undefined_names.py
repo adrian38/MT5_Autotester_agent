@@ -1,8 +1,15 @@
-"""Detecta nombres globales sueltos y prohíbe nuevas importaciones estrella."""
+"""Detecta nombres sueltos por ámbito y prohíbe nuevas importaciones estrella.
+
+El recuento es por ámbito, no por fichero: un local de otra función no cuenta
+como definido. Mirarlo plano dejaba pasar justo lo que rompe un refactor que
+parte una función en pasos —el paso extraído sigue leyendo el nombre que se
+quedó en el original— porque el nombre sí existe en alguna parte del fichero.
+"""
 from __future__ import annotations
 
 import ast
 import builtins
+import symtable
 import sys
 from pathlib import Path
 
@@ -11,6 +18,10 @@ from tools.source_files import ROOT, iter_python_files
 ALLOWED_STAR_IMPORTS: frozenset[str] = frozenset()
 ALWAYS_DEFINED = frozenset(dir(builtins)) | {
     "__name__", "__file__", "__doc__", "__package__", "__spec__", "__all__",
+    "__builtins__", "__loader__", "__debug__", "__annotations__", "__class__",
+    "__qualname__", "__module__", "WindowsError",
+    # ámbitos internos que CPython 3.14 crea para las anotaciones diferidas
+    "__classdict__", "__conditional_annotations__",
 }
 
 
@@ -54,23 +65,36 @@ def _annotations(tree: ast.AST) -> list[ast.AST]:
     return [node for node in found if node is not None]
 
 
-def unresolved(source: str) -> list[str] | None:
+def _bound_in(table: symtable.SymbolTable) -> set[str]:
+    return {symbol.get_name() for symbol in table.get_symbols()
+            if symbol.is_assigned() or symbol.is_parameter()
+            or symbol.is_imported() or symbol.is_declared_global()}
+
+
+def _walk_scopes(table: symtable.SymbolTable, enclosing: set[str],
+                 missing: set[str]) -> None:
+    visible = enclosing | _bound_in(table)
+    for symbol in table.get_symbols():
+        name = symbol.get_name()
+        if symbol.is_referenced() and name not in visible:
+            missing.add(name)
+    # El cuerpo de una clase no es ámbito de sus métodos: lo que se define ahí
+    # se lee por el objeto, no por nombre suelto.
+    inherited = enclosing if table.get_type() == "class" else visible
+    for child in table.get_children():
+        _walk_scopes(child, inherited, missing)
+
+
+def unresolved(source: str, filename: str = "<fuente>") -> list[str] | None:
     tree = ast.parse(source)
     if any(isinstance(node, ast.ImportFrom)
            and any(alias.name == "*" for alias in node.names)
            for node in ast.walk(tree)):
         return None
-    defined = set(ALWAYS_DEFINED)
-    for node in ast.walk(tree):
-        defined |= _bound_by(node)
-    deferred = any(isinstance(node, ast.ImportFrom) and node.module == "__future__"
-                   and any(alias.name == "annotations" for alias in node.names)
-                   for node in ast.walk(tree))
-    skipped = {id(item) for annotation in _annotations(tree)
-               for item in ast.walk(annotation)} if deferred else set()
-    return sorted({node.id for node in ast.walk(tree)
-                   if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-                   and node.id not in defined and id(node) not in skipped})
+    missing: set[str] = set()
+    _walk_scopes(symtable.symtable(source, filename, "exec"),
+                 set(ALWAYS_DEFINED), missing)
+    return sorted(missing)
 
 
 def relative_path(path: Path) -> str:
@@ -82,7 +106,7 @@ def main(argv: list[str]) -> int:
     found = 0
     star_paths = set()
     for path in paths:
-        missing = unresolved(path.read_text(encoding="utf-8"))
+        missing = unresolved(path.read_text(encoding="utf-8"), str(path))
         if missing is None:
             star_paths.add(relative_path(path))
         elif missing:

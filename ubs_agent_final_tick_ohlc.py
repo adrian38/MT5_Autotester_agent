@@ -284,7 +284,7 @@ def _final_tick_run_ohlc(
         ohlc_code = run_backtests(args, ohlc_backtest_dir, model="1")
         if ohlc_code == RUNNING_TERMINAL_EXIT_CODE:
             print("ERROR: run_tests.py no ejecuto OHLC Final Tick porque hay una terminal MT5 abierta.")
-            return 1, skip_ohlc
+            return 1, skip_ohlc, ohlc_min_report_mtime
         if ohlc_code != 0:
             print(f"AVISO: OHLC Final Tick termino con codigo {ohlc_code}; se evaluaran reportes disponibles")
             if args.dry_run:
@@ -297,7 +297,7 @@ def _final_tick_run_ohlc(
 
 def _final_tick_filter_pending(
     args, rows, deferred_out, main_from_date, main_to_date,
-    ohlc_retry_from, ohlc_retry_to, final_tick_stage,
+    ohlc_retry_from, ohlc_retry_to, final_tick_stage, final_tick_label,
     using_ohlc_retry_dates, retry_pending_quality,
     _row_uses_retry_dates, _row_in_retry_scope,
 ):
@@ -354,7 +354,7 @@ def _final_tick_filter_pending(
 def _final_tick_retry_dates(
     args, rows, final_tick_stage, final_tick_label, allow_ohlc_retry,
     ohlc_retry_from, ohlc_retry_to, retry_pending_quality, _row_uses_retry_dates,
-) -> bool:
+) -> tuple[int | None, bool]:
     """Decide si la pasada usa las fechas alternativas de reintento OHLC."""
     has_ohlc_trades_pending = False
     if ohlc_retry_from and ohlc_retry_to:
@@ -374,16 +374,16 @@ def _final_tick_retry_dates(
     if allow_ohlc_retry and final_tick_stage == "six_month" and args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
             print(f"ERROR: {final_tick_label} OHLC retry requiere ambas fechas alternativas Desde y Hasta.")
-            return 1, rows, False, False
+            return 1, False
         args.from_date = ohlc_retry_from
         args.to_date = ohlc_retry_to
         date_error = validate_final_tick_stage_dates(final_tick_stage, str(args.from_date or ""), str(args.to_date or ""))
         if date_error:
             print(f"ERROR: {date_error}")
-            return 1, rows, False, False
+            return 1, False
         using_ohlc_retry_dates = True
         print(f"{final_tick_label} OHLC retry: usando fechas alternativas {args.from_date} -> {args.to_date}.")
-    return using_ohlc_retry_dates
+    return None, using_ohlc_retry_dates
 
 
 def _final_tick_pending_rows(
@@ -396,7 +396,7 @@ def _final_tick_pending_rows(
     if args.final_tick_pending_only:
         rows = _final_tick_filter_pending(
             args, rows, deferred_out, main_from_date, main_to_date,
-            ohlc_retry_from, ohlc_retry_to, final_tick_stage,
+            ohlc_retry_from, ohlc_retry_to, final_tick_stage, final_tick_label,
             using_ohlc_retry_dates, retry_pending_quality,
             _row_uses_retry_dates, _row_in_retry_scope,
         )
@@ -451,10 +451,12 @@ def _final_tick_rows_in_scope(
             or _row_uses_retry_dates(row)
         )
 
-    using_ohlc_retry_dates = _final_tick_retry_dates(
+    retry_code, using_ohlc_retry_dates = _final_tick_retry_dates(
         args, rows, final_tick_stage, final_tick_label, allow_ohlc_retry,
         ohlc_retry_from, ohlc_retry_to, retry_pending_quality, _row_uses_retry_dates,
     )
+    if retry_code is not None:
+        return retry_code, rows, False, False
     pending_code, rows, stored_dates_match = _final_tick_pending_rows(
         args, rows, run_id, final_tick_stage, final_tick_label, deferred_out,
         main_from_date, main_to_date, ohlc_retry_from, ohlc_retry_to,

@@ -338,9 +338,10 @@ def _final_tick_run_stages(
         ohlc_results,
     )
 
-    resume_code = _final_tick_resume_reconcile(
+    resume_code, ready_for_tick = _final_tick_resume_reconcile(
         args, memory, score_config, symbol_map, run_id, final_tick_label,
-        final_tick_stage, resume_pending_dir, ready_for_tick, status_counts,
+        final_tick_stage, resume_pending_dir, ready_for_tick, ohlc_results,
+        status_counts,
     )
     if resume_code is not None:
         return resume_code
@@ -362,7 +363,8 @@ def _final_tick_run_stages(
 
 def _final_tick_resume_reconcile(
     args, memory, score_config, symbol_map, run_id, final_tick_label,
-    final_tick_stage, resume_pending_dir, ready_for_tick, status_counts,
+    final_tick_stage, resume_pending_dir, ready_for_tick, ohlc_results,
+    status_counts,
 ):
     """Aprovecha los informes Real Tick ya en disco antes de relanzar MT5."""
     reconciled_tick = 0
@@ -403,8 +405,8 @@ def _final_tick_resume_reconcile(
             + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
             + f"; memoria={memory.path}"
         )
-        return 0
-    return None
+        return 0, ready_for_tick
+    return None, ready_for_tick
 
 
 def _evaluate_candidate_final_tick_pass(

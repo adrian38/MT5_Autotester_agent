@@ -329,7 +329,7 @@ def _print_seed_evaluation_summary(disabled_pending, invalid_pending, invalid_se
         print(f"Symbols deshabilitados con SEEDS activo: {len(seed_enabled_when_disabled)}")
     print(f"Semillas ya evaluadas sin cambios: {unchanged_count}")
 
-def _filter_disabled_seeds(args, memory, symbol_map):
+def _filter_disabled_seeds(args, memory, symbol_map, pending, blocked_count):
     """Aparta las semillas cuyo simbolo esta desactivado en la politica."""
     disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
     disabled_symbols = load_disabled_symbols(disabled_policy_path)
@@ -351,7 +351,7 @@ def _filter_disabled_seeds(args, memory, symbol_map):
         memory.record_seed_score(seed, None, "disabled_symbol", None)
     pending = [seed for seed in pending if str(seed.path) not in disabled_paths]
     blocked_count += len(disabled_pending)
-    return blocked_count, disabled_paths, disabled_pending, pending, seed, seed_enabled_when_disabled
+    return blocked_count, disabled_paths, disabled_pending, pending, seed_enabled_when_disabled
 
 def _filter_invalid_seeds(args, memory, seeds):
     """Aparta las semillas sin simbolo o sin timeframe utilizable."""
@@ -373,7 +373,7 @@ def _filter_invalid_seeds(args, memory, seeds):
     pending = [seed for seed in pending if seed not in invalid_pending]
     unchanged_count = len(seeds) - original_pending_count
     blocked_count = len(invalid_pending)
-    return blocked_count, invalid_paths, invalid_pending, original_pending_paths, pending, seed, unchanged_count
+    return blocked_count, invalid_paths, invalid_pending, original_pending_paths, pending, unchanged_count
 
 def _report_no_pending_seeds(
     args, memory, score_config, blocked_count, disabled_paths, disabled_pending,
@@ -432,7 +432,8 @@ def _print_seed_evaluation_result(args, memory, score_config, code, copied, disa
     if code != 0 and scored == 0 and handled_issues == 0:
         return 1
 
-def _check_seed_sets(memory, disabled_pending, invalid_pending, seed_enabled_when_disabled, seeds, symbol_map, unchanged_count):
+def _check_seed_sets(memory, disabled_pending, invalid_pending, seed_enabled_when_disabled, seeds, symbol_map,
+                     unchanged_count, pending, blocked_count):
     """Revisa los .set de las semillas pendientes y avisa de los invalidos."""
     invalid_set_reasons: dict[str, list[str]] = {}
     for seed in pending:
@@ -449,9 +450,9 @@ def _check_seed_sets(memory, disabled_pending, invalid_pending, seed_enabled_whe
         pending = [seed for seed in pending if str(seed.path) not in invalid_set_reasons]
         blocked_count += len(invalid_set_reasons)
     _print_seed_evaluation_summary(disabled_pending, invalid_pending, invalid_set_reasons, pending, seed_enabled_when_disabled, seeds, symbol_map, unchanged_count)
-    return blocked_count, invalid_set_reasons, pending, seed
+    return blocked_count, invalid_set_reasons, pending
 
-def _reconcile_pending_seeds(args, memory, score_config, output_root, symbol_map):
+def _reconcile_pending_seeds(args, memory, score_config, output_root, symbol_map, pending):
     """Aprovecha los informes de semillas ya presentes en disco."""
     reconciled_counts, reconciled_paths = reconcile_seed_eval_reports(
         memory,
@@ -471,8 +472,8 @@ def _reconcile_pending_seeds(args, memory, score_config, output_root, symbol_map
         print(f"Semillas pendientes tras reconciliar: {len(pending)}")
     if args.reconcile_seed_eval_only:
         print(f"Memoria: {memory.path}")
-        return 0
-    return pending
+        return 0, pending
+    return None, pending
 
 def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
     source_dir = resolve_workspace_path(args.source_dir)
@@ -486,10 +487,21 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
         return 1
 
     symbol_map = parse_symbol_map(args.symbol_map)
-    blocked_count, invalid_paths, invalid_pending, original_pending_paths, pending, seed, unchanged_count = _filter_invalid_seeds(args, memory, seeds)
-    blocked_count, disabled_paths, disabled_pending, pending, seed, seed_enabled_when_disabled = _filter_disabled_seeds(args, memory, symbol_map)
-    blocked_count, invalid_set_reasons, pending, seed = _check_seed_sets(memory, disabled_pending, invalid_pending, seed_enabled_when_disabled, seeds, symbol_map, unchanged_count)
-    pending = _reconcile_pending_seeds(args, memory, score_config, output_root, symbol_map)
+    blocked_count, invalid_paths, invalid_pending, original_pending_paths, pending, unchanged_count = _filter_invalid_seeds(
+        args, memory, seeds,
+    )
+    blocked_count, disabled_paths, disabled_pending, pending, seed_enabled_when_disabled = _filter_disabled_seeds(
+        args, memory, symbol_map, pending, blocked_count,
+    )
+    blocked_count, invalid_set_reasons, pending = _check_seed_sets(
+        memory, disabled_pending, invalid_pending, seed_enabled_when_disabled, seeds, symbol_map,
+        unchanged_count, pending, blocked_count,
+    )
+    reconcile_code, pending = _reconcile_pending_seeds(
+        args, memory, score_config, output_root, symbol_map, pending,
+    )
+    if reconcile_code is not None:
+        return reconcile_code
     if not pending:
         return _report_no_pending_seeds(
             args, memory, score_config, blocked_count, disabled_paths, disabled_pending,

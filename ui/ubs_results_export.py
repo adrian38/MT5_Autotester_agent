@@ -41,6 +41,7 @@ def _export_folder_name(cid: int, set_str: str, symbol: str, period: str) -> str
 class UBSResultsExportMixin:
     """Exportacion de un run y borrado del historico."""
 
+    @staticmethod
     def _report_related_files(rep_str: str) -> list[Path]:
         """Return the .htm/.html report + all associated image files."""
         if not rep_str:
