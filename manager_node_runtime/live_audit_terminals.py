@@ -207,6 +207,12 @@ class LiveAuditTerminalsMixin:
                 return
             time.sleep(0.5)
         self._close_terminal_pids(pids & self._terminal_pids())
+        # `taskkill /F` vuelve en cuanto pide la terminacion, no cuando Windows
+        # retira el proceso. Quien comprueba justo despues lo ve vivo y da el
+        # terminal por no cerrado sin haber intentado nada.
+        forced = time.monotonic() + 10.0
+        while time.monotonic() < forced and pids & self._terminal_pids():
+            time.sleep(0.5)
 
     def _launch_terminal(self, terminal_path: str, config_path: Path | None = None) -> set[int]:
         """Arranca una instalación y espera a identificar su proceso exacto."""
@@ -326,6 +332,32 @@ class LiveAuditTerminalsMixin:
                     self._terminal_pids_for_path(terminal_path)
                 )
 
+    def _persist_terminal_account_retrying(
+        self, mt5: Any, terminal_path: str, login: str, password: str, server: str,
+    ) -> Any:
+        """Guarda la cuenta final y, si falla, lo intenta una segunda vez.
+
+        El arranque manual con el INI compite con el IPC de MT5: es el patron
+        que el 2026-09-14 dejo cuatro terminales en `(-10005, 'IPC timeout')`.
+        De la reapertura se pudo quitar el arranque manual; de aqui no, porque
+        `KeepPrivate=1` solo entra por el INI de arranque. La operacion se
+        verifica sola y es idempotente, asi que repetirla sobre la instalacion
+        ya cerrada no arriesga nada y convierte la carrera en una restauracion
+        buena. Un rechazo real falla las dos veces y se reporta igual.
+        """
+        errors: list[str] = []
+        for attempt in (1, 2):
+            try:
+                return self._persist_terminal_account(
+                    mt5, terminal_path, login, password, server,
+                )
+            except Exception as exc:
+                errors.append(f"intento {attempt}: {exc}")
+                self._close_terminal_pids_gracefully(
+                    self._terminal_pids_for_path(terminal_path)
+                )
+        raise RuntimeError("; ".join(errors))
+
     def _restore_tester_login(self, request: dict[str, Any]) -> list[dict[str, Any]]:
         """Deja todos los terminales usados en la cuenta de restauración.
 
@@ -363,7 +395,7 @@ class LiveAuditTerminalsMixin:
                 "error": None,
             }
             try:
-                info = self._persist_terminal_account(
+                info = self._persist_terminal_account_retrying(
                     mt5, terminal["mt5_path"], login,
                     str(request["restore_password"]), server,
                 )
