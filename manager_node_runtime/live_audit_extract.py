@@ -59,23 +59,14 @@ class LiveAuditExtractMixin:
             mt5.shutdown()
             self._close_terminal_pids_gracefully(launched_pids)
 
-    def _reconstruct_real_history(
-        self, mt5: Any, period_deals: list[Any], sync_detail: dict[str, Any],
-        period_start: datetime, period_end: datetime,
-    ) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, Any]]:
-        market_deals = [deal for deal in period_deals if self._is_market_deal(deal)]
-        opening_positions = {
-            int(getattr(deal, "position_id", 0) or 0)
-            for deal in market_deals if int(getattr(deal, "entry", -1)) in {0, 2}
-        }
-        closing_positions = {
-            int(getattr(deal, "position_id", 0) or 0)
-            for deal in market_deals if int(getattr(deal, "entry", -1)) in {1, 2, 3}
-        }
-        open_at_period_end = self._open_positions_at_period_end(
-            market_deals, opening_positions, closing_positions
-        )
-        missing_open_positions = closing_positions - opening_positions
+    def _recover_prior_openings(
+        self, mt5: Any, period_deals: list[Any], missing_open_positions: set[int],
+    ) -> tuple[list[Any], int, list[int]]:
+        """Busca fuera del periodo la apertura de cada posicion que solo cerro dentro.
+
+        Una posicion abierta antes del periodo aparece en el solo por su cierre:
+        sin su apertura no hay operacion que reconstruir.
+        """
         all_deals = list(period_deals)
         recovered_positions = 0
         unresolved_positions: list[int] = []
@@ -93,6 +84,28 @@ class LiveAuditExtractMixin:
                 all_deals.extend(position_deals)
             else:
                 unresolved_positions.append(position_id)
+        return all_deals, recovered_positions, unresolved_positions
+
+    def _reconstruct_real_history(
+        self, mt5: Any, period_deals: list[Any], sync_detail: dict[str, Any],
+        period_start: datetime, period_end: datetime,
+    ) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, Any]]:
+        market_deals = [deal for deal in period_deals if self._is_market_deal(deal)]
+        opening_positions = {
+            int(getattr(deal, "position_id", 0) or 0)
+            for deal in market_deals if int(getattr(deal, "entry", -1)) in {0, 2}
+        }
+        closing_positions = {
+            int(getattr(deal, "position_id", 0) or 0)
+            for deal in market_deals if int(getattr(deal, "entry", -1)) in {1, 2, 3}
+        }
+        open_at_period_end = self._open_positions_at_period_end(
+            market_deals, opening_positions, closing_positions
+        )
+        missing_open_positions = closing_positions - opening_positions
+        all_deals, recovered_positions, unresolved_positions = self._recover_prior_openings(
+            mt5, period_deals, missing_open_positions
+        )
         unique_deals = {self._deal_identity(deal): deal for deal in all_deals}
         trades = [
             trade for trade in self._real_trades(unique_deals.values())
