@@ -173,11 +173,15 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
                 state = self._wait(controller)
 
         self.assertEqual(state["status"], "completed")
-        self.assertEqual(attempts, 2)
+        # Un rechazo real falla los dos intentos: la reapertura del primero y ya
+        # el arranque del segundo. Se reporta igual, con los dos por delante.
+        self.assertEqual(attempts, 3)
         self.assertFalse(state["terminal_restore"][0]["restored"])
         self.assertFalse(state["terminal_restore"][0]["password_persisted"])
         self.assertFalse(state["terminal_restore"][0]["reopened_without_password"])
         self.assertIn("Authorization failed", state["terminal_restore"][0]["error"])
+        self.assertIn("intento 1: ", state["terminal_restore"][0]["error"])
+        self.assertIn("intento 2: ", state["terminal_restore"][0]["error"])
         self.assertIn("no quedó en la cuenta configurada 333", state["progress_text"])
 
     def test_the_same_terminal_is_only_restored_once(self) -> None:
