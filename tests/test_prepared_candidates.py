@@ -9,7 +9,9 @@ from unittest import mock
 
 import ubs_agent as agent
 from manager_node_runtime import guided_batches as protocol
-from tests.test_guided_node import package, rebuild_package, recovery_package, symbol_package
+from tests.test_guided_node import (
+    cross_broker_package, package, rebuild_package, recovery_package, symbol_package,
+)
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.prepared import run_prepared
@@ -66,6 +68,27 @@ class PreparedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'positivo final'):
             run_prepared(self.args,self.memory,ScoreConfig(),self.api)
         self.assertEqual(self.memory.conn.execute('select count(*) from runs').fetchone()[0],1)
+
+    def test_cross_broker_final_parent_does_not_require_a_false_local_identity(self):
+        value=cross_broker_package()
+        directory=protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        self.api.evaluate_generation.assert_called_once()
+        variant=self.api.evaluate_generation.call_args.args[4][0]
+        self.assertEqual((variant.target_symbol,variant.mutated_keys),('US30',('ATR_Period',)))
+
+    def test_missing_local_parent_still_cannot_claim_local_provenance(self):
+        value=cross_broker_package();item=value['candidates'][0]
+        item['parent_provenance']={'kind':'local','broker':'ICTRADING_STANDARD','run_id':282}
+        value['batch_id']=protocol.batch_identity(value)
+        directory=protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+
+        with self.assertRaisesRegex(ValueError,'positivo final de esta memoria'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+        self.api.evaluate_generation.assert_not_called()
 
     def test_current_universe_disables_import_without_relaxation(self):
         self.api.load_disabled_symbols=lambda path:{'US30'}

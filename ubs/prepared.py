@@ -70,6 +70,11 @@ def _registered_parent_matches(source_raw, parent_raw, symbol_map, api):
     return source_symbols[0].casefold() == str(expected).strip().casefold()
 
 
+def _is_cross_broker_parent(item) -> bool:
+    provenance = item.get('parent_provenance')
+    return isinstance(provenance, dict) and provenance.get('kind') == 'cross_broker_final'
+
+
 @dataclass
 class _PreparedContext:
     """Universo, mapas y caches con los que se valida un lote preparado."""
@@ -247,12 +252,13 @@ def _check_numeric_mutation(ctx: _PreparedContext, item, parent, strategy, timef
 def _validate_prepared_item(ctx: _PreparedContext, item, raw, parent):
     """Valida un candidato del lote y devuelve su copia de ejecucion."""
     recovery = item['mode'] == 'symbol_exploration' and item['mutation'].get('kind') == 'symbol_recovery'
-    row = ctx.registered_row(item, recovery)
-    if not row:
-        if recovery:
-            raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
-        raise ValueError('El padre no es un positivo final de esta memoria')
-    ctx.verify_parent(row, parent)
+    if not _is_cross_broker_parent(item):
+        row = ctx.registered_row(item, recovery)
+        if not row:
+            if recovery:
+                raise ValueError('El padre de recuperación no es un intento previo de este nodo sin positivo final')
+            raise ValueError('El padre no es un positivo final de esta memoria')
+        ctx.verify_parent(row, parent)
     values = protocol.set_params(raw)
     strategy = values.get('Run_Strategy', '').split('||')[0]
     ctx.check_destination(item)

@@ -20,9 +20,16 @@ an enabled symbol that has no Final Tick 6M positive in current memory.
 the existing persistent FIFO and forces base, robustness, Final Tick and Final Tick
 6M. Paused work retains ownership; duplicate batches never enqueue twice.
 
-`ubs/prepared.py`, through `ubs_agent.py --prepared-manifest`, validates the local
-accepted parent, current universe and mutation rules, then calls the existing
-evaluator without remutating. The batch run.json binds fingerprints/candidate IDs
+`ubs/prepared.py`, through `ubs_agent.py --prepared-manifest`, validates the
+parent authority, current universe and mutation rules, then calls the existing
+evaluator without remutating. A local parent must still be accepted in this
+node's memory (or be a valid local recovery attempt). A package v2 may instead
+declare `cross_broker_final` with source broker/run, source symbol, set
+fingerprint and Final Tick 6M report evidence. The portable protocol requires
+that complete exact shape and a source broker different from the destination;
+only then is the impossible local-id lookup skipped. A recovery can never use
+that exception. Package v1 remains compatible but is local-only.
+The batch run.json binds fingerprints/candidate IDs
 to the exact run for later stages and results. Parent acceptance is not inherited.
 Pure symbol retargets keep their `symbol_exploration`/`symbol_retarget` provenance
 in `mutation_details_json`, but persist an empty `mutated_keys`: `ForceSymbol` is
