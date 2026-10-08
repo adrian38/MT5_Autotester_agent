@@ -10,6 +10,7 @@ from typing import Any
 from .common import load_json
 from .live_audit_helpers import single_variant_mode
 from .live_audit_sets import resolve_portfolio_set
+from .live_audit_symbols import broker_symbol_spellings
 from .mt5_native_history_report import NativeHistoryReportError, export_native_history_report
 
 
@@ -350,6 +351,11 @@ class LiveAuditExtractMixin:
                 f"disponibles: {', '.join(available) or 'ninguna'}"
             )
         return detail, matching
+
+    def _broker_symbol_spellings(self) -> dict[str, str]:
+        """Escritura exacta de cada simbolo en el servidor del broker."""
+        project = Path(str(self.owner.config["project_dir"])).expanduser().resolve()
+        return broker_symbol_spellings(project, self.owner.config.get("broker") or "ICTRADING")
 
     def _broker_volume_rules(self) -> dict[str, tuple[float, float]]:
         """Carga volume_min/volume_step publicados por el agente del broker."""

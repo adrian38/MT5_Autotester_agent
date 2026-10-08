@@ -28,6 +28,7 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     normalize_request,
     single_variant_mode,
 )
+from .live_audit_symbols import audit_symbol_key
 from .live_audit_terminals import LiveAuditTerminalsMixin
 from .live_audit_extract import LiveAuditExtractMixin
 from .live_audit_tester import LiveAuditTesterMixin
@@ -258,7 +259,7 @@ class LiveAuditController(
         pairs += [(row.get("strategy"), row.get("report_symbol")) for row in strategy_artifacts]
         for raw_strategy, raw_symbol in pairs:
             strategy = str(raw_strategy or "")
-            symbol = str(raw_symbol or "").casefold()
+            symbol = audit_symbol_key(raw_symbol)
             if strategy and symbol:
                 symbols_by_strategy.setdefault(strategy, set()).add(symbol)
         return symbols_by_strategy
@@ -282,7 +283,7 @@ class LiveAuditController(
                 continue
             real_lot = float(real_strategy_lots.get(strategy, effective_lot))
             symbols = symbols_by_strategy.get(strategy) or {
-                str(member.get("symbol") or "").casefold()
+                audit_symbol_key(member.get("symbol"))
             }
             signatures.update(
                 (symbol, round(real_lot, 8)) for symbol in symbols if symbol and real_lot > 0
@@ -300,7 +301,7 @@ class LiveAuditController(
         filtered = [
             trade for trade in real_trades
             if (
-                str(trade.get("symbol") or "").casefold(),
+                audit_symbol_key(trade.get("symbol")),
                 round(float(trade.get("volume") or 0), 8),
             ) in signatures
         ]

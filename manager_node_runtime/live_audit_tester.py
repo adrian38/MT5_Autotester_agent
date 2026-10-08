@@ -81,14 +81,14 @@ class LiveAuditTesterMixin:
 
     def _prepare_member_set(
         self, index: int, member: dict[str, Any], request: dict[str, Any],
-        sets_dir: Path, volume_rules: Any,
+        sets_dir: Path, volume_rules: Any, broker_symbols: dict[str, str],
     ) -> tuple[Path, dict[str, Any]]:
         """Copia el set del miembro al area de trabajo con el lotaje del tester."""
         source = self._resolve_set(str(member.get("set_path") or member.get("set_id") or ""))
         text, set_encoding = _read_set_text(source)
         lots = self._tester_lot(member, volume_rules)
         text = self._set_value(text, "StartLots", f"{lots[1]:.8f}".rstrip("0").rstrip("."))
-        text = normalize_live_audit_set_symbols(text, request["tester_server"])
+        text = normalize_live_audit_set_symbols(text, request["tester_server"], broker_symbols)
         work = sets_dir.parent
         target = sets_dir / audit_set_name(
             index, source.name, sets_dir, work / "reports", work / "configs"
@@ -111,8 +111,11 @@ class LiveAuditTesterMixin:
         set_files: list[Path] = []
         member_by_stem: dict[str, dict[str, Any]] = {}
         volume_rules = self._broker_volume_rules()
+        broker_symbols = self._broker_symbol_spellings()
         for index, member in enumerate(members, 1):
-            target, prepared = self._prepare_member_set(index, member, request, sets_dir, volume_rules)
+            target, prepared = self._prepare_member_set(
+                index, member, request, sets_dir, volume_rules, broker_symbols
+            )
             set_files.append(target)
             member_by_stem[target.stem] = prepared
         return set_files, member_by_stem
