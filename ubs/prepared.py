@@ -75,6 +75,16 @@ def _is_cross_broker_parent(item) -> bool:
     return isinstance(provenance, dict) and provenance.get('kind') == 'cross_broker_final'
 
 
+def _is_local_seed_parent(item) -> bool:
+    provenance = item.get('parent_provenance')
+    return isinstance(provenance, dict) and provenance.get('kind') == 'local_seed'
+
+
+def _is_local_lineage_parent(item) -> bool:
+    provenance = item.get('parent_provenance')
+    return isinstance(provenance, dict) and provenance.get('kind') == 'local_candidate'
+
+
 @dataclass
 class _PreparedContext:
     """Universo, mapas y caches con los que se valida un lote preparado."""
@@ -114,6 +124,34 @@ class _PreparedContext:
                 (item['parent_candidate_id'],)).fetchone()
         self.row_cache[row_key] = row
         return row
+
+    def registered_seed(self, item):
+        """Return the current active, base-accepted seed declared by package v3."""
+        seed_id = item['parent_provenance']['seed_id']
+        row_key = ('seed', seed_id)
+        if row_key not in self.row_cache:
+            self.row_cache[row_key] = self.memory.conn.execute(
+                '''select s.seed_path from seed_scores s where s.id=? and s.active=1
+                   and s.status='accepted' and upper(s.symbol)=upper(?)
+                   and s.period=? and s.family=? and upper(s.seed_path)=upper(?)''',
+                (seed_id, item['target_symbol'], item['period'], item['family'],
+                 item['root_seed'])).fetchone()
+        return self.row_cache[row_key]
+
+    def registered_lineage_candidate(self, item):
+        """Return a base winner from a local lineage that has no final winner."""
+        run_id = item['parent_provenance']['run_id']
+        row_key = ('lineage', item['parent_candidate_id'], run_id)
+        if row_key not in self.row_cache:
+            self.row_cache[row_key] = self.memory.conn.execute(
+                '''select c.set_path from candidates c where c.id=? and c.run_id=?
+                   and c.status='accepted' and upper(c.target_symbol)=upper(?)
+                   and c.period=? and c.family=? and not exists (
+                       select 1 from candidate_final_tick_6m f
+                       where f.candidate_id=c.id and f.status='accepted')''',
+                (item['parent_candidate_id'], run_id, item['target_symbol'],
+                 item['period'], item['family'])).fetchone()
+        return self.row_cache[row_key]
 
     def verify_parent(self, row, parent) -> None:
         """Comprueba que el padre recibido es el set local registrado.
@@ -252,7 +290,17 @@ def _check_numeric_mutation(ctx: _PreparedContext, item, parent, strategy, timef
 def _validate_prepared_item(ctx: _PreparedContext, item, raw, parent):
     """Valida un candidato del lote y devuelve su copia de ejecucion."""
     recovery = item['mode'] == 'symbol_exploration' and item['mutation'].get('kind') == 'symbol_recovery'
-    if not _is_cross_broker_parent(item):
+    if _is_local_seed_parent(item):
+        row = ctx.registered_seed(item)
+        if not row:
+            raise ValueError('La semilla padre no está activa y aceptada en esta memoria')
+        ctx.verify_parent(row, parent)
+    elif _is_local_lineage_parent(item):
+        row = ctx.registered_lineage_candidate(item)
+        if not row:
+            raise ValueError('El padre de linaje no es un candidato local aceptado sin positivo final')
+        ctx.verify_parent(row, parent)
+    elif not _is_cross_broker_parent(item):
         row = ctx.registered_row(item, recovery)
         if not row:
             if recovery:

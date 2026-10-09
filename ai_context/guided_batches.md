@@ -29,6 +29,13 @@ fingerprint and Final Tick 6M report evidence. The portable protocol requires
 that complete exact shape and a source broker different from the destination;
 only then is the impossible local-id lookup skipped. A recovery can never use
 that exception. Package v1 remains compatible but is local-only.
+Package v3 adds `seed_exploration` with local `local_seed` and
+`local_candidate` provenance. A seed must remain active and accepted in
+`seed_scores`; a candidate must remain Base accepted with the exact run, target,
+period and family and must not itself have a Final Tick 6M acceptance. Both
+sources are verified byte-for-byte against live memory before evaluation. They
+do not inherit acceptance and still traverse the complete pipeline. V3 may mix
+these sources with v2 local or cross-broker parents.
 The batch run.json binds fingerprints/candidate IDs
 to the exact run for later stages and results. Parent acceptance is not inherited.
 Pure symbol retargets keep their `symbol_exploration`/`symbol_retarget` provenance

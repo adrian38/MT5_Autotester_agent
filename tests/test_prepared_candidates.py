@@ -10,7 +10,8 @@ from unittest import mock
 import ubs_agent as agent
 from manager_node_runtime import guided_batches as protocol
 from tests.test_guided_node import (
-    cross_broker_package, package, rebuild_package, recovery_package, symbol_package,
+    cross_broker_package, local_lineage_package, local_seed_package, package,
+    rebuild_package, recovery_package, symbol_package,
 )
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
@@ -89,6 +90,53 @@ class PreparedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'positivo final de esta memoria'):
             run_prepared(self.args,self.memory,ScoreConfig(),self.api)
         self.api.evaluate_generation.assert_not_called()
+
+    def test_active_accepted_local_seed_enters_full_prepared_evaluation(self):
+        value=local_seed_package();item=value['candidates'][0]
+        seed=self.root/'accepted_seed.set';seed.write_bytes(base64.b64decode(item['parent_b64']))
+        stat=seed.stat()
+        item['root_seed']=str(seed);value['batch_id']=protocol.batch_identity(value)
+        self.memory.conn.execute('''insert into seed_scores(
+            id,seed_path,seed_mtime,seed_size,symbol,period,family,run_strategy,
+            accepted,status,active,last_seen) values(?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (1,str(seed),stat.st_mtime,stat.st_size,'US30','M15','Client_sets','1',
+             1,'accepted',1,'now'))
+        self.memory.conn.commit()
+        directory=protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        variant=self.api.evaluate_generation.call_args.args[4][0]
+        self.assertEqual(variant.policy,'guided_prepared:seed_exploration')
+
+        self.memory.conn.execute('update seed_scores set active=0 where id=1')
+        self.memory.conn.commit();self.api.evaluate_generation.reset_mock()
+        with self.assertRaisesRegex(ValueError,'semilla padre'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
+
+    def test_base_winner_from_unproductive_lineage_enters_full_evaluation(self):
+        value=local_lineage_package();item=value['candidates'][0]
+        item['parent_provenance']['run_id']=self.memory.conn.execute(
+            'select run_id from candidates where id=1').fetchone()[0]
+        item['root_seed']=self.memory.conn.execute(
+            'select seed_path from candidates where id=1').fetchone()[0]
+        value['batch_id']=protocol.batch_identity(value)
+        self.memory.conn.execute("update candidates set status='accepted' where id=1")
+        self.memory.conn.execute('delete from candidate_final_tick_6m where candidate_id=1')
+        self.memory.conn.commit()
+        directory=protocol.store_batch(self.root,value,'ICTRADING','STANDARD')
+        self.args.prepared_manifest=directory/'batch.json'
+
+        self.assertEqual(run_prepared(self.args,self.memory,ScoreConfig(),self.api),0)
+        variant=self.api.evaluate_generation.call_args.args[4][0]
+        self.assertEqual(variant.policy,'guided_prepared:seed_exploration')
+
+        self.memory.conn.execute(
+            "insert into candidate_final_tick_6m(candidate_id,run_id,status,evaluated_at) "
+            "values (1,?,'accepted','now')", (item['parent_provenance']['run_id'],))
+        self.memory.conn.commit();self.api.evaluate_generation.reset_mock()
+        with self.assertRaisesRegex(ValueError,'sin positivo final'):
+            run_prepared(self.args,self.memory,ScoreConfig(),self.api)
 
     def test_current_universe_disables_import_without_relaxation(self):
         self.api.load_disabled_symbols=lambda path:{'US30'}
