@@ -549,6 +549,13 @@ enter this queue.
   tester context because tick download/synchronization failed;
   `pending_ohlc_trades` — the OHLC batch produced too few trades to make a valid
   comparison, so OHLC retry dates may be used before re-running real tick.
+- Empty OHLC Model=1 shells (`Bars=0`, `Ticks=0`) are technical history failures,
+  not low-trade strategy evidence. `run_tests.py` retries them once for every
+  tester model. If the retry remains empty, Final Tick stores `no_report` with
+  `empty_ohlc_context`, no OHLC score, and keeps the row eligible for a later
+  pending-only continuation. Legacy rows stored as `pending_ohlc_trades` with
+  zero trades and zero history quality are also re-queued even when their OHLC
+  retry dates were already used.
 - An empty Model=4 HTML (`Bars=0`, `Ticks=0`, empty symbol/M0) is a technical
   result, not evidence that the broker lacks historical ticks. Its displayed
   History Quality is not trusted. The row stays `pending_history_quality`,

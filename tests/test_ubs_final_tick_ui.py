@@ -49,6 +49,14 @@ class UBSFinalTickReasonTests(unittest.TestCase):
 
         self.assertEqual(reason, "descarga Real Tick interrumpida; reintento pendiente")
 
+    def test_empty_ohlc_context_is_explained_as_retryable(self) -> None:
+        reason = self.logic._ubs_final_tick_reason(
+            "no_report",
+            {"reasons": ["empty_ohlc_context"], "technical_failure": True},
+        )
+
+        self.assertEqual(reason, "histórico OHLC no disponible; reintento pendiente")
+
     def test_legacy_high_quality_pending_row_has_context_explanation(self) -> None:
         reason = self.logic._ubs_final_tick_reason(
             "pending_history_quality",

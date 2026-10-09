@@ -125,6 +125,7 @@ from run_tests_reports import (  # noqa: F401
     log_ini_content,
     model4_history_cache_files,
     model4_report_has_empty_tester_data,
+    report_has_empty_tester_data,
     mt5_tester_abort,
     prepare_model4_history_preflight,
     read_tester_journal_tail,

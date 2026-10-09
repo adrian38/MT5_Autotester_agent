@@ -181,7 +181,8 @@ class UBSFinalTickRowsMixin:
                     c.*,
                     ft.status as final_tick_status,
                     ft.from_date as final_tick_from_date,
-                    ft.to_date as final_tick_to_date
+                    ft.to_date as final_tick_to_date,
+                    ft.ohlc_metrics_json as ft_ohlc_metrics_json
                 from candidates c
                 join candidate_robustness cr on cr.candidate_id = c.id
                 {probe_join}
@@ -268,6 +269,8 @@ class UBSFinalTickRowsMixin:
             minimum = check.get("min_trades") if isinstance(check, dict) else None
             return f"OHLC pendiente: {self._format_ubs_int(trades)} ops < {self._format_ubs_int(minimum)}"
         if status == "no_report":
+            if "empty_ohlc_context" in {str(reason) for reason in (similarity.get("reasons") or [])}:
+                return "histórico OHLC no disponible; reintento pendiente"
             return "sin reporte OHLC o real tick"
         if status == "parse_error":
             return "error al parsear reporte"

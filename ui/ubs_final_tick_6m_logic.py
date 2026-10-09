@@ -182,7 +182,7 @@ class UBSFinalTick6MLogicMixin:
         )
         self.ubs_final_tick_6m_summary.set(
             f"Run #{run['id']} | candidatos corto elegibles {total} | 6M OK {accepted} | "
-            f"6M FAIL {rejected} | pend reales {pending} | sin 6M {missing_6m}"
+            f"6M FAIL {rejected} | pendientes {pending} | sin 6M {missing_6m}"
         )
         from_date, to_date, retry_from, retry_to = self._final_tick_stage_dates("six_month")
         retry_label = f" | Retry pocas ops OHLC: {retry_from} -> {retry_to}" if retry_from and retry_to else ""

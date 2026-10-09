@@ -416,6 +416,13 @@ requirement changes or a debt item is opened/closed.
   `pending_ohlc_trades` — the OHLC batch produced fewer trades than
   `--final-tick-min-ohlc-trades` (retryable via OHLC-retry date range). Rows in
   pending states MUST NOT be treated as final `accepted` or `rejected`. An empty
+  Model=1 OHLC report (`Bars=0` and `Ticks=0`) is a retryable technical history
+  failure, not a valid zero-trade score and not `pending_ohlc_trades`. The runner
+  MUST retry it once automatically; if it remains empty, Final Tick MUST retain
+  the report as evidence under a date-independent retryable status without an
+  OHLC score. Legacy empty OHLC shells previously stored as `pending_ohlc_trades`
+  MUST remain eligible for an explicit continuation even after using the retry
+  date range. An empty
   Model=4 report (`Bars=0` and `Ticks=0`) whose journal ends with
   `no history data, stop testing` MUST be treated as a retryable technical
   failure even when the HTML carries an apparently valid History Quality.
