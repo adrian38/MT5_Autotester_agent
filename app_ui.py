@@ -25,6 +25,7 @@ from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_search_view import UBSSearchViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
 from ui.ubs_params_view import UBSParamsViewMixin
+from ui.ubs_set_rules_logic import UBSSetRulesLogicMixin
 from ui.settings_logic import SettingsLogicMixin
 from ui.settings_view import SettingsViewMixin
 from ui.startup_progress import StartupProgress, current as startup_progress_current
@@ -108,6 +109,7 @@ class MT5AutotesterUI(
     UBSAgentLogicMixin,
     UBSParamsViewMixin,
     UBSParamsLogicMixin,
+    UBSSetRulesLogicMixin,
     UBSResultsViewMixin,
     UBSResultsLogicMixin,
     UBSRobustnessViewMixin,

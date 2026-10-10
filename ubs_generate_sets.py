@@ -9,9 +9,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from ubs.set_rules import normalize_generated_set_text
 from ubs.set_utils import (
     compact_safe_part,
-    force_fixed_lot_text,
     read_set_with_encoding,
     set_use_every_tick_text,
     write_set_text,
@@ -28,6 +28,7 @@ FROZEN_EXACT = {
     "Risk",
     "StartLots",
     "UseEveryTick",
+    "EnableNFP_Filter",
     "Lic_key",
     "URL",
     "LICURL",
@@ -156,7 +157,7 @@ def mutate_text(text: str, rng: random.Random, mutations_per_variant: int) -> tu
     lines = text.splitlines()
     candidates = candidate_keys(lines)
     if not candidates:
-        normalized, _, missing = force_fixed_lot_text(text)
+        normalized, _, missing = normalize_generated_set_text(text)
         normalized = set_use_every_tick_text(normalized, False)
         return normalized, [], missing
 
@@ -182,7 +183,7 @@ def mutate_text(text: str, rng: random.Random, mutations_per_variant: int) -> tu
         lines[line_index] = f"{lhs}={'||'.join(parts)}"
         changed.append(key)
 
-    normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized, _, missing = normalize_generated_set_text("\n".join(lines))
     normalized = set_use_every_tick_text(normalized, False)
     return normalized, changed, missing
 

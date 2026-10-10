@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 
 from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
+from ubs.set_rules import normalize_generated_set_text
 from ubs.set_utils import (
     file_sha256,
-    force_fixed_lot_text,
     read_set_with_encoding,
     safe_part,
     write_set_text,
@@ -79,7 +79,7 @@ def prepare_sets(source_dir: Path, output_dir: Path, reset: bool) -> int:
         target = unique_target(output_dir, relative, symbol, period)
 
         text, encoding = read_set_with_encoding(source)
-        normalized, found, missing = force_fixed_lot_text(text)
+        normalized, found, missing = normalize_generated_set_text(text)
         if missing:
             missing_count += 1
         write_set_text(target, normalized, encoding)
