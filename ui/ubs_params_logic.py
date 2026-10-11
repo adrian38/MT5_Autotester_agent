@@ -12,6 +12,7 @@ from ubs.params_catalog import (
 )
 from ubs_agent import (
     GLOBAL_PARAMS_FILE,
+    RULE_LOCKED_KEYS,
     is_agent_mutable_key,
     load_global_params,
     load_mutation_overrides,
@@ -168,6 +169,10 @@ class UBSParamsLogicMixin:
                 tag = "overridden_mutable"
                 agent_label = "✦ forzado mutable"
                 display_value = p["value"]
+            elif key in RULE_LOCKED_KEYS:
+                tag = "frozen"
+                agent_label = "⛓ regla"
+                display_value = p["value"]
             else:
                 tag = "mutable" if mutable else "frozen"
                 agent_label = "✓ mutable" if mutable else "— fijo"
@@ -187,6 +192,13 @@ class UBSParamsLogicMixin:
         if not row_values or str(row_values[1]) == "":
             return
         key = str(row_values[0])
+        if key in RULE_LOCKED_KEYS:
+            messagebox.showinfo(
+                "UBS Parámetros",
+                f"'{key}' lo gobierna una regla de generación (ubs/set_rules.py).\n"
+                "Su valor no se negocia por parámetro: cámbialo en la regla.",
+            )
+            return
         frozen_ov, mutable_ov = load_mutation_overrides()
         frozen_ov, mutable_ov = dict(frozen_ov), set(mutable_ov)
         global_val = load_global_params().get(key, str(row_values[2]))

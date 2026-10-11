@@ -447,12 +447,13 @@ def _mt5_report_integer_metric(text: str, *labels: str) -> int | None:
     digits = re.sub(r"\D", "", match.group(1))
     return int(digits) if digits else None
 
-def model4_report_has_empty_tester_data(report_files: list[Path]) -> bool:
+def report_has_empty_tester_data(report_files: list[Path]) -> bool:
     """Return True when MT5 emitted a report shell without bars or ticks.
 
     MT5 can exit with code 0 after a transient connection loss while fetching
-    real ticks.  The resulting report may even retain a plausible History
-    Quality value, but Bars=0 and Ticks=0 means no test was executed.
+    OHLC history or real ticks.  The resulting report may even retain a
+    plausible History Quality value, but Bars=0 and Ticks=0 means no test was
+    executed.
     """
     main_report = next(
         (path for path in report_files if path.suffix.lower() in {".htm", ".html"}),
@@ -466,6 +467,11 @@ def model4_report_has_empty_tester_data(report_files: list[Path]) -> bool:
     bars = _mt5_report_integer_metric(text, "Barras", "Bars")
     ticks = _mt5_report_integer_metric(text, "Ticks")
     return bars == 0 and ticks == 0
+
+
+def model4_report_has_empty_tester_data(report_files: list[Path]) -> bool:
+    """Compatibility alias for callers using the former Model=4-only name."""
+    return report_has_empty_tester_data(report_files)
 
 def fresh_report_signature(
     report_path: Path,

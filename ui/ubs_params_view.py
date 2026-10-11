@@ -24,10 +24,12 @@ class UBSParamsViewMixin:
         toolbar.columnconfigure(0, weight=1)
         ttk.Label(toolbar, text="Parámetros globales del agente UBS — doble click para editar valor",
                   style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(toolbar, text="Aplicar reglas a todos los sets", style="TButton",
+                   command=self._ubs_apply_set_rules).grid(row=0, column=1, sticky="e", padx=(0, 8))
         ttk.Button(toolbar, text="Toggle inamovible/mutable", style="TButton",
-                   command=self._ubs_params_toggle_mutability).grid(row=0, column=1, sticky="e", padx=(0, 8))
+                   command=self._ubs_params_toggle_mutability).grid(row=0, column=2, sticky="e", padx=(0, 8))
         ttk.Button(toolbar, text="Guardar", style="Primary.TButton",
-                   command=self._ubs_params_save).grid(row=0, column=2, sticky="e")
+                   command=self._ubs_params_save).grid(row=0, column=3, sticky="e")
 
         # row 2 — filter bar
         filter_bar = ttk.Frame(card, style="Panel.TFrame")

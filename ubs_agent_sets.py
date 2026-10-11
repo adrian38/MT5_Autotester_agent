@@ -20,6 +20,7 @@ from ubs_generate_sets import parse_numeric
 from ubs.account import DEFAULT_BROKER, normalize_broker
 from ubs.memory import AgentMemory
 from ubs.models import Seed
+from ubs.set_rules import apply_nfp_rules_text, nfp_rule_violations
 from ubs.set_utils import read_set_with_encoding, write_set_text, write_set_use_every_tick
 from ubs.universe import load_asset_universe
 from ubs.weights import score_aware_percentile_multipliers
@@ -291,8 +292,12 @@ def repair_seed_backtest_set(path: Path, symbol: str, period: str) -> dict[str, 
 
     _repair_strategy_timeframes(lines, params, period, run_strategy, changes)
     _repair_legacy_timeframes(lines, params, changes)
+    # Reparar es tambien volver a la regla: un .set que pasa por aqui sale
+    # con el filtro NFP que le toca por estrategia.
+    rule = apply_nfp_rules_text("\n".join(lines), run_strategy)
+    changes.extend(rule.changed)
     if changes:
-        write_set_text(path, "\n".join(lines), encoding)
+        write_set_text(path, rule.text, encoding)
     return {"changed": changes, "run_strategy": run_strategy}
 
 
@@ -324,6 +329,9 @@ def validate_seed_backtest_set(seed: Seed) -> list[str]:
     run_strategy = str(params.get("Run_Strategy") or seed.run_strategy or "").strip()
     if has_strategy_keys and run_strategy not in {"1", "2", "3"}:
         issues.append("sin Run_Strategy valido")
+
+    for key, wanted in sorted(nfp_rule_violations(params, run_strategy).items()):
+        issues.append(f"{key}={params[key]} incumple la regla NFP (debe ser {wanted})")
 
     valid_timeframes = set(TIMEFRAME_ENUM)
     for key in (

@@ -221,6 +221,9 @@ SectionKey=----- Section label -----
 | `NFP_MinutesBefore` | Minutes before NFP to pause trading | N |
 | `NFP_MinutesAfter` | Minutes after NFP before resuming trading | N |
 
+> These five keys are **rule-locked**. Their values are not a per-set choice —
+> see [Generation rules — immutable keys](#generation-rules--immutable-keys).
+
 ---
 
 ## Section: IR_FILTER — Interest Rate filter
@@ -288,3 +291,72 @@ These are the parameters the UBS agent mutates during generation:
 | `Exit_TrailTP_Start` | varies | Trailing TP activation |
 | `Exit_BE_start` | varies | Break-even activation |
 | `Exit_BE_extra_pips` | varies | Break-even extra pips |
+
+---
+
+## Generation rules — immutable keys
+
+A **generation rule** is an invariant of the `.set` file, not a tunable. The
+rules live in [`ubs/set_rules.py`](../ubs/set_rules.py) and hold on three
+fronts at once:
+
+1. **Creation.** Every path that mints a `.set` normalizes through
+   `normalize_generated_set_text()` — agent variants
+   (`ubs_agent_variants.create_variant`), the legacy generator
+   (`ubs_generate_sets.mutate_text`), seed preparation (`ubs_prepare_sets.py`)
+   and seed import/dedup (`ui/ubs_seeds_import.py`,
+   `ui/ubs_seeds_duplicates.py`). Stage copies (robustness, regression, Final
+   Tick, retries) inherit the values from their already-compliant source.
+2. **Mutation.** The keys a rule owns are in `RULE_LOCKED_KEYS`
+   (`ubs_agent_config.py`). `is_agent_mutable_key()` denies them *before*
+   reading `ubs_mutation_overrides.json`, so neither a `mutable_override` nor
+   the *Toggle inamovible/mutable* button can unfreeze them; the UBS Parámetros
+   table shows them as `⛓ regla`. `ubs_generate_sets.FROZEN_EXACT` mirrors the
+   same keys for the legacy generator.
+3. **Repair and audit.** `repair_seed_backtest_set()` re-applies the rules, and
+   `validate_seed_backtest_set()` reports a violation as a seed issue.
+
+Existing `.set` files are brought in line by
+[`ubs_set_rules.py`](../ubs_set_rules.py) — UI: *UBS Parámetros → Aplicar
+reglas a todos los sets* (`Sí` applies, `No` simulates). It sweeps `sets/`,
+`live_sets/`, `sets_1.7/`, `MQL5/Profiles/Tester/` and `outputs/`, rewrites
+only the files that break a rule, copies each one to `outputs/backups/` first
+and leaves a JSON report beside the backup.
+
+### Rule: NFP filter
+
+`EnableNFP_Filter` is decided by `Run_Strategy` alone. Strategy 1 trades
+against support/resistance levels that the NFP release breaks on volatility
+alone, so it pauses; strategies 2 and 3 live off that volatility, so they do
+not.
+
+| `Run_Strategy` | Strategy | `EnableNFP_Filter` |
+|---|---|---|
+| `1` | Breakout Support/Resistance | `true` |
+| `2` | Volatility Breakout | `false` |
+| `3` | Range | `false` |
+
+The other four keys are constant in every set, whatever the strategy:
+
+| Key | Value |
+|-----|-------|
+| `NFP_CloseOpenTrades` | `true` |
+| `NFP_ClosePendingOrders` | `true` |
+| `NFP_MinutesBefore` | `50` |
+| `NFP_MinutesAfter` | `30` |
+
+Rewrites touch only the current value, keeping the `||default||step||max||Y/N`
+optimizer metadata and the file's own line endings. A set whose `Run_Strategy`
+is missing has it inferred from the one active strategy block
+(`ST1_Timeframe`/`Entry_Timing`, `VolTimeframe`, `RNG_Timeframe`); if that is
+ambiguous, the four constants are still applied and `EnableNFP_Filter` is left
+alone. A set with no NFP block at all (another EA version) is reported, never
+given invented keys.
+
+### Adding a rule
+
+Add the constants and the decision to `ubs/set_rules.py`, extend
+`apply_nfp_rules_text()` or add a sibling applied from
+`normalize_generated_set_text()`, add the keys to `RULE_LOCKED_KEYS` and to
+`ubs_generate_sets.FROZEN_EXACT`, cover it in
+`tests/test_ubs_set_rules.py`, and run `ubs_set_rules.py` over the history.

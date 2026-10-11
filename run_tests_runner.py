@@ -47,7 +47,7 @@ from run_tests_reports import (
     install_dir_reports,
     load_universe_symbols,
     log_ini_content,
-    model4_report_has_empty_tester_data,
+    report_has_empty_tester_data,
     mt5_tester_abort,
     prepare_model4_history_preflight,
     read_tester_journal_tail,
@@ -236,7 +236,7 @@ class _TestRunner:
         write_tester_journal_sidecars(copied_reports, self.terminal_data_dirs, self.before, self.logger)
         if empty_tester_data:
             self.logger.write(
-                "ERROR: MT5 Model=4 volvio a generar 0 barras / 0 ticks; "
+                f"ERROR: MT5 Model={self.model_label} volvio a generar 0 barras / 0 ticks; "
                 "el reporte se conserva como evidencia y el trabajo queda reintentable."
             )
             return MODEL4_NO_HISTORY_EXIT_CODE
@@ -266,12 +266,10 @@ class _TestRunner:
         )
         if not report_files:
             return self._no_report(attempt)
-        empty_tester_data = (
-            self.real_tick_model and model4_report_has_empty_tester_data(report_files)
-        )
+        empty_tester_data = report_has_empty_tester_data(report_files)
         if empty_tester_data and attempt < self.MAX_ATTEMPTS:
             self.logger.write(
-                "MT5 Model=4 genero un reporte vacio (0 barras / 0 ticks); "
+                f"MT5 Model={self.model_label} genero un reporte vacio (0 barras / 0 ticks); "
                 "se considera un fallo tecnico de historico y se reintentara."
             )
             time.sleep(MODEL4_NO_HISTORY_RETRY_DELAY_SECONDS)

@@ -141,6 +141,17 @@ class UniverseService:
         }
 
     def latest_statuses(self, aliases):
+        """Probe verdicts, completed with generation ones where the probe never looked.
+
+        MT5 only emits ``no history data`` when the symbol's bars fall entirely
+        outside the requested range, so a generation verdict over the full
+        execution window also answers the probe's shorter window inside it.
+        Ignoring it leaves the symbol enabled and every batch spends discovery
+        slots rediscovering the same gap. The probe stays authoritative: an
+        existing probe verdict is never replaced, only gaps are filled, and only
+        with the symbol's *latest* generation status, because a symbol whose
+        history the broker backfilled later produces real results again.
+        """
         if not self.memory.exists():
             return {}
         with contextlib.closing(sqlite3.connect(self.memory.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
@@ -149,7 +160,18 @@ class UniverseService:
             rows = conn.execute(
                 "select target_symbol,status from candidates where policy='history_probe' order by id"
             )
-            return {canonical_symbol(symbol, aliases): status for symbol, status in rows if symbol}
+            statuses = {canonical_symbol(symbol, aliases): status for symbol, status in rows if symbol}
+            generated: dict[str, str] = {}
+            for symbol, status in conn.execute(
+                "select target_symbol,status from candidates"
+                " where ifnull(policy,'')<>'history_probe' order by id"
+            ):
+                if symbol:
+                    generated[canonical_symbol(symbol, aliases)] = status
+            for symbol, status in generated.items():
+                if status == "no_history":
+                    statuses.setdefault(symbol, status)
+            return statuses
 
     def history_dates(self):
         defaults = self.config.get("defaults") or {}

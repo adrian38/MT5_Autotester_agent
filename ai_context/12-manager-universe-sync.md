@@ -16,8 +16,11 @@ the complete API implemented by `UniverseControllerMixin` in
   `--probe-universe-history --probe-history-timeframe H1 --execute-backtests`.
   Uses normal node terminal/source/memory options and a one-year date range.
   Preparation runs in the child process; HTTP does not wait for backtests.
-- POST `/api/v1/universe/disable-preview`: latest probe-only no_history verdicts,
+- POST `/api/v1/universe/disable-preview`: latest no_history verdicts,
   already-disabled count and newly-disabled symbols for user confirmation.
+  The probe is authoritative; a generation verdict only answers for a symbol
+  the probe never covered, and only when it is that symbol's latest status
+  (a later accepted/rejected row means the broker backfilled its history).
 - POST `/api/v1/universe/disable-no-history`: accepts the confirmed `symbols`
   list, intersects it with current verdicts and never expands the approval.
 - POST `/api/v1/universe/trade-disabled-preview`: connects to the terminal for

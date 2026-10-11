@@ -1,10 +1,12 @@
 import ubs_agent_final_tick_entry
 import ubs_agent_sets
 import ubs_agent_final_tick
+import ubs_agent_final_tick_ohlc
 import ubs_agent_final_tick_pass
 import ubs_agent_universe
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -22,6 +24,7 @@ from ubs_agent import (
     run_backtests,
     validate_final_tick_stage_dates,
 )
+from tests.ubs_agent_files_fixtures import score
 
 
 class UBSAgentFinalTickPassTests(unittest.TestCase):
@@ -136,6 +139,79 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
                 "2026.06.30",
             )
         )
+
+    def test_empty_legacy_ohlc_shell_remains_retryable_on_same_dates(self) -> None:
+        row = {
+            "final_tick_status": "pending_ohlc_trades",
+            "final_tick_from_date": "2025.09.01",
+            "final_tick_to_date": "2026.06.30",
+            "ft_ohlc_metrics_json": json.dumps({"trades": 0, "history_quality": 0.0}),
+        }
+
+        self.assertTrue(
+            final_tick_row_pending_for_dates(
+                row,
+                "2025.09.01",
+                "2026.06.30",
+                final_tick_stage="six_month",
+            )
+        )
+        self.assertFalse(
+            final_tick_ohlc_retry_exhausted_for_dates(
+                row,
+                "2025.09.01",
+                "2026.06.30",
+            )
+        )
+
+    def test_empty_ohlc_report_is_stored_as_retryable_technical_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report = root / "ohlc.htm"
+            report.write_text(
+                "<td>Bars:</td><td><b>0</b></td><td>Ticks:</td><td><b>0</b></td>",
+                encoding="utf-8",
+            )
+            variant = Variant(
+                path=root / "candidate.set",
+                seed=Seed(root / "seed.set", "BTCUSD", "H1", "family", "1"),
+                target_symbol="BTCUSD",
+                target_period="H1",
+                mutated_keys=(),
+                missing_lot_keys=(),
+                policy="test",
+            )
+            args = SimpleNamespace(
+                broker="ICTRADING",
+                symbol_suffix="",
+                final_tick_min_trades_w1=2,
+                final_tick_min_trades_mn=0,
+            )
+            recorder = Mock()
+            with (
+                patch.object(ubs_agent_final_tick_ohlc, "find_report_for_set", return_value=report),
+                patch.object(
+                    ubs_agent_final_tick_ohlc, "score_report_file",
+                    return_value=score(
+                        -75.0, symbol="BTCUSD", timeframe="H1", trades=0,
+                        history_quality=0.0, accepted=False,
+                    ),
+                ),
+                patch.object(
+                    ubs_agent_final_tick_ohlc, "tester_log_no_history_metadata",
+                    return_value={"reasons": ["no_history_data"]},
+                ),
+            ):
+                result = ubs_agent_final_tick_ohlc._fresh_ohlc_result(
+                    args, ScoreConfig(), {}, {"id": 85666}, variant, 0.0, 4, recorder,
+                )
+
+            self.assertIsNone(result)
+            self.assertEqual(recorder.write.call_args.args[:2], (85666, "no_report"))
+            self.assertNotIn(-75.0, recorder.write.call_args.args)
+            payload = json.loads(recorder.write.call_args.kwargs["details"])
+            self.assertEqual(payload["reasons"], ["empty_ohlc_context"])
+            self.assertTrue(payload["technical_failure"])
 
     def test_six_month_ohlc_retry_uses_separate_report_prefix(self) -> None:
         self.assertEqual(final_tick_stage_prefixes("six_month"), ("ohlc6m", "tick6m"))

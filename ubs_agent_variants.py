@@ -10,9 +10,9 @@ from pathlib import Path
 
 from ubs_generate_sets import format_like
 from ubs.models import Seed, Variant
+from ubs.set_rules import normalize_generated_set_text
 from ubs.set_utils import (
     compact_safe_part,
-    force_fixed_lot_text,
     read_set_with_encoding,
     safe_part,
     set_use_every_tick_text,
@@ -131,7 +131,7 @@ def create_variant(
         lines, candidates, selected, mutation_direction_feedback, rng,
     )
 
-    normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized, _, missing = normalize_generated_set_text("\n".join(lines))
     normalized = set_use_every_tick_text(normalized, False)
     target = _variant_target(
         seed, target_symbol, target_period, output_dir,
@@ -162,7 +162,7 @@ def create_history_probe_variant(
     lines = text.splitlines()
     replace_or_add_plain_key(lines, "ForceSymbol", target_symbol)
     timeframe_keys = replace_timeframe_keys(lines, seed.run_strategy, target_period)
-    normalized, _, missing = force_fixed_lot_text("\n".join(lines))
+    normalized, _, missing = normalize_generated_set_text("\n".join(lines))
     normalized = set_use_every_tick_text(normalized, False)
     filename = f"{safe_part(target_symbol)}_{safe_part(target_period)}_history_probe_{index:04d}.set"
     target = output_dir / safe_part(target_symbol) / safe_part(target_period) / filename

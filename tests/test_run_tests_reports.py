@@ -149,7 +149,7 @@ class CopyReportsToProjectTests(unittest.TestCase):
                 patch.object(run_tests_runner, "filter_fresh_report_files", side_effect=lambda paths, *_args: paths),
                 patch.object(
                     run_tests_runner,
-                    "model4_report_has_empty_tester_data",
+                    "report_has_empty_tester_data",
                     side_effect=[True, False],
                 ),
                 patch.object(run_tests_runner, "copy_reports_to_project", return_value=[second_report]) as copy_reports,
@@ -178,6 +178,54 @@ class CopyReportsToProjectTests(unittest.TestCase):
             copy_reports.assert_called_once()
             self.assertEqual(copy_reports.call_args.args[0], [second_report])
             self.assertTrue(any("0 barras / 0 ticks" in message for message in logger.messages))
+
+    def test_run_test_retries_model1_empty_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = run_tests.Path(temp_dir)
+            logger = ListLogger()
+            settings, first_report, second_report = model4_retry_fixture(root)
+
+            with (
+                patch.object(run_tests_runner, "tester_model_from_ini", return_value="1"),
+                patch.object(
+                    run_tests_runner.subprocess, "Popen",
+                    side_effect=[Mock(pid=101), Mock(pid=102)],
+                ) as popen,
+                patch.object(
+                    run_tests_runner, "wait_for_mt5_process",
+                    side_effect=[(0, False, 1.0), (0, False, 2.0)],
+                ),
+                patch.object(run_tests_runner, "delete_existing_report_files"),
+                patch.object(
+                    run_tests_runner, "find_report_files",
+                    side_effect=[[first_report], [second_report]],
+                ),
+                patch.object(
+                    run_tests_runner, "filter_fresh_report_files",
+                    side_effect=lambda paths, *_args: paths,
+                ),
+                patch.object(
+                    run_tests_runner, "report_has_empty_tester_data",
+                    side_effect=[True, False],
+                ),
+                patch.object(
+                    run_tests_runner, "copy_reports_to_project", return_value=[second_report],
+                ) as copy_reports,
+                patch.object(run_tests_runner, "write_tester_journal_sidecars"),
+                patch.object(run_tests_runner, "prepare_model4_history_preflight") as preflight,
+                patch.object(run_tests_runner, "finish_model4_history_preflight"),
+                patch.object(run_tests_runner, "log_ini_content"),
+                patch.object(run_tests_runner.time, "sleep"),
+            ):
+                exit_code = run_tests.run_test(
+                    root / "tester.ini", root / "report", settings, False, logger, [],
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(popen.call_count, 2)
+            preflight.assert_not_called()
+            copy_reports.assert_called_once_with([second_report], logger)
+            self.assertTrue(any("Model=1" in message for message in logger.messages))
 
     def test_run_test_retries_model1_normal_exit_without_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
