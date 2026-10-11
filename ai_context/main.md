@@ -74,6 +74,19 @@ batch wrappers.
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
   `ubs_generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
+- **`.set` generation rules are invariants, not preferences.** They live in
+  `ubs/set_rules.py` and are listed in
+  [08-ubs-parameters.md](08-ubs-parameters.md#generation-rules--immutable-keys).
+  Every path that creates a `.set` normalizes through
+  `normalize_generated_set_text()`; the keys a rule owns are listed in
+  `RULE_LOCKED_KEYS` and `is_agent_mutable_key()` denies them *before* reading
+  user overrides, so no UI toggle can unfreeze them. The current rule fixes the
+  NFP filter: `EnableNFP_Filter` is `true` for `Run_Strategy=1` (Breakout
+  Support/Resistance) and `false` for `2` (Volatility Breakout) and `3`
+  (Range), with `NFP_CloseOpenTrades`/`NFP_ClosePendingOrders` `true` and
+  `NFP_MinutesBefore`/`NFP_MinutesAfter` `50`/`30` in every set. Existing `.set`
+  files are brought in line with `ubs_set_rules.py` (UI: *UBS Parámetros →
+  Aplicar reglas a todos los sets*), which backs up what it rewrites.
 - UBS stage `.set` copies enforce `UseEveryTick`: `false` for generated/base
   results, OOS robustness, backward regression, and the OHLC copies in short
   Final Tick and Final Tick 6M; `true` only for their real-tick copies. Stage
@@ -549,6 +562,13 @@ enter this queue.
   tester context because tick download/synchronization failed;
   `pending_ohlc_trades` — the OHLC batch produced too few trades to make a valid
   comparison, so OHLC retry dates may be used before re-running real tick.
+- Empty OHLC Model=1 shells (`Bars=0`, `Ticks=0`) are technical history failures,
+  not low-trade strategy evidence. `run_tests.py` retries them once for every
+  tester model. If the retry remains empty, Final Tick stores `no_report` with
+  `empty_ohlc_context`, no OHLC score, and keeps the row eligible for a later
+  pending-only continuation. Legacy rows stored as `pending_ohlc_trades` with
+  zero trades and zero history quality are also re-queued even when their OHLC
+  retry dates were already used.
 - An empty Model=4 HTML (`Bars=0`, `Ticks=0`, empty symbol/M0) is a technical
   result, not evidence that the broker lacks historical ticks. Its displayed
   History Quality is not trusted. The row stays `pending_history_quality`,

@@ -9,7 +9,7 @@ import time
 
 from ubs.score import ScoreResult, score_report_file
 
-from run_tests import RUNNING_TERMINAL_EXIT_CODE
+from run_tests import RUNNING_TERMINAL_EXIT_CODE, report_has_empty_tester_data
 from ubs_agent_evaluate import (
     count_valid_existing_reports,
     prepare_final_tick_exec_dir,
@@ -27,6 +27,7 @@ from ubs_agent_final_tick import (
 from ubs_agent_reports import (
     find_report_for_set,
     report_matches_variant,
+    tester_log_no_history_metadata,
 )
 from ubs_agent_variants import run_backtests
 from ubs_agent_universe import (
@@ -76,6 +77,35 @@ def _stored_ohlc_result(row, ohlc_variant, recorder: _OhlcRecorder):
     return (Path(stored_path) if stored_path else ohlc_variant.path), ohlc_result
 
 
+def _record_empty_ohlc_context(
+    args, symbol_map, candidate_id, ohlc_variant, ohlc_report, recorder,
+) -> bool:
+    """Guarda un shell OHLC vacio como fallo tecnico reintentable."""
+    if not report_has_empty_tester_data([ohlc_report]):
+        return False
+    payload = {
+        "accepted": False,
+        "pending": True,
+        "technical_failure": True,
+        "reasons": ["empty_ohlc_context"],
+        "checks": {},
+    }
+    history_failure = tester_log_no_history_metadata(
+        ohlc_report, ohlc_variant, symbol_map, args.symbol_suffix,
+    )
+    if history_failure:
+        payload["history_failure"] = history_failure
+    print(
+        f"AVISO: reporte OHLC Final Tick vacio para candidate #{candidate_id}; "
+        "queda pendiente para reintentar el historico."
+    )
+    recorder.write(
+        candidate_id, "no_report", ohlc_report=ohlc_report,
+        details=json.dumps(payload, ensure_ascii=True, sort_keys=True),
+    )
+    return True
+
+
 def _fresh_ohlc_result(
     args, score_config, symbol_map, row, ohlc_variant, ohlc_min_report_mtime: float,
     default_min_ohlc_trades: int, recorder: _OhlcRecorder,
@@ -106,6 +136,10 @@ def _fresh_ohlc_result(
     except Exception as exc:
         print(f"AVISO: no pude parsear OHLC Final Tick candidate #{candidate_id}: {exc}")
         recorder.write(candidate_id, "parse_error", ohlc_report=ohlc_report)
+        return None
+    if _record_empty_ohlc_context(
+        args, symbol_map, candidate_id, ohlc_variant, ohlc_report, recorder,
+    ):
         return None
     ohlc_matches, ohlc_mismatch = report_matches_variant(
         ohlc_variant,

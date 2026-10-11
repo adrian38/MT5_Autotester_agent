@@ -45,7 +45,8 @@ class UBSSeedsDuplicatesMixin:
         """Calcula las huellas del pool y agrupa las semillas duplicadas."""
         from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
         from ubs.seed_dedup import SeedFingerprint, scan_duplicates
-        from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding
+        from ubs.set_rules import normalize_generated_set_text
+        from ubs.set_utils import read_set_with_encoding
 
         fingerprints = []
         errors: list[str] = []
@@ -54,7 +55,7 @@ class UBSSeedsDuplicatesMixin:
             q.put(("progress", idx, total, path.name))
             try:
                 text, _encoding = read_set_with_encoding(path)
-                normalized, _found, _missing = force_fixed_lot_text(text)
+                normalized, _found, _missing = normalize_generated_set_text(text)
                 params = load_set_params(path)
                 fingerprints.append(
                     SeedFingerprint.from_text(

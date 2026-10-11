@@ -23,12 +23,13 @@ class UBSSeedsImportMixin:
         """Copia una semilla normalizada o la descarta por duplicada."""
         from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
         from ubs.seed_dedup import DUPLICATE_EXACT, SeedFingerprint
-        from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, write_set_text
+        from ubs.set_rules import normalize_generated_set_text
+        from ubs.set_utils import read_set_with_encoding, write_set_text
         from ubs_prepare_sets import unique_target
 
         try:
             text, encoding = read_set_with_encoding(source)
-            normalized, _found, _missing = force_fixed_lot_text(text)
+            normalized, _found, _missing = normalize_generated_set_text(text)
 
             params = load_set_params(source)
             symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
@@ -68,7 +69,8 @@ class UBSSeedsImportMixin:
         """Indexa el destino, copia el lote normalizado y publica el progreso."""
         from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
         from ubs.seed_dedup import DUPLICATE_EXACT, SeedDuplicateIndex, SeedFingerprint
-        from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, write_set_text
+        from ubs.set_rules import normalize_generated_set_text
+        from ubs.set_utils import read_set_with_encoding, write_set_text
         from ubs_prepare_sets import unique_target
 
         index = SeedDuplicateIndex()
@@ -88,7 +90,7 @@ class UBSSeedsImportMixin:
             q.put(("index", idx, len(existing), current.name))
             try:
                 text, _encoding = read_set_with_encoding(current)
-                normalized, _found, _missing = force_fixed_lot_text(text)
+                normalized, _found, _missing = normalize_generated_set_text(text)
                 params = load_set_params(current)
                 index.add(
                     SeedFingerprint.from_text(

@@ -116,10 +116,21 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         self.verdict("OLD.A", "no_history")
         self.verdict("GBPUSD", "no_history", policy="generation")
         preview = self.service.history_preview()
-        self.assertEqual(preview["pending"], 1)
+        self.assertEqual(preview["pending"], 0)
         self.assertEqual(preview["from_date"], "2024.02.29")
         self.assertEqual(preview["to_date"], "2025.02.28")
-        self.assertEqual(self.service.disable_preview()["symbols"], ["OLD"])
+        # The probe never looked at GBPUSD, so its generation verdict answers
+        # for it; otherwise every batch keeps spending slots on the same gap.
+        self.assertEqual(self.service.disable_preview()["symbols"], ["GBPUSD", "OLD"])
+
+    def test_generation_no_history_never_overrides_probe_or_a_later_result(self):
+        self.assets.write_text("[Forex]\nsymbols=EURUSD,GBPUSD,OLDSEED\n", encoding="utf-8")
+        self.verdict("EURUSD", "history_ok")
+        self.verdict("EURUSD", "no_history", policy="generation")
+        self.verdict("GBPUSD", "no_history", policy="generation")
+        self.verdict("GBPUSD", "accepted", policy="generation")
+        self.assertEqual(self.service.disable_preview()["symbols"], [])
+        self.assertEqual(self.service.history_preview()["pending"], 1)
 
     def test_disable_never_expands_confirmed_set_and_rechecks_latest_verdict(self):
         self.verdict("OLD.A", "no_history")

@@ -17,6 +17,7 @@ from ubs.account import (
     default_symbol_map_for_broker,
 )
 from ubs.selection import DISCOVERY_SOURCE_MIX_FLOOR
+from ubs.set_rules import NFP_RULE_KEYS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -179,6 +180,10 @@ CORE_MUTATION_KEYS = {
         "Exit_TrailSL_step",
     ),
 }
+# Claves gobernadas por una regla de generacion (ubs/set_rules.py). No son
+# "congeladas por ahora": su valor lo decide la regla, asi que ni el agente las
+# muta ni un override de la pantalla de parametros puede liberarlas.
+RULE_LOCKED_KEYS = {"UseEveryTick", *NFP_RULE_KEYS}
 FROZEN_KEYS = {
     "PrintLogs",
     "PrintSetLoadingInfo",
@@ -202,6 +207,7 @@ FROZEN_KEYS = {
     "UseAutoLoader",
     "UseCommonFolder",
     "Run_Strategy",
+    "EnableNFP_Filter",
     "EA_MagicNumber",
     "ST1_MagicNumber",
     "ST2_MagicNumber",
@@ -303,7 +309,7 @@ def save_global_params(params: dict[str, str]) -> None:
 
 def is_agent_mutable_key(key: str) -> bool:
     """Return True if the agent is allowed to mutate this key."""
-    if key == "UseEveryTick":
+    if key in RULE_LOCKED_KEYS:
         return False
     frozen_ov, mutable_ov = load_mutation_overrides()
     if key in frozen_ov:

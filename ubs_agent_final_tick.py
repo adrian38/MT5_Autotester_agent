@@ -163,6 +163,8 @@ def final_tick_row_pending_for_dates(
     if force_quality_retry and status == "pending_history_quality":
         return True  # retry regardless of stored dates
     if stage == "six_month" and status == "pending_ohlc_trades":
+        if final_tick_stored_ohlc_is_empty_context(row):
+            return True
         return not final_tick_dates_match(row, from_date, to_date)
     if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
         return stage == "six_month" and not final_tick_dates_match(row, from_date, to_date)
@@ -196,7 +198,22 @@ def final_tick_ohlc_retry_needed_for_dates(
 def final_tick_ohlc_retry_exhausted_for_dates(row: sqlite3.Row, from_date: str, to_date: str) -> bool:
     if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades":
         return False
+    if final_tick_stored_ohlc_is_empty_context(row):
+        return False
     return final_tick_dates_match(row, from_date, to_date)
+
+
+def final_tick_stored_ohlc_is_empty_context(row: sqlite3.Row) -> bool:
+    """Recognise legacy OHLC shells that were stored as low-trade results."""
+    try:
+        keys = row.keys() if hasattr(row, "keys") else row
+        raw = row["ft_ohlc_metrics_json"] if "ft_ohlc_metrics_json" in keys else None
+        metrics = json.loads(str(raw or "{}"))
+        trades = int(metrics.get("trades", -1))
+        quality = float(metrics.get("history_quality", -1.0))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return trades == 0 and quality == 0.0
 
 
 def normalize_final_tick_stage(value: object) -> str:

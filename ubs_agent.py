@@ -110,6 +110,16 @@ from ubs.selection import (
     estimate_discovery_target_policy_mix,
 )
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
+from ubs.set_rules import (  # noqa: F401
+    NFP_CONSTANT_VALUES,
+    NFP_FILTER_BY_RUN_STRATEGY,
+    NFP_FILTER_KEY,
+    NFP_RULE_KEYS,
+    apply_nfp_rules_file,
+    apply_nfp_rules_text,
+    nfp_rule_violations,
+    normalize_generated_set_text,
+)
 from ubs.set_utils import (
     compact_safe_part,
     force_fixed_lot_text,
@@ -191,6 +201,7 @@ from ubs_agent_config import (  # noqa: F401
     PRODUCTION_SEED_SYMBOL_CAP_RATIO,
     PRODUCTION_TARGET_SYMBOL_CAP_RATIO,
     RANDOM_STREAM_VERSION,
+    RULE_LOCKED_KEYS,
     SELECTION_FITNESS_APPLIED_SCALE,
     SELECTION_FITNESS_MODE,
     SYMBOL_NOT_EXIST_STATUS,
