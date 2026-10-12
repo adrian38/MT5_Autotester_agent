@@ -327,3 +327,36 @@ temporales usadas por la auditoría: en `Axi-US50-Live` retira un `.sa` final de
 de futuros `.fs`, ni shares `+`. `manager_node_runtime/live_audit.py`, que es
 el proceso embebido realmente ejecutado por el agente, aplica la normalización
 antes de invocar `run_tests.py`.
+
+## El tester en `Axi-US51-Live` escribe los símbolos con `.sa` (2026-10-08)
+
+El caso inverso al anterior. La auditoría `20261008_142645_244165` usó el login
+tester `60268704` en `Axi-US51-Live`, que publica el universo estándar con
+sufijo. Tres sets importados llevaban `ForceSymbol` sin sufijo y MT5 abortó con
+`symbol USDJPY not exist` (`shutdown with -1000012358`, terminal); el cuarto,
+`ETHUSD.sa`, sí corrió. Los dos servidores conviven: la cuenta real estaba en
+`Axi-US50-Live`, sin sufijo.
+
+Por eso la auditoría cruza dos escrituras del mismo mercado y hay que tratarlas
+en los dos lados:
+
+- `broker_symbol_spellings()` indexa `assets/<broker>_assets.ini` por clave sin
+  sufijo de cuenta y devuelve la escritura exacta del broker. Claves ambiguas
+  —dos símbolos con la misma clave— se descartan en vez de adivinar.
+  `normalize_live_audit_set_symbols()` la aplica a la copia temporal del set
+  cuando el tester **no** está en un servidor sin sufijo; `Axi-US50-Live` sigue
+  con el recorte de `.sa` de la nota anterior.
+- `audit_symbol_key()` (sobre `normalize_set_symbol`) es la clave común a los
+  dos servidores: quita sólo el sufijo de cuenta en minúsculas, así que
+  `XAUUSD.sa` y `XAUUSD` emparejan mientras `SIL.NYSE` y `SIL.US-24` siguen
+  siendo distintos. La usan `_match_candidates` y el filtro de cierres reales
+  por `(símbolo, lote)` —`_symbols_by_strategy`, `_portfolio_trade_signatures`
+  y `_filter_real_trades`—, que si no habrían descartado todos los cierres de
+  la cuenta real al correr el tester en el otro servidor.
+
+Pendiente, del mismo origen: `_broker_volume_rules()` indexa
+`assets/<broker>_symbol_specs.json` por la escritura del broker (`XAUUSD.sa`) y
+`_tester_lot()` la busca por el símbolo del miembro (`XAUUSD`), así que la
+normalización del lote al mínimo del broker no se aplica a ningún símbolo con
+sufijo. Hoy es inocuo —los mínimos AXI coinciden con los lotes guardados— pero
+no está arreglado.

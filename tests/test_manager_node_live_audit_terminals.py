@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from manager_node_runtime.live_audit import LiveAuditController
+from manager_node_runtime.live_audit_helpers import normalize_request
 from tests.manager_node_live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
 
 
@@ -336,6 +338,86 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         # Y el último recurso sigue existiendo: sin él, un terminal colgado
         # bloquearía la auditoría para siempre.
         self.assertIn(fallback, source)
+
+    def test_without_the_multiterminal_checkbox_everything_uses_the_principal(self) -> None:
+        # El uso 105 de AXI quedó NO COMPARABLE porque dos sets de XAUUSD
+        # cayeron en terminales cuya caché de ticks empezaba el 10.07, con el
+        # periodo arrancando el 10.05. Desmarcada la casilla, el uso entero
+        # —cuenta real, tester, informe nativo y restauración— pasa por la
+        # principal, que es la primera habilitada del broker activo.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _owner, controller = self._controller(root, "idle")
+            controller.owner.config.update(
+                project_dir=str(root), settings_file="ui_settings.ini",
+            )
+            lines = ["[Multiterminal]", "enabled=1", "workers=10", ""]
+            for index, (name, enabled) in enumerate(
+                (("MT5_AXI_0", False), ("MT5_AXI_1", True), ("MT5_AXI_2", True)), 1,
+            ):
+                path = root / name / "terminal64.exe"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+                lines += [
+                    f"[Terminal.{index}]", f"name={name}",
+                    f"enabled={1 if enabled else 0}", f"mt5_path={path}", "",
+                ]
+            (root / "ui_settings.ini").write_text("\n".join(lines), encoding="utf-8")
+
+            every = [section for section, _p in controller._terminal_profiles(include_disabled=True)]
+            self.assertEqual(every, ["Terminal.1", "Terminal.2", "Terminal.3"])
+            self.assertEqual(len(controller._tester_terminal_pool("Terminal.3", {}, 6)), 3)
+
+            controller.single_terminal_audit = True
+            self.assertEqual(
+                [s for s, _p in controller._terminal_profiles()], ["Terminal.2"],
+            )
+            self.assertEqual(
+                [s for s, _p in controller._terminal_profiles(include_disabled=True)], ["Terminal.2"],
+            )
+            self.assertEqual(
+                [s for s, _p in controller._tester_terminal_pool("Terminal.3", {}, 6)], ["Terminal.2"],
+            )
+
+    def test_the_multiterminal_checkbox_arrives_in_the_request(self) -> None:
+        payload = request()
+        self.assertIs(normalize_request(payload)["use_multiterminal"], False)
+        payload["use_multiterminal"] = True
+        self.assertIs(normalize_request(payload)["use_multiterminal"], True)
+
+    def test_the_user_can_stop_an_audit_and_it_is_not_counted_as_a_failure(self) -> None:
+        # Detener es para cuando la configuración salió mal. Lo que no puede
+        # es dejar las terminales en la cuenta real ni el pipeline pausado, ni
+        # publicarse como una avería del auditor.
+        import threading
+
+        with tempfile.TemporaryDirectory() as temp:
+            owner, controller = self._controller(Path(temp), "running")
+            running = threading.Event()
+
+            def blocking_tester(*_args):
+                running.set()
+                while not controller.stop_requested:
+                    time.sleep(0.01)
+                return ([], [], {}, [], {})
+
+            controller._run_tester = blocking_tester
+            controller.start(request())
+            self.assertTrue(running.wait(10))
+            stopping = controller.stop("9")
+            self.assertIn("Deteniendo", stopping["progress_text"])
+            state = self._wait(controller)
+
+        self.assertEqual(state["status"], "stopped")
+        self.assertEqual(state["status_label"], "DETENIDA")
+        self.assertIsNone(state["error"])
+        self.assertEqual((owner.pause_calls, owner.resume_calls), (1, 1))
+
+    def test_stopping_without_an_audit_in_flight_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            _owner, controller = self._controller(Path(temp), "idle")
+            with self.assertRaisesRegex(ValueError, "ninguna auditoría en curso"):
+                controller.stop("9")
 
     def test_missing_tick_quality_is_published_for_the_manager_to_judge(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
