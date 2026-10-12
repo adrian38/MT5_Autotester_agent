@@ -170,6 +170,13 @@ def _validated_period_mode(value: dict[str, Any]) -> str:
     return period_mode
 
 
+def _as_bool(value: Any) -> bool:
+    """Casilla del manager: ausente es falso, que es «una sola terminal»."""
+    if isinstance(value, bool):
+        return value
+    return str(value if value is not None else "").strip().casefold() in {"1", "true", "on", "si", "sí"}
+
+
 def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
     value = dict(payload or {})
     audit_key = str(value.get("audit_key") or value.get("portfolio_id") or "").strip()
@@ -210,6 +217,7 @@ def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
         "drawdown_deviation_warning_pct": _as_float(
             value.get("drawdown_deviation_warning_pct"), "drawdown_deviation_warning_pct"
         ),
+        "use_multiterminal": _as_bool(value.get("use_multiterminal")),
         "execution_delay_mode": str(value.get("execution_delay_mode") or "measured"),
         "fixed_delay_ms": _as_int(value.get("fixed_delay_ms", 0), "fixed_delay_ms", 0),
     }

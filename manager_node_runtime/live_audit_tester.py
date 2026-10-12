@@ -387,17 +387,23 @@ class LiveAuditTesterMixin:
         wrapper = self._tester_wrapper(reports_dir, configs_dir, logs_dir)
         terminals = self._prepare_tester_terminals(request, set_files)
         terminal_config_path, terminal_names = self._write_terminal_config(request, work, terminals)
+        multiterminal = bool(request.get("use_multiterminal"))
         tester_execution = {
             "portfolio_type": request["portfolio_type"],
             "set_count": len(set_files),
             "workers": terminals.workers,
             "terminal_profiles": terminal_names,
             "terminal_validations": terminals.validations,
+            "use_multiterminal": multiterminal,
         }
         self._update(
-            request["audit_key"], "testing", "Ejecutando Strategy Tester en paralelo.",
+            request["audit_key"], "testing",
+            "Ejecutando Strategy Tester en paralelo." if multiterminal else
+            "Ejecutando Strategy Tester en la terminal principal.",
             f"Solo variante {request['portfolio_type']}: {len(set_files)} sets repartidos entre "
-            f"{terminals.workers} terminales ({', '.join(terminal_names)})",
+            f"{terminals.workers} terminales ({', '.join(terminal_names)})" if multiterminal else
+            f"Solo variante {request['portfolio_type']}: {len(set_files)} sets en serie "
+            f"en {', '.join(terminal_names)}",
         )
         command = self._tester_command(
             wrapper, template_path, terminal_config_path, terminals.workers,

@@ -511,6 +511,7 @@ class LiveAuditController(
         audit_key = request["audit_key"]
         paused_by_auditor = False
         terminal_status = "failed"
+        self.single_terminal_audit = not request.get("use_multiterminal", False)
         with self.lock:
             self.real_account_terminals[audit_key] = []
         try:
@@ -524,3 +525,4 @@ class LiveAuditController(
             )
         finally:
             self._finish_run(request, audit_id, terminal_status, paused_by_auditor)
+            self.single_terminal_audit = False
