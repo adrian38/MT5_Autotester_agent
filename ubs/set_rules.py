@@ -4,6 +4,9 @@ Una regla aqui no es una preferencia del agente: es una invariante del fichero.
 Ningun camino que cree o edite un .set puede dejarla sin aplicar, y ninguna
 pantalla puede marcar sus claves como mutables.
 
+Regla de lotaje variable: `AdjustLotsizeToVariableValues` siempre queda en
+`false` y con su flag de optimizacion en `N`.
+
 Regla NFP: los cinco parametros del filtro Non-Farm Payroll estan fijados. Los
 cuatro de comportamiento son constantes, y `EnableNFP_Filter` depende solo de
 `Run_Strategy`: la estrategia 1 (Breakout Support/Resistance) opera contra
@@ -15,7 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ubs.set_utils import force_fixed_lot_text, read_set_with_encoding, write_set_text
+from ubs.set_utils import (
+    LOTS_REPLACEMENTS,
+    force_fixed_lot_text,
+    read_set_with_encoding,
+    write_set_text,
+)
 
 
 RUN_STRATEGY_KEY = "Run_Strategy"
@@ -28,6 +36,9 @@ NFP_CONSTANT_VALUES: dict[str, str] = {
 }
 NFP_FILTER_BY_RUN_STRATEGY: dict[str, str] = {"1": "true", "2": "false", "3": "false"}
 NFP_RULE_KEYS: tuple[str, ...] = (NFP_FILTER_KEY, *NFP_CONSTANT_VALUES)
+ADJUST_LOTSIZE_KEY = "AdjustLotsizeToVariableValues"
+ADJUST_LOTSIZE_RULE_VALUE = LOTS_REPLACEMENTS[ADJUST_LOTSIZE_KEY]
+SET_RULE_KEYS: tuple[str, ...] = (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY)
 
 # Marcas con las que se deduce la estrategia de un .set que perdio su
 # Run_Strategy; son las mismas que usa `infer_missing_run_strategy_from_set`.
@@ -119,6 +130,18 @@ def _rewrite_current_value(line: str, value: str) -> str:
     return f"{lhs}={value}{ending}"
 
 
+def _rewrite_full_value(line: str, value: str) -> str:
+    content, ending = split_line_ending(line)
+    lhs, _raw_value = content.split("=", 1)
+    return f"{lhs}={value}{ending}"
+
+
+def _append_rule_value(text: str, key: str, value: str) -> str:
+    ending = "\r\n" if "\r\n" in text else "\n"
+    separator = "" if not text or text.endswith(("\r", "\n")) else ending
+    return f"{text}{separator}{key}={value}"
+
+
 def apply_nfp_rules_text(text: str, run_strategy: str = "") -> NfpRuleResult:
     """Fija las claves NFP presentes y deja el resto del fichero intacto.
 
@@ -156,6 +179,48 @@ def apply_nfp_rules_file(path: Path) -> NfpRuleResult:
     return result
 
 
+def apply_set_rules_text(text: str, run_strategy: str = "") -> NfpRuleResult:
+    """Aplica todas las reglas inmutables presentes en un `.set`."""
+    nfp_result = apply_nfp_rules_text(text, run_strategy)
+    lines = nfp_result.text.splitlines(keepends=True)
+    changed = list(nfp_result.changed)
+    found_adjust_lotsize = False
+    for index, line in enumerate(lines):
+        content, _ending = split_line_ending(line)
+        if "=" not in content or content.lstrip().startswith(";"):
+            continue
+        key, raw_value = content.split("=", 1)
+        if key.strip() != ADJUST_LOTSIZE_KEY:
+            continue
+        found_adjust_lotsize = True
+        if raw_value.strip() != ADJUST_LOTSIZE_RULE_VALUE:
+            lines[index] = _rewrite_full_value(line, ADJUST_LOTSIZE_RULE_VALUE)
+            if ADJUST_LOTSIZE_KEY not in changed:
+                changed.append(ADJUST_LOTSIZE_KEY)
+    absent = list(nfp_result.absent)
+    if not found_adjust_lotsize:
+        absent.append(ADJUST_LOTSIZE_KEY)
+        changed.append(ADJUST_LOTSIZE_KEY)
+        return NfpRuleResult(
+            _append_rule_value(nfp_result.text, ADJUST_LOTSIZE_KEY, ADJUST_LOTSIZE_RULE_VALUE),
+            nfp_result.run_strategy,
+            tuple(changed),
+            tuple(absent),
+        )
+    if tuple(changed) == nfp_result.changed:
+        return NfpRuleResult(nfp_result.text, nfp_result.run_strategy, tuple(changed), tuple(absent))
+    return NfpRuleResult("".join(lines), nfp_result.run_strategy, tuple(changed), tuple(absent))
+
+
+def apply_set_rules_file(path: Path) -> NfpRuleResult:
+    """Aplica todas las reglas y reescribe el fichero solo si cambia algo."""
+    text, encoding = read_set_with_encoding(path)
+    result = apply_set_rules_text(text)
+    if result.changed:
+        write_set_text(path, result.text, encoding)
+    return result
+
+
 def normalize_generated_set_text(text: str) -> tuple[str, set[str], set[str]]:
     """Lotaje fijo 0.01 mas las reglas inmutables, en un solo paso.
 
@@ -164,4 +229,4 @@ def normalize_generated_set_text(text: str) -> tuple[str, set[str], set[str]]:
     puntos para que una regla nueva no dependa de recordar cada llamada.
     """
     normalized, found, missing = force_fixed_lot_text(text)
-    return apply_nfp_rules_text(normalized).text, found, missing
+    return apply_set_rules_text(normalized).text, found, missing

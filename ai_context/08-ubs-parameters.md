@@ -323,6 +323,16 @@ reglas a todos los sets* (`Sí` applies, `No` simulates). It sweeps `sets/`,
 only the files that break a rule, copies each one to `outputs/backups/` first
 and leaves a JSON report beside the backup.
 
+### Rule: variable lot adjustment disabled
+
+`AdjustLotsizeToVariableValues` is fixed to
+`false||false||0||true||N` in every `.set`: the effective value is `false` and
+the MT5 optimizer flag is `N`. It is also a member of `RULE_LOCKED_KEYS`, so
+the UBS agent and the *Toggle inamovible/mutable* action cannot make it
+mutable. The generation normalizer enforces the rule on new sets, seed repair
+re-applies it, and *Aplicar reglas a todos los sets* repairs existing sets. If
+an old set lacks the parameter, the canonical fixed line is added.
+
 ### Rule: NFP filter
 
 `EnableNFP_Filter` is decided by `Run_Strategy` alone. Strategy 1 trades

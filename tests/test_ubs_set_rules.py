@@ -4,10 +4,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import ubs_generate_sets
+import ubs_set_rules
 from ubs.set_rules import (
+    ADJUST_LOTSIZE_KEY,
+    ADJUST_LOTSIZE_RULE_VALUE,
     NFP_RULE_KEYS,
     apply_nfp_rules_file,
     apply_nfp_rules_text,
+    apply_set_rules_text,
     nfp_rule_violations,
     normalize_generated_set_text,
     set_line_values,
@@ -117,6 +121,53 @@ class NfpRuleTests(unittest.TestCase):
 
 
 class NfpRuleIntegrationTests(unittest.TestCase):
+    def test_all_rules_force_variable_lots_off_and_not_optimizable(self) -> None:
+        source = set_text("1", "true") + "\nAdjustLotsizeToVariableValues=true||true||1||true||Y"
+
+        result = apply_set_rules_text(source)
+
+        self.assertIn(ADJUST_LOTSIZE_KEY, result.changed)
+        self.assertIn(f"{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}", result.text)
+
+    def test_a_compliant_variable_lot_rule_is_untouched(self) -> None:
+        source = set_text("1", "true") + f"\n{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}"
+
+        result = apply_set_rules_text(source)
+
+        self.assertNotIn(ADJUST_LOTSIZE_KEY, result.changed)
+        self.assertEqual(result.text, source)
+
+    def test_a_missing_variable_lot_parameter_is_added(self) -> None:
+        source = set_text("1", "true")
+
+        result = apply_set_rules_text(source)
+
+        self.assertIn(ADJUST_LOTSIZE_KEY, result.absent)
+        self.assertIn(ADJUST_LOTSIZE_KEY, result.changed)
+        self.assertTrue(
+            result.text.endswith(f"{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}")
+        )
+
+    def test_bulk_sweep_rewrites_variable_lots_and_optimizer_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "existing.set"
+            path.write_text(
+                set_text("1", "true")
+                + "\nAdjustLotsizeToVariableValues=true||true||1||true||Y",
+                encoding="utf-8",
+            )
+            tally = ubs_set_rules.RuleSweepTally()
+
+            ubs_set_rules.process_set_file(root, path, tally, None, False)
+
+            self.assertEqual(tally.rewritten, 1)
+            self.assertEqual(tally.by_key[ADJUST_LOTSIZE_KEY], 1)
+            self.assertIn(
+                f"{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}",
+                path.read_text(encoding="utf-8"),
+            )
+
     def test_the_generation_normalizer_applies_the_rule(self) -> None:
         normalized, _found, _missing = normalize_generated_set_text(set_text("2", "true"))
 
@@ -144,8 +195,9 @@ class NfpRuleIntegrationTests(unittest.TestCase):
             self.assertIn("EnableNFP_Filter=true", path.read_text(encoding="utf-8"))
 
     def test_the_rule_keys_cannot_be_made_agent_mutable(self) -> None:
-        with patch("ubs_agent_config.load_mutation_overrides", return_value=({}, set(NFP_RULE_KEYS))):
-            for key in NFP_RULE_KEYS:
+        rule_keys = (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY)
+        with patch("ubs_agent_config.load_mutation_overrides", return_value=({}, set(rule_keys))):
+            for key in rule_keys:
                 self.assertFalse(is_agent_mutable_key(key), key)
 
     def test_the_legacy_generator_also_freezes_the_rule_keys(self) -> None:

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ubs.set_rules import NFP_RULE_KEYS, apply_nfp_rules_text
+from ubs.set_rules import ADJUST_LOTSIZE_KEY, NFP_RULE_KEYS, apply_set_rules_text
 from ubs.set_utils import read_set_with_encoding, write_set_text
 
 
@@ -35,6 +35,7 @@ class RuleSweepTally:
     rewritten: int = 0
     unknown_strategy: int = 0
     without_nfp_block: int = 0
+    without_adjust_lotsize: int = 0
     by_key: dict[str, int] = field(default_factory=dict)
     by_root: dict[str, int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
@@ -43,13 +44,15 @@ class RuleSweepTally:
         return (
             f"{self.scanned} .set revisados, {self.rewritten} con la regla aplicada, "
             f"{self.unknown_strategy} sin estrategia deducible, "
-            f"{self.without_nfp_block} sin bloque NFP, {len(self.failed)} con error"
+            f"{self.without_nfp_block} sin bloque NFP, "
+            f"{self.without_adjust_lotsize} sin {ADJUST_LOTSIZE_KEY}, "
+            f"{len(self.failed)} con error"
         )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fija las claves de regla (filtro NFP) en todos los .set del proyecto."
+        description="Fija todas las claves de regla en los .set del proyecto."
     )
     parser.add_argument(
         "--root", action="append", default=None,
@@ -118,12 +121,14 @@ def process_set_file(
     except OSError as exc:
         tally.failed.append(f"{path}: {exc}")
         return
-    result = apply_nfp_rules_text(text)
+    result = apply_set_rules_text(text)
     tally.scanned += 1
     if not result.run_strategy:
         tally.unknown_strategy += 1
-    if len(result.absent) == len(NFP_RULE_KEYS):
+    if all(key in result.absent for key in NFP_RULE_KEYS):
         tally.without_nfp_block += 1
+    if ADJUST_LOTSIZE_KEY in result.absent:
+        tally.without_adjust_lotsize += 1
     if not result.changed:
         return
     if not dry_run:
@@ -164,6 +169,7 @@ def write_report(report_path: Path, tally: RuleSweepTally, roots: list[Path], dr
                 "rewritten": tally.rewritten,
                 "unknown_strategy": tally.unknown_strategy,
                 "without_nfp_block": tally.without_nfp_block,
+                "without_adjust_lotsize": tally.without_adjust_lotsize,
                 "by_key": tally.by_key,
                 "by_root": tally.by_root,
                 "failed": tally.failed,

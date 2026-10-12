@@ -17,7 +17,7 @@ from ubs.account import (
     default_symbol_map_for_broker,
 )
 from ubs.selection import DISCOVERY_SOURCE_MIX_FLOOR
-from ubs.set_rules import NFP_RULE_KEYS
+from ubs.set_rules import SET_RULE_KEYS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -183,7 +183,7 @@ CORE_MUTATION_KEYS = {
 # Claves gobernadas por una regla de generacion (ubs/set_rules.py). No son
 # "congeladas por ahora": su valor lo decide la regla, asi que ni el agente las
 # muta ni un override de la pantalla de parametros puede liberarlas.
-RULE_LOCKED_KEYS = {"UseEveryTick", *NFP_RULE_KEYS}
+RULE_LOCKED_KEYS = {"UseEveryTick", *SET_RULE_KEYS}
 FROZEN_KEYS = {
     "PrintLogs",
     "PrintSetLoadingInfo",

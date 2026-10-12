@@ -42,6 +42,11 @@
 - Generated Excel workbooks in `outputs/` are artifacts. Regenerate them for
   verification, but do not treat them as source unless the user wants the
   artifact.
+- `.set` files are operational data, not source changes. `*.set` is ignored so
+  new files cannot enter Git. This repository still contains legacy tracked
+  `.set` files; each broker checkout must mark them `assume-unchanged` locally
+  before running bulk rule repair, so their on-disk updates never enter normal
+  status, staging, or commits.
 
 ## UI Conventions
 

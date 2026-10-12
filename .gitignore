@@ -37,6 +37,7 @@ ui_settings.ini
 tester_template.ini
 configs/
 sets/
+*.set
 runtime/
 
 # Test / coverage
