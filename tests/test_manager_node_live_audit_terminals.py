@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from datetime import datetime, timezone
@@ -383,6 +384,40 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         self.assertIs(normalize_request(payload)["use_multiterminal"], False)
         payload["use_multiterminal"] = True
         self.assertIs(normalize_request(payload)["use_multiterminal"], True)
+
+    def test_the_user_can_stop_an_audit_and_it_is_not_counted_as_a_failure(self) -> None:
+        # Detener es para cuando la configuración salió mal. Lo que no puede
+        # es dejar las terminales en la cuenta real ni el pipeline pausado, ni
+        # publicarse como una avería del auditor.
+        import threading
+
+        with tempfile.TemporaryDirectory() as temp:
+            owner, controller = self._controller(Path(temp), "running")
+            running = threading.Event()
+
+            def blocking_tester(*_args):
+                running.set()
+                while not controller.stop_requested:
+                    time.sleep(0.01)
+                return ([], [], {}, [], {})
+
+            controller._run_tester = blocking_tester
+            controller.start(request())
+            self.assertTrue(running.wait(10))
+            stopping = controller.stop("9")
+            self.assertIn("Deteniendo", stopping["progress_text"])
+            state = self._wait(controller)
+
+        self.assertEqual(state["status"], "stopped")
+        self.assertEqual(state["status_label"], "DETENIDA")
+        self.assertIsNone(state["error"])
+        self.assertEqual((owner.pause_calls, owner.resume_calls), (1, 1))
+
+    def test_stopping_without_an_audit_in_flight_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            _owner, controller = self._controller(Path(temp), "idle")
+            with self.assertRaisesRegex(ValueError, "ninguna auditoría en curso"):
+                controller.stop("9")
 
     def test_missing_tick_quality_is_published_for_the_manager_to_judge(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

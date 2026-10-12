@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import os
 from dataclasses import dataclass
 import math
 import subprocess
@@ -167,6 +168,12 @@ class LiveAuditTesterMixin:
             request["audit_key"], "testing", "Cuenta tester confirmada en todas las terminales.",
             f"Login tester verificado por MT5: {verified_summary}",
         )
+        # Las terminales de este pool son las que hay que cerrar si el usuario
+        # detiene: matar el lanzador deja vivo lo que ya abrió.
+        with self.lock:
+            self.tester_terminal_paths = [
+                str(profile.get("mt5_path") or "") for _section, profile in selected_profiles
+            ]
         return _TesterTerminals(selected_profiles, tester_profile, journal_snapshot, validations)
 
     def _write_terminal_config(
@@ -247,11 +254,20 @@ class LiveAuditTesterMixin:
     ) -> subprocess.CompletedProcess:
         """Lanza el backtest y limpia siempre secretos y journals al terminar."""
         try:
-            return subprocess.run(
+            # Popen y no `run`: el botón de detener necesita el mango del
+            # proceso para cortarlo, porque esto es lo que dura horas.
+            process = subprocess.Popen(
                 command, cwd=str(Path(str(self.owner.config["project_dir"])).resolve()),
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=86400,
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             )
+            with self.lock:
+                self.tester_process = process
+            output, _ = process.communicate(timeout=86400)
+            return subprocess.CompletedProcess(command, process.returncode, output, "")
         finally:
+            with self.lock:
+                self.tester_process = None
             # Los INI contienen la contraseña del tester: nunca se conservan en el agente.
             self._discard_tester_secrets(secret_files, configs_dir)
             _redact_log_files(
@@ -273,6 +289,9 @@ class LiveAuditTesterMixin:
             request["audit_key"], "testing", "Journals principales de MT5 capturados.",
             "Journal principal guardado para: " + (", ".join(captured) if captured else "ninguna terminal"),
         )
+        # El código de salida de un tester que acabamos de matar no es una
+        # avería que haya que contar: primero se mira si se pidió detener.
+        self._honour_stop_request()
         if completed.returncode:
             tail = runner_failure_summary(runner_output)
             raise RuntimeError(f"Strategy Tester terminó con código {completed.returncode}: {tail}")

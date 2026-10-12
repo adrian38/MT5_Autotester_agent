@@ -19,8 +19,17 @@ STATUS_LABELS = {
     "extracting": "EXTRAYENDO", "testing": "PROBANDO", "comparing": "COMPARANDO",
     "finalizing": "FINALIZANDO", "resuming": "REANUDANDO",
     "completed": "COMPLETADA", "not_comparable": "NO COMPARABLE",
-    "failed": "FALLIDA",
+    "failed": "FALLIDA", "stopped": "DETENIDA",
 }
+
+
+class AuditStopped(RuntimeError):
+    """El usuario pidió parar: no es un fallo y no debe leerse como tal.
+
+    Se lanza en los cortes entre fases, así que la auditoría termina por su
+    `finally` de siempre: restaura la cuenta de cada terminal y reanuda el
+    pipeline que había pausado.
+    """
 PORTFOLIO_MODES = ("aggressive", "balanced", "conservative")
 # MT5 trunca a 259 caracteres; el margen cubre el sufijo mas largo que anade a
 # un reporte, `.watchdog_attempt_N.mt5log.txt`.
@@ -32,7 +41,7 @@ PROGRESS = {
     "comparing": ("comparing", 85), "finalizing": ("comparing", 95),
     "resuming": ("comparing", 98),
     "completed": ("completed", 100), "not_comparable": ("completed", 100),
-    "failed": ("completed", 100),
+    "failed": ("completed", 100), "stopped": ("completed", 100),
 }
 
 def single_variant_mode(detail: dict[str, Any]) -> str:

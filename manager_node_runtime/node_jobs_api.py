@@ -85,6 +85,7 @@ class JobApiMixin:
                 "historical_cleanup": bool(node_settings.historical_cleanup_scripts(self.config, required=False)),
                 "live_account_audit": True,
                 "live_audit_restore_account": True,
+                "live_audit_stop": True,
             },
             "observed_at": utc_now(),
         }
