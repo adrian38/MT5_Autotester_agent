@@ -111,12 +111,16 @@ from ubs.selection import (
 )
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename, seed_from_path
 from ubs.set_rules import (  # noqa: F401
+    ADJUST_LOTSIZE_KEY,
+    ADJUST_LOTSIZE_RULE_VALUE,
     NFP_CONSTANT_VALUES,
     NFP_FILTER_BY_RUN_STRATEGY,
     NFP_FILTER_KEY,
     NFP_RULE_KEYS,
     apply_nfp_rules_file,
     apply_nfp_rules_text,
+    apply_set_rules_file,
+    apply_set_rules_text,
     nfp_rule_violations,
     normalize_generated_set_text,
 )

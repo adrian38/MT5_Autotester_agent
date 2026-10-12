@@ -4,6 +4,8 @@ from __future__ import annotations
 from tkinter import messagebox
 
 from ubs.set_rules import (
+    ADJUST_LOTSIZE_KEY,
+    ADJUST_LOTSIZE_RULE_VALUE,
     NFP_CONSTANT_VALUES,
     NFP_FILTER_BY_RUN_STRATEGY,
     NFP_FILTER_KEY,
@@ -20,6 +22,8 @@ RUN_STRATEGY_LABELS = {
 def set_rules_summary() -> str:
     """Texto de la regla vigente, leido de la propia regla."""
     lines = [
+        f"{ADJUST_LOTSIZE_KEY} = {ADJUST_LOTSIZE_RULE_VALUE}",
+        "",
         f"{NFP_FILTER_KEY} queda fijado por estrategia:",
         *[
             f"    Run_Strategy {strategy} ({RUN_STRATEGY_LABELS.get(strategy, strategy)}) → {value}"
