@@ -251,6 +251,9 @@ class NodeHandler(BaseHTTPRequestHandler):
             return 202, controller.resume()
         if self.path == "/api/v1/jobs/queue/cancel":
             return 200, controller.cancel_queued(str(self._body().get("task_id") or ""))
+        if self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/stop"):
+            audit_key = urllib.parse.unquote(self.path.strip("/").split("/")[-2])
+            return 202, {"audit": controller.live_audits.stop(audit_key)}
         if self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/run"):
             portfolio_id = safe_int(self.path.strip("/").split("/")[-2], 0, minimum=1)
             body = self._body()

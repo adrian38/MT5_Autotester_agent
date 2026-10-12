@@ -415,3 +415,43 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
         self.assertEqual(row["limits"]["open_price_configured_points"], 15)
         self.assertEqual(row["limits"]["open_price_rule"], "adaptive_gold")
         self.assertEqual(row["status"], "matched")
+
+
+class LiveAuditCrossServerSymbolTests(LiveAuditTestBase, unittest.TestCase):
+    """El tester puede correr en otro servidor del broker, que escribe distinto."""
+
+    def test_comparison_pairs_the_same_market_spelled_with_account_suffix(self) -> None:
+        now = datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc)
+        real = [{
+            "strategy": "real", "symbol": "XAUUSD", "side": "buy", "open_time": now,
+            "close_time": now, "open_price": 4566.63, "volume": .03, "profit": 1.0,
+        }]
+        tester = [{
+            "strategy": "xau", "symbol": "XAUUSD.sa", "side": "buy", "open_time": now,
+            "close_time": now, "open_price": 4566.63, "volume": .03, "profit": 1.0,
+        }]
+
+        result = LiveAuditController._compare(
+            real, tester, {"XAUUSD": .01}, request(), {"xau": 1},
+        )
+
+        self.assertEqual(result["matched_trades"], 1)
+        self.assertEqual(result["comparison_detail"]["missing_by_strategy"], {})
+
+    def test_real_trade_filter_keeps_the_market_the_tester_ran_with_suffix(self) -> None:
+        members = [{"candidate_id": "xau", "symbol": "XAUUSD", "lot": .03}]
+        tester_trades = [{"strategy": "xau", "symbol": "XAUUSD.sa"}]
+        real_trades = [
+            {"strategy": "real", "symbol": "XAUUSD", "volume": .03},
+            {"strategy": "otra", "symbol": "EURUSD", "volume": .03},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _owner, controller = self._controller(root, "idle")
+            controller.states["9"] = {"audit_key": "9", "status": "extracting"}
+            signatures = controller._portfolio_trade_signatures(
+                request(), members, tester_trades, [],
+            )
+            filtered = controller._filter_real_trades("9", real_trades, signatures, {})
+
+        self.assertEqual([trade["symbol"] for trade in filtered], ["XAUUSD"])

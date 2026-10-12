@@ -8,6 +8,7 @@ from typing import Any
 from .common import utc_now
 from .live_audit_price import ADAPTIVE_PRICE_TOLERANCE_FLOORS
 from .live_audit_helpers import _drawdown, _effective_price_tolerance, _pnl_comparison, _trade_view
+from .live_audit_symbols import audit_symbol_key
 
 
 @dataclass
@@ -63,9 +64,12 @@ def _match_candidates(
     """Operaciones reales del mismo mercado y las que caen dentro del margen."""
     candidates: list[tuple[float, int]] = []
     same_market: list[tuple[float, int]] = []
+    # Por clave, no por escritura: el tester puede correr en otro servidor del
+    # mismo broker, donde el simbolo real `XAUUSD` se llama `XAUUSD.sa`.
+    expected_symbol = audit_symbol_key(expected["symbol"])
     for index in unused:
         actual = real[index]
-        if actual["symbol"].casefold() != expected["symbol"].casefold() or actual["side"] != expected["side"]:
+        if audit_symbol_key(actual["symbol"]) != expected_symbol or actual["side"] != expected["side"]:
             continue
         delta = abs((actual["open_time"] - expected["open_time"]).total_seconds())
         same_market.append((delta, index))

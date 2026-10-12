@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import os
 from dataclasses import dataclass
 import math
 import subprocess
@@ -81,14 +82,14 @@ class LiveAuditTesterMixin:
 
     def _prepare_member_set(
         self, index: int, member: dict[str, Any], request: dict[str, Any],
-        sets_dir: Path, volume_rules: Any,
+        sets_dir: Path, volume_rules: Any, broker_symbols: dict[str, str],
     ) -> tuple[Path, dict[str, Any]]:
         """Copia el set del miembro al area de trabajo con el lotaje del tester."""
         source = self._resolve_set(str(member.get("set_path") or member.get("set_id") or ""))
         text, set_encoding = _read_set_text(source)
         lots = self._tester_lot(member, volume_rules)
         text = self._set_value(text, "StartLots", f"{lots[1]:.8f}".rstrip("0").rstrip("."))
-        text = normalize_live_audit_set_symbols(text, request["tester_server"])
+        text = normalize_live_audit_set_symbols(text, request["tester_server"], broker_symbols)
         work = sets_dir.parent
         target = sets_dir / audit_set_name(
             index, source.name, sets_dir, work / "reports", work / "configs"
@@ -111,8 +112,11 @@ class LiveAuditTesterMixin:
         set_files: list[Path] = []
         member_by_stem: dict[str, dict[str, Any]] = {}
         volume_rules = self._broker_volume_rules()
+        broker_symbols = self._broker_symbol_spellings()
         for index, member in enumerate(members, 1):
-            target, prepared = self._prepare_member_set(index, member, request, sets_dir, volume_rules)
+            target, prepared = self._prepare_member_set(
+                index, member, request, sets_dir, volume_rules, broker_symbols
+            )
             set_files.append(target)
             member_by_stem[target.stem] = prepared
         return set_files, member_by_stem
@@ -164,6 +168,12 @@ class LiveAuditTesterMixin:
             request["audit_key"], "testing", "Cuenta tester confirmada en todas las terminales.",
             f"Login tester verificado por MT5: {verified_summary}",
         )
+        # Las terminales de este pool son las que hay que cerrar si el usuario
+        # detiene: matar el lanzador deja vivo lo que ya abrió.
+        with self.lock:
+            self.tester_terminal_paths = [
+                str(profile.get("mt5_path") or "") for _section, profile in selected_profiles
+            ]
         return _TesterTerminals(selected_profiles, tester_profile, journal_snapshot, validations)
 
     def _write_terminal_config(
@@ -244,11 +254,20 @@ class LiveAuditTesterMixin:
     ) -> subprocess.CompletedProcess:
         """Lanza el backtest y limpia siempre secretos y journals al terminar."""
         try:
-            return subprocess.run(
+            # Popen y no `run`: el botón de detener necesita el mango del
+            # proceso para cortarlo, porque esto es lo que dura horas.
+            process = subprocess.Popen(
                 command, cwd=str(Path(str(self.owner.config["project_dir"])).resolve()),
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=86400,
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             )
+            with self.lock:
+                self.tester_process = process
+            output, _ = process.communicate(timeout=86400)
+            return subprocess.CompletedProcess(command, process.returncode, output, "")
         finally:
+            with self.lock:
+                self.tester_process = None
             # Los INI contienen la contraseña del tester: nunca se conservan en el agente.
             self._discard_tester_secrets(secret_files, configs_dir)
             _redact_log_files(
@@ -270,6 +289,9 @@ class LiveAuditTesterMixin:
             request["audit_key"], "testing", "Journals principales de MT5 capturados.",
             "Journal principal guardado para: " + (", ".join(captured) if captured else "ninguna terminal"),
         )
+        # El código de salida de un tester que acabamos de matar no es una
+        # avería que haya que contar: primero se mira si se pidió detener.
+        self._honour_stop_request()
         if completed.returncode:
             tail = runner_failure_summary(runner_output)
             raise RuntimeError(f"Strategy Tester terminó con código {completed.returncode}: {tail}")
@@ -384,17 +406,23 @@ class LiveAuditTesterMixin:
         wrapper = self._tester_wrapper(reports_dir, configs_dir, logs_dir)
         terminals = self._prepare_tester_terminals(request, set_files)
         terminal_config_path, terminal_names = self._write_terminal_config(request, work, terminals)
+        multiterminal = bool(request.get("use_multiterminal"))
         tester_execution = {
             "portfolio_type": request["portfolio_type"],
             "set_count": len(set_files),
             "workers": terminals.workers,
             "terminal_profiles": terminal_names,
             "terminal_validations": terminals.validations,
+            "use_multiterminal": multiterminal,
         }
         self._update(
-            request["audit_key"], "testing", "Ejecutando Strategy Tester en paralelo.",
+            request["audit_key"], "testing",
+            "Ejecutando Strategy Tester en paralelo." if multiterminal else
+            "Ejecutando Strategy Tester en la terminal principal.",
             f"Solo variante {request['portfolio_type']}: {len(set_files)} sets repartidos entre "
-            f"{terminals.workers} terminales ({', '.join(terminal_names)})",
+            f"{terminals.workers} terminales ({', '.join(terminal_names)})" if multiterminal else
+            f"Solo variante {request['portfolio_type']}: {len(set_files)} sets en serie "
+            f"en {', '.join(terminal_names)}",
         )
         command = self._tester_command(
             wrapper, template_path, terminal_config_path, terminals.workers,

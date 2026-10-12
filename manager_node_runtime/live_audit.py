@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -11,6 +14,7 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     PROGRESS,
     RUNNING_STATUSES,
     STATUS_LABELS,
+    AuditStopped,
     _as_float,
     _as_int,
     _audit_period,
@@ -28,6 +32,7 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     normalize_request,
     single_variant_mode,
 )
+from .live_audit_symbols import audit_symbol_key
 from .live_audit_terminals import LiveAuditTerminalsMixin
 from .live_audit_extract import LiveAuditExtractMixin
 from .live_audit_tester import LiveAuditTesterMixin
@@ -58,6 +63,11 @@ class LiveAuditController(
         # última cuenta de cada terminal, así que hay que devolverlos a la cuenta
         # configurada para restauración antes de soltarlos: ver `_restore_tester_login`.
         self.real_account_terminals: dict[str, list[dict[str, str]]] = {}
+        # Botón de detener: una auditoría a la vez, así que la petición y el
+        # proceso del tester que hay que matar caben en el controlador.
+        self.stop_requested = False
+        self.tester_process: Any = None
+        self.tester_terminal_paths: list[str] = []
         if self.state_path.is_file():
             try:
                 stored = load_json(self.state_path)
@@ -119,6 +129,9 @@ class LiveAuditController(
         with self.lock:
             if self.is_running():
                 raise RuntimeError("Ya hay una auditoría utilizando las terminales del nodo")
+            # Una detención pedida sobre la anterior no puede matar a ésta.
+            self.stop_requested = False
+            self.tester_process = None
             audit_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             self.states[audit_key] = {
                 "audit_key": audit_key, "portfolio_id": portfolio_id,
@@ -137,6 +150,79 @@ class LiveAuditController(
         thread = threading.Thread(target=self._run, args=(request, audit_id), daemon=True)
         thread.start()
         return self.state(audit_key)
+
+    def stop(self, audit_key: str | int = "") -> dict[str, Any]:
+        """Detiene la auditoría en curso: la configuración pudo salir mal.
+
+        No se mata el hilo: se pide parar y se corta el Strategy Tester, que es
+        lo que puede tardar horas. La auditoría sale por su `finally` de
+        siempre, así que deja cada terminal en su cuenta y reanuda el pipeline.
+        """
+        with self.lock:
+            running = [
+                key for key, value in self.states.items()
+                if str(value.get("status")) in RUNNING_STATUSES
+            ]
+            if not running:
+                raise ValueError("No hay ninguna auditoría en curso que detener")
+            requested = str(audit_key)
+            key = requested if requested in running else running[0]
+            self.stop_requested = True
+            process = self.tester_process
+            paths = list(self.tester_terminal_paths)
+            status = str(self.states[key].get("status") or "")
+        if process is not None and process.poll() is None:
+            self._terminate_tester_process(process)
+        closed = self._close_tester_terminals(paths)
+        self._update(
+            key, status, "Deteniendo la auditoría a petición del usuario.",
+            "Detención pedida por el usuario: cortado el lanzador del tester y "
+            f"cerradas {closed} terminal(es) suyas; vuelven a su cuenta configurada.",
+        )
+        return self.state(key)
+
+    def _close_tester_terminals(self, paths: list[str]) -> int:
+        """Cierra las terminales que el tester tenía abiertas, sin perder su cuenta.
+
+        Matar el lanzador no para lo que ya abrió: el backtest sigue corriendo
+        en cada MT5. Se cierran por el camino ordenado, que es el que deja a
+        MT5 escribir su configuración antes de irse.
+        """
+        pids: set[int] = set()
+        for path in paths:
+            if path:
+                pids |= self._terminal_pids_for_path(path)
+        if pids:
+            self._close_terminal_pids_gracefully(pids)
+        return len(pids)
+
+    @staticmethod
+    def _terminate_tester_process(process: Any) -> None:
+        """Corta el lanzador del tester como el pipeline corta su proceso.
+
+        Nunca `taskkill /F` sobre un terminal: eso le borra la cuenta guardada.
+        Se avisa al lanzador, que cierra lo suyo, y sólo si no atiende en ocho
+        segundos se le termina.
+        """
+        try:
+            if os.name == "nt":
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                process.send_signal(signal.SIGTERM)
+            process.wait(timeout=8)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            process.terminate()
+
+    def _honour_stop_request(self) -> None:
+        """Corte entre fases. Lo pide el botón de detener y lo mira el hilo.
+
+        No se interrumpe a mitad de un paso: se sale por el `finally` del
+        `_run`, que restaura la cuenta de cada terminal y reanuda el pipeline.
+        """
+        with self.lock:
+            stopped = self.stop_requested
+        if stopped:
+            raise AuditStopped("Auditoría detenida a petición del usuario")
 
     def _update(self, audit_key: str, status: str, text: str, log: str | None = None, **changes: Any) -> None:
         with self.lock:
@@ -258,7 +344,7 @@ class LiveAuditController(
         pairs += [(row.get("strategy"), row.get("report_symbol")) for row in strategy_artifacts]
         for raw_strategy, raw_symbol in pairs:
             strategy = str(raw_strategy or "")
-            symbol = str(raw_symbol or "").casefold()
+            symbol = audit_symbol_key(raw_symbol)
             if strategy and symbol:
                 symbols_by_strategy.setdefault(strategy, set()).add(symbol)
         return symbols_by_strategy
@@ -282,7 +368,7 @@ class LiveAuditController(
                 continue
             real_lot = float(real_strategy_lots.get(strategy, effective_lot))
             symbols = symbols_by_strategy.get(strategy) or {
-                str(member.get("symbol") or "").casefold()
+                audit_symbol_key(member.get("symbol"))
             }
             signatures.update(
                 (symbol, round(real_lot, 8)) for symbol in symbols if symbol and real_lot > 0
@@ -300,7 +386,7 @@ class LiveAuditController(
         filtered = [
             trade for trade in real_trades
             if (
-                str(trade.get("symbol") or "").casefold(),
+                audit_symbol_key(trade.get("symbol")),
                 round(float(trade.get("volume") or 0), 8),
             ) in signatures
         ]
@@ -451,11 +537,13 @@ class LiveAuditController(
     def _audit(self, request: dict[str, Any], audit_id: str) -> str:
         """Ejecuta la auditoria completa y devuelve su estado terminal."""
         audit_key = request["audit_key"]
+        self._honour_stop_request()
         self._update(audit_key, "extracting", "Extrayendo operaciones de la cuenta real.", "Conectando la cuenta real")
         period_start, period_end = _audit_period(request)
         real_trades, symbol_points, account, real_account_report, real_history_detail, open_positions = (
             self._extract_real_account(request, audit_id, period_start, period_end)
         )
+        self._honour_stop_request()
         self._update(
             audit_key, "testing", "Ejecutando el portafolio con ticks reales en el nodo.",
             f"{len(real_trades)} cierres reales reconstruidos antes del filtro del portafolio.",
@@ -463,6 +551,7 @@ class LiveAuditController(
         tester_trades, qualities, strategies, strategy_artifacts, tester_execution = self._run_tester(
             request, audit_id, period_start, period_end
         )
+        self._honour_stop_request()
         _detail, selected_members = self._portfolio_members(
             request["portfolio_id"], request["portfolio_type"]
         )
@@ -510,11 +599,21 @@ class LiveAuditController(
         audit_key = request["audit_key"]
         paused_by_auditor = False
         terminal_status = "failed"
+        self.single_terminal_audit = not request.get("use_multiterminal", False)
         with self.lock:
             self.real_account_terminals[audit_key] = []
         try:
             paused_by_auditor = self._pause_active_job(audit_key)
             terminal_status = self._audit(request, audit_id)
+        except AuditStopped:
+            # Detener no es fallar: ni `error` ni texto de avería. Lo que
+            # queda por hacer es lo mismo, restaurar y reanudar.
+            terminal_status = "stopped"
+            self._update(
+                audit_key, "finalizing",
+                "Detenida a petición del usuario; restaurando las terminales.",
+                "Auditoría detenida por el usuario antes de terminar.",
+            )
         except Exception as exc:
             terminal_status = "failed"
             self._update(
@@ -523,3 +622,4 @@ class LiveAuditController(
             )
         finally:
             self._finish_run(request, audit_id, terminal_status, paused_by_auditor)
+            self.single_terminal_audit = False

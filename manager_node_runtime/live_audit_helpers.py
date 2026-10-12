@@ -19,8 +19,17 @@ STATUS_LABELS = {
     "extracting": "EXTRAYENDO", "testing": "PROBANDO", "comparing": "COMPARANDO",
     "finalizing": "FINALIZANDO", "resuming": "REANUDANDO",
     "completed": "COMPLETADA", "not_comparable": "NO COMPARABLE",
-    "failed": "FALLIDA",
+    "failed": "FALLIDA", "stopped": "DETENIDA",
 }
+
+
+class AuditStopped(RuntimeError):
+    """El usuario pidió parar: no es un fallo y no debe leerse como tal.
+
+    Se lanza en los cortes entre fases, así que la auditoría termina por su
+    `finally` de siempre: restaura la cuenta de cada terminal y reanuda el
+    pipeline que había pausado.
+    """
 PORTFOLIO_MODES = ("aggressive", "balanced", "conservative")
 # MT5 trunca a 259 caracteres; el margen cubre el sufijo mas largo que anade a
 # un reporte, `.watchdog_attempt_N.mt5log.txt`.
@@ -32,7 +41,7 @@ PROGRESS = {
     "comparing": ("comparing", 85), "finalizing": ("comparing", 95),
     "resuming": ("comparing", 98),
     "completed": ("completed", 100), "not_comparable": ("completed", 100),
-    "failed": ("completed", 100),
+    "failed": ("completed", 100), "stopped": ("completed", 100),
 }
 
 def single_variant_mode(detail: dict[str, Any]) -> str:
@@ -170,6 +179,13 @@ def _validated_period_mode(value: dict[str, Any]) -> str:
     return period_mode
 
 
+def _as_bool(value: Any) -> bool:
+    """Casilla del manager: ausente es falso, que es «una sola terminal»."""
+    if isinstance(value, bool):
+        return value
+    return str(value if value is not None else "").strip().casefold() in {"1", "true", "on", "si", "sí"}
+
+
 def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
     value = dict(payload or {})
     audit_key = str(value.get("audit_key") or value.get("portfolio_id") or "").strip()
@@ -210,6 +226,7 @@ def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
         "drawdown_deviation_warning_pct": _as_float(
             value.get("drawdown_deviation_warning_pct"), "drawdown_deviation_warning_pct"
         ),
+        "use_multiterminal": _as_bool(value.get("use_multiterminal")),
         "execution_delay_mode": str(value.get("execution_delay_mode") or "measured"),
         "fixed_delay_ms": _as_int(value.get("fixed_delay_ms", 0), "fixed_delay_ms", 0),
     }
