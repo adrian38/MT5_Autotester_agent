@@ -9,7 +9,11 @@ from typing import Any
 
 from ubs.account import account_memory_path
 from ubs.db import connect_memory
-from ubs.manual_status import mark_candidate_final_tick, mark_candidate_robustness
+from ubs.manual_status import (
+    mark_candidate_final_tick,
+    mark_candidate_robustness,
+    mark_candidates,
+)
 
 
 # REGLA DUPLICADA: el criterio vive tambien en el manager
@@ -19,12 +23,16 @@ from ubs.manual_status import mark_candidate_final_tick, mark_candidate_robustne
 MANUAL_REASON = "manual"
 DEGRADATION_REASON = "degradation"
 OHLC_MISMATCH_REASON = "ohlc_mismatch"
-REASON_CODES = (MANUAL_REASON, DEGRADATION_REASON, OHLC_MISMATCH_REASON)
+LIVE_MISMATCH_REASON = "live_mismatch"
+REASON_CODES = (
+    MANUAL_REASON, DEGRADATION_REASON, OHLC_MISMATCH_REASON, LIVE_MISMATCH_REASON,
+)
 
 REASON_TEXTS = {
     MANUAL_REASON: "Excluida manualmente desde el manager",
     DEGRADATION_REASON: "Excluida por degradación: rechazada en el test de robustez",
     OHLC_MISMATCH_REASON: "Excluida porque el OHLC no se parece al every tick: rechazada en Final Tick 6M",
+    LIVE_MISMATCH_REASON: "Excluida porque no funciona en las condiciones reales de este bróker: candidato rechazado",
 }
 
 STAGE_TABLES = (
@@ -33,6 +41,26 @@ STAGE_TABLES = (
     "candidate_final_tick_6m",
     "candidate_regression",
 )
+
+# El candidato en si, que solo toca `live_mismatch`. No es una etapa: va aparte
+# porque se restaura con un `update` y no borrando e insertando como las demas.
+#
+# Ese motivo existe porque los otros dos dicen «esta prueba del pipeline la
+# habria suspendido», y «en las condiciones reales de ESTE broker no funciona»
+# no es ninguna prueba del pipeline. Lo que lo deja escrito es
+# `candidates.status`, que es la fila por la que pregunta el linaje:
+# `ubs/memory_feedback.py::SOURCE_FEEDBACK_SQL` encadena semilla -> candidato ->
+# descendientes por `c.seed_path = d.set_path` leyendo ese estado, y
+# `ubs/memory_selection.py::discovery_seed_descendant_predictions` puntua a un
+# padre por como acabaron sus hijos. Y como cada broker tiene su memoria de
+# cuenta (`ubs/account.py::account_memory_path`), la constancia es de este
+# broker y solo de este.
+CANDIDATE_TABLE = "candidates"
+
+# Lo unico que cambia el veredicto en esa fila, y por tanto lo unico que hay que
+# respaldar. Copiar la fila entera guardaria `score` y `metrics_json`, que el
+# veredicto no toca, y restaurarlos pisaria cualquier recalculo posterior.
+CANDIDATE_COLUMNS = ("status", "accepted")
 
 
 def normalize_reason_code(value: object) -> str:
@@ -65,24 +93,40 @@ def ensure_quarantine_reason_columns(conn: sqlite3.Connection) -> None:
         conn.execute("alter table portfolio_quarantine add column restore_json text")
 
 
-def snapshot_candidate_stages(conn: sqlite3.Connection, candidate_id: object) -> str | None:
+def _candidate_identifier(candidate_id: object) -> int | None:
+    try:
+        identifier = int(candidate_id)
+    except (TypeError, ValueError):
+        return None
+    return identifier if identifier >= 1 else None
+
+
+def snapshot_candidate_stages(
+    conn: sqlite3.Connection, candidate_id: object, *, reason_code: object = "",
+) -> str | None:
     """Copia literal de las etapas antes del veredicto, para poder reintegrar.
 
     El rechazo por degradacion BORRA Final Tick, Final Tick 6M y regresion, igual
     que el del agente. Sin este respaldo, reintegrar la estrategia la dejaria
     fuera del pool para siempre: el manager exige las cuatro etapas aceptadas.
+
+    `reason_code` solo anade la fila de `candidates` cuando el veredicto que
+    viene es `live_mismatch`, que es el unico que la toca. Incluirla siempre
+    cambiaria el significado de «el respaldo esta vacio», que es lo que hoy
+    impide aplicar un veredicto a un candidato sin etapas.
     """
-    try:
-        identifier = int(candidate_id)
-    except (TypeError, ValueError):
-        return None
-    if identifier < 1:
+    identifier = _candidate_identifier(candidate_id)
+    if identifier is None:
         return None
     snapshot: dict[str, list[dict[str, Any]]] = {}
-    for table in STAGE_TABLES:
+    tables = list(STAGE_TABLES)
+    if normalize_reason_code(reason_code) == LIVE_MISMATCH_REASON:
+        tables.append(CANDIDATE_TABLE)
+    for table in tables:
         if not _quarantine_table_exists(conn, table):
             continue
-        cursor = conn.execute(f"select * from {table} where candidate_id=?", (identifier,))
+        key = "id" if table == CANDIDATE_TABLE else "candidate_id"
+        cursor = conn.execute(f"select * from {table} where {key}=?", (identifier,))
         names = [str(column[0]) for column in cursor.description]
         rows = [dict(zip(names, row)) for row in cursor.fetchall()]
         if rows:
@@ -93,18 +137,21 @@ def snapshot_candidate_stages(conn: sqlite3.Connection, candidate_id: object) ->
 
 
 def apply_candidate_verdict(conn: sqlite3.Connection, candidate_id: object, reason_code: str) -> bool:
-    """Marca la etapa que corresponde al motivo, con la primitiva del agente."""
+    """Marca la fila que corresponde al motivo, con la primitiva del agente."""
     code = normalize_reason_code(reason_code)
     if code == MANUAL_REASON:
         return False
-    try:
-        identifier = int(candidate_id)
-    except (TypeError, ValueError):
-        return False
-    if identifier < 1:
+    identifier = _candidate_identifier(candidate_id)
+    if identifier is None:
         return False
     if code == DEGRADATION_REASON:
         return bool(mark_candidate_robustness(conn, [identifier], "rejected"))
+    if code == LIVE_MISMATCH_REASON:
+        # No hay etapa que suspender: lo que fallo son las condiciones reales de
+        # este broker, que el pipeline no prueba. `mark_candidates` rechaza el
+        # candidato y se lleva por delante sus cuatro etapas, que es lo que lee
+        # el linaje al generar desde su padre o desde sus hijos.
+        return bool(mark_candidates(conn, [identifier], "rejected"))
     return bool(
         mark_candidate_final_tick(conn, [identifier], "rejected", final_tick_stage="six_month")
     )
@@ -131,8 +178,58 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"pragma table_info({table})")}
 
 
+def _restore_stage_table(conn: sqlite3.Connection, table: str, rows: object) -> int:
+    if not isinstance(rows, list) or not rows or not _quarantine_table_exists(conn, table):
+        return 0
+    available = _table_columns(conn, table)
+    restored = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        columns = [name for name in row if name in available]
+        if not columns:
+            continue
+        identifier = row.get("candidate_id")
+        if identifier is not None:
+            conn.execute(f"delete from {table} where candidate_id=?", (identifier,))
+        placeholders = ",".join("?" for _ in columns)
+        conn.execute(
+            f"insert into {table} ({','.join(columns)}) values ({placeholders})",
+            tuple(row[name] for name in columns),
+        )
+        restored += 1
+    return restored
+
+
+def _restore_candidate_row(conn: sqlite3.Connection, rows: object) -> int:
+    """Devuelve `candidates.status` y `accepted` al valor previo al veredicto.
+
+    Aqui no vale borrar e insertar como en las etapas: `candidates.id` es
+    autoincremental y lo referencian las cuatro tablas de etapa por
+    `candidate_id`, asi que reinsertar la fila romperia esas referencias.
+    """
+    if not isinstance(rows, list) or not rows or not _quarantine_table_exists(conn, CANDIDATE_TABLE):
+        return 0
+    available = _table_columns(conn, CANDIDATE_TABLE)
+    restored = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        identifier = row.get("id")
+        columns = [name for name in CANDIDATE_COLUMNS if name in row and name in available]
+        if identifier is None or not columns:
+            continue
+        assignments = ",".join(f"{name}=?" for name in columns)
+        conn.execute(
+            f"update {CANDIDATE_TABLE} set {assignments} where id=?",
+            (*(row[name] for name in columns), identifier),
+        )
+        restored += 1
+    return restored
+
+
 def restore_candidate_stages(conn: sqlite3.Connection, snapshot: object) -> int:
-    """Devuelve las filas de etapa tal y como estaban antes del veredicto.
+    """Devuelve las filas tal y como estaban antes del veredicto.
 
     Copia de `mt5_manager/candidate_verdict.py::restore_candidate_stages`. Se
     restaura por nombre de columna, nunca por posicion: dos memorias pueden tener
@@ -147,29 +244,9 @@ def restore_candidate_stages(conn: sqlite3.Connection, snapshot: object) -> int:
             return 0
     if not isinstance(data, dict) or not data:
         return 0
-    restored = 0
+    restored = _restore_candidate_row(conn, data.get(CANDIDATE_TABLE))
     for table in STAGE_TABLES:
-        rows = data.get(table)
-        if not isinstance(rows, list) or not rows:
-            continue
-        if not _quarantine_table_exists(conn, table):
-            continue
-        available = _table_columns(conn, table)
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            columns = [name for name in row if name in available]
-            if not columns:
-                continue
-            identifier = row.get("candidate_id")
-            if identifier is not None:
-                conn.execute(f"delete from {table} where candidate_id=?", (identifier,))
-            placeholders = ",".join("?" for _ in columns)
-            conn.execute(
-                f"insert into {table} ({','.join(columns)}) values ({placeholders})",
-                tuple(row[name] for name in columns),
-            )
-            restored += 1
+        restored += _restore_stage_table(conn, table, data.get(table))
     return restored
 
 
@@ -222,7 +299,7 @@ def _reapply_candidate_verdict(
         candidate_conn.row_factory = sqlite3.Row
         candidate_conn.execute("begin immediate")
         restore_candidate_stages(candidate_conn, previous_restore)
-        snapshot = snapshot_candidate_stages(candidate_conn, candidate_id)
+        snapshot = snapshot_candidate_stages(candidate_conn, candidate_id, reason_code=target)
         if target not in (MANUAL_REASON, "pool"):
             if not snapshot:
                 raise ValueError(
@@ -449,7 +526,7 @@ def _quarantine_grouped_members(grouped, portfolio_id, quarantine_ids, reason, r
                 # El respaldo se lee ANTES del veredicto y viaja con la fila de
                 # cuarentena: es lo unico que permite reintegrar despues.
                 restore_json = (
-                    snapshot_candidate_stages(source_conn, candidate_id)
+                    snapshot_candidate_stages(source_conn, candidate_id, reason_code=reason_code)
                     if reason_code != MANUAL_REASON else None
                 )
                 source_conn.execute(
