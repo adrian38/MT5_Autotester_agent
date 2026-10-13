@@ -254,6 +254,9 @@ class NodeHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/stop"):
             audit_key = urllib.parse.unquote(self.path.strip("/").split("/")[-2])
             return 202, {"audit": controller.live_audits.stop(audit_key)}
+        if self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/reports"):
+            audit_key = urllib.parse.unquote(self.path.strip("/").split("/")[-2])
+            return 200, {"audit": controller.live_audits.replace_reports(audit_key, self._body())}
         if self.path.startswith("/api/v1/live-audits/") and self.path.endswith("/run"):
             portfolio_id = safe_int(self.path.strip("/").split("/")[-2], 0, minimum=1)
             body = self._body()

@@ -136,6 +136,7 @@ batch wrappers.
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
 | [10-regression-validation.md](10-regression-validation.md) | Backward 2017-2019 OHLC validation: rationale, scoring, statuses, CLI, and official MT5 sources. |
 | [11-live-audit.md](11-live-audit.md) | Embedded manager-node live-account audit, A/M/C variants, MT5 history synchronization, and diagnostics. |
+| [manual_live_audit_reports.md](manual_live_audit_reports.md) | Exact filename contract and validation for replacing tester reports without rerunning MT5. |
 | [12-manager-universe-sync.md](12-manager-universe-sync.md) | Remote symbol sync, history probe, no_history policy, and node process control. |
 | [13-manager-status-during-repair.md](13-manager-status-during-repair.md) | Nonblocking status/log snapshots during bulk repair and stale manager cards. |
 

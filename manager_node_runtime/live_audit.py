@@ -20,7 +20,6 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     _audit_period,
     _drawdown,
     _effective_price_tolerance,
-    _member_strategy_id,
     _metric_number,
     _normalize_real_strategy_lots,
     _pnl_comparison,
@@ -32,11 +31,11 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     normalize_request,
     single_variant_mode,
 )
-from .live_audit_symbols import audit_symbol_key
 from .live_audit_terminals import LiveAuditTerminalsMixin
 from .live_audit_extract import LiveAuditExtractMixin
 from .live_audit_tester import LiveAuditTesterMixin
 from .live_audit_compare import LiveAuditCompareMixin
+from .live_audit_report_upload import replace_tester_reports
 
 
 class LiveAuditController(
@@ -96,6 +95,10 @@ class LiveAuditController(
             key = str(audit_key)
             raw = self.states.get(key) or {"audit_key": key, "status": "idle"}
             return _safe_state(raw)
+
+    def replace_reports(self, audit_key: str | int, payload: Any) -> dict[str, Any]:
+        """Sustituye reportes tester de la ejecucion visible, sin relanzar MT5."""
+        return replace_tester_reports(self, str(audit_key), payload)
 
     def artifact_path(self, audit_key: str, audit_id: str, filename: str) -> Path:
         """Resuelve únicamente reportes de la ejecución visible de una auditoría."""
@@ -333,72 +336,6 @@ class LiveAuditController(
             real_trades, symbol_points, account, real_account_report,
             real_history_detail, open_positions,
         )
-
-    @staticmethod
-    def _symbols_by_strategy(
-        tester_trades: list[dict[str, Any]], strategy_artifacts: list[dict[str, Any]]
-    ) -> dict[str, set[str]]:
-        """Simbolos que el tester asocio a cada estrategia del portafolio."""
-        symbols_by_strategy: dict[str, set[str]] = {}
-        pairs = [(row.get("strategy"), row.get("symbol")) for row in tester_trades]
-        pairs += [(row.get("strategy"), row.get("report_symbol")) for row in strategy_artifacts]
-        for raw_strategy, raw_symbol in pairs:
-            strategy = str(raw_strategy or "")
-            symbol = audit_symbol_key(raw_symbol)
-            if strategy and symbol:
-                symbols_by_strategy.setdefault(strategy, set()).add(symbol)
-        return symbols_by_strategy
-
-    def _portfolio_trade_signatures(
-        self, request: dict[str, Any], selected_members: list[dict[str, Any]],
-        tester_trades: list[dict[str, Any]], strategy_artifacts: list[dict[str, Any]],
-    ) -> set[tuple[str, float]]:
-        """Pares simbolo/lote con los que la variante opera en la cuenta real."""
-        volume_rules = self._broker_volume_rules()
-        symbols_by_strategy = self._symbols_by_strategy(tester_trades, strategy_artifacts)
-        real_strategy_lots = request.get("real_strategy_lots") or {}
-        signatures: set[tuple[str, float]] = set()
-        for member in selected_members:
-            strategy = _member_strategy_id(member)
-            try:
-                _configured_lot, effective_lot, _volume_min, _volume_step, _units = self._tester_lot(
-                    member, volume_rules,
-                )
-            except (TypeError, ValueError):
-                continue
-            real_lot = float(real_strategy_lots.get(strategy, effective_lot))
-            symbols = symbols_by_strategy.get(strategy) or {
-                audit_symbol_key(member.get("symbol"))
-            }
-            signatures.update(
-                (symbol, round(real_lot, 8)) for symbol in symbols if symbol and real_lot > 0
-            )
-        return signatures
-
-    def _filter_real_trades(
-        self, audit_key: str, real_trades: list[dict[str, Any]],
-        signatures: set[tuple[str, float]], real_history_detail: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Deja solo los cierres reales que corresponden a la variante auditada."""
-        if not signatures:
-            return real_trades
-        before_filter = len(real_trades)
-        filtered = [
-            trade for trade in real_trades
-            if (
-                audit_symbol_key(trade.get("symbol")),
-                round(float(trade.get("volume") or 0), 8),
-            ) in signatures
-        ]
-        ignored = before_filter - len(filtered)
-        self._update(
-            audit_key, "extracting", "Filtrando operaciones de la variante seleccionada.",
-            f"Filtro por símbolo/lote real configurado: {len(filtered)} cierres del portafolio, "
-            f"{ignored} cierres ajenos ignorados; firmas {sorted(signatures)}",
-        )
-        real_history_detail["portfolio_closures"] = len(filtered)
-        real_history_detail["foreign_closures_ignored"] = ignored
-        return filtered
 
     def _not_comparable_result(
         self, request: dict[str, Any], period_start: datetime, period_end: datetime,

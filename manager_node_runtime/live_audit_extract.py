@@ -159,10 +159,6 @@ class LiveAuditExtractMixin:
                 terminal_path, login, server, period_start, period_end, destination, profile_name,
             )
         except NativeHistoryReportError as primary_error:
-            # MetaTrader5 puede adjuntarse a un terminal abierto en otra sesión
-            # de Windows. La API funciona, pero su ventana no es automatizable
-            # desde el nodo. Para el reporte se abre una copia IC aislada en la
-            # sesión del nodo y se cierra al terminar.
             mt5.shutdown()
             errors = [f"{profile_name}: {primary_error}"]
             for section, profile in self._native_report_profiles(terminal_path):
