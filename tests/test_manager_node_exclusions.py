@@ -93,6 +93,46 @@ class ManagerNodeExclusionVerdictTests(unittest.TestCase):
             self.assertEqual(stages["candidate_robustness"], [("accepted",)])
             self.assertEqual(stages["candidate_final_tick"], [("accepted",)])
 
+    def _candidate(self, memory: Path):
+        """El candidato en si, que es la fila por la que pregunta el linaje."""
+        with contextlib.closing(sqlite3.connect(memory)) as conn:
+            return conn.execute("select id,status,accepted from candidates").fetchall()
+
+    def test_a_live_mismatch_exclusion_rejects_the_candidate_and_drops_every_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, portfolio_id = self._memory_with_candidate(project)
+
+            result = self._exclude(project, memory, portfolio_id, "live_mismatch")
+
+            self.assertTrue(result["verdict_applied"])
+            self.assertEqual(result["reason_code"], "live_mismatch")
+            # No hay etapa que suspender: lo que fallo son las condiciones reales
+            # de este broker, que el pipeline no prueba. Se rechaza el candidato,
+            # que es lo que leen `ubs/memory_feedback.py` y la prediccion por
+            # descendientes al generar desde su padre o desde sus hijos.
+            self.assertEqual(self._candidate(memory), [(1, "rejected", 0)])
+            for table, rows in self._stages(memory).items():
+                self.assertEqual(rows, [], table)
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                row = conn.execute(
+                    "select reason_code,restore_json from portfolio_quarantine"
+                ).fetchone()
+            self.assertEqual(row[0], "live_mismatch")
+            # El respaldo lleva tambien la fila del candidato: sin ella,
+            # reintegrar lo dejaria rechazado para siempre.
+            self.assertIn('"candidates"', row[1])
+
+    def test_a_stage_verdict_never_touches_the_candidate_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, portfolio_id = self._memory_with_candidate(project)
+            before = self._candidate(memory)
+
+            self._exclude(project, memory, portfolio_id, "degradation")
+
+            self.assertEqual(self._candidate(memory), before)
+
     def test_a_manual_exclusion_leaves_every_stage_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)
@@ -295,6 +335,55 @@ class ManagerNodeRequalifyTests(unittest.TestCase):
             self.assertEqual(row[1], "manual")
             # Sin veredicto no hay nada que restaurar la proxima vez.
             self.assertIsNone(row[3])
+
+    def test_moving_from_degradation_to_live_mismatch_undoes_the_first_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, pristine, verdict_tests = self._excluded(project)
+            candidate_before = verdict_tests._candidate(memory)
+
+            result = self._requalify(project, memory, key, "live_mismatch")
+
+            self.assertEqual(result["reason_code"], "live_mismatch")
+            self.assertEqual(verdict_tests._candidate(memory), [(1, "rejected", 0)])
+
+            # Y volver al pool devuelve las dos cosas: el candidato y sus etapas.
+            self._requalify(project, memory, key, "pool")
+            self.assertEqual(verdict_tests._candidate(memory), candidate_before)
+            self.assertEqual(verdict_tests._stages(memory), pristine)
+            self.assertEqual(self._quarantine(memory), [])
+
+    def test_moving_from_live_mismatch_to_a_stage_verdict_gives_the_candidate_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, pristine, verdict_tests = self._excluded(project, "live_mismatch")
+
+            self._requalify(project, memory, key, "ohlc_mismatch")
+
+            # El candidato vuelve a estar aceptado: lo que ahora falla es el 6M.
+            # `accepted` vuelve a NULL porque asi lo deja el fixture, y eso es
+            # justo lo que se comprueba: se restaura el valor, no un 1 inventado.
+            self.assertEqual(verdict_tests._candidate(memory), [(1, "accepted", None)])
+            stages = verdict_tests._stages(memory)
+            self.assertEqual(stages["candidate_robustness"], pristine["candidate_robustness"])
+            self.assertEqual(stages["candidate_final_tick"], pristine["candidate_final_tick"])
+            self.assertEqual(stages["candidate_final_tick_6m"], [("rejected",)])
+
+    def test_the_live_verdict_keeps_the_candidate_id_that_the_stages_point_at(self) -> None:
+        # El respaldo del candidato se devuelve con un `update`, no borrando e
+        # insertando como las etapas: `candidates.id` es autoincremental y las
+        # tablas de etapa lo referencian por `candidate_id`.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            memory, key, _pristine, _verdict_tests = self._excluded(project, "live_mismatch")
+
+            self._requalify(project, memory, key, "pool")
+
+            with contextlib.closing(sqlite3.connect(memory)) as conn:
+                self.assertEqual(
+                    conn.execute("select id,set_path,score from candidates").fetchall(),
+                    [(1, "same.set", 91.5)],
+                )
 
     def test_the_same_state_changes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
