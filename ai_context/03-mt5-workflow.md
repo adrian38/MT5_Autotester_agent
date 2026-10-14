@@ -1,5 +1,12 @@
 # MT5 Compile & Backtest Workflow
 
+## Histórico de portafolios manuales
+
+El runtime expone `FromDate` y `ToDate` de `tester_template.ini` como fechas
+predeterminadas. La ejecución permite editarlas, fuerza siempre
+`run_tests.py --model 1` (OHLC sobre M1), reutiliza los `.set` persistidos por
+el portafolio y se serializa mediante la cola normal del nodo.
+
 ## Path Resolution
 
 MT5 path lookup order in `run_tests.py`:

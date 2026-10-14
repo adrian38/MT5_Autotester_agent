@@ -12,6 +12,7 @@ from typing import Any
 from . import node_settings, node_snapshots
 from .common import safe_int, save_json, utc_now
 from .manual_portfolio import create_manual_portfolio
+from .manual_portfolio_history import history_defaults
 from .portfolio_save import (
     exclude_portfolio_members_payload,
     normalize_portfolio_alias,
@@ -292,3 +293,7 @@ class JobApiMixin:
             return {"lines": [], "log_path": path_text}
         content = Path(path_text).read_text(encoding="utf-8", errors="replace").splitlines()
         return {"lines": content[-max(1, min(lines, 2000)):], "log_path": path_text}
+
+    def manual_portfolio_defaults(self) -> dict[str, Any]:
+        cfg, _db_path = self._settings_and_memory()
+        return history_defaults(self.config, cfg)
