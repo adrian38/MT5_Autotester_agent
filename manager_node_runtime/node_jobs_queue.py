@@ -120,6 +120,8 @@ class JobQueueMixin:
                     self._start_regression(payload)
                 elif item.get("type") == "cleanup":
                     self._start_cleanup()
+                elif item.get("type") == "manual_history":
+                    self._start_manual_history(payload)
                 else:
                     self._start_generation(payload)
             except Exception as exc:

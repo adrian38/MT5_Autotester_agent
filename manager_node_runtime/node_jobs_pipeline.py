@@ -13,6 +13,7 @@ from . import guided_batches, node_commands, node_settings, node_snapshots
 from .common import safe_int, utc_now
 from .node_jobs_common import ACTIVE_STATUSES, CONTROL_LOCK_TIMEOUT
 from .node_settings import CLEANUP_STAGES
+from .manual_portfolio_history import build_history_command as build_manual_history_command
 from .universe_service import build_history_command
 
 
@@ -95,6 +96,11 @@ class JobPipelineMixin:
                 command, cwd = node_commands.build_generation_command(self.config, step_request)
             elif stage == "universe_history":
                 command, cwd = build_history_command(self.config, step_request)
+            elif stage == "manual_history":
+                cfg, memory = self._settings_and_memory()
+                step_request, command, cwd = build_manual_history_command(
+                    self.config, cfg, memory, step_request,
+                )
             elif stage in CLEANUP_STAGES:
                 command, cwd = node_settings.build_historical_cleanup_command(self.config, stage)
             else:

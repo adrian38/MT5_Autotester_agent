@@ -7,6 +7,7 @@ from typing import Any
 from . import node_commands, node_settings
 from .common import safe_int, utc_now
 from .node_settings import CLEANUP_STAGES
+from .manual_portfolio_history import build_history_command
 
 
 class JobStartMixin:
@@ -361,4 +362,35 @@ class JobStartMixin:
             "cleanup_failed": False,
         }
         self._launch_next_runnable(0, log_path, first=True)
+        return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
+
+    def start_manual_history(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            cfg, memory = self._settings_and_memory()
+            normalized, command, cwd = build_history_command(self.config, cfg, memory, payload)
+            if self._busy() or self.queue:
+                return self._enqueue(
+                    "manual_history", normalized,
+                    f"Portafolio #{normalized['portfolio_id']} · histórico OHLC",
+                )
+            return self._start_manual_history(normalized, command, cwd)
+
+    def _start_manual_history(
+        self, payload: dict[str, Any], command: list[str] | None = None, cwd=None,
+    ) -> dict[str, Any]:
+        if command is None or cwd is None:
+            cfg, memory = self._settings_and_memory()
+            payload, command, cwd = build_history_command(self.config, cfg, memory, payload)
+        job_id = "manual_history_" + time.strftime("%Y%m%d_%H%M%S")
+        log_path = self.runtime_dir / f"{job_id}.log"
+        pipeline = [{"action": "manual_history", "cycle": None, "run_id": None}]
+        self.state = {
+            "job_id": job_id, "job_type": "manual_history", "status": "running", "pid": None,
+            "started_at": utc_now(), "finished_at": None, "return_code": None,
+            "request": payload, "command": command, "log_path": str(log_path), "error": None,
+            "pipeline": pipeline, "current_stage": "manual_history", "current_cycle": None,
+            "current_run_id": None, "completed_stages": [], "stage_return_codes": {},
+            "commands": {"manual_history": command}, "telegram_notifications": [],
+        }
+        self._launch_step(0, command, cwd, log_path, first=True)
         return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
