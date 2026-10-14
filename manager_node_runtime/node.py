@@ -274,6 +274,7 @@ class NodeHandler(BaseHTTPRequestHandler):
             return 202, controller.start_universe_history()
         portfolio_routes = {
             "/api/v1/portfolios/save": (201, controller.save_portfolio, 50_000_000),
+            "/api/v1/portfolios/manual": (201, controller.create_manual_portfolio, 50_000_000),
             "/api/v1/portfolios/alias": (200, controller.set_portfolio_alias, 1_000_000),
             "/api/v1/portfolios/delete": (200, controller.delete_portfolio, 1_000_000),
             "/api/v1/portfolios/exclude": (200, controller.exclude_portfolio_members, 1_000_000),
