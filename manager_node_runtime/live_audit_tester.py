@@ -89,7 +89,9 @@ class LiveAuditTesterMixin:
         text, set_encoding = _read_set_text(source)
         lots = self._tester_lot(member, volume_rules)
         text = self._set_value(text, "StartLots", f"{lots[1]:.8f}".rstrip("0").rstrip("."))
-        text = normalize_live_audit_set_symbols(text, request["tester_server"], broker_symbols)
+        text = normalize_live_audit_set_symbols(
+            text, request["tester_server"], broker_symbols, request["tester_login"]
+        )
         work = sets_dir.parent
         target = sets_dir / audit_set_name(
             index, source.name, sets_dir, work / "reports", work / "configs"

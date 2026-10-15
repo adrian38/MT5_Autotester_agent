@@ -16,6 +16,9 @@ from run_tests_symbols import normalize_set_symbol
 
 
 _UNSUFFIXED_AXI_SERVERS = frozenset({"axi-us50-live"})
+_ACCOUNT_SYMBOL_SUFFIXES = {
+    ("10068103", "axi-us50-demo"): ".s",
+}
 _SET_SYMBOL_WITH_STANDARD_SUFFIX = re.compile(
     r"^(\s*\ufeff?(?:ForceSymbol|Symbol)\s*=\s*)([^\s|]+)\.sa(?=\s*(?:\|\||$))",
     flags=re.IGNORECASE | re.MULTILINE,
@@ -64,10 +67,20 @@ def broker_symbol_spellings(project: Path, broker: object) -> dict[str, str]:
 
 
 def normalize_live_audit_set_symbols(
-    text: str, tester_server: str, broker_symbols: dict[str, str] | None = None
+    text: str, tester_server: str, broker_symbols: dict[str, str] | None = None,
+    tester_login: object = None,
 ) -> str:
     """Adapt symbol parameters in an audit copy to the selected MT5 server."""
-    if tester_server.strip().casefold() in _UNSUFFIXED_AXI_SERVERS:
+    server = tester_server.strip().casefold()
+    account_suffix = _ACCOUNT_SYMBOL_SUFFIXES.get((str(tester_login or "").strip(), server))
+    if account_suffix:
+        def _account_spelling(match: re.Match[str]) -> str:
+            symbol = match.group(2)
+            base = audit_symbol_key(symbol)
+            return f"{match.group(1)}{base}{account_suffix}"
+
+        return _SET_SYMBOL_PARAMETER.sub(_account_spelling, text)
+    if server in _UNSUFFIXED_AXI_SERVERS:
         return _SET_SYMBOL_WITH_STANDARD_SUFFIX.sub(r"\1\2", text)
     if not broker_symbols:
         return text

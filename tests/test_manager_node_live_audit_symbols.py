@@ -110,6 +110,42 @@ class LiveAuditSymbolNormalizationTests(unittest.TestCase):
             source,
         )
 
+    def test_account_10068103_on_axi_us50_demo_uses_s_suffix(self) -> None:
+        source = (
+            "ForceSymbol=XAUUSD.sa||XAUUSD.sa||0||XAUUSD.sa||N\r\n"
+            "Symbol=NAS100.fs\r\n"
+            "ForceSymbol=USDJPY\r\n"
+        )
+
+        normalized = normalize_live_audit_set_symbols(
+            source, "Axi-US50-Demo", self.spellings, "10068103"
+        )
+
+        self.assertEqual(
+            normalized,
+            (
+                "ForceSymbol=XAUUSD.s||XAUUSD.sa||0||XAUUSD.sa||N\r\n"
+                "Symbol=NAS100.s\r\n"
+                "ForceSymbol=USDJPY.s\r\n"
+            ),
+        )
+
+    def test_s_suffix_exception_requires_both_account_and_server(self) -> None:
+        source = "ForceSymbol=XAUUSD.sa\n"
+
+        self.assertEqual(
+            normalize_live_audit_set_symbols(
+                source, "Axi-US50-Demo", self.spellings, "10068104"
+            ),
+            source,
+        )
+        self.assertEqual(
+            normalize_live_audit_set_symbols(
+                source, "Axi-US51-Demo", self.spellings, "10068103"
+            ),
+            source,
+        )
+
     def test_suffixed_server_adapts_a_set_written_without_suffix(self) -> None:
         source = (
             "ForceSymbol=USDJPY||USDJPY||0||USDJPY||N\r\n"

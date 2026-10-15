@@ -360,3 +360,16 @@ Pendiente, del mismo origen: `_broker_volume_rules()` indexa
 normalización del lote al mínimo del broker no se aplica a ningún símbolo con
 sufijo. Hoy es inocuo —los mínimos AXI coinciden con los lotes guardados— pero
 no está arreglado.
+
+## Excepción `.s` para la cuenta AXI 10068103 (2026-10-15)
+
+La auditoría `20261015_113156_663508` confirmó que el login tester `10068103`
+en `Axi-US50-Demo` publica los símbolos con el sufijo `.s`. El runtime había
+aplicado el universo AXI general y envió `XAUUSD.sa`, `NAS100.fs` y
+`USDJPY.sa`; MT5 rechazó los tres como inexistentes.
+
+`normalize_live_audit_set_symbols()` aplica `.s` sólo cuando coinciden a la vez
+el login `10068103` y el servidor `Axi-US50-Demo`. La excepción recibe el login
+desde la petición de auditoría y modifica únicamente `ForceSymbol`/`Symbol` en
+la copia temporal del set. Otras cuentas del mismo servidor y la misma cuenta
+en cualquier otro servidor continúan usando la normalización general.
