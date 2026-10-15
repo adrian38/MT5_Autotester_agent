@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
+from run_tests_symbols import infer_tester_fields_from_set, load_set_params
 from ubs.db import connect_memory
+from ubs.set_rules import normalize_generated_set_text
+from ubs.set_utils import read_set_with_encoding, set_use_every_tick_text, write_set_text
 
-from .live_audit_helpers import _read_set_text
 from .portfolio_save import _PortfolioPersistence
 
 
@@ -30,28 +32,27 @@ TIMEFRAME_LABELS = {
 }
 
 
-def _set_values(path: Path) -> dict[str, str]:
-    text, _encoding = _read_set_text(path)
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        if "=" not in line or line.lstrip().startswith((";", "#")):
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip().casefold()] = value.split("||", 1)[0].strip()
-    return values
+def normalize_manual_set(path: Path) -> None:
+    """Aplica al set manual las mismas invariantes que al incorporarlo al agente."""
+    text, encoding = read_set_with_encoding(path)
+    normalized, _found, _missing = normalize_generated_set_text(text)
+    normalized = set_use_every_tick_text(normalized, False)
+    if normalized != text:
+        write_set_text(path, normalized, encoding)
 
 
 def _member(path: Path, index: int) -> StrategyAllocation:
-    values = _set_values(path)
-    symbol = values.get("forcesymbol") or values.get("symbol") or ""
-    timeframe = values.get("timeframe") or values.get("period") or ""
-    timeframe = TIMEFRAME_LABELS.get(timeframe, timeframe.upper())
+    values = load_set_params(path)
+    fields = infer_tester_fields_from_set(path)
+    symbol = str(fields.get("Symbol") or values.get("ForceSymbol") or values.get("Symbol") or "")
+    raw_timeframe = str(fields.get("Period") or values.get("TimeFrame") or values.get("Period") or "")
+    timeframe = TIMEFRAME_LABELS.get(raw_timeframe, raw_timeframe.upper())
     if not symbol or not timeframe:
         raise ValueError(
-            f"{path.name}: el set debe declarar ForceSymbol y TimeFrame para poder auditarlo"
+            f"{path.name}: no se pudieron inferir el simbolo y el timeframe para auditarlo"
         )
     try:
-        lot = float(values.get("startlots") or "0.01")
+        lot = float(values.get("StartLots") or "0.01")
     except ValueError as exc:
         raise ValueError(f"{path.name}: StartLots no es numerico") from exc
     if lot <= 0:
@@ -90,6 +91,7 @@ def _write_sets(runtime_dir: Path, raw_files: object) -> tuple[Path, list[Path]]
                 raise ValueError("La carpeta de sets supera el limite de 35 MB")
             path = target / name
             path.write_bytes(content)
+            normalize_manual_set(path)
             paths.append(path)
             names.add(name.casefold())
         if not paths:
