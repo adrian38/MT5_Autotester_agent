@@ -23,6 +23,24 @@ The portfolio's history is created later through the existing live-audit flow.
 Starting that history repairs portfolios created by older runtimes: their stored
 sets and SQLite lot allocations are normalized before `run_tests.py` is queued.
 
+The history request carries `use_multiterminal`. True uses the configured
+`[Multiterminal].workers`; false keeps the same broker-aware runner but forces
+one worker, so every set uses the principal enabled terminal. Both modes pass
+the broker symbol map and suffix arguments to `run_tests.py`; canonical stored
+symbols therefore become their executable broker names (for example
+`XAUUSD` -> `XAUUSD.sa` on AXI) without rewriting the uploaded set identity.
+
+Manual history is a one-step batch and is never resumable after failure or an
+agent restart. A pending retry must be allowed to leave the persistent FIFO;
+otherwise the failed step reserves the node forever. Repeated requests for the
+same portfolio are coalesced in place, retaining the newest dates and terminal
+mode instead of executing duplicate backtest batches.
+
+`queue.json` is a JSON array, unlike the object-shaped state/config files. It
+must be loaded directly as an array on startup; the shared `load_json()` helper
+rejects non-object roots and previously made every persisted queue silently
+disappear after a restart.
+
 Files are written before the SQLite transaction and their new UUID directory is
 removed if validation or persistence fails. A successful portfolio owns that
 runtime directory; deleting the database row does not currently garbage-collect

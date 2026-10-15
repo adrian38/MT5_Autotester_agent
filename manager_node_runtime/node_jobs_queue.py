@@ -18,6 +18,23 @@ from .node_jobs_common import RESUMABLE_STATUSES
 class JobQueueMixin:
     """Cola de trabajos, instantanea de estado y avisos de Telegram."""
 
+    @staticmethod
+    def _coalesce_manual_history_queue(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        positions: dict[str, int] = {}
+        for item in items:
+            payload = item.get("payload") or {}
+            portfolio_id = str(payload.get("portfolio_id") or "")
+            if item.get("type") != "manual_history" or not portfolio_id:
+                result.append(item)
+                continue
+            if portfolio_id in positions:
+                result[positions[portfolio_id]] = item
+                continue
+            positions[portfolio_id] = len(result)
+            result.append(item)
+        return result
+
     def _persist(self) -> None:
         save_json(self.state_path, self.state)
         self._publish_status_snapshot()
@@ -69,6 +86,8 @@ class JobQueueMixin:
         return self.process is not None or self._is_resumable() or self.live_audits.is_running()
 
     def _is_resumable(self) -> bool:
+        if str(self.state.get("job_type") or "") == "manual_history":
+            return False
         pipeline = list(self.state.get("pipeline") or [])
         step_index = safe_int(self.state.get("current_step_index"), -1)
         return (
@@ -88,13 +107,14 @@ class JobQueueMixin:
             "created_at": utc_now(),
             "summary": summary,
         }
-        self.queue.append(item)
+        self.queue = self._coalesce_manual_history_queue([*self.queue, item])
         self._persist_queue()
+        snapshot = self._queue_snapshot()
         return {
             **dict(self.state),
             "queued": True,
-            "queue_item": dict(self._queue_snapshot()["items"][-1]),
-            "task_queue": self._queue_snapshot(),
+            "queue_item": next(row for row in snapshot["items"] if row["id"] == task_id),
+            "task_queue": snapshot,
         }
 
     def _schedule_queue_drain(self) -> None:
