@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import sqlite3
 import tempfile
 import unittest
@@ -57,16 +58,41 @@ class ManualPortfolioTests(unittest.TestCase):
         self.assertEqual(portfolio["name"], "Cartera AXI externa")
         self.assertEqual(portfolio["portfolio_type"], "balanced")
         self.assertEqual([(row["symbol"], row["timeframe"], row["lot"]) for row in members], [
-            ("EURUSD", "H1", 0.03), ("XAUUSD", "H1", 0.01),
+            ("EURUSD", "H1", 0.01), ("XAUUSD", "H1", 0.01),
         ])
         self.assertTrue(all(Path(row["set_path"]).is_file() for row in members))
+        normalized = (sets / "eurusd.set").read_text(encoding="utf-8")
+        self.assertIn("StartLots=0.01||0.01||0.001000||0.100000||N", normalized)
+        self.assertIn("AdjustLotsizeToVariableValues=false||false||0||true||N", normalized)
+        self.assertIn("UseEveryTick=false||false||0||true||N", normalized)
+
+    def test_symbol_and_timeframe_use_the_standard_set_inference(self) -> None:
+        payload = {
+            "name": "Inferido", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "gold.set",
+                "ForceSymbol=XAUUSD\nRun_Strategy=1\nST1_Timeframe=16385\nStartLots=0.10\n",
+            )],
+        }
+
+        result = create_manual_portfolio(self.memory, self.runtime, payload)
+
+        conn = sqlite3.connect(self.memory)
+        try:
+            row = conn.execute(
+                "select symbol,timeframe,lot from portfolio_allocations where portfolio_id=?",
+                (result["portfolio_id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row, ("XAUUSD", "H1", 0.01))
 
     def test_a_set_without_auditable_identity_is_rejected_and_cleaned(self) -> None:
         payload = {
             "name": "Incompleto", "portfolio_type": "balanced",
             "files": [self.uploaded("bad.set", "StartLots=0.01||0||0||0||N\n")],
         }
-        with self.assertRaisesRegex(ValueError, "ForceSymbol y TimeFrame"):
+        with self.assertRaisesRegex(ValueError, "inferir el simbolo y el timeframe"):
             create_manual_portfolio(self.memory, self.runtime, payload)
         self.assertFalse(any((self.runtime / "manual_portfolios").glob("*/sets/*.set")))
 
@@ -94,6 +120,58 @@ class ManualPortfolioTests(unittest.TestCase):
         self.assertEqual(command[command.index("--from-date") + 1], "2020.01.01")
         self.assertEqual(command[command.index("--to-date") + 1], "2026.05.22")
         self.assertEqual(cwd, self.root)
+
+    def test_history_repairs_sets_and_allocations_created_before_normalization(self) -> None:
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read_dict({"Paths": {"template_path": str(template)}})
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Anterior", "portfolio_type": "balanced",
+            "files": [self.uploaded("old.set", "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.10\n")],
+        })
+        set_path = next(Path(saved["sets_folder"]).glob("*.set"))
+        set_path.write_text(
+            "ForceSymbol=XAUUSD\nTimeFrame=H1\nRisk=2\nStartLots=0.10\n"
+            "AdjustLotsizeToVariableValues=true\nUseEveryTick=true\n",
+            encoding="utf-8",
+        )
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            conn.execute(
+                "update portfolio_allocations set units=10,lot=0.10 where portfolio_id=?",
+                (saved["portfolio_id"],),
+            )
+            conn.execute(
+                "update portfolio_members set lot_multiplier=10,lot=0.10 where portfolio_id=?",
+                (saved["portfolio_id"],),
+            )
+            conn.execute(
+                "update portfolios set total_lot=0.10,total_units=10 where id=?",
+                (saved["portfolio_id"],),
+            )
+            conn.commit()
+
+        build_history_command(
+            {"project_dir": str(self.root)}, cfg, self.memory,
+            {"portfolio_id": saved["portfolio_id"]},
+        )
+
+        repaired = set_path.read_text(encoding="utf-8")
+        self.assertIn("Risk=0||0||0||20||N", repaired)
+        self.assertIn("StartLots=0.01||0.01||0.001000||0.100000||N", repaired)
+        self.assertIn("AdjustLotsizeToVariableValues=false||false||0||true||N", repaired)
+        self.assertIn("UseEveryTick=false", repaired)
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            allocation = conn.execute(
+                "select units,lot from portfolio_allocations where portfolio_id=?",
+                (saved["portfolio_id"],),
+            ).fetchone()
+            portfolio = conn.execute(
+                "select total_units,total_lot from portfolios where id=?",
+                (saved["portfolio_id"],),
+            ).fetchone()
+        self.assertEqual(allocation, (1, 0.01))
+        self.assertEqual(portfolio, (1, 0.01))
 
     def test_http_dispatch_exposes_history_defaults_and_start(self) -> None:
         class Controller:

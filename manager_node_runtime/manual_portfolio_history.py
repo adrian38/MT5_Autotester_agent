@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .manual_portfolio import normalize_manual_set
+
 
 def _template_path(config: dict[str, Any], cfg: configparser.ConfigParser) -> Path:
     project = Path(str(config["project_dir"])).expanduser().resolve()
@@ -59,6 +61,28 @@ def _manual_sets(memory_path: Path, portfolio_id: int) -> list[Path]:
     return paths
 
 
+def _repair_manual_lots(memory_path: Path, portfolio_id: int, paths: list[Path]) -> None:
+    """Normaliza sets heredados y sincroniza su asignacion fija en SQLite."""
+    for path in paths:
+        normalize_manual_set(path)
+    count = len(paths)
+    with contextlib.closing(sqlite3.connect(memory_path, timeout=10)) as conn:
+        conn.execute("begin immediate")
+        conn.execute(
+            "update portfolio_allocations set units=1,lot=0.01,lot_size_step=0.01 "
+            "where portfolio_id=?", (portfolio_id,),
+        )
+        conn.execute(
+            "update portfolio_members set lot_multiplier=1,lot=0.01,lot_size_step=0.01 "
+            "where portfolio_id=?", (portfolio_id,),
+        )
+        conn.execute(
+            "update portfolios set total_lot=?,total_units=? where id=?",
+            (round(count * 0.01, 8), count, portfolio_id),
+        )
+        conn.commit()
+
+
 def build_history_command(
     config: dict[str, Any], cfg: configparser.ConfigParser, memory_path: Path,
     payload: dict[str, Any],
@@ -82,6 +106,7 @@ def build_history_command(
         "--from-date", from_date, "--to-date", to_date,
     ]
     paths = _manual_sets(memory_path, portfolio_id)
+    _repair_manual_lots(memory_path, portfolio_id, paths)
     for path in paths:
         command.extend(["--set-file", str(path)])
     normalized = {"portfolio_id": portfolio_id, "from_date": from_date, "to_date": to_date, "model": 1}
