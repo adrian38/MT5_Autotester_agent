@@ -118,9 +118,10 @@ class JobController(
                 pass
         if self.queue_path.is_file():
             try:
-                stored_queue = load_json(self.queue_path)
+                stored_queue = json.loads(self.queue_path.read_text(encoding="utf-8"))
                 if isinstance(stored_queue, list):
-                    self.queue = [dict(item) for item in stored_queue if isinstance(item, dict)]
+                    loaded = [dict(item) for item in stored_queue if isinstance(item, dict)]
+                    self.queue = self._coalesce_manual_history_queue(loaded)
             except ValueError:
                 pass
         self._publish_status_snapshot()
@@ -226,6 +227,25 @@ class NodeHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "Ruta no encontrada"})
 
+    def _dispatch_portfolio_post(self, controller) -> tuple[int, Any] | None:
+        if self.path == "/api/v1/portfolios/manual-defaults":
+            return 200, controller.manual_portfolio_defaults()
+        if self.path == "/api/v1/portfolios/manual-history":
+            return 202, controller.start_manual_history(self._body())
+        routes = {
+            "/api/v1/portfolios/save": (201, controller.save_portfolio, 50_000_000),
+            "/api/v1/portfolios/manual": (201, controller.create_manual_portfolio, 50_000_000),
+            "/api/v1/portfolios/alias": (200, controller.set_portfolio_alias, 1_000_000),
+            "/api/v1/portfolios/delete": (200, controller.delete_portfolio, 1_000_000),
+            "/api/v1/portfolios/exclude": (200, controller.exclude_portfolio_members, 1_000_000),
+            "/api/v1/portfolios/requalify": (200, controller.requalify_portfolio_member, 1_000_000),
+        }
+        route = routes.get(self.path)
+        if not route:
+            return None
+        status, action, maximum = route
+        return status, action(self._body(maximum))
+
     def _dispatch_post(self) -> tuple[int, Any]:
         controller = self.server.controller
         if self.path == "/api/v1/application/restart":
@@ -272,17 +292,9 @@ class NodeHandler(BaseHTTPRequestHandler):
             return 200, controller.universe_action(self.path.rsplit("/", 1)[1], self._body())
         if self.path == "/api/v1/jobs/universe-history":
             return 202, controller.start_universe_history()
-        portfolio_routes = {
-            "/api/v1/portfolios/save": (201, controller.save_portfolio, 50_000_000),
-            "/api/v1/portfolios/alias": (200, controller.set_portfolio_alias, 1_000_000),
-            "/api/v1/portfolios/delete": (200, controller.delete_portfolio, 1_000_000),
-            "/api/v1/portfolios/exclude": (200, controller.exclude_portfolio_members, 1_000_000),
-            "/api/v1/portfolios/requalify": (200, controller.requalify_portfolio_member, 1_000_000),
-        }
-        route = portfolio_routes.get(self.path)
-        if route:
-            status, action, maximum = route
-            return status, action(self._body(maximum))
+        portfolio_response = self._dispatch_portfolio_post(controller)
+        if portfolio_response is not None:
+            return portfolio_response
         return 404, {"error": "Ruta no encontrada"}
 
     def do_POST(self) -> None:
