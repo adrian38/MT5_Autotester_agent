@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .manual_portfolio import normalize_manual_set
+from .node_commands import _add_symbol_options
+from .common import safe_int
 
 
 def _template_path(config: dict[str, Any], cfg: configparser.ConfigParser) -> Path:
@@ -83,6 +85,16 @@ def _repair_manual_lots(memory_path: Path, portfolio_id: int, paths: list[Path])
         conn.commit()
 
 
+def _history_workers(cfg: configparser.ConfigParser, payload: dict[str, Any]) -> tuple[bool, int]:
+    use_multiterminal = payload.get("use_multiterminal", True)
+    if not isinstance(use_multiterminal, bool):
+        raise ValueError("use_multiterminal debe ser verdadero o falso")
+    configured = safe_int(
+        cfg.get("Multiterminal", "workers", fallback="1"), 1, minimum=1, maximum=64,
+    )
+    return use_multiterminal, configured if use_multiterminal else 1
+
+
 def build_history_command(
     config: dict[str, Any], cfg: configparser.ConfigParser, memory_path: Path,
     payload: dict[str, Any],
@@ -98,16 +110,22 @@ def build_history_command(
     project = Path(str(config["project_dir"])).expanduser().resolve()
     settings = Path(str(config.get("settings_file") or "ui_settings.ini"))
     settings = settings if settings.is_absolute() else project / settings
+    use_multiterminal, workers = _history_workers(cfg, payload)
     command = [
         str(config.get("python_executable") or sys.executable), "-u", str(project / "run_tests.py"),
         "--template", str(_template_path(config, cfg)), "--multi-terminal",
-        "--terminals-config", str(settings), "--max-workers", "1",
+        "--terminals-config", str(settings), "--max-workers", str(workers),
         "--infer-tester-from-set", "--prefer-set-path-timeframe", "--model", "1",
         "--from-date", from_date, "--to-date", to_date,
     ]
+    broker = str(config.get("broker") or cfg.get("General", "ubs_broker", fallback="ROBOFOREX")).upper()
+    _add_symbol_options(command, cfg, broker)
     paths = _manual_sets(memory_path, portfolio_id)
     _repair_manual_lots(memory_path, portfolio_id, paths)
     for path in paths:
         command.extend(["--set-file", str(path)])
-    normalized = {"portfolio_id": portfolio_id, "from_date": from_date, "to_date": to_date, "model": 1}
+    normalized = {
+        "portfolio_id": portfolio_id, "from_date": from_date, "to_date": to_date,
+        "model": 1, "use_multiterminal": use_multiterminal,
+    }
     return normalized, command, project

@@ -100,14 +100,19 @@ class ManualPortfolioTests(unittest.TestCase):
         template = self.root / "tester_template.ini"
         template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
         settings = self.root / "ui_settings.ini"
-        settings.write_text(f"[Paths]\ntemplate_path={template}\n", encoding="utf-8")
+        settings.write_text(
+            f"[Paths]\ntemplate_path={template}\n"
+            "[General]\nsymbol_suffix_enabled=1\nsymbol_suffix=.sa\n"
+            "[Multiterminal]\nworkers=6\n",
+            encoding="utf-8",
+        )
         cfg = configparser.ConfigParser(interpolation=None)
         cfg.read(settings, encoding="utf-8")
         saved = create_manual_portfolio(self.memory, self.runtime, {
             "name": "OHLC", "portfolio_type": "balanced",
             "files": [self.uploaded("one.set", "ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.02\n")],
         })
-        config = {"project_dir": str(self.root), "settings_file": str(settings)}
+        config = {"project_dir": str(self.root), "settings_file": str(settings), "broker": "AXI"}
 
         defaults = history_defaults(config, cfg)
         normalized, command, cwd = build_history_command(
@@ -119,7 +124,17 @@ class ManualPortfolioTests(unittest.TestCase):
         self.assertEqual(command[command.index("--model") + 1], "1")
         self.assertEqual(command[command.index("--from-date") + 1], "2020.01.01")
         self.assertEqual(command[command.index("--to-date") + 1], "2026.05.22")
+        self.assertEqual(command[command.index("--symbol-suffix") + 1], ".sa")
+        self.assertEqual(command[command.index("--max-workers") + 1], "6")
+        self.assertTrue(normalized["use_multiterminal"])
         self.assertEqual(cwd, self.root)
+
+        single, single_command, _cwd = build_history_command(
+            config, cfg, self.memory,
+            {"portfolio_id": saved["portfolio_id"], "use_multiterminal": False},
+        )
+        self.assertEqual(single_command[single_command.index("--max-workers") + 1], "1")
+        self.assertFalse(single["use_multiterminal"])
 
     def test_history_repairs_sets_and_allocations_created_before_normalization(self) -> None:
         template = self.root / "tester_template.ini"
