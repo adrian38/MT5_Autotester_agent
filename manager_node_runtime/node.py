@@ -118,9 +118,10 @@ class JobController(
                 pass
         if self.queue_path.is_file():
             try:
-                stored_queue = load_json(self.queue_path)
+                stored_queue = json.loads(self.queue_path.read_text(encoding="utf-8"))
                 if isinstance(stored_queue, list):
-                    self.queue = [dict(item) for item in stored_queue if isinstance(item, dict)]
+                    loaded = [dict(item) for item in stored_queue if isinstance(item, dict)]
+                    self.queue = self._coalesce_manual_history_queue(loaded)
             except ValueError:
                 pass
         self._publish_status_snapshot()

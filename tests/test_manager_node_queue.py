@@ -13,6 +13,46 @@ from manager_node_runtime.node import JobController
 
 
 class ManagerNodeQueueTests(unittest.TestCase):
+    def test_failed_manual_history_does_not_block_its_queued_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            controller = JobController(
+                {"node_id": "ic", "project_dir": str(project)},
+                project / "manager_node.json",
+            )
+            controller.state.update({
+                "job_id": "old", "job_type": "manual_history", "status": "failed",
+                "pipeline": [{"action": "manual_history"}], "current_step_index": 0,
+                "log_path": str(project / "old.log"),
+            })
+            controller.queue = [{
+                "id": "retry", "type": "manual_history",
+                "payload": {"portfolio_id": 109}, "summary": "retry",
+            }]
+            with patch.object(controller, "_start_manual_history") as start:
+                controller._drain_queue()
+            start.assert_called_once_with({"portfolio_id": 109})
+            self.assertEqual(controller.queue, [])
+
+    def test_manual_history_queue_keeps_only_latest_request_per_portfolio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            seed = JobController(
+                {"node_id": "ic", "project_dir": str(project)},
+                project / "manager_node.json",
+            )
+            seed.queue_path.write_text(json.dumps([
+                {"id": "old", "type": "manual_history", "payload": {"portfolio_id": 109, "to_date": "2025.01.01"}},
+                {"id": "other", "type": "generation", "payload": {"cycles": 1}},
+                {"id": "new", "type": "manual_history", "payload": {"portfolio_id": 109, "to_date": "2026.05.22"}},
+            ]), encoding="utf-8")
+            with patch.object(JobController, "_schedule_queue_drain"):
+                controller = JobController(
+                    {"node_id": "ic", "project_dir": str(project)},
+                    project / "manager_node.json",
+                )
+            self.assertEqual([item["id"] for item in controller.queue], ["new", "other"])
+
     def test_queue_snapshot_stays_pending_while_next_job_starts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)
