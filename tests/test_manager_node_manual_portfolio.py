@@ -4,13 +4,16 @@ import base64
 import contextlib
 import sqlite3
 import tempfile
+import threading
 import unittest
 import configparser
 from pathlib import Path
 
+from manager_node_runtime.live_audit_sets import resolve_portfolio_set
 from manager_node_runtime.manual_portfolio import create_manual_portfolio
 from manager_node_runtime.manual_portfolio_history import build_history_command, history_defaults
 from manager_node_runtime.node import NodeHandler
+from manager_node_runtime.node_jobs_api import JobApiMixin
 
 
 class ManualPortfolioTests(unittest.TestCase):
@@ -65,6 +68,41 @@ class ManualPortfolioTests(unittest.TestCase):
         self.assertIn("StartLots=0.01||0.01||0.001000||0.100000||N", normalized)
         self.assertIn("AdjustLotsizeToVariableValues=false||false||0||true||N", normalized)
         self.assertIn("UseEveryTick=false||false||0||true||N", normalized)
+
+    def test_the_detail_keeps_the_stored_path_so_the_auditor_never_guesses(self) -> None:
+        # `set_id` de un portafolio manual es el nombre pelado del fichero; la
+        # ruta solo vive en `set_path`. Si el detalle no la reexporta, el auditor
+        # recibe «uno.set» y acaba en el rglob por nombre de
+        # `resolve_portfolio_set`, que con homonimos distintos se niega a elegir:
+        # «Se encontraron varios sets distintos para …».
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Manual auditable", "portfolio_type": "balanced",
+            "files": [self.uploaded("uno.set", "ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.02\n")],
+        })
+        homonym = self.root / "otra_campana" / "uno.set"
+        homonym.parent.mkdir()
+        homonym.write_text("ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.99\n", encoding="utf-8")
+
+        class Controller(JobApiMixin):
+            def __init__(self, config: dict) -> None:
+                self.config = config
+                self.lock = threading.Lock()
+
+        controller = Controller({
+            "project_dir": str(self.root), "memory_path": str(self.memory),
+            "settings_file": str(self.root / "ui_settings.ini"),
+        })
+        detail = controller.portfolio_detail(saved["portfolio_id"], "full_history")["portfolio"]
+        members = detail["members"]
+
+        stored = Path(saved["sets_folder"]) / "uno.set"
+        self.assertEqual([member["set_id"] for member in members], ["uno.set"])
+        self.assertEqual([member["set_path"] for member in members], [str(stored)])
+        self.assertEqual(
+            resolve_portfolio_set(self.root, members[0]["set_path"]).resolve(), stored.resolve(),
+        )
+        with self.assertRaisesRegex(FileNotFoundError, "varios sets distintos"):
+            resolve_portfolio_set(self.root, members[0]["set_id"])
 
     def test_symbol_and_timeframe_use_the_standard_set_inference(self) -> None:
         payload = {
