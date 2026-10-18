@@ -1,4 +1,20 @@
-"""Creacion local de un portafolio a partir de ficheros ``.set`` subidos."""
+"""Creacion local de un portafolio a partir de ficheros ``.set`` subidos.
+
+Tambien su borrado del disco. Un portafolio manual no vive solo en SQLite: sus
+``.set`` quedan en ``<runtime>/manual_portfolios/<uuid>/sets/`` y la ruta
+completa se guarda en ``set_path``. Borrar el portafolio quitaba unicamente las
+filas, asi que esa carpeta quedaba huerfana para siempre.
+
+La regla de ``manual_portfolio_folder`` es deliberadamente estrecha, porque
+borrar ficheros no se deshace: solo la carpeta ``<uuid>`` cuyo ``sets/``
+contiene el ``.set``, solo si el abuelo se llama ``manual_portfolios``, solo si
+cae bajo la raiz de runtime del nodo y solo si ninguna fila de otro portafolio
+sigue apuntando ahi. El ``set_path`` de un portafolio UBS es la ruta del
+candidato del pool y no cumple ninguna de las tres primeras.
+
+El manager tiene su propia copia en ``mt5_manager/portfolio_manual_files.py``,
+con los mismos nombres; cambiar solo una de las dos no sirve.
+"""
 from __future__ import annotations
 
 import base64
@@ -7,7 +23,7 @@ import shutil
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
 from run_tests_symbols import infer_tester_fields_from_set, load_set_params
@@ -30,6 +46,97 @@ TIMEFRAME_LABELS = {
     "360": "H6", "480": "H8", "720": "H12", "1440": "D1",
     "10080": "W1", "43200": "MN1",
 }
+
+
+MANUAL_PORTFOLIOS_DIRNAME = "manual_portfolios"
+MANUAL_SETS_DIRNAME = "sets"
+MEMBER_TABLES = ("portfolio_allocations", "portfolio_members")
+
+
+def _key(folder: Path) -> str:
+    return folder.as_posix().casefold()
+
+
+def _within(folder: Path, root: Path) -> bool:
+    """Comparacion por texto: resolver una unidad de red cuesta segundos."""
+    base = root.as_posix().rstrip("/").casefold()
+    target = _key(folder)
+    return bool(base) and (target == base or target.startswith(base + "/"))
+
+
+def manual_portfolio_folder(root: Path | str, set_path: Any) -> Path | None:
+    """``<root>/.../manual_portfolios/<uuid>`` de un set manual, o ``None``."""
+    text = str(set_path or "").replace("\\", "/").strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    if not candidate.is_absolute() or candidate.parent.name.casefold() != MANUAL_SETS_DIRNAME:
+        return None
+    folder = candidate.parent.parent
+    if folder.parent.name.casefold() != MANUAL_PORTFOLIOS_DIRNAME:
+        return None
+    return folder if _within(folder, Path(root).expanduser().absolute()) else None
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "select 1 from sqlite_master where type='table' and name=?", (table,)
+    ).fetchone() is not None
+
+
+def _set_paths(conn: sqlite3.Connection, portfolio_id: int, mine: bool) -> list[Any]:
+    comparison = "=" if mine else "<>"
+    values: list[Any] = []
+    for table in MEMBER_TABLES:
+        if _table_exists(conn, table):
+            values.extend(
+                row[0] for row in conn.execute(
+                    f"select set_path from {table} where portfolio_id{comparison}?",
+                    (portfolio_id,),
+                )
+            )
+    return values
+
+
+def manual_portfolio_folders(root: Path | str, set_paths: Iterable[Any]) -> list[Path]:
+    """Las carpetas distintas que nombran estos ``set_path``, sin repetir."""
+    found: dict[str, Path] = {}
+    for value in set_paths:
+        folder = manual_portfolio_folder(root, value)
+        if folder is not None:
+            found.setdefault(_key(folder), folder)
+    return list(found.values())
+
+
+def manual_portfolio_folders_only_for(
+    conn: sqlite3.Connection, root: Path | str, portfolio_id: int,
+) -> list[Path]:
+    """Carpetas que solo usa este portafolio, listas para retirar.
+
+    Se llama **antes** de borrar ninguna fila, para que la consulta de «las de
+    los demas» no se confunda con las que estan desapareciendo.
+    """
+    mine = manual_portfolio_folders(root, _set_paths(conn, portfolio_id, mine=True))
+    shared = {_key(folder) for folder in manual_portfolio_folders(
+        root, _set_paths(conn, portfolio_id, mine=False)
+    )}
+    return [folder for folder in mine if _key(folder) not in shared]
+
+
+def discard_manual_portfolio_folders(folders: Iterable[Path]) -> list[str]:
+    """Retira cada carpeta y devuelve las que ya no estan.
+
+    Que falte, o que el sistema de ficheros se niegue, no interrumpe el borrado
+    del portafolio: las filas ya no existen y repetir la accion no las devuelve.
+    """
+    removed: list[str] = []
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        if not folder.exists():
+            removed.append(str(folder))
+    return removed
 
 
 def normalize_manual_set(path: Path) -> None:

@@ -181,14 +181,18 @@ class ManagerNodePortfolioSaveTests(unittest.TestCase):
             controller = SimpleNamespace(
                 _settings_and_memory=lambda: (None, memory),
                 _persist=lambda: None,
+                runtime_dir=Path(temp_dir) / "runtime",
             )
 
             result = JobController.delete_portfolio(controller, {
                 "scope": "full_history", "portfolio_id": portfolio_id,
             })
 
+            # `removed_folders` vacio: este portafolio es UBS y sus `set_path`
+            # son candidatos del pool, no carpetas de `manual_portfolios`.
             self.assertEqual(result, {
                 "deleted": True, "portfolio_id": portfolio_id, "scope": "full_history",
+                "removed_folders": [],
             })
             with contextlib.closing(sqlite3.connect(memory)) as conn:
                 self.assertEqual(conn.execute(
