@@ -11,7 +11,11 @@ from typing import Any
 
 from . import node_settings, node_snapshots
 from .common import safe_int, save_json, utc_now
-from .manual_portfolio import create_manual_portfolio
+from .manual_portfolio import (
+    create_manual_portfolio,
+    discard_manual_portfolio_folders,
+    manual_portfolio_folders_only_for,
+)
 from .manual_portfolio_history import history_defaults
 from .portfolio_save import (
     exclude_portfolio_members_payload,
@@ -218,6 +222,9 @@ class JobApiMixin:
             if row is None:
                 conn.rollback()
                 raise ValueError(f"No existe el portafolio #{portfolio_id} en este ámbito")
+            # Un portafolio manual tambien tiene sus `.set` en el disco de este
+            # agente; sin esto la carpeta queda huerfana para siempre.
+            folders = manual_portfolio_folders_only_for(conn, self.runtime_dir, portfolio_id)
             for table in ("portfolio_decision_log", "portfolio_allocations", "portfolio_members", "portfolio_versions"):
                 if node_settings._table_exists(conn, table):
                     conn.execute(f"delete from {table} where portfolio_id=?", (portfolio_id,))
@@ -229,8 +236,12 @@ class JobApiMixin:
         with contextlib.closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=10)) as check:
             if check.execute("select 1 from portfolios where id=?", (portfolio_id,)).fetchone() is not None:
                 raise RuntimeError(f"El portafolio #{portfolio_id} sigue presente después del commit")
+        removed = discard_manual_portfolio_folders(folders)
         self._persist()
-        return {"deleted": True, "portfolio_id": portfolio_id, "scope": scope}
+        return {
+            "deleted": True, "portfolio_id": portfolio_id, "scope": scope,
+            "removed_folders": removed,
+        }
 
     def exclude_portfolio_members(self, payload: dict[str, Any]) -> dict[str, Any]:
         _cfg, db_path = self._settings_and_memory()

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import shutil
 import sqlite3
 import tempfile
 import threading
 import unittest
 import configparser
 from pathlib import Path
+from typing import Any
 
 from manager_node_runtime.live_audit_sets import resolve_portfolio_set
 from manager_node_runtime.manual_portfolio import create_manual_portfolio
@@ -225,6 +227,103 @@ class ManualPortfolioTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(allocation, (1, 0.01))
         self.assertEqual(portfolio, (1, 0.01))
+
+    def _delete_controller(self) -> Any:
+        """El controlador de la API con lo justo para `delete_portfolio`."""
+        memory = self.memory
+        runtime = self.runtime
+
+        class Controller(JobApiMixin):
+            def __init__(self) -> None:
+                self.config = {"project_dir": str(memory.parent), "node_id": "nodo"}
+                self.runtime_dir = runtime
+                self.lock = threading.Lock()
+                self.persisted = 0
+
+            def _settings_and_memory(self):
+                return configparser.ConfigParser(), memory
+
+            def _persist(self) -> None:
+                self.persisted += 1
+
+        return Controller()
+
+    def _manual(self, name: str, set_name: str = "uno.set") -> dict:
+        return create_manual_portfolio(self.memory, self.runtime, {
+            "name": name, "portfolio_type": "balanced",
+            "files": [self.uploaded(set_name, "ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.02\n")],
+        })
+
+    def test_deleting_a_manual_portfolio_also_removes_its_sets_folder(self) -> None:
+        # Sin esto la carpeta `<runtime>/manual_portfolios/<uuid>` queda
+        # huerfana para siempre: el portafolio que la nombraba ya no existe.
+        saved = self._manual("Para borrar")
+        folder = Path(saved["sets_folder"]).parent
+        self.assertTrue(folder.is_dir())
+
+        controller = self._delete_controller()
+        result = controller.delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["removed_folders"], [str(folder)])
+        self.assertFalse(folder.exists())
+        self.assertTrue(folder.parent.is_dir(), "no se toca `manual_portfolios`")
+
+    def test_a_folder_that_is_already_gone_does_not_break_the_delete(self) -> None:
+        saved = self._manual("Sin ficheros")
+        folder = Path(saved["sets_folder"]).parent
+        shutil.rmtree(folder)
+
+        controller = self._delete_controller()
+        result = controller.delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["removed_folders"], [])
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            self.assertIsNone(
+                conn.execute("select 1 from portfolios where id=?", (saved["portfolio_id"],)).fetchone()
+            )
+
+    def test_a_set_outside_manual_portfolios_keeps_its_file(self) -> None:
+        # El `set_path` de un portafolio UBS es la ruta del candidato del pool,
+        # fuera de `runtime/`: ni se borra el fichero ni su carpeta.
+        saved = self._manual("Reapuntado")
+        pool = self.root / "data" / "ICTRADING" / "sets"
+        pool.mkdir(parents=True)
+        candidate = pool / "Candidato.set"
+        candidate.write_text("Risk=1\n", encoding="utf-8")
+        folder = Path(saved["sets_folder"]).parent
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            for table in ("portfolio_allocations", "portfolio_members"):
+                conn.execute(
+                    f"update {table} set set_path=? where portfolio_id=?",
+                    (str(candidate), saved["portfolio_id"]),
+                )
+            conn.commit()
+
+        result = self._delete_controller().delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertEqual(result["removed_folders"], [])
+        self.assertTrue(candidate.is_file(), "se borro el set de un portafolio UBS")
+        self.assertTrue(pool.is_dir())
+        self.assertTrue(folder.is_dir(), "nadie la nombra ya, pero no es de este portafolio")
+
+    def test_a_folder_that_another_portfolio_still_uses_survives(self) -> None:
+        saved = self._manual("Primero")
+        other = self._manual("Segundo", "dos.set")
+        folder = Path(saved["sets_folder"]).parent
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            for table in ("portfolio_allocations", "portfolio_members"):
+                conn.execute(
+                    f"update {table} set set_path=? where portfolio_id=?",
+                    (str(Path(saved["sets_folder"]) / "uno.set"), other["portfolio_id"]),
+                )
+            conn.commit()
+
+        result = self._delete_controller().delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertEqual(result["removed_folders"], [])
+        self.assertTrue(folder.is_dir(), "la carpeta la sigue usando otro portafolio")
 
     def test_http_dispatch_exposes_history_defaults_and_start(self) -> None:
         class Controller:
