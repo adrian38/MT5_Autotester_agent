@@ -53,6 +53,35 @@ def _tick_bases_progress_signature(terminal_data_dirs: list[Path]) -> tuple[int,
                 newest = st.st_mtime
     return count, total, newest
 
+def _history_sync_signature(history_targets: list[Path]) -> tuple[int, int]:
+    """Cuanto lleva reconstruido el historico M1 que el preflight aparto.
+
+    El preflight de Model=4 borra a proposito la cache M1 del simbolo para que
+    MT5 tome el camino resistente de sincronizar M1 antes de pedir ticks. Esa
+    sincronizacion **no vuelca el journal ni toca los .tkc**: reescribe los
+    .hcc que el preflight aparto, y ninguna de las dos senales que miraba el
+    detector la ve. Resultado: confundia la sincronizacion que el mismo habia
+    forzado con un atasco y mataba el terminal a los 40s.
+
+    El 20 de octubre de 2026 eso tumbo tres auditorias de AXI. El orden del log
+    lo dice todo: XAUUSD.sa, con cache de 2014 a 2026, murio en los dos
+    intentos; USDJPY.sa, de 2015 a 2026, murio en el primero y paso en el
+    segundo; BTCUSD.sa y ETHUSD.sa, con tres anos, pasaron a la primera. Cuanta
+    mas cache hay que rehacer, mas tarda la sincronizacion y mas segura es la
+    muerte.
+    """
+    count = 0
+    total = 0
+    for target in history_targets:
+        try:
+            size = int(target.stat().st_size)
+        except OSError:
+            continue
+        count += 1
+        total += size
+    return count, total
+
+
 def terminate_process_tree(process: subprocess.Popen, logger: RunLogger) -> None:
     if process.poll() is not None:
         return
@@ -89,6 +118,7 @@ class _WatchdogLimits:
     max_runtime_seconds: int = 0
     tester_model: str = ""
     tester_log_dirs: list[Path] = field(default_factory=list)
+    history_targets: list[Path] = field(default_factory=list)
     log_check_min_mtime: float = 0.0
     report_path: Path | None = None
     mt5_path: Path | None = None
@@ -187,17 +217,20 @@ class _Mt5Watchdog:
         return None
 
     def _bases_state(self) -> tuple[tuple[int, int, float], bool, bool]:
-        """Progreso real de la descarga de ticks mirando los .tkc de bases/.
+        """Progreso real mirando los .tkc de ticks y los .hcc de historico.
 
         MT5 bufferea el journal del tester mientras descarga, asi que el log
         puede no existir ni crecer durante minutos aunque la descarga avance.
+        Y antes de los ticks viene la sincronizacion M1, que no toca ninguno
+        de los dos: por eso cuenta tambien `_history_sync_signature`.
         """
         if not self.limits.use_model4_log_check:
             return (0, 0, 0.0), False, True
         bases_signature = _tick_bases_progress_signature(self.limits.tester_log_dirs)
-        bases_progress = self.last_bases_signature is not None and bases_signature != self.last_bases_signature
+        combined = bases_signature + _history_sync_signature(self.limits.history_targets)
+        bases_progress = self.last_bases_signature is not None and combined != self.last_bases_signature
         first_bases_check = self.last_bases_signature is None
-        self.last_bases_signature = bases_signature
+        self.last_bases_signature = combined
         return bases_signature, bases_progress, first_bases_check
 
     def _journal_state(self, journal: Path, bases_progress: bool) -> tuple[bool, bool, str]:
@@ -230,10 +263,12 @@ class _Mt5Watchdog:
             and elapsed >= self.limits.kick_after_seconds
         )
         if self.limits.use_model4_log_check and not marker_stuck_now:
+            history = _history_sync_signature(self.limits.history_targets)
             self.logger.write(
                 f"MT5 activo ({elapsed:.0f}s): journal sin volcar; "
                 f"ticks {'descargando' if bases_progress else 'sin datos aun'} "
-                f"({bases_signature[0]} .tkc / {bases_signature[1] / 1048576:.1f} MB)."
+                f"({bases_signature[0]} .tkc / {bases_signature[1] / 1048576:.1f} MB); "
+                f"historico M1 {history[0]} .hcc / {history[1] / 1048576:.1f} MB."
             )
         return False, marker_stuck_now, "journal del tester sin volcar a disco"
 
@@ -375,6 +410,7 @@ def wait_for_mt5_process(
     max_runtime_seconds: int = 0,
     tester_model: str = "",
     tester_log_dirs: list[Path] | None = None,
+    history_targets: list[Path] | None = None,
     log_check_min_mtime: float = 0.0,
     report_path: Path | None = None,
     mt5_path: Path | None = None,
@@ -383,6 +419,9 @@ def wait_for_mt5_process(
     """Wait for MT5 to exit.
 
     Model=4 keeps its marker/tick-download detector through kick_after_seconds.
+    history_targets are the M1 caches the Model=4 preflight rotated away: while
+    MT5 rebuilds them there is neither journal nor tick progress, so without
+    them the detector kills the very synchronization it asked for.
     Independently, stall_after_seconds applies to every model: if neither the
     tester journal nor a fresh report progresses for two checks after that idle
     window, MT5 is killed. max_runtime_seconds is an absolute per-job failsafe.
@@ -400,6 +439,7 @@ def wait_for_mt5_process(
         max_runtime_seconds=max_runtime_seconds,
         tester_model=tester_model,
         tester_log_dirs=list(tester_log_dirs or []),
+        history_targets=list(history_targets or []),
         log_check_min_mtime=log_check_min_mtime,
         report_path=report_path,
         mt5_path=mt5_path,

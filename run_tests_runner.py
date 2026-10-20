@@ -108,6 +108,9 @@ class _TestRunner:
         self.real_tick_model = False
         self.before = 0.0
         self.restarted = False
+        # Las caches M1 que el preflight aparta en esta pasada. El watchdog las
+        # necesita para no confundir la sincronizacion con un atasco.
+        self.history_targets: list[Path] = []
 
     @property
     def model_label(self) -> str:
@@ -137,6 +140,7 @@ class _TestRunner:
             max_runtime_seconds=settings.tester_max_runtime_seconds,
             tester_model=self.tester_model,
             tester_log_dirs=self.terminal_data_dirs,
+            history_targets=self.history_targets,
             log_check_min_mtime=self.before,
             report_path=self.report_path,
             mt5_path=settings.mt5_path,
@@ -166,9 +170,11 @@ class _TestRunner:
             if self.real_tick_model
             else []
         )
+        self.history_targets = [rotation.original for rotation in history_rotations]
         try:
             return self._launch(attempt)
         finally:
+            self.history_targets = []
             finish_model4_history_preflight(history_rotations, self.logger)
 
     def _snapshot(self, attempt: int, label: str) -> None:
