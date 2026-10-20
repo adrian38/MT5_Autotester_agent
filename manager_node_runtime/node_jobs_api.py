@@ -89,6 +89,10 @@ class JobApiMixin:
                 "task_queue": True,
                 "application_restart": bool(getattr(self, "application_restart_available", False)),
                 "historical_cleanup": bool(node_settings.historical_cleanup_scripts(self.config, required=False)),
+                # El sondeo diario de cuentas reales. El manager lo exige antes
+                # de pedirlo: un agente sin portar devolvería «Ruta no
+                # encontrada» a cada cita y el cron lo contaría como fallo.
+                "live_account_snapshot": True,
                 "live_account_audit": True, "live_audit_restore_account": True,
                 "live_audit_manual_reports": True,
                 "live_audit_stop": True,

@@ -176,6 +176,32 @@ class NodeHandler(BaseHTTPRequestHandler):
             raise ValueError("El cuerpo debe ser un objeto JSON")
         return value
 
+    def _send_live_accounts(self) -> None:
+        self._send(200, {
+            "snapshot": self.server.controller.live_audits.account_snapshot_state(),
+            "observed_at": utc_now(),
+        })
+
+    @staticmethod
+    def _is_live_account_artifact(path: str) -> bool:
+        parts = path.strip("/").split("/")
+        return (
+            len(parts) == 6
+            and parts[:3] == ["api", "v1", "live-accounts"]
+            and parts[4] == "artifacts"
+        )
+
+    def _send_live_account_artifact(self, path: str) -> None:
+        parts = path.strip("/").split("/")
+        try:
+            self._send_artifact(
+                self.server.controller.live_audits.account_snapshot_artifact(
+                    urllib.parse.unquote(parts[3]), urllib.parse.unquote(parts[5]),
+                )
+            )
+        except (ValueError, FileNotFoundError):
+            self._send(404, {"error": "Informe de cuenta no encontrado"})
+
     def do_GET(self) -> None:
         if not self._authorized():
             self._send(401, {"error": "No autorizado"})
@@ -217,6 +243,10 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self._send_artifact(path)
             except (ValueError, FileNotFoundError):
                 self._send(404, {"error": "Reporte de auditoría no encontrado"})
+        elif parsed.path == "/api/v1/live-accounts":
+            self._send_live_accounts()
+        elif self._is_live_account_artifact(parsed.path):
+            self._send_live_account_artifact(parsed.path)
         elif parsed.path.startswith("/api/v1/live-audits/"):
             audit_key = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
             self._send(200, {"audit": self.server.controller.live_audits.state(audit_key), "observed_at": utc_now()})
@@ -282,6 +312,10 @@ class NodeHandler(BaseHTTPRequestHandler):
             body = self._body()
             body["portfolio_id"] = portfolio_id
             return 202, {"audit": controller.live_audits.start(body)}
+        if self.path == "/api/v1/live-accounts/snapshot":
+            return 202, {
+                "snapshot": controller.live_audits.start_account_snapshot(self._body()),
+            }
         if self.path == "/api/v1/universe/symbols":
             return 200, controller.update_universe(self._body())
         if self.path in {
