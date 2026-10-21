@@ -20,6 +20,8 @@ STAGE_NOTIFICATION_LABELS = {
     "final_tick_6m": "Final Tick 6M",
     "final_tick_6m_quality": "Calidad baja Final Tick 6M",
     "regression": "Regresiva OHLC",
+    "manual_check_ohlc": "Comprobacion manual OHLC",
+    "manual_check_tick": "Comprobacion manual tick a tick",
     "cleanup_tester": "Limpieza historica Tester",
     "cleanup_data": "Limpieza historica bases/history",
     "cleanup_verify": "Verificacion de limpieza historica",
