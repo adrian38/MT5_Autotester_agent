@@ -238,6 +238,72 @@ class ManualCheckTests(unittest.TestCase):
         self.assertIn('"/api/v1/jobs/manual-check"', source.read_text(encoding="utf-8"))
 
 
+class ManualCheckQueueTests(unittest.TestCase):
+    """Una comprobacion fallida no puede dejar la cola parada.
+
+    El 2026-10-21 la comprobacion del #62 acabo `failed`, la siguiente se
+    quedo en «pendiente» para siempre y el usuario tuvo que darle a «Detener»
+    para que arrancara: `failed` esta en RESUMABLE_STATUSES, asi que el nodo
+    se daba por ocupado y `_drain_queue` volvia sin hacer nada.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.project = Path(self.temp.name)
+        self.controller = JobController(
+            {"node_id": "nodo", "project_dir": str(self.project)},
+            self.project / "manager_node.json",
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _state(self, job_type: str, status: str) -> None:
+        self.controller.state = {
+            "job_type": job_type, "status": status,
+            "pipeline": [{"action": "manual_check_ohlc"}, {"action": "manual_check_tick"}],
+            "current_step_index": 1, "log_path": str(self.project / "trabajo.log"),
+        }
+
+    def test_a_failed_manual_check_frees_the_node(self) -> None:
+        self._state("manual_check", "failed")
+
+        self.assertFalse(self.controller._is_resumable())
+        self.assertFalse(self.controller._busy())
+
+    def test_an_interrupted_manual_check_frees_it_too(self) -> None:
+        self._state("manual_check", "interrupted")
+
+        self.assertFalse(self.controller._busy())
+
+    def test_a_paused_manual_check_still_reserves_it(self) -> None:
+        # La pausa es del usuario: arrancar otro trabajo encima dejaria la
+        # comprobacion a medias sin forma de reanudarla.
+        self._state("manual_check", "paused")
+
+        self.assertTrue(self.controller._is_resumable())
+        self.assertTrue(self.controller._busy())
+
+    def test_a_failed_generation_keeps_reserving_the_node(self) -> None:
+        # Ahi si hay algo que continuar, y son horas de trabajo.
+        self._state("generation", "failed")
+
+        self.assertTrue(self.controller._is_resumable())
+
+    def test_the_queue_starts_what_was_waiting_behind_a_failed_check(self) -> None:
+        self._state("manual_check", "failed")
+        started: list[dict] = []
+        self.controller._start_manual_check = lambda payload: started.append(payload)
+        self.controller.queue = [{
+            "id": "uno", "type": "manual_check", "payload": {"portfolio_id": 62},
+        }]
+
+        self.controller._drain_queue()
+
+        self.assertEqual(started, [{"portfolio_id": 62}])
+        self.assertEqual(self.controller.queue, [])
+
+
 class ManualCheckRetryTests(unittest.TestCase):
     """Quien decide el reintento es el pipeline, que ve el codigo de salida.
 
