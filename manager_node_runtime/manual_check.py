@@ -68,6 +68,29 @@ def _lot(value: Any) -> float:
     return lot
 
 
+DEFAULT_RETRIES = 3
+MAX_RETRIES = 10
+
+
+def _retries(value: Any) -> int:
+    """Cuantas veces se vuelve a lanzar lo que quedo sin informe.
+
+    Son intentos **extra**: con 3, una estrategia se prueba hasta cuatro
+    veces. Lo pidio el usuario el 2026-10-21, despues de que un bloqueo de
+    MT5 en Model=4 dejara sin informe una de tres estrategias y tumbara la
+    comprobacion entera.
+    """
+    if value is None or str(value).strip() == "":
+        return DEFAULT_RETRIES
+    try:
+        retries = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Los reintentos deben ser un numero entero") from exc
+    if not 0 <= retries <= MAX_RETRIES:
+        raise ValueError(f"Los reintentos deben estar entre 0 y {MAX_RETRIES}")
+    return retries
+
+
 def _models(payload: dict[str, Any]) -> list[str]:
     requested = payload.get("models")
     if not isinstance(requested, list) or not requested:
@@ -121,6 +144,7 @@ def normalize_manual_check(payload: dict[str, Any]) -> dict[str, Any]:
         "models": _models(payload),
         "use_multiterminal": use_multiterminal,
         "lot": _lot(payload.get("lot")),
+        "retries": _retries(payload.get("retries")),
         "strategies": _strategies(payload),
     }
 
@@ -238,15 +262,38 @@ def _template_path(config: dict[str, Any], cfg: configparser.ConfigParser) -> Pa
     return path if path.is_absolute() else project / path
 
 
+def pending_set_files(work: Path, model: str) -> list[Path]:
+    """Los sets de ese modelo que todavia no han dejado informe.
+
+    Es lo que decide si un reintento tiene sentido y que corre en el: repetir
+    los que ya salieron costaria las mismas horas para reescribir lo mismo.
+    MT5 nombra el informe como el set, asi que la ausencia del `.htm` es la
+    senal, y es ademas la misma que usa la pantalla para decir que falta un
+    tipo de datos.
+    """
+    reports = work / "reports" / model
+    pending = []
+    for set_file in sorted((work / "sets").glob("*.set")):
+        if not any((reports / f"{set_file.stem}{suffix}").is_file() for suffix in (".htm", ".html")):
+            pending.append(set_file)
+    return pending
+
+
 def build_manual_check_command(
     config: dict[str, Any], cfg: configparser.ConfigParser, request: dict[str, Any], model: str,
+    attempt: int = 1,
 ) -> tuple[list[str], Path]:
-    """La orden de una de las dos ejecuciones, la del modelo pedido."""
+    """La orden de una de las dos ejecuciones, la del modelo pedido.
+
+    A partir del segundo intento sólo viajan los sets sin informe: un
+    bloqueo de MT5 se lleva una estrategia, no la tanda, y las que ya salieron
+    no tienen por que volver a correr.
+    """
     if model not in MODEL_OPTIONS:
         raise ValueError(f"Tipo de datos desconocido: {model}")
     work = Path(str(request.get("work_dir") or ""))
     sets_dir = work / "sets"
-    set_files = sorted(sets_dir.glob("*.set"))
+    set_files = pending_set_files(work, model) if attempt > 1 else sorted(sets_dir.glob("*.set"))
     if not set_files:
         raise ValueError("La comprobacion no conserva sus archivos .set")
     reports, configs, logs = _report_dirs(work, model)
