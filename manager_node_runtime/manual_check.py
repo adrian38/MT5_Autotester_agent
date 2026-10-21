@@ -4,7 +4,7 @@ Quien decide que estrategias son nuevas es el manager, que tiene la genealogia
 del portafolio; quien ejecuta es este runtime, el unico proceso con MT5
 delante. Cada comprobacion vive en `runtime/<nodo>/manual_checks/<check_id>/`:
 
-    sets/               copia del .set de cada estrategia con su StartLots
+    sets/               copia del .set con su StartLots y su UseEveryTick
     reports/<modelo>/   el .htm de MT5 y las imagenes de sus graficos
     configs/<modelo>/   los .ini del tester
     logs/<modelo>/      el log del runner
@@ -137,17 +137,36 @@ def _check_set_name(index: int, source_name: str, work: Path) -> str:
     return f"{prefix}{stem.rstrip('._-') or stem}.set"
 
 
+def _force_set_value(text: str, key: str, value: str, fallback: str) -> str:
+    """Deja `key=value` conservando el resto de la linea del `.set`.
+
+    Una linea es `clave=valor||min||paso||max||optimizar`: solo se toca el
+    valor, porque el rango y la marca de optimizacion son del experto. Si el
+    set no declara la clave se anade, que es lo que ya se hacia con StartLots:
+    un experto que no la tenga la ignora.
+    """
+    pattern = re.compile(rf"(?mi)^{key}=([^|\r\n]*)(.*)$")
+    if pattern.search(text):
+        return pattern.sub(lambda match: f"{key}={value}{match.group(2)}", text, count=1)
+    return f"{text}\n{fallback}\n"
+
+
 def _write_check_sets(project: Path, request: dict[str, Any], sets_dir: Path) -> None:
-    """Copia cada .set con su StartLots puesto y anota el nombre resultante."""
+    """Copia cada .set con su StartLots y su UseEveryTick puestos.
+
+    `UseEveryTick=true` no es un detalle: la comprobacion manual existe para
+    contrastar OHLC M1 con tick a tick, y un set que llega con `false` hace
+    que las dos corridas miren lo mismo por dentro aunque el tester reciba
+    modelos distintos. Lo pidio el usuario el 2026-10-21.
+    """
     lot = f"{request['lot']:.8f}".rstrip("0").rstrip(".")
     for index, strategy in enumerate(request["strategies"], 1):
         source = resolve_portfolio_set(project, strategy["set_path"])
         text, encoding = _read_set_text(source)
-        pattern = re.compile(r"(?mi)^StartLots=([^|\r\n]*)(.*)$")
-        if pattern.search(text):
-            text = pattern.sub(lambda match: f"StartLots={lot}{match.group(2)}", text, count=1)
-        else:
-            text = f"{text}\nStartLots={lot}||{lot}||0||0||N\n"
+        text = _force_set_value(text, "StartLots", lot, f"StartLots={lot}||{lot}||0||0||N")
+        text = _force_set_value(
+            text, "UseEveryTick", "true", "UseEveryTick=true||false||0||true||N",
+        )
         target = sets_dir / _check_set_name(index, source.name, sets_dir)
         target.write_text(text, encoding=encoding, newline="\n")
         strategy["source_set"] = str(source)
