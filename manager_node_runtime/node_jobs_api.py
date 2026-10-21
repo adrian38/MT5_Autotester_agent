@@ -96,6 +96,10 @@ class JobApiMixin:
                 "live_account_audit": True, "live_audit_restore_account": True,
                 "live_audit_manual_reports": True,
                 "live_audit_stop": True,
+                # La comprobación manual de las estrategias nuevas de un
+                # portafolio. El manager la exige antes de ofrecer el botón:
+                # un agente sin portar contestaría «Ruta no encontrada».
+                "manual_check": True,
             },
             "observed_at": utc_now(),
         }

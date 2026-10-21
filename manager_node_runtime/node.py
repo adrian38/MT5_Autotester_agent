@@ -291,6 +291,8 @@ class NodeHandler(BaseHTTPRequestHandler):
             return 202, controller.start_repair(self._body())
         if self.path == "/api/v1/jobs/regression":
             return 202, controller.start_regression(self._body())
+        if self.path == "/api/v1/jobs/manual-check":
+            return 202, controller.start_manual_check(self._body())
         if self.path == "/api/v1/jobs/cleanup":
             return 202, controller.start_cleanup()
         if self.path == "/api/v1/jobs/stop":

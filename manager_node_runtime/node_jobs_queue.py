@@ -142,6 +142,8 @@ class JobQueueMixin:
                     self._start_cleanup()
                 elif item.get("type") == "manual_history":
                     self._start_manual_history(payload)
+                elif item.get("type") == "manual_check":
+                    self._start_manual_check(payload)
                 else:
                     self._start_generation(payload)
             except Exception as exc:
