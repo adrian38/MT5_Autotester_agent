@@ -90,6 +90,32 @@ class ManualCheckTests(unittest.TestCase):
         copy = Path(request["work_dir"]) / "sets" / request["strategies"][0]["runtime_set"]
         self.assertIn("StartLots=0.5||0||0||0||N", copy.read_text(encoding="utf-8"))
 
+    def test_every_tick_is_marked_in_each_copy(self) -> None:
+        """Las dos corridas tienen que diferenciarse solo en el modelo de datos.
+
+        Un set que llega con `UseEveryTick=false` hace que OHLC M1 y tick a
+        tick miren lo mismo por dentro, y la comparacion de la pantalla deja
+        de medir lo que dice medir.
+        """
+        self.set_path.write_text(
+            SET_TEXT + "UseEveryTick=false||false||0||true||N\n", encoding="utf-8",
+        )
+
+        request = prepare_manual_check(self.config, self.runtime, self.payload())
+
+        copy = Path(request["work_dir"]) / "sets" / request["strategies"][0]["runtime_set"]
+        self.assertIn("UseEveryTick=true||false||0||true||N", copy.read_text(encoding="utf-8"))
+        # El original no se toca: es el set que el portafolio tiene guardado.
+        self.assertIn("UseEveryTick=false", self.set_path.read_text(encoding="utf-8"))
+
+    def test_a_set_without_the_parameter_still_gets_it(self) -> None:
+        request = prepare_manual_check(self.config, self.runtime, self.payload())
+
+        copy = Path(request["work_dir"]) / "sets" / request["strategies"][0]["runtime_set"]
+        text = copy.read_text(encoding="utf-8")
+        self.assertIn("UseEveryTick=true", text)
+        self.assertIn("StartLots=0.01||0||0||0||N", text)
+
     def test_each_model_runs_with_its_own_tester_model_and_report_folder(self) -> None:
         request = prepare_manual_check(self.config, self.runtime, self.payload())
 
