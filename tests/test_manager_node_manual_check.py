@@ -8,14 +8,16 @@ import unittest
 from pathlib import Path
 
 from manager_node_runtime.manual_check import (
+    DEFAULT_RETRIES,
     MODEL_STAGES,
     STAGE_MODELS,
     build_manual_check_command,
     manual_check_summary,
     normalize_manual_check,
+    pending_set_files,
     prepare_manual_check,
 )
-from manager_node_runtime.node import NodeHandler
+from manager_node_runtime.node import JobController, NodeHandler
 
 
 SET_TEXT = "ForceSymbol=XAUUSD||0||0||0||N\nTimeFrame=H1||0||0||0||N\nStartLots=0.07||0||0||0||N\n"
@@ -153,6 +155,43 @@ class ManualCheckTests(unittest.TestCase):
 
         self.assertEqual(command[command.index("--max-workers") + 1], "4")
 
+    def test_the_retries_default_to_three_and_are_editable(self) -> None:
+        self.assertEqual(DEFAULT_RETRIES, 3)
+        self.assertEqual(normalize_manual_check(self.payload())["retries"], 3)
+        self.assertEqual(normalize_manual_check(self.payload(retries=0))["retries"], 0)
+        self.assertEqual(normalize_manual_check(self.payload(retries=10))["retries"], 10)
+
+    def test_a_retry_only_carries_the_sets_that_have_no_report(self) -> None:
+        """Repetir lo que ya salio costaria las mismas horas para lo mismo.
+
+        Es el caso real del 2026-10-21: de tres estrategias en tick a tick,
+        MT5 se colgo en una y las otras dos ya tenian su `.htm` al lado.
+        """
+        payload = self.payload()
+        second = self.project / "outputs" / "USDJPY_M30_demo_g001_s002_v001.set"
+        second.write_text(SET_TEXT, encoding="utf-8")
+        payload["strategies"].append({
+            "set_path": str(second), "set_name": second.name,
+            "symbol": "USDJPY", "timeframe": "M30", "candidate_id": "ICTRADING/STANDARD:237",
+        })
+        request = prepare_manual_check(self.config, self.runtime, payload)
+        work = Path(request["work_dir"])
+        (work / "reports" / "tick").mkdir(parents=True)
+        done = request["strategies"][0]["report_stem"]
+        (work / "reports" / "tick" / f"{done}.htm").write_text("<html>", encoding="utf-8")
+
+        self.assertEqual(
+            [path.stem for path in pending_set_files(work, "tick")],
+            [request["strategies"][1]["report_stem"]],
+        )
+        command, _ = build_manual_check_command(self.config, self.cfg, request, "tick", 2)
+        carried = [command[index + 1] for index, value in enumerate(command) if value == "--set-file"]
+        self.assertEqual([Path(path).stem for path in carried],
+                         [request["strategies"][1]["report_stem"]])
+        # El primer intento sigue llevandolos todos.
+        first, _ = build_manual_check_command(self.config, self.cfg, request, "tick")
+        self.assertEqual(first.count("--set-file"), 2)
+
     def test_a_missing_set_fails_before_the_job_is_queued(self) -> None:
         payload = self.payload()
         payload["strategies"][0]["set_path"] = str(self.project / "no_existe.set")
@@ -168,6 +207,9 @@ class ManualCheckTests(unittest.TestCase):
             ({"from_date": "01/01/2025"}, "YYYY.MM.DD"),
             ({"from_date": "2026.06.01", "to_date": "2026.01.01"}, "posterior"),
             ({"lot": 0}, "entre 0.01 y 100"),
+            ({"retries": 11}, "entre 0 y 10"),
+            ({"retries": -1}, "entre 0 y 10"),
+            ({"retries": "muchos"}, "numero entero"),
             ({"portfolio_id": 0}, "portafolio"),
         ):
             with self.subTest(changes=changes):
@@ -194,3 +236,85 @@ class ManualCheckTests(unittest.TestCase):
     def test_the_node_publishes_the_route_the_manager_calls(self) -> None:
         source = Path(NodeHandler.__module__.replace(".", "/") + ".py")
         self.assertIn('"/api/v1/jobs/manual-check"', source.read_text(encoding="utf-8"))
+
+
+class ManualCheckRetryTests(unittest.TestCase):
+    """Quien decide el reintento es el pipeline, que ve el codigo de salida.
+
+    El 2026-10-21 el XAUUSD H1 del #62 se colgo dos veces en tick a tick y
+    tumbo la comprobacion entera con los otros dos informes ya escritos al
+    lado. El usuario pidio reintentos, 3 por defecto y editables.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.project = Path(self.temp.name)
+        self.work = self.project / "runtime" / "nodo" / "manual_checks" / "check_1"
+        (self.work / "sets").mkdir(parents=True)
+        (self.work / "reports" / "tick").mkdir(parents=True)
+        for name in ("check_001_uno", "check_002_dos"):
+            (self.work / "sets" / f"{name}.set").write_text(SET_TEXT, encoding="utf-8")
+        (self.work / "reports" / "tick" / "check_002_dos.htm").write_text("<html>", encoding="utf-8")
+        self.log = self.project / "trabajo.log"
+        self.log.write_text("", encoding="utf-8")
+        self.controller = JobController(
+            {"node_id": "nodo", "project_dir": str(self.project)},
+            self.project / "manager_node.json",
+        )
+        self.launched: list[int] = []
+        self.controller._launch_next_runnable = lambda index, _path: (
+            self.launched.append(index) or True
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _state(self, retries: int = 3) -> dict:
+        step = {"action": "manual_check_tick", "cycle": None, "run_id": None}
+        self.controller.state = {
+            "log_path": str(self.log),
+            "pipeline": [step],
+            "request": {"work_dir": str(self.work), "retries": retries},
+        }
+        return step
+
+    def test_a_blocked_strategy_is_tried_again_and_only_that_one(self) -> None:
+        step = self._state()
+
+        self.assertTrue(self.controller._retry_manual_check(step, 0))
+
+        self.assertEqual(self.launched, [0])
+        self.assertEqual(step["manual_attempt"], 2)
+        self.assertIn("Reintento 1 de 3", self.log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [path.stem for path in pending_set_files(self.work, "tick")], ["check_001_uno"],
+        )
+
+    def test_the_retries_run_out(self) -> None:
+        step = self._state(retries=2)
+        step["manual_attempt"] = 3
+
+        self.assertFalse(self.controller._retry_manual_check(step, 0))
+        self.assertEqual(self.launched, [])
+
+    def test_zero_retries_is_the_old_behaviour(self) -> None:
+        step = self._state(retries=0)
+
+        self.assertFalse(self.controller._retry_manual_check(step, 0))
+        self.assertEqual(self.launched, [])
+
+    def test_nothing_missing_is_nothing_to_repeat(self) -> None:
+        # El codigo de salida no era 0 pero estan todos los informes: repetir
+        # la tanda entera seria no entender el fallo.
+        (self.work / "reports" / "tick" / "check_001_uno.htm").write_text("<html>", encoding="utf-8")
+        step = self._state()
+
+        self.assertFalse(self.controller._retry_manual_check(step, 0))
+        self.assertEqual(self.launched, [])
+
+    def test_another_kind_of_stage_is_none_of_its_business(self) -> None:
+        step = self._state()
+        step["action"] = "generation"
+
+        self.assertFalse(self.controller._retry_manual_check(step, 0))
+        self.assertEqual(self.launched, [])
