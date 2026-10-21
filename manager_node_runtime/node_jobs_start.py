@@ -7,6 +7,7 @@ from typing import Any
 from . import node_commands, node_settings
 from .common import safe_int, utc_now
 from .node_settings import CLEANUP_STAGES
+from .manual_check import MODEL_STAGES, prepare_manual_check
 from .manual_portfolio_history import build_history_command
 
 
@@ -393,4 +394,41 @@ class JobStartMixin:
             "commands": {"manual_history": command}, "telegram_notifications": [],
         }
         self._launch_step(0, command, cwd, log_path, first=True)
+        return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
+
+    def start_manual_check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Comprobacion manual de las estrategias nuevas de un portafolio.
+
+        El area de trabajo se prepara aqui aunque la tarea acabe encolada: un
+        set que ya no esta en disco tiene que fallar delante del usuario, no
+        tres horas despues dentro de la cola.
+        """
+        with self.lock:
+            request = prepare_manual_check(self.config, self.runtime_dir, payload)
+            if self._busy() or self.queue:
+                return self._enqueue(
+                    "manual_check", request,
+                    f"Portafolio #{request['portfolio_id']} · comprobación manual de "
+                    f"{len(request['strategies'])} estrategia(s)",
+                )
+            return self._start_manual_check(request)
+
+    def _start_manual_check(self, request: dict[str, Any]) -> dict[str, Any]:
+        pipeline = [
+            {"action": MODEL_STAGES[model], "cycle": None, "run_id": None}
+            for model in request.get("models") or []
+        ]
+        if not pipeline:
+            raise ValueError("Marca al menos un tipo de datos: ohlc o tick")
+        job_id = "manual_check_" + time.strftime("%Y%m%d_%H%M%S")
+        log_path = self.runtime_dir / f"{job_id}.log"
+        self.state = {
+            "job_id": job_id, "job_type": "manual_check", "status": "running", "pid": None,
+            "started_at": utc_now(), "finished_at": None, "return_code": None,
+            "request": request, "command": None, "log_path": str(log_path), "error": None,
+            "pipeline": pipeline, "current_stage": pipeline[0]["action"], "current_cycle": None,
+            "current_run_id": None, "completed_stages": [], "stage_return_codes": {},
+            "commands": {}, "telegram_notifications": [],
+        }
+        self._launch_next_runnable(0, log_path, first=True)
         return {**dict(self.state), "queued": False, "task_queue": self._queue_snapshot()}
