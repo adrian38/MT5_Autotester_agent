@@ -13,7 +13,13 @@ from . import guided_batches, node_commands, node_settings, node_snapshots
 from .common import safe_int, utc_now
 from .node_jobs_common import ACTIVE_STATUSES, CONTROL_LOCK_TIMEOUT
 from .node_settings import CLEANUP_STAGES
-from .manual_check import STAGE_MODELS, build_manual_check_command
+from .manual_check import (
+    DEFAULT_RETRIES,
+    MAX_RETRIES,
+    STAGE_MODELS,
+    build_manual_check_command,
+    pending_set_files,
+)
 from .manual_portfolio_history import build_history_command as build_manual_history_command
 from .universe_service import build_history_command
 
@@ -106,6 +112,7 @@ class JobPipelineMixin:
                 cfg, _memory = self._settings_and_memory()
                 command, cwd = build_manual_check_command(
                     self.config, cfg, step_request, STAGE_MODELS[stage],
+                    safe_int(step.get("manual_attempt"), 1, minimum=1),
                 )
             elif stage in CLEANUP_STAGES:
                 command, cwd = node_settings.build_historical_cleanup_command(self.config, stage)
@@ -248,10 +255,57 @@ class JobPipelineMixin:
                 pending_step["run_id"] = generated_run
         self.state["pipeline"] = pipeline
 
+    def _retry_manual_check(self, step: dict[str, Any], step_index: int) -> bool:
+        """Relanza la etapa de comprobacion manual con lo que quedo sin informe.
+
+        Un bloqueo de MT5 en Model=4 se lleva **una estrategia**, no la tanda:
+        el 2026-10-21 el XAUUSD H1 de la comprobacion del #62 se colgo dos
+        veces en tick a tick y tumbo el trabajo entero, con los otros dos
+        informes ya escritos al lado. El usuario pidio reintentos, 3 por
+        defecto y editables.
+
+        Se repite solo lo que no tiene `.htm`: repetir lo que ya salio costaria
+        las mismas horas para reescribir lo mismo. Devuelve si relanzo.
+        """
+        stage = str(step["action"])
+        if stage not in STAGE_MODELS:
+            return False
+        request = dict(self.state.get("request") or {})
+        retries = safe_int(
+            request.get("retries"), DEFAULT_RETRIES, minimum=0, maximum=MAX_RETRIES,
+        )
+        attempt = safe_int(step.get("manual_attempt"), 1, minimum=1)
+        if attempt > retries:
+            return False
+        work = Path(str(request.get("work_dir") or ""))
+        pending = pending_set_files(work, STAGE_MODELS[stage])
+        if not pending:
+            # El codigo de salida no era 0 pero no falta ningun informe: no hay
+            # nada que repetir, y repetirlo todo seria no entender el fallo.
+            return False
+        step["manual_attempt"] = attempt + 1
+        log_path = Path(str(self.state["log_path"]))
+        with log_path.open("a", encoding="utf-8", errors="replace") as handle:
+            handle.write(
+                f"[manager-node] Reintento {attempt} de {retries} en {stage}: "
+                f"{len(pending)} estrategia(s) sin informe.\n"
+            )
+        try:
+            return self._launch_next_runnable(step_index, log_path)
+        except Exception as exc:
+            # Un reintento que no arranca no puede dejar el trabajo colgado:
+            # se anota y el camino normal lo cierra como fallido.
+            self.state["error"] = str(exc)
+            return False
+
     def _continue_after_watched_step(
         self, pipeline: list[dict[str, Any]], step_index: int,
         step: dict[str, Any], return_code: int,
     ) -> None:
+        # Antes del aviso: un intento que se va a repetir no es el final de la
+        # etapa, y anunciarlo seria avisar de un fallo que aun no lo es.
+        if return_code != 0 and self._retry_manual_check(step, step_index):
+            return
         self._notify_stage_completion(step, return_code)
         next_index = step_index + 1
         next_is_cleanup = (
