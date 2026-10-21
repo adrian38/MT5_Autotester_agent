@@ -86,7 +86,19 @@ class JobQueueMixin:
         return self.process is not None or self._is_resumable() or self.live_audits.is_running()
 
     def _is_resumable(self) -> bool:
-        if str(self.state.get("job_type") or "") == "manual_history":
+        job_type = str(self.state.get("job_type") or "")
+        if job_type == "manual_history":
+            return False
+        # Una comprobacion manual reserva el nodo **solo mientras el usuario la
+        # tenga en pausa**. Fallada no hay nada que continuar: sus reintentos
+        # ya se agotaron y reanudar relanzaria la etapa entera, que es lo
+        # mismo que volver a lanzarla desde el modal.
+        #
+        # Dejarla reservando el nodo paraba la cola sin decir por que: el
+        # 2026-10-21 una comprobacion fallida dejo la siguiente en «pendiente»
+        # para siempre, y el usuario tuvo que darle a «Detener» para que
+        # arrancara. `stopped` no es reanudable, y por eso aquello funciono.
+        if job_type == "manual_check" and str(self.state.get("status") or "") != "paused":
             return False
         pipeline = list(self.state.get("pipeline") or [])
         step_index = safe_int(self.state.get("current_step_index"), -1)
