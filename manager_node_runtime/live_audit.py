@@ -200,12 +200,15 @@ class LiveAuditController(
             self.stop_requested = True
             process = self.tester_process
             paths = list(self.tester_terminal_paths)
-            status = str(self.states[key].get("status") or "")
         if process is not None and process.poll() is None:
             self._terminate_tester_process(process)
         closed = self._close_tester_terminals(paths)
-        self._update(
-            key, status, "Deteniendo la auditoría a petición del usuario.",
+        # Sin tocar el estado: cortar el tester y cerrar sus terminales tarda
+        # segundos, y en ese hueco el trabajador ya ha pasado a `finalizing`.
+        # Devolver aqui el estado leido antes lo hacia retroceder y la
+        # auditoria no se cerraba nunca.
+        self._note_progress(
+            key, "Deteniendo la auditoría a petición del usuario.",
             "Detención pedida por el usuario: cortado el lanzador del tester y "
             f"cerradas {closed} terminal(es) suyas; vuelven a su cuenta configurada.",
         )
@@ -260,6 +263,27 @@ class LiveAuditController(
             raw.update(status=status, progress_text=text, **changes)
             if log:
                 raw.setdefault("log_lines", []).append(f"[{utc_now()}] {log}")
+            self._persist()
+
+    def _note_progress(self, audit_key: str, text: str, line: str) -> None:
+        """Avanza el texto de la pantalla **sin tocar el estado**.
+
+        `stop_audit` leia el estado antes de cortar el tester y lo volvia a
+        escribir despues, y en esos segundos el trabajador ya habia pasado a
+        `finalizing`: el estado retrocedia a `testing` y el cierre, que solo
+        cierra desde `finalizing` o `resuming`, no llegaba a fijar el estado
+        final. La auditoria se quedaba en «PROBANDO» con el texto «Deteniendo
+        la auditoria...» para siempre, y volver a pulsar Detener repetia la
+        misma carrera. Medido el 2026-10-22 en `audit-109` de AXI: parada a
+        las 14:05:49, estado pisado a las 14:05:50, cierre sin efecto a las
+        14:06:03.
+        """
+        with self.lock:
+            raw = self.states.get(audit_key)
+            if raw is None:
+                return
+            raw["progress_text"] = text
+            raw.setdefault("log_lines", []).append(f"[{utc_now()}] {line}")
             self._persist()
 
     def _log(self, audit_key: str, line: str) -> None:
@@ -457,7 +481,11 @@ class LiveAuditController(
         audit_key = request["audit_key"]
         with self.lock:
             raw = self.states[audit_key]
-            if str(raw.get("status")) in {"finalizing", "resuming"}:
+            # Cualquier estado en curso, no solo `finalizing` y `resuming`: si
+            # algo piso el estado mientras se restauraban las terminales, no
+            # cerrar aqui deja la auditoria viva para siempre. Lo que esta
+            # guarda protege es un estado **terminal** ya publicado.
+            if str(raw.get("status")) in RUNNING_STATUSES:
                 raw.update(
                     status=terminal_status,
                     progress_text=str(
