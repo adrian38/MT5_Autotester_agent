@@ -292,7 +292,10 @@ def _trade_view(trade: dict[str, Any] | None) -> dict[str, Any] | None:
     ):
         value = trade.get(key)
         result[key] = value.isoformat() if isinstance(value, datetime) else value
-    for key in ("position_id", "ticket", "sl", "tp"):
+    # `comment` entra aqui o no llega: `_trade_view` es una lista blanca y
+    # es lo ultimo que toca la operacion antes de publicarse. Anadirlo solo
+    # al extractor dejaba el campo extraido y tirado al serializar.
+    for key in ("position_id", "ticket", "sl", "tp", "comment"):
         if trade.get(key) is not None:
             result[key] = trade[key]
     return result
