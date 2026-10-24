@@ -9,6 +9,8 @@ from ubs.set_rules import (
     NFP_CONSTANT_VALUES,
     NFP_FILTER_BY_RUN_STRATEGY,
     NFP_FILTER_KEY,
+    ONLY_UP_KEY,
+    ONLY_UP_RULE_VALUE,
 )
 
 
@@ -23,6 +25,7 @@ def set_rules_summary() -> str:
     """Texto de la regla vigente, leido de la propia regla."""
     lines = [
         f"{ADJUST_LOTSIZE_KEY} = {ADJUST_LOTSIZE_RULE_VALUE}",
+        f"{ONLY_UP_KEY} = {ONLY_UP_RULE_VALUE}",
         "",
         f"{NFP_FILTER_KEY} queda fijado por estrategia:",
         *[

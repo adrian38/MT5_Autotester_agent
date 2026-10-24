@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ubs.set_rules import ADJUST_LOTSIZE_KEY, NFP_RULE_KEYS, apply_set_rules_text
+from ubs.set_rules import ADJUST_LOTSIZE_KEY, NFP_RULE_KEYS, ONLY_UP_KEY, apply_set_rules_text
 from ubs.set_utils import read_set_with_encoding, write_set_text
 
 
@@ -36,6 +36,7 @@ class RuleSweepTally:
     unknown_strategy: int = 0
     without_nfp_block: int = 0
     without_adjust_lotsize: int = 0
+    without_only_up: int = 0
     by_key: dict[str, int] = field(default_factory=dict)
     by_root: dict[str, int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
@@ -46,6 +47,7 @@ class RuleSweepTally:
             f"{self.unknown_strategy} sin estrategia deducible, "
             f"{self.without_nfp_block} sin bloque NFP, "
             f"{self.without_adjust_lotsize} sin {ADJUST_LOTSIZE_KEY}, "
+            f"{self.without_only_up} sin {ONLY_UP_KEY}, "
             f"{len(self.failed)} con error"
         )
 
@@ -129,6 +131,8 @@ def process_set_file(
         tally.without_nfp_block += 1
     if ADJUST_LOTSIZE_KEY in result.absent:
         tally.without_adjust_lotsize += 1
+    if ONLY_UP_KEY in result.absent:
+        tally.without_only_up += 1
     if not result.changed:
         return
     if not dry_run:
@@ -170,6 +174,7 @@ def write_report(report_path: Path, tally: RuleSweepTally, roots: list[Path], dr
                 "unknown_strategy": tally.unknown_strategy,
                 "without_nfp_block": tally.without_nfp_block,
                 "without_adjust_lotsize": tally.without_adjust_lotsize,
+                "without_only_up": tally.without_only_up,
                 "by_key": tally.by_key,
                 "by_root": tally.by_root,
                 "failed": tally.failed,

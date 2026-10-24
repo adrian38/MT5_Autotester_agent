@@ -25,6 +25,7 @@ DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"
 
 FROZEN_EXACT = {
     "AdjustLotsizeToVariableValues",
+    "OnlyUp",
     "Risk",
     "StartLots",
     "UseEveryTick",
