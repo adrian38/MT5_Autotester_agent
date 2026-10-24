@@ -9,6 +9,8 @@ from ubs.set_rules import (
     ADJUST_LOTSIZE_KEY,
     ADJUST_LOTSIZE_RULE_VALUE,
     NFP_RULE_KEYS,
+    ONLY_UP_KEY,
+    ONLY_UP_RULE_VALUE,
     apply_nfp_rules_file,
     apply_nfp_rules_text,
     apply_set_rules_text,
@@ -130,7 +132,11 @@ class NfpRuleIntegrationTests(unittest.TestCase):
         self.assertIn(f"{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}", result.text)
 
     def test_a_compliant_variable_lot_rule_is_untouched(self) -> None:
-        source = set_text("1", "true") + f"\n{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}"
+        source = (
+            set_text("1", "true")
+            + f"\n{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}"
+            + f"\n{ONLY_UP_KEY}={ONLY_UP_RULE_VALUE}"
+        )
 
         result = apply_set_rules_text(source)
 
@@ -144,9 +150,36 @@ class NfpRuleIntegrationTests(unittest.TestCase):
 
         self.assertIn(ADJUST_LOTSIZE_KEY, result.absent)
         self.assertIn(ADJUST_LOTSIZE_KEY, result.changed)
-        self.assertTrue(
-            result.text.endswith(f"{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}")
+        self.assertIn(f"{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}", result.text)
+
+    def test_all_rules_force_only_up_off_and_not_optimizable(self) -> None:
+        source = set_text("1", "true") + "\nOnlyUp=true||false||0||true||Y"
+
+        result = apply_set_rules_text(source)
+
+        self.assertIn(ONLY_UP_KEY, result.changed)
+        self.assertIn(f"{ONLY_UP_KEY}={ONLY_UP_RULE_VALUE}", result.text)
+
+    def test_a_compliant_only_up_rule_is_untouched(self) -> None:
+        source = (
+            set_text("1", "true")
+            + f"\n{ADJUST_LOTSIZE_KEY}={ADJUST_LOTSIZE_RULE_VALUE}"
+            + f"\n{ONLY_UP_KEY}={ONLY_UP_RULE_VALUE}"
         )
+
+        result = apply_set_rules_text(source)
+
+        self.assertNotIn(ONLY_UP_KEY, result.changed)
+        self.assertEqual(result.text, source)
+
+    def test_a_missing_only_up_parameter_is_added(self) -> None:
+        source = set_text("1", "true")
+
+        result = apply_set_rules_text(source)
+
+        self.assertIn(ONLY_UP_KEY, result.absent)
+        self.assertIn(ONLY_UP_KEY, result.changed)
+        self.assertIn(f"{ONLY_UP_KEY}={ONLY_UP_RULE_VALUE}", result.text)
 
     def test_bulk_sweep_rewrites_variable_lots_and_optimizer_flag(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -195,13 +228,13 @@ class NfpRuleIntegrationTests(unittest.TestCase):
             self.assertIn("EnableNFP_Filter=true", path.read_text(encoding="utf-8"))
 
     def test_the_rule_keys_cannot_be_made_agent_mutable(self) -> None:
-        rule_keys = (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY)
+        rule_keys = (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY, ONLY_UP_KEY)
         with patch("ubs_agent_config.load_mutation_overrides", return_value=({}, set(rule_keys))):
             for key in rule_keys:
                 self.assertFalse(is_agent_mutable_key(key), key)
 
     def test_the_legacy_generator_also_freezes_the_rule_keys(self) -> None:
-        for key in NFP_RULE_KEYS:
+        for key in (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY, ONLY_UP_KEY):
             self.assertFalse(ubs_generate_sets.is_mutable_key(key), key)
 
 

@@ -7,6 +7,10 @@ pantalla puede marcar sus claves como mutables.
 Regla de lotaje variable: `AdjustLotsizeToVariableValues` siempre queda en
 `false` y con su flag de optimizacion en `N`.
 
+Regla OnlyUp: `OnlyUp` siempre queda en `false` y con su flag de optimizacion
+en `N`. El lote solo debe crecer o decrecer segun el riesgo configurado, nunca
+quedar "pegado" al maximo alcanzado en la sesion.
+
 Regla NFP: los cinco parametros del filtro Non-Farm Payroll estan fijados. Los
 cuatro de comportamiento son constantes, y `EnableNFP_Filter` depende solo de
 `Run_Strategy`: la estrategia 1 (Breakout Support/Resistance) opera contra
@@ -38,7 +42,15 @@ NFP_FILTER_BY_RUN_STRATEGY: dict[str, str] = {"1": "true", "2": "false", "3": "f
 NFP_RULE_KEYS: tuple[str, ...] = (NFP_FILTER_KEY, *NFP_CONSTANT_VALUES)
 ADJUST_LOTSIZE_KEY = "AdjustLotsizeToVariableValues"
 ADJUST_LOTSIZE_RULE_VALUE = LOTS_REPLACEMENTS[ADJUST_LOTSIZE_KEY]
-SET_RULE_KEYS: tuple[str, ...] = (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY)
+ONLY_UP_KEY = "OnlyUp"
+ONLY_UP_RULE_VALUE = "false||false||0||true||N"
+# Claves cuyo .set entero (no solo el valor actual) queda fijado por una
+# regla; una nueva regla de este tipo solo necesita una entrada aqui.
+FULL_VALUE_RULES: dict[str, str] = {
+    ADJUST_LOTSIZE_KEY: ADJUST_LOTSIZE_RULE_VALUE,
+    ONLY_UP_KEY: ONLY_UP_RULE_VALUE,
+}
+SET_RULE_KEYS: tuple[str, ...] = (*NFP_RULE_KEYS, *FULL_VALUE_RULES)
 
 # Marcas con las que se deduce la estrategia de un .set que perdio su
 # Run_Strategy; son las mismas que usa `infer_missing_run_strategy_from_set`.
@@ -184,32 +196,32 @@ def apply_set_rules_text(text: str, run_strategy: str = "") -> NfpRuleResult:
     nfp_result = apply_nfp_rules_text(text, run_strategy)
     lines = nfp_result.text.splitlines(keepends=True)
     changed = list(nfp_result.changed)
-    found_adjust_lotsize = False
+    found_keys: set[str] = set()
     for index, line in enumerate(lines):
         content, _ending = split_line_ending(line)
         if "=" not in content or content.lstrip().startswith(";"):
             continue
         key, raw_value = content.split("=", 1)
-        if key.strip() != ADJUST_LOTSIZE_KEY:
+        key = key.strip()
+        rule_value = FULL_VALUE_RULES.get(key)
+        if rule_value is None:
             continue
-        found_adjust_lotsize = True
-        if raw_value.strip() != ADJUST_LOTSIZE_RULE_VALUE:
-            lines[index] = _rewrite_full_value(line, ADJUST_LOTSIZE_RULE_VALUE)
-            if ADJUST_LOTSIZE_KEY not in changed:
-                changed.append(ADJUST_LOTSIZE_KEY)
+        found_keys.add(key)
+        if raw_value.strip() != rule_value:
+            lines[index] = _rewrite_full_value(line, rule_value)
+            if key not in changed:
+                changed.append(key)
     absent = list(nfp_result.absent)
-    if not found_adjust_lotsize:
-        absent.append(ADJUST_LOTSIZE_KEY)
-        changed.append(ADJUST_LOTSIZE_KEY)
-        return NfpRuleResult(
-            _append_rule_value(nfp_result.text, ADJUST_LOTSIZE_KEY, ADJUST_LOTSIZE_RULE_VALUE),
-            nfp_result.run_strategy,
-            tuple(changed),
-            tuple(absent),
-        )
+    text_so_far = "".join(lines)
+    for key, rule_value in FULL_VALUE_RULES.items():
+        if key in found_keys:
+            continue
+        absent.append(key)
+        changed.append(key)
+        text_so_far = _append_rule_value(text_so_far, key, rule_value)
     if tuple(changed) == nfp_result.changed:
         return NfpRuleResult(nfp_result.text, nfp_result.run_strategy, tuple(changed), tuple(absent))
-    return NfpRuleResult("".join(lines), nfp_result.run_strategy, tuple(changed), tuple(absent))
+    return NfpRuleResult(text_so_far, nfp_result.run_strategy, tuple(changed), tuple(absent))
 
 
 def apply_set_rules_file(path: Path) -> NfpRuleResult:
