@@ -42,6 +42,25 @@ from .live_audit_compare import LiveAuditCompareMixin
 from .live_audit_report_upload import replace_tester_reports
 
 
+def _native_history_note(detail: dict[str, Any]) -> str:
+    """Dice en el log que el informe nativo desmintio a la API, si paso.
+
+    Sin esto, una auditoria salvada por el HTML se lee igual que una normal y
+    nadie se entera de que `history_deals_get` volvio a devolver una cache
+    vacia, que es el fallo que hay que perseguir en el terminal.
+    """
+    if detail.get("native_history_error"):
+        return f" El informe nativo no se pudo leer: {detail['native_history_error']}"
+    if detail.get("real_trades_source") != "native_terminal_report":
+        return ""
+    return (
+        " MT5 no devolvió ningún deal, así que las operaciones reales salen del "
+        f"informe nativo del terminal: {detail.get('native_closed_positions', 0)} "
+        f"cierres y {detail.get('native_open_positions_at_period_end', 0)} posición(es) "
+        f"abierta(s)."
+    )
+
+
 class LiveAuditController(
     LiveAuditTerminalsMixin,
     LiveAuditExtractMixin,
@@ -358,7 +377,8 @@ class LiveAuditController(
             f"con periodo {real_account_report.get('period_mode')} "
             f"{real_account_report.get('period_start_date')} a {real_account_report.get('period_end_date')}, "
             f"{real_account_report.get('bytes', 0)} bytes, sha256 "
-            f"{str(real_account_report.get('sha256') or '')[:16]}...",
+            f"{str(real_account_report.get('sha256') or '')[:16]}..."
+            + _native_history_note(real_history_detail),
         )
 
     def _extract_real_account(
