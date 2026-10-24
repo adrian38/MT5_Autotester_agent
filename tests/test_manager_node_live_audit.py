@@ -455,3 +455,91 @@ class LiveAuditCrossServerSymbolTests(LiveAuditTestBase, unittest.TestCase):
             filtered = controller._filter_real_trades("9", real_trades, signatures, {})
 
         self.assertEqual([trade["symbol"] for trade in filtered], ["XAUUSD"])
+
+
+_NATIVE_CLOSED = (
+    '<tr align="right"><td>2026.10.19 15:34:30</td><td>772438775</td><td>XOM</td>'
+    '<td>buy</td><td class="hidden" colspan="8"></td><td>0.01</td><td>176.51</td>'
+    "<td>177.11</td><td>187.00</td><td>2026.10.19 16:31:18</td><td>177.04</td>"
+    '<td>-0.06</td><td>-0.08</td><td colspan="2">0.47</td></tr>'
+)
+
+_NATIVE_REPORT = (
+    "<html><head><title>77049426: Informe del historial de trading</title></head><body>"
+    '<table><tr align="center"><th colspan="14"><b>Posiciones</b></th></tr>'
+    '<tr align="center" bgcolor="#E5F0FC"><td><b>Fecha/Hora</b></td>'
+    "<td><b>Posición</b></td><td><b>Símbolo</b></td><td><b>Tipo</b></td>"
+    "<td><b>Volumen</b></td><td><b>Precio</b></td><td><b>S / L</b></td>"
+    "<td><b>T / P</b></td><td><b>Fecha/Hora</b></td><td><b>Precio</b></td>"
+    "<td><b>Comisión</b></td><td><b>Swap</b></td>"
+    '<td colspan="2"><b>Beneficio</b></td></tr>' + _NATIVE_CLOSED + "</table></body></html>"
+)
+
+
+class _EmptyHistoryMt5:
+    """El terminal que devolvio una cache vacia el 2026-10-24."""
+
+    def __init__(self) -> None:
+        self.shutdown_called = False
+
+    account_info = staticmethod(
+        lambda: SimpleNamespace(login=111, server="IC-Real", currency="EUR")
+    )
+    terminal_info = staticmethod(lambda: SimpleNamespace(connected=True))
+    symbol_info = staticmethod(lambda _symbol: SimpleNamespace(point=.01))
+    last_error = staticmethod(lambda: (1, "Success"))
+
+    def history_deals_get(self, *_args, **_kwargs):
+        return []
+
+    def history_orders_get(self, *_args, **_kwargs):
+        return []
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+class LiveAuditNativeFallbackTests(LiveAuditTestBase, unittest.TestCase):
+    """Si `history_deals_get` no trae nada, manda el HTML del terminal.
+
+    El 2026-10-24 la auditoria del portafolio #170 publico «0 reales» del
+    periodo 18→24/10 mientras el informe que ese mismo terminal acababa de
+    escribir traia 50 posiciones cerradas.
+    """
+
+    def _extract(self, folder: Path, report: str | None):
+        controller = LiveAuditController(FakeOwner("idle"), folder)
+        controller.history_sync_attempts = 2
+        controller.history_sync_delay_seconds = 0
+        destination = folder / "real_account_mt5_report.html"
+        mt5 = _EmptyHistoryMt5()
+
+        def export(**_kwargs) -> dict:
+            if report is not None:
+                destination.write_text(report, encoding="utf-16")
+            return {"native_terminal_report": True, "filename": destination.name}
+
+        controller._export_native_account_report = export
+        controller._login_terminal = lambda *_a, **_k: (
+            mt5, "Terminal.2", {"name": "MT5_1", "mt5_path": "mt5.exe"}, set()
+        )
+        period_start = datetime(2026, 10, 18, tzinfo=timezone.utc)
+        period_end = datetime(2026, 10, 24, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        return controller._extract_real(request(), period_start, period_end, destination), mt5
+
+    def test_the_native_report_replaces_an_empty_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            (trades, points, account), _mt5 = self._extract(Path(temp), _NATIVE_REPORT)
+
+        self.assertEqual([trade["position_id"] for trade in trades], [772438775])
+        self.assertEqual(trades[0]["sl"], 177.11)
+        self.assertEqual(points, {"XOM": .01})
+        detail = account["history_detail"]
+        self.assertEqual(detail["real_trades_source"], "native_terminal_report")
+        self.assertEqual(detail["native_closed_positions"], 1)
+        self.assertEqual(detail["trades_reconstructed"], 1)
+
+    def test_an_unreadable_report_with_an_empty_api_stops_the_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, "no se pudo leer"):
+                self._extract(Path(temp), None)
