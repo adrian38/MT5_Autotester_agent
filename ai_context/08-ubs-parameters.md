@@ -199,6 +199,9 @@ SectionKey=----- Section label -----
 | `OnlyUp` | Only increase lot size, never reduce during a session | N |
 | `CheckMargin` | Check available margin before placing order | N |
 
+> `OnlyUp` is **rule-locked** to `false` — see
+> [Generation rules — immutable keys](#generation-rules--immutable-keys).
+
 ---
 
 ## Section: GMT_Settings — GMT offset
@@ -332,6 +335,16 @@ the UBS agent and the *Toggle inamovible/mutable* action cannot make it
 mutable. The generation normalizer enforces the rule on new sets, seed repair
 re-applies it, and *Aplicar reglas a todos los sets* repairs existing sets. If
 an old set lacks the parameter, the canonical fixed line is added.
+
+### Rule: OnlyUp disabled
+
+`OnlyUp` is fixed to `false||false||0||true||N` in every `.set`: the effective
+value is `false` and the MT5 optimizer flag is `N`. It is also a member of
+`RULE_LOCKED_KEYS`, so the UBS agent and the *Toggle inamovible/mutable*
+action cannot make it mutable. The generation normalizer enforces the rule on
+new sets, seed repair re-applies it, and *Aplicar reglas a todos los sets*
+repairs existing sets. If an old set lacks the parameter, the canonical fixed
+line is added.
 
 ### Rule: NFP filter
 
