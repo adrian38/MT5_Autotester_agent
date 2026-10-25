@@ -1,11 +1,23 @@
 # Project verification contract
 
-The IC checkout has an enforceable repository gate in
-`python -m tools.verify_project`. Its quick mode checks undefined global names,
+This checkout has an enforceable repository gate in
+`python -m tools.verify_project`. By default it checks undefined global names,
 the 60-line function ratchet, the 600-line file ratchet, the `ai_context` index,
-and the guard tests. The default mode also runs the full unittest suite.
-When the sibling manager checkout is mounted, the gate also compares the two
-guided-protocol modules after normalizing Git line endings.
+the test-group registry, and the `guardas` test group. When the sibling manager
+checkout is mounted, the gate also compares the two guided-protocol modules
+after normalizing Git line endings.
+
+The rest of `tests/` is split by area in `tools/test_groups.py` and runs per
+group: `python -m tools.verify_project --group final_tick`. The full unittest
+suite runs only with `--full`, and only when the user asks for it — roughly 950
+tests add nothing over the group covering the area being changed. `--quick`
+remains an alias of the default mode.
+
+The split is a registry, not a naming convention: every `tests/test_*.py` must
+belong to exactly one group, and `tests/test_test_groups.py` fails on a module
+that is orphaned, duplicated across groups, or named in the registry after being
+deleted. That guard is what keeps a per-group workflow from silently skipping
+new tests.
 
 The size baselines describe inherited debt at the moment the contract was
 introduced. They are not allowances for new code: an existing item may stay
