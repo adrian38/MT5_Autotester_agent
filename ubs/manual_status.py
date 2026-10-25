@@ -495,3 +495,7 @@ def mark_candidate_regression(
         )
         _upsert_candidate_regression(conn, values)
     return len(rows)
+
+
+# Reexportado: el marcado de seeds vive en su propio modulo por el techo de lineas.
+from ubs.manual_status_seed import mark_seed_final_tick  # noqa: E402,F401

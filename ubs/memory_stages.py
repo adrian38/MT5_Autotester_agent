@@ -12,6 +12,10 @@ FINAL_TICK_STAGE_TABLES = {
     "probe": "candidate_final_tick",
     "six_month": "candidate_final_tick_6m",
 }
+SEED_FINAL_TICK_STAGE_TABLES = {
+    "probe": "seed_final_tick",
+    "six_month": "seed_final_tick_6m",
+}
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
 
@@ -39,6 +43,15 @@ def final_tick_table_for_stage(stage: str | None) -> str:
     return FINAL_TICK_STAGE_TABLES[key]
 
 
+def seed_final_tick_table_for_stage(stage: str | None) -> str:
+    key = str(stage or "probe").strip().lower().replace("-", "_")
+    if key in {"6m", "sixmonth", "six_month"}:
+        key = "six_month"
+    if key not in SEED_FINAL_TICK_STAGE_TABLES:
+        raise ValueError(f"Etapa Final Tick de seeds desconocida: {stage}")
+    return SEED_FINAL_TICK_STAGE_TABLES[key]
+
+
 FINAL_TICK_UPSERT_SQL = """
 insert into {final_tick_table} (
     candidate_id, run_id, status, accepted,
@@ -51,6 +64,39 @@ insert into {final_tick_table} (
 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 on conflict(candidate_id) do update set
     run_id=excluded.run_id,
+    status=excluded.status,
+    accepted=excluded.accepted,
+    ohlc_report_path=excluded.ohlc_report_path,
+    real_tick_report_path=excluded.real_tick_report_path,
+    ohlc_score=excluded.ohlc_score,
+    real_tick_score=excluded.real_tick_score,
+    ohlc_metrics_json=excluded.ohlc_metrics_json,
+    real_tick_metrics_json=excluded.real_tick_metrics_json,
+    similarity_json=excluded.similarity_json,
+    history_quality=excluded.history_quality,
+    min_history_quality=excluded.min_history_quality,
+    from_date=excluded.from_date,
+    to_date=excluded.to_date,
+    max_net_delta_pct=excluded.max_net_delta_pct,
+    max_pf_delta_pct=excluded.max_pf_delta_pct,
+    max_dd_delta_pct=excluded.max_dd_delta_pct,
+    max_trades_delta_pct=excluded.max_trades_delta_pct,
+    evaluated_at=excluded.evaluated_at
+"""
+
+SEED_FINAL_TICK_UPSERT_SQL = """
+insert into {final_tick_table} (
+    seed_path, symbol, period, status, accepted,
+    ohlc_report_path, real_tick_report_path,
+    ohlc_score, real_tick_score,
+    ohlc_metrics_json, real_tick_metrics_json, similarity_json,
+    history_quality, min_history_quality, from_date, to_date,
+    max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
+    evaluated_at
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+on conflict(seed_path) do update set
+    symbol=excluded.symbol,
+    period=excluded.period,
     status=excluded.status,
     accepted=excluded.accepted,
     ohlc_report_path=excluded.ohlc_report_path,
@@ -262,6 +308,111 @@ class MemoryStagesMixin:
             self.conn.execute("delete from candidate_final_tick_6m where candidate_id=?", (int(candidate_id),))
         if final_tick_table == "candidate_final_tick_6m" and status != "accepted":
             self.conn.execute("delete from candidate_regression where candidate_id=?", (int(candidate_id),))
+        self._commit()
+
+    def accepted_seeds_for_final_tick(
+        self,
+        *,
+        final_tick_stage: str = "probe",
+    ) -> list[sqlite3.Row]:
+        """Seeds elegibles para una etapa tick a tick, con su fila guardada.
+
+        El probe arranca de las seeds ``accepted`` activas; 6M exige ademas que
+        el probe haya salido ``accepted`` o ``pending_ohlc_trades``, la misma
+        cascada que aplican los candidatos.
+        """
+        final_tick_table = seed_final_tick_table_for_stage(final_tick_stage)
+        probe_join = ""
+        if final_tick_table != "seed_final_tick":
+            probe_join = (
+                "join seed_final_tick probe_ft on probe_ft.seed_path = s.seed_path "
+                "and probe_ft.status in ('accepted', 'pending_ohlc_trades')"
+            )
+        return self.conn.execute(
+            f"""
+            select
+                s.seed_path, s.symbol, s.period, s.family, s.run_strategy,
+                s.score as seed_score,
+                ft.status as final_tick_status,
+                ft.from_date as final_tick_from_date,
+                ft.to_date as final_tick_to_date,
+                ft.similarity_json as final_tick_similarity_json,
+                ft.ohlc_metrics_json as ft_ohlc_metrics_json,
+                ft.ohlc_report_path as final_tick_ohlc_report_path,
+                ft.ohlc_score as final_tick_ohlc_score
+            from seed_scores s
+            {probe_join}
+            left join {final_tick_table} ft on ft.seed_path = s.seed_path
+            where s.active=1 and s.status='accepted'
+            order by s.seed_path
+            """
+        ).fetchall()
+
+    def seed_final_tick_row(self, seed_path: str, *, final_tick_stage: str = "probe"):
+        final_tick_table = seed_final_tick_table_for_stage(final_tick_stage)
+        return self.conn.execute(
+            f"select * from {final_tick_table} where seed_path=?",
+            (str(seed_path),),
+        ).fetchone()
+
+    def record_seed_final_tick(
+        self,
+        seed_path: str,
+        symbol: str,
+        period: str,
+        status: str,
+        ohlc_result: ScoreResult | None,
+        real_tick_result: ScoreResult | None,
+        ohlc_report_path: Path | None,
+        real_tick_report_path: Path | None,
+        similarity_json: str | None,
+        history_quality: float | None,
+        min_history_quality: float,
+        from_date: str,
+        to_date: str,
+        max_net_delta_pct: float,
+        max_pf_delta_pct: float,
+        max_dd_delta_pct: float,
+        max_trades_delta_pct: float,
+        *,
+        final_tick_stage: str | None = None,
+    ) -> None:
+        accepted = int(status == "accepted")
+        final_tick_table = seed_final_tick_table_for_stage(
+            final_tick_stage or self.active_final_tick_stage
+        )
+        self.conn.execute(
+            SEED_FINAL_TICK_UPSERT_SQL.format(final_tick_table=final_tick_table),
+            (
+                str(seed_path),
+                str(symbol or "").strip().upper(),
+                str(period or "").strip().upper(),
+                status,
+                accepted,
+                str(ohlc_report_path) if ohlc_report_path else (ohlc_result.report_path if ohlc_result else None),
+                str(real_tick_report_path) if real_tick_report_path else (
+                    real_tick_result.report_path if real_tick_result else None
+                ),
+                ohlc_result.score if ohlc_result else None,
+                real_tick_result.score if real_tick_result else None,
+                ohlc_result.to_json() if ohlc_result else None,
+                real_tick_result.to_json() if real_tick_result else None,
+                similarity_json,
+                history_quality,
+                float(min_history_quality),
+                from_date.strip(),
+                to_date.strip(),
+                float(max_net_delta_pct),
+                float(max_pf_delta_pct),
+                float(max_dd_delta_pct),
+                float(max_trades_delta_pct),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        # Un probe que deja de ser elegible invalida su 6M: si no se borra, la
+        # seed seguiria cobrando el bonus de 6M con un probe ya rechazado.
+        if final_tick_table == "seed_final_tick" and status not in {"accepted", "pending_ohlc_trades"}:
+            self.conn.execute("delete from seed_final_tick_6m where seed_path=?", (str(seed_path),))
         self._commit()
 
     def record_candidate_regression(

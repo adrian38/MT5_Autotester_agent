@@ -212,6 +212,8 @@ def _add_final_tick_arguments(parser: argparse.ArgumentParser) -> None:
         default="probe",
         help="Etapa Final Tick: probe=filtro corto; six_month=validacion 6M para uso en portafolio.",
     )
+    parser.add_argument("--evaluate-seed-final-tick", action="store_true", help="Compara OHLC vs Every tick based on real ticks sobre las seeds accepted.")
+    parser.add_argument("--seed-final-tick-pending-only", action="store_true", help="Con --evaluate-seed-final-tick, testea solo las seeds pendientes o retryables de la etapa.")
     parser.add_argument("--final-tick-pending-only", action="store_true", help="Con --evaluate-final-tick, testea solo robust accepted sin Final Tick.")
     parser.add_argument("--final-tick-retry-pending-quality", action="store_true", help="Con --final-tick-pending-only, reintenta exclusivamente las filas pending_history_quality, coincidan o no las fechas guardadas.")
     parser.add_argument("--final-tick-reconcile-only", action="store_true", help="Con --evaluate-final-tick, concilia reportes OHLC/Every Tick ya existentes en disco sin abrir MT5.")

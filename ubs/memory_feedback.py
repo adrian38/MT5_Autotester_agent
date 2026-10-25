@@ -199,11 +199,24 @@ class MemoryFeedbackMixin:
     def _seed_feedback_rows(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
-            select seed_path, symbol, period, score, accepted, metrics_json, status, report_path
-            from seed_scores
-            where active=1
-              and status in ('accepted', 'rejected', 'no_trades')
-              and (score is not null or status = 'no_trades')
+            select
+                s.seed_path, s.symbol, s.period, s.score, s.accepted,
+                s.metrics_json, s.status, s.report_path,
+                ft.status as final_tick_status,
+                ft.similarity_json as final_tick_similarity_json,
+                ft6.status as final_tick_6m_status,
+                ft6.similarity_json as final_tick_6m_similarity_json
+            from seed_scores s
+            left join seed_final_tick ft
+              on ft.seed_path = s.seed_path
+             and s.status='accepted'
+            left join seed_final_tick_6m ft6
+              on ft6.seed_path = s.seed_path
+             and s.status='accepted'
+             and ft.status in ('accepted', 'pending_ohlc_trades')
+            where s.active=1
+              and s.status in ('accepted', 'rejected', 'no_trades')
+              and (s.score is not null or s.status = 'no_trades')
             """
         ).fetchall()
 

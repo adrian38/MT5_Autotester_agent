@@ -43,6 +43,8 @@ from ui.ubs_robustness_logic import UBSRobustnessLogicMixin
 from ui.ubs_robustness_view import UBSRobustnessViewMixin
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 from ui.ubs_universe_view import UBSUniverseViewMixin
+from ui.ubs_seed_final_tick_logic import UBSSeedFinalTickLogicMixin
+from ui.ubs_seed_final_tick_view import UBSSeedFinalTickViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
 
@@ -122,6 +124,8 @@ class MT5AutotesterUI(
     UBSRegressionLogicMixin,
     UBSSeedsViewMixin,
     UBSSeedsLogicMixin,
+    UBSSeedFinalTickViewMixin,
+    UBSSeedFinalTickLogicMixin,
     UBSUniverseViewMixin,
     UBSUniverseLogicMixin,
     tk.Tk,
@@ -364,6 +368,8 @@ class MT5AutotesterUI(
             ("reports", self._refresh_reports),
             ("ubs_results", self._refresh_ubs_results),
             ("ubs_robustness", self._refresh_ubs_robustness),
+            ("ubs_seed_final_tick", self._refresh_ubs_seed_final_tick),
+            ("ubs_seed_final_tick_6m", self._refresh_ubs_seed_final_tick_6m),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
             ("ubs_regression", self._refresh_ubs_regression),

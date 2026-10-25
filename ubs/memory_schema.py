@@ -11,6 +11,12 @@ FINAL_TICK_STAGE_TABLES = {
     "probe": "candidate_final_tick",
     "six_month": "candidate_final_tick_6m",
 }
+# Las seeds corren las mismas dos etapas que los candidatos, pero su fila no
+# cuelga de un run: la clave es el seed_path, igual que en seed_scores.
+SEED_FINAL_TICK_STAGE_TABLES = {
+    "probe": "seed_final_tick",
+    "six_month": "seed_final_tick_6m",
+}
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
 
@@ -36,6 +42,20 @@ def final_tick_table_for_stage(stage: str | None) -> str:
     if key not in FINAL_TICK_STAGE_TABLES:
         raise ValueError(f"Etapa Final Tick desconocida: {stage}")
     return FINAL_TICK_STAGE_TABLES[key]
+
+
+def normalize_final_tick_stage_key(stage: str | None) -> str:
+    """Clave canonica de etapa, compartida por candidatos y seeds."""
+    key = str(stage or "probe").strip().lower().replace("-", "_")
+    if key in {"6m", "sixmonth", "six_month"}:
+        return "six_month"
+    if key != "probe":
+        raise ValueError(f"Etapa Final Tick desconocida: {stage}")
+    return key
+
+
+def seed_final_tick_table_for_stage(stage: str | None) -> str:
+    return SEED_FINAL_TICK_STAGE_TABLES[normalize_final_tick_stage_key(stage)]
 
 
 SCHEMA_DDL = """
@@ -139,6 +159,52 @@ create table if not exists candidate_final_tick (
 create table if not exists candidate_final_tick_6m (
     candidate_id integer primary key,
     run_id integer not null,
+    status text not null,
+    accepted integer,
+    ohlc_report_path text,
+    real_tick_report_path text,
+    ohlc_score real,
+    real_tick_score real,
+    ohlc_metrics_json text,
+    real_tick_metrics_json text,
+    similarity_json text,
+    history_quality real,
+    min_history_quality real not null default 80.0,
+    from_date text not null default '',
+    to_date text not null default '',
+    max_net_delta_pct real not null default 35.0,
+    max_pf_delta_pct real not null default 35.0,
+    max_dd_delta_pct real not null default 35.0,
+    max_trades_delta_pct real not null default 35.0,
+    evaluated_at text not null
+);
+create table if not exists seed_final_tick (
+    seed_path text primary key,
+    symbol text not null default '',
+    period text not null default '',
+    status text not null,
+    accepted integer,
+    ohlc_report_path text,
+    real_tick_report_path text,
+    ohlc_score real,
+    real_tick_score real,
+    ohlc_metrics_json text,
+    real_tick_metrics_json text,
+    similarity_json text,
+    history_quality real,
+    min_history_quality real not null default 80.0,
+    from_date text not null default '',
+    to_date text not null default '',
+    max_net_delta_pct real not null default 35.0,
+    max_pf_delta_pct real not null default 35.0,
+    max_dd_delta_pct real not null default 35.0,
+    max_trades_delta_pct real not null default 35.0,
+    evaluated_at text not null
+);
+create table if not exists seed_final_tick_6m (
+    seed_path text primary key,
+    symbol text not null default '',
+    period text not null default '',
     status text not null,
     accepted integer,
     ohlc_report_path text,

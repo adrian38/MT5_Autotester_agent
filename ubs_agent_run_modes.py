@@ -28,6 +28,7 @@ from ubs_agent_robustness import (
     evaluate_candidate_robustness,
 )
 from ubs_agent_run_config import regression_runtime
+from ubs_agent_seed_final_tick import evaluate_seed_final_tick
 from ubs_agent_seed_scores import (
     evaluate_seed_scores,
     rescore_seed_scores_only,
@@ -64,6 +65,8 @@ def run_standalone_mode(args, memory, score_config) -> int | None:
         return _run_and_close(evaluate_candidate_robustness, args, memory, score_config)
     if args.evaluate_final_tick:
         return _run_and_close(evaluate_candidate_final_tick, args, memory, score_config)
+    if args.evaluate_seed_final_tick:
+        return _run_and_close(evaluate_seed_final_tick, args, memory, score_config)
     if args.evaluate_regression:
         return _run_regression_and_close(evaluate_candidate_regression, args, memory)
     if args.rescore_seeds_only:

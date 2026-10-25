@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox
 import telegram_notify
 from mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, TESTER_DEFAULTS
+from ui.settings_stage_dates import final_tick_date_settings
 from ubs.account import (
     BROKERS,
     DEFAULT_BROKER,
@@ -309,6 +310,7 @@ class SettingsLogicMixin(SettingsCleanupMixin):
     def _general_stage_settings(self, symbol_maps) -> dict[str, str]:
         """Umbrales de semillas, robustez, Final Tick y regresiva."""
         return {
+        **final_tick_date_settings(self),
         "ubs_seed_pass_min_net_profit": self.ubs_seed_pass_min_net_profit.get().strip(),
         "ubs_seed_pass_min_profit_factor": self.ubs_seed_pass_min_profit_factor.get().strip(),
         "ubs_seed_pass_min_trades": str(self.ubs_seed_pass_min_trades.get()),
@@ -335,14 +337,6 @@ class SettingsLogicMixin(SettingsCleanupMixin):
         "ubs_seed_to_date": self.ubs_seed_to_date.get().strip(),
         "ubs_robust_from_date": self.ubs_robust_from_date.get().strip(),
         "ubs_robust_to_date": self.ubs_robust_to_date.get().strip(),
-        "ubs_final_tick_from_date": self.ubs_final_tick_from_date.get().strip(),
-        "ubs_final_tick_to_date": self.ubs_final_tick_to_date.get().strip(),
-        "ubs_final_tick_ohlc_from_date": self.ubs_final_tick_ohlc_from_date.get().strip(),
-        "ubs_final_tick_ohlc_to_date": self.ubs_final_tick_ohlc_to_date.get().strip(),
-        "ubs_final_tick_6m_from_date": self.ubs_final_tick_6m_from_date.get().strip(),
-        "ubs_final_tick_6m_to_date": self.ubs_final_tick_6m_to_date.get().strip(),
-        "ubs_final_tick_6m_ohlc_from_date": self.ubs_final_tick_6m_ohlc_from_date.get().strip(),
-        "ubs_final_tick_6m_ohlc_to_date": self.ubs_final_tick_6m_ohlc_to_date.get().strip(),
         "ubs_regression_from_date": self.ubs_regression_from_date.get().strip(),
         "ubs_regression_to_date": self.ubs_regression_to_date.get().strip(),
         "ubs_regression_min_net_profit": self.ubs_regression_min_net_profit.get().strip(),

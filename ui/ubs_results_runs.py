@@ -86,6 +86,58 @@ CANDIDATE_FINAL_TICK_6M_DDL = """
 """
 
 
+SEED_FINAL_TICK_DDL = """
+            create table if not exists seed_final_tick (
+                seed_path text primary key,
+                symbol text not null default '',
+                period text not null default '',
+                status text not null,
+                accepted integer,
+                ohlc_report_path text,
+                real_tick_report_path text,
+                ohlc_score real,
+                real_tick_score real,
+                ohlc_metrics_json text,
+                real_tick_metrics_json text,
+                similarity_json text,
+                history_quality real,
+                min_history_quality real not null default 80.0,
+                from_date text not null default '',
+                to_date text not null default '',
+                max_net_delta_pct real not null default 35.0,
+                max_pf_delta_pct real not null default 35.0,
+                max_dd_delta_pct real not null default 35.0,
+                max_trades_delta_pct real not null default 35.0,
+                evaluated_at text not null
+            )
+"""
+
+SEED_FINAL_TICK_6M_DDL = """
+            create table if not exists seed_final_tick_6m (
+                seed_path text primary key,
+                symbol text not null default '',
+                period text not null default '',
+                status text not null,
+                accepted integer,
+                ohlc_report_path text,
+                real_tick_report_path text,
+                ohlc_score real,
+                real_tick_score real,
+                ohlc_metrics_json text,
+                real_tick_metrics_json text,
+                similarity_json text,
+                history_quality real,
+                min_history_quality real not null default 80.0,
+                from_date text not null default '',
+                to_date text not null default '',
+                max_net_delta_pct real not null default 35.0,
+                max_pf_delta_pct real not null default 35.0,
+                max_dd_delta_pct real not null default 35.0,
+                max_trades_delta_pct real not null default 35.0,
+                evaluated_at text not null
+            )
+"""
+
 CANDIDATE_REGRESSION_DDL = """
             create table if not exists candidate_regression (
                 candidate_id integer primary key,
@@ -120,6 +172,8 @@ class UBSResultsRunsMixin:
         conn.execute(CANDIDATE_FINAL_TICK_DDL)
         conn.execute(CANDIDATE_FINAL_TICK_6M_DDL)
         conn.execute(CANDIDATE_REGRESSION_DDL)
+        conn.execute(SEED_FINAL_TICK_DDL)
+        conn.execute(SEED_FINAL_TICK_6M_DDL)
         conn.commit()
 
     @staticmethod

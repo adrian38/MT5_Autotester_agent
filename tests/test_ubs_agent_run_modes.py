@@ -10,6 +10,7 @@ MODE_FLAGS = (
     "evaluate_seeds",
     "evaluate_robustness",
     "evaluate_final_tick",
+    "evaluate_seed_final_tick",
     "evaluate_regression",
     "rescore_seeds_only",
     "rescore_candidates_only",

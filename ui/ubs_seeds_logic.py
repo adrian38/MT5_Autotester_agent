@@ -51,6 +51,72 @@ class UBSSeedsLogicMixin(
     UBSSeedsDuplicatesMixin,
     UBSSeedsCleanupMixin,
 ):
+    # Estados que cierran una etapa tick a tick de una seed: los dos veredictos
+    # y los terminales que no admiten reintento. El resto -sin fila, pendiente
+    # de historico, sin reporte, mismatch- sigue en la cola de ejecucion.
+    SEED_FINAL_TICK_RESOLVED = (
+        "accepted", "rejected", "symbol_not_exist", "trade_disabled",
+    )
+
+    def _pending_seed_final_tick_counts(self, conn: sqlite3.Connection) -> tuple[int, int]:
+        """Seeds accepted sin cerrar el tick corto, y las que no cerraron el 6M.
+
+        La puerta de los pesos: una seed solo cuenta cuando su contraste OHLC vs
+        real tick esta decidido en las dos etapas, igual que un candidato.
+        """
+        if not self._sqlite_table_exists(conn, "seed_scores"):
+            return 0, 0
+        accepted_total = int(
+            conn.execute(
+                "select count(*) from seed_scores where active=1 and status='accepted'"
+            ).fetchone()[0]
+            or 0
+        )
+        if not self._sqlite_table_exists(conn, "seed_final_tick"):
+            return accepted_total, 0
+        resolved = ",".join("?" for _status in self.SEED_FINAL_TICK_RESOLVED)
+        pending_probe = int(
+            conn.execute(
+                f"""
+                select count(*)
+                from seed_scores s
+                left join seed_final_tick ft on ft.seed_path = s.seed_path
+                where s.active=1 and s.status='accepted'
+                  and (ft.status is null or ft.status not in ({resolved}))
+                """,
+                self.SEED_FINAL_TICK_RESOLVED,
+            ).fetchone()[0]
+            or 0
+        )
+        six_month_scope = """
+            from seed_scores s
+            join seed_final_tick ft on ft.seed_path = s.seed_path
+            {join_6m}
+            where s.active=1 and s.status='accepted'
+              and ft.status in ('accepted', 'pending_ohlc_trades')
+              {extra}
+        """
+        if not self._sqlite_table_exists(conn, "seed_final_tick_6m"):
+            pending_six = int(
+                conn.execute(
+                    "select count(*)" + six_month_scope.format(join_6m="", extra="")
+                ).fetchone()[0]
+                or 0
+            )
+            return pending_probe, pending_six
+        pending_six = int(
+            conn.execute(
+                "select count(*)"
+                + six_month_scope.format(
+                    join_6m="left join seed_final_tick_6m ft6 on ft6.seed_path = s.seed_path",
+                    extra=f"and (ft6.status is null or ft6.status not in ({resolved}))",
+                ),
+                self.SEED_FINAL_TICK_RESOLVED,
+            ).fetchone()[0]
+            or 0
+        )
+        return pending_probe, pending_six
+
     def _ubs_apply_weights(self) -> None:
         """Check all seeds are evaluated, then unlock and show weights."""
         memory_path = self._ubs_memory_path()
@@ -79,6 +145,7 @@ class UBSSeedsLogicMixin(
             ).fetchone()
             if self._sqlite_table_exists(conn, "seed_scores"):
                 known_paths = {str(row["seed_path"]) for row in conn.execute("select seed_path from seed_scores where active=1").fetchall()}
+            pending_probe, pending_six = self._pending_seed_final_tick_counts(conn)
             conn.close()
             pending_count = int(pending["n"] if pending else 0)
             total_count = int(total["n"] if total else 0)
@@ -96,6 +163,15 @@ class UBSSeedsLogicMixin(
                 "Calcular pesos",
                 f"Hay {pending_count} semilla(s) sin evaluar de {total_count} activas.\n\n"
                 "Ejecuta 'Evaluar semillas' primero para obtener pesos fiables.",
+            )
+            return
+        if pending_probe or pending_six:
+            messagebox.showwarning(
+                "Calcular pesos",
+                f"Faltan etapas tick a tick: {pending_probe} seed(s) sin cerrar Seeds Tick "
+                f"y {pending_six} sin cerrar Seeds Tick 6M. "
+                "Una seed solo aporta peso cuando su contraste OHLC vs real tick esta "
+                "cerrado en las dos etapas; lanzalas desde Seeds Tick y Seeds Tick 6M.",
             )
             return
         self.ubs_weights_locked.set(False)

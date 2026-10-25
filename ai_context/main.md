@@ -163,6 +163,8 @@ batch wrappers.
 | `logs` | Logs | (part of files) | (part of files) |
 | `agente_ubs` | UBS Agente UBS | `ui/ubs_agent_view.py` | `ui/ubs_agent_logic.py` |
 | `ubs_seeds` | UBS Seeds | `ui/ubs_seeds_view.py` | `ui/ubs_seeds_logic.py` |
+| `ubs_seeds_tick` | UBS Seeds Tick | `ui/ubs_seed_final_tick_view.py` | `ui/ubs_seed_final_tick_logic.py` |
+| `ubs_seeds_tick_6m` | UBS Seeds Tick 6M | `ui/ubs_seed_final_tick_view.py` | `ui/ubs_seed_final_tick_logic.py` |
 | `ubs_resultados` | UBS Resultados | `ui/ubs_results_view.py` | `ui/ubs_results_logic.py` |
 | `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
 | `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
@@ -631,6 +633,46 @@ technical/error states must be resolved first. Neither short `accepted` nor
 `pending_ohlc_trades` authorizes live use by itself: only a later Final Tick 6M
 `accepted` result makes the strategy portfolio/export eligible. Weight feedback
 only teaches future exploration and never overrides candidate-level rejection.
+
+#### Seed tick-by-tick stages (`UBS Seeds Tick`, `UBS Seeds Tick 6M`)
+
+Seeds get the same OHLC-vs-real-tick contrast as candidates, in the same two
+stages, over their own windows: a short probe and a 6M run. The verdict comes
+from `final_tick_similarity` and `final_tick_status_from_similarity` — the very
+functions that decide the candidate stages — so the criterion cannot drift
+between the two pipelines. `ubs_agent_seed_final_tick.py` owns only the plumbing
+that genuinely differs: which rows run, where the sets and reports go, and which
+table is written.
+
+| Piece | Candidates | Seeds |
+|-------|-----------|-------|
+| Rows keyed by | `candidate_id` + `run_id` | `seed_path` (seeds belong to no run) |
+| Tables | `candidate_final_tick`, `candidate_final_tick_6m` | `seed_final_tick`, `seed_final_tick_6m` |
+| CLI | `--evaluate-final-tick` | `--evaluate-seed-final-tick` |
+| Pending mode | `--final-tick-pending-only` | `--seed-final-tick-pending-only` |
+| Dates | `ubs_final_tick[_6m]_{from,to}_date` | `ubs_seed_final_tick[_6m]_{from,to}_date` |
+| Thresholds | `--final-tick-*` | the same `--final-tick-*` flags |
+
+Both stages take `--final-tick-stage probe|six_month` and reuse every
+`--final-tick-*` threshold, including the 6M rules: the PF delta is clamped to
+30%, a per-model PF floor applies, and a lossless OHLC control leg must clear
+the absolute `LosslessControlGate`. The 6M date range still has to span at least
+`FINAL_TICK_6M_MIN_DAYS`.
+
+Eligibility cascades exactly as for candidates: the probe runs over seeds that
+are `accepted` and active in `seed_scores`; 6M runs only over seeds whose probe
+came out `accepted` or `pending_ohlc_trades`, and a probe that stops being
+eligible deletes its 6M row. One deliberate simplification: seeds have no
+alternative OHLC window for `pending_ohlc_trades` rows. The status is recorded
+the same way — so 6M stays reachable — but there is no second date range to
+retry; changing the stage dates re-queues the seed.
+
+These stages gate the weights. `_seed_feedback_rows` publishes
+`final_tick_status` and `final_tick_6m_status` under the same column names the
+candidate query uses, so `feedback_weight` applies the same 6M bonus and the
+same rejection ceiling to a seed. On top of that, `Calcular pesos` refuses to
+unlock while any accepted seed has an unresolved stage: a seed contributes
+weight only once its tick-by-tick contrast is decided in both stages.
 
 #### `from_date` / `to_date` consistency guard
 

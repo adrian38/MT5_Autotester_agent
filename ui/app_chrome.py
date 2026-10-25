@@ -16,6 +16,7 @@ SIDEBAR_ITEMS = (
     ("portfolio", "▤  Portfolio"), ("configuracion", "⚙  Configuracion"),
     ("archivos", "▤  Archivos"), ("logs", "≣  Logs"),
     ("agente_ubs", "UBS  Agente UBS"), ("ubs_seeds", "UBS  Seeds"),
+    ("ubs_seeds_tick", "UBS  Seeds Tick"), ("ubs_seeds_tick_6m", "UBS  Seeds Tick 6M"),
     ("ubs_resultados", "UBS  Resultados"), ("ubs_robustez", "UBS  Robustez"),
     ("ubs_final_tick", "UBS  Final Tick"), ("ubs_final_tick_6m", "UBS  Final Tick 6M"),
     ("ubs_regression", "UBS  Regresiva"), ("ubs_historico", "UBS  Historico"),
@@ -230,7 +231,7 @@ class AppChromeMixin:
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_seeds_tick", "ubs_seeds_tick_6m", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -238,6 +239,8 @@ class AppChromeMixin:
         self._build_dashboard(self.section_frames["panel"])
         self._build_ubs_agent(self.section_frames["agente_ubs"])
         self._build_ubs_seeds(self.section_frames["ubs_seeds"])
+        self._build_ubs_seed_final_tick(self.section_frames["ubs_seeds_tick"])
+        self._build_ubs_seed_final_tick_6m(self.section_frames["ubs_seeds_tick_6m"])
         self._build_ubs_results(self.section_frames["ubs_resultados"])
         self._build_ubs_robustness(self.section_frames["ubs_robustez"])
         self._build_ubs_final_tick(self.section_frames["ubs_final_tick"])
