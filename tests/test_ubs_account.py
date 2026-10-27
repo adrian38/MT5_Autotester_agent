@@ -6,6 +6,8 @@ from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 
 from ubs.account import (
+    DEFAULT_UI_ACCOUNT_TYPE,
+    DEFAULT_UI_BROKER,
     account_disabled_symbols_path,
     account_memory_path,
     account_output_dir,
@@ -42,6 +44,13 @@ from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
 
 class UBSAccountTests(unittest.TestCase):
+    def test_vantage_raw_is_the_branch_default(self) -> None:
+        self.assertEqual(DEFAULT_UI_BROKER, "VANTAGE")
+        self.assertEqual(DEFAULT_UI_ACCOUNT_TYPE, "RAW")
+        self.assertEqual(normalize_broker("vantage markets"), "VANTAGE")
+        self.assertEqual(normalize_account_type("", "VANTAGE"), "RAW")
+        self.assertEqual(normalize_account_type("ECN", "VANTAGE"), "RAW")
+
     def test_universe_refresh_does_not_render_memory_only_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -72,11 +81,11 @@ class UBSAccountTests(unittest.TestCase):
             self.assertNotIn("Memoria", universe.ubs_universe_summary.get())
             self.assertIn("fuera de universo ignorados: 1", universe.ubs_universe_summary.get())
 
-    def test_normalize_account_type_defaults_to_ecn(self) -> None:
-        self.assertEqual(normalize_account_type("pro"), "PRO")
-        self.assertEqual(normalize_account_type("ECN"), "ECN")
-        self.assertEqual(normalize_account_type(""), "ECN")
-        self.assertEqual(normalize_account_type("demo"), "ECN")
+    def test_normalize_account_type_is_scoped_to_broker(self) -> None:
+        self.assertEqual(normalize_account_type("pro", "ROBOFOREX"), "PRO")
+        self.assertEqual(normalize_account_type("ECN", "ROBOFOREX"), "ECN")
+        self.assertEqual(normalize_account_type("", "ROBOFOREX"), "ECN")
+        self.assertEqual(normalize_account_type("demo", "ROBOFOREX"), "ECN")
         self.assertEqual(normalize_account_type("premium", "AXI"), "PREMIUM")
         self.assertEqual(normalize_account_type("ECN", "AXI"), "STANDARD")
         self.assertEqual(normalize_account_type("", "ICTRADING"), "STANDARD")
@@ -84,9 +93,10 @@ class UBSAccountTests(unittest.TestCase):
     def test_account_paths_are_scoped_per_account(self) -> None:
         base = Path("project")
 
-        self.assertEqual(account_memory_path(base, "PRO"), base / "outputs" / "ubs_memory_ROBOFOREX_PRO.sqlite")
-        self.assertEqual(account_output_dir(base, "ECN"), base / "outputs" / "ubs_agent" / "ROBOFOREX" / "ECN")
-        self.assertEqual(account_seed_dir(base, "PRO"), base / "sets" / "ubs_ready" / "ROBOFOREX" / "PRO")
+        self.assertEqual(account_memory_path(base, "RAW", "VANTAGE"), base / "outputs" / "ubs_memory_VANTAGE_RAW.sqlite")
+        self.assertEqual(account_output_dir(base, "RAW", "VANTAGE"), base / "outputs" / "ubs_agent" / "VANTAGE" / "RAW")
+        self.assertEqual(account_seed_dir(base, "RAW", "VANTAGE"), base / "sets" / "ubs_ready" / "VANTAGE" / "RAW")
+        self.assertEqual(account_memory_path(base, "PRO", "ROBOFOREX"), base / "outputs" / "ubs_memory_ROBOFOREX_PRO.sqlite")
         self.assertEqual(account_memory_path(base, "PREMIUM", "AXI"), base / "outputs" / "ubs_memory_AXI_PREMIUM.sqlite")
 
     def test_universe_policy_is_broker_scoped_and_timeframes_are_shared(self) -> None:
@@ -100,17 +110,17 @@ class UBSAccountTests(unittest.TestCase):
             tf_path.write_text('{"timeframes": ["H1", "D1"]}', encoding="utf-8")
 
             self.assertEqual(
-                account_disabled_symbols_path(base, "ECN"),
+                account_disabled_symbols_path(base, "ECN", "ROBOFOREX"),
                 base / "outputs" / "ubs_disabled_symbols_ROBOFOREX_ECN.json",
             )
             self.assertEqual(
-                account_disabled_symbols_path(base, "PRO"),
+                account_disabled_symbols_path(base, "PRO", "ROBOFOREX"),
                 base / "outputs" / "ubs_disabled_symbols_ROBOFOREX_PRO.json",
             )
-            self.assertEqual(account_timeframe_universe_path(base, "ECN"), account_timeframe_universe_path(base, "PRO"))
-            self.assertEqual(account_timeframe_universe_path(base, "STANDARD", "AXI"), account_timeframe_universe_path(base, "PRO"))
-            self.assertEqual(load_account_timeframe_universe(base, "PRO"), ("H1", "D1"))
-            self.assertEqual(load_account_timeframe_universe(base, "ECN"), ("H1", "D1"))
+            self.assertEqual(account_timeframe_universe_path(base, "ECN", "ROBOFOREX"), account_timeframe_universe_path(base, "PRO", "ROBOFOREX"))
+            self.assertEqual(account_timeframe_universe_path(base, "STANDARD", "AXI"), account_timeframe_universe_path(base, "PRO", "ROBOFOREX"))
+            self.assertEqual(load_account_timeframe_universe(base, "PRO", "ROBOFOREX"), ("H1", "D1"))
+            self.assertEqual(load_account_timeframe_universe(base, "ECN", "ROBOFOREX"), ("H1", "D1"))
             self.assertEqual(broker_asset_universe_path_with_fallback(base, "AXI"), axi_assets)
             self.assertEqual(
                 broker_asset_universe_path_with_fallback(base, "ICTRADING"),
@@ -264,9 +274,11 @@ class UBSAccountTests(unittest.TestCase):
     def test_search_audit_contexts_are_limited_to_active_broker(self) -> None:
         robo = _FakeSearch("ROBOFOREX")
         axi = _FakeSearch("AXI")
+        vantage = _FakeSearch("VANTAGE")
 
         self.assertEqual(robo._ubs_active_broker_account_contexts(), (("ROBOFOREX", "ECN"), ("ROBOFOREX", "PRO")))
         self.assertEqual(axi._ubs_active_broker_account_contexts(), (("AXI", "STANDARD"), ("AXI", "PREMIUM")))
+        self.assertEqual(vantage._ubs_active_broker_account_contexts(), (("VANTAGE", "RAW"),))
         self.assertEqual(robo._ubs_account_context_file_label("ROBOFOREX/ECN"), "ROBOFOREX_ECN")
         self.assertIsNone(axi._parse_ubs_account_context("ROBOFOREX/ECN"))
         self.assertEqual(axi._parse_ubs_account_context("PREMIUM"), ("AXI", "PREMIUM"))
@@ -278,9 +290,11 @@ class UBSAccountTests(unittest.TestCase):
             robo_report = base / "robo.htm"
             axi_report = base / "axi.htm"
             ic_report = base / "ic.htm"
+            vantage_report = base / "vantage.htm"
             robo_report.write_text("<html>RoboForex-ECN (Build 5120)</html>", encoding="utf-8")
             axi_report.write_text("<html>AXI Premium (Build 5120)</html>", encoding="utf-8")
             ic_report.write_text("<html>ICTrading-Live (Build 5120)</html>", encoding="utf-8")
+            vantage_report.write_text("<html>Vantage Markets Raw (Build 5120)</html>", encoding="utf-8")
 
             self.assertEqual(
                 search._detect_ubs_report_account_header(robo_report, "ROBOFOREX")[1:],
@@ -293,6 +307,10 @@ class UBSAccountTests(unittest.TestCase):
             self.assertEqual(
                 search._detect_ubs_report_account_header(ic_report, "ICTRADING")[1:],
                 ("ICTRADING", "STANDARD"),
+            )
+            self.assertEqual(
+                search._detect_ubs_report_account_header(vantage_report, "VANTAGE")[1:],
+                ("VANTAGE", "RAW"),
             )
 
     def test_monthly_margin_profile_defaults_to_active_broker_unless_ttp_is_selected(self) -> None:

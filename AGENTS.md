@@ -54,8 +54,9 @@ the IC checkout is normally worked on a different PC than `dev`/`AXI`.
 
 ## Absolute write boundary
 
-Codex may modify agent code only in this ICTrading checkout while it is on
-branch `IC`. It must never modify the AXI or RoboForex checkouts or their
+Codex may modify agent code in this Vantage checkout while it is on branch
+`vantage`, and in the ICTrading checkout while it is on branch `IC`. It must
+never modify the AXI or RoboForex checkouts or their
 branches directly, even to repair a live failure. The user alone ports commits
 from `IC` to the other broker branches and restarts those agents. Codex must
 report every agent commit and wait for the user to confirm porting and restart
@@ -75,6 +76,7 @@ con `git status --short --branch`.
 | Repositorio | Rama | Escritura permitida |
 | --- | --- | --- |
 | Esta copia ICTrading | `IC` | Sí, para la tarea pedida. |
+| Esta copia Vantage | `vantage` | Sí, para la tarea pedida. |
 | Manager | `dev` | Sólo si la tarea exige explícitamente un cambio hermano de contrato. |
 | Discovery Model Lab | `main` | Sólo si la tarea exige explícitamente un cambio hermano de contrato. |
 | AXI, RoboForex o copia genérica | cualquiera | Nunca; el usuario porta el commit de IC. |

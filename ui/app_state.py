@@ -8,8 +8,9 @@ from mt5_env import env_value, metaeditor_path_from_env, terminal_path_from_env
 from run_tests import REPORT_DIR, TEMPLATE_FILE, find_mt5_path, load_experts_root
 from ubs.account import (
     BROKERS,
-    DEFAULT_ACCOUNT_TYPE,
     DEFAULT_BROKER,
+    DEFAULT_UI_ACCOUNT_TYPE,
+    DEFAULT_UI_BROKER,
     default_symbol_map_for_broker,
     migrate_legacy_roboforex_storage,
     normalize_account_type,
@@ -77,9 +78,12 @@ class AppStateMixin:
         )
         self.ubs_long_tf_min_trades_w1 = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_w1", "12"))
         self.ubs_long_tf_min_trades_mn = tk.StringVar(value=saved_general.get("ubs_long_tf_min_trades_mn", "4"))
-        self.ubs_broker = tk.StringVar(value=normalize_broker(saved_general.get("ubs_broker", DEFAULT_BROKER)))
+        self.ubs_broker = tk.StringVar(value=normalize_broker(saved_general.get("ubs_broker", DEFAULT_UI_BROKER)))
         self.ubs_account_type = tk.StringVar(
-            value=normalize_account_type(saved_general.get("ubs_account_type", DEFAULT_ACCOUNT_TYPE), self.ubs_broker.get())
+            value=normalize_account_type(
+                saved_general.get("ubs_account_type", DEFAULT_UI_ACCOUNT_TYPE),
+                self.ubs_broker.get(),
+            )
         )
         self._startup_progress.advance("Migracion legacy")
         self._legacy_ubs_migrations = migrate_legacy_roboforex_storage(BASE_DIR)

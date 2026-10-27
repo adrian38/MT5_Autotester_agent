@@ -94,7 +94,8 @@ class MultiterminalLogicMixin:
         return normalize_broker(broker_var.get() if broker_var is not None else DEFAULT_BROKER)
 
     def _profile_broker(self, profile: dict[str, object]) -> str:
-        return normalize_broker(profile.get("broker", DEFAULT_BROKER))
+        # Profiles created before broker scoping belonged to RoboForex.
+        return normalize_broker(profile.get("broker") or "ROBOFOREX")
 
     def _broker_multiterminal_profiles(self, *, include_disabled: bool = True) -> list[dict[str, object]]:
         broker = self._active_multiterminal_broker()

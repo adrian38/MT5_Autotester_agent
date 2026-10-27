@@ -10,6 +10,7 @@ from ubs.path_utils import resolve_workspace_path
 
 
 BROKER_ACCOUNTS = {
+    "VANTAGE": ("RAW",),
     "ROBOFOREX": ("ECN", "PRO"),
     "ICTRADING": ("STANDARD",),
     "AXI": ("STANDARD", "PREMIUM"),
@@ -23,6 +24,8 @@ BROKER_ACCOUNT_TYPES = tuple(
 )
 DEFAULT_BROKER = "ROBOFOREX"
 DEFAULT_ACCOUNT_TYPE = "ECN"
+DEFAULT_UI_BROKER = "VANTAGE"
+DEFAULT_UI_ACCOUNT_TYPE = "RAW"
 DEFAULT_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "D1")
 ROBOFOREX_DEFAULT_SYMBOL_MAP = (
     "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,"
@@ -57,6 +60,7 @@ AXI_CASH_FUTURE_SYMBOL_FAMILIES = (
     (("UKOIL", "XBRUSD", "BRENT"), ("UKOIL.sa", "BRENT.fs")),
 )
 DEFAULT_SYMBOL_MAPS_BY_BROKER = {
+    "VANTAGE": "",
     "ROBOFOREX": ROBOFOREX_DEFAULT_SYMBOL_MAP,
     "ICTRADING": ICTRADING_DEFAULT_SYMBOL_MAP,
     "AXI": AXI_DEFAULT_SYMBOL_MAP,
@@ -73,6 +77,8 @@ BROKER_IDENTITY_SUFFIXES = {
 def normalize_broker(value: object) -> str:
     broker = str(value or DEFAULT_BROKER).strip().upper().replace(" ", "")
     aliases = {
+        "VANTAGE": "VANTAGE",
+        "VANTAGEMARKETS": "VANTAGE",
         "ROBO": "ROBOFOREX",
         "ROBOFOREX": "ROBOFOREX",
         "IC": "ICTRADING",

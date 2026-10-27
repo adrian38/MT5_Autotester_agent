@@ -98,8 +98,9 @@ batch wrappers.
   modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, `ubs/account.py`,
   `ubs/manual_status.py`, etc.). Do NOT grow `app_ui.py` or `ubs_agent.py`
   with logic that belongs in a domain module.
-- **Broker/account isolation**: RoboForex ECN/PRO, ICTrading STANDARD, and AXI
-  STANDARD/PREMIUM use separate SQLite DBs, seed dirs, output dirs, and results.
+- **Broker/account isolation**: Vantage RAW, RoboForex ECN/PRO, ICTrading
+  STANDARD, and AXI STANDARD/PREMIUM use separate SQLite DBs, seed dirs, output
+  dirs, and results. The Vantage branch defaults to Vantage RAW.
   Asset universes are broker-scoped; disabled-symbol GEN/SEEDS policies are
   broker/account-scoped. Timeframe universe configuration is the only shared
   universe for now. All path resolution goes through `ubs/account.py` helpers.

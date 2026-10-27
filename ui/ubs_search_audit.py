@@ -196,6 +196,7 @@ class UBSSearchAuditMixin:
         cleaned = re.sub(r"<[^>]+>", " ", text)
         cleaned = unescape(re.sub(r"\s+", " ", cleaned)).strip()
         token_map = {
+            "VANTAGE": ("Vantage", "Vantage Markets"),
             "ROBOFOREX": ("RoboForex",),
             "ICTRADING": ("ICTrading", "IC Trading", "ICMarkets", "IC Markets"),
             "AXI": ("AXI",),
