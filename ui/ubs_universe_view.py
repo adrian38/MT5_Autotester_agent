@@ -30,7 +30,7 @@ class UBSUniverseViewMixin:
         panel = self._card(parent, "Universo, scores y pesos UBS")
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(3, weight=1)
+        panel.rowconfigure(4, weight=1)
 
         bar = tk.Frame(panel, bg=self.colors["panel_alt"])
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 8))
@@ -49,6 +49,42 @@ class UBSUniverseViewMixin:
         self._ubs_universe_summary_wrap = 0
         bar.bind("<Configure>", self._fit_ubs_universe_summary)
         return panel, bar
+
+    def _build_ubs_universe_mt5_config(self, panel) -> None:
+        """Configuracion persistente de la conexion usada por Extraer MT5."""
+        config = ttk.LabelFrame(panel, text="Conexion MT5 para Universo")
+        config.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 8))
+        config.columnconfigure(1, weight=3)
+        config.columnconfigure(5, weight=2)
+
+        ttk.Checkbutton(
+            config, text="Usar esta cuenta", variable=self.ubs_universe_mt5_use_account,
+            command=self._toggle_ubs_universe_account_fields,
+        ).grid(row=0, column=0, sticky="w", padx=(10, 8), pady=7)
+        ttk.Label(config, text="Terminal", style="Panel.TLabel").grid(row=0, column=1, sticky="w", padx=(0, 6))
+        ttk.Entry(config, textvariable=self.ubs_universe_mt5_path).grid(
+            row=0, column=2, columnspan=4, sticky="ew", padx=(0, 8), pady=7
+        )
+        ttk.Button(
+            config, text="Guardar config MT5", style="Primary.TButton",
+            command=self._save_ubs_universe_mt5_config,
+        ).grid(row=0, column=6, sticky="e", padx=(0, 10), pady=7)
+
+        fields = (
+            ("Login", self.ubs_universe_mt5_login, False),
+            ("Servidor", self.ubs_universe_mt5_server, False),
+            ("Password", self.ubs_universe_mt5_password, True),
+        )
+        self._ubs_universe_account_entries = []
+        for index, (label, variable, secret) in enumerate(fields):
+            column = index * 2
+            ttk.Label(config, text=label, style="Panel.TLabel").grid(
+                row=1, column=column, sticky="w", padx=(10 if index == 0 else 8, 6), pady=(0, 8)
+            )
+            entry = ttk.Entry(config, textvariable=variable, show="*" if secret else "")
+            entry.grid(row=1, column=column + 1, sticky="ew", padx=(0, 8), pady=(0, 8))
+            self._ubs_universe_account_entries.append(entry)
+        self._toggle_ubs_universe_account_fields()
 
     def _build_ubs_universe_buttons(self, bar):
         """Filas de botones por area: datos, marcados, pesos y memoria."""
@@ -111,7 +147,7 @@ class UBSUniverseViewMixin:
     def _build_ubs_universe_filters(self, panel):
         """Cajas de busqueda de activos y de timeframes."""
         filter_bar = ttk.Frame(panel, style="Panel.TFrame")
-        filter_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 6))
+        filter_bar.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 6))
         filter_bar.columnconfigure(1, weight=1)
         ttk.Label(filter_bar, text="Buscar activos:", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.ubs_universe_asset_search.trace_add("write", lambda *_: self._refresh_ubs_universe())
@@ -204,10 +240,11 @@ class UBSUniverseViewMixin:
     def _build_ubs_universe(self, parent: ttk.Frame) -> None:
         panel, bar = self._build_ubs_universe_panel(parent)
         self._build_ubs_universe_buttons(bar)
+        self._build_ubs_universe_mt5_config(panel)
         self._build_ubs_universe_filters(panel)
 
         body = ttk.PanedWindow(panel, orient="horizontal")
-        body.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 8))
+        body.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 8))
 
         self._build_ubs_universe_assets_table(body)
         self._build_ubs_universe_timeframes_table(body)

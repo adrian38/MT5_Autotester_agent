@@ -279,12 +279,16 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             _owner, controller = self._controller(Path(temp), "idle")
             profiles = [
-                (f"Terminal.{index}", {"name": f"MT5_IC_{index}", "mt5_path": fr"C:\\IC{index}\\terminal64.exe"})
+                (f"Terminal.{index}", {
+                    "name": f"MT5_IC_{index}", "broker": "ICTRADING",
+                    "mt5_path": fr"C:\\IC{index}\\terminal64.exe",
+                })
                 for index in range(1, 6)
             ]
             controller._terminal_profiles = lambda *, include_disabled=False: (
                 list(profiles) if include_disabled else list(profiles[:1])
             )
+            controller._multiterminal_worker_limit = lambda: 5
             selected = controller._tester_terminal_pool("Terminal.3", profiles[2][1], 6)
 
         self.assertEqual(len(selected), 5)

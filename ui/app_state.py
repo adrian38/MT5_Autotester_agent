@@ -241,6 +241,15 @@ class AppStateMixin:
                 default_symbol_map_for_broker(DEFAULT_BROKER),
             )
         self._ubs_symbol_map_active_broker = self.ubs_broker.get()
+        self.ubs_universe_mt5_path = tk.StringVar(
+            value=saved_general.get("ubs_universe_mt5_path", self.mt5_path.get())
+        )
+        self.ubs_universe_mt5_use_account = tk.BooleanVar(
+            value=self._bool_setting(saved_general.get("ubs_universe_mt5_use_account"), False)
+        )
+        self.ubs_universe_mt5_login = tk.StringVar(value=saved_general.get("ubs_universe_mt5_login", ""))
+        self.ubs_universe_mt5_server = tk.StringVar(value=saved_general.get("ubs_universe_mt5_server", ""))
+        self.ubs_universe_mt5_password = tk.StringVar(value=saved_general.get("ubs_universe_mt5_password", ""))
         self.symbol_map = tk.StringVar(value=self._ubs_symbol_maps_by_broker.get(
             self._ubs_symbol_map_active_broker,
             default_symbol_map_for_broker(self._ubs_symbol_map_active_broker),

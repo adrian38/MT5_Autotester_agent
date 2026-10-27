@@ -1437,6 +1437,14 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   without a broker are treated as `ROBOFOREX`.
 - Compilation remains sequential; multiterminal applies to backtest queues.
 
+### Universe MT5 connection
+
+`UBS Universo` keeps its symbol-extraction connection in the visible screen and
+persists it under `[General]` in `ui_settings.ini`. `Usar esta cuenta` controls
+whether login, server and password are sent to MetaTrader5. When it is disabled,
+the extraction passes no credentials and uses the account already logged into
+the selected terminal.
+
 ### Portfolio parser English support
 
 The portfolio parser was fixed to recognise English MT5 report labels (`Symbol`,

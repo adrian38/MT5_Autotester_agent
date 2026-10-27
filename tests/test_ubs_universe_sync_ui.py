@@ -16,6 +16,46 @@ class StatusVar:
         self.value = value
 
 
+class ValueVar:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class UniverseCredentialsHarness(UBSUniverseLogicMixin):
+    def __init__(self, *, use_account: bool) -> None:
+        self.ubs_universe_mt5_use_account = ValueVar(use_account)
+        self.ubs_universe_mt5_path = ValueVar("terminal64.exe")
+        self.ubs_universe_mt5_login = ValueVar("123456")
+        self.ubs_universe_mt5_server = ValueVar("VantageInternational-Live")
+        self.ubs_universe_mt5_password = ValueVar("secret")
+
+
+class UniverseCredentialsTests(unittest.TestCase):
+    def test_logged_terminal_mode_does_not_forward_saved_credentials(self) -> None:
+        credentials = UniverseCredentialsHarness(use_account=False)._mt5_symbol_extract_credentials()
+
+        self.assertIsNone(credentials["login"])
+        self.assertEqual(credentials["server"], "")
+        self.assertEqual(credentials["password"], "")
+
+    def test_explicit_account_mode_forwards_saved_credentials(self) -> None:
+        credentials = UniverseCredentialsHarness(use_account=True)._mt5_symbol_extract_credentials()
+
+        self.assertEqual(credentials["login"], 123456)
+        self.assertEqual(credentials["server"], "VantageInternational-Live")
+        self.assertEqual(credentials["password"], "secret")
+
+    def test_explicit_account_requires_a_numeric_login(self) -> None:
+        harness = UniverseCredentialsHarness(use_account=True)
+        harness.ubs_universe_mt5_login = ValueVar("not-a-number")
+
+        with self.assertRaisesRegex(ValueError, "numerico"):
+            harness._mt5_symbol_extract_credentials()
+
+
 class UniverseSyncHarness(UBSUniverseLogicMixin):
     """Expone solo lo que toca el flujo de sincronizacion, sin Tk."""
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
@@ -41,135 +40,37 @@ class UBSUniverseMT5Mixin:
             }
         return profile
 
-    def _build_mt5_credentials_fields(
-        self, dialog, profile, mt5_path_var, login_var, server_var, password_var,
-    ) -> int:
-        """Etiquetas, entradas y nota del dialogo de credenciales MT5."""
-        fields = (
-            ("Terminal", mt5_path_var, False),
-            ("Login", login_var, False),
-            ("Servidor", server_var, False),
-            ("Password", password_var, True),
-        )
-        for row, (label, variable, secret) in enumerate(fields):
-            tk.Label(
-                dialog,
-                text=label,
-                bg=self.colors["panel"],
-                fg=self.colors["text"],
-                font=("Segoe UI", 10),
-            ).grid(row=row, column=0, sticky="w", padx=(16, 8), pady=7)
-            entry = tk.Entry(
-                dialog,
-                textvariable=variable,
-                show="*" if secret else "",
-                bg=self.colors["panel_alt"],
-                fg=self.colors["text"],
-                insertbackground=self.colors["text"],
-                relief="solid",
-                borderwidth=1,
-                width=62,
-            )
-            entry.grid(row=row, column=1, sticky="ew", padx=(0, 16), pady=7)
+    def _toggle_ubs_universe_account_fields(self) -> None:
+        state = "normal" if self.ubs_universe_mt5_use_account.get() else "disabled"
+        for entry in getattr(self, "_ubs_universe_account_entries", ()):
+            entry.configure(state=state)
 
-        hint = (
-            f"Perfil: {profile['name']}. Login/servidor/password son opcionales si el terminal ya esta conectado."
-        )
-        tk.Label(
-            dialog,
-            text=hint,
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            font=("Segoe UI", 9),
-            wraplength=560,
-        ).grid(row=len(fields), column=0, columnspan=2, sticky="ew", padx=16, pady=(4, 12))
-        return len(fields)
+    def _save_ubs_universe_mt5_config(self) -> None:
+        self._write_ui_settings()
+        self.status_text.set("Configuracion MT5 de Universo guardada")
 
-    def _build_mt5_credentials_buttons(self, dialog, field_count, accept, cancel) -> None:
-        """Barra de aceptar y cancelar del dialogo de credenciales MT5."""
-        button_bar = tk.Frame(dialog, bg=self.colors["panel_alt"])
-        button_bar.grid(row=field_count + 1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 16))
-        button_bar.columnconfigure(0, weight=1)
-
-        tk.Button(
-            button_bar,
-            text="Cancelar",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            command=cancel,
-        ).grid(row=0, column=1, sticky="e", padx=(0, 6), pady=5)
-        tk.Button(
-            button_bar,
-            text="Extraer",
-            bg=self.colors["accent"],
-            fg="#ffffff",
-            relief="flat",
-            borderwidth=0,
-            padx=10,
-            pady=5,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            command=accept,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 10), pady=5)
-
-    def _ask_mt5_symbol_extract_credentials(self) -> dict[str, object] | None:
-        profile = self._default_mt5_symbol_extract_profile()
-        dialog = tk.Toplevel(self)
-        dialog.title("Extraer simbolos MT5")
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.configure(bg=self.colors["panel"])
-        dialog.columnconfigure(1, weight=1)
-
-        mt5_path_var = tk.StringVar(value=profile["mt5_path"])
-        login_var = tk.StringVar(value="")
-        server_var = tk.StringVar(value="")
-        password_var = tk.StringVar(value="")
-        result: dict[str, object] | None = None
-
-        field_count = self._build_mt5_credentials_fields(
-            dialog, profile, mt5_path_var, login_var, server_var, password_var,
-        )
-        def accept() -> None:
-            nonlocal result
-            login_text = login_var.get().strip()
-            if login_text:
-                try:
-                    login_value = int(login_text)
-                except ValueError:
-                    messagebox.showerror("Extraer simbolos MT5", "Login debe ser numerico.", parent=dialog)
-                    return
-            else:
-                login_value = None
-            result = {
-                "mt5_path": mt5_path_var.get().strip(),
-                "login": login_value,
-                "server": server_var.get().strip(),
-                "password": password_var.get(),
-            }
-            dialog.destroy()
-
-        def cancel() -> None:
-            dialog.destroy()
-
-        self._build_mt5_credentials_buttons(dialog, field_count, accept, cancel)
-        dialog.update_idletasks()
-        x = self.winfo_rootx() + max(0, (self.winfo_width() - dialog.winfo_width()) // 2)
-        y = self.winfo_rooty() + max(0, (self.winfo_height() - dialog.winfo_height()) // 2)
-        dialog.geometry(f"+{x}+{y}")
-        dialog.wait_window()
-        return result
+    def _mt5_symbol_extract_credentials(self) -> dict[str, object]:
+        use_account = bool(self.ubs_universe_mt5_use_account.get())
+        login_text = self.ubs_universe_mt5_login.get().strip()
+        if use_account and not login_text:
+            raise ValueError("Indica el login o desmarca 'Usar esta cuenta'.")
+        try:
+            login = int(login_text) if use_account else None
+        except ValueError as exc:
+            raise ValueError("Login debe ser numerico.") from exc
+        return {
+            "mt5_path": self.ubs_universe_mt5_path.get().strip(),
+            "login": login,
+            "server": self.ubs_universe_mt5_server.get().strip() if use_account else "",
+            "password": self.ubs_universe_mt5_password.get() if use_account else "",
+        }
 
     def _extract_live_mt5_symbols(self, title: str, confirm_message: str):
         """Consulta el inventario y ``trade_mode`` actuales del terminal MT5."""
-        credentials = self._ask_mt5_symbol_extract_credentials()
-        if credentials is None:
+        try:
+            credentials = self._mt5_symbol_extract_credentials()
+        except ValueError as exc:
+            messagebox.showerror(title, str(exc))
             return None
         raw_path = str(credentials.get("mt5_path") or "").strip()
         terminal_path = Path(raw_path).expanduser() if raw_path else None
