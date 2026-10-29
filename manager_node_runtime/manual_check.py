@@ -32,7 +32,7 @@ from typing import Any
 from .common import safe_int, save_json, utc_now
 from .live_audit_helpers import MT5_MAX_PATH, MT5_NAME_SUFFIX_BUDGET, _read_set_text
 from .live_audit_sets import resolve_portfolio_set
-from .node_commands import _add_symbol_options
+from .node_commands import _add_symbol_options, _add_symbol_universe_option
 
 
 MODEL_OPTIONS = {"ohlc": "1", "tick": "4"}
@@ -314,6 +314,7 @@ def build_manual_check_command(
     ]
     broker = str(config.get("broker") or cfg.get("General", "ubs_broker", fallback="ROBOFOREX")).upper()
     _add_symbol_options(command, cfg, broker)
+    _add_symbol_universe_option(command, project, broker)
     for set_file in set_files:
         command.extend(["--set-file", str(set_file)])
     return command, project

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .manual_portfolio import normalize_manual_set
-from .node_commands import _add_symbol_options
+from .node_commands import _add_symbol_options, _add_symbol_universe_option
 from .common import safe_int
 
 
@@ -120,6 +120,7 @@ def build_history_command(
     ]
     broker = str(config.get("broker") or cfg.get("General", "ubs_broker", fallback="ROBOFOREX")).upper()
     _add_symbol_options(command, cfg, broker)
+    _add_symbol_universe_option(command, project, broker)
     paths = _manual_sets(memory_path, portfolio_id)
     _repair_manual_lots(memory_path, portfolio_id, paths)
     for path in paths:

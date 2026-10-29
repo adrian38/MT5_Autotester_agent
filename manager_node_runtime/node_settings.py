@@ -111,11 +111,20 @@ print("Verificacion completada: no quedan datos historicos de MT5.", flush=True)
     return [sys.executable, "-c", verification], project
 
 
+def broker_universe_path(project: Path, broker: object) -> Path:
+    """`assets/<broker>_assets.ini`: como escribe cada simbolo este servidor.
+
+    Es la unica fuente que dice que el oro de Vantage es `XAUUSD+` y no
+    `XAUUSD.r`; sin ella los sufijos se aplican a ciegas.
+    """
+    return Path(project) / "assets" / f"{str(broker or '').strip().lower()}_assets.ini"
+
+
 def _universe_paths(config: dict[str, Any]) -> tuple[Path, Path]:
     project = Path(str(config["project_dir"])).expanduser().resolve()
     broker = str(config.get("broker") or "ROBOFOREX").strip().upper()
     account = str(config.get("account_type") or "ECN").strip().upper()
-    return (project / "assets" / f"{broker.lower()}_assets.ini", project / "outputs" / f"ubs_disabled_symbols_{broker}_{account}.json")
+    return (broker_universe_path(project, broker), project / "outputs" / f"ubs_disabled_symbols_{broker}_{account}.json")
 
 
 def _load_universe_rows(config: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
