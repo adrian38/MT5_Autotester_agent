@@ -18,6 +18,7 @@ from manager_node_runtime.manual_check import (
     prepare_manual_check,
 )
 from manager_node_runtime.node import JobController, NodeHandler
+from run_tests_symbols import apply_symbol_suffix, load_symbol_suffix_universe
 
 
 SET_TEXT = "ForceSymbol=XAUUSD||0||0||0||N\nTimeFrame=H1||0||0||0||N\nStartLots=0.07||0||0||0||N\n"
@@ -138,6 +139,41 @@ class ManualCheckTests(unittest.TestCase):
             ohlc[ohlc.index("--set-file") + 1],
             str(Path(request["work_dir"]) / "sets" / request["strategies"][0]["runtime_set"]),
         )
+
+    def test_the_check_sends_the_broker_universe_with_its_suffixes(self) -> None:
+        # Mismo fallo que en el historico OHLC manual: los sufijos viajaban sin
+        # el universo y `run_tests.py` los aplicaba a ciegas, asi que en Vantage
+        # el oro acababa como `XAUUSD.r` en vez de `XAUUSD+`.
+        assets = self.project / "assets" / "vantage_assets.ini"
+        assets.parent.mkdir()
+        assets.write_text(
+            "[Forex]\nsymbols=EURUSD.r\n\n[Metals]\nsymbols=XAUUSD+\n", encoding="utf-8",
+        )
+        self.config["broker"] = "VANTAGE"
+        self.cfg.read_dict({"General": {
+            "symbol_suffix_enabled": "1", "symbol_suffix": ".r",
+            "symbol_futures_suffix": "ft.r", "symbol_shares_suffix": "+",
+        }})
+        request = prepare_manual_check(self.config, self.runtime, self.payload())
+
+        command, _ = build_manual_check_command(self.config, self.cfg, request, "ohlc")
+
+        self.assertEqual(command[command.index("--symbol-universe") + 1], str(assets))
+        universe = load_symbol_suffix_universe(assets, ".r", "ft.r", "+")
+        self.assertEqual(apply_symbol_suffix("XAUUSD", ".r", "ft.r", "+", universe), "XAUUSD+")
+
+    def test_the_check_omits_the_universe_when_there_are_no_suffixes(self) -> None:
+        # Sin sufijos que resolver, mandarlo solo añadiria el filtro por
+        # inventario: `run_tests.py` omite los sets cuyo Symbol no este listado.
+        (self.project / "assets").mkdir()
+        (self.project / "assets" / "ictrading_assets.ini").write_text(
+            "[Forex]\nsymbols=EURUSD\n", encoding="utf-8",
+        )
+        request = prepare_manual_check(self.config, self.runtime, self.payload())
+
+        command, _ = build_manual_check_command(self.config, self.cfg, request, "ohlc")
+
+        self.assertNotIn("--symbol-universe", command)
 
     def test_a_single_terminal_run_keeps_one_worker(self) -> None:
         request = prepare_manual_check(
