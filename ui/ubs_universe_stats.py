@@ -18,7 +18,7 @@ class UBSUniverseStatsMixin:
     """Recuento de pesos por activo y por timeframe leido de la memoria."""
 
     def _read_ubs_universe_memory(self, memory_path, signal_aliases, universe_symbols):
-        """Filas, semillas y senales de la memoria, o None si SQLite falla."""
+        conn = None
         try:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
@@ -59,6 +59,7 @@ class UBSUniverseStatsMixin:
                     """
                 ).fetchall()
             conn.close()
+            conn = None
             memory = AgentMemory(memory_path)
             try:
                 asset_signals = memory.asset_feedback_signals(
@@ -72,6 +73,9 @@ class UBSUniverseStatsMixin:
             self.ubs_universe_summary.set(f"No se pudo leer memoria UBS: {exc}")
             self.ubs_timeframe_summary.set("Sin pesos por error SQLite")
             return None
+        finally:
+            if conn is not None:
+                conn.close()
         return rows, seed_rows, asset_signals, timeframe_signals
 
     def _apply_ubs_candidate_weights(self, row, asset_stat, tf_stat, counters) -> None:

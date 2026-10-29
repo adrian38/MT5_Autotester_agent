@@ -120,6 +120,7 @@ def memory_conn() -> sqlite3.Connection:
 class UBSManualStatusTests(unittest.TestCase):
     def test_mark_candidate_accepted_without_score_does_not_contribute_to_weights(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute(
             "insert into candidates (id, run_id, status, score, target_symbol, period) values (1, 7, 'no_trades', null, 'GS', 'H4')"
         )
@@ -133,6 +134,7 @@ class UBSManualStatusTests(unittest.TestCase):
 
     def test_mark_seed_status_updates_state_even_without_score(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute("insert into seed_scores (seed_path, status, score) values ('seed.set', 'pending', null)")
 
         self.assertEqual(mark_seed_scores(conn, ["seed.set"], "rejected"), 1)
@@ -143,6 +145,7 @@ class UBSManualStatusTests(unittest.TestCase):
 
     def test_manual_robust_accepted_makes_candidate_available_for_final_tick(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute(
             "insert into candidates (id, run_id, status, score, target_symbol, period) values (2, 7, 'accepted', 100, 'CAT', 'H1')"
         )
@@ -156,6 +159,7 @@ class UBSManualStatusTests(unittest.TestCase):
 
     def test_manual_final_tick_preserves_existing_metrics(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute(
             "insert into candidates (id, run_id, status, score, target_symbol, period) values (3, 7, 'accepted', 100, 'TSLA', 'H1')"
         )
@@ -179,6 +183,7 @@ class UBSManualStatusTests(unittest.TestCase):
 
     def test_manual_final_tick_6m_writes_6m_table(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute(
             "insert into candidates (id, run_id, status, score, target_symbol, period) values (4, 7, 'accepted', 100, 'TSLA', 'H1')"
         )
@@ -203,6 +208,7 @@ class UBSManualStatusTests(unittest.TestCase):
 
     def test_manual_final_tick_6m_status_affects_feedback_weight(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute(
             "insert into candidates (id, run_id, status, score, target_symbol, period) values (5, 7, 'accepted', 100, 'TSLA', 'H1')"
         )
@@ -225,6 +231,7 @@ class UBSManualStatusTests(unittest.TestCase):
 
     def test_manual_regression_requires_6m_acceptance_and_applies_points(self) -> None:
         conn = memory_conn()
+        self.addCleanup(conn.close)
         conn.execute(
             "insert into candidates (id, run_id, status, score, target_symbol, period) values (6, 7, 'accepted', 100, 'EURUSD', 'H1')"
         )

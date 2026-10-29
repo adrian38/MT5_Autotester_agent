@@ -97,15 +97,13 @@ class UBSUniverseViewMixin:
             ("Deshabilitar trading bloqueado", "danger", self._disable_trade_disabled_universe_symbols),
         ]
         selection_buttons = [
-            ("Limpiar marcados", "standard", self._clear_selected_weights),
+            ("Desmarcar todos", "standard", self._clear_universe_selection),
             ("Habilitar marcados", "standard", lambda: self._set_checked_universe_symbols_enabled(True)),
             ("Permitir seeds", "standard", lambda: self._set_checked_universe_symbols_seed_enabled(True)),
             ("Bloquear seeds", "standard", lambda: self._set_checked_universe_symbols_seed_enabled(False)),
             ("Deshabilitar marcados", "danger", lambda: self._set_checked_universe_symbols_enabled(False)),
         ]
         weight_buttons = [
-            ("Reset pesos activos", "danger", self._clear_all_asset_weights),
-            ("Reset pesos TF", "danger", self._clear_all_tf_weights),
             ("Calcular pesos", "primary", self._ubs_apply_weights),
         ]
         memory_buttons = [

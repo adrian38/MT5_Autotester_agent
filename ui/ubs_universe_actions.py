@@ -224,6 +224,7 @@ class UBSUniverseActionsMixin:
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
             return len(active)
+        conn = None
         try:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
@@ -235,9 +236,11 @@ class UBSUniverseActionsMixin:
                 order by id
                 """
             ).fetchall()
-            conn.close()
-        except sqlite3.Error:
-            return len(active)
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"No se pudo leer la memoria UBS: {exc}") from exc
+        finally:
+            if conn is not None:
+                conn.close()
         final_statuses = {"history_ok", "no_history"}
         latest = {
             self._canonical_ubs_symbol(str(row["target_symbol"] or ""), aliases).upper(): str(row["status"] or "")

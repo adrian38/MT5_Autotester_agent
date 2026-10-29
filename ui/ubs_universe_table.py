@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from tkinter import messagebox
 
-from run_tests import KNOWN_TIMEFRAMES, load_symbol_suffix_universe
+from run_tests import load_symbol_suffix_universe
 from ubs.db import connect_memory
 from ubs.account import broker_asset_universe_path_with_fallback, load_account_timeframe_universe
 from ubs.weights import grouped_shrunk_mean
@@ -18,10 +18,11 @@ if getattr(sys, "frozen", False):
 
 
 class UBSUniverseTableMixin:
-    """Tabla del universo, simbolos deshabilitados y limpieza de pesos."""
+    """Tabla del universo, símbolos deshabilitados y selección visible."""
 
     def _render_ubs_universe_asset_tree(
         self, ranked_assets, checked_symbols, disabled_symbols, seed_enabled_when_disabled,
+        *, show_weights=True,
     ) -> None:
         """Pinta el arbol de activos con los que han pasado la busqueda."""
         if hasattr(self, "ubs_universe_assets_tree"):
@@ -38,24 +39,25 @@ class UBSUniverseTableMixin:
                         group,
                         symbol,
                         ", ".join(symbol_aliases),
-                        self._format_ubs_number(weight_value),
-                        self._format_ubs_number(probability * 100.0 if probability is not None else None),
-                        self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
-                        int(final_trials),
-                        int(regression_trials),
-                        self._format_ubs_number(avg_score),
-                        self._format_ubs_number(stat["best"]),
+                        self._format_ubs_number(weight_value if show_weights else None),
+                        self._format_ubs_number(probability * 100.0 if show_weights and probability is not None else None),
+                        self._format_ubs_number(confidence * 100.0 if show_weights and confidence is not None else None),
+                        int(final_trials) if show_weights else "",
+                        int(regression_trials) if show_weights else "",
+                        self._format_ubs_number(avg_score if show_weights else None),
+                        self._format_ubs_number(stat["best"] if show_weights else None),
                         int(stat["tests"]),
                         int(stat["accepted"]),
                         int(stat["pending"]),
                     ),
-                    tags=("disabled" if is_disabled else self._tag_for_weight(weight_value),),
+                    tags=("disabled" if is_disabled else self._tag_for_weight(weight_value if show_weights else None),),
                 )
                 self.ubs_universe_paths[item] = {"symbol": symbol.upper()}
 
     def _rank_ubs_universe_assets(
         self, assets, asset_stats, asset_signals, timeframe_stats,
         disabled_symbols, seed_enabled_when_disabled, checked_symbols,
+        *, show_weights=True,
     ):
         """Ordena los activos, aplica la busqueda y pinta el arbol."""
         ranked_assets = []
@@ -85,13 +87,14 @@ class UBSUniverseTableMixin:
 
         self._render_ubs_universe_asset_tree(
             ranked_assets, checked_symbols, disabled_symbols, seed_enabled_when_disabled,
+            show_weights=show_weights,
         )
 
         valid_symbols = {info["symbol"] for info in self.ubs_universe_paths.values() if info.get("symbol")}
         self.ubs_universe_checked.intersection_update(valid_symbols)
         return ranked_assets, asset_total_before_filter, asset_search_terms
 
-    def _rank_ubs_universe_timeframes(self, timeframe_stats, timeframe_signals):
+    def _rank_ubs_universe_timeframes(self, timeframe_stats, timeframe_signals, *, show_weights=True):
         """Ordena los timeframes, aplica la busqueda y pinta el arbol."""
         timeframe_order = list(
             load_account_timeframe_universe(
@@ -131,18 +134,18 @@ class UBSUniverseTableMixin:
                     values=(
                         self._checkbox_text(period.upper() in self.ubs_timeframe_checked),
                         period,
-                        self._format_ubs_number(weight_value),
-                        self._format_ubs_number(probability * 100.0 if probability is not None else None),
-                        self._format_ubs_number(confidence * 100.0 if confidence is not None else None),
-                        int(final_trials),
-                        int(regression_trials),
-                        self._format_ubs_number(avg_score),
-                        self._format_ubs_number(stat["best"]),
+                        self._format_ubs_number(weight_value if show_weights else None),
+                        self._format_ubs_number(probability * 100.0 if show_weights and probability is not None else None),
+                        self._format_ubs_number(confidence * 100.0 if show_weights and confidence is not None else None),
+                        int(final_trials) if show_weights else "",
+                        int(regression_trials) if show_weights else "",
+                        self._format_ubs_number(avg_score if show_weights else None),
+                        self._format_ubs_number(stat["best"] if show_weights else None),
                         int(stat["tests"]),
                         int(stat["accepted"]),
                         int(stat["pending"]),
                     ),
-                    tags=(self._tag_for_weight(weight_value),),
+                    tags=(self._tag_for_weight(weight_value if show_weights else None),),
                 )
             self.ubs_timeframe_checked.intersection_update(valid_tfs)
         return tf_rows, tf_total_before_filter, tf_search_terms
@@ -185,6 +188,12 @@ class UBSUniverseTableMixin:
         tf_rows, tf_total_before_filter, tf_search_terms,
     ) -> None:
         """Los dos textos de resumen bajo las tablas del universo."""
+        if getattr(self, "ubs_weights_locked", None) and self.ubs_weights_locked.get():
+            self.ubs_universe_summary.set(
+                "Pesos bloqueados — evalúa todas las semillas y pulsa 'Calcular pesos'"
+            )
+            self.ubs_timeframe_summary.set("Sin pesos hasta que completes la evaluación")
+            return
         asset_filter_text = (
             f" | mostrando activos {len(ranked_assets)}/{asset_total_before_filter}"
             if asset_search_terms else ""
@@ -213,14 +222,9 @@ class UBSUniverseTableMixin:
         if hasattr(self, "ubs_timeframes_tree"):
             for item in self.ubs_timeframes_tree.get_children():
                 self.ubs_timeframes_tree.delete(item)
-        # Respect locked state — don't show weights until user confirms with "Calcular pesos"
-        if getattr(self, "ubs_weights_locked", None) and self.ubs_weights_locked.get():
-            if hasattr(self, "ubs_universe_summary"):
-                self.ubs_universe_summary.set(
-                    "Pesos bloqueados — evalúa todas las semillas y pulsa 'Calcular pesos'"
-                )
-            if hasattr(self, "ubs_timeframe_summary"):
-                self.ubs_timeframe_summary.set("Sin pesos hasta que completes la evaluación")
+        weights_locked = bool(
+            getattr(self, "ubs_weights_locked", None) and self.ubs_weights_locked.get()
+        )
         context = self._ubs_universe_context()
         (
             assets, aliases, universe_symbols, universe_symbols_tuple,
@@ -241,11 +245,13 @@ class UBSUniverseTableMixin:
             self._rank_ubs_universe_assets(
                 assets, stats["asset_stats"], stats["asset_signals"], stats["timeframe_stats"],
                 disabled_symbols, seed_enabled_when_disabled, checked_symbols,
+                show_weights=not weights_locked,
             )
         )
         tf_rows, tf_total_before_filter, tf_search_terms = (
             self._rank_ubs_universe_timeframes(
                 stats["timeframe_stats"], stats["timeframe_signals"],
+                show_weights=not weights_locked,
             )
         )
         self._set_ubs_universe_summaries(
@@ -321,101 +327,9 @@ class UBSUniverseTableMixin:
     def _weight_memory_path(self):
         return self._ubs_memory_path()
 
-    def _clear_weights_sql(self, conn, *, symbols=None, periods=None) -> int:
-        """Set score=NULL for candidates matching symbols and/or periods.
-        Returns number of rows affected."""
-        affected = 0
-        if symbols:
-            for sym in symbols:
-                r = conn.execute(
-                    "update candidates set score=null, accepted=null "
-                    "where upper(target_symbol)=upper(?) and score is not null",
-                    (sym,),
-                )
-                affected += r.rowcount
-                r2 = conn.execute(
-                    "update seed_scores set score=null, accepted=null "
-                    "where upper(symbol)=upper(?) and score is not null",
-                    (sym,),
-                )
-                affected += r2.rowcount
-        if periods:
-            for per in periods:
-                r = conn.execute(
-                    "update candidates set score=null, accepted=null "
-                    "where upper(period)=upper(?) and score is not null",
-                    (per,),
-                )
-                affected += r.rowcount
-                r2 = conn.execute(
-                    "update seed_scores set score=null, accepted=null "
-                    "where upper(period)=upper(?) and score is not null",
-                    (per,),
-                )
-                affected += r2.rowcount
-        conn.commit()
-        return affected
-
-    def _clear_selected_weights(self) -> None:
-        symbols = set(self.ubs_universe_checked)
-        periods = set(self.ubs_timeframe_checked)
-        if not symbols and not periods:
-            messagebox.showinfo("Limpiar pesos", "Marca activos o TFs primero (columna SEL).")
-            return
-        mem = self._weight_memory_path()
-        if not mem.exists():
-            messagebox.showinfo("Limpiar pesos", "No existe memoria UBS.")
-            return
-        desc = []
-        if symbols:
-            desc.append(f"activos: {', '.join(sorted(symbols))}")
-        if periods:
-            desc.append(f"TF: {', '.join(sorted(periods))}")
-        if not messagebox.askyesno("Limpiar pesos seleccionados",
-                                   f"Esto pondrá score=NULL en todos los candidatos para:\n{chr(10).join(desc)}\n\nSus pesos volverán a 0. ¿Continuar?"):
-            return
-        import sqlite3
-        conn = connect_memory(mem)
-        n = self._clear_weights_sql(conn, symbols=symbols, periods=periods)
-        conn.close()
+    def _clear_universe_selection(self) -> None:
+        """Desmarca filas sin modificar la evidencia histórica de SQLite."""
         self.ubs_universe_checked.clear()
         self.ubs_timeframe_checked.clear()
-        self.status_text.set(f"Pesos limpiados: {n} candidatos afectados")
-        self._refresh_ubs_universe()
-
-    def _clear_all_asset_weights(self) -> None:
-        mem = self._weight_memory_path()
-        if not mem.exists():
-            messagebox.showinfo("Limpiar pesos activos", "No existe memoria UBS.")
-            return
-        if not messagebox.askyesno("Limpiar todos los pesos de activos",
-                                   "Esto pondrá score=NULL en TODOS los candidatos de todos los activos.\n"
-                                   "Los pesos volverán a 0. ¿Continuar?"):
-            return
-        import sqlite3
-        conn = connect_memory(mem)
-        conn.execute("update candidates set score=null, accepted=null where score is not null")
-        conn.execute("update seed_scores  set score=null, accepted=null where score is not null")
-        n = conn.execute("select changes()").fetchone()[0]
-        conn.commit()
-        conn.close()
-        self.status_text.set(f"Todos los pesos de activos limpiados")
-        self._refresh_ubs_universe()
-
-    def _clear_all_tf_weights(self) -> None:
-        mem = self._weight_memory_path()
-        if not mem.exists():
-            messagebox.showinfo("Limpiar pesos TF", "No existe memoria UBS.")
-            return
-        if not messagebox.askyesno("Limpiar todos los pesos de Timeframes",
-                                   "Esto pondrá score=NULL para todos los TFs en candidates y seed_scores.\n"
-                                   "Los pesos de TF volverán a 0. ¿Continuar?"):
-            return
-        import sqlite3
-        periods = list(KNOWN_TIMEFRAMES)
-        conn = connect_memory(mem)
-        n = self._clear_weights_sql(conn, periods=periods)
-        conn.close()
-        self.ubs_timeframe_checked.clear()
-        self.status_text.set(f"Todos los pesos de TF limpiados: {n} candidatos afectados")
+        self.status_text.set("Selección del Universo limpiada")
         self._refresh_ubs_universe()
