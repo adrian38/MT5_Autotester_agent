@@ -26,20 +26,16 @@ from .live_audit_helpers import (  # noqa: F401  fachada del modulo
     _read_set_text,
     _redact_log_files,
     _redact_runner_output,
-    _safe_state,
     _trade_view,
     normalize_request,
     single_variant_mode,
 )
-from .live_account_snapshot import (
-    RUNNING_SNAPSHOT_STATUSES,
-    _AccountSnapshotMixin,
-)
+from .live_account_snapshot import _AccountSnapshotMixin
+from .live_audit_state import LiveAuditStateMixin
 from .live_audit_terminals import LiveAuditTerminalsMixin
 from .live_audit_extract import LiveAuditExtractMixin
 from .live_audit_tester import LiveAuditTesterMixin
 from .live_audit_compare import LiveAuditCompareMixin
-from .live_audit_report_upload import replace_tester_reports
 
 
 def _native_history_note(detail: dict[str, Any]) -> str:
@@ -62,6 +58,7 @@ def _native_history_note(detail: dict[str, Any]) -> str:
 
 
 class LiveAuditController(
+    LiveAuditStateMixin,
     LiveAuditTerminalsMixin,
     LiveAuditExtractMixin,
     LiveAuditTesterMixin,
@@ -115,59 +112,6 @@ class LiveAuditController(
 
     def _persist(self) -> None:
         save_json(self.state_path, self.states)
-
-    def is_running(self) -> bool:
-        """Si las terminales están ocupadas, por una auditoría **o** un sondeo.
-
-        El candado es uno porque el recurso es uno: la cuenta guardada de cada
-        terminal. Un sondeo de cuentas a la vez que una auditoría dejaría a la
-        auditoría midiendo con la cuenta que el sondeo puso."""
-        with self.lock:
-            return (
-                any(
-                    str(item.get("status")) in RUNNING_STATUSES
-                    for item in self.states.values()
-                )
-                or str(self.account_snapshot.get("status") or "")
-                in RUNNING_SNAPSHOT_STATUSES
-            )
-
-    def all_states(self) -> dict[str, Any]:
-        with self.lock:
-            return {key: _safe_state(value) for key, value in self.states.items()}
-
-    def state(self, audit_key: str | int) -> dict[str, Any]:
-        with self.lock:
-            key = str(audit_key)
-            raw = self.states.get(key) or {"audit_key": key, "status": "idle"}
-            return _safe_state(raw)
-
-    def replace_reports(self, audit_key: str | int, payload: Any) -> dict[str, Any]:
-        """Sustituye reportes tester de la ejecucion visible, sin relanzar MT5."""
-        return replace_tester_reports(self, str(audit_key), payload)
-
-    def artifact_path(self, audit_key: str, audit_id: str, filename: str) -> Path:
-        """Resuelve únicamente reportes de la ejecución visible de una auditoría."""
-        if any(
-            not value or len(value) > 255 or not all(char.isalnum() or char in "-_." for char in value)
-            for value in (str(audit_key), str(audit_id))
-        ):
-            raise ValueError("Identificador de artefacto no válido")
-        if not filename or Path(filename).name != filename:
-            raise ValueError("Nombre de artefacto no válido")
-        if Path(filename).suffix.casefold() not in {".htm", ".html", ".png", ".gif", ".jpg", ".jpeg"}:
-            raise ValueError("Tipo de artefacto no permitido")
-        with self.lock:
-            raw = self.states.get(str(audit_key))
-            if not raw or str(raw.get("audit_id") or "") != str(audit_id):
-                raise FileNotFoundError("La ejecución solicitada no es la ejecución visible")
-        reports_dir = (
-            self.runtime_dir / f"audit_{audit_key}" / str(audit_id) / "reports"
-        ).resolve()
-        path = (reports_dir / filename).resolve()
-        if path.parent != reports_dir or not path.is_file():
-            raise FileNotFoundError(filename)
-        return path
 
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = normalize_request(payload)
