@@ -62,8 +62,11 @@ from `IC` to the other broker branches and restarts those agents. Codex must
 report every agent commit and wait for the user to confirm porting and restart
 before asking to resume work that depends on it.
 
-Manager changes are allowed only in the separate
-`MT5_Autotester_agent_manager` repository on branch `dev`.
+The manager branch `dev` is frozen. Codex must not switch to it, update it,
+merge into it, commit on it, or use it as the target for a manager change unless
+the user explicitly says to unfreeze or modify `dev` in that request. The older
+rule that manager changes belong on `dev` does not itself grant that permission.
+No other manager branch becomes writable by implication.
 
 For functional requirements and the technical-debt backlog, see
 [requirements.md](requirements.md).
@@ -77,7 +80,7 @@ con `git status --short --branch`.
 | --- | --- | --- |
 | Esta copia ICTrading | `IC` | Sí, para la tarea pedida. |
 | Esta copia Vantage | `vantage` | Sí, para la tarea pedida. |
-| Manager | `dev` | Sólo si la tarea exige explícitamente un cambio hermano de contrato. |
+| Manager | `dev` | Congelada; nunca escribir ni cambiar a ella salvo orden explícita del usuario de descongelar o modificar `dev`. |
 | Discovery Model Lab | `main` | Sólo si la tarea exige explícitamente un cambio hermano de contrato. |
 | AXI, RoboForex o copia genérica | cualquiera | Nunca; el usuario porta el commit de IC. |
 

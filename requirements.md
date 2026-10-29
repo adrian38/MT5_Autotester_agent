@@ -977,6 +977,13 @@ The manager (`I:\TRADING\MT5_Autotester_agent_manager`, node `axi` in its
 `manager.json`) reads this project directory. The dependency is one-way: this
 repository MUST NOT read anything from the manager.
 
+- **FR-1.16.0** The manager branch `dev` is frozen. An AI agent MUST NOT switch
+  to it, update it, merge into it, commit on it, or select it as the target of a
+  manager change unless the user explicitly orders that `dev` be unfrozen or
+  modified in the current request. A request for a manager fix without naming
+  that override is insufficient. This freeze does not make another manager
+  branch writable.
+
 - **FR-1.16.1** These are the only files the manager consumes, and their
   ownership MUST stay explicit:
 
