@@ -236,6 +236,22 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
                 "MongoDB+",
             )
 
+    def test_vantage_universe_protects_exact_symbols_before_suffix_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            assets = run_tests.Path(temp_dir) / "vantage_assets.ini"
+            assets.write_text(
+                "[Forex]\nsymbols=AUDUSD,EURUSD+\n"
+                "[Indices]\nsymbols=DJ30.r,DJ30ft.r,Nikkei225\n",
+                encoding="utf-8",
+            )
+            universe = run_tests.load_symbol_suffix_universe(assets, ".r", "ft.r", "+")
+
+            self.assertEqual(run_tests.apply_symbol_suffix("AUDUSD", ".r", "ft.r", "+", universe), "AUDUSD")
+            self.assertEqual(run_tests.apply_symbol_suffix("EURUSD", ".r", "ft.r", "+", universe), "EURUSD+")
+            self.assertEqual(run_tests.apply_symbol_suffix("DJ30", ".r", "ft.r", "+", universe), "DJ30.r")
+            self.assertEqual(run_tests.apply_symbol_suffix("DJ30ft", ".r", "ft.r", "+", universe), "DJ30ft.r")
+            self.assertEqual(run_tests.apply_symbol_suffix("NIKKEI225", ".r", "ft.r", "+", universe), "Nikkei225")
+
     def test_symbol_map_preserves_explicit_broker_suffix(self) -> None:
         symbol_map = run_tests.parse_symbol_map("NAS100=USTECH,WTI=USOIL")
 

@@ -67,6 +67,23 @@ class MT5SymbolExtractTests(unittest.TestCase):
         self.assertEqual(groups["Commodities"], ["COPPER.fs"])
         self.assertEqual(groups["Indices"], ["NAS100.fs"])
 
+    def test_group_symbols_classifies_vantage_index_spellings(self) -> None:
+        symbols = [
+            "BVSPX.r",
+            "CHINA50ft.r",
+            "DJ30.r",
+            "GER40ft.r",
+            "JPN225ft",
+            "Nikkei225",
+            "SP500.r",
+            "USDX.r",
+        ]
+
+        groups = group_symbols_for_universe(ExtractedSymbol(name) for name in symbols)
+
+        self.assertEqual(groups["Indices"], sorted(symbols, key=str.upper))
+        self.assertNotIn("Other", groups)
+
     def test_write_asset_universe_syncs_removed_and_added_with_backup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ictrading_assets.ini"

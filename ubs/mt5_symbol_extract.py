@@ -77,6 +77,25 @@ CRYPTO_HINTS = (
 )
 ENERGY_HINTS = ("OIL", "WTI", "BRENT", "XTI", "XBR", "XNG", "GAS")
 INDEX_HINTS = (
+    "BVSPX",
+    "CHINA50",
+    "CHINAH",
+    "DJ30",
+    "ES35",
+    "EU50",
+    "FRA40",
+    "GER40",
+    "HK50",
+    "HKTECH",
+    "JPN225",
+    "NETH25",
+    "NIKKEI225",
+    "SGP20",
+    "SP500",
+    "SPI200",
+    "SWI20",
+    "US2000",
+    "USDX",
     "US30",
     "US500",
     "USTEC",
@@ -143,7 +162,7 @@ def classify_symbol_group(symbol: ExtractedSymbol) -> str:
 
 def _classification_symbol_base(symbol: str) -> str:
     value = str(symbol or "").strip().upper()
-    for suffix in (".SA", ".FS", "+"):
+    for suffix in ("FT.R", ".R", ".SA", ".FS", "+"):
         if value.endswith(suffix):
             return value[: -len(suffix)]
     return value

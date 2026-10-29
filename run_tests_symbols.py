@@ -41,11 +41,11 @@ def load_symbol_suffix_universe(
     # also repair casing drift such as AXI ``APPLE+`` -> ``Apple+``.
     universe = SymbolSuffixUniverse()
     for source, target in load_symbol_suffix_target_map(path, symbol_suffix, futures_suffix, shares_suffix).items():
+        universe.exact_targets.setdefault(source, target)
+        universe.exact_targets.setdefault(normalize_set_symbol(target), target)
         for suffix in suffixes:
             if _symbol_endswith(target, suffix):
                 universe[source] = target[-len(suffix):]
-                universe.exact_targets[source] = target
-                universe.exact_targets.setdefault(normalize_set_symbol(target), target)
                 break
     return universe
 
@@ -77,6 +77,8 @@ def load_symbol_suffix_target_map(
             listed = item.strip()
             if not listed:
                 continue
+            listed_key = normalize_set_symbol(listed)
+            mapping.setdefault(listed_key, listed)
             for suffix in suffixes:
                 if _symbol_endswith(listed, suffix):
                     base = listed[: -len(suffix)]
