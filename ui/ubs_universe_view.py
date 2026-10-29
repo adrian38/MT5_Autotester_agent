@@ -234,7 +234,7 @@ class UBSUniverseViewMixin:
         """Leyenda con el resumen de los pesos de timeframe."""
         legend = ttk.Label(panel, textvariable=self.ubs_timeframe_summary,
                            style="Muted.TLabel", anchor="w", justify="left", wraplength=600)
-        legend.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 18))
+        legend.grid(row=5, column=0, sticky="ew", padx=20, pady=(0, 18))
         legend.bind("<Configure>", lambda event: legend.configure(wraplength=max(200, event.width)))
 
     def _build_ubs_universe(self, parent: ttk.Frame) -> None:
