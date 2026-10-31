@@ -12,6 +12,7 @@ from . import guided_batches
 from .common import safe_int
 from .node_settings import (
     _table_exists,
+    broker_universe_path,
     declared_cli_options,
     memory_path,
     read_settings,
@@ -30,6 +31,8 @@ SCORE_OPTIONS = {
     "ubs_long_tf_min_trades_w1": "--min-trades-w1",
     "ubs_long_tf_min_trades_mn": "--min-trades-mn",
 }
+
+SUFFIX_OPTIONS = ("--symbol-suffix", "--symbol-futures-suffix", "--symbol-shares-suffix")
 
 VALUE_OPTIONS = {
     "--source-dir", "--output-dir", "--memory", "--broker", "--account-type", "--template",
@@ -356,6 +359,27 @@ def _add_symbol_options(args: list[str], cfg, broker: str) -> None:
         _add(args, "--symbol-suffix", setting(cfg, "General", "symbol_suffix"))
         _add(args, "--symbol-futures-suffix", setting(cfg, "General", "symbol_futures_suffix"))
         _add(args, "--symbol-shares-suffix", setting(cfg, "General", "symbol_shares_suffix"))
+
+
+def _add_symbol_universe_option(args: list[str], project: Path, broker: str) -> None:
+    """El inventario del broker, para quien llama a `run_tests.py` directamente.
+
+    Un sufijo sin universo se aplica a ciegas: en Vantage `XAUUSD` salia como
+    `ForceSymbol: XAUUSD -> XAUUSD.r` cuando el simbolo del servidor es
+    `XAUUSD+`, y el backtest moria sin historico. `ubs_agent.py` ya pasa el
+    universo por su cuenta (desde `--assets`), asi que esto es solo para las
+    ordenes que el nodo arma contra el runner: el historico OHLC manual y la
+    comprobacion manual.
+
+    Va aparte de `_add_symbol_options` a proposito: esa funcion tambien arma la
+    orden de `ubs_agent.py`, que no declara `--symbol-universe` y moriria con
+    `unrecognized arguments`.
+    """
+    if not any(option in args for option in SUFFIX_OPTIONS):
+        return
+    path = broker_universe_path(project, broker)
+    if path.is_file():
+        args.extend(["--symbol-universe", str(path)])
 
 
 def build_pipeline_stage_command(
