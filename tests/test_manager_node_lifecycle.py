@@ -129,29 +129,41 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             [sys.executable, str(entrypoint.resolve()), "--sample"],
         )
 
-    def test_relaunch_pulls_then_pushes_current_branch_before_exec(self) -> None:
-        branch_result = mock.Mock(returncode=0, stdout="IC\n", stderr="")
-        pull_result = mock.Mock(returncode=0, stdout="Already up to date.\n", stderr="")
-        push_result = mock.Mock(returncode=0, stdout="", stderr="Everything up-to-date\n")
+    def run_relaunch(self, project_dir: Path, results: list[mock.Mock]) -> mock.Mock:
+        entrypoint = project_dir / "app_ui.py"
+        with (
+            mock.patch("manager_node_lifecycle.sys.frozen", False, create=True),
+            mock.patch("manager_node_lifecycle.sys.argv", ["app_ui.py"]),
+            mock.patch(
+                "manager_node_lifecycle.subprocess.run", side_effect=results
+            ) as run,
+            mock.patch("manager_node_lifecycle.os.execv") as execv,
+        ):
+            relaunch_application(entrypoint, project_dir)
+        execv.assert_called_once_with(sys.executable, [sys.executable, str(entrypoint)])
+        return run
+
+    @staticmethod
+    def restart_log(project_dir: Path) -> str:
+        return (project_dir / "logs" / "manager_node_restart.log").read_text(encoding="utf-8")
+
+    def test_relaunch_fetches_then_pushes_current_branch_before_exec(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr="From github.com/adrian38\n"),
+            mock.Mock(returncode=0, stdout="0\t1\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr="To github.com/adrian38\n"),
+        ]
         with tempfile.TemporaryDirectory() as temp:
             project_dir = Path(temp).resolve()
-            entrypoint = project_dir / "app_ui.py"
-            with (
-                mock.patch("manager_node_lifecycle.sys.frozen", False, create=True),
-                mock.patch("manager_node_lifecycle.sys.argv", ["app_ui.py"]),
-                mock.patch(
-                    "manager_node_lifecycle.subprocess.run",
-                    side_effect=[branch_result, pull_result, push_result],
-                ) as run,
-                mock.patch("manager_node_lifecycle.os.execv") as execv,
-            ):
-                relaunch_application(entrypoint, project_dir)
+            run = self.run_relaunch(project_dir, results)
 
             self.assertEqual(
                 [call.args[0] for call in run.call_args_list],
                 [
                     ["git", "branch", "--show-current"],
-                    ["git", "pull", "--ff-only", "origin", "IC"],
+                    ["git", "fetch", "origin", "IC"],
+                    ["git", "rev-list", "--left-right", "--count", "FETCH_HEAD...HEAD"],
                     ["git", "push", "origin", "IC"],
                 ],
             )
@@ -164,36 +176,123 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
                     for call in run.call_args_list
                 )
             )
-            log_text = (project_dir / "logs" / "manager_node_restart.log").read_text(
-                encoding="utf-8"
-            )
-            self.assertIn("git pull --ff-only origin IC: exit 0", log_text)
-            self.assertIn("git push origin IC: exit 0", log_text)
-            execv.assert_called_once_with(
-                sys.executable,
-                [sys.executable, str(entrypoint)],
-            )
+            log_text = self.restart_log(project_dir)
+            self.assertIn("0 commit(s) en origin por traer, 1 local(es) por publicar", log_text)
+            self.assertIn("git push origin IC (intento 1): exit 0", log_text)
 
-    def test_relaunch_still_execs_and_skips_push_when_pull_fails(self) -> None:
-        branch_result = mock.Mock(returncode=0, stdout="IC\n", stderr="")
-        pull_result = mock.Mock(returncode=1, stdout="", stderr="Not possible to fast-forward\n")
+    def test_relaunch_fast_forwards_when_only_origin_moved(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="2\t0\n", stderr=""),
+            mock.Mock(returncode=0, stdout="Updating c53f081..80a7a30\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr="Everything up-to-date\n"),
+        ]
         with tempfile.TemporaryDirectory() as temp:
             project_dir = Path(temp).resolve()
-            entrypoint = project_dir / "app_ui.py"
-            with (
-                mock.patch("manager_node_lifecycle.sys.frozen", False, create=True),
-                mock.patch("manager_node_lifecycle.sys.argv", ["app_ui.py"]),
-                mock.patch(
-                    "manager_node_lifecycle.subprocess.run",
-                    side_effect=[branch_result, pull_result],
-                ) as run,
-                mock.patch("manager_node_lifecycle.os.execv") as execv,
-            ):
-                relaunch_application(entrypoint, project_dir)
+            run = self.run_relaunch(project_dir, results)
+
+            self.assertIn(
+                ["git", "merge", "--ff-only", "FETCH_HEAD"],
+                [call.args[0] for call in run.call_args_list],
+            )
+
+    def test_relaunch_rebases_local_commits_when_the_branch_diverged(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="3\t1\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="Successfully rebased\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr="To github.com/adrian38\n"),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            project_dir = Path(temp).resolve()
+            run = self.run_relaunch(project_dir, results)
+
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list],
+                [
+                    ["git", "branch", "--show-current"],
+                    ["git", "fetch", "origin", "IC"],
+                    ["git", "rev-list", "--left-right", "--count", "FETCH_HEAD...HEAD"],
+                    ["git", "status", "--porcelain", "--untracked-files=no"],
+                    ["git", "rebase", "FETCH_HEAD"],
+                    ["git", "push", "origin", "IC"],
+                ],
+            )
+
+    def test_relaunch_aborts_a_conflicting_rebase_and_skips_push(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="3\t1\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=1, stdout="", stderr="CONFLICT (content)\n"),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            project_dir = Path(temp).resolve()
+            run = self.run_relaunch(project_dir, results)
+
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list][-2:],
+                [
+                    ["git", "rebase", "FETCH_HEAD"],
+                    ["git", "rebase", "--abort"],
+                ],
+            )
+            self.assertIn("El rebase fallo; no se ejecuta git push", self.restart_log(project_dir))
+
+    def test_relaunch_retries_the_push_after_a_rejection(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="0\t1\n", stderr=""),
+            mock.Mock(returncode=1, stdout="", stderr="! [remote rejected] IC -> IC (failed)\n"),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="0\t1\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr="To github.com/adrian38\n"),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            project_dir = Path(temp).resolve()
+            run = self.run_relaunch(project_dir, results)
+
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list].count(
+                    ["git", "push", "origin", "IC"]
+                ),
+                2,
+            )
+            log_text = self.restart_log(project_dir)
+            self.assertIn("git push origin IC (intento 1): exit 1", log_text)
+            self.assertIn("git push origin IC (intento 2): exit 0", log_text)
+
+    def test_relaunch_still_execs_and_skips_push_when_fetch_fails(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=1, stdout="", stderr="fatal: bad object refs/remotes/origin/HEAD\n"),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            project_dir = Path(temp).resolve()
+            run = self.run_relaunch(project_dir, results)
 
             self.assertEqual(len(run.call_args_list), 2)
+            self.assertIn("El fetch fallo; no se ejecuta git push", self.restart_log(project_dir))
+
+    def test_relaunch_leaves_a_dirty_diverged_checkout_untouched(self) -> None:
+        results = [
+            mock.Mock(returncode=0, stdout="IC\n", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="3\t1\n", stderr=""),
+            mock.Mock(returncode=0, stdout=" M app_ui.py\n", stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            project_dir = Path(temp).resolve()
+            run = self.run_relaunch(project_dir, results)
+
+            self.assertEqual(len(run.call_args_list), 4)
             self.assertIn(
-                "El pull fallo; no se ejecuta git push",
-                (project_dir / "logs" / "manager_node_restart.log").read_text(encoding="utf-8"),
+                "Hay cambios sin commitear y la rama diverge",
+                self.restart_log(project_dir),
             )
-            execv.assert_called_once()

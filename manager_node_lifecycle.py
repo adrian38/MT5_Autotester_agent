@@ -7,11 +7,14 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 TRUE_VALUES = {"1", "true", "yes", "on", "si"}
 GIT_SYNC_TIMEOUT_SECONDS = 300
+GIT_PUSH_ATTEMPTS = 2
+
+GitRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 
 class EmbeddedManagerNode:
@@ -160,9 +163,17 @@ def _git_result_detail(result: subprocess.CompletedProcess[str]) -> str:
     return detail
 
 
-def sync_origin_before_relaunch(project_dir: Path) -> bool:
-    """Fast-forward from origin and publish existing commits before relaunching."""
-    project_dir = project_dir.resolve()
+def _parse_divergence(output: str) -> tuple[int, int] | None:
+    parts = (output or "").split()
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def _git_runner(project_dir: Path) -> GitRunner:
     environment = dict(os.environ)
     environment["GIT_TERMINAL_PROMPT"] = "0"
     run_options = {
@@ -180,6 +191,77 @@ def sync_origin_before_relaunch(project_dir: Path) -> bool:
     def run_git(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["git", *arguments], **run_options)
 
+    return run_git
+
+
+def _log_git(
+    project_dir: Path, label: str, result: subprocess.CompletedProcess[str]
+) -> None:
+    detail = _git_result_detail(result)
+    _write_restart_log(
+        project_dir,
+        f"{label}: exit {result.returncode}" + (f" | {detail}" if detail else ""),
+    )
+
+
+def _integrate_origin(project_dir: Path, run_git: GitRunner, branch: str) -> bool:
+    """Fetch origin/<branch> and put the local commits on top of it."""
+    fetch_result = run_git(["fetch", "origin", branch])
+    _log_git(project_dir, f"git fetch origin {branch}", fetch_result)
+    if fetch_result.returncode != 0:
+        _write_restart_log(project_dir, "El fetch fallo; no se ejecuta git push")
+        return False
+
+    counts_result = run_git(["rev-list", "--left-right", "--count", "FETCH_HEAD...HEAD"])
+    divergence = (
+        _parse_divergence(counts_result.stdout) if counts_result.returncode == 0 else None
+    )
+    if divergence is None:
+        _log_git(project_dir, "git rev-list --left-right --count FETCH_HEAD...HEAD", counts_result)
+        _write_restart_log(project_dir, "No se pudo comparar con origin; no se ejecuta git push")
+        return False
+
+    behind, ahead = divergence
+    _write_restart_log(
+        project_dir,
+        f"Rama {branch}: {behind} commit(s) en origin por traer, {ahead} local(es) por publicar",
+    )
+    if behind == 0:
+        return True
+    if ahead == 0:
+        merge_result = run_git(["merge", "--ff-only", "FETCH_HEAD"])
+        _log_git(project_dir, "git merge --ff-only FETCH_HEAD", merge_result)
+        if merge_result.returncode != 0:
+            _write_restart_log(project_dir, "El merge fallo; no se ejecuta git push")
+            return False
+        return True
+
+    # Diverged branch: a fast-forward is impossible, so the local commits are
+    # replayed on origin instead of staying unpublished for every later restart.
+    # An autostash would resolve its own pop with conflict markers inside the
+    # sources the relaunch is about to load, so a dirty tree stops the rebase.
+    status_result = run_git(["status", "--porcelain", "--untracked-files=no"])
+    if status_result.returncode != 0 or (status_result.stdout or "").strip():
+        _log_git(project_dir, "git status --porcelain", status_result)
+        _write_restart_log(
+            project_dir,
+            "Hay cambios sin commitear y la rama diverge; no se reorganiza ni se ejecuta git push",
+        )
+        return False
+
+    rebase_result = run_git(["rebase", "FETCH_HEAD"])
+    _log_git(project_dir, "git rebase FETCH_HEAD", rebase_result)
+    if rebase_result.returncode != 0:
+        _log_git(project_dir, "git rebase --abort", run_git(["rebase", "--abort"]))
+        _write_restart_log(project_dir, "El rebase fallo; no se ejecuta git push")
+        return False
+    return True
+
+
+def sync_origin_before_relaunch(project_dir: Path) -> bool:
+    """Bring the current branch in line with origin and publish it before relaunching."""
+    project_dir = project_dir.resolve()
+    run_git = _git_runner(project_dir)
     try:
         branch_result = run_git(["branch", "--show-current"])
         branch = (branch_result.stdout or "").strip()
@@ -193,25 +275,19 @@ def sync_origin_before_relaunch(project_dir: Path) -> bool:
             return False
 
         _write_restart_log(project_dir, f"Sincronizando rama {branch} con origin antes del reinicio")
-        pull_result = run_git(["pull", "--ff-only", "origin", branch])
-        pull_detail = _git_result_detail(pull_result)
+        for attempt in range(1, GIT_PUSH_ATTEMPTS + 1):
+            if not _integrate_origin(project_dir, run_git, branch):
+                return False
+            push_result = run_git(["push", "origin", branch])
+            _log_git(project_dir, f"git push origin {branch} (intento {attempt})", push_result)
+            if push_result.returncode == 0:
+                return True
+        # A retry only helps when origin moved under us; a branch the remote
+        # itself refuses keeps failing, and the relaunch continues regardless.
         _write_restart_log(
-            project_dir,
-            f"git pull --ff-only origin {branch}: exit {pull_result.returncode}"
-            + (f" | {pull_detail}" if pull_detail else ""),
+            project_dir, f"El push a origin/{branch} fallo tras {GIT_PUSH_ATTEMPTS} intentos"
         )
-        if pull_result.returncode != 0:
-            _write_restart_log(project_dir, "El pull fallo; no se ejecuta git push")
-            return False
-
-        push_result = run_git(["push", "origin", branch])
-        push_detail = _git_result_detail(push_result)
-        _write_restart_log(
-            project_dir,
-            f"git push origin {branch}: exit {push_result.returncode}"
-            + (f" | {push_detail}" if push_detail else ""),
-        )
-        return push_result.returncode == 0
+        return False
     except (OSError, subprocess.SubprocessError) as exc:
         _write_restart_log(project_dir, f"ERROR al sincronizar con origin: {exc}")
         return False

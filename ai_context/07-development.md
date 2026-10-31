@@ -8,11 +8,17 @@ Run the desktop UI:
 python .\app_ui.py
 ```
 
-The manager's `Reiniciar app` action performs a clean shutdown and then runs
-`git pull --ff-only origin <current-branch>` followed by
-`git push origin <current-branch>` before starting the UI again. A failed pull
-skips the push, but any Git failure still allows the application to relaunch.
-The command results are recorded in `logs/manager_node_restart.log`.
+The manager's `Reiniciar app` action performs a clean shutdown and then
+synchronizes the current branch with origin before starting the UI again:
+`git fetch origin <current-branch>`, then a fast-forward merge when only origin
+moved, or `git rebase FETCH_HEAD` when the branch diverged (the rebase is
+skipped while tracked files are modified, and a conflicting rebase is aborted,
+so the checkout never relaunches mid-rebase or with conflict markers in the
+sources), and finally `git push origin <current-branch>`. A rejected push is
+retried once after re-synchronizing, because the earlier `--ff-only` pull left
+unpublished commits stranded and blocked every later restart. A failed fetch, merge or
+rebase skips the push, but any Git failure still allows the application to
+relaunch. The command results are recorded in `logs/manager_node_restart.log`.
 
 Compile sources:
 
