@@ -13,7 +13,8 @@ from manager_node_runtime.live_audit import (
     normalize_request, single_variant_mode,
 )
 from manager_node_runtime.mt5_native_history_report import (
-    NativeHistoryReportError, validate_native_history_report,
+    NativeHistoryReportError, _WindowsTerminalReportExporter,
+    validate_native_history_report,
 )
 from tests.manager_node_live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
 
@@ -65,6 +66,13 @@ class _HistorySyncMt5:
 
 
 class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
+    def test_a_failed_remote_allocation_has_a_readable_error(self) -> None:
+        exporter = _WindowsTerminalReportExporter.__new__(_WindowsTerminalReportExporter)
+        exporter.kernel32 = SimpleNamespace(VirtualAllocEx=lambda *_args: None)
+
+        with self.assertRaisesRegex(NativeHistoryReportError, "no reservó memoria"):
+            exporter._remote_allocation(123, 16)
+
     def test_credentials_are_required_and_never_enter_public_state(self) -> None:
         payload = request()
         payload["source_password"] = ""

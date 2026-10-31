@@ -48,9 +48,11 @@ assets, margin profiles or normalization.
 | `dev` | **RoboForex** | `G:\TRADING\MT5_Autotester_agent` |
 | `AXI` | **AXI** | `F:\TRADING\MT5_Autotester_agent_AXI` |
 | `IC` | **ICTrading** | `C:\Users\Adrian\Adrian\TRADING\MT5_Autotester_agent_IC\MT5_Autotester_agent` |
+| `vantage` | **Vantage** | `I:\TRADING\MT5_Autotester_agent_Vantage` |
 
-Broker branches (`AXI`, `IC`) merge into `dev`. Paths are per-workstation, and
-the IC checkout is normally worked on a different PC than `dev`/`AXI`.
+Broker branches (`AXI`, `IC`, `vantage`) merge into `dev`. Paths are
+per-workstation, and the IC checkout is normally worked on a different PC than
+`dev`/`AXI`/`vantage`.
 
 ## Absolute write boundary
 
