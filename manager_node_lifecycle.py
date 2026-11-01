@@ -14,6 +14,14 @@ TRUE_VALUES = {"1", "true", "yes", "on", "si"}
 GIT_SYNC_TIMEOUT_SECONDS = 300
 GIT_PUSH_ATTEMPTS = 2
 
+NODE_SUPERVISION_INTERVAL_MS = 5000
+"""Cada cuanto mira la aplicacion si el hilo del nodo sigue vivo.
+
+Cinco segundos no cuestan nada —es comparar un booleano— y acotan a eso el
+tiempo que el manager puede estar hablandole a un nodo que ya no escucha. El
+2026-11-01 ese hueco fueron nueve horas porque no habia nadie mirando.
+"""
+
 GitRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 
@@ -44,7 +52,9 @@ class EmbeddedManagerNode:
         self.server: Any = None
         self.controller: Any = None
         self.thread: threading.Thread | None = None
+        self.address: tuple[str, int] | None = None
         self._restart_requested = threading.Event()
+        self._supervision_error = ""
         self.last_error = ""
 
     @property
@@ -76,7 +86,7 @@ class EmbeddedManagerNode:
             if not self.config_path.is_file():
                 raise ValueError(f"No existe la configuracion del nodo: {self.config_path}")
             from manager_node_runtime.common import load_json, safe_int
-            from manager_node_runtime.node import JobController, NodeServer
+            from manager_node_runtime.node import JobController
 
             config = load_json(self.config_path)
             project_dir = Path(str(config.get("project_dir") or "")).expanduser().resolve()
@@ -88,16 +98,7 @@ class EmbeddedManagerNode:
             host = str(config.get("host") or "0.0.0.0")
             port = safe_int(config.get("port"), 8761, minimum=1, maximum=65535)
             self.controller = JobController(config, self.config_path)
-            self.server = NodeServer(
-                (host, port), self.controller, restart_callback=self._restart_requested.set
-            )
-            self.thread = threading.Thread(
-                target=self.server.serve_forever,
-                kwargs={"poll_interval": 0.5},
-                name="mt5-manager-node",
-                daemon=True,
-            )
-            self.thread.start()
+            self._serve(host, port)
             self._log(f"Nodo integrado iniciado en {host}:{port}")
             return True
         except Exception as exc:
@@ -105,8 +106,72 @@ class EmbeddedManagerNode:
             self.server = None
             self.controller = None
             self.thread = None
+            self.address = None
             self._log(f"ERROR al iniciar nodo integrado: {exc}")
             return False
+
+    def _serve(self, host: str, port: int) -> None:
+        """Deja escuchando un servidor nuevo sobre el controlador ya creado.
+
+        El controlador se recibe hecho y no se toca: cuando `supervise` vuelve
+        a llamar aqui puede haber una generacion en marcha, y un `JobController`
+        nuevo sobre el mismo `state.json` serian dos escritores para un trabajo.
+        """
+        from manager_node_runtime.node import NodeServer
+
+        server = NodeServer(
+            (host, port), self.controller, restart_callback=self._restart_requested.set
+        )
+        thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.5},
+            name="mt5-manager-node",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except BaseException:
+            server.server_close()
+            raise
+        self.server, self.thread, self.address = server, thread, (host, port)
+
+    def supervise(self) -> bool:
+        """Vuelve a escuchar si el hilo del nodo murio sin que nadie lo parase.
+
+        `serve_forever` solo se sale por `shutdown()` o por una excepcion que no
+        atrapa. Lo primero lo hace `stop`, que deja `self.server` en `None` y no
+        llega aqui; lo segundo mata el hilo y deja el socket escuchando sin que
+        nadie lo atienda, que es peor que una caida: el puerto sigue abierto,
+        las conexiones se amontonan en la cola y, cuando se llena, Windows
+        empieza a contestar RST. El manager lo ve como «Connection refused» y no
+        tiene forma de distinguirlo de un agente apagado. Paso el 2026-11-01.
+
+        No se reinicia la aplicacion ni se toca el trabajo en curso: se cierra
+        el socket huerfano —que ademas libera las conexiones a medio cerrar— y
+        se levanta otro servidor sobre el mismo controlador.
+        """
+        if self.server is None or self.address is None:
+            return False
+        if self.thread is not None and self.thread.is_alive():
+            return False
+        self._log("El hilo del nodo murio solo; se vuelve a escuchar")
+        try:
+            self.server.server_close()
+        except Exception:
+            pass
+        try:
+            self._serve(*self.address)
+        except Exception as exc:
+            # El puerto puede tardar en soltarse. Se reintenta en la vuelta
+            # siguiente, pero sin repetir la misma linea cada cinco segundos.
+            if str(exc) != self._supervision_error:
+                self._supervision_error = str(exc)
+                self._log(f"ERROR al volver a escuchar el nodo: {exc}")
+            return False
+        self._supervision_error = ""
+        host, port = self.address
+        self._log(f"Nodo integrado relanzado en {host}:{port}")
+        return True
 
     def stop(self, *, stop_job: bool = True) -> None:
         controller = self.controller
@@ -130,6 +195,8 @@ class EmbeddedManagerNode:
         self.server = None
         self.controller = None
         self.thread = None
+        # Sin direccion `supervise` no relanza nada: una parada es una parada.
+        self.address = None
         self._log("Nodo integrado detenido")
 
     def _log(self, message: str) -> None:

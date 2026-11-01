@@ -37,6 +37,15 @@ def write_embedded_config(path: Path, app_base: Path, port: int, token: str) -> 
     )
 
 
+def health_status(port: int, token: str) -> int:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/v1/health",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        return int(response.status)
+
+
 class EmbeddedManagerNodeTests(unittest.TestCase):
     def test_node_starts_and_stops_with_matching_app_project(self) -> None:
         app_base = Path(__file__).resolve().parent.parent
@@ -112,6 +121,85 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             lifecycle = EmbeddedManagerNode(root, settings)
             self.assertFalse(lifecycle.start())
             self.assertIn("pertenece a otro proyecto", lifecycle.last_error)
+
+    def started_lifecycle(self, temp: str, port: int, token: str) -> EmbeddedManagerNode:
+        app_base = Path(__file__).resolve().parent.parent
+        config_path = Path(temp) / "node.json"
+        write_embedded_config(config_path, app_base, port, token)
+        settings = configparser.ConfigParser()
+        settings["ManagerNode"] = {"enabled": "1", "config_file": str(config_path)}
+        lifecycle = EmbeddedManagerNode(app_base, settings)
+        self.assertTrue(lifecycle.start(), lifecycle.last_error)
+        self.addCleanup(lifecycle.stop)
+        return lifecycle
+
+    @staticmethod
+    def kill_serving_thread(lifecycle: EmbeddedManagerNode) -> None:
+        """Deja el nodo como quedo el 2026-11-01: sin hilo y con socket abierto.
+
+        `shutdown()` saca al hilo de `serve_forever` sin cerrar el socket, que
+        es exactamente lo que deja una excepcion sin atrapar dentro del bucle.
+        """
+        lifecycle.server.shutdown()
+        lifecycle.thread.join(timeout=5)
+
+    def test_supervision_serves_again_when_the_node_thread_dies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            port, token = free_port(), "test-supervision-token"
+            lifecycle = self.started_lifecycle(temp, port, token)
+            self.assertEqual(health_status(port, token), 200)
+            controller = lifecycle.controller
+            self.kill_serving_thread(lifecycle)
+            self.assertFalse(lifecycle.running)
+
+            self.assertTrue(lifecycle.supervise())
+
+            self.assertTrue(lifecycle.running)
+            self.assertEqual(health_status(port, token), 200)
+            # El controlador se conserva: uno nuevo sobre el mismo `state.json`
+            # serian dos escritores para la generacion que siguiera en marcha.
+            self.assertIs(lifecycle.controller, controller)
+
+    def test_supervision_leaves_a_live_node_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            port, token = free_port(), "test-supervision-token"
+            lifecycle = self.started_lifecycle(temp, port, token)
+            thread, server = lifecycle.thread, lifecycle.server
+
+            self.assertFalse(lifecycle.supervise())
+
+            self.assertIs(lifecycle.thread, thread)
+            self.assertIs(lifecycle.server, server)
+            self.assertEqual(health_status(port, token), 200)
+
+    def test_supervision_does_not_resurrect_a_node_that_was_stopped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            port, token = free_port(), "test-supervision-token"
+            lifecycle = self.started_lifecycle(temp, port, token)
+            lifecycle.stop()
+
+            self.assertFalse(lifecycle.supervise())
+
+            self.assertIsNone(lifecycle.server)
+            self.assertIsNone(lifecycle.address)
+
+    def test_supervision_reports_a_failed_relaunch_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            port, token = free_port(), "test-supervision-token"
+            lifecycle = self.started_lifecycle(temp, port, token)
+            self.kill_serving_thread(lifecycle)
+            lines: list[str] = []
+            with (
+                mock.patch.object(lifecycle, "_log", lines.append),
+                mock.patch.object(
+                    lifecycle, "_serve", side_effect=OSError("puerto ocupado")
+                ),
+            ):
+                self.assertFalse(lifecycle.supervise())
+                self.assertFalse(lifecycle.supervise())
+            # Reintenta cada vuelta, pero no repite la linea cada cinco segundos.
+            errors = [line for line in lines if line.startswith("ERROR")]
+            self.assertEqual(errors, ["ERROR al volver a escuchar el nodo: puerto ocupado"])
 
     def test_relaunch_uses_python_and_the_source_entrypoint(self) -> None:
         entrypoint = Path(__file__).resolve().parent.parent / "app_ui.py"
