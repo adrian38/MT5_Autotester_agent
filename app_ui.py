@@ -8,7 +8,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from manager_node_lifecycle import EmbeddedManagerNode, relaunch_application
+import crash_log
+from manager_node_lifecycle import (
+    NODE_SUPERVISION_INTERVAL_MS,
+    EmbeddedManagerNode,
+    relaunch_application,
+)
 from ui.dashboard_logic import DashboardLogicMixin
 from ui.dashboard_view import DashboardViewMixin
 from ui.files_logic import FilesLogicMixin
@@ -208,6 +213,7 @@ class MT5AutotesterUI(
         self.after(60, self._animate_progress)
         self.after(OUTPUT_DRAIN_IDLE_INTERVAL_MS, self._drain_output_queue)
         self.after(100, self._poll_manager_restart)
+        self.after(NODE_SUPERVISION_INTERVAL_MS, self._supervise_manager_node)
         self._startup_progress.done()
 
     def __init__(self) -> None:
@@ -220,6 +226,17 @@ class MT5AutotesterUI(
         saved_multi = ui_settings["Multiterminal"] if ui_settings.has_section("Multiterminal") else {}
         self._init_configured_state(ui_settings, saved_paths, saved_general, saved_multi)
         self._finish_startup()
+
+    def _supervise_manager_node(self) -> None:
+        """Comprueba que el nodo siga escuchando, y lo relanza si no.
+
+        Va en el bucle de Tk y no en un hilo aparte porque `supervise` solo mira
+        una bandera y, como mucho, abre un socket: nada que pueda quedarse
+        colgado dentro de la interfaz. Lo que hace y lo que falla lo anota
+        `manager_node.log`, que hasta ahora solo sabia de arranques y paradas.
+        """
+        self._manager_node.supervise()
+        self.after(NODE_SUPERVISION_INTERVAL_MS, self._supervise_manager_node)
 
     def _poll_manager_restart(self) -> None:
         if self._manager_node.consume_restart_request():
@@ -389,6 +406,9 @@ class MT5AutotesterUI(
 
 
 def main() -> int:
+    # Lo primero de todo: a partir de aqui ninguna traza se queda solo en una
+    # consola que luego se cierra, ni se pierde si el arranque muere a medias.
+    crash_log.install(BASE_DIR)
     try:
         app = MT5AutotesterUI()
     except BaseException as exc:
