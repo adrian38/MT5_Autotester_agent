@@ -37,8 +37,18 @@ class LiveAuditExtractMixin:
                     f"MT5 confirmó el login, pero en el servidor {actual_server!r} y no "
                     f"{request['source_server']!r}"
                 )
-            terminal = mt5.terminal_info()
-            if terminal is None or not bool(getattr(terminal, "connected", False)):
+            # La conexion se reasienta, no se muestrea: entre la espera de
+            # `_active_account_settled` y esta relectura el terminal puede abrir
+            # su «scanning network for access points», y ahi `connected` vuelve
+            # a valer `False` sin que la cuenta tenga nada malo. Una sola lectura
+            # tumbo la auditoria del uso 109 de AXI el 2026-11-01, sobre una
+            # cuenta que ese mismo turno se leyo bien en el sondeo y en el
+            # reintento. Se le pasa lo que MT5 acaba de confirmar, no lo pedido:
+            # asi la espera no se cuelga por como se escriba el mismo numero.
+            _login, _server, connected = self._settled_account(
+                mt5, str(info.login), actual_server, self.tester_login_settle_seconds,
+            )
+            if not connected:
                 raise RuntimeError("MT5 confirmó el login local, pero el terminal no está conectado al broker")
 
             period_deals, sync_detail = self._synchronised_history(mt5, period_start, period_end)
