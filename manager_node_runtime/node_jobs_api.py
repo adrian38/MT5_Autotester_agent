@@ -15,6 +15,7 @@ from .manual_portfolio import (
     create_manual_portfolio,
     discard_manual_portfolio_folders,
     manual_portfolio_folders_only_for,
+    update_manual_portfolio,
 )
 from .manual_portfolio_history import history_defaults
 from .portfolio_save import (
@@ -207,6 +208,13 @@ class JobApiMixin:
             f"Portafolio manual guardado: #{result['portfolio_id']}, "
             f"{result['strategies']} estrategias",
         )
+        self._persist()
+        return result
+
+    def update_manual_portfolio(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Add or remove sets from an existing manual portfolio."""
+        _cfg, db_path = self._settings_and_memory()
+        result = update_manual_portfolio(db_path, self.runtime_dir, payload)
         self._persist()
         return result
 

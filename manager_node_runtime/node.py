@@ -262,6 +262,8 @@ class NodeHandler(BaseHTTPRequestHandler):
             return 200, controller.manual_portfolio_defaults()
         if self.path == "/api/v1/portfolios/manual-history":
             return 202, controller.start_manual_history(self._body())
+        if self.path == "/api/v1/portfolios/manual-members":
+            return 200, controller.update_manual_portfolio(self._body(50_000_000))
         routes = {
             "/api/v1/portfolios/save": (201, controller.save_portfolio, 50_000_000),
             "/api/v1/portfolios/manual": (201, controller.create_manual_portfolio, 50_000_000),
