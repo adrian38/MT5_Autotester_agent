@@ -212,9 +212,26 @@ class JobApiMixin:
         return result
 
     def update_manual_portfolio(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Add or remove sets from an existing manual portfolio."""
+        """Add or remove sets from an existing manual portfolio.
+
+        Se edita con el candado del auditor tomado, no solo preguntandole si
+        esta corriendo. Una auditoria lee la composicion tres veces -al
+        empezar, antes del tester y al publicar el resultado-, asi que un
+        cambio colado entre dos de esas lecturas mezclaria dos composiciones
+        en una misma ejecucion sin que nada lo dijera. Con el candado la
+        edicion entra antes de que arranque la auditoria o espera a que
+        termine, que es el mismo trato que ya se dan entre si la auditoria y
+        el sondeo de cuentas: el recurso compartido es la cuenta guardada de
+        cada terminal.
+        """
         _cfg, db_path = self._settings_and_memory()
-        result = update_manual_portfolio(db_path, self.runtime_dir, payload)
+        with self.live_audits.lock:
+            if self.live_audits.is_running():
+                raise ValueError(
+                    "El nodo esta auditando o sondeando cuentas reales; espera a "
+                    "que termine para cambiar los sets del portafolio."
+                )
+            result = update_manual_portfolio(db_path, self.runtime_dir, payload)
         self._persist()
         return result
 
