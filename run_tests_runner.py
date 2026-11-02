@@ -208,9 +208,10 @@ class _TestRunner:
             self.logger.write(
                 f"DIAG TESTER_ABORT symbol={symbol} code={signed_exit_code(exit_code)} retry=no"
             )
+            # El consejo viaja en el motivo: la linea de arriba ya dice el
+            # simbolo, y cada codigo se arregla mirando una cosa distinta.
             self.logger.write(
-                "ERROR: backtest abortado por MT5 sin reintento: "
-                f"{reason}. Revisa el universo del broker para {symbol or 'este simbolo'}."
+                f"ERROR: backtest abortado por MT5 sin reintento: {reason}."
             )
             return 1
         self.logger.write(
