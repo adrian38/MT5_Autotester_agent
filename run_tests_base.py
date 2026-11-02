@@ -28,8 +28,21 @@ SKIPPED_SYMBOL_EXIT_CODE = 5
 # Popen los entrega sin signo en Windows (3294954938), asi que se normalizan.
 # transient=False significa que reintentar el mismo .ini no puede cambiar el
 # resultado: el reintento solo gasta un arranque de terminal.
+#
+# El motivo lleva su propio consejo porque ya no hay uno que valga para todos:
+# el que estaba escrito en `_tester_abort` mandaba revisar el universo del
+# broker, que es la respuesta de -1000012358 y no la de -1000012351.
 MT5_TESTER_ABORT_CODES: dict[int, tuple[str, bool]] = {
-    -1000012358: ("el Symbol del tester no existe en el servidor del broker", False),
+    -1000012351: (
+        "el terminal no llego a arrancar el Strategy Tester con ese .ini; "
+        "revisa el periodo, porque MT5 rechaza un rango vacio (FromDate=ToDate)",
+        False,
+    ),
+    -1000012358: (
+        "el Symbol del tester no existe en el servidor del broker; "
+        "revisa el universo del broker",
+        False,
+    ),
     -1000012362: ("el terminal no estaba sincronizado con el servidor de trading", True),
 }
 RUN_LOG_QUEUE_MAX_BATCHES = 20_000
