@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 import configparser
+from unittest import mock
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,34 @@ from manager_node_runtime.live_audit_sets import resolve_portfolio_set
 from manager_node_runtime.manual_portfolio import create_manual_portfolio, update_manual_portfolio
 from manager_node_runtime.manual_portfolio_history import build_history_command, history_defaults
 from manager_node_runtime.node import NodeHandler
+from manager_node_runtime import node_jobs_api
 from manager_node_runtime.node_jobs_api import JobApiMixin
+
+
+class _TerminalsInUse:
+    """El auditor, reducido a lo que la edicion de sets necesita de el.
+
+    El candado cuenta sus entradas porque el contrato no es «preguntar si hay
+    una auditoria corriendo» sino «cambiar los sets con el candado puesto»:
+    solo asi una auditoria o un sondeo no pueden arrancar entre la pregunta y
+    el commit de la composicion nueva.
+    """
+
+    def __init__(self, running: bool = False) -> None:
+        self.running = running
+        self.depth = 0
+        self.lock = self
+
+    def __enter__(self) -> "_TerminalsInUse":
+        self.depth += 1
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        self.depth -= 1
+        return False
+
+    def is_running(self) -> bool:
+        return self.running
 
 
 class ManualPortfolioTests(unittest.TestCase):
@@ -188,6 +216,47 @@ class ManualPortfolioTests(unittest.TestCase):
             })
         self.assertTrue(only.is_file())
 
+    def test_sets_do_not_change_while_the_node_audits_or_probes_accounts(self) -> None:
+        saved = self._manual("Ocupada")
+        controller = self._delete_controller(_TerminalsInUse(running=True))
+
+        with self.assertRaisesRegex(ValueError, "auditando o sondeando"):
+            controller.update_manual_portfolio({
+                "operation": "add", "portfolio_id": saved["portfolio_id"],
+                "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+            })
+
+        self.assertFalse((Path(saved["sets_folder"]) / "dos.set").exists())
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            count = conn.execute(
+                "select count(*) from portfolio_allocations where portfolio_id=?",
+                (saved["portfolio_id"],),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertEqual(controller.persisted, 0)
+
+    def test_the_change_commits_with_the_audit_lock_taken(self) -> None:
+        saved = self._manual("Con candado")
+        audits = _TerminalsInUse()
+        controller = self._delete_controller(audits)
+        original = node_jobs_api.update_manual_portfolio
+        depths: list[int] = []
+
+        def spy(memory: Any, runtime: Any, payload: Any) -> Any:
+            depths.append(audits.depth)
+            return original(memory, runtime, payload)
+
+        with mock.patch.object(node_jobs_api, "update_manual_portfolio", spy):
+            result = controller.update_manual_portfolio({
+                "operation": "add", "portfolio_id": saved["portfolio_id"],
+                "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+            })
+
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(depths, [1], "la composicion cambio sin el candado del auditor")
+        self.assertEqual(audits.depth, 0)
+        self.assertEqual(controller.persisted, 1)
+
     def test_history_uses_template_dates_and_forces_ohlc_model(self) -> None:
         template = self.root / "tester_template.ini"
         template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
@@ -280,16 +349,18 @@ class ManualPortfolioTests(unittest.TestCase):
         self.assertEqual(allocation, (1, 0.01))
         self.assertEqual(portfolio, (1, 0.01))
 
-    def _delete_controller(self) -> Any:
+    def _delete_controller(self, audits: Any = None) -> Any:
         """El controlador de la API con lo justo para `delete_portfolio`."""
         memory = self.memory
         runtime = self.runtime
+        live_audits = audits if audits is not None else _TerminalsInUse()
 
         class Controller(JobApiMixin):
             def __init__(self) -> None:
                 self.config = {"project_dir": str(memory.parent), "node_id": "nodo"}
                 self.runtime_dir = runtime
                 self.lock = threading.Lock()
+                self.live_audits = live_audits
                 self.persisted = 0
 
             def _settings_and_memory(self):
