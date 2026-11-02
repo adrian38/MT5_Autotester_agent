@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from manager_node_runtime.live_audit_sets import resolve_portfolio_set
-from manager_node_runtime.manual_portfolio import create_manual_portfolio
+from manager_node_runtime.manual_portfolio import create_manual_portfolio, update_manual_portfolio
 from manager_node_runtime.manual_portfolio_history import build_history_command, history_defaults
 from manager_node_runtime.node import NodeHandler
 from manager_node_runtime.node_jobs_api import JobApiMixin
@@ -136,6 +136,58 @@ class ManualPortfolioTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inferir el simbolo y el timeframe"):
             create_manual_portfolio(self.memory, self.runtime, payload)
         self.assertFalse(any((self.runtime / "manual_portfolios").glob("*/sets/*.set")))
+
+    def test_sets_can_be_added_to_an_existing_manual_portfolio(self) -> None:
+        saved = self._manual("Ampliable")
+        result = update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": saved["portfolio_id"],
+            "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+        })
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["strategies"], 2)
+        self.assertTrue((Path(saved["sets_folder"]) / "dos.set").is_file())
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            counts = [conn.execute(
+                f"select count(*) from {table} where portfolio_id=?", (saved["portfolio_id"],),
+            ).fetchone()[0] for table in ("portfolio_allocations", "portfolio_members")]
+            totals = conn.execute(
+                "select active_strategies,target_strategies,total_units,total_lot "
+                "from portfolios where id=?", (saved["portfolio_id"],),
+            ).fetchone()
+        self.assertEqual(counts, [2, 2])
+        self.assertEqual(totals, (2, 2, 2, 0.02))
+
+    def test_one_set_can_be_removed_from_an_existing_manual_portfolio(self) -> None:
+        saved = self._manual("Reducible")
+        update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": saved["portfolio_id"],
+            "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+        })
+        removed = Path(saved["sets_folder"]) / "dos.set"
+        result = update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "remove", "portfolio_id": saved["portfolio_id"],
+            "set_path": str(removed),
+        })
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["strategies"], 1)
+        self.assertTrue(result["file_removed"])
+        self.assertFalse(removed.exists())
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            paths = conn.execute(
+                "select set_path from portfolio_allocations where portfolio_id=?",
+                (saved["portfolio_id"],),
+            ).fetchall()
+        self.assertEqual(paths, [(str(Path(saved["sets_folder"]) / "uno.set"),)])
+
+    def test_the_last_set_cannot_be_removed(self) -> None:
+        saved = self._manual("No vacia")
+        only = Path(saved["sets_folder"]) / "uno.set"
+        with self.assertRaisesRegex(ValueError, "ultimo set"):
+            update_manual_portfolio(self.memory, self.runtime, {
+                "operation": "remove", "portfolio_id": saved["portfolio_id"],
+                "set_path": str(only),
+            })
+        self.assertTrue(only.is_file())
 
     def test_history_uses_template_dates_and_forces_ohlc_model(self) -> None:
         template = self.root / "tester_template.ini"
@@ -403,6 +455,9 @@ class ManualPortfolioTests(unittest.TestCase):
             def start_manual_history(self, payload):
                 return {"payload": payload}
 
+            def update_manual_portfolio(self, payload):
+                return {"updated": payload}
+
         class Request:
             path = "/api/v1/portfolios/manual-defaults"
 
@@ -416,6 +471,11 @@ class ManualPortfolioTests(unittest.TestCase):
         self.assertEqual(
             NodeHandler._dispatch_portfolio_post(request, Controller()),
             (202, {"payload": {"portfolio_id": 4}}),
+        )
+        request.path = "/api/v1/portfolios/manual-members"
+        self.assertEqual(
+            NodeHandler._dispatch_portfolio_post(request, Controller()),
+            (200, {"updated": {"portfolio_id": 4}}),
         )
 
 
