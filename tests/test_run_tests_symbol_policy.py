@@ -44,6 +44,25 @@ class TesterAbortCodeTests(unittest.TestCase):
         self.assertIn("Symbol", reason)
         self.assertFalse(transient)
 
+    def test_translates_the_tester_that_never_started(self) -> None:
+        # 3294954945 es el -1000012351 del journal, "tester has not been
+        # started". Sin traducir se confundia con "no se genero reporte": la
+        # auditoria larga del 2026-11-02 lo devolvio en sus ocho trabajos y el
+        # aviso mando revisar el EA y el historico, que estaban bien.
+        self.assertEqual(run_tests.signed_exit_code(3294954945), -1000012351)
+        reason, transient = run_tests.mt5_tester_abort(3294954945)
+        self.assertIn("FromDate=ToDate", reason)
+        self.assertFalse(transient)
+
+    def test_each_abort_reason_carries_its_own_advice(self) -> None:
+        # El consejo ya no es uno para todos: mandar revisar el universo del
+        # broker cuando el problema es el periodo del .ini es justo el fallo
+        # que esta traduccion viene a quitar.
+        periodo, _ = run_tests.mt5_tester_abort(3294954945)
+        simbolo, _ = run_tests.mt5_tester_abort(3294954938)
+        self.assertIn("universo del broker", simbolo)
+        self.assertNotIn("universo del broker", periodo)
+
     def test_not_synchronized_is_transient(self) -> None:
         reason, transient = run_tests.mt5_tester_abort(3294954934)
         self.assertIn("sincronizado", reason)
