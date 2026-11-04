@@ -20,18 +20,21 @@ class UBSSeedsImportMixin:
 
     @staticmethod
     def _import_one_ubs_seed(index, source, source_dir, output_dir, without_symbol, errors) -> str:
-        """Copia una semilla normalizada o la descarta por duplicada."""
-        from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-        from ubs.seed_dedup import DUPLICATE_EXACT, SeedFingerprint
+        """Copia una semilla V6 filtrada o la descarta por duplicada."""
+        from run_tests import infer_period_from_set, infer_symbol_from_set
+        from ubs.seed_dedup import DUPLICATE_EXACT, SeedFingerprint, parse_set_params
         from ubs.set_rules import normalize_generated_set_text
         from ubs.set_utils import read_set_with_encoding, write_set_text
+        from ubs.v6_parameters import UBS_VERSION
+        from ubs.version_rules import filter_set_parameters_for_version
         from ubs_prepare_sets import unique_target
 
         try:
             text, encoding = read_set_with_encoding(source)
-            normalized, _found, _missing = normalize_generated_set_text(text)
+            filtered, _removed = filter_set_parameters_for_version(text, UBS_VERSION)
+            normalized, _found, _missing = normalize_generated_set_text(filtered)
 
-            params = load_set_params(source)
+            params = parse_set_params(normalized)
             symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
             period = infer_period_from_set(source, params) or "UNKNOWN"
 
@@ -67,11 +70,12 @@ class UBSSeedsImportMixin:
     @staticmethod
     def _run_ubs_seed_import(q, set_files, source_dir: Path, output_dir: Path) -> None:
         """Indexa el destino, copia el lote normalizado y publica el progreso."""
-        from run_tests import infer_period_from_set, infer_symbol_from_set, load_set_params
-        from ubs.seed_dedup import DUPLICATE_EXACT, SeedDuplicateIndex, SeedFingerprint
+        from run_tests import infer_period_from_set, infer_symbol_from_set
+        from ubs.seed_dedup import SeedDuplicateIndex, SeedFingerprint, parse_set_params
         from ubs.set_rules import normalize_generated_set_text
-        from ubs.set_utils import read_set_with_encoding, write_set_text
-        from ubs_prepare_sets import unique_target
+        from ubs.set_utils import read_set_with_encoding
+        from ubs.v6_parameters import UBS_VERSION
+        from ubs.version_rules import filter_set_parameters_for_version
 
         index = SeedDuplicateIndex()
         total = len(set_files)
@@ -90,8 +94,9 @@ class UBSSeedsImportMixin:
             q.put(("index", idx, len(existing), current.name))
             try:
                 text, _encoding = read_set_with_encoding(current)
-                normalized, _found, _missing = normalize_generated_set_text(text)
-                params = load_set_params(current)
+                filtered, _removed = filter_set_parameters_for_version(text, UBS_VERSION)
+                normalized, _found, _missing = normalize_generated_set_text(filtered)
+                params = parse_set_params(normalized)
                 index.add(
                     SeedFingerprint.from_text(
                         current,
@@ -131,8 +136,7 @@ class UBSSeedsImportMixin:
             f"  Seeds copiadas:    {copied}\n"
             f"  Duplicados idénticos omitidos:   {dup_exact}\n"
             f"  Duplicados equivalentes omitidos: {dup_equivalent}\n"
-            f"    (mismo símbolo/TF e idénticos en todas las claves\n"
-            f"     comunes; solo difieren en parámetros nuevos del EA)\n"
+            f"    (mismo símbolo/TF y mismos valores en las claves V6 comunes)\n"
             f"  Destino: {output_dir}"
         )
         if without_symbol:
@@ -172,9 +176,10 @@ class UBSSeedsImportMixin:
             "Importar seeds",
             f"Importar {total} .set desde:\n{source_dir}\n\n"
             f"Destino: {output_dir}\n\n"
-            "Se normalizará el lotaje (lote fijo 0.01) y se omitirán las seeds\n"
+            "Se eliminarán las keys ajenas al contrato UBS V6, se normalizará\n"
+            "el lotaje (lote fijo 0.01) y se omitirán las seeds\n"
             "que ya existan en el destino, tanto idénticas como equivalentes\n"
-            "(mismo símbolo/TF que solo difieren en parámetros nuevos del EA).\n\n"
+            "(mismo símbolo/TF y mismos valores en las keys V6 comunes).\n\n"
             "¿Continuar?",
         ):
             return

@@ -988,9 +988,11 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
 - **Fechas Seeds bar**: `ubs_seed_from_date` / `ubs_seed_to_date` override
   `FromDate`/`ToDate` for seed evaluation only.
 - **"⬆ Importar seeds"**: folder picker → normalises lot size (lote fijo 0.01
-  via `force_fixed_lot_text`) → deduplicates → copies to configured seeds
-  folder. Modal progress popup + summary dialog. Implemented in
-  `ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+  via `force_fixed_lot_text`) → applies the active version contract →
+  deduplicates → copies to configured seeds folder. UBS V6 keeps only its 164
+  canonical real parameters; comments and section markers remain, while
+  missing V6 keys are not created. Modal progress popup + summary dialog.
+  Implemented in `ui/ubs_seeds_import.py:_import_ubs_seeds`.
   - Dedup lives in `ubs/seed_dedup.py` (`SeedDuplicateIndex`). The import
     **first indexes the `.set` files already in the destination**, then checks
     every incoming file against that index and re-adds each copied file, so the
@@ -999,11 +1001,10 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
     separately: `exact` (identical normalised content) and `equivalent` (same
     symbol/TF and identical values on **every shared key**, with ≥100 shared
     keys and ≥60% overlap).
-  - The `equivalent` pass exists because the EA keeps gaining parameters: the
-    same seed re-exported from a newer UBS build carries extra keys, so its
-    SHA256 differs and a hash-only dedup reimports the whole pool. This is not
-    hypothetical — the `UPDATED SETS UBS_V6.4` import (Aug 2026) copied 292
-    files of which 176 were already in the pool.
+  - Version filtering lives in `ubs/version_rules.py`. Incoming files and the
+    in-memory fingerprints of existing destination seeds use the same V6 view,
+    so keys from later EA builds cannot alter import identity. Existing files
+    are not rewritten by this comparison.
   - Values are compared after stripping optimisation ranges (`value||min||…`),
     so toggling a parameter's optimise flag does not create a false new seed.
   - Sets whose symbol/TF cannot be inferred **are still imported** (they land in

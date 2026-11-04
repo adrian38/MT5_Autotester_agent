@@ -9,6 +9,12 @@ Parámetros screen always starts from this V6 structure and overlays only
 editable values from `ubs_global_params.json`. It no longer derives its shape
 from whichever seed happens to sort first.
 
+Versioned seed-import contracts live in `ubs/version_rules.py`. V6 import is a
+closed schema: real parameter lines outside the 164 canonical keys are removed
+before value-rule normalization and deduplication. Comments and section markers
+are preserved, and missing V6 keys are not added. Existing destination seeds
+are filtered in memory for the duplicate fingerprint but are not rewritten.
+
 The supplied default set is reference input, not authority over generation
 rules. It contains current values that conflict with project invariants
 (`AdjustLotsizeToVariableValues=true`, `OnlyUp=true`, and strategy-1

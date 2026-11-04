@@ -626,6 +626,12 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.12.10** The evaluation confirmation dialog MUST show both the total seed
   count AND the expected backtest count (seeds that will actually run), computed
   locally by comparing DB state against the seed files before launching the agent.
+- **FR-1.12.10a** Seed import MUST apply the parameter contract registered for
+  the active UBS version before normalization and deduplication. For UBS V6,
+  every real parameter outside the canonical 164-key list MUST be removed;
+  comments and section separators MUST remain, and missing V6 keys MUST NOT be
+  invented. Existing destination seeds MUST be fingerprinted through the same
+  V6 view without being rewritten.
 - **FR-1.12.11** The UBS Parámetros tab MUST show all EA parameter keys grouped
   by section, with columns: CLAVE, DESCRIPCIÓN, VALOR, RANGO, AGENTE. Values
   are loaded from `ubs_global_params.json`. The AGENTE column indicates `✓ mutable`,
