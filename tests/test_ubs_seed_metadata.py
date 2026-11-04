@@ -42,4 +42,15 @@ class UBSSeedMetadataTests(unittest.TestCase):
 
         self.assertTrue(is_general_ubs_set(path, {}))
         self.assertTrue(is_general_ubs_set(Path("other.set"), {"UseAutoLoader": "true"}))
-        self.assertFalse(is_general_ubs_set(Path("optimization.set"), {"UseAutoLoader": "false"}))
+        self.assertTrue(is_general_ubs_set(Path("optimization.set"), {"UseAutoLoader": "false"}))
+
+    def test_optimization_templates_are_not_seeds(self) -> None:
+        self.assertTrue(
+            is_general_ubs_set(
+                Path("Other_sets_daytrade_2_DAILY_optimization.set"), {}
+            )
+        )
+        self.assertTrue(is_general_ubs_set(Path("Range_Optimization_EURUSD.set"), {}))
+        self.assertFalse(
+            is_general_ubs_set(Path("old optimizations/A.set"), {})
+        )

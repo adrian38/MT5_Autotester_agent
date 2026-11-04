@@ -22,6 +22,7 @@ SOURCE_MARKERS = {
     "ubsliveportfolio": "",
 }
 CLIENT_SETS_MARKER = "clientsets"
+OPTIMIZATION_TOKENS = {"optimization", "optimisation"}
 
 
 @dataclass(frozen=True)
@@ -86,8 +87,11 @@ def seed_trace_from_file(path: Path) -> SeedTraceMetadata:
 
 
 def is_general_ubs_set(path: Path, params: dict[str, str]) -> bool:
-    """Return true for OneChart/auto-loader aggregate settings, not real seeds."""
+    """Return true for aggregate settings or optimization templates, not seeds."""
     if str(params.get("UseAutoLoader") or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    filename_tokens = set(re.findall(r"[a-z0-9]+", path.stem.lower()))
+    if filename_tokens & OPTIMIZATION_TOKENS:
         return True
     compact = _compact(path.stem)
     return "onechart" in compact and "main" in compact and "settings" in compact

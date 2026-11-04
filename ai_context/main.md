@@ -1015,7 +1015,9 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
     again.
   - OneChart/main-EA aggregate settings (`UseAutoLoader=true`, including
     `ubs_onechart_live_MainEA_Settings.set`) are listed as not imported and
-    never enter the seed pool.
+    never enter the seed pool. Files whose own name contains the exact
+    `optimization`/`optimisation` token are treated the same way; parent folder
+    names do not exclude otherwise valid seeds.
   - Values are compared after stripping optimisation ranges (`value||min||…`),
     so toggling a parameter's optimise flag does not create a false new seed.
   - Sets whose symbol/TF cannot be inferred **are still imported** (they land in

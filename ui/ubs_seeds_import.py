@@ -145,7 +145,7 @@ class UBSSeedsImportMixin:
         if skipped_general:
             shown = "\n    ".join(skipped_general[:10])
             summary += (
-                f"\n\n  No importados (sets generales): {len(skipped_general)}\n"
+                f"\n\n  No importados (generales/optimización): {len(skipped_general)}\n"
                 f"    {shown}"
             )
             if len(skipped_general) > 10:
@@ -190,8 +190,8 @@ class UBSSeedsImportMixin:
             "Se eliminarán las keys ajenas al contrato UBS V6, se normalizará\n"
             "el lotaje (lote fijo 0.01) y cada seed nueva sustituirá la versión\n"
             "anterior si coincide su destino o su identidad V6. No se crearán\n"
-            "copias con sufijos _2, _3, etc. Los sets generales OneChart se\n"
-            "listarán al terminar, pero no se importarán.\n\n"
+            "copias con sufijos _2, _3, etc. Los sets generales OneChart y las\n"
+            "plantillas de optimización se listarán, pero no se importarán.\n\n"
             "¿Continuar?",
         ):
             return

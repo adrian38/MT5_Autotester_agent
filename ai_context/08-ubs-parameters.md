@@ -22,7 +22,9 @@ new evaluation when the normalized contents differ.
 OneChart/main-EA aggregate settings are not seeds. Import rejects files with
 `UseAutoLoader=true` or the combined OneChart/main/settings filename markers and
 lists them as not imported; `ubs_onechart_live_MainEA_Settings.set` is the V9
-reference case.
+reference case. Optimization templates are also rejected when their filename
+contains the exact `optimization` or `optimisation` token. Folder names are not
+considered, so real seeds under an `old optimizations` directory remain valid.
 
 The supplied default set is reference input, not authority over generation
 rules. It contains current values that conflict with project invariants

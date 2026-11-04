@@ -643,9 +643,11 @@ requirement changes or a debt item is opened/closed.
   MUST make any stored evaluation stale through the normal seed-evaluation
   freshness guard.
 - **FR-1.12.10c** Seed import MUST recognize OneChart/main-EA aggregate settings
-  as non-seeds. A file with `UseAutoLoader=true`, or a filename containing the
-  OneChart + main + settings markers, MUST NOT be copied or replace a seed. The
-  completion dialog MUST list these files under "No importados".
+  and optimization templates as non-seeds. A file with `UseAutoLoader=true`, a
+  filename containing the OneChart + main + settings markers, or the exact
+  filename token `optimization` / `optimisation` MUST NOT be copied or replace
+  a seed. Directory names do not trigger this rule. The completion dialog MUST
+  list these files under "No importados".
 - **FR-1.12.11** The UBS Parámetros tab MUST show all EA parameter keys grouped
   by section, with columns: CLAVE, DESCRIPCIÓN, VALOR, RANGO, AGENTE. Values
   are loaded from `ubs_global_params.json`. The AGENTE column indicates `✓ mutable`,
