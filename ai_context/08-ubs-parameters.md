@@ -1,6 +1,20 @@
 # UBS EA Parameters Reference
 
-Source: Ultimate Breakout System Manual V5.0
+Source: user-supplied UBS V6 key catalog (`UBS_keys_v6.xlsx`) and canonical
+default set (`setfile_keys_v6_default.set`), received 2026-11-04.
+
+The executable contract is embedded in `ubs/v6_parameters.py`: 164 ordered
+parameter keys plus their V6 default set lines and optimizer metadata. The UBS
+Parámetros screen always starts from this V6 structure and overlays only
+editable values from `ubs_global_params.json`. It no longer derives its shape
+from whichever seed happens to sort first.
+
+The supplied default set is reference input, not authority over generation
+rules. It contains current values that conflict with project invariants
+(`AdjustLotsizeToVariableValues=true`, `OnlyUp=true`, and strategy-1
+`EnableNFP_Filter=false`). The UI normalizes the reference through
+`normalize_generated_set_text()` before display, so rule-owned values remain
+locked and take precedence over global or mutability overrides.
 
 ## .set file format
 

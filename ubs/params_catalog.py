@@ -12,48 +12,136 @@ def fmt_num_str(s: str) -> str:
         return s
 
 
+def parse_set_parameter_text(text: str) -> list[dict[str, str]]:
+    """Parse editable parameters and their optimizer metadata from set text."""
+    params: list[dict[str, str]] = []
+    current_section = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";") or "=" not in stripped:
+            continue
+        key, _, rest = stripped.partition("=")
+        key = key.strip()
+        if rest.startswith(("---", "===")) or (len(rest) > 6 and rest.count("-") > 4):
+            current_section = key
+            continue
+        parts = rest.split("||")
+        value = parts[0] if parts else rest
+        default = parts[1].strip() if len(parts) > 1 else ""
+        step = parts[2].strip() if len(parts) > 2 else ""
+        max_val = parts[3].strip() if len(parts) > 3 else ""
+        optimizable = parts[4].strip() if len(parts) > 4 else ""
+        range_text = ""
+        if step and max_val and step != "0.000000" and max_val != "0.000000":
+            try:
+                range_text = f"{fmt_num(float(default) if default else 0.0)} - {fmt_num(float(max_val))}"
+            except ValueError:
+                range_text = f"{default} - {max_val}"
+        params.append({
+            "section": current_section,
+            "key": key,
+            "value": value,
+            "default": default,
+            "step": step,
+            "max": max_val,
+            "optimizable": optimizable,
+            "range": range_text,
+        })
+    return params
+
+
 UBS_SECTION_LABELS: dict[str, str] = {
+    "infopan": "Panel de informacion",
+    "autoload": "Carga automatica de sets (OneChartSetup)",
     "CustomOptimization": "Optimizacion personalizada",
     "filters": "Filtros de trading",
     "spreadfilter": "Filtro de spread / slippage",
+    "spreadfilter_": "Filtro de spread / slippage",
+    "BacktestSpeed_string": "Velocidad de backtest",
     "otherfilters": "Otros filtros",
+    "otherfilters_": "Otros ajustes",
     "Variable_Values": "Valores de variables (ATR)",
+    "Variable_Values_": "Valores de variables (ATR)",
+    "Vol_Entry": "Volatility Breakout - Entrada",
     "ST1_Entry": "Estrategia 1 - Entrada",
+    "ST1_Entry_": "Breakout soporte/resistencia - Entrada",
     "Trade_mg": "Gestion de salidas",
+    "Trade_mg_": "Gestion de salidas",
     "Trade_Exit_TrailSL": "Trailing Stop Loss",
+    "Trade_Exit_TrailSL_": "Trailing Stop Loss",
     "Trade_Exit_TrailTP": "Trailing Take Profit",
+    "Trade_Exit_TrailTP_": "Trailing Take Profit",
     "BE_Exit": "Break-even",
+    "BE_Exit_": "Break-even",
     "HL_settings": "Trailing SL por High/Low",
+    "HL_settings_": "Trailing SL por High/Low",
     "TimeTL": "Trailing SL por tiempo",
+    "TimeTL_": "Trailing SL por tiempo",
     "MagicTrail": "MagicTrail",
+    "MagicTrail_": "MagicTrail",
+    "GridSettings": "Grid",
+    "PropFirmSettings": "Prop Firm",
     "LotSizeSettings": "Gestion de lotaje",
+    "LotSizeSettings_": "Gestion de lotaje",
     "GMT_Settings": "Configuracion GMT",
+    "GMT_Settings_": "Configuracion GMT",
+    "newsFilter": "Filtro de noticias",
     "NFP_FILTER": "Filtro NFP",
+    "NFP_FILTER_": "Filtro NFP",
     "IR_FILTER": "Filtro Interest Rate",
+    "IR_FILTER_": "Filtro Interest Rate",
     "CPI_FILTER": "Filtro CPI",
+    "CPI_FILTER_": "Filtro CPI",
+    "FAKE_BREAKOUT_FILTER": "Filtro de falsa ruptura",
     "timefilter": "Horario de trading",
+    "timefilter_": "Horario de trading",
 }
 
 
 UBS_PARAM_DESCRIPTIONS: dict[str, str] = {
+    "URL": "URL principal autorizada para la licencia del EA",
+    "URLB": "URL alternativa autorizada para la licencia del EA",
+    "LICURL": "Instruccion de configuracion de las URLs de licencia",
+    "LICURLB": "Ruta de MT5 donde se autorizan las URLs de licencia",
     "ShowInfoPanel": "Muestra el panel de informacion en el grafico",
     "UpdateInfoTesting": "Actualiza el panel de informacion durante backtesting",
     "InfoPanelSizeAdjust": "Multiplicador de tamano del panel de informacion",
+    "SetFontSize": "Tamano de fuente del panel informativo",
+    "UseAutoLoader": "Activa la carga automatica de sets en OneChartSetup",
+    "Sets_Folder": "Carpeta de sets usada por el cargador automatico",
+    "overrideAutoLoadLotsSettings": "Sobrescribe el lotaje al cargar sets automaticamente",
+    "overrideNewsFilter": "Sobrescribe los filtros de noticias al cargar sets",
+    "overrideTimeSettings": "Sobrescribe los horarios al cargar sets",
+    "overrideProp": "Sobrescribe la configuracion Prop Firm al cargar sets",
+    "ForcePendingMax": "Limite forzado de ordenes pendientes del cargador",
     "EP": "Expected Profit objetivo (criterio de optimizacion personalizada)",
     "RF": "Recovery Factor objetivo (criterio de optimizacion personalizada)",
     "TR": "Target Return objetivo (criterio de optimizacion personalizada)",
+    "MTR": "Minimum Target Return objetivo de optimizacion personalizada",
     "SpreadFilter": "Activa el filtro de spread; bloquea entradas con spread excesivo",
     "MaxSpread": "Spread maximo permitido en pips para abrir operacion",
     "DistForSpreadFilter": "Distancia en pips para activar el filtro de spread",
+    "BacktestSpeed": "Ajuste de velocidad de ejecucion durante el backtest",
+    "PrintLogs": "Escribe mensajes de diagnostico del EA en el journal",
+    "ForceSymbol": "Fuerza el simbolo que ejecuta el set",
+    "OnlyLoaderForceSymbol": "Limita ForceSymbol al cargador automatico",
     "setSL_TP_After_Entry": "Pone SL/TP despues del fill, no en la orden pendiente",
     "Virtual_expiration": "Usa expiracion virtual de ordenes (no la del broker)",
     "useVirtualStops": "Stops virtuales: 0=off, 1=SL virtual, 2=TP virtual, 3=ambos",
     "VirtualSL_Safety_Hardstop_dist": "Distancia del hard stop de seguridad para SL virtual (0=off)",
     "SetVSL_to_hardSL_sec_delay": "Segundos de delay antes de convertir SL virtual a hard SL",
+    "Run_Strategy": "Estrategia activa: 1=soporte/resistencia, 2=volatilidad, 3=rango",
     "ATRDefault": "Valor ATR por defecto (0 = usar ATR calculado del mercado)",
     "ATR_Period": "Periodo del ATR en barras",
     "ATR_Timeframe": "Timeframe para calcular el ATR (enum MT5)",
     "DefaultValue": "Valor por defecto para variables internas",
+    "VolTimeframe": "Timeframe de la estrategia Volatility Breakout",
+    "VolCandles": "Numero de velas usado por la entrada de volatilidad",
+    "minSize": "Tamano minimo exigido para la ruptura de volatilidad",
+    "AtrPeriod": "Periodo ATR de la estrategia de volatilidad",
+    "VolAtrTimeframe": "Timeframe del ATR de la estrategia de volatilidad",
+    "DevFactor": "Factor de desviacion aplicado a la entrada de volatilidad",
+    "VolMaxTrades": "Maximo de operaciones de la estrategia de volatilidad",
     "AllowBuyTrades": "Permite operaciones largas (compra)",
     "AllowSellTrades": "Permite operaciones cortas (venta)",
     "ST1_Timeframe": "Timeframe de la estrategia 1 (0 = timeframe del grafico)",
@@ -100,18 +188,38 @@ UBS_PARAM_DESCRIPTIONS: dict[str, str] = {
     "Exit_MagicTrail_BE_extra_pips": "Pips extra de break-even para MagicTrail",
     "Exit_MagicTrail_Adjust_after_X_Minutes": "Ajusta MagicTrail despues de X minutos (0=off)",
     "Exit_MagicTrail_Adjust_after_X_Minutes_start": "Nivel de inicio para ajuste por tiempo de MagicTrail",
+    "EnableGrid": "Activa la gestion Grid",
+    "GridStart": "Distancia o nivel inicial del Grid",
+    "GridStep": "Separacion entre niveles del Grid",
+    "GridTiming": "Timeframe o temporizacion usada por el Grid",
+    "GridTakeProfitPips": "Take Profit conjunto del Grid en pips",
+    "GridTakeProfitUSD": "Take Profit conjunto del Grid en divisa de cuenta",
+    "GridLossUSD": "Perdida maxima del Grid en divisa de cuenta",
+    "StopTradingAfterGridLoss": "Detiene nuevas entradas tras alcanzar la perdida del Grid",
+    "GridMultiplier": "Multiplicador de lotaje entre niveles del Grid",
+    "CloseAtMinEquity": "Cierra operaciones al alcanzar la equidad minima",
+    "CloseAtMaxEquity": "Cierra operaciones al alcanzar la equidad maxima",
+    "PropFirmMaxDailyDD": "Drawdown diario maximo permitido por Prop Firm",
+    "RandomizationValue": "Valor de aleatorizacion aplicado por la configuracion Prop Firm",
+    "ManualBalance": "Balance manual usado para calcular el lotaje",
     "LotsAdjustMinChangePercent": "Cambio minimo en % para reajustar tamano de lote",
+    "AdjustLotsizeToVariableValues": "Ajusta el lotaje a valores variables; bloqueado por regla",
     "Risk": "Modo lotaje: 0=fijos, 1=% riesgo/op, 2=lote por balance, 3=manual",
     "StartLots": "Tamano de lote fijo (Risk=0)",
     "Manual_RiskPerTrade": "Porcentaje de riesgo por operacion (Risk=1)",
+    "MaxRiskInDollar_input": "Riesgo maximo manual por operacion en divisa de cuenta",
     "LotPerBalance_step": "Incremento de balance para sumar 0.01 lote (Risk=2)",
+    "MaxRiskPerStrategy_Value": "Riesgo maximo permitido por estrategia",
+    "HistoricalMaxDD": "Drawdown historico usado para limitar el riesgo",
     "MaxLots": "Tamano maximo de lote permitido",
     "UseEquity": "Usa equidad en lugar de balance para calcular lotes",
     "OnlyUp": "Solo incrementa lote, nunca reduce durante la sesion",
+    "ResetHighestBalance": "Reinicia el mayor balance registrado para el calculo de lotaje",
     "CheckMargin": "Verifica margen disponible antes de abrir operacion",
     "Broker_GMT_OFFSET_Summer": "Offset GMT del broker en horario de verano (DST)",
     "Broker_GMT_OFFSET_Winter": "Offset GMT del broker en horario de invierno",
     "AutoGMT": "Deteccion automatica del offset GMT del broker",
+    "UseMQL5Calendar": "Usa el calendario economico integrado de MQL5",
     "EnableNFP_Filter": "Activa pausa de trading durante NFP (Non-Farm Payroll)",
     "NFP_CloseOpenTrades": "Cierra operaciones abiertas antes del NFP",
     "NFP_ClosePendingOrders": "Cancela ordenes pendientes antes del NFP",
@@ -127,6 +235,16 @@ UBS_PARAM_DESCRIPTIONS: dict[str, str] = {
     "CPI_ClosePendingOrders": "Cancela ordenes pendientes antes del CPI",
     "CPI_MinutesBefore": "Minutos antes del CPI para detener trading",
     "CPI_MinutesAfter": "Minutos despues del CPI para reanudar",
+    "confirmationCandleTimeframeA": "Timeframe de la vela de confirmacion A",
+    "UseConfirmationCandleA": "Activa la vela de confirmacion A",
+    "confirmationCandleTimeframeB": "Timeframe de la vela de confirmacion B",
+    "UseConfirmationCandleB": "Activa la vela de confirmacion B",
+    "confirmationCandleTimeframeC": "Timeframe de la vela de confirmacion C",
+    "UseConfirmationCandleC": "Activa la vela de confirmacion C",
+    "confirmationCandleTimeframeD": "Timeframe de la vela de confirmacion D",
+    "UseConfirmationCandleD": "Activa la vela de confirmacion D",
+    "confirmationCandleTimeframeE": "Timeframe de la vela de confirmacion E",
+    "UseConfirmationCandleE": "Activa la vela de confirmacion E",
     "UseTradingTimeZones": "Activa filtro de horario de trading por dias/horas",
     "KillPending": "Cancela ordenes pendientes fuera del horario permitido",
     "KillOpen": "Cierra operaciones abiertas fuera del horario permitido",

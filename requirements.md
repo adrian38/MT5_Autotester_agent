@@ -573,9 +573,10 @@ requirement changes or a debt item is opened/closed.
 ### 1.11 UBS agent — parameter mutability overrides
 
 - **FR-1.11.1** Key mutability MUST be determined by `is_agent_mutable_key(key)`
-  in `ubs_agent.py`. This function checks `ubs_mutation_overrides.json` first,
-  then the hardcoded `FROZEN_KEYS`, `FROZEN_PREFIXES`, `ALLOWED_MUTATION_KEYS`,
-  and `ALLOWED_MUTATION_PREFIXES` constants.
+  in `ubs_agent.py`. Rule-owned keys MUST be rejected before reading
+  `ubs_mutation_overrides.json`; all other keys then use the hardcoded
+  `FROZEN_KEYS`, `FROZEN_PREFIXES`, `ALLOWED_MUTATION_KEYS`, and
+  `ALLOWED_MUTATION_PREFIXES` constants plus user overrides.
 - **FR-1.11.2** `outputs/ubs_mutation_overrides.json` MUST support two override
   types:
   - `frozen_override`: `{key: ""}` — normally mutable keys the user has frozen.
@@ -586,9 +587,10 @@ requirement changes or a debt item is opened/closed.
   value for every EA parameter. When a key appears in `frozen_override`, its
   value from this file MUST be injected into every generated variant, overriding
   whatever the seed file holds.
-- **FR-1.11.4** On first launch of the UBS Parámetros tab, if
-  `ubs_global_params.json` does not exist, it MUST be bootstrapped from the
-  first available seed file and saved immediately.
+- **FR-1.11.4** The UBS Parámetros tab MUST bootstrap its structure and defaults
+  from the bundled UBS V6 contract (164 ordered keys), not from an arbitrary
+  seed. Existing editable values in `ubs_global_params.json` overlay that
+  contract; rule-owned values ignore global and mutability overrides.
 - **FR-1.11.5** Any edit made in the UBS Parámetros tab MUST be persisted to
   `ubs_global_params.json` immediately (no separate save required for individual
   edits, though a bulk "Guardar" button also exists).
@@ -628,11 +630,14 @@ requirement changes or a debt item is opened/closed.
   by section, with columns: CLAVE, DESCRIPCIÓN, VALOR, RANGO, AGENTE. Values
   are loaded from `ubs_global_params.json`. The AGENTE column indicates `✓ mutable`,
   `— fijo`, `✦ fijo global` (user-frozen with injected value), or
-  `✦ forzado mutable` (user-unlocked).
+  `✦ forzado mutable` (user-unlocked). Rule-owned keys are shown as
+  `⛓ regla` and use their normalized rule value.
 - **FR-1.12.12** The UBS Parámetros tab MUST allow the user to toggle any
-  parameter between mutable/frozen via a "Toggle inamovible/mutable" button.
-  The change MUST be written immediately to `ubs_mutation_overrides.json` and
-  reflected in the table without restart.
+  non-rule parameter between mutable/frozen via a "Toggle
+  inamovible/mutable" button. The change MUST be written immediately to
+  `ubs_mutation_overrides.json` and reflected in the table without restart.
+  Rule-owned keys MUST remain non-editable and non-toggleable even if a stale
+  override file lists them as mutable.
 - **FR-1.12.13** Treeview column values across all tabs MUST be center-aligned.
 - **FR-1.12.14** The UBS Seeds tab MUST expose "Resetear evaluación". It MUST
   confirm the action, reset active seed DB rows to pending, delete stored report

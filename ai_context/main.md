@@ -979,6 +979,9 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
 - The screen header shows the current working UBS generation as
   `Semillas UBS · UBS V6`. This is an explicit product label, not metadata
   inferred from individual `.set` files and not a table column.
+- UBS Parámetros uses the bundled 164-key V6 contract as its canonical
+  structure/default source. Rule-owned keys are normalized before display,
+  ignore global/mutable overrides, and cannot be edited or toggled.
 - **SEL checkbox column** + `self.ubs_seed_checked`.
 - **Criteria bar**: editable seed-only thresholds (net profit, PF, trades, DD,
   recovery). Persisted separately from UBS Agent thresholds.
