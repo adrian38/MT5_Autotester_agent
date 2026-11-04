@@ -13,7 +13,7 @@ class UBSSeedsViewMixin:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
-        card = self._card(parent, "Semillas UBS")
+        card = self._card(parent, "Semillas UBS · UBS V6")
         card.grid(row=0, column=0, sticky="nsew")
         card.columnconfigure(0, weight=1)
         card.rowconfigure(4, weight=1)

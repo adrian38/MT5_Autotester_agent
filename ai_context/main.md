@@ -976,6 +976,9 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
 
 ### UBS Seeds tab — new features
 
+- The screen header shows the current working UBS generation as
+  `Semillas UBS · UBS V6`. This is an explicit product label, not metadata
+  inferred from individual `.set` files and not a table column.
 - **SEL checkbox column** + `self.ubs_seed_checked`.
 - **Criteria bar**: editable seed-only thresholds (net profit, PF, trades, DD,
   recovery). Persisted separately from UBS Agent thresholds.
