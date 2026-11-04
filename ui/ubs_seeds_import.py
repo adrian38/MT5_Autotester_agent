@@ -20,14 +20,14 @@ class UBSSeedsImportMixin:
 
     @staticmethod
     def _import_one_ubs_seed(index, source, source_dir, output_dir, without_symbol, errors) -> str:
-        """Copia una semilla V6 filtrada o la descarta por duplicada."""
+        """Copia una semilla V6 nueva o sustituye su version anterior."""
         from run_tests import infer_period_from_set, infer_symbol_from_set
-        from ubs.seed_dedup import DUPLICATE_EXACT, SeedFingerprint, parse_set_params
+        from ubs.seed_dedup import SeedFingerprint, parse_set_params
         from ubs.set_rules import normalize_generated_set_text
         from ubs.set_utils import read_set_with_encoding, write_set_text
         from ubs.v6_parameters import UBS_VERSION
         from ubs.version_rules import filter_set_parameters_for_version
-        from ubs_prepare_sets import unique_target
+        from ubs_prepare_sets import seed_target
 
         try:
             text, encoding = read_set_with_encoding(source)
@@ -37,17 +37,6 @@ class UBSSeedsImportMixin:
             params = parse_set_params(normalized)
             symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
             period = infer_period_from_set(source, params) or "UNKNOWN"
-
-            fingerprint = SeedFingerprint.from_text(
-                source, normalized, symbol, period
-            )
-            match = index.find_duplicate(fingerprint)
-            if match is not None:
-                _existing, reason = match
-                if reason == DUPLICATE_EXACT:
-                    return "exact"
-                return "equivalent"
-
             if symbol == "UNKNOWN" or period == "UNKNOWN":
                 # Se importa igualmente: el usuario puede rescatarla
                 # con "Guardar Symbol/TF". Hasta entonces la pestana
@@ -55,7 +44,16 @@ class UBSSeedsImportMixin:
                 without_symbol.append(source.name)
 
             relative = source.relative_to(source_dir)
-            target = unique_target(output_dir, relative, symbol, period)
+            target = seed_target(output_dir, relative, symbol, period)
+            fingerprint = SeedFingerprint.from_text(source, normalized, symbol, period)
+            match = index.find_duplicate(fingerprint)
+            replacement = target if target.exists() else (match[0].path if match else None)
+            if replacement is not None:
+                write_set_text(replacement, normalized, encoding)
+                index.remove_path(replacement)
+                index.add(SeedFingerprint.from_text(replacement, normalized, symbol, period))
+                return "replaced"
+
             write_set_text(target, normalized, encoding)
             # Reindexar con la ruta final para que el resto del lote
             # compare tambien contra lo recien copiado.
@@ -80,8 +78,7 @@ class UBSSeedsImportMixin:
         index = SeedDuplicateIndex()
         total = len(set_files)
         copied = 0
-        dup_exact = 0
-        dup_equivalent = 0
+        replaced = 0
         without_symbol: list[str] = []
         errors: list[str] = []
 
@@ -89,7 +86,7 @@ class UBSSeedsImportMixin:
 
         # Indexar las seeds ya presentes: sin esto el dedup solo compara los
         # ficheros del propio lote y reimporta todo el pool existente.
-        existing = sorted(output_dir.rglob("*.set"))
+        existing = sorted(path for path in output_dir.rglob("*.set") if path.is_file())
         for idx, current in enumerate(existing):
             q.put(("index", idx, len(existing), current.name))
             try:
@@ -115,28 +112,23 @@ class UBSSeedsImportMixin:
             )
             if outcome == "copied":
                 copied += 1
-            elif outcome == "exact":
-                dup_exact += 1
-            elif outcome == "equivalent":
-                dup_equivalent += 1
-        q.put(("done", copied, dup_exact, dup_equivalent, without_symbol, errors))
+            elif outcome == "replaced":
+                replaced += 1
+        q.put(("done", copied, replaced, without_symbol, errors))
 
     def _report_ubs_seed_import(
         self,
         output_dir: Path,
         copied: int,
-        dup_exact: int,
-        dup_equivalent: int,
+        replaced: int,
         without_symbol: list[str],
         errors: list[str],
     ) -> None:
         """Resumen de la importacion y refresco del panel."""
         summary = (
             f"Importación completada\n\n"
-            f"  Seeds copiadas:    {copied}\n"
-            f"  Duplicados idénticos omitidos:   {dup_exact}\n"
-            f"  Duplicados equivalentes omitidos: {dup_equivalent}\n"
-            f"    (mismo símbolo/TF y mismos valores en las claves V6 comunes)\n"
+            f"  Seeds nuevas:       {copied}\n"
+            f"  Seeds sustituidas:  {replaced}\n"
             f"  Destino: {output_dir}"
         )
         if without_symbol:
@@ -166,7 +158,7 @@ class UBSSeedsImportMixin:
         except Exception:
             output_dir = self._ubs_default_source_dir()
 
-        set_files = sorted(source_dir.rglob("*.set"))
+        set_files = sorted(path for path in source_dir.rglob("*.set") if path.is_file())
         total = len(set_files)
         if total == 0:
             messagebox.showinfo("Importar seeds", f"No se encontraron archivos .set en:\n{source_dir}")
@@ -177,9 +169,9 @@ class UBSSeedsImportMixin:
             f"Importar {total} .set desde:\n{source_dir}\n\n"
             f"Destino: {output_dir}\n\n"
             "Se eliminarán las keys ajenas al contrato UBS V6, se normalizará\n"
-            "el lotaje (lote fijo 0.01) y se omitirán las seeds\n"
-            "que ya existan en el destino, tanto idénticas como equivalentes\n"
-            "(mismo símbolo/TF y mismos valores en las keys V6 comunes).\n\n"
+            "el lotaje (lote fijo 0.01) y cada seed nueva sustituirá la versión\n"
+            "anterior si coincide su destino o su identidad V6. No se crearán\n"
+            "copias con sufijos _2, _3, etc.\n\n"
             "¿Continuar?",
         ):
             return

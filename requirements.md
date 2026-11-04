@@ -632,6 +632,12 @@ requirement changes or a debt item is opened/closed.
   comments and section separators MUST remain, and missing V6 keys MUST NOT be
   invented. Existing destination seeds MUST be fingerprinted through the same
   V6 view without being rewritten.
+- **FR-1.12.10b** An incoming seed MUST replace the previous seed when its
+  deterministic destination path already exists or its V6 fingerprint matches
+  an existing seed. The incoming file wins, the stored path is reused, and the
+  importer MUST NOT create `_2`, `_3`, or later copies. Changed file metadata
+  MUST make any stored evaluation stale through the normal seed-evaluation
+  freshness guard.
 - **FR-1.12.11** The UBS Parámetros tab MUST show all EA parameter keys grouped
   by section, with columns: CLAVE, DESCRIPCIÓN, VALOR, RANGO, AGENTE. Values
   are loaded from `ubs_global_params.json`. The AGENTE column indicates `✓ mutable`,

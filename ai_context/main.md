@@ -1004,7 +1004,11 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
   - Version filtering lives in `ubs/version_rules.py`. Incoming files and the
     in-memory fingerprints of existing destination seeds use the same V6 view,
     so keys from later EA builds cannot alter import identity. Existing files
-    are not rewritten by this comparison.
+    are not rewritten by this comparison alone. When an incoming seed matches
+    an existing destination or fingerprint, however, the incoming normalized
+    file replaces the previous one at the existing path; `_2`/`_3` copies are
+    not created, and normal mtime/size freshness makes changed seeds evaluable
+    again.
   - Values are compared after stripping optimisation ranges (`value||min||…`),
     so toggling a parameter's optimise flag does not create a false new seed.
   - Sets whose symbol/TF cannot be inferred **are still imported** (they land in

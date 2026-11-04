@@ -117,6 +117,16 @@ class SeedDuplicateIndexTests(unittest.TestCase):
         self.assertIsNotNone(index.find_duplicate(_fingerprint("second.set", params)))
         self.assertEqual(len(index), 1)
 
+    def test_remove_path_drops_stale_fingerprint_before_replacement(self) -> None:
+        index = SeedDuplicateIndex()
+        old = _fingerprint("seed.set", _base_params())
+        index.add(old)
+
+        index.remove_path(old.path)
+
+        self.assertEqual(len(index), 0)
+        self.assertIsNone(index.find_duplicate(old))
+
     def test_unknown_symbol_and_period_are_normalised(self) -> None:
         index = SeedDuplicateIndex()
         params = _base_params()

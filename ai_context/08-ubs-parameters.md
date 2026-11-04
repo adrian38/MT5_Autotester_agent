@@ -14,6 +14,11 @@ closed schema: real parameter lines outside the 164 canonical keys are removed
 before value-rule normalization and deduplication. Comments and section markers
 are preserved, and missing V6 keys are not added. Existing destination seeds
 are filtered in memory for the duplicate fingerprint but are not rewritten.
+During import, an incoming seed replaces an older file when either the
+deterministic symbol/timeframe/family/name destination already exists or the V6
+fingerprint matches another stored seed. The existing path is reused and no
+`_2`/`_3` copy is created; the changed mtime/size freshness guard schedules a
+new evaluation when the normalized contents differ.
 
 The supplied default set is reference input, not authority over generation
 rules. It contains current values that conflict with project invariants

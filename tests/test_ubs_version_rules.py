@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 
 from ubs.params_catalog import parse_set_parameter_text
-from ubs.seed_dedup import SeedDuplicateIndex
+from ubs.seed_dedup import SeedDuplicateIndex, SeedFingerprint
+from ubs.set_rules import normalize_generated_set_text
 from ubs.set_utils import read_set_with_encoding
 from ubs.v6_parameters import UBS_VERSION, V6_DEFAULT_SET_TEXT, V6_PARAMETER_KEYS
 from ubs.version_rules import (
@@ -12,6 +13,7 @@ from ubs.version_rules import (
     version_rule,
 )
 from ui.ubs_seeds_import import UBSSeedsImportMixin
+from ubs_prepare_sets import seed_target
 
 
 class UBSVersionRulesTests(unittest.TestCase):
@@ -77,6 +79,70 @@ class UBSVersionRulesTests(unittest.TestCase):
             keys = tuple(param["key"] for param in parse_set_parameter_text(text))
             self.assertEqual(keys, V6_PARAMETER_KEYS)
             self.assertNotIn("FutureKey=", text)
+
+    def test_same_logical_seed_replaces_old_content_without_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            output_dir = root / "output"
+            source_dir.mkdir()
+            source = source_dir / "XAUUSD_H1.set"
+            relative = source.relative_to(source_dir)
+            target = seed_target(output_dir, relative, "XAUUSD", "H1")
+            target.parent.mkdir(parents=True)
+            target.write_text("Run_Strategy=1\nExit_stop=10\n", encoding="utf-8")
+            index = SeedDuplicateIndex()
+            index.add(
+                SeedFingerprint.from_text(
+                    target, target.read_text(encoding="utf-8"), "XAUUSD", "H1"
+                )
+            )
+            source.write_text(
+                "Run_Strategy=1\nExit_stop=20\nFutureKey=99\n", encoding="utf-8"
+            )
+
+            outcome = UBSSeedsImportMixin._import_one_ubs_seed(
+                index, source, source_dir, output_dir, [], [],
+            )
+
+            files = [path for path in output_dir.rglob("*.set") if path.is_file()]
+            imported, _encoding = read_set_with_encoding(target)
+            self.assertEqual(outcome, "replaced")
+            self.assertEqual(files, [target])
+            self.assertIn("Exit_stop=20", imported)
+            self.assertNotIn("FutureKey=", imported)
+            self.assertEqual(len(index), 1)
+
+    def test_matching_v6_fingerprint_reuses_existing_seed_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            output_dir = root / "output"
+            source_dir.mkdir()
+            output_dir.mkdir()
+            existing = output_dir / "old_seed.set"
+            existing_text, _found, _missing = normalize_generated_set_text(
+                "Run_Strategy=1\nExit_stop=20\n"
+            )
+            existing.write_text(existing_text, encoding="utf-8")
+            index = SeedDuplicateIndex()
+            index.add(
+                SeedFingerprint.from_text(
+                    existing, existing.read_text(encoding="utf-8"), "XAUUSD", "H1"
+                )
+            )
+            source = source_dir / "new_family" / "XAUUSD_H1.set"
+            source.parent.mkdir()
+            source.write_text("Run_Strategy=1\nExit_stop=20\n", encoding="utf-8")
+
+            outcome = UBSSeedsImportMixin._import_one_ubs_seed(
+                index, source, source_dir, output_dir, [], [],
+            )
+
+            files = [path for path in output_dir.rglob("*.set") if path.is_file()]
+            self.assertEqual(outcome, "replaced")
+            self.assertEqual(files, [existing])
+            self.assertEqual(len(index), 1)
 
 
 if __name__ == "__main__":

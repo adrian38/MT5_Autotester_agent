@@ -33,14 +33,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def unique_target(base_dir: Path, relative_source: Path, symbol: str, period: str) -> Path:
+def seed_target(base_dir: Path, relative_source: Path, symbol: str, period: str) -> Path:
     family = safe_part(relative_source.parts[0] if relative_source.parts else "UBS")
     name_parts = [safe_part(part) for part in relative_source.with_suffix("").parts[1:]]
     if not name_parts:
         name_parts = [safe_part(relative_source.stem)]
     filename = "__".join(name_parts) + ".set"
     target_dir = base_dir / safe_part(symbol) / safe_part(period) / family
-    target = target_dir / filename
+    return target_dir / filename
+
+
+def unique_target(base_dir: Path, relative_source: Path, symbol: str, period: str) -> Path:
+    target = seed_target(base_dir, relative_source, symbol, period)
 
     if not target.exists():
         return target
