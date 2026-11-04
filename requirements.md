@@ -604,7 +604,11 @@ requirement changes or a debt item is opened/closed.
   a thread-safe queue and `after()` polling. The UI MUST NOT freeze.
 - **FR-1.12.3** The UBS Seeds tab MUST display: status, symbol, TF, score, OK,
   override flag, rejection motivo (criteria that failed with their actual values),
-  and seed filename. The motivo format is `metric: value | metric: value`.
+  seed filename, and optional CLIENTE, ESTRATEGIA, and FAMILIA traceability.
+  Folder metadata MAY be empty when it cannot be inferred safely. Paths under
+  `Client sets/<name>` use that name as client; known non-client UBS source
+  folders use `Profalgo`. Strategy type prefers `Run_Strategy` (1/2/3).
+  The motivo format is `metric: value | metric: value`.
 - **FR-1.12.4** The UBS Seeds tab MUST expose editable seed-only scoring
   thresholds above the table. These controls MUST be persisted in
   `ui_settings.ini` separately from the UBS Agent thresholds.
@@ -638,6 +642,10 @@ requirement changes or a debt item is opened/closed.
   importer MUST NOT create `_2`, `_3`, or later copies. Changed file metadata
   MUST make any stored evaluation stale through the normal seed-evaluation
   freshness guard.
+- **FR-1.12.10c** Seed import MUST recognize OneChart/main-EA aggregate settings
+  as non-seeds. A file with `UseAutoLoader=true`, or a filename containing the
+  OneChart + main + settings markers, MUST NOT be copied or replace a seed. The
+  completion dialog MUST list these files under "No importados".
 - **FR-1.12.11** The UBS Parámetros tab MUST show all EA parameter keys grouped
   by section, with columns: CLAVE, DESCRIPCIÓN, VALOR, RANGO, AGENTE. Values
   are loaded from `ubs_global_params.json`. The AGENTE column indicates `✓ mutable`,

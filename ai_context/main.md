@@ -983,6 +983,10 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
   structure/default source. Rule-owned keys are normalized before display,
   ignore global/mutable overrides, and cannot be edited or toggled.
 - **SEL checkbox column** + `self.ubs_seed_checked`.
+- Optional traceability columns **CLIENTE**, **ESTRATEGIA**, and **FAMILIA** are
+  derived from the imported hierarchy and `Run_Strategy`. `Client sets/<name>`
+  supplies the client; recognized non-client source trees use `Profalgo`.
+  Uncertain metadata stays blank.
 - **Criteria bar**: editable seed-only thresholds (net profit, PF, trades, DD,
   recovery). Persisted separately from UBS Agent thresholds.
 - **Fechas Seeds bar**: `ubs_seed_from_date` / `ubs_seed_to_date` override
@@ -1009,6 +1013,9 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
     file replaces the previous one at the existing path; `_2`/`_3` copies are
     not created, and normal mtime/size freshness makes changed seeds evaluable
     again.
+  - OneChart/main-EA aggregate settings (`UseAutoLoader=true`, including
+    `ubs_onechart_live_MainEA_Settings.set`) are listed as not imported and
+    never enter the seed pool.
   - Values are compared after stripping optimisation ranges (`value||min||…`),
     so toggling a parameter's optimise flag does not create a false new seed.
   - Sets whose symbol/TF cannot be inferred **are still imported** (they land in

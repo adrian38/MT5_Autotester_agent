@@ -80,6 +80,25 @@ class UBSVersionRulesTests(unittest.TestCase):
             self.assertEqual(keys, V6_PARAMETER_KEYS)
             self.assertNotIn("FutureKey=", text)
 
+    def test_general_onechart_set_is_listed_and_not_imported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            output_dir = root / "output"
+            source_dir.mkdir()
+            output_dir.mkdir()
+            source = source_dir / "ubs_onechart_live_MainEA_Settings.set"
+            source.write_text("UseAutoLoader=true\nRun_Strategy=1\n", encoding="utf-8")
+            skipped: list[str] = []
+
+            outcome = UBSSeedsImportMixin._import_one_ubs_seed(
+                SeedDuplicateIndex(), source, source_dir, output_dir, [], [], skipped,
+            )
+
+            self.assertEqual(outcome, "general")
+            self.assertEqual(skipped, [source.name])
+            self.assertEqual(list(output_dir.rglob("*.set")), [])
+
     def test_same_logical_seed_replaces_old_content_without_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

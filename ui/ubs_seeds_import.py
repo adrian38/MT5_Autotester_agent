@@ -19,10 +19,13 @@ class UBSSeedsImportMixin:
     """Importacion de semillas y revision de duplicados."""
 
     @staticmethod
-    def _import_one_ubs_seed(index, source, source_dir, output_dir, without_symbol, errors) -> str:
+    def _import_one_ubs_seed(
+        index, source, source_dir, output_dir, without_symbol, errors, skipped_general=None,
+    ) -> str:
         """Copia una semilla V6 nueva o sustituye su version anterior."""
         from run_tests import infer_period_from_set, infer_symbol_from_set
         from ubs.seed_dedup import SeedFingerprint, parse_set_params
+        from ubs.seed_metadata import is_general_ubs_set
         from ubs.set_rules import normalize_generated_set_text
         from ubs.set_utils import read_set_with_encoding, write_set_text
         from ubs.v6_parameters import UBS_VERSION
@@ -31,6 +34,11 @@ class UBSSeedsImportMixin:
 
         try:
             text, encoding = read_set_with_encoding(source)
+            raw_params = parse_set_params(text)
+            if is_general_ubs_set(source, raw_params):
+                if skipped_general is not None:
+                    skipped_general.append(str(source.relative_to(source_dir)))
+                return "general"
             filtered, _removed = filter_set_parameters_for_version(text, UBS_VERSION)
             normalized, _found, _missing = normalize_generated_set_text(filtered)
 
@@ -80,6 +88,7 @@ class UBSSeedsImportMixin:
         copied = 0
         replaced = 0
         without_symbol: list[str] = []
+        skipped_general: list[str] = []
         errors: list[str] = []
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,12 +118,13 @@ class UBSSeedsImportMixin:
             q.put(("progress", idx, total, source.name))
             outcome = UBSSeedsImportMixin._import_one_ubs_seed(
                 index, source, source_dir, output_dir, without_symbol, errors,
+                skipped_general,
             )
             if outcome == "copied":
                 copied += 1
             elif outcome == "replaced":
                 replaced += 1
-        q.put(("done", copied, replaced, without_symbol, errors))
+        q.put(("done", copied, replaced, without_symbol, skipped_general, errors))
 
     def _report_ubs_seed_import(
         self,
@@ -122,6 +132,7 @@ class UBSSeedsImportMixin:
         copied: int,
         replaced: int,
         without_symbol: list[str],
+        skipped_general: list[str],
         errors: list[str],
     ) -> None:
         """Resumen de la importacion y refresco del panel."""
@@ -131,6 +142,14 @@ class UBSSeedsImportMixin:
             f"  Seeds sustituidas:  {replaced}\n"
             f"  Destino: {output_dir}"
         )
+        if skipped_general:
+            shown = "\n    ".join(skipped_general[:10])
+            summary += (
+                f"\n\n  No importados (sets generales): {len(skipped_general)}\n"
+                f"    {shown}"
+            )
+            if len(skipped_general) > 10:
+                summary += f"\n    ... y {len(skipped_general) - 10} más"
         if without_symbol:
             shown = "\n    ".join(without_symbol[:5])
             summary += (
@@ -171,7 +190,8 @@ class UBSSeedsImportMixin:
             "Se eliminarán las keys ajenas al contrato UBS V6, se normalizará\n"
             "el lotaje (lote fijo 0.01) y cada seed nueva sustituirá la versión\n"
             "anterior si coincide su destino o su identidad V6. No se crearán\n"
-            "copias con sufijos _2, _3, etc.\n\n"
+            "copias con sufijos _2, _3, etc. Los sets generales OneChart se\n"
+            "listarán al terminar, pero no se importarán.\n\n"
             "¿Continuar?",
         ):
             return

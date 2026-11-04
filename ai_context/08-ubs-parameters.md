@@ -19,6 +19,10 @@ deterministic symbol/timeframe/family/name destination already exists or the V6
 fingerprint matches another stored seed. The existing path is reused and no
 `_2`/`_3` copy is created; the changed mtime/size freshness guard schedules a
 new evaluation when the normalized contents differ.
+OneChart/main-EA aggregate settings are not seeds. Import rejects files with
+`UseAutoLoader=true` or the combined OneChart/main/settings filename markers and
+lists them as not imported; `ubs_onechart_live_MainEA_Settings.set` is the V9
+reference case.
 
 The supplied default set is reference input, not authority over generation
 rules. It contains current values that conflict with project invariants

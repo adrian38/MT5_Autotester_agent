@@ -153,7 +153,10 @@ class UBSSeedsViewMixin:
         table_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 10))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = ("mark", "status", "symbol", "period", "score", "accepted", "override", "reason", "seed")
+        columns = (
+            "mark", "status", "symbol", "period", "client", "strategy", "family",
+            "score", "accepted", "override", "reason", "seed",
+        )
         self.ubs_seeds_tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -166,13 +169,20 @@ class UBSSeedsViewMixin:
             "status": "ESTADO",
             "symbol": "SYMBOL",
             "period": "TF",
+            "client": "CLIENTE",
+            "strategy": "ESTRATEGIA",
+            "family": "FAMILIA",
             "score": "SCORE",
             "accepted": "OK",
             "override": "OVERRIDE",
             "reason": "MOTIVO",
             "seed": "SEED",
         }
-        widths = {"mark": 48, "status": 125, "symbol": 90, "period": 60, "score": 90, "accepted": 70, "override": 90, "reason": 220, "seed": 500}
+        widths = {
+            "mark": 48, "status": 125, "symbol": 90, "period": 60,
+            "client": 130, "strategy": 170, "family": 190, "score": 90,
+            "accepted": 70, "override": 90, "reason": 220, "seed": 420,
+        }
         for column in columns:
             self.ubs_seeds_tree.heading(column, text=headings[column])
             self.ubs_seeds_tree.column(column, width=widths[column], minwidth=50, stretch=False, anchor="center")
