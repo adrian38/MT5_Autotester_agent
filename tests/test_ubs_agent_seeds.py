@@ -2,6 +2,7 @@ import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from ubs.models import Seed, Variant
 from ubs.account import account_disabled_symbols_path
@@ -23,9 +24,32 @@ from ubs_agent import (
 )
 from run_tests import infer_period_from_set, load_set_params, parse_symbol_map
 from tests.ubs_agent_files_fixtures import score
+from ubs_agent_seed_scores import _score_seed_reports
 
 
 class UBSAgentSeedTests(unittest.TestCase):
+    @patch("ubs_agent_seed_scores.evaluate_seed_report")
+    @patch("ubs_agent_seed_scores.find_report_for_set")
+    def test_score_seed_reports_initializes_counters_and_preserves_blocked_count(
+        self, find_report, evaluate_report,
+    ) -> None:
+        accepted = Seed(Path("accepted.set"), "XAUUSD", "H1", "family", "1")
+        missing = Seed(Path("missing.set"), "EURUSD", "H1", "family", "1")
+        copied = [(accepted, Path("accepted_copy.set")), (missing, Path("missing_copy.set"))]
+        find_report.side_effect = [Path("accepted.htm"), None]
+        evaluate_report.return_value = ("accepted", object())
+        args = Mock(broker="ICTRADING", symbol_suffix="", symbol_map="")
+        memory = Mock()
+        status_counts = {}
+
+        handled_issues, scored = _score_seed_reports(
+            args, memory, object(), 1.0, copied, status_counts, {}, 4,
+        )
+
+        self.assertEqual((handled_issues, scored), (5, 1))
+        self.assertEqual(status_counts, {"accepted": 1, "no_report": 1})
+        memory.record_seed_score.assert_called_once_with(missing, None, "no_report", None)
+
     def test_crudeoil_seed_is_disabled_when_wti_is_disabled(self) -> None:
         seed = Seed(Path("Crude_D__CrudeOil_Optimization.set"), "CRUDEOIL", "D1", "family", "1")
         symbol_map = parse_symbol_map("CRUDEOIL=WTI,XTIUSD=WTI")

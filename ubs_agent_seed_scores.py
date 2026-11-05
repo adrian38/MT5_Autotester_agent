@@ -269,8 +269,11 @@ def format_disabled_seed_counts(seeds: list[Seed], symbol_map: dict[str, str]) -
     return ", ".join(parts)
 
 
-def _score_seed_reports(args, memory, score_config, batch_started_at, copied, status_counts, symbol_map):
+def _score_seed_reports(
+    args, memory, score_config, batch_started_at, copied, status_counts, symbol_map, handled_issues,
+):
     """Puntua el informe de cada semilla evaluada y guarda su estado."""
+    scored = 0
     for seed, copied_set in copied:
         report = find_report_for_set(copied_set, min_mtime=batch_started_at - 1.0)
         if not report:
@@ -296,7 +299,7 @@ def _score_seed_reports(args, memory, score_config, batch_started_at, copied, st
             scored += 1
         else:
             handled_issues += 1
-    return handled_issues, scored, status
+    return handled_issues, scored
 
 def _prepare_seed_eval_dir(args, output_root, pending, symbol_map):
     """Prepara el directorio de evaluacion y copia las semillas pendientes."""
@@ -524,10 +527,10 @@ def evaluate_seed_scores(args: argparse.Namespace, memory: AgentMemory, score_co
     if args.dry_run:
         return 0
 
-    scored = 0
-    handled_issues = blocked_count
     status_counts: dict[str, int] = {}
-    handled_issues, scored, status = _score_seed_reports(args, memory, score_config, batch_started_at, copied, status_counts, symbol_map)
+    handled_issues, scored = _score_seed_reports(
+        args, memory, score_config, batch_started_at, copied, status_counts, symbol_map, blocked_count,
+    )
 
     _print_seed_evaluation_result(args, memory, score_config, code, copied, disabled_paths, handled_issues, invalid_paths, invalid_set_reasons, original_pending_paths, scored, seeds, status_counts, symbol_map)
     return 0
