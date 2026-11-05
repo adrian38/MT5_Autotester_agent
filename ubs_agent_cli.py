@@ -205,6 +205,7 @@ def _add_robustness_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_final_tick_arguments(parser: argparse.ArgumentParser) -> None:
     """Etapas, umbrales y control lossless del Final Tick."""
     parser.add_argument("--evaluate-final-tick", action="store_true", help="Compara OHLC vs Every tick based on real ticks para robustez accepted.")
+    parser.add_argument("--evaluate-seed-final-tick", action="store_true", help="Compara OHLC vs ticks reales para las seeds UBS aceptadas.")
     parser.add_argument("--final-tick-run-id", type=int, help="Run SQLite cuyos robust accepted se enviaran al test Final Tick.")
     parser.add_argument(
         "--final-tick-stage",

@@ -31,6 +31,8 @@ class UBSSeedsEvalMixin:
         for label, callback in (
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
             ("ubs_seeds", self._refresh_ubs_seeds),
+            ("ubs_seed_final_tick", self._refresh_ubs_seed_final_tick),
+            ("ubs_seed_final_tick_6m", self._refresh_ubs_seed_final_tick_6m),
             ("ubs_universe", self._refresh_ubs_universe),
         ):
             self._safe_refresh(label, callback)

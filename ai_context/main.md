@@ -133,6 +133,7 @@ batch wrappers.
 | [06-conventions.md](06-conventions.md) | Coding style, UI conventions, generated files, packaging notes. |
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
+| [seed_final_tick.md](seed_final_tick.md) | Seed-specific Final Tick and 6M screens, persistence, gating, and neutral weight policy. |
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
 | [10-regression-validation.md](10-regression-validation.md) | Backward 2017-2019 OHLC validation: rationale, scoring, statuses, CLI, and official MT5 sources. |
 | [11-live-audit.md](11-live-audit.md) | Embedded manager-node live-account audit, A/M/C variants, MT5 history synchronization, and diagnostics. |
@@ -164,6 +165,8 @@ batch wrappers.
 | `logs` | Logs | (part of files) | (part of files) |
 | `agente_ubs` | UBS Agente UBS | `ui/ubs_agent_view.py` | `ui/ubs_agent_logic.py` |
 | `ubs_seeds` | UBS Seeds | `ui/ubs_seeds_view.py` | `ui/ubs_seeds_logic.py` |
+| `ubs_seed_final_tick` | UBS Seeds Final Tick | `ui/ubs_seed_final_tick_view.py` | `ui/ubs_seed_final_tick_logic.py` |
+| `ubs_seed_final_tick_6m` | UBS Seeds Final Tick 6M | `ui/ubs_seed_final_tick_6m_view.py` | `ui/ubs_seed_final_tick_6m_logic.py` |
 | `ubs_resultados` | UBS Resultados | `ui/ubs_results_view.py` | `ui/ubs_results_logic.py` |
 | `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
 | `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
