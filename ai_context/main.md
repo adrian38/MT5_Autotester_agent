@@ -84,8 +84,9 @@ batch wrappers.
   `AdjustLotsizeToVariableValues` to `false` with optimizer flag `N` in every
   set, and fix the NFP filter: `EnableNFP_Filter` is `true` for
   `Run_Strategy=1` (Breakout
-  Support/Resistance) and `false` for `2` (Volatility Breakout) and `3`
-  (Range), with `NFP_CloseOpenTrades`/`NFP_ClosePendingOrders` `true` and
+  Support/Resistance) and `false` for `2` (Volatility Breakout). The current
+  V6 contract has no strategy `3`; legacy Range seeds are invalid and must not
+  reach MT5. `NFP_CloseOpenTrades`/`NFP_ClosePendingOrders` remain `true` and
   `NFP_MinutesBefore`/`NFP_MinutesAfter` `50`/`30` in every set. Existing `.set`
   files are brought in line with `ubs_set_rules.py` (UI: *UBS Parámetros →
   Aplicar reglas a todos los sets*), which backs up what it rewrites.

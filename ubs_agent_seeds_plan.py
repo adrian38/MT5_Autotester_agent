@@ -9,6 +9,7 @@ from pathlib import Path
 from ubs.account import DEFAULT_BROKER, account_disabled_symbols_path
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
+from ubs.strategies import VALID_RUN_STRATEGIES
 from ubs.universe import canonical_symbol, seed_symbol_disabled
 from ubs_agent_config import (
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
@@ -438,7 +439,8 @@ def generation_source_seeds(
     allowed = [
         seed
         for seed in seeds
-        if not seed_symbol_disabled(seed, disabled_symbols, symbol_map, seed_enabled_when_disabled)
+        if seed.run_strategy in VALID_RUN_STRATEGIES
+        and not seed_symbol_disabled(seed, disabled_symbols, symbol_map, seed_enabled_when_disabled)
     ]
     return allowed, len(seeds) - len(allowed)
 

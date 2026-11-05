@@ -20,7 +20,7 @@ class UBSSeedMetadataTests(unittest.TestCase):
         trace = seed_trace_from_path(path, {"Run_Strategy": "1"})
 
         self.assertEqual(trace.client, "Profalgo")
-        self.assertEqual(trace.strategy_type, "Soporte/Resistencia")
+        self.assertEqual(trace.strategy_type, "Breakout Support/Resistance")
         self.assertEqual(trace.family, "GOLD / Gold Phantom")
 
     def test_imported_flattened_client_path_remains_traceable(self) -> None:
@@ -29,13 +29,18 @@ class UBSSeedMetadataTests(unittest.TestCase):
         trace = seed_trace_from_path(path, {"Run_Strategy": "1"})
 
         self.assertEqual(trace.client, "MisterMember (Xmas)")
-        self.assertEqual(trace.strategy_type, "Soporte/Resistencia")
+        self.assertEqual(trace.strategy_type, "Breakout Support/Resistance")
         self.assertEqual(trace.family, "")
 
     def test_unknown_metadata_stays_empty(self) -> None:
         trace = seed_trace_from_path(Path("legacy/seed.set"))
 
         self.assertEqual((trace.client, trace.strategy_type, trace.family), ("", "", ""))
+
+    def test_obsolete_strategy_is_explicitly_incompatible(self) -> None:
+        trace = seed_trace_from_path(Path("Range_Breakout/legacy.set"), {"Run_Strategy": "3"})
+
+        self.assertEqual(trace.strategy_type, "Incompatible V6 (Run_Strategy=3)")
 
     def test_onechart_main_settings_is_a_general_set(self) -> None:
         path = Path("UBS live portfolio/ubs_onechart_live_MainEA_Settings.set")

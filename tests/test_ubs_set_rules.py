@@ -50,12 +50,11 @@ class NfpRuleTests(unittest.TestCase):
         self.assertEqual(result.changed, ("EnableNFP_Filter",))
         self.assertEqual(set_line_values(result.text.splitlines())["EnableNFP_Filter"], "false")
 
-    def test_range_strategy_forces_the_filter_off(self) -> None:
-        result = apply_nfp_rules_text(
-            set_text("3", "true", ST1_Timeframe="0||0||0||49153||N", RNG_Timeframe="16385||0||0||49153||N")
-        )
+    def test_unsupported_strategy_does_not_apply_a_strategy_specific_filter(self) -> None:
+        result = apply_nfp_rules_text(set_text("3", "true"))
 
-        self.assertEqual(set_line_values(result.text.splitlines())["EnableNFP_Filter"], "false")
+        self.assertEqual(result.run_strategy, "")
+        self.assertEqual(set_line_values(result.text.splitlines())["EnableNFP_Filter"], "true")
 
     def test_a_compliant_set_is_returned_untouched(self) -> None:
         source = set_text("1", "true")

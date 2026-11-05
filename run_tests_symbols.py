@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from ubs.set_utils import read_set_with_encoding
+from ubs.strategies import GENERAL_TIMEFRAME_KEYS, STRATEGY_TIMEFRAME_KEYS
 
 
 def _symbol_endswith(value: str, suffix: str) -> bool:
@@ -284,13 +285,8 @@ def infer_symbol_from_set(set_file: Path, params: dict[str, str]) -> str:
 
 def infer_period_from_set(set_file: Path, params: dict[str, str]) -> str:
     run_strategy = params.get("Run_Strategy", "").strip()
-    strategy_timeframe_key = ""
-    if run_strategy == "1":
-        strategy_timeframe_key = "ST1_Timeframe"
-    elif run_strategy == "2":
-        strategy_timeframe_key = "VolTimeframe"
-    elif run_strategy == "3":
-        strategy_timeframe_key = "RNG_Timeframe"
+    strategy_keys = STRATEGY_TIMEFRAME_KEYS.get(run_strategy, ())
+    strategy_timeframe_key = strategy_keys[0] if strategy_keys else ""
 
     if strategy_timeframe_key:
         period = TIMEFRAME_ENUM.get(params.get(strategy_timeframe_key, ""))
@@ -311,9 +307,7 @@ def infer_period_from_set(set_file: Path, params: dict[str, str]) -> str:
     for key in (
         "ST1_Timeframe",
         "VolTimeframe",
-        "RNG_Timeframe",
-        "Entry_Timing",
-        "ATR_Timeframe",
+        *GENERAL_TIMEFRAME_KEYS,
     ):
         value = params.get(key, "")
         period = TIMEFRAME_ENUM.get(value)

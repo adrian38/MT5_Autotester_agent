@@ -28,6 +28,7 @@ class UBSSeedsImportMixin:
         from ubs.seed_metadata import is_general_ubs_set
         from ubs.set_rules import normalize_generated_set_text
         from ubs.set_utils import read_set_with_encoding, write_set_text
+        from ubs.strategies import VALID_RUN_STRATEGIES
         from ubs.v6_parameters import UBS_VERSION
         from ubs.version_rules import filter_set_parameters_for_version
         from ubs_prepare_sets import seed_target
@@ -43,6 +44,9 @@ class UBSSeedsImportMixin:
             normalized, _found, _missing = normalize_generated_set_text(filtered)
 
             params = parse_set_params(normalized)
+            strategy = str(params.get("Run_Strategy") or "").strip()
+            if strategy and strategy not in VALID_RUN_STRATEGIES:
+                raise ValueError(f"Run_Strategy={strategy} no soportado por UBS V6")
             symbol = infer_symbol_from_set(source, params) or "UNKNOWN"
             period = infer_period_from_set(source, params) or "UNKNOWN"
             if symbol == "UNKNOWN" or period == "UNKNOWN":

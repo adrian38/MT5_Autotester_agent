@@ -19,6 +19,7 @@ from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename
+from ubs.strategies import VALID_RUN_STRATEGIES
 from ubs.universe import (
     load_disabled_symbols,
     load_seed_enabled_disabled_symbols,
@@ -441,7 +442,12 @@ def _check_seed_sets(memory, disabled_pending, invalid_pending, seed_enabled_whe
                      unchanged_count, pending, blocked_count):
     """Revisa los .set de las semillas pendientes y avisa de los invalidos."""
     invalid_set_reasons: dict[str, list[str]] = {}
-    for seed in pending:
+    pending_paths = {str(seed.path) for seed in pending}
+    contract_checks = [
+        seed for seed in seeds
+        if str(seed.path) in pending_paths or seed.run_strategy not in VALID_RUN_STRATEGIES
+    ]
+    for seed in contract_checks:
         reasons = validate_seed_backtest_set(seed)
         if reasons:
             invalid_set_reasons[str(seed.path)] = reasons
@@ -454,6 +460,7 @@ def _check_seed_sets(memory, disabled_pending, invalid_pending, seed_enabled_whe
     if invalid_set_reasons:
         pending = [seed for seed in pending if str(seed.path) not in invalid_set_reasons]
         blocked_count += len(invalid_set_reasons)
+        unchanged_count -= sum(path not in pending_paths for path in invalid_set_reasons)
     _print_seed_evaluation_summary(disabled_pending, invalid_pending, invalid_set_reasons, pending, seed_enabled_when_disabled, seeds, symbol_map, unchanged_count)
     return blocked_count, invalid_set_reasons, pending
 

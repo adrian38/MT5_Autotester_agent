@@ -9,6 +9,7 @@ from pathlib import Path
 
 from manager_node_runtime import guided_batches as protocol
 from .models import Seed, Variant
+from .strategies import VALID_RUN_STRATEGIES
 
 
 def _broker_execution_item(item, universe, symbol_map, api, *, strict=False):
@@ -309,6 +310,8 @@ def _validate_prepared_item(ctx: _PreparedContext, item, raw, parent):
         ctx.verify_parent(row, parent)
     values = protocol.set_params(raw)
     strategy = values.get('Run_Strategy', '').split('||')[0]
+    if strategy not in VALID_RUN_STRATEGIES:
+        raise ValueError('Run_Strategy no soportado por UBS V6: '+str(strategy or '(vacío)'))
     ctx.check_destination(item)
     execution_item = _broker_execution_item(
         item, ctx.execution_universe, ctx.symbol_map, ctx.api,

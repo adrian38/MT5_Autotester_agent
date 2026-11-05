@@ -80,6 +80,28 @@ class UBSVersionRulesTests(unittest.TestCase):
             self.assertEqual(keys, V6_PARAMETER_KEYS)
             self.assertNotIn("FutureKey=", text)
 
+    def test_seed_import_rejects_unsupported_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            output_dir = root / "output"
+            source_dir.mkdir()
+            output_dir.mkdir()
+            source = source_dir / "DE40_D1.set"
+            source.write_text(
+                V6_DEFAULT_SET_TEXT.replace("Run_Strategy=1", "Run_Strategy=3", 1),
+                encoding="utf-8",
+            )
+            errors: list[str] = []
+
+            outcome = UBSSeedsImportMixin._import_one_ubs_seed(
+                SeedDuplicateIndex(), source, source_dir, output_dir, [], errors,
+            )
+
+            self.assertEqual(outcome, "")
+            self.assertEqual(list(output_dir.rglob("*.set")), [])
+            self.assertIn("Run_Strategy=3 no soportado por UBS V6", errors[0])
+
     def test_general_onechart_set_is_listed_and_not_imported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

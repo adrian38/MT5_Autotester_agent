@@ -2,7 +2,7 @@ import random
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from ubs.models import Seed, Variant
 from ubs.account import account_disabled_symbols_path
@@ -15,6 +15,7 @@ from ubs.universe import (
 from ubs_agent import (
     choose_target_symbol,
     copy_accepted,
+    generation_source_seeds,
     recreate_work_dir,
     target_symbol_disabled,
     repair_seed_backtest_set,
@@ -24,10 +25,37 @@ from ubs_agent import (
 )
 from run_tests import infer_period_from_set, load_set_params, parse_symbol_map
 from tests.ubs_agent_files_fixtures import score
-from ubs_agent_seed_scores import _score_seed_reports
+from ubs_agent_seed_scores import _check_seed_sets, _score_seed_reports
 
 
 class UBSAgentSeedTests(unittest.TestCase):
+    def test_generation_excludes_unsupported_strategy_sources(self) -> None:
+        valid = Seed(Path("valid.set"), "XAUUSD", "H1", "family", "1")
+        obsolete = Seed(Path("obsolete.set"), "DE40", "D1", "family", "3")
+
+        allowed, blocked = generation_source_seeds([valid, obsolete], {}, set(), set())
+
+        self.assertEqual(allowed, [valid])
+        self.assertEqual(blocked, 1)
+
+    @patch("ubs_agent_seed_scores.record_invalid_seed")
+    def test_unchanged_unsupported_strategy_is_reclassified_without_backtest(
+        self, record_invalid,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "legacy_range.set"
+            path.write_text("ForceSymbol=DE40\nRun_Strategy=3\n", encoding="utf-8")
+            seed = Seed(path, "DE40", "D1", "family", "3")
+
+            blocked, reasons, pending = _check_seed_sets(
+                Mock(), [], [], set(), [seed], {}, 1, [], 0,
+            )
+
+        self.assertEqual(blocked, 1)
+        self.assertEqual(pending, [])
+        self.assertIn("Run_Strategy=3 no soportado por UBS V6", reasons[str(path)][0])
+        record_invalid.assert_called_once_with(ANY, seed, reasons[str(path)])
+
     @patch("ubs_agent_seed_scores.evaluate_seed_report")
     @patch("ubs_agent_seed_scores.find_report_for_set")
     def test_score_seed_reports_initializes_counters_and_preserves_blocked_count(
@@ -207,7 +235,7 @@ class UBSAgentSeedTests(unittest.TestCase):
 
             self.assertEqual(validate_seed_backtest_set(seed), [])
 
-    def test_seed_validation_accepts_range_strategy_and_uses_rng_timeframe(self) -> None:
+    def test_seed_validation_rejects_obsolete_range_strategy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "DE40_range.set"
             path.write_text(
@@ -222,13 +250,13 @@ class UBSAgentSeedTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            params = load_set_params(path)
             seed = Seed(path, "DE40", "H1", "family", "3")
 
-            self.assertEqual(infer_period_from_set(path, params), "H1")
-            self.assertEqual(validate_seed_backtest_set(seed), [])
+            issues = validate_seed_backtest_set(seed)
 
-    def test_repair_seed_backtest_set_sets_range_strategy_timeframe(self) -> None:
+            self.assertIn("Run_Strategy=3 no soportado por UBS V6 (permitidos: 1/2)", issues)
+
+    def test_repair_does_not_invent_obsolete_range_parameters(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "DE40_range.set"
             path.write_text(
@@ -245,10 +273,9 @@ class UBSAgentSeedTests(unittest.TestCase):
 
             result = repair_seed_backtest_set(path, "DE40", "H1")
 
-            self.assertIn("RNG_Timeframe", result["changed"])
-            self.assertIn("RNG_ATR_Timeframe", result["changed"])
-            self.assertIn("RNG_Timeframe=16385||0||0||49153||N", path.read_text(encoding="utf-8"))
-            self.assertIn("RNG_ATR_Timeframe=16385||0||0||49153||N", path.read_text(encoding="utf-8"))
+            self.assertEqual(result["run_strategy"], "")
+            self.assertNotIn("RNG_Timeframe", result["changed"])
+            self.assertNotIn("RNG_ATR_Timeframe", result["changed"])
 
     def test_write_set_force_symbol_adds_missing_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

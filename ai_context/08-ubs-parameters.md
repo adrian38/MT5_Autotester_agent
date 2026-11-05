@@ -33,6 +33,13 @@ rules. It contains current values that conflict with project invariants
 `normalize_generated_set_text()` before display, so rule-owned values remain
 locked and take precedence over global or mutability overrides.
 
+The current V6 enum exposes exactly two strategies: `1` = Breakout
+Support/Resistance and `2` = Volatility Breakout. Legacy seeds with
+`Run_Strategy=3` belong to an obsolete Range contract that is absent from the
+canonical 164-key V6 schema and from the supplied default set. They are marked
+`invalid_seed` before MT5. A normal seed evaluation also revalidates unchanged
+non-V6 strategy values so previously scored legacy rows are corrected.
+
 ## .set file format
 
 Each parameter line follows this structure:
@@ -381,14 +388,12 @@ line is added.
 
 `EnableNFP_Filter` is decided by `Run_Strategy` alone. Strategy 1 trades
 against support/resistance levels that the NFP release breaks on volatility
-alone, so it pauses; strategies 2 and 3 live off that volatility, so they do
-not.
+alone, so it pauses; strategy 2 lives off that volatility, so it does not.
 
 | `Run_Strategy` | Strategy | `EnableNFP_Filter` |
 |---|---|---|
 | `1` | Breakout Support/Resistance | `true` |
 | `2` | Volatility Breakout | `false` |
-| `3` | Range | `false` |
 
 The other four keys are constant in every set, whatever the strategy:
 
@@ -401,11 +406,12 @@ The other four keys are constant in every set, whatever the strategy:
 
 Rewrites touch only the current value, keeping the `||default||step||max||Y/N`
 optimizer metadata and the file's own line endings. A set whose `Run_Strategy`
-is missing has it inferred from the one active strategy block
-(`ST1_Timeframe`/`Entry_Timing`, `VolTimeframe`, `RNG_Timeframe`); if that is
-ambiguous, the four constants are still applied and `EnableNFP_Filter` is left
-alone. A set with no NFP block at all (another EA version) is reported, never
-given invented keys.
+is missing has it inferred from the one active V6 strategy block
+(`ST1_Timeframe`/`Entry_Timing` or `VolTimeframe`); if that is ambiguous, the
+four constants are still applied and `EnableNFP_Filter` is left alone. An
+explicit unsupported value is never silently inferred as another strategy. A
+set with no NFP block at all (another EA version) is reported, never given
+invented keys.
 
 ### Adding a rule
 

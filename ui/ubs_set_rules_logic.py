@@ -12,13 +12,7 @@ from ubs.set_rules import (
     ONLY_UP_KEY,
     ONLY_UP_RULE_VALUE,
 )
-
-
-RUN_STRATEGY_LABELS = {
-    "1": "Breakout Support/Resistance",
-    "2": "Volatility Breakout",
-    "3": "Range",
-}
+from ubs.strategies import STRATEGY_LABELS
 
 
 def set_rules_summary() -> str:
@@ -29,7 +23,7 @@ def set_rules_summary() -> str:
         "",
         f"{NFP_FILTER_KEY} queda fijado por estrategia:",
         *[
-            f"    Run_Strategy {strategy} ({RUN_STRATEGY_LABELS.get(strategy, strategy)}) → {value}"
+            f"    Run_Strategy {strategy} ({STRATEGY_LABELS.get(strategy, strategy)}) → {value}"
             for strategy, value in sorted(NFP_FILTER_BY_RUN_STRATEGY.items())
         ],
         "",

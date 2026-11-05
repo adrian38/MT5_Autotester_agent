@@ -15,7 +15,7 @@ Regla NFP: los cinco parametros del filtro Non-Farm Payroll estan fijados. Los
 cuatro de comportamiento son constantes, y `EnableNFP_Filter` depende solo de
 `Run_Strategy`: la estrategia 1 (Breakout Support/Resistance) opera contra
 niveles que el NFP rompe por pura volatilidad y se pausa; la 2 (Volatility
-Breakout) y la 3 (Range) viven de esa volatilidad y no se pausan.
+Breakout) vive de esa volatilidad y no se pausa.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from ubs.set_utils import (
     read_set_with_encoding,
     write_set_text,
 )
+from ubs.strategies import STRATEGY_MARKER_KEYS
 
 
 RUN_STRATEGY_KEY = "Run_Strategy"
@@ -38,7 +39,7 @@ NFP_CONSTANT_VALUES: dict[str, str] = {
     "NFP_MinutesBefore": "50",
     "NFP_MinutesAfter": "30",
 }
-NFP_FILTER_BY_RUN_STRATEGY: dict[str, str] = {"1": "true", "2": "false", "3": "false"}
+NFP_FILTER_BY_RUN_STRATEGY: dict[str, str] = {"1": "true", "2": "false"}
 NFP_RULE_KEYS: tuple[str, ...] = (NFP_FILTER_KEY, *NFP_CONSTANT_VALUES)
 ADJUST_LOTSIZE_KEY = "AdjustLotsizeToVariableValues"
 ADJUST_LOTSIZE_RULE_VALUE = LOTS_REPLACEMENTS[ADJUST_LOTSIZE_KEY]
@@ -54,13 +55,6 @@ SET_RULE_KEYS: tuple[str, ...] = (*NFP_RULE_KEYS, *FULL_VALUE_RULES)
 
 # Marcas con las que se deduce la estrategia de un .set que perdio su
 # Run_Strategy; son las mismas que usa `infer_missing_run_strategy_from_set`.
-_STRATEGY_MARKER_KEYS: dict[str, tuple[str, ...]] = {
-    "1": ("ST1_Timeframe", "Entry_Timing"),
-    "2": ("VolTimeframe",),
-    "3": ("RNG_Timeframe",),
-}
-
-
 @dataclass(frozen=True)
 class NfpRuleResult:
     """Resultado de aplicar la regla NFP a un .set."""
@@ -103,11 +97,11 @@ def _marker_active(values: dict[str, str], keys: tuple[str, ...]) -> bool:
 def infer_run_strategy(values: dict[str, str]) -> str:
     """Estrategia declarada o, si falta, la unica que el .set tiene activa."""
     current = (values.get(RUN_STRATEGY_KEY) or "").strip()
-    if current in NFP_FILTER_BY_RUN_STRATEGY:
-        return current
+    if current:
+        return current if current in NFP_FILTER_BY_RUN_STRATEGY else ""
     active = [
         strategy
-        for strategy, keys in _STRATEGY_MARKER_KEYS.items()
+        for strategy, keys in STRATEGY_MARKER_KEYS.items()
         if _marker_active(values, keys)
     ]
     return active[0] if len(active) == 1 else ""

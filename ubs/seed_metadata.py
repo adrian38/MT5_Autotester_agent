@@ -8,17 +8,13 @@ import re
 
 from ubs.seed_dedup import parse_set_params
 from ubs.set_utils import read_set_with_encoding
+from ubs.strategies import STRATEGY_LABELS, strategy_label
 
 
-STRATEGY_TYPES = {
-    "1": "Soporte/Resistencia",
-    "2": "Volatility Breakout",
-    "3": "Range Breakout",
-}
 SOURCE_MARKERS = {
-    "breakoutsupportresistance": STRATEGY_TYPES["1"],
-    "volatilitybreakout": STRATEGY_TYPES["2"],
-    "rangebreakout": STRATEGY_TYPES["3"],
+    "breakoutsupportresistance": STRATEGY_LABELS["1"],
+    "volatilitybreakout": STRATEGY_LABELS["2"],
+    "rangebreakout": "Range Breakout (incompatible V6)",
     "ubsliveportfolio": "",
 }
 CLIENT_SETS_MARKER = "clientsets"
@@ -59,7 +55,7 @@ def seed_trace_from_path(
     params = params or {}
     parent_parts = tuple(path.parent.parts)
     found = _marker(parent_parts)
-    strategy_type = STRATEGY_TYPES.get(str(params.get("Run_Strategy") or ""), "")
+    strategy_type = strategy_label(params.get("Run_Strategy"))
     if found is None:
         return SeedTraceMetadata(strategy_type=strategy_type)
 
