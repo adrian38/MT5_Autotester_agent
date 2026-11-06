@@ -31,6 +31,8 @@ def _seed_stage_query(stage: str) -> str:
         """
     return f"""
         select ss.*, ss.seed_path as set_path, ss.symbol as target_symbol,
+               '' as mutated_keys, '' as missing_lot_keys,
+               'seed_final_tick' as policy, '' as timeframe_keys,
                ft.status as final_tick_status,
                ft.from_date as final_tick_from_date,
                ft.to_date as final_tick_to_date,

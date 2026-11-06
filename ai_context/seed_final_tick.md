@@ -12,6 +12,11 @@ quality rules, similarity thresholds, retry handling, and report reconciliation,
 but an adapter persists the result in `seed_final_tick` or
 `seed_final_tick_6m`. No candidate row is created.
 
+Seed rows do not have candidate mutation metadata. The adapter query supplies
+empty `mutated_keys`, `missing_lot_keys`, and `timeframe_keys` plus the
+`seed_final_tick` policy when it presents a seed to the shared runner; no
+mutation history is inferred or invented.
+
 The 6M stage accepts only seeds whose current short probe is `accepted` or
 `pending_ohlc_trades`. Both tables store the seed mtime and size used for the
 evaluation; a changed source seed therefore appears pending rather than reusing

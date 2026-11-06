@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ubs.memory import AgentMemory
+from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs_agent_seed_final_tick import (
     SeedFinalTickMemoryAdapter,
     eligible_seed_final_tick_rows,
@@ -62,6 +62,18 @@ class UBSSeedFinalTickTests(unittest.TestCase):
         rows = eligible_seed_final_tick_rows(self.memory, "six_month")
         self.assertEqual(len(rows), 1)
         self.assertEqual(int(rows[0]["id"]), self.seed_id)
+
+    def test_seed_rows_adapt_to_variants_without_mutation_metadata(self) -> None:
+        for stage in ("probe", "six_month"):
+            if stage == "six_month":
+                self._record("accepted")
+            row = eligible_seed_final_tick_rows(self.memory, stage)[0]
+            variant = variant_from_candidate_row(row)
+
+            self.assertEqual(variant.mutated_keys, ())
+            self.assertEqual(variant.missing_lot_keys, ())
+            self.assertEqual(variant.timeframe_keys, ())
+            self.assertEqual(variant.policy, "seed_final_tick")
 
     def test_probe_failure_removes_existing_six_month_result(self) -> None:
         self._record("accepted")
