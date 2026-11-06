@@ -163,7 +163,8 @@ requirement changes or a debt item is opened/closed.
   `force_fixed_lot_text` before use.
 - **FR-1.6.4** Timeframe exploration MUST draw on SQLite feedback
   (`asset_feedback`, `timeframe_feedback`) and target the normal generation
-  universe M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / D1. W1 / MN MUST remain opt-in
+  universe M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / H6 / H8 / H12 / D1.
+  W1 / MN MUST remain opt-in
   experimental targets behind `--experimental-long-timeframes`.
 - **FR-1.6.4a** When W1/MN experimentation is enabled, accepted/rejected scoring
   in generation and robustness MUST use timeframe-specific minimum trade counts:

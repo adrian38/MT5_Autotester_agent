@@ -37,11 +37,16 @@ LEGACY_TIMEFRAME_TO_ENUM = {
     "120": TIMEFRAME_TO_ENUM["H2"],
     "180": TIMEFRAME_TO_ENUM["H3"],
     "240": TIMEFRAME_TO_ENUM["H4"],
+    "360": TIMEFRAME_TO_ENUM["H6"],
+    "480": TIMEFRAME_TO_ENUM["H8"],
+    "720": TIMEFRAME_TO_ENUM["H12"],
     "1440": TIMEFRAME_TO_ENUM["D1"],
     "10080": TIMEFRAME_TO_ENUM["W1"],
     "43200": TIMEFRAME_TO_ENUM["MN"],
 }
-BASE_TIMEFRAME_UNIVERSE = ("M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "D1")
+BASE_TIMEFRAME_UNIVERSE = (
+    "M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
+)
 
 
 def diag_log(message: str) -> None:

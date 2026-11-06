@@ -362,6 +362,13 @@ def _filter_disabled_seeds(args, memory, symbol_map, pending, blocked_count):
 def _filter_invalid_seeds(args, memory, seeds):
     """Aparta las semillas sin simbolo o sin timeframe utilizable."""
     pending = memory.prepare_seed_evaluation(seeds, force=args.reevaluate_seeds)
+    pending_paths = {str(seed.path) for seed in pending}
+    for seed in seeds:
+        row = memory.seed_score_row(seed.path)
+        was_invalid = row is not None and str(row["status"] or "") == "invalid_seed"
+        if was_invalid and str(seed.path) not in pending_paths and not validate_seed_backtest_set(seed):
+            pending.append(seed)
+            pending_paths.add(str(seed.path))
     original_pending_count = len(pending)
     original_pending_paths = {str(seed.path) for seed in pending}
     invalid_pending = [

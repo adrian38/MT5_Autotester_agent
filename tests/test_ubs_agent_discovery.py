@@ -267,8 +267,14 @@ class UBSAgentDiscoveryTests(unittest.TestCase):
         self.assertEqual(experimental[-2:], ("W1", "MN"))
 
     def test_related_timeframes_filter_experimental_long_timeframes(self) -> None:
-        self.assertEqual(related_timeframes("D1", target_timeframe_universe(False)), ("H4", "D1"))
-        self.assertEqual(related_timeframes("D1", target_timeframe_universe(True)), ("H4", "D1", "W1", "MN"))
+        self.assertEqual(
+            related_timeframes("D1", target_timeframe_universe(False)),
+            ("H4", "H8", "H12", "D1"),
+        )
+        self.assertEqual(
+            related_timeframes("D1", target_timeframe_universe(True)),
+            ("H4", "H8", "H12", "D1", "W1", "MN"),
+        )
 
     def test_choose_target_period_does_not_emit_long_timeframes_by_default(self) -> None:
         seed = Seed(Path("seed.set"), "XAUUSD", "D1", "family", "1")

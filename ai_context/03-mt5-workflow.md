@@ -150,7 +150,7 @@ Report=
 - BTCUSD.
 - US100/US30/US500/DAX indices.
 - XTIUSD/WTI/crude oil.
-- Timeframes such as M1, M5, M15, M30, H1, H2, H3, H4, D1, W1.
+- Timeframes such as M1, M5, M15, M30, H1, H2, H3, H4, H6, H8, H12, D1, W1.
 
 Broker symbol rewriting can be configured through a `source=target` symbol map
 from the UI or `--symbol-map`.

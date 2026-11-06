@@ -25,7 +25,7 @@ from ubs_agent import (
 )
 from run_tests import infer_period_from_set, load_set_params, parse_symbol_map
 from tests.ubs_agent_files_fixtures import score
-from ubs_agent_seed_scores import _check_seed_sets, _score_seed_reports
+from ubs_agent_seed_scores import _check_seed_sets, _filter_invalid_seeds, _score_seed_reports
 
 
 class UBSAgentSeedTests(unittest.TestCase):
@@ -37,6 +37,23 @@ class UBSAgentSeedTests(unittest.TestCase):
 
         self.assertEqual(allowed, [valid])
         self.assertEqual(blocked, 1)
+
+    def test_previously_invalid_seed_reenters_queue_when_contract_now_accepts_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "UBS-XAUUSD-H12.set"
+            path.write_text(
+                "ForceSymbol=XAUUSD\nRun_Strategy=1\nST1_Timeframe=16396\nEntry_Timing=16390\n",
+                encoding="utf-8",
+            )
+            seed = Seed(path, "XAUUSD", "H12", "family", "1")
+            memory = Mock()
+            memory.prepare_seed_evaluation.return_value = []
+            memory.seed_score_row.return_value = {"status": "invalid_seed"}
+
+            result = _filter_invalid_seeds(Mock(reevaluate_seeds=False), memory, [seed])
+
+        self.assertEqual(result[4], [seed])
+        self.assertEqual(result[5], 0)
 
     @patch("ubs_agent_seed_scores.record_invalid_seed")
     def test_unchanged_unsupported_strategy_is_reclassified_without_backtest(

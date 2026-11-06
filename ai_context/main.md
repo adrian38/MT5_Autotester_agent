@@ -688,16 +688,20 @@ Two different things, often confused:
 H2 (`16386`) and H3 (`16387`) were added in Aug 2026 to **both**: they are
 supported (classified, validated, evaluated, weighted, selectable as a
 Symbol/TF override) **and** part of the default generation universe, so the
-agent creates variants on them. MT5 encodes hourly timeframes as
-`16384 + hours`, so H6/H8/H12 (`16390`/`16392`/`16396`) are equally valid MT5
-values that this app still rejects — the rejection message names the supported
-universe rather than claiming the value is not valid MT5.
+agent creates variants on them. H6/H8/H12 (`16390`/`16392`/`16396`) joined the
+same supported and default-generation contract in Nov 2026. MT5 encodes hourly
+timeframes as `16384 + hours`; legacy minute values `360`/`480`/`720` normalize
+to those three enum values. A stored `invalid_seed` is revalidated against the
+current contract during a normal seed evaluation; if a contract expansion now
+accepts it, the seed returns to the pending backtest queue without a global
+evaluation reset.
 
-`related_timeframes()` filters through the active universe, so the H1/H2/H3/H4
-neighbour band only takes effect while those timeframes stay in it. The
+`related_timeframes()` filters through the active universe, so the hourly
+neighbour bands only take effect while those timeframes stay in it. The
 discovery-mode exploratory quotas (`FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS`) still
 cover only M1/M5/M15/M30; H2/H3 get coverage from the generic "reserve a slot
-for each allowed timeframe missing from the selected source seeds" rule.
+for each allowed timeframe missing from the selected source seeds" rule, as do
+H6/H8/H12.
 
 **Scope**: `TIMEFRAME_ENUM` / `TIMEFRAME_PATTERNS` live in `run_tests.py` and
 `ubs_timeframes.json` is a single shared file — timeframe support and universe
@@ -705,7 +709,8 @@ are **broker-agnostic**, unlike asset universes and disabled-symbol policies.
 A timeframe change affects every broker/account in the clone, and reaches the
 other broker clones only through a branch merge.
 
-Normal generation targets M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / D1. W1 / MN are
+Normal generation targets M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / H6 / H8 /
+H12 / D1. W1 / MN are
 available only through the explicit **Experimentar W1/MN** toggle, persisted
 as `ubs_experimental_long_timeframes` and passed as
 `--experimental-long-timeframes`. MT5 supports W1/MN, but they are kept opt-in

@@ -345,9 +345,15 @@ def related_timeframes(
     elif period == "H3":
         related = ("H1", "H2", "H3", "H4")
     elif period == "H4":
-        related = ("H1", "H2", "H3", "H4", "D1")
+        related = ("H1", "H2", "H3", "H4", "H6", "H8", "D1")
+    elif period == "H6":
+        related = ("H3", "H4", "H6", "H8", "H12")
+    elif period == "H8":
+        related = ("H4", "H6", "H8", "H12", "D1")
+    elif period == "H12":
+        related = ("H6", "H8", "H12", "D1")
     elif period == "D1":
-        related = ("H4", "D1", "W1", "MN")
+        related = ("H4", "H8", "H12", "D1", "W1", "MN")
     elif period == "M1":
         related = ("M1", "M5", "M15")
     elif period == "M5":

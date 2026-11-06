@@ -12,6 +12,7 @@ from run_tests import (
     load_set_params,
 )
 from ubs.account import DEFAULT_TIMEFRAME_UNIVERSE, load_account_timeframe_universe
+from ubs.models import Seed
 from ubs.seeds import seed_eval_filename, seed_from_path
 from ubs.selection import FITNESS_TIMEFRAMES
 from ubs_agent import (
@@ -19,6 +20,7 @@ from ubs_agent import (
     LEGACY_TIMEFRAME_TO_ENUM,
     TIMEFRAME_TO_ENUM,
     related_timeframes,
+    validate_seed_backtest_set,
 )
 
 
@@ -36,7 +38,10 @@ class CanonicalTimeframeTableTests(unittest.TestCase):
         self.assertEqual(KNOWN_TIMEFRAMES, tuple(dict.fromkeys(TIMEFRAME_ENUM.values())))
         self.assertEqual(
             KNOWN_TIMEFRAMES,
-            ("M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "D1", "W1", "MN"),
+            (
+                "M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4",
+                "H6", "H8", "H12", "D1", "W1", "MN",
+            ),
         )
 
     def test_mt5_hourly_encoding_is_16384_plus_hours(self) -> None:
@@ -55,9 +60,12 @@ class CanonicalTimeframeTableTests(unittest.TestCase):
     def test_legacy_minute_aliases_cover_the_new_hourly_timeframes(self) -> None:
         self.assertEqual(LEGACY_TIMEFRAME_TO_ENUM["120"], TIMEFRAME_TO_ENUM["H2"])
         self.assertEqual(LEGACY_TIMEFRAME_TO_ENUM["180"], TIMEFRAME_TO_ENUM["H3"])
+        self.assertEqual(LEGACY_TIMEFRAME_TO_ENUM["360"], TIMEFRAME_TO_ENUM["H6"])
+        self.assertEqual(LEGACY_TIMEFRAME_TO_ENUM["480"], TIMEFRAME_TO_ENUM["H8"])
+        self.assertEqual(LEGACY_TIMEFRAME_TO_ENUM["720"], TIMEFRAME_TO_ENUM["H12"])
 
 
-class H2H3InferenceTests(unittest.TestCase):
+class HourlyInferenceTests(unittest.TestCase):
     def test_strategy_timeframe_16386_is_h2_not_a_fallback(self) -> None:
         """Antes caia al ultimo recurso y Entry_Timing decidia el periodo."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,6 +104,23 @@ class H2H3InferenceTests(unittest.TestCase):
         self.assertEqual(infer_period_from_path(Path("x_H1_a.set")), "H1")
         self.assertEqual(infer_period_from_path(Path("x_H4_a.set")), "H4")
 
+    def test_h6_h8_and_h12_are_inferred_and_validated_from_mt5_values(self) -> None:
+        for raw, expected in (("16390", "H6"), ("16392", "H8"), ("16396", "H12")):
+            with self.subTest(expected), tempfile.TemporaryDirectory() as tmp:
+                path = _write_set(
+                    Path(tmp),
+                    f"UBS-XAUUSD-{expected}.set",
+                    {
+                        "ForceSymbol": "XAUUSD",
+                        "Run_Strategy": "1",
+                        "ST1_Timeframe": raw,
+                        "Entry_Timing": raw,
+                    },
+                )
+                self.assertEqual(infer_period_from_set(path, load_set_params(path)), expected)
+                seed = Seed(path, "XAUUSD", expected, "family", "1")
+                self.assertEqual(validate_seed_backtest_set(seed), [])
+
     def test_seed_eval_copy_carries_the_period_to_the_tester(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _write_set(
@@ -116,10 +141,10 @@ class H2H3InferenceTests(unittest.TestCase):
 
 
 class GenerationUniverseTests(unittest.TestCase):
-    def test_h2_and_h3_are_generation_targets_by_default(self) -> None:
+    def test_supported_hourly_timeframes_are_generation_targets_by_default(self) -> None:
         for universe in (DEFAULT_TIMEFRAME_UNIVERSE, BASE_TIMEFRAME_UNIVERSE):
-            self.assertIn("H2", universe)
-            self.assertIn("H3", universe)
+            for period in ("H2", "H3", "H6", "H8", "H12"):
+                self.assertIn(period, universe)
         self.assertEqual(DEFAULT_TIMEFRAME_UNIVERSE, BASE_TIMEFRAME_UNIVERSE)
 
     def test_the_universe_is_broker_agnostic(self) -> None:
@@ -154,6 +179,11 @@ class RelatedTimeframeTests(unittest.TestCase):
     def test_h2_neighbours_stay_inside_the_hourly_band(self) -> None:
         opened = ("M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "D1")
         self.assertEqual(related_timeframes("H2", opened), ("H1", "H2", "H3", "H4"))
+
+    def test_new_hourly_neighbours_stay_inside_the_active_universe(self) -> None:
+        opened = DEFAULT_TIMEFRAME_UNIVERSE
+        self.assertEqual(related_timeframes("H6", opened), ("H3", "H4", "H6", "H8", "H12"))
+        self.assertEqual(related_timeframes("H12", opened), ("H6", "H8", "H12", "D1"))
 
 
 if __name__ == "__main__":
