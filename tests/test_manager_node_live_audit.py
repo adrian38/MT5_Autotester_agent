@@ -70,8 +70,21 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
         exporter = _WindowsTerminalReportExporter.__new__(_WindowsTerminalReportExporter)
         exporter.kernel32 = SimpleNamespace(VirtualAllocEx=lambda *_args: None)
 
-        with self.assertRaisesRegex(NativeHistoryReportError, "no reservó memoria"):
+        with unittest.mock.patch(
+            "manager_node_runtime.mt5_native_history_report.time.sleep",
+        ), self.assertRaisesRegex(NativeHistoryReportError, "no reservó memoria"):
             exporter._remote_allocation(123, 16)
+
+    def test_a_transient_remote_allocation_is_retried_on_the_same_terminal(self) -> None:
+        exporter = _WindowsTerminalReportExporter.__new__(_WindowsTerminalReportExporter)
+        pointers = iter((None, None, 456))
+        exporter.kernel32 = SimpleNamespace(VirtualAllocEx=lambda *_args: next(pointers))
+
+        with unittest.mock.patch(
+            "manager_node_runtime.mt5_native_history_report.time.sleep",
+        ) as pause:
+            self.assertEqual(exporter._remote_allocation(123, 16), 456)
+        self.assertEqual(pause.call_count, 2)
 
     def test_credentials_are_required_and_never_enter_public_state(self) -> None:
         payload = request()
