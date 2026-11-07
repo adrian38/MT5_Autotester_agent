@@ -13,7 +13,8 @@ from manager_node_runtime.live_audit import (
     normalize_request, single_variant_mode,
 )
 from manager_node_runtime.mt5_native_history_report import (
-    NativeHistoryReportError, _WindowsTerminalReportExporter,
+    NativeHistoryReportError, _RemoteAllocationError, _WindowsTerminalReportExporter,
+    export_native_history_report,
     validate_native_history_report,
 )
 from tests.manager_node_live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
@@ -68,23 +69,32 @@ class _HistorySyncMt5:
 class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
     def test_a_failed_remote_allocation_has_a_readable_error(self) -> None:
         exporter = _WindowsTerminalReportExporter.__new__(_WindowsTerminalReportExporter)
-        exporter.kernel32 = SimpleNamespace(VirtualAllocEx=lambda *_args: None)
+        exporter.kernel32 = SimpleNamespace(
+            VirtualAllocEx=lambda *_args: None, GetLastError=lambda: 8,
+        )
 
-        with unittest.mock.patch(
-            "manager_node_runtime.mt5_native_history_report.time.sleep",
-        ), self.assertRaisesRegex(NativeHistoryReportError, "no reservó memoria"):
+        with self.assertRaisesRegex(NativeHistoryReportError, "Win32 8"):
             exporter._remote_allocation(123, 16)
 
-    def test_a_transient_remote_allocation_is_retried_on_the_same_terminal(self) -> None:
-        exporter = _WindowsTerminalReportExporter.__new__(_WindowsTerminalReportExporter)
-        pointers = iter((None, None, 456))
-        exporter.kernel32 = SimpleNamespace(VirtualAllocEx=lambda *_args: next(pointers))
-
+    def test_a_transient_remote_allocation_reopens_the_terminal_process(self) -> None:
+        failed = unittest.mock.Mock()
+        failed.export.side_effect = _RemoteAllocationError("Win32 487")
+        recovered = unittest.mock.Mock()
+        recovered.export.return_value = {"native_terminal_report": True}
         with unittest.mock.patch(
+            "manager_node_runtime.mt5_native_history_report._WindowsTerminalReportExporter",
+            side_effect=(failed, recovered),
+        ) as exporter, unittest.mock.patch(
             "manager_node_runtime.mt5_native_history_report.time.sleep",
-        ) as pause:
-            self.assertEqual(exporter._remote_allocation(123, 16), 456)
-        self.assertEqual(pause.call_count, 2)
+        ):
+            result = export_native_history_report(
+                terminal_path=Path("terminal64.exe"), login="1", server="Broker",
+                period_start=datetime(2026, 11, 1, tzinfo=timezone.utc),
+                period_end=datetime(2026, 11, 7, tzinfo=timezone.utc),
+                destination=Path("report.html"),
+            )
+        self.assertTrue(result["native_terminal_report"])
+        self.assertEqual(exporter.call_count, 2)
 
     def test_credentials_are_required_and_never_enter_public_state(self) -> None:
         payload = request()
