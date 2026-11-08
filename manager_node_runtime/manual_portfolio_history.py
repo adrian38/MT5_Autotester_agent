@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .manual_portfolio import normalize_manual_set
+from .manual_portfolio import normalize_manual_set, pool_report_names, report_stem
 from .node_commands import _add_symbol_options, _add_symbol_universe_option
 from .common import safe_int
 
@@ -57,10 +57,31 @@ def _manual_sets(memory_path: Path, portfolio_id: int) -> list[Path]:
         rows = conn.execute(
             "select set_path from portfolio_allocations where portfolio_id=? order by id", (portfolio_id,),
         ).fetchall()
+        protected = pool_report_names(conn)
     paths = [Path(str(item["set_path"])).resolve() for item in rows]
     if not paths or any(not path.is_file() for path in paths):
         raise ValueError("El portafolio no conserva todos sus archivos .set")
+    _refuse_pool_report_overwrite(paths, protected)
     return paths
+
+
+def _refuse_pool_report_overwrite(paths: list[Path], protected: set[str]) -> None:
+    """Para el histórico antes de que pise el informe de un candidato.
+
+    `run_tests.py` nombra cada informe con el del `.set` y los deja todos en la
+    misma carpeta `reports/`, así que un set manual homónimo de un candidato
+    sustituye su informe por otro con un período distinto. La subida ya rechaza
+    esos nombres, pero los portafolios manuales guardados antes de esa guarda
+    siguen ahí y volverían a pisarlo en cuanto se les pidiera el histórico.
+    """
+    clashing = sorted({path.name for path in paths if report_stem(path.name) in protected})
+    if clashing:
+        raise ValueError(
+            "El histórico OHLC sobrescribiría el informe de un candidato del pool, que "
+            "dejaría de poder reconstruir la base de sus carteras: "
+            + ", ".join(clashing)
+            + ". Vuelve a subir esos sets con otro nombre."
+        )
 
 
 def _repair_manual_lots(memory_path: Path, portfolio_id: int, paths: list[Path]) -> None:
