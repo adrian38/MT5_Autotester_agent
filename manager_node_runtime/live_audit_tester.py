@@ -15,6 +15,24 @@ from run_tests_parallel import runner_failure_summary
 from .live_audit_helpers import audit_set_name, _member_strategy_id, _metric_number, _read_set_text, _redact_log_files, _redact_runner_output
 from .live_audit_symbols import normalize_live_audit_set_symbols
 
+AUDIT_EVERY_TICK = ("UseEveryTick", "true")
+"""Todo set que una auditoria manda al tester revisa cada tick.
+
+El usuario lo pidio el 2026-11-08 para **todas** las auditorias, venga la
+ejecucion del boton, del programador, de un hueco recuperado o del periodo
+completo: todas pasan por `_prepare_member_set`, que es el unico sitio donde
+se escribe el `.set` que MT5 abre, asi que se marca ahi y no en cada via.
+
+`UseEveryTick` es un input del experto, no un ajuste del tester: con `false`
+--que es como los escribe `guided_batches.py`-- el experto solo mira el cierre
+de vela aunque el tester reciba ticks reales (`--model 4`), y la auditoria
+compara la cuenta real contra algo que esa cuenta nunca ejecuto.
+
+Cuesta tiempo: en la comprobacion manual la corrida tick a tick paso de
+segundos a decenas de minutos y desperto el bloqueo del watchdog de Model=4.
+El original no se toca; se marca la copia de `sets/` del area de trabajo.
+"""
+
 
 @dataclass
 class _TesterTerminals:
@@ -89,6 +107,7 @@ class LiveAuditTesterMixin:
         text, set_encoding = _read_set_text(source)
         lots = self._tester_lot(member, volume_rules)
         text = self._set_value(text, "StartLots", f"{lots[1]:.8f}".rstrip("0").rstrip("."))
+        text = self._set_value(text, *AUDIT_EVERY_TICK)
         text = normalize_live_audit_set_symbols(
             text, request["tester_server"], broker_symbols, request["tester_login"]
         )
