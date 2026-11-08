@@ -175,45 +175,36 @@ class ManualPortfolioTests(unittest.TestCase):
             )
             conn.commit()
 
-    def test_a_set_named_like_a_pool_report_is_rejected_before_it_is_written(self) -> None:
-        # `run_tests.py` nombra cada informe con el del `.set` y los deja todos
-        # en la misma carpeta `reports/`, asi que generar el historico de este
-        # portafolio sustituiria el tramo base del candidato por otro periodo y
-        # ninguna cartera que lo use podria reconstruir su base.
+    def test_a_set_of_the_pool_can_be_uploaded(self) -> None:
+        # Los portafolios manuales son usos en real y sus estrategias suelen
+        # ser candidatos aceptados: prohibir el nombre prohibia el caso normal.
         self._seed_pool_report("XAUUSD_H1_GOLD_g002_s013_v010.htm")
-        payload = {
+        saved = create_manual_portfolio(self.memory, self.runtime, {
             "name": "Copia del pool", "portfolio_type": "balanced",
             "files": [self.uploaded(
                 "xauusd_h1_gold_g002_s013_v010.set",
                 "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.01\n",
             )],
-        }
-        with self.assertRaisesRegex(ValueError, "informe del pool con ese nombre"):
-            create_manual_portfolio(self.memory, self.runtime, payload)
-        self.assertFalse(any((self.runtime / "manual_portfolios").glob("*/sets/*.set")))
-
-    def test_adding_a_set_named_like_a_pool_report_is_rejected_too(self) -> None:
-        saved = self._manual("Ampliable")
-        self._seed_pool_report("USDJPY_H1_Advanced_Scalper.htm")
-        with self.assertRaisesRegex(ValueError, "informe del pool con ese nombre"):
-            update_manual_portfolio(self.memory, self.runtime, {
-                "operation": "add", "portfolio_id": saved["portfolio_id"],
-                "files": [self.uploaded(
-                    "usdjpy_h1_advanced_scalper.set",
-                    "ForceSymbol=USDJPY\nTimeFrame=H1\nStartLots=0.01\n",
-                )],
-            })
-        self.assertFalse((Path(saved["sets_folder"]) / "usdjpy_h1_advanced_scalper.set").exists())
-
-    def test_a_name_that_no_candidate_claims_is_accepted(self) -> None:
-        self._seed_pool_report("XAUUSD_H1_GOLD_g002_s013_v010.htm")
-        saved = create_manual_portfolio(self.memory, self.runtime, {
-            "name": "Propia", "portfolio_type": "balanced",
-            "files": [self.uploaded(
-                "mi_xauusd.set", "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.01\n",
-            )],
         })
         self.assertEqual(saved["strategies"], 1)
+        self.assertTrue(
+            (Path(saved["sets_folder"]) / "xauusd_h1_gold_g002_s013_v010.set").is_file()
+        )
+
+    def test_a_set_of_the_pool_can_also_be_added_later(self) -> None:
+        saved = self._manual("Ampliable")
+        self._seed_pool_report("USDJPY_H1_Advanced_Scalper.htm")
+        result = update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": saved["portfolio_id"],
+            "files": [self.uploaded(
+                "usdjpy_h1_advanced_scalper.set",
+                "ForceSymbol=USDJPY\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        })
+        self.assertEqual(result["added"], 1)
+        self.assertTrue(
+            (Path(saved["sets_folder"]) / "usdjpy_h1_advanced_scalper.set").is_file()
+        )
 
     def test_sets_can_be_added_to_an_existing_manual_portfolio(self) -> None:
         saved = self._manual("Ampliable")
@@ -417,29 +408,65 @@ class ManualPortfolioTests(unittest.TestCase):
 
         self.assertNotIn("--symbol-universe", command)
 
-    def test_history_refuses_to_overwrite_the_report_of_a_pool_candidate(self) -> None:
-        # Los portafolios manuales guardados antes de la guarda de subida
-        # siguen ahi con el nombre que pisa el informe, asi que la ejecucion
-        # tiene que pararlo tambien: cuando el backtest termina, el tramo base
-        # del candidato ya se ha perdido y no hay copia de donde recuperarlo.
+    def test_history_runs_on_a_renamed_copy_so_it_cannot_overwrite_the_pool(self) -> None:
+        # Mismo nombre que un candidato del pool: con el nombre de origen, el
+        # backtest sustituia su informe base y las carteras que lo usaban se
+        # quedaban sin base reconstruible.
         template = self.root / "tester_template.ini"
         template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
         cfg = configparser.ConfigParser(interpolation=None)
         cfg.read_dict({"Paths": {"template_path": str(template)}})
         saved = create_manual_portfolio(self.memory, self.runtime, {
-            "name": "Anterior a la guarda", "portfolio_type": "balanced",
+            "name": "Copia del pool", "portfolio_type": "balanced",
             "files": [self.uploaded(
                 "btcusd_h1_mix_g001_s004_v008.set",
                 "ForceSymbol=BTCUSD\nTimeFrame=H1\nStartLots=0.01\n",
             )],
         })
+        pid = saved["portfolio_id"]
         self._seed_pool_report("BTCUSD_H1_MIX_g001_s004_v008.htm")
 
-        with self.assertRaisesRegex(ValueError, "sobrescribir"):
-            build_history_command(
-                {"project_dir": str(self.root)}, cfg, self.memory,
-                {"portfolio_id": saved["portfolio_id"]},
-            )
+        _normalized, command, _cwd = build_history_command(
+            {"project_dir": str(self.root)}, cfg, self.memory, {"portfolio_id": pid},
+        )
+
+        sets = [command[i + 1] for i, part in enumerate(command) if part == "--set-file"]
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(
+            Path(sets[0]).name, f"manual_{pid:06d}_btcusd_h1_mix_g001_s004_v008.set",
+        )
+        # La copia vive dentro de la carpeta del portafolio, para irse con el.
+        self.assertEqual(Path(sets[0]).parent.name, "history_sets")
+        self.assertEqual(Path(sets[0]).parent.parent, Path(saved["sets_folder"]).parent)
+        # El set original no se toca: sigue siendo el que audita la cartera.
+        self.assertTrue(
+            (Path(saved["sets_folder"]) / "btcusd_h1_mix_g001_s004_v008.set").is_file()
+        )
+
+    def test_history_rebuilds_its_copies_so_a_removed_member_stops_running(self) -> None:
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read_dict({"Paths": {"template_path": str(template)}})
+        saved = self._manual("Con dos")
+        pid = saved["portfolio_id"]
+        update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": pid,
+            "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+        })
+        config = {"project_dir": str(self.root)}
+        build_history_command(config, cfg, self.memory, {"portfolio_id": pid})
+        update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "remove", "portfolio_id": pid,
+            "set_path": str(Path(saved["sets_folder"]) / "dos.set"),
+        })
+
+        _normalized, command, _cwd = build_history_command(
+            config, cfg, self.memory, {"portfolio_id": pid},
+        )
+
+        sets = [Path(command[i + 1]).name for i, part in enumerate(command) if part == "--set-file"]
+        self.assertEqual(sets, [f"manual_{pid:06d}_uno.set"])
 
     def test_history_repairs_sets_and_allocations_created_before_normalization(self) -> None:
         template = self.root / "tester_template.ini"
