@@ -164,6 +164,56 @@ class ManualPortfolioTests(unittest.TestCase):
             create_manual_portfolio(self.memory, self.runtime, payload)
         self.assertFalse(any((self.runtime / "manual_portfolios").glob("*/sets/*.set")))
 
+    def _seed_pool_report(self, *names: str) -> None:
+        """Un candidato del pool con su informe base, como lo deja el agente."""
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            conn.execute("create table if not exists candidates (id integer, report_path text)")
+            conn.executemany(
+                "insert into candidates (id, report_path) values (?, ?)",
+                [(index, f"/data/axi/reports/{name}") for index, name in enumerate(names, 1)],
+            )
+            conn.commit()
+
+    def test_a_set_named_like_a_pool_report_is_rejected_before_it_is_written(self) -> None:
+        # `run_tests.py` nombra cada informe con el del `.set` y los deja todos
+        # en la misma carpeta `reports/`, asi que generar el historico de este
+        # portafolio sustituiria el tramo base del candidato por otro periodo y
+        # ninguna cartera que lo use podria reconstruir su base.
+        self._seed_pool_report("XAUUSD_H1_GOLD_g002_s013_v010.htm")
+        payload = {
+            "name": "Copia del pool", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "xauusd_h1_gold_g002_s013_v010.set",
+                "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        }
+        with self.assertRaisesRegex(ValueError, "informe del pool con ese nombre"):
+            create_manual_portfolio(self.memory, self.runtime, payload)
+        self.assertFalse(any((self.runtime / "manual_portfolios").glob("*/sets/*.set")))
+
+    def test_adding_a_set_named_like_a_pool_report_is_rejected_too(self) -> None:
+        saved = self._manual("Ampliable")
+        self._seed_pool_report("USDJPY_H1_Advanced_Scalper.htm")
+        with self.assertRaisesRegex(ValueError, "informe del pool con ese nombre"):
+            update_manual_portfolio(self.memory, self.runtime, {
+                "operation": "add", "portfolio_id": saved["portfolio_id"],
+                "files": [self.uploaded(
+                    "usdjpy_h1_advanced_scalper.set",
+                    "ForceSymbol=USDJPY\nTimeFrame=H1\nStartLots=0.01\n",
+                )],
+            })
+        self.assertFalse((Path(saved["sets_folder"]) / "usdjpy_h1_advanced_scalper.set").exists())
+
+    def test_a_name_that_no_candidate_claims_is_accepted(self) -> None:
+        self._seed_pool_report("XAUUSD_H1_GOLD_g002_s013_v010.htm")
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Propia", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "mi_xauusd.set", "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        })
+        self.assertEqual(saved["strategies"], 1)
+
     def test_sets_can_be_added_to_an_existing_manual_portfolio(self) -> None:
         saved = self._manual("Ampliable")
         result = update_manual_portfolio(self.memory, self.runtime, {
@@ -296,6 +346,30 @@ class ManualPortfolioTests(unittest.TestCase):
         )
         self.assertEqual(single_command[single_command.index("--max-workers") + 1], "1")
         self.assertFalse(single["use_multiterminal"])
+
+    def test_history_refuses_to_overwrite_the_report_of_a_pool_candidate(self) -> None:
+        # Los portafolios manuales guardados antes de la guarda de subida
+        # siguen ahi con el nombre que pisa el informe, asi que la ejecucion
+        # tiene que pararlo tambien: cuando el backtest termina, el tramo base
+        # del candidato ya se ha perdido y no hay copia de donde recuperarlo.
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read_dict({"Paths": {"template_path": str(template)}})
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Anterior a la guarda", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "btcusd_h1_mix_g001_s004_v008.set",
+                "ForceSymbol=BTCUSD\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        })
+        self._seed_pool_report("BTCUSD_H1_MIX_g001_s004_v008.htm")
+
+        with self.assertRaisesRegex(ValueError, "sobrescribir"):
+            build_history_command(
+                {"project_dir": str(self.root)}, cfg, self.memory,
+                {"portfolio_id": saved["portfolio_id"]},
+            )
 
     def test_history_repairs_sets_and_allocations_created_before_normalization(self) -> None:
         template = self.root / "tester_template.ini"
