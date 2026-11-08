@@ -168,12 +168,18 @@ def pool_report_names(conn: sqlite3.Connection) -> set[str]:
     """Los informes que el pool reclama como evidencia, por su nombre.
 
     Todo backtest de este agente escribe en la unica carpeta `reports/` con el
-    nombre del `.set`, asi que un set manual homonimo de un candidato pisa su
-    informe. El 2026-11-08 el historico OHLC de un portafolio manual reemplazo
-    el tramo 2020-2024 de cuatro candidatos de AXI por uno 2020-2026: desde
-    entonces su informe base solapa con el de robustez y ninguna cartera que
-    los contenga puede reconstruir su base. El nombre se rechaza al subirlo,
-    porque a la hora de ejecutar el informe ya esta perdido.
+    nombre del `.set`, asi que un set manual homonimo de un candidato pisaria
+    su informe. El 2026-11-08 el historico OHLC de un portafolio manual
+    reemplazo el tramo 2020-2024 de cuatro candidatos de AXI por uno 2020-2026:
+    desde entonces su informe base solapaba con el de robustez y ninguna
+    cartera que los contuviera podia reconstruir su base.
+
+    **Subir un set del pool es legitimo y frecuente**: los portafolios manuales
+    son usos en real, y sus estrategias suelen ser candidatos aceptados. Por
+    eso la colision no se evita prohibiendo el nombre, sino corriendo el
+    historico sobre una copia con prefijo (`manual_portfolio_history`). Esto
+    queda como ultima red: comprueba los nombres que de verdad se van a
+    escribir.
 
     Se consultan las cuatro etapas y no solo la base: un set llamado como un
     informe de etapa lo pisaria igual. Una memoria sin alguna de esas tablas no
@@ -190,12 +196,6 @@ def pool_report_names(conn: sqlite3.Connection) -> set[str]:
             if name:
                 names.add(name)
     return names
-
-
-def pool_report_names_for(memory_path: str | Path) -> set[str]:
-    """`pool_report_names` abriendo la memoria, para quien aun no la tiene abierta."""
-    with contextlib.closing(connect_memory(memory_path, timeout=10.0)) as conn:
-        return pool_report_names(conn)
 
 
 def _member(path: Path, index: int) -> StrategyAllocation:
@@ -224,14 +224,12 @@ def _member(path: Path, index: int) -> StrategyAllocation:
 
 def _write_uploaded_sets(
     target: Path, raw_files: object, existing_names: Iterable[str] = (),
-    reserved_reports: Iterable[str] = (),
 ) -> list[Path]:
     if not isinstance(raw_files, list) or not raw_files:
         raise ValueError("Selecciona una carpeta que contenga al menos un fichero .set")
     target.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     names = {str(name).casefold() for name in existing_names}
-    reserved = set(reserved_reports)
     total = 0
     try:
         for item in raw_files:
@@ -242,13 +240,6 @@ def _write_uploaded_sets(
                 continue
             if name.casefold() in names or (target / name).exists():
                 raise ValueError(f"Ya existe un fichero .set con el mismo nombre: {name}")
-            if report_stem(name) in reserved:
-                raise ValueError(
-                    f"{name}: ya hay un informe del pool con ese nombre. Generar su "
-                    "historico OHLC lo sobrescribiria y las carteras que usen ese "
-                    "candidato se quedarian sin base reconstruible. Renombra el "
-                    "fichero antes de subirlo."
-                )
             try:
                 content = base64.b64decode(str(item.get("content") or ""), validate=True)
             except (ValueError, binascii.Error) as exc:
@@ -270,14 +261,10 @@ def _write_uploaded_sets(
         raise
 
 
-def _write_sets(
-    runtime_dir: Path, raw_files: object, reserved_reports: Iterable[str] = (),
-) -> tuple[Path, list[Path]]:
+def _write_sets(runtime_dir: Path, raw_files: object) -> tuple[Path, list[Path]]:
     folder = runtime_dir / MANUAL_PORTFOLIOS_DIRNAME / uuid.uuid4().hex
     try:
-        return folder, _write_uploaded_sets(
-            folder / MANUAL_SETS_DIRNAME, raw_files, reserved_reports=reserved_reports,
-        )
+        return folder, _write_uploaded_sets(folder / MANUAL_SETS_DIRNAME, raw_files)
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -365,9 +352,7 @@ def _add_manual_sets(
 ) -> dict[str, Any]:
     rows, target = _manual_rows(conn, runtime_dir, portfolio_id)
     existing = [Path(str(row["set_path"])).name for row in rows]
-    paths = _write_uploaded_sets(
-        target, raw_files, existing, reserved_reports=pool_report_names(conn),
-    )
+    paths = _write_uploaded_sets(target, raw_files, existing)
     try:
         helper = _PortfolioPersistence()
         first = _next_manual_index(rows)
@@ -453,9 +438,7 @@ def create_manual_portfolio(
         raise ValueError("Indica un nombre de portafolio de hasta 80 caracteres")
     if mode not in MODE_LABELS:
         raise ValueError("El modo debe ser Agresivo, Moderado o Conservador")
-    folder, paths = _write_sets(
-        runtime_dir, payload.get("files"), pool_report_names_for(memory_path),
-    )
+    folder, paths = _write_sets(runtime_dir, payload.get("files"))
     try:
         result = _result(paths)
     except Exception:
