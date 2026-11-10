@@ -74,7 +74,7 @@ def final_tick_status_from_similarity(similarity: object) -> str | None:
 
 
 def lossless_control_gate_from_args(args: argparse.Namespace) -> LosslessControlGate:
-    """Puertas absolutas de 6M para el caso de control OHLC sin perdidas.
+    """Diagnosticos absolutos 6M para el caso OHLC sin perdidas.
 
     Lee con ``getattr`` porque por aqui pasan namespaces montados a mano (los
     reconciliadores y los tests no rellenan la lista completa de flags); lo que

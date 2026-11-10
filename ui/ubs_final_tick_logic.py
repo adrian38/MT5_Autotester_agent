@@ -261,14 +261,18 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
             "Modelos: OHLC Model=1 vs Every tick based on real ticks Model=4",
             f"History Quality >= {thresholds['min_quality']:.2f}%",
             f"Min ops OHLC: {thresholds['min_ohlc_trades']}",
-            f"Min ops W1/MN Final Tick: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
+            f"Diagnostico score ops W1/MN: W1>={thresholds['min_trades_w1']} | MN>={thresholds['min_trades_mn']}",
             ("Retry pocas ops OHLC: " if final_tick_stage == "six_month" else "Fechas retry OHLC: ")
             + f"{ohlc_from or '(mismas)'} -> {ohlc_to or '(mismas)'}",
-            f"Deltas max: net {thresholds['net_delta']:.2f}% | PF {pf_delta:.2f}% | "
-            f"DD {thresholds['dd_delta']:.2f}% | trades {thresholds['trades_delta']:.2f}%",
+            f"Deltas comportamiento (bloquean): DD {thresholds['dd_delta']:.2f}% | "
+            f"trades {thresholds['trades_delta']:.2f}%",
+            f"Deltas economicos (solo diagnostico): net {thresholds['net_delta']:.2f}% | PF {pf_delta:.2f}%",
         ]
         if final_tick_stage == "six_month":
-            details.append(f"6M PF minimo por modelo: >= {self.ubs_pass_min_profit_factor.get().strip() or '1.20'}")
+            details.append(
+                f"Diagnostico 6M PF por modelo: >= "
+                f"{self.ubs_pass_min_profit_factor.get().strip() or '1.20'} (no bloquea)"
+            )
         details.extend(self._multiterminal_execution_details())
         return details
 

@@ -25,9 +25,9 @@ stale evidence. A failed short probe removes downstream 6M evidence.
 Both seed screens share the candidate Final Tick classification. Their purpose
 is to verify that OHLC reproduces Every Tick behavior closely enough. Trade-count
 and drawdown differences remain symmetric rejection criteria; score, net-profit,
-and relative profit-factor differences are result diagnostics and do not prove
-behavioral divergence by themselves. The six-month stage retains its absolute
-PF floor and lossless controls. A valid Real Tick report whose only failed
+relative profit-factor differences, PF floors, and lossless economic controls
+are result diagnostics and do not prove behavioral divergence by themselves.
+A valid Real Tick report whose only failed
 criterion is the absolute minimum trade sample is stored as
 `pending_tick_trades`, not `rejected`; an additional failed criterion still
 produces `rejected`. The pending low-sample row is not automatically rerun over

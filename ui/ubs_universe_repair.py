@@ -156,7 +156,18 @@ class UBSUniverseRepairMixin:
     # similitud. Cualquier otro (no_report, parse_error, report_mismatch,
     # no_trades, no_history, pending_ohlc_trades, ...) lo decide una etapa
     # anterior a la comparacion y no se toca aunque haya un blob guardado.
-    FINAL_TICK_VERDICT_STATUSES = frozenset({"accepted", "rejected", "pending_history_quality"})
+    FINAL_TICK_VERDICT_STATUSES = frozenset(
+        {"accepted", "rejected", "pending_history_quality", "pending_tick_trades"}
+    )
+
+    @staticmethod
+    def _stored_min_model_pf(tick_raw, six_month):
+        if not six_month:
+            return None
+        try:
+            return float(tick_raw.get("score_config", {}).get("min_profit_factor", 1.20))
+        except (AttributeError, TypeError, ValueError):
+            return 1.20
 
     def scan_final_tick_status_mismatches(self, conn) -> list[dict]:
         """Filas cuyo status no concuerda con el veredicto de su similarity_json.
@@ -227,14 +238,7 @@ class UBSUniverseRepairMixin:
             return
 
         stored_max_pf = float(row["max_pf_delta_pct"] or 35.0)
-        # min_profit_factor viene del score_config que la propia fila
-        # guarda, no de la configuracion actual de la UI.
-        min_model_pf = None
-        if six_month:
-            try:
-                min_model_pf = float(tick_raw.get("score_config", {}).get("min_profit_factor", 1.20))
-            except (AttributeError, TypeError, ValueError):
-                min_model_pf = 1.20
+        min_model_pf = self._stored_min_model_pf(tick_raw, six_month)
         similarity = final_tick_similarity(
             ohlc,
             tick,
@@ -247,7 +251,9 @@ class UBSUniverseRepairMixin:
             lossless_control_gate=LosslessControlGate() if six_month else None,
         )
         expected = final_tick_status_from_similarity(similarity)
-        if expected is None or expected == status:
+        similarity_json = json.dumps(similarity, ensure_ascii=True, sort_keys=True)
+        stored_similarity_json = str(row["similarity_json"] or "")
+        if expected is None or (expected == status and similarity_json == stored_similarity_json):
             return
         changes.append(
             {
@@ -260,7 +266,8 @@ class UBSUniverseRepairMixin:
                 "stored_similarity_json": row["similarity_json"],
                 "expected_status": expected,
                 "expected_accepted": 1 if expected == "accepted" else 0,
-                "similarity_json": json.dumps(similarity, ensure_ascii=True, sort_keys=True),
+                "similarity_json": similarity_json,
+                "status_changed": expected != status,
                 "reasons": list(similarity.get("reasons") or ()),
                 "cause": "ohlc_lossless" if run_is_lossless(ohlc) else "reglas_cambiadas",
             }
@@ -458,7 +465,9 @@ class UBSUniverseRepairMixin:
             unlocked = [
                 item["candidate_id"]
                 for item in (mismatches + recomputed)
-                if item["table"] == "candidate_final_tick" and item["expected_status"] == "accepted"
+                if item["table"] == "candidate_final_tick"
+                and item["expected_status"] == "accepted"
+                and item.get("status_changed", item["stored_status"] != item["expected_status"])
             ]
             queued = self.six_month_rows_to_queue(conn, unlocked)
         finally:

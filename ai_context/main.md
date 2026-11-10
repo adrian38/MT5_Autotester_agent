@@ -619,20 +619,20 @@ enter this queue.
 #### Final Tick similarity logic (`final_tick_similarity()` in `ubs_agent.py`)
 
 The same strategy is run twice (OHLC Model=1 and Every Tick Model=4) with the same
-date range. The goal is to verify the results are similar enough, not to determine
-which is better. All three active checks are **symmetric**.
+date range. The goal is to verify behavioral reproduction, not to determine
+which result is economically better. The active comparison checks are symmetric.
 
 | Check | Formula | Notes |
 |-------|---------|-------|
-| `profit_factor` | `\|tick_pf − ohlc_pf\| / max(ohlc_pf, 1.0) × 100` | PF capped [0,10]; floor 1.0 |
 | `drawdown_pct` | `\|tick_dd − ohlc_dd\| / max(ohlc_dd, tick_dd, 2.0) × 100` | 2 pp floor prevents false fails on tiny DDs |
 | `trades` | `\|tick_tr − ohlc_tr\| / max(ohlc_tr, 1.0) × 100` | Symmetric count |
 
-`net_profit` is stored in `checks["net_profit"]` with `"checked": false` and
-`"accepted": true` always — visible in UI/DB for inspection only. It was removed from
-active criteria because `normalized_net_profit` depends on the normalization group and
-produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
-delta, but PF/DD/trades practically identical).
+`net_profit`, `profit_factor`, score, the six-month PF floor, and the legacy
+lossless economic thresholds are stored as diagnostics with `"checked": false`
+and `"accepted": true`. They remain visible in UI/DB but never decide similarity.
+Only history quality plus the drawdown/trade-count comparison can prevent an
+otherwise valid pair from being accepted; missing or insufficient samples remain
+technical/pending states rather than economic rejections.
 
 The short Final Tick probe is a discard filter, not the final live-use gate.
 `accepted` advances to Final Tick 6M; `rejected` is terminal and invalidates any
@@ -1490,7 +1490,7 @@ Final Tick is now a **two-stage pipeline**:
 | `probe` (default) | `--final-tick-stage probe` | `candidate_final_tick` | Short-window OHLC vs real-tick similarity filter. Same as before. |
 | `six_month` | `--final-tick-stage six_month` | `candidate_final_tick_6m` | 6-month validation for live portfolio eligibility. Requires ≥ 180-day date range. |
 
-The `six_month` stage adds an extra **PF floor check** (`min_model_profit_factor`): both OHLC and real-tick PF must meet the configured minimum profit factor. If either falls short, `reasons` gets `"profit_factor_floor"`. The PF delta tolerance is also tightened to `min(configured, 30.0)%` when running the 6M stage. This stricter check is applied only to `six_month`; the `probe` stage is unchanged.
+The `six_month` stage records an extra PF-floor diagnostic (`min_model_profit_factor`) for both OHLC and real-tick. It does not decide similarity: PF is an economic result, not behavioral reproduction. The stored check exposes `meets_floor`; trade-count and drawdown similarity remain the blocking behavioral criteria.
 
 The `--final-tick-stage` argument normalises `"6m"`, `"sixmonth"`, `"six_month"` → `"six_month"`. The stage controls which output directory (`final_tick/` vs `final_tick_6m/`) and which DB table is used.
 
@@ -1565,9 +1565,9 @@ Repair consulta el modo persistido de cada run para añadir regresión únicamen
 a runs Production. Modos antiguos o desconocidos no habilitan regresión de
 forma implícita; la acción manual Regression continúa siendo independiente.
 
-### Final Tick similarity — `profit_factor_floor` check (6M only)
+### Final Tick similarity — economic diagnostics in 6M
 
-`final_tick_similarity()` in `ubs_agent.py` accepts an optional `min_model_profit_factor` parameter. When set (only for `six_month` stage), it adds a **symmetric floor check**: both OHLC PF and real-tick PF must be ≥ the minimum. This is separate from the delta check and fires even when the two values are close to each other but both below the threshold. The check appears as `"profit_factor_floor"` in `similarity_json.checks` and in UI `CAUSA` columns.
+`final_tick_similarity()` records the PF floor and lossless 6M thresholds in `similarity_json.checks`, but they are informational. They expose `meets_floor`/`meets_limit` without adding rejection reasons. Final Tick validates behavioral reproduction between OHLC and Every Tick; economic level, score, profit factor, net profit, recovery, and positive-month ratio do not decide that comparison.
 
 ### UBS Portafolio Mensual
 

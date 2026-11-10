@@ -306,6 +306,22 @@ class UBSAgentVariantTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertFalse(result["checks"]["profit_factor"]["within_tolerance"])
 
+    def test_final_tick_6m_accepts_matching_negative_scores_below_pf_floor(self) -> None:
+        result = final_tick_similarity(
+            score(-31.8, profit_factor=0.8, drawdown_pct=2.0, trades=100),
+            score(-30.8, profit_factor=0.8, drawdown_pct=2.1, trades=98),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=30.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+            min_model_profit_factor=1.2,
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("profit_factor_floor", result["reasons"])
+        self.assertFalse(result["checks"]["profit_factor_floor"]["meets_floor"])
+
     def test_final_tick_similarity_still_rejects_behavior_drift(self) -> None:
         result = final_tick_similarity(
             score(122.5, drawdown_pct=2.0, trades=100),

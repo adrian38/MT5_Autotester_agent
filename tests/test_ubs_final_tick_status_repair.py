@@ -246,11 +246,13 @@ class RecomputeFinalTickVerdictsTests(unittest.TestCase):
         self.assertEqual(changes[0]["cause"], "ohlc_lossless")
         self.assertIn("ohlc_lossless", json.loads(changes[0]["similarity_json"])["checks"])
 
-    def test_a_weak_tick_leg_stays_rejected_with_a_real_cause(self) -> None:
+    def test_a_weak_economic_tick_leg_is_recomputed_as_behaviorally_accepted(self) -> None:
         self.add("candidate_final_tick_6m", 70235, "rejected", 0,
                  self.lossless(), self.metrics(recovery_factor=0.712),
                  sim(False, ["profit_factor", "drawdown_pct"]))
-        self.assertEqual(self.scanner.recompute_final_tick_verdicts(self.conn), [])
+        changes = self.scanner.recompute_final_tick_verdicts(self.conn)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["expected_status"], "accepted")
 
     def test_it_reports_when_the_change_is_not_the_lossless_fix(self) -> None:
         """Filas de julio con la formula de delta antigua: causa distinta."""
@@ -282,11 +284,22 @@ class RecomputeFinalTickVerdictsTests(unittest.TestCase):
                  self.lossless(), self.metrics(), payload)
         self.assertEqual(self.scanner.recompute_final_tick_verdicts(self.conn), [])
 
+    def test_it_recomputes_legacy_pending_tick_trades(self) -> None:
+        self.add("candidate_final_tick_6m", 70242, "pending_tick_trades", 0,
+                 self.metrics(trades=10), self.metrics(trades=10),
+                 sim(False, ["tick_trades"]))
+        changes = self.scanner.recompute_final_tick_verdicts(self.conn)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["expected_status"], "accepted")
+
     def test_it_leaves_a_verdict_that_still_holds(self) -> None:
         self.add("candidate_final_tick", 1, "accepted", 1,
                  self.metrics(profit_factor=1.75, losing_trades=8), self.metrics(),
                  sim(True))
-        self.assertEqual(self.scanner.recompute_final_tick_verdicts(self.conn), [])
+        changes = self.scanner.recompute_final_tick_verdicts(self.conn)
+        self.assertEqual(len(changes), 1)
+        self.assertFalse(changes[0]["status_changed"])
+        self.assertEqual(changes[0]["expected_status"], "accepted")
 
     def test_the_probe_gets_no_absolute_gates(self) -> None:
         """Mismo par que en 6M: en probe pasa, porque no hay puertas absolutas."""
@@ -298,7 +311,8 @@ class RecomputeFinalTickVerdictsTests(unittest.TestCase):
         changes = {item["table"]: item for item in self.scanner.recompute_final_tick_verdicts(self.conn)}
         self.assertIn("candidate_final_tick", changes)
         self.assertEqual(changes["candidate_final_tick"]["expected_status"], "accepted")
-        self.assertNotIn("candidate_final_tick_6m", changes)
+        self.assertIn("candidate_final_tick_6m", changes)
+        self.assertEqual(changes["candidate_final_tick_6m"]["expected_status"], "accepted")
 
 
 class QueueSixMonthTests(unittest.TestCase):

@@ -31,15 +31,14 @@ def _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_
     tick_pf   = _bounded_profit_factor(real_tick_result.profit_factor)
     if min_model_profit_factor is not None:
         min_pf = float(min_model_profit_factor)
-        pf_floor_accepted = ohlc_pf >= min_pf and tick_pf >= min_pf
-        if not pf_floor_accepted:
-            reasons.append("profit_factor_floor")
+        pf_floor_met = ohlc_pf >= min_pf and tick_pf >= min_pf
         checks["profit_factor_floor"] = {
             "ohlc": round(ohlc_pf, 4),
             "real_tick": round(tick_pf, 4),
             "min_profit_factor": round(min_pf, 4),
-            "accepted": pf_floor_accepted,
-            "checked": True,
+            "accepted": True,
+            "meets_floor": pf_floor_met,
+            "checked": False,
         }
     pf_delta  = _relative_delta_pct(ohlc_pf, tick_pf, floor=1.0)
     # Sin pérdidas en OHLC el PF es el centinela 99 recortado a 10: comparar
@@ -98,7 +97,7 @@ def _final_tick_trades_check(ohlc_result, real_tick_result, max_trades_delta_pct
 
 
 def _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_gate, checks, reasons, tick_dd, tick_trades):
-    """Puerta absoluta de las pasadas lossless del Final Tick 6M."""
+    """Diagnosticos absolutos de las pasadas lossless del Final Tick 6M."""
     if absolute_gate:
         gate = lossless_control_gate
         for name, observed, limit, ok in (
@@ -134,13 +133,12 @@ def _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_
                 float(real_tick_result.positive_month_ratio) >= gate.min_positive_month_ratio,
             ),
         ):
-            if not ok:
-                reasons.append(name)
             checks[name] = {
                 "real_tick": round(float(observed), 4),
                 "limit": round(float(limit), 4),
-                "accepted": bool(ok),
-                "checked": True,
+                "accepted": True,
+                "meets_limit": bool(ok),
+                "checked": False,
             }
 
 
@@ -149,19 +147,16 @@ def _initialize_similarity_checks(
     lossless_control_gate: LosslessControlGate | None,
     checks: dict[str, dict[str, object]],
 ) -> tuple[bool, bool]:
-    # La degeneracion de PF y DD no depende de la etapa: si el control no perdio
-    # nunca, esas dos comparaciones no miden nada ni en el probe ni en 6M, y se
-    # descartan siempre. Lo que si es especifico de 6M es el sustituto: alli hay
-    # una barra de calidad a la que caer (la poblacion aceptada tiene PF>=1.2,
-    # net mediano 145, RF mediano 1.6) y en el probe no la hay (net mediano
-    # 0.38, RF mediano 0.075), porque el probe solo cribra divergencia. Sin gate
-    # se descartan las dos y deciden las que siguen siendo medibles.
+    # Si OHLC no tuvo perdidas, PF y DD relativos degeneran contra centinelas.
+    # En 6M se guardan tambien los antiguos limites absolutos, exclusivamente
+    # para auditoria; no sustituyen la comparacion ni deciden el veredicto.
     lossless_control = run_is_lossless(ohlc_result)
     absolute_gate = lossless_control and lossless_control_gate is not None
     checks["ohlc_lossless"] = {
         "ohlc_losing_trades": ohlc_result.losing_trades,
         "detected": lossless_control,
-        "absolute_gate_applied": absolute_gate,
+        "absolute_gate_applied": False,
+        "absolute_diagnostics_applied": absolute_gate,
         "accepted": True,
         "checked": False,
     }
@@ -204,8 +199,8 @@ def final_tick_similarity(
 ) -> dict[str, object]:
     """Valida que OHLC y Every Tick reproduzcan un comportamiento parecido.
 
-    Operaciones y drawdown miden comportamiento y bloquean. Beneficio, score y
-    PF son resultados, no comportamiento, y sus diferencias son diagnosticas.
+    Operaciones y drawdown miden comportamiento y bloquean. Beneficio, score,
+    PF y puertas economicas absolutas son diagnosticos, no comportamiento.
     """
     reasons: list[str] = []
     checks: dict[str, dict[str, object]] = {}
@@ -221,7 +216,7 @@ def final_tick_similarity(
     # 2. Resultado economico — informacional, no bloquea.
     _final_tick_net_check(ohlc_result, real_tick_result, max_net_delta_pct, checks)
 
-    # PF relativo es informacional; en 6M se mantiene su piso absoluto.
+    # PF relativo y su piso 6M son informacionales.
     _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_pct, min_model_profit_factor, checks, lossless_control, reasons)
 
     # 3. Comportamiento — drawdown y numero de operaciones deben parecerse.
@@ -229,7 +224,7 @@ def final_tick_similarity(
 
     tick_trades = _final_tick_trades_check(ohlc_result, real_tick_result, max_trades_delta_pct, checks, reasons)
 
-    # 4. Control sin perdidas en 6M: la pata de tick tiene que sostenerse sola.
+    # 4. Los antiguos controles absolutos 6M quedan auditables, no bloquean.
     _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_gate, checks, reasons, tick_dd, tick_trades)
 
     return _similarity_payload(reasons, history_quality, min_history_quality, checks)

@@ -134,7 +134,7 @@ class LosslessControlFallbackTests(unittest.TestCase):
         self.assertFalse(similarity["accepted"])
         self.assertEqual(similarity["reasons"], ["trades"])
 
-    def test_gate_replaces_the_degenerate_checks_and_accepts_a_solid_tick_leg(self) -> None:
+    def test_gate_keeps_absolute_diagnostics_without_changing_the_verdict(self) -> None:
         tick = healthy_tick(recovery_factor=1.2)
         similarity = final_tick_similarity(
             lossless_ohlc(), tick, lossless_control_gate=GATE, **COMMON
@@ -142,25 +142,26 @@ class LosslessControlFallbackTests(unittest.TestCase):
         self.assertTrue(similarity["accepted"])
         self.assertEqual(similarity["reasons"], [])
         checks = similarity["checks"]
-        self.assertTrue(checks["ohlc_lossless"]["absolute_gate_applied"])
+        self.assertFalse(checks["ohlc_lossless"]["absolute_gate_applied"])
+        self.assertTrue(checks["ohlc_lossless"]["absolute_diagnostics_applied"])
         # Las dos degeneradas quedan registradas pero ya no deciden.
         self.assertFalse(checks["profit_factor"]["checked"])
         self.assertFalse(checks["drawdown_pct"]["checked"])
         self.assertTrue(checks["profit_factor"]["accepted"])
         self.assertTrue(checks["drawdown_pct"]["accepted"])
-        # Y las absolutas si.
-        self.assertTrue(checks["tick_recovery_factor"]["checked"])
+        # Las antiguas puertas absolutas quedan solo como diagnostico.
+        self.assertFalse(checks["tick_recovery_factor"]["checked"])
         self.assertEqual(checks["tick_recovery_factor"]["limit"], 0.75)
 
-    def test_gate_still_reaches_a_rejection_on_a_real_shortfall(self) -> None:
-        """El caso ROKU+ del run 361: RF de tick 0.7938 pasa; 0.71 no."""
+    def test_recovery_shortfall_is_informational(self) -> None:
         weak = healthy_tick(recovery_factor=0.712)
         similarity = final_tick_similarity(
             lossless_ohlc(), weak, lossless_control_gate=GATE, **COMMON
         )
-        self.assertFalse(similarity["accepted"])
-        self.assertEqual(similarity["reasons"], ["tick_recovery_factor"])
+        self.assertTrue(similarity["accepted"])
+        self.assertEqual(similarity["reasons"], [])
         self.assertEqual(similarity["checks"]["tick_recovery_factor"]["real_tick"], 0.712)
+        self.assertFalse(similarity["checks"]["tick_recovery_factor"]["meets_limit"])
 
     def test_the_run_361_cluster_splits_instead_of_being_rejected_wholesale(self) -> None:
         gate_kwargs = dict(lossless_control_gate=GATE, **COMMON)
@@ -169,9 +170,9 @@ class LosslessControlFallbackTests(unittest.TestCase):
             lossless_ohlc(), healthy_tick(recovery_factor=0.746), **gate_kwargs
         )
         self.assertTrue(above["accepted"])
-        self.assertFalse(below["accepted"])
+        self.assertTrue(below["accepted"])
 
-    def test_every_absolute_gate_can_fire(self) -> None:
+    def test_every_absolute_gate_is_informational(self) -> None:
         cases = {
             "tick_trades": dict(trades=20),
             "tick_net_profit": dict(normalized_net_profit=5.0),
@@ -188,8 +189,9 @@ class LosslessControlFallbackTests(unittest.TestCase):
                     lossless_control_gate=GATE,
                     **COMMON,
                 )
-                self.assertIn(reason, similarity["reasons"])
-                self.assertFalse(similarity["accepted"])
+                self.assertNotIn(reason, similarity["reasons"])
+                self.assertTrue(similarity["accepted"])
+                self.assertFalse(similarity["checks"][reason]["meets_limit"])
 
     def test_trades_delta_and_history_quality_survive_the_fallback(self) -> None:
         """Lo que si es medible con un control degenerado se sigue midiendo."""
@@ -202,14 +204,16 @@ class LosslessControlFallbackTests(unittest.TestCase):
         self.assertIn("trades", similarity["reasons"])
         self.assertIn("history_quality", similarity["reasons"])
 
-    def test_profit_factor_floor_still_applies_to_the_tick_leg(self) -> None:
+    def test_profit_factor_floor_is_informational(self) -> None:
         similarity = final_tick_similarity(
             lossless_ohlc(),
             healthy_tick(profit_factor=1.0, recovery_factor=1.2),
             lossless_control_gate=GATE,
             **COMMON,
         )
-        self.assertIn("profit_factor_floor", similarity["reasons"])
+        self.assertNotIn("profit_factor_floor", similarity["reasons"])
+        self.assertTrue(similarity["accepted"])
+        self.assertFalse(similarity["checks"]["profit_factor_floor"]["meets_floor"])
 
     def test_a_non_degenerate_control_only_checks_behavior_deltas(self) -> None:
         """Con control normal PF informa y drawdown sigue midiendo conducta."""

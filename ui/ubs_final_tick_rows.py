@@ -335,9 +335,8 @@ class UBSFinalTickRowsMixin:
             return (
                 f"PF minimo: OHLC {self._format_ubs_number(ohlc)} / tick {self._format_ubs_number(tick)} < {self._format_ubs_number(minimum)}"
             )
-        # Puertas absolutas del respaldo por control OHLC sin perdidas: no
-        # llevan delta contra el OHLC, sino el valor de la pata de tick
-        # contra su limite.
+        # Compatibilidad visual con blobs antiguos que aun guardan estas
+        # causas; el clasificador actual las conserva solo como diagnosticos.
         absolute_labels = {
             "tick_trades": ("ops tick", "<"),
             "tick_net_profit": ("net tick", "<"),
