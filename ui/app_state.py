@@ -218,6 +218,9 @@ class AppStateMixin:
         self.ubs_final_tick_max_trades_delta_pct = tk.StringVar(
             value=saved_general.get("ubs_final_tick_max_trades_delta_pct", "35")
         )
+        self.ubs_final_tick_max_dd_gap_pp = tk.StringVar(
+            value=saved_general.get("ubs_final_tick_max_dd_gap_pp", "3")
+        )
 
 
     def _init_symbol_vars(self, saved_general) -> None:

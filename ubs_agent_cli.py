@@ -226,6 +226,7 @@ def _add_final_tick_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--final-tick-max-net-delta-pct", type=float, default=35.0, help="Diferencia maxima de net normalizado vs OHLC.")
     parser.add_argument("--final-tick-max-pf-delta-pct", type=float, default=35.0, help="Diferencia maxima de PF vs OHLC.")
     parser.add_argument("--final-tick-max-dd-delta-pct", type=float, default=35.0, help="Diferencia maxima de DD pct vs OHLC.")
+    parser.add_argument("--final-tick-max-dd-gap-pp", type=float, default=3.0, help="Banda absoluta de DD (puntos) que acepta aunque falle la relativa.")
     parser.add_argument("--final-tick-max-trades-delta-pct", type=float, default=35.0, help="Diferencia maxima de trades vs OHLC.")
     # Respaldo para 6M cuando el control OHLC cierra sin ninguna operacion
     # perdedora: PF y DD dejan de ser comparables y la pata de tick pasa a

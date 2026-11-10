@@ -559,6 +559,15 @@ enter this queue.
   - `--final-tick-max-net-delta-pct`, `--final-tick-max-pf-delta-pct`,
     `--final-tick-max-dd-delta-pct`, `--final-tick-max-trades-delta-pct` — tolerances for
     comparing real-tick metrics against OHLC control metrics (all default `35.0`).
+  - `--final-tick-max-dd-gap-pp` (default `3.0`) — absolute drawdown band, in
+    percentage points. The drawdown check passes with **either** the relative
+    ratio or this band, because the ratio divides by the drawdown itself and is
+    therefore strictest where the risk is smallest: 6.5% vs 3.7% scores 43.9%
+    and used to be rejected, while 20% vs 27% — more risk, and worsening —
+    scores 25.9% and passed. Stored per row in `max_dd_gap_pp`, and reported in
+    `similarity_json` as `gap_pp` / `max_gap_pp` / `within_gap`.
+    `tools/repair_final_tick_dd_band.py` re-applies the verdict to rows already
+    in memory, seeds included, without opening MT5.
 - The agent copies each robust-accepted `.set` twice under
   `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/...`: one OHLC batch with `Model=1` and
   one real-tick batch with `Model=4` (`Every tick based on real ticks`).

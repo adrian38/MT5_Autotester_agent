@@ -85,6 +85,7 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
                 max_pf_delta_pct=thresholds["pf_delta"],
                 max_dd_delta_pct=thresholds["dd_delta"],
                 max_trades_delta_pct=thresholds["trades_delta"],
+                max_dd_gap_pp=thresholds["dd_gap_pp"],
                 symbol_suffix=self._effective_symbol_suffix_text(),
             )
         finally:
@@ -132,6 +133,7 @@ class UBSFinalTickLogicMixin(UBSFinalTickRowsMixin):
                 max_pf_delta_pct=thresholds["pf_delta"],
                 max_dd_delta_pct=thresholds["dd_delta"],
                 max_trades_delta_pct=thresholds["trades_delta"],
+                max_dd_gap_pp=thresholds["dd_gap_pp"],
             )
             conn.commit()
             conn.close()

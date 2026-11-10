@@ -100,7 +100,7 @@ class SeedFinalTickMemoryAdapter:
         ohlc_report_path, real_tick_report_path, similarity_json, history_quality,
         min_history_quality, from_date, to_date, max_net_delta_pct,
         max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct, *,
-        final_tick_stage=None,
+        max_dd_gap_pp=3.0, final_tick_stage=None,
     ) -> None:
         seed_id = int(candidate_id)
         row = self._seed_rows.get(seed_id) or self._memory.conn.execute(
@@ -117,6 +117,7 @@ class SeedFinalTickMemoryAdapter:
                 real_tick_report_path, similarity_json, history_quality,
                 min_history_quality, from_date, to_date, max_net_delta_pct,
                 max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
+                max_dd_gap_pp,
             ),
         )
         if table == "seed_final_tick" and status not in {"accepted", "pending_ohlc_trades"}:
@@ -133,8 +134,8 @@ def _seed_final_tick_upsert(table: str) -> str:
             ohlc_score, real_tick_score, ohlc_metrics_json, real_tick_metrics_json,
             similarity_json, history_quality, min_history_quality, from_date, to_date,
             max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
-            max_trades_delta_pct, seed_mtime, seed_size, evaluated_at
-        ) values ({','.join('?' for _ in range(21))})
+            max_trades_delta_pct, max_dd_gap_pp, seed_mtime, seed_size, evaluated_at
+        ) values ({','.join('?' for _ in range(22))})
         on conflict(seed_id) do update set
             status=excluded.status, accepted=excluded.accepted,
             ohlc_report_path=excluded.ohlc_report_path,
@@ -150,6 +151,7 @@ def _seed_final_tick_upsert(table: str) -> str:
             max_pf_delta_pct=excluded.max_pf_delta_pct,
             max_dd_delta_pct=excluded.max_dd_delta_pct,
             max_trades_delta_pct=excluded.max_trades_delta_pct,
+            max_dd_gap_pp=excluded.max_dd_gap_pp,
             seed_mtime=excluded.seed_mtime, seed_size=excluded.seed_size,
             evaluated_at=excluded.evaluated_at
     """
@@ -165,7 +167,7 @@ def _seed_final_tick_values(
     row, status, ohlc_result, real_tick_result, ohlc_report_path,
     real_tick_report_path, similarity_json, history_quality, min_history_quality,
     from_date, to_date, max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
-    max_trades_delta_pct,
+    max_trades_delta_pct, max_dd_gap_pp,
 ) -> tuple:
     return (
         int(row["id"]), status, int(status == "accepted"),
@@ -178,7 +180,8 @@ def _seed_final_tick_values(
         similarity_json, history_quality, float(min_history_quality),
         str(from_date or "").strip(), str(to_date or "").strip(),
         float(max_net_delta_pct), float(max_pf_delta_pct), float(max_dd_delta_pct),
-        float(max_trades_delta_pct), float(row["seed_mtime"]), int(row["seed_size"]),
+        float(max_trades_delta_pct), float(max_dd_gap_pp),
+        float(row["seed_mtime"]), int(row["seed_size"]),
         datetime.now().isoformat(timespec="seconds"),
     )
 

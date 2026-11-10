@@ -61,7 +61,8 @@ keys include:
 - `ubs_final_tick_ohlc_from_date`, `ubs_final_tick_ohlc_to_date`
 - `ubs_final_tick_min_history_quality`, `ubs_final_tick_min_ohlc_trades`
 - `ubs_final_tick_max_net_delta_pct`, `ubs_final_tick_max_pf_delta_pct`,
-  `ubs_final_tick_max_dd_delta_pct`, `ubs_final_tick_max_trades_delta_pct`
+  `ubs_final_tick_max_dd_delta_pct`, `ubs_final_tick_max_trades_delta_pct`,
+  `ubs_final_tick_max_dd_gap_pp`
 - UBS Portfolio: `ubs_portfolio_num_symbols`, `ubs_portfolio_type`,
   `ubs_portfolio_valley_pct`, `ubs_portfolio_point_pct`, `ubs_portfolio_capital`,
   `ubs_portfolio_top_k`, `ubs_portfolio_max_candidates`, `ubs_portfolio_min_trades`,

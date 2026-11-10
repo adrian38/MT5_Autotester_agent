@@ -55,6 +55,7 @@ CANDIDATE_FINAL_TICK_DDL = """
                 max_pf_delta_pct real not null default 35.0,
                 max_dd_delta_pct real not null default 35.0,
                 max_trades_delta_pct real not null default 35.0,
+                max_dd_gap_pp real not null default 3.0,
                 evaluated_at text not null
             )
 """
@@ -81,6 +82,7 @@ CANDIDATE_FINAL_TICK_6M_DDL = """
                 max_pf_delta_pct real not null default 35.0,
                 max_dd_delta_pct real not null default 35.0,
                 max_trades_delta_pct real not null default 35.0,
+                max_dd_gap_pp real not null default 3.0,
                 evaluated_at text not null
             )
 """
@@ -120,7 +122,22 @@ class UBSResultsRunsMixin:
         conn.execute(CANDIDATE_FINAL_TICK_DDL)
         conn.execute(CANDIDATE_FINAL_TICK_6M_DDL)
         conn.execute(CANDIDATE_REGRESSION_DDL)
+        self._ensure_final_tick_gap_column(conn)
         conn.commit()
+
+    @staticmethod
+    def _ensure_final_tick_gap_column(conn: sqlite3.Connection) -> None:
+        """Banda absoluta de DD en memorias escritas antes de que existiera."""
+        for table in (
+            "candidate_final_tick", "candidate_final_tick_6m",
+            "seed_final_tick", "seed_final_tick_6m",
+        ):
+            try:
+                columns = {str(row["name"]) for row in conn.execute(f"pragma table_info({table})")}
+            except sqlite3.Error:
+                continue
+            if columns and "max_dd_gap_pp" not in columns:
+                conn.execute(f"alter table {table} add column max_dd_gap_pp real not null default 3.0")
 
     @staticmethod
     def _ubs_run_pending_counters(conn, run):

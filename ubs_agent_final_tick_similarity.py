@@ -9,6 +9,11 @@ from ubs_agent_robustness import (
     _relative_delta_pct,
 )
 
+# Tolerancia absoluta del drawdown, en puntos porcentuales. Convive con la
+# razon relativa: pasa el que cumpla cualquiera de las dos.
+DEFAULT_MAX_DD_GAP_PP = 3.0
+
+
 def _final_tick_net_check(ohlc_result, real_tick_result, max_net_delta_pct, checks):
     """Compara el beneficio neto normalizado entre OHLC y Real Tick."""
     ohlc_net = float(ohlc_result.normalized_net_profit)
@@ -55,15 +60,24 @@ def _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_
     }
 
 
-def _final_tick_drawdown_check(ohlc_result, real_tick_result, max_dd_delta_pct, checks, lossless_control, reasons):
+def _final_tick_drawdown_check(
+    ohlc_result, real_tick_result, max_dd_delta_pct, max_dd_gap_pp, checks,
+    lossless_control, reasons,
+):
     """Compara el drawdown entre OHLC y Real Tick."""
     ohlc_dd   = float(ohlc_result.drawdown_pct)
     tick_dd   = float(real_tick_result.drawdown_pct)
+    dd_gap_pp = abs(tick_dd - ohlc_dd)
     dd_floor  = max(ohlc_dd, tick_dd, 2.0)
-    dd_delta  = abs(tick_dd - ohlc_dd) / dd_floor * 100.0
+    dd_delta  = dd_gap_pp / dd_floor * 100.0
     # Con OHLC a 0.0 de DD la diferencia relativa es 100% en cuanto el tick pase
     # de 0.7pp: es la misma degeneración que el PF, no una divergencia real.
-    dd_accepted = lossless_control or dd_delta <= max_dd_delta_pct
+    # La banda absoluta cubre el mismo defecto en todo el tramo de DD pequeño:
+    # con 6.5% contra 3.7% la razon relativa da 44% y rechaza, mientras que un
+    # par 20%/27% —mas riesgo y peor— se queda en 26% y pasa. Por debajo de
+    # unos pocos puntos de DD el cociente mide ruido de fills, no comportamiento.
+    within_gap  = dd_gap_pp <= float(max_dd_gap_pp)
+    dd_accepted = lossless_control or within_gap or dd_delta <= max_dd_delta_pct
     if not dd_accepted:
         reasons.append("drawdown_pct")
     checks["drawdown_pct"] = {
@@ -71,6 +85,9 @@ def _final_tick_drawdown_check(ohlc_result, real_tick_result, max_dd_delta_pct, 
         "real_tick": round(tick_dd, 4),
         "delta_pct": round(dd_delta, 4),
         "max_delta_pct": round(float(max_dd_delta_pct), 4),
+        "gap_pp": round(dd_gap_pp, 4),
+        "max_gap_pp": round(float(max_dd_gap_pp), 4),
+        "within_gap": within_gap,
         "accepted": dd_accepted,
         "checked": not lossless_control,
     }
@@ -194,6 +211,7 @@ def final_tick_similarity(
     max_pf_delta_pct: float,
     max_dd_delta_pct: float,
     max_trades_delta_pct: float,
+    max_dd_gap_pp: float = DEFAULT_MAX_DD_GAP_PP,
     min_model_profit_factor: float | None = None,
     lossless_control_gate: LosslessControlGate | None = None,
 ) -> dict[str, object]:
@@ -201,6 +219,10 @@ def final_tick_similarity(
 
     Operaciones y drawdown miden comportamiento y bloquean. Beneficio, score,
     PF y puertas economicas absolutas son diagnosticos, no comportamiento.
+
+    El drawdown pasa con la razon relativa o con la banda absoluta
+    ``max_dd_gap_pp``: sin ella el mismo criterio es tanto mas estricto cuanto
+    menor es el riesgo de las dos patas.
     """
     reasons: list[str] = []
     checks: dict[str, dict[str, object]] = {}
@@ -220,7 +242,10 @@ def final_tick_similarity(
     _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_pct, min_model_profit_factor, checks, lossless_control, reasons)
 
     # 3. Comportamiento — drawdown y numero de operaciones deben parecerse.
-    tick_dd = _final_tick_drawdown_check(ohlc_result, real_tick_result, max_dd_delta_pct, checks, lossless_control, reasons)
+    tick_dd = _final_tick_drawdown_check(
+        ohlc_result, real_tick_result, max_dd_delta_pct, max_dd_gap_pp, checks,
+        lossless_control, reasons,
+    )
 
     tick_trades = _final_tick_trades_check(ohlc_result, real_tick_result, max_trades_delta_pct, checks, reasons)
 

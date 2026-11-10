@@ -162,6 +162,7 @@ class UBSFinalTick6MViewMixin:
             (0, "Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, 8),
             (1, "PF delta %", self.ubs_final_tick_max_pf_delta_pct, 8),
             (1, "DD delta %", self.ubs_final_tick_max_dd_delta_pct, 8),
+            (1, "DD banda pp", self.ubs_final_tick_max_dd_gap_pp, 8),
             (1, "Net delta %", self.ubs_final_tick_max_net_delta_pct, 8),
             (1, "Trades delta %", self.ubs_final_tick_max_trades_delta_pct, 8),
             (2, "Ops bajas desde", self.ubs_final_tick_6m_ohlc_from_date, 14),

@@ -247,6 +247,7 @@ class UBSUniverseRepairMixin:
             max_pf_delta_pct=min(stored_max_pf, 30.0) if six_month else stored_max_pf,
             max_dd_delta_pct=float(row["max_dd_delta_pct"] or 35.0),
             max_trades_delta_pct=float(row["max_trades_delta_pct"] or 35.0),
+            max_dd_gap_pp=float(row["max_dd_gap_pp"] or 3.0),
             min_model_profit_factor=min_model_pf,
             lossless_control_gate=LosslessControlGate() if six_month else None,
         )
@@ -276,12 +277,22 @@ class UBSUniverseRepairMixin:
     def _recompute_final_tick_table(self, conn, table, label, changes) -> None:
         """Veredictos recalculados de una tabla Final Tick."""
         six_month = table == "candidate_final_tick_6m"
+        # Una memoria anterior a la banda absoluta de DD no tiene la columna, y
+        # nombrarla dejaria la tabla entera sin recalcular por el except de
+        # abajo: se sustituye por el valor por defecto.
+        gap_column = "max_dd_gap_pp"
+        try:
+            columns = {str(row["name"]) for row in conn.execute(f"pragma table_info({table})")}
+        except sqlite3.Error:
+            return
+        if "max_dd_gap_pp" not in columns:
+            gap_column = "3.0 as max_dd_gap_pp"
         try:
             rows = conn.execute(
                 f"""select candidate_id, run_id, status, accepted, similarity_json,
                            ohlc_metrics_json, real_tick_metrics_json, min_history_quality,
                            max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
-                           max_trades_delta_pct
+                           max_trades_delta_pct, {gap_column}
                     from {table}"""
             ).fetchall()
         except sqlite3.Error:

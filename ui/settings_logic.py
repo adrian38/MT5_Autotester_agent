@@ -357,6 +357,12 @@ class SettingsLogicMixin(SettingsCleanupMixin):
         "ubs_regression_max_dd_ratio": self.ubs_regression_max_dd_ratio.get().strip(),
         "ubs_regression_positive_points": self.ubs_regression_positive_points.get().strip(),
         "ubs_regression_negative_points": self.ubs_regression_negative_points.get().strip(),
+        **self._general_final_tick_settings(),
+        }
+
+    def _general_final_tick_settings(self) -> dict[str, str]:
+        """Criterios de comparacion OHLC vs Real Tick."""
+        return {
         "ubs_final_tick_min_history_quality": self.ubs_final_tick_min_history_quality.get().strip(),
         "ubs_final_tick_min_ohlc_trades": self.ubs_final_tick_min_ohlc_trades.get().strip(),
         "ubs_final_tick_min_trades_w1": self.ubs_final_tick_min_trades_w1.get().strip(),
@@ -364,6 +370,7 @@ class SettingsLogicMixin(SettingsCleanupMixin):
         "ubs_final_tick_max_net_delta_pct": self.ubs_final_tick_max_net_delta_pct.get().strip(),
         "ubs_final_tick_max_pf_delta_pct": self.ubs_final_tick_max_pf_delta_pct.get().strip(),
         "ubs_final_tick_max_dd_delta_pct": self.ubs_final_tick_max_dd_delta_pct.get().strip(),
+        "ubs_final_tick_max_dd_gap_pp": self.ubs_final_tick_max_dd_gap_pp.get().strip(),
         "ubs_final_tick_max_trades_delta_pct": self.ubs_final_tick_max_trades_delta_pct.get().strip(),
         }
 

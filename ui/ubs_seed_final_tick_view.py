@@ -106,6 +106,7 @@ class UBSSeedFinalTickViewMixin:
             ("MN FT ops", self.ubs_final_tick_min_trades_mn),
             ("PF delta %", self.ubs_final_tick_max_pf_delta_pct),
             ("DD delta %", self.ubs_final_tick_max_dd_delta_pct),
+            ("DD banda pp", self.ubs_final_tick_max_dd_gap_pp),
             ("Net delta %", self.ubs_final_tick_max_net_delta_pct),
             ("Trades delta %", self.ubs_final_tick_max_trades_delta_pct),
         )

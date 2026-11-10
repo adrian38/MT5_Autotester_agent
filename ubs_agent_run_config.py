@@ -278,6 +278,7 @@ def _config_final_tick_defaults(args: argparse.Namespace) -> dict[str, object]:
         "max_pf_delta_pct": float(args.final_tick_max_pf_delta_pct),
         "max_dd_delta_pct": float(args.final_tick_max_dd_delta_pct),
         "max_trades_delta_pct": float(args.final_tick_max_trades_delta_pct),
+        "max_dd_gap_pp": float(args.final_tick_max_dd_gap_pp),
     }
 
 

@@ -124,6 +124,7 @@ create table if not exists seed_final_tick (
     max_pf_delta_pct real not null default 35.0,
     max_dd_delta_pct real not null default 35.0,
     max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
     seed_mtime real not null,
     seed_size integer not null,
     evaluated_at text not null,
@@ -148,6 +149,7 @@ create table if not exists seed_final_tick_6m (
     max_pf_delta_pct real not null default 35.0,
     max_dd_delta_pct real not null default 35.0,
     max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
     seed_mtime real not null,
     seed_size integer not null,
     evaluated_at text not null,
@@ -188,6 +190,7 @@ create table if not exists candidate_final_tick (
     max_pf_delta_pct real not null default 35.0,
     max_dd_delta_pct real not null default 35.0,
     max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
     evaluated_at text not null
 );
 create table if not exists candidate_final_tick_6m (
@@ -210,6 +213,7 @@ create table if not exists candidate_final_tick_6m (
     max_pf_delta_pct real not null default 35.0,
     max_dd_delta_pct real not null default 35.0,
     max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
     evaluated_at text not null
 );
 create table if not exists candidate_regression (
@@ -259,6 +263,11 @@ class MemorySchemaMixin:
         self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
         self._ensure_column("candidates", "mutation_details_json", "text not null default ''")
         self._ensure_column("candidate_robustness", "degradation_json", "text not null default ''")
+        for final_tick_table in (
+            "candidate_final_tick", "candidate_final_tick_6m",
+            "seed_final_tick", "seed_final_tick_6m",
+        ):
+            self._ensure_column(final_tick_table, "max_dd_gap_pp", "real not null default 3.0")
         self._ensure_column("generation_seed_selection", "fitness_probability", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_weight", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_evidence", "real not null default 0.0")

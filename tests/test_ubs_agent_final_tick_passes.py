@@ -325,6 +325,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             final_tick_max_net_delta_pct=35.0,
             final_tick_max_pf_delta_pct=35.0,
             final_tick_max_dd_delta_pct=35.0,
+            final_tick_max_dd_gap_pp=3.0,
             final_tick_max_trades_delta_pct=35.0,
         )
 

@@ -77,6 +77,7 @@ def _final_tick_reconcile_only(args, memory, score_config, final_tick_stage, fin
         max_pf_delta_pct=args.final_tick_max_pf_delta_pct,
         max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
         max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+        max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
         symbol_suffix=args.symbol_suffix,
     )
     if counts:
@@ -125,6 +126,7 @@ def _report_retired_final_tick_rows(args, memory, retired_rows, run_id, final_ti
             args.final_tick_max_pf_delta_pct,
             args.final_tick_max_dd_delta_pct,
             args.final_tick_max_trades_delta_pct,
+            max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
         )
     if retired_rows:
         print(
@@ -216,7 +218,7 @@ def _print_final_tick_header(args, final_tick_label, run_id, mode, copied, final
         f"History Quality>={args.final_tick_min_history_quality:.2f}% | "
         f"Net delta<={args.final_tick_max_net_delta_pct:.2f}% | "
         f"PF delta<={args.final_tick_max_pf_delta_pct:.2f}% | "
-        f"DD delta<={args.final_tick_max_dd_delta_pct:.2f}% | "
+        f"DD delta<={args.final_tick_max_dd_delta_pct:.2f}% o <={args.final_tick_max_dd_gap_pp:.2f}pp | "
         f"Trades delta<={args.final_tick_max_trades_delta_pct:.2f}%"
     )
 
@@ -252,6 +254,7 @@ def _evaluate_final_tick_rows(
                 args.final_tick_max_pf_delta_pct,
                 args.final_tick_max_dd_delta_pct,
                 args.final_tick_max_trades_delta_pct,
+                max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
             )
             status_counts[status] = status_counts.get(status, 0) + 1
             continue

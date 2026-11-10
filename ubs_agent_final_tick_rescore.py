@@ -11,6 +11,7 @@ from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_can
 from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, score_report_file
+from ubs_agent_final_tick_similarity import DEFAULT_MAX_DD_GAP_PP
 from ubs_agent_final_tick import (
     _evaluate_final_tick_tick_report,
     _read_ohlc_report_cfg_dates,
@@ -50,6 +51,7 @@ class _ReconcileLimits:
     max_pf_delta_pct: float = 35.0
     max_dd_delta_pct: float = 35.0
     max_trades_delta_pct: float = 35.0
+    max_dd_gap_pp: float = DEFAULT_MAX_DD_GAP_PP
     symbol_suffix: str = ""
 
     def thresholds(self, from_date: str, to_date: str) -> argparse.Namespace:
@@ -64,6 +66,7 @@ class _ReconcileLimits:
             final_tick_max_pf_delta_pct=float(self.max_pf_delta_pct),
             final_tick_max_dd_delta_pct=float(self.max_dd_delta_pct),
             final_tick_max_trades_delta_pct=float(self.max_trades_delta_pct),
+            final_tick_max_dd_gap_pp=float(self.max_dd_gap_pp),
             final_tick_min_trades_w1=int(self.min_trades_w1),
             final_tick_min_trades_mn=int(self.min_trades_mn),
         )
@@ -153,6 +156,7 @@ def _reconcile_candidate(
             thresholds.from_date, thresholds.to_date,
             float(limits.max_net_delta_pct), float(limits.max_pf_delta_pct),
             float(limits.max_dd_delta_pct), float(limits.max_trades_delta_pct),
+            max_dd_gap_pp=float(limits.max_dd_gap_pp),
         )
         status_counts["pending_ohlc_trades"] = status_counts.get("pending_ohlc_trades", 0) + 1
         return
@@ -267,6 +271,7 @@ def _record_stored_final_tick(
         str(row["ft_from_date"] or ""), str(row["ft_to_date"] or ""),
         float(args.final_tick_max_net_delta_pct), float(args.final_tick_max_pf_delta_pct),
         float(args.final_tick_max_dd_delta_pct), float(args.final_tick_max_trades_delta_pct),
+        max_dd_gap_pp=float(args.final_tick_max_dd_gap_pp),
         final_tick_stage=stage,
     )
 
@@ -284,6 +289,7 @@ def _stored_final_tick_similarity(
         if is_six_month else float(args.final_tick_max_pf_delta_pct),
         max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
         max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+        max_dd_gap_pp=float(args.final_tick_max_dd_gap_pp),
         min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
         lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
     )
@@ -374,6 +380,7 @@ def _rescore_final_tick_thresholds(
         final_tick_max_pf_delta_pct=float(args.final_tick_max_pf_delta_pct),
         final_tick_max_dd_delta_pct=float(args.final_tick_max_dd_delta_pct),
         final_tick_max_trades_delta_pct=float(args.final_tick_max_trades_delta_pct),
+        final_tick_max_dd_gap_pp=float(args.final_tick_max_dd_gap_pp),
         final_tick_min_trades_w1=int(args.final_tick_min_trades_w1),
         final_tick_min_trades_mn=int(args.final_tick_min_trades_mn),
     )
@@ -392,6 +399,7 @@ def _record_rescored_final_tick(
         thresholds.final_tick_min_history_quality, thresholds.from_date, thresholds.to_date,
         thresholds.final_tick_max_net_delta_pct, thresholds.final_tick_max_pf_delta_pct,
         thresholds.final_tick_max_dd_delta_pct, thresholds.final_tick_max_trades_delta_pct,
+        max_dd_gap_pp=thresholds.final_tick_max_dd_gap_pp,
     )
 
 

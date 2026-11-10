@@ -59,6 +59,18 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
+def _ensure_final_tick_gap_column(conn: sqlite3.Connection, table: str) -> None:
+    """Anade la banda absoluta de DD a una memoria escrita antes que ella.
+
+    Esta primitiva recibe conexiones crudas (el runtime del nodo abre la
+    memoria sin pasar por ``AgentMemory``), asi que no puede dar por hecha la
+    migracion del esquema.
+    """
+    columns = {str(row[1]) for row in conn.execute(f"pragma table_info({table})")}
+    if columns and "max_dd_gap_pp" not in columns:
+        conn.execute(f"alter table {table} add column max_dd_gap_pp real not null default 3.0")
+
+
 def _final_tick_table(stage: str) -> str:
     key = str(stage or "probe").strip().lower().replace("-", "_")
     if key in {"6m", "sixmonth", "six_month"}:
@@ -272,7 +284,8 @@ def _final_tick_rows(
             ft.max_net_delta_pct as max_net_delta_pct,
             ft.max_pf_delta_pct as max_pf_delta_pct,
             ft.max_dd_delta_pct as max_dd_delta_pct,
-            ft.max_trades_delta_pct as max_trades_delta_pct
+            ft.max_trades_delta_pct as max_trades_delta_pct,
+            ft.max_dd_gap_pp as max_dd_gap_pp
         from candidates c
         left join {table} ft on ft.candidate_id = c.id
         where c.id in ({_placeholders(len(ids))})
@@ -285,7 +298,7 @@ def _final_tick_values(
     row: sqlite3.Row, status: str, min_history_quality: float,
     from_date: str, to_date: str, max_net_delta_pct: float,
     max_pf_delta_pct: float, max_dd_delta_pct: float,
-    max_trades_delta_pct: float, now: str,
+    max_trades_delta_pct: float, max_dd_gap_pp: float, now: str,
 ) -> tuple[object, ...]:
     def existing_or(key: str, default: object) -> object:
         return row[key] if row[key] is not None else default
@@ -300,7 +313,8 @@ def _final_tick_values(
         float(existing_or("max_net_delta_pct", max_net_delta_pct)),
         float(existing_or("max_pf_delta_pct", max_pf_delta_pct)),
         float(existing_or("max_dd_delta_pct", max_dd_delta_pct)),
-        float(existing_or("max_trades_delta_pct", max_trades_delta_pct)), now,
+        float(existing_or("max_trades_delta_pct", max_trades_delta_pct)),
+        float(existing_or("max_dd_gap_pp", max_dd_gap_pp)), now,
     )
 
 
@@ -315,8 +329,8 @@ def _upsert_candidate_final_tick(
             ohlc_metrics_json, real_tick_metrics_json, similarity_json,
             history_quality, min_history_quality, from_date, to_date,
             max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
-            evaluated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            max_dd_gap_pp, evaluated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(candidate_id) do update set
             run_id=excluded.run_id, status=excluded.status, accepted=excluded.accepted,
             ohlc_report_path=excluded.ohlc_report_path,
@@ -332,6 +346,7 @@ def _upsert_candidate_final_tick(
             max_pf_delta_pct=excluded.max_pf_delta_pct,
             max_dd_delta_pct=excluded.max_dd_delta_pct,
             max_trades_delta_pct=excluded.max_trades_delta_pct,
+            max_dd_gap_pp=excluded.max_dd_gap_pp,
             evaluated_at=excluded.evaluated_at
         """,
         values,
@@ -372,19 +387,21 @@ def mark_candidate_final_tick(
     max_pf_delta_pct: float = 35.0,
     max_dd_delta_pct: float = 35.0,
     max_trades_delta_pct: float = 35.0,
+    max_dd_gap_pp: float = 3.0,
 ) -> int:
     status = _normalize_status(status)
     ids = _ids(candidate_ids)
     if not ids:
         return 0
     table = _final_tick_table(final_tick_stage)
+    _ensure_final_tick_gap_column(conn, table)
     rows = _final_tick_rows(conn, table, ids)
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
         values = _final_tick_values(
             row, status, min_history_quality, from_date, to_date,
             max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
-            max_trades_delta_pct, now,
+            max_trades_delta_pct, max_dd_gap_pp, now,
         )
         _upsert_candidate_final_tick(conn, table, values)
     _clear_final_tick_dependants(conn, table, status, ids)

@@ -33,6 +33,7 @@ def _axi_tick_args() -> SimpleNamespace:
         final_tick_max_net_delta_pct=35.0,
         final_tick_max_pf_delta_pct=35.0,
         final_tick_max_dd_delta_pct=35.0,
+        final_tick_max_dd_gap_pp=3.0,
         final_tick_max_trades_delta_pct=35.0,
         final_tick_min_trades_w1=2,
         final_tick_min_trades_mn=1,
@@ -47,7 +48,7 @@ class _RecordingMemory:
     def __init__(self) -> None:
         self.calls = []
 
-    def record_candidate_final_tick(self, *args) -> None:
+    def record_candidate_final_tick(self, *args, **kwargs) -> None:
         self.calls.append(args)
 
 

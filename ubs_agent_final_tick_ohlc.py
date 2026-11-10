@@ -58,6 +58,7 @@ class _OhlcRecorder:
             args.final_tick_min_history_quality, args.from_date, args.to_date,
             args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
             args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+            max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
         )
         self.status_counts[status] = self.status_counts.get(status, 0) + 1
 

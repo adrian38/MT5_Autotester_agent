@@ -287,6 +287,7 @@ class _FinalTickRecord:
             args.final_tick_min_history_quality, args.from_date, args.to_date,
             args.final_tick_max_net_delta_pct, args.final_tick_max_pf_delta_pct,
             args.final_tick_max_dd_delta_pct, args.final_tick_max_trades_delta_pct,
+            max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
         )
         self.status_counts[status] = self.status_counts.get(status, 0) + 1
         return True
@@ -377,6 +378,7 @@ def _final_tick_similarity_verdict(
         max_pf_delta_pct=min(float(args.final_tick_max_pf_delta_pct), 30.0) if is_six_month else args.final_tick_max_pf_delta_pct,
         max_dd_delta_pct=args.final_tick_max_dd_delta_pct,
         max_trades_delta_pct=args.final_tick_max_trades_delta_pct,
+        max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
         min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
         lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
     )

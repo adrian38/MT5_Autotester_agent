@@ -221,6 +221,7 @@ Owns the UBS agent workflow:
 | `--final-tick-max-net-delta-pct` (default 35) | Max net-profit divergence % |
 | `--final-tick-max-pf-delta-pct` (default 35) | Max PF divergence % |
 | `--final-tick-max-dd-delta-pct` (default 35) | Max DD divergence % |
+| `--final-tick-max-dd-gap-pp` (default 3) | Absolute DD band in points; accepts when the relative ratio fails |
 | `--final-tick-max-trades-delta-pct` (default 35) | Max trade count divergence % |
 | `--from-date` / `--to-date` | Override template dates for any run |
 | `--generation-mode production\|discovery` | Normal evidence-driven generation or explicit unseeded exploration |

@@ -327,6 +327,7 @@ class UBSFinalTick6MLogicMixin:
                 max_pf_delta_pct=thresholds["pf_delta"],
                 max_dd_delta_pct=thresholds["dd_delta"],
                 max_trades_delta_pct=thresholds["trades_delta"],
+                max_dd_gap_pp=thresholds["dd_gap_pp"],
             )
             conn.commit()
             conn.close()

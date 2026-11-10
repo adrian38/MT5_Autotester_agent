@@ -79,6 +79,11 @@ class UBSFinalTickRowsMixin:
                 "Final Tick delta trades",
                 minimum=0.0,
             ),
+            "dd_gap_pp": self._score_float(
+                self.ubs_final_tick_max_dd_gap_pp,
+                "Final Tick banda DD",
+                minimum=0.0,
+            ),
         }
 
     def _ubs_final_tick_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
@@ -367,7 +372,20 @@ class UBSFinalTickRowsMixin:
         label = labels.get(str(reason), str(reason))
         if delta is None:
             return label
-        return f"{label}: {self._format_ubs_number(delta)}% > {self._format_ubs_number(maximum)}%"
+        detail = f"{label}: {self._format_ubs_number(delta)}% > {self._format_ubs_number(maximum)}%"
+        return detail + self._final_tick_gap_detail(check)
+
+    def _final_tick_gap_detail(self, check: object) -> str:
+        """Banda absoluta de la causa, cuando la comprobacion la trae.
+
+        El DD solo bloquea si falla la razon relativa y ademas la banda: sin
+        los dos numeros la causa no se entiende.
+        """
+        gap = check.get("gap_pp") if isinstance(check, dict) else None
+        max_gap = check.get("max_gap_pp") if isinstance(check, dict) else None
+        if gap is None or max_gap is None:
+            return ""
+        return f" y {self._format_ubs_number(gap)}pp > {self._format_ubs_number(max_gap)}pp"
 
     def _metric_from_json(self, raw, key: str):
         metrics = self._parse_ubs_metrics(raw)
