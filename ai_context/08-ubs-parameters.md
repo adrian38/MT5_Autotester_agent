@@ -40,6 +40,11 @@ canonical 164-key V6 schema and from the supplied default set. They are marked
 `invalid_seed` before MT5. A normal seed evaluation also revalidates unchanged
 non-V6 strategy values so previously scored legacy rows are corrected.
 
+The execution timeframe is strategy-specific: strategy `1` uses
+`Entry_Timing`, while strategy `2` uses `VolTimeframe`. `ST1_Timeframe` belongs
+to the support/resistance calculation and must not override strategy `1`'s
+execution timeframe.
+
 ## .set file format
 
 Each parameter line follows this structure:
@@ -123,8 +128,8 @@ SectionKey=----- Section label -----
 |-----|-------------|-----|
 | `AllowBuyTrades` | Allow long (buy) trades | N |
 | `AllowSellTrades` | Allow short (sell) trades | N |
-| `ST1_Timeframe` | Timeframe for strategy 1 (0 = chart timeframe) | N |
-| `Entry_Timing` | Entry timing mode (MT5 timeframe enum) | N |
+| `ST1_Timeframe` | Support/resistance calculation timeframe (0 = chart timeframe) | N |
+| `Entry_Timing` | Execution timeframe for Breakout Support/Resistance (MT5 timeframe enum) | N |
 | `ST1_HL_strength_L` | Bars to the LEFT of pivot to validate High/Low | **Y** |
 | `ST1_HL_strength_R` | Bars to the RIGHT of pivot to validate High/Low | **Y** |
 | `ST1_countback` | Number of bars to look back when searching for High/Low | **Y** |

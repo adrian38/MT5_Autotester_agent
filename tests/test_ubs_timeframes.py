@@ -66,8 +66,7 @@ class CanonicalTimeframeTableTests(unittest.TestCase):
 
 
 class HourlyInferenceTests(unittest.TestCase):
-    def test_strategy_timeframe_16386_is_h2_not_a_fallback(self) -> None:
-        """Antes caia al ultimo recurso y Entry_Timing decidia el periodo."""
+    def test_support_resistance_uses_entry_timing_instead_of_st1_timeframe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _write_set(
                 Path(tmp),
@@ -80,9 +79,9 @@ class HourlyInferenceTests(unittest.TestCase):
                     "ATR_Timeframe": "16408",
                 },
             )
-            self.assertEqual(infer_period_from_set(path, load_set_params(path)), "H2")
+            self.assertEqual(infer_period_from_set(path, load_set_params(path)), "M5")
 
-    def test_strategy_timeframe_16387_is_h3(self) -> None:
+    def test_support_resistance_entry_timing_accepts_hourly_enum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _write_set(
                 Path(tmp),
@@ -94,7 +93,7 @@ class HourlyInferenceTests(unittest.TestCase):
                     "Entry_Timing": "16385",
                 },
             )
-            self.assertEqual(infer_period_from_set(path, load_set_params(path)), "H3")
+            self.assertEqual(infer_period_from_set(path, load_set_params(path)), "H1")
 
     def test_h2_and_h3_are_recognised_in_file_names(self) -> None:
         self.assertEqual(infer_period_from_path(Path("UBS-XAGUSD-H2-AGA04.set")), "H2")
@@ -134,10 +133,10 @@ class HourlyInferenceTests(unittest.TestCase):
                 },
             )
             seed = seed_from_path(path)
-            self.assertEqual((seed.symbol, seed.period), ("XAGUSD", "H2"))
+            self.assertEqual((seed.symbol, seed.period), ("XAGUSD", "M5"))
             name = seed_eval_filename(1, seed, set())
             # run_tests corre con --prefer-set-path-timeframe: manda el nombre.
-            self.assertEqual(infer_period_from_path(Path(name)), "H2")
+            self.assertEqual(infer_period_from_path(Path(name)), "M5")
 
 
 class GenerationUniverseTests(unittest.TestCase):

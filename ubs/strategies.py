@@ -9,7 +9,7 @@ STRATEGY_LABELS: dict[str, str] = {
 }
 VALID_RUN_STRATEGIES = frozenset(STRATEGY_LABELS)
 STRATEGY_TIMEFRAME_KEYS: dict[str, tuple[str, ...]] = {
-    "1": ("ST1_Timeframe",),
+    "1": ("Entry_Timing",),
     "2": ("VolTimeframe",),
 }
 STRATEGY_MARKER_KEYS: dict[str, tuple[str, ...]] = {

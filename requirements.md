@@ -215,6 +215,10 @@ requirement changes or a debt item is opened/closed.
   parameters from target-timeframe patch keys (`ST1_Timeframe`, `VolTimeframe`,
   `Entry_Timing`, `ATR_Timeframe`). Timeframe patch keys MAY be stored for
   audit, but MUST NOT pollute parameter-mutation weights.
+- **FR-1.6.12a** The strategy execution timeframe MUST come from
+  `Entry_Timing` for `Run_Strategy=1` (Breakout Support/Resistance) and from
+  `VolTimeframe` for `Run_Strategy=2` (Volatility Breakout). `ST1_Timeframe`
+  MUST NOT override the execution timeframe of strategy 1.
 - **FR-1.6.13** New generation runs MUST persist their launch configuration in
   `runs.config_json`. The JSON MUST include the account type, paths, generation
   mode, legacy-derived flags such as `force_unseeded_universe`, exploration probabilities, execution

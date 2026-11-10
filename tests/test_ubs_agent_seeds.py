@@ -42,7 +42,7 @@ class UBSAgentSeedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "UBS-XAUUSD-H12.set"
             path.write_text(
-                "ForceSymbol=XAUUSD\nRun_Strategy=1\nST1_Timeframe=16396\nEntry_Timing=16390\n",
+                "ForceSymbol=XAUUSD\nRun_Strategy=1\nST1_Timeframe=16390\nEntry_Timing=16396\n",
                 encoding="utf-8",
             )
             seed = Seed(path, "XAUUSD", "H12", "family", "1")
@@ -325,7 +325,8 @@ class UBSAgentSeedTests(unittest.TestCase):
             self.assertEqual(result["run_strategy"], "1")
             self.assertIn("ForceSymbol=BTCUSD", text)
             self.assertIn("Run_Strategy=1||1||0||2||N", text)
-            self.assertIn("ST1_Timeframe=16385||0||0||49153||N", text)
+            self.assertIn("ST1_Timeframe=0||0||0||49153||N", text)
+            self.assertIn("Entry_Timing=16385||0||0||49153||N", text)
             self.assertEqual(validate_seed_backtest_set(Seed(path, "BTCUSD", "H1", "family", "1")), [])
 
     def test_repair_seed_backtest_set_uses_volatility_strategy_when_vol_key_is_active(self) -> None:

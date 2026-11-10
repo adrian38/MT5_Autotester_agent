@@ -109,7 +109,7 @@ class UBSAgentVariantTests(unittest.TestCase):
                 random.Random(2),
             )
 
-            self.assertIn("ST1_Timeframe", variant.timeframe_keys)
+            self.assertNotIn("ST1_Timeframe", variant.timeframe_keys)
             self.assertIn("Entry_Timing", variant.timeframe_keys)
             self.assertIn("ATR_Timeframe", variant.timeframe_keys)
             self.assertNotIn("ST1_Timeframe", variant.mutated_keys)
