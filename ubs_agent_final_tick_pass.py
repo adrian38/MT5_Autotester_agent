@@ -16,7 +16,7 @@ from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, ScoreResult
-from ubs.set_utils import set_matches_use_every_tick_source
+from ubs.set_utils import safe_part, set_matches_use_every_tick_source
 from ubs_agent_config import (
     SYMBOL_NOT_EXIST_STATUS,
 )
@@ -134,6 +134,16 @@ def _report_retired_final_tick_rows(args, memory, retired_rows, run_id, final_ti
         )
 
 
+def _final_tick_set_names(
+    prefixes: tuple[str, str], candidate_id: int, source_set: Path, target_period: str,
+) -> tuple[str, str]:
+    """Codifica el periodo objetivo antes de cualquier periodo del nombre fuente."""
+    period = safe_part(str(target_period).strip().upper())
+    suffix = f"{candidate_id:06d}_{period}_{source_set.name}"
+    ohlc_prefix, tick_prefix = prefixes
+    return f"{ohlc_prefix}_{suffix}", f"{tick_prefix}_{suffix}"
+
+
 def _copy_final_tick_sets(
     args, rows, ohlc_dir, real_tick_dir, final_dir,
     final_tick_stage, final_tick_label, using_ohlc_retry_dates, resume_pending_dir,
@@ -146,8 +156,10 @@ def _copy_final_tick_sets(
     for row in rows:
         candidate_id = int(row["id"])
         source_set = resolve_workspace_path(row["set_path"])
-        ohlc_name = f"{ohlc_prefix}_{candidate_id:06d}_{source_set.name}"
-        real_tick_name = f"{tick_prefix}_{candidate_id:06d}_{source_set.name}"
+        original_variant = variant_from_candidate_row(row)
+        ohlc_name, real_tick_name = _final_tick_set_names(
+            (ohlc_prefix, tick_prefix), candidate_id, source_set, original_variant.target_period,
+        )
         if ohlc_name in used_names or real_tick_name in used_names:
             print(f"ERROR: nombre duplicado en {final_tick_label} para candidate #{candidate_id}")
             return 1
@@ -161,7 +173,6 @@ def _copy_final_tick_sets(
             False,
         ):
             ohlc_sets_unchanged = False
-        original_variant = variant_from_candidate_row(row)
         # Las dos copias salen del mismo .set guardado, asi que ambas heredan
         # un ForceSymbol mal escrito; sin reparar, MT5 cierra sin reporte.
         exact_symbol = write_retry_set(

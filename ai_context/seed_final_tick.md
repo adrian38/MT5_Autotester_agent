@@ -39,6 +39,11 @@ mtime/size snapshots. It stays stable for resume/reconciliation, while a source
 or eligibility change gets a fresh work directory and cannot execute stale
 copied sets.
 
+Final Tick execution-copy names encode the recorded target period before the
+original seed filename. This is required because the tester intentionally
+prefers timeframe tokens in the execution path; a legacy source name such as
+`...H1...` must not override a parameter-derived `M15` seed period.
+
 CLI entry point:
 
 ```text

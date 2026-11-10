@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from run_tests_symbols import infer_period_from_path
 from ubs.memory import AgentMemory, variant_from_candidate_row
+from ubs_agent_final_tick_pass import _final_tick_set_names
 from ubs_agent_seed_final_tick import (
     SeedFinalTickMemoryAdapter,
     eligible_seed_final_tick_rows,
@@ -74,6 +76,21 @@ class UBSSeedFinalTickTests(unittest.TestCase):
             self.assertEqual(variant.missing_lot_keys, ())
             self.assertEqual(variant.timeframe_keys, ())
             self.assertEqual(variant.policy, "seed_final_tick")
+
+    def test_final_tick_copy_name_prioritizes_the_recorded_seed_period(self) -> None:
+        names = _final_tick_set_names(
+            ("ohlc", "tick"), 582,
+            Path("MisterMember_Xmas__UBS-TSLA.NAS-H1-TSV01.set"), "M15",
+        )
+        self.assertEqual(
+            names,
+            (
+                "ohlc_000582_M15_MisterMember_Xmas__UBS-TSLA.NAS-H1-TSV01.set",
+                "tick_000582_M15_MisterMember_Xmas__UBS-TSLA.NAS-H1-TSV01.set",
+            ),
+        )
+        inferred = [infer_period_from_path(Path(name)) for name in names]
+        self.assertEqual(inferred, ["M15", "M15"])
 
     def test_probe_failure_removes_existing_six_month_result(self) -> None:
         self._record("accepted")
