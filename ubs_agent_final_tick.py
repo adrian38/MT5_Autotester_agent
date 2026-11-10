@@ -55,8 +55,10 @@ def final_tick_status_from_similarity(similarity: object) -> str | None:
     Devuelve ``None`` cuando el payload no es un veredicto cerrado y por tanto
     no determina un estado: un dict sin ``accepted``, algo que no es dict, o un
     payload ``pending`` (el de ``pending_ohlc_trades``, que corta antes de
-    comparar nada). Un ``final_tick_similarity`` recien calculado siempre
-    devuelve un estado.
+    comparar nada). Una muestra Real Tick insuficiente queda pendiente cuando
+    ``tick_trades`` es la unica causa; combinada con otra falla sigue siendo un
+    rechazo. Un ``final_tick_similarity`` recien calculado siempre devuelve un
+    estado.
     """
 
     if not isinstance(similarity, dict) or "accepted" not in similarity:
@@ -66,6 +68,8 @@ def final_tick_status_from_similarity(similarity: object) -> str | None:
     reasons = {str(reason) for reason in similarity.get("reasons") or ()}
     if reasons & FINAL_TICK_PENDING_HISTORY_REASONS:
         return "pending_history_quality"
+    if reasons == {"tick_trades"}:
+        return "pending_tick_trades"
     return "accepted" if bool(similarity.get("accepted")) else "rejected"
 
 

@@ -11,6 +11,12 @@ FINAL_TICK_STAGE_TABLES = {
     "probe": "candidate_final_tick",
     "six_month": "candidate_final_tick_6m",
 }
+ALL_FINAL_TICK_TABLES = (
+    ("candidate_final_tick", "candidate_id"),
+    ("candidate_final_tick_6m", "candidate_id"),
+    ("seed_final_tick", "seed_id"),
+    ("seed_final_tick_6m", "seed_id"),
+)
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
 
@@ -267,6 +273,7 @@ class MemorySchemaMixin:
         )
         self._reclassify_empty_tester_contexts()
         self._reclassify_legacy_real_tick_no_history()
+        self._reclassify_insufficient_final_tick_trades()
         self._reclassify_trade_disabled_no_trades()
         self._reclassify_invalid_stops_no_trades()
         self.conn.commit()
@@ -487,4 +494,30 @@ class MemorySchemaMixin:
         migrated_at = datetime.now().isoformat(timespec="seconds")
         for table in FINAL_TICK_STAGE_TABLES.values():
             migrated += self._reclassify_legacy_real_tick_table(table, migrated_at)
+        return migrated
+
+    def _reclassify_insufficient_final_tick_trades(self) -> int:
+        """Keep low-sample Real Tick evidence pending instead of rejected."""
+        migrated = 0
+        for table, key in ALL_FINAL_TICK_TABLES:
+            rows = self.conn.execute(
+                f"select {key}, similarity_json from {table} "
+                "where status='rejected' and coalesce(similarity_json, '') != ''"
+            ).fetchall()
+            for row in rows:
+                try:
+                    similarity = json.loads(row["similarity_json"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(similarity, dict):
+                    continue
+                reasons = {str(reason) for reason in similarity.get("reasons") or ()}
+                if reasons != {"tick_trades"}:
+                    continue
+                self.conn.execute(
+                    f"update {table} set status='pending_tick_trades', accepted=0 "
+                    f"where {key}=? and status='rejected'",
+                    (int(row[key]),),
+                )
+                migrated += 1
         return migrated

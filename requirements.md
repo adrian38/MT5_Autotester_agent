@@ -414,13 +414,18 @@ requirement changes or a debt item is opened/closed.
   probe lacked. `pending_history_quality` and technical/error states MUST NOT
   advance until resolved. Passing or remaining sample-pending in the short probe
   never authorizes live use by itself: only Final Tick 6M `accepted` does so.
-- **FR-1.8.11** Final Tick MUST support two intermediate pending states:
+- **FR-1.8.11** Final Tick MUST support three intermediate pending states:
   `pending_history_quality` — real-tick report produced but history quality is
   below threshold or the Model=4 tick download/synchronization ended with an
   empty tester context (retryable when the connection or data improves);
   `pending_ohlc_trades` — the OHLC batch produced fewer trades than
-  `--final-tick-min-ohlc-trades` (retryable via OHLC-retry date range). Rows in
-  pending states MUST NOT be treated as final `accepted` or `rejected`. An empty
+  `--final-tick-min-ohlc-trades` (retryable via OHLC-retry date range);
+  `pending_tick_trades` — the valid Real Tick report is below its absolute
+  minimum trade sample and `tick_trades` is its only failed criterion. It MUST
+  remain neutral and MUST NOT be retried automatically over the same dates. An
+  additional failed similarity or absolute criterion keeps the row `rejected`.
+  Rows in pending states MUST NOT be treated as final `accepted` or `rejected`.
+  An empty
   Model=1 OHLC report (`Bars=0` and `Ticks=0`) is a retryable technical history
   failure, not a valid zero-trade score and not `pending_ohlc_trades`. The runner
   MUST retry it once automatically; if it remains empty, Final Tick MUST retain

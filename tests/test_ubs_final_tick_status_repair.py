@@ -53,6 +53,14 @@ class StatusFromSimilarityTests(unittest.TestCase):
         payload = json.loads(sim(False, ["profit_factor"]))
         self.assertEqual(final_tick_status_from_similarity(payload), "rejected")
 
+    def test_low_tick_sample_alone_is_pending(self) -> None:
+        payload = json.loads(sim(False, ["tick_trades"]))
+        self.assertEqual(final_tick_status_from_similarity(payload), "pending_tick_trades")
+
+    def test_low_tick_sample_does_not_hide_a_real_failure(self) -> None:
+        payload = json.loads(sim(False, ["tick_trades", "tick_net_profit"]))
+        self.assertEqual(final_tick_status_from_similarity(payload), "rejected")
+
     def test_history_quality_outranks_the_rejection(self) -> None:
         payload = json.loads(sim(False, ["history_quality", "profit_factor"]))
         self.assertEqual(final_tick_status_from_similarity(payload), "pending_history_quality")

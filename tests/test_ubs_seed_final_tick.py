@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -137,6 +138,51 @@ class UBSSeedFinalTickTests(unittest.TestCase):
         for table in ("seed_final_tick", "seed_final_tick_6m"):
             count = self.memory.conn.execute(f"select count(*) from {table}").fetchone()[0]
             self.assertEqual(count, 0)
+
+    def test_memory_reclassifies_low_tick_sample_for_candidates_and_seeds(self) -> None:
+        similarity = json.dumps({"accepted": False, "reasons": ["tick_trades"]})
+        for stage in ("probe", "six_month"):
+            self._record("rejected", stage)
+        for table in ("seed_final_tick", "seed_final_tick_6m"):
+            self.memory.conn.execute(
+                f"update {table} set similarity_json=? where seed_id=?",
+                (similarity, self.seed_id),
+            )
+        for table in ("candidate_final_tick", "candidate_final_tick_6m"):
+            self.memory.conn.execute(
+                f"insert into {table} "
+                "(candidate_id, run_id, status, accepted, similarity_json, evaluated_at) "
+                "values (1, 1, 'rejected', 0, ?, 'now')",
+                (similarity,),
+            )
+        mixed = json.dumps(
+            {"accepted": False, "reasons": ["tick_trades", "tick_net_profit"]}
+        )
+        self.memory.conn.execute(
+            "insert into candidate_final_tick_6m "
+            "(candidate_id, run_id, status, accepted, similarity_json, evaluated_at) "
+            "values (2, 1, 'rejected', 0, ?, 'now')",
+            (mixed,),
+        )
+        self.memory.conn.commit()
+        self.memory.close()
+        self.memory = AgentMemory(Path(self.temp_dir.name) / "memory.sqlite")
+
+        rows = (
+            ("seed_final_tick", "seed_id", self.seed_id),
+            ("seed_final_tick_6m", "seed_id", self.seed_id),
+            ("candidate_final_tick", "candidate_id", 1),
+            ("candidate_final_tick_6m", "candidate_id", 1),
+        )
+        for table, key, row_id in rows:
+            status = self.memory.conn.execute(
+                f"select status from {table} where {key}=?", (row_id,)
+            ).fetchone()[0]
+            self.assertEqual(status, "pending_tick_trades")
+        mixed_status = self.memory.conn.execute(
+            "select status from candidate_final_tick_6m where candidate_id=2"
+        ).fetchone()[0]
+        self.assertEqual(mixed_status, "rejected")
 
 
 if __name__ == "__main__":

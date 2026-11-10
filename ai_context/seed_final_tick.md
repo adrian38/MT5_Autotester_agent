@@ -22,6 +22,12 @@ The 6M stage accepts only seeds whose current short probe is `accepted` or
 evaluation; a changed source seed therefore appears pending rather than reusing
 stale evidence. A failed short probe removes downstream 6M evidence.
 
+Both seed screens share the candidate Final Tick classification. A valid Real
+Tick report whose only failed criterion is the absolute minimum trade sample is
+stored as `pending_tick_trades`, not `rejected`; an additional failed criterion
+still produces `rejected`. The pending low-sample row is not automatically
+rerun over the same dates.
+
 Seed Final Tick is currently audit-only. It does not change Universe weights,
 does not add candidate lifecycle trials, and does not make a seed portfolio
 eligible. Seed deletion and the Seeds reset action remove both stage rows.

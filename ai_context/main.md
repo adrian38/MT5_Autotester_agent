@@ -570,7 +570,10 @@ enter this queue.
   real-tick report has quality below threshold, or Model=4 ended with an empty
   tester context because tick download/synchronization failed;
   `pending_ohlc_trades` — the OHLC batch produced too few trades to make a valid
-  comparison, so OHLC retry dates may be used before re-running real tick.
+  comparison, so OHLC retry dates may be used before re-running real tick;
+  `pending_tick_trades` — Real Tick completed but its sample is below the
+  absolute minimum and that is the only failed criterion. It is neutral and is
+  not automatically retried over the same dates; mixed failures stay rejected.
 - Empty OHLC Model=1 shells (`Bars=0`, `Ticks=0`) are technical history failures,
   not low-trade strategy evidence. `run_tests.py` retries them once for every
   tester model. If the retry remains empty, Final Tick stores `no_report` with
@@ -586,8 +589,11 @@ enter this queue.
 - On memory initialization, `AgentMemory` idempotently upgrades only the legacy
   signature `rejected + real_tick_no_history + tick_download_failed=true` in
   both `candidate_final_tick` and `candidate_final_tick_6m`. It records a
-  `status_audit` object in `similarity_json`; real PF/DD/trades rejections are
-  not changed.
+  `status_audit` object in `similarity_json`; real PF/DD and mixed substantive
+  rejections are not changed.
+- On memory initialization it also upgrades `rejected` rows whose only reason
+  is `tick_trades` to `pending_tick_trades` across candidate and seed Final Tick
+  tables. Rows with any additional failed criterion are not changed.
 - A row is final `accepted` when history quality ≥ threshold AND the three active
   similarity checks pass (see below). `net_profit` is **not** an active check.
 - Percentage deltas use a symmetric max-denominator difference:
