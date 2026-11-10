@@ -26,6 +26,8 @@ SIDEBAR_ITEMS = (
     ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
     ("buscador", "UBS  Buscador"),
 )
+SIDEBAR_WIDTH = 268
+SIDEBAR_HORIZONTAL_PADDING = 16
 
 
 class AppChromeMixin:
@@ -272,9 +274,15 @@ class AppChromeMixin:
         ttk.Label(footer, textvariable=self.running_text, style="Subtitle.TLabel").grid(row=0, column=3, sticky="e")
 
     def _build_sidebar(self) -> None:
-        sidebar = ttk.Frame(self, style="Sidebar.TFrame", padding=(16, 18, 16, 16), width=240)
+        sidebar = ttk.Frame(
+            self,
+            style="Sidebar.TFrame",
+            padding=(SIDEBAR_HORIZONTAL_PADDING, 18, SIDEBAR_HORIZONTAL_PADDING, 16),
+            width=SIDEBAR_WIDTH,
+        )
         sidebar.grid(row=0, column=0, rowspan=3, sticky="nsw")
         sidebar.grid_propagate(False)
+        sidebar.columnconfigure(0, weight=1)
         sidebar.rowconfigure(1, weight=1)
 
         header = ttk.Frame(sidebar, style="Sidebar.TFrame")
@@ -287,6 +295,7 @@ class AppChromeMixin:
             bg=COLORS["sidebar_bg"],
             highlightthickness=0,
             bd=0,
+            width=SIDEBAR_WIDTH - (SIDEBAR_HORIZONTAL_PADDING * 2),
             yscrollincrement=24,
         )
         nav_canvas.grid(row=1, column=0, sticky="nsew")
