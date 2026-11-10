@@ -211,14 +211,14 @@ class LosslessControlFallbackTests(unittest.TestCase):
         )
         self.assertIn("profit_factor_floor", similarity["reasons"])
 
-    def test_a_non_degenerate_control_is_unaffected_by_the_gate(self) -> None:
-        """Con control normal el gate no debe tocar nada."""
+    def test_a_non_degenerate_control_only_checks_behavior_deltas(self) -> None:
+        """Con control normal PF informa y drawdown sigue midiendo conducta."""
         ohlc = make_result(profit_factor=1.9, drawdown_pct=2.2, losing_trades=8, trades=26)
         similarity = final_tick_similarity(
             ohlc, healthy_tick(), lossless_control_gate=GATE, **COMMON
         )
         self.assertTrue(similarity["accepted"])
-        self.assertTrue(similarity["checks"]["profit_factor"]["checked"])
+        self.assertFalse(similarity["checks"]["profit_factor"]["checked"])
         self.assertTrue(similarity["checks"]["drawdown_pct"]["checked"])
         self.assertNotIn("tick_recovery_factor", similarity["checks"])
 

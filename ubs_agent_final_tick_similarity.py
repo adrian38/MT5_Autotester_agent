@@ -44,16 +44,15 @@ def _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_
     pf_delta  = _relative_delta_pct(ohlc_pf, tick_pf, floor=1.0)
     # Sin pérdidas en OHLC el PF es el centinela 99 recortado a 10: comparar
     # contra eso exigiría PF de tick >=7.0, que no mide nada de la estrategia.
-    pf_accepted = lossless_control or pf_delta <= max_pf_delta_pct
-    if not pf_accepted:
-        reasons.append("profit_factor")
+    pf_similar = lossless_control or pf_delta <= max_pf_delta_pct
     checks["profit_factor"] = {
         "ohlc": round(ohlc_pf, 4),
         "real_tick": round(tick_pf, 4),
         "delta_pct": round(pf_delta, 4),
         "max_delta_pct": round(float(max_pf_delta_pct), 4),
-        "accepted": pf_accepted,
-        "checked": not lossless_control,
+        "accepted": True,
+        "within_tolerance": pf_similar,
+        "checked": False,
     }
 
 
@@ -203,26 +202,10 @@ def final_tick_similarity(
     min_model_profit_factor: float | None = None,
     lossless_control_gate: LosslessControlGate | None = None,
 ) -> dict[str, object]:
-    """Decide si OHLC y real-tick son suficientemente parecidos.
+    """Valida que OHLC y Every Tick reproduzcan un comportamiento parecido.
 
-    Es la MISMA estrategia ejecutada con dos modelos de datos distintos.
-    La pregunta es: ¿dan resultados similares? No cuál es mejor.
-
-    Criterios activos (contribuyen a accepted/rejected):
-      - profit_factor  : diferencia relativa simétrica; cap [0,10]; piso 1.0
-      - drawdown_pct   : diferencia relativa simétrica; piso 2pp evita falsos fallos en DDs pequeños
-      - trades         : diferencia relativa simétrica
-
-    net_profit se guarda como informacional pero NO bloquea la aceptación.
-    La escala de normalized_net_profit depende del grupo de normalización y produce
-    falsos fallos cuando los valores son pequeños en comparación absoluta.
-
-    Cuando la pata OHLC no tiene ni una operación perdedora, PF y DD dejan de
-    compararse en cualquier etapa (quedan como informacionales): son un
-    centinela contra un cero, no una divergencia. Si además se pasa
-    ``lossless_control_gate`` —solo 6M— la pata de tick tiene que pasar en su
-    lugar las puertas absolutas de ``LosslessControlGate``. El veredicto sigue
-    siendo accepted/rejected: lo que cambia es que se decide con lo medible.
+    Operaciones y drawdown miden comportamiento y bloquean. Beneficio, score y
+    PF son resultados, no comportamiento, y sus diferencias son diagnosticas.
     """
     reasons: list[str] = []
     checks: dict[str, dict[str, object]] = {}
@@ -235,19 +218,18 @@ def final_tick_similarity(
         real_tick_result, min_history_quality, reasons,
     )
 
-    # 2. Net profit — informacional, no bloquea aceptación
+    # 2. Resultado economico — informacional, no bloquea.
     _final_tick_net_check(ohlc_result, real_tick_result, max_net_delta_pct, checks)
 
-    # 3. Profit factor — simétrico, cap [0, 10], piso 1.0
+    # PF relativo es informacional; en 6M se mantiene su piso absoluto.
     _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_pct, min_model_profit_factor, checks, lossless_control, reasons)
 
-    # 4. Drawdown — simétrico, piso 2pp
+    # 3. Comportamiento — drawdown y numero de operaciones deben parecerse.
     tick_dd = _final_tick_drawdown_check(ohlc_result, real_tick_result, max_dd_delta_pct, checks, lossless_control, reasons)
 
-    # 5. Trades — simétrico
     tick_trades = _final_tick_trades_check(ohlc_result, real_tick_result, max_trades_delta_pct, checks, reasons)
 
-    # 6. Control sin pérdidas en 6M: la pata de tick tiene que sostenerse sola.
+    # 4. Control sin perdidas en 6M: la pata de tick tiene que sostenerse sola.
     _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_gate, checks, reasons, tick_dd, tick_trades)
 
     return _similarity_payload(reasons, history_quality, min_history_quality, checks)

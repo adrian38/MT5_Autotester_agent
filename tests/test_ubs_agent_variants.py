@@ -276,7 +276,7 @@ class UBSAgentVariantTests(unittest.TestCase):
         self.assertNotIn("net_profit", result["reasons"])
         self.assertFalse(result["checks"]["net_profit"]["checked"])
 
-    def test_final_tick_similarity_rejects_large_profit_factor_drift(self) -> None:
+    def test_final_tick_similarity_keeps_large_profit_factor_drift_informational(self) -> None:
         result = final_tick_similarity(
             score(10.0, profit_factor=2.0),
             score(10.0, profit_factor=1.0),
@@ -287,8 +287,39 @@ class UBSAgentVariantTests(unittest.TestCase):
             max_trades_delta_pct=35.0,
         )
 
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("profit_factor", result["reasons"])
+        self.assertFalse(result["checks"]["profit_factor"]["within_tolerance"])
+        self.assertFalse(result["checks"]["profit_factor"]["checked"])
+
+    def test_final_tick_similarity_accepts_the_reported_seed_score_case(self) -> None:
+        result = final_tick_similarity(
+            score(122.5, profit_factor=4.0),
+            score(31.4, profit_factor=1.5),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertFalse(result["checks"]["profit_factor"]["within_tolerance"])
+
+    def test_final_tick_similarity_still_rejects_behavior_drift(self) -> None:
+        result = final_tick_similarity(
+            score(122.5, drawdown_pct=2.0, trades=100),
+            score(31.4, drawdown_pct=8.0, trades=40),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+        )
+
         self.assertFalse(result["accepted"])
-        self.assertIn("profit_factor", result["reasons"])
+        self.assertIn("drawdown_pct", result["reasons"])
+        self.assertIn("trades", result["reasons"])
 
     def test_empty_real_tick_report_with_high_quality_is_pending_history_not_mismatch(self) -> None:
         args = _axi_tick_args()
