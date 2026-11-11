@@ -17,7 +17,7 @@ from ubs.universe import (
     load_disabled_symbols,
     load_seed_enabled_disabled_symbols,
 )
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
     diag_log,
     generation_random_stream,
@@ -26,7 +26,7 @@ from ubs.agent.evaluation.evaluate import (
     generation_fitness_target,
     select_next_generation_survivors,
 )
-from ubs_agent_history import (
+from ubs.agent.history import (
     evaluate_generation,
 )
 from ubs.agent.run.config import (

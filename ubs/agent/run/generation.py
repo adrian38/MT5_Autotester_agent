@@ -7,7 +7,7 @@ from pathlib import Path
 
 from run_tests import RUNNING_TERMINAL_EXIT_CODE, parse_symbol_map
 from ubs.models import Variant
-from ubs_agent_config import (
+from ubs.agent.config import (
     diag_log,
     generation_random_stream,
 )

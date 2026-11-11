@@ -13,7 +13,7 @@ from ubs.models import Seed, Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, ScoreResult
 from ubs.seeds import seed_eval_filename, seed_from_path
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
     DEFAULT_OUTPUT,
 )

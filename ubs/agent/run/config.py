@@ -23,7 +23,7 @@ from ubs.selection import (
     DiscoverySourceMix,
     DiscoveryTargetPolicyMix,
 )
-from ubs_agent_config import (
+from ubs.agent.config import (
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
     ASSET_UNSEEDED_FORCE_PROB_LATE,
     BASE_DIR,

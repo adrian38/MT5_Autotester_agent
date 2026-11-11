@@ -19,7 +19,7 @@ from ubs.set_utils import (
     write_set_text,
 )
 from ubs.weights import MUTATION_SCORE_FULL_STRENGTH
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
     diag_log,
     load_global_params,

@@ -8,7 +8,7 @@ from ubs.params_catalog import (
 )
 from ubs.set_rules import SET_RULE_KEYS, normalize_generated_set_text
 from ubs.v6_parameters import UBS_VERSION, V6_DEFAULT_SET_TEXT, V6_PARAMETER_KEYS
-from ubs_agent_config import RULE_LOCKED_KEYS, is_agent_mutable_key
+from ubs.agent.config import RULE_LOCKED_KEYS, is_agent_mutable_key
 from ui.ubs_params_logic import UBSParamsLogicMixin
 
 
@@ -43,7 +43,7 @@ class UBSV6ParameterContractTests(unittest.TestCase):
 
     def test_rule_locked_v6_keys_ignore_mutable_overrides(self) -> None:
         with patch(
-            "ubs_agent_config.load_mutation_overrides",
+            "ubs.agent.config.load_mutation_overrides",
             return_value=({}, set(RULE_LOCKED_KEYS)),
         ):
             for key in RULE_LOCKED_KEYS:

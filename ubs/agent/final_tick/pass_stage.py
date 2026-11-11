@@ -17,7 +17,7 @@ from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, ScoreResult
 from ubs.set_utils import safe_part, set_matches_use_every_tick_source
-from ubs_agent_config import (
+from ubs.agent.config import (
     SYMBOL_NOT_EXIST_STATUS,
 )
 from ubs.agent.evaluation.evaluate import (

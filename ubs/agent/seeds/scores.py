@@ -25,7 +25,7 @@ from ubs.universe import (
     load_seed_enabled_disabled_symbols,
     seed_symbol_disabled,
 )
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
 )
 from ubs.agent.evaluation.evaluate import (

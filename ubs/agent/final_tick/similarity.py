@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 from ubs.score import ScoreResult, run_is_lossless
-from ubs_agent_config import LosslessControlGate
+from ubs.agent.config import LosslessControlGate
 from ubs.agent.evaluation.robustness import (
     _bounded_profit_factor,
     _relative_delta_pct,

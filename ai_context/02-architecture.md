@@ -52,6 +52,9 @@
 |-- ubs/                         # UBS agent support library
 |   |-- __init__.py
 |   |-- agent/                   # UBS orchestration implementation
+|   |   |-- cli.py               # UBS CLI parser and dispatch
+|   |   |-- config.py            # Agent configuration and retry states
+|   |   |-- history.py           # Historical probe evaluation
 |   |   |-- evaluation/          # Reports, retries, robustness and variant evaluation
 |   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
 |   |   |-- generation/          # Target policies, universe and set generation

@@ -3,10 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests import PROJECT_ROOT
+from ubs.agent import config as agent_config
 from ubs.memory import AgentMemory
 
 
 class UBSRunConfigTests(unittest.TestCase):
+    def test_agent_base_dir_remains_the_repository_root(self) -> None:
+        self.assertEqual(agent_config.BASE_DIR, PROJECT_ROOT)
+
     def test_create_run_persists_config_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = AgentMemory(Path(temp_dir) / "memory.sqlite")

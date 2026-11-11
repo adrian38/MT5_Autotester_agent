@@ -354,7 +354,7 @@ fronts at once:
    `ui/ubs_seeds_duplicates.py`). Stage copies (robustness, regression, Final
    Tick, retries) inherit the values from their already-compliant source.
 2. **Mutation.** The keys a rule owns are in `RULE_LOCKED_KEYS`
-   (`ubs_agent_config.py`). `is_agent_mutable_key()` denies them *before*
+   (`ubs/agent/config.py`). `is_agent_mutable_key()` denies them *before*
    reading `ubs_mutation_overrides.json`, so neither a `mutable_override` nor
    the *Toggle inamovible/mutable* button can unfreeze them; the UBS Parámetros
    table shows them as `⛓ regla`. `ubs_generate_sets.FROZEN_EXACT` mirrors the

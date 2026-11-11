@@ -11,7 +11,7 @@ import ubs.agent.generation.sets
 import ubs.agent.run.config
 import ubs.agent.evaluation.robustness
 import ubs.agent.evaluation.evaluate
-import ubs_agent_config
+import ubs.agent.config
 from ubs.models import Seed, Variant
 
 
@@ -75,10 +75,10 @@ class EvaluateVariantWithoutReportTests(unittest.TestCase):
                 universe_symbols={"XAUUSD", "EEX.NYSE-24"},
             )
 
-        self.assertEqual(status, ubs_agent_config.SYMBOL_NOT_EXIST_STATUS)
+        self.assertEqual(status, ubs.agent.config.SYMBOL_NOT_EXIST_STATUS)
         self.assertIsNone(result)
         memory.record_score.assert_called_once_with(
-            variant.path, None, ubs_agent_config.SYMBOL_NOT_EXIST_STATUS, None
+            variant.path, None, ubs.agent.config.SYMBOL_NOT_EXIST_STATUS, None
         )
 
     def test_manually_disabled_symbol_stays_retryable(self) -> None:
@@ -118,10 +118,10 @@ class EvaluateVariantWithoutReportTests(unittest.TestCase):
         self.assertEqual(status, "no_report")
 
     def test_status_is_not_retryable(self) -> None:
-        self.assertNotIn(ubs_agent_config.SYMBOL_NOT_EXIST_STATUS, ubs_agent_config.FINAL_TICK_RETRYABLE_STATUSES)
+        self.assertNotIn(ubs.agent.config.SYMBOL_NOT_EXIST_STATUS, ubs.agent.config.FINAL_TICK_RETRYABLE_STATUSES)
         self.assertNotIn(
-            ubs_agent_config.SYMBOL_NOT_EXIST_STATUS,
-            ubs_agent_config.FINAL_TICK_DATE_RETRYABLE_STATUSES,
+            ubs.agent.config.SYMBOL_NOT_EXIST_STATUS,
+            ubs.agent.config.FINAL_TICK_DATE_RETRYABLE_STATUSES,
         )
 
 
@@ -184,7 +184,7 @@ class MissingReportStatusTests(unittest.TestCase):
     def test_retired_symbol_gets_terminal_status(self) -> None:
         self.assertEqual(
             ubs.agent.generation.universe.missing_report_status("EEX.NYSE", self.args),
-            ubs_agent_config.SYMBOL_NOT_EXIST_STATUS,
+            ubs.agent.config.SYMBOL_NOT_EXIST_STATUS,
         )
 
     def test_live_and_manually_disabled_symbols_stay_retryable(self) -> None:
@@ -202,7 +202,7 @@ class MissingReportStatusTests(unittest.TestCase):
         args = argparse.Namespace(assets=str(self.assets), symbol_map="esto=no=es=valido,,")
         self.assertIn(
             ubs.agent.generation.universe.missing_report_status("XAUUSD", args),
-            {"no_report", ubs_agent_config.SYMBOL_NOT_EXIST_STATUS},
+            {"no_report", ubs.agent.config.SYMBOL_NOT_EXIST_STATUS},
         )
 
 
@@ -278,7 +278,7 @@ class RegressionRuntimeHookTests(unittest.TestCase):
             self.assertIsNotNone(runtime.missing_report_status)
             self.assertEqual(runtime.missing_report_status("XAUUSD"), "no_report")
             self.assertEqual(
-                runtime.missing_report_status("EEX.NYSE"), ubs_agent_config.SYMBOL_NOT_EXIST_STATUS
+                runtime.missing_report_status("EEX.NYSE"), ubs.agent.config.SYMBOL_NOT_EXIST_STATUS
             )
             ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
@@ -296,10 +296,10 @@ class StageRetrySetsTests(unittest.TestCase):
         from manager_node_runtime import node
         from ubs.regression_rules import REGRESSION_RETRYABLE_STATUSES
 
-        status = ubs_agent_config.SYMBOL_NOT_EXIST_STATUS
+        status = ubs.agent.config.SYMBOL_NOT_EXIST_STATUS
         for name, retryable in (
-            ("agent final tick", ubs_agent_config.FINAL_TICK_RETRYABLE_STATUSES),
-            ("agent final tick date", ubs_agent_config.FINAL_TICK_DATE_RETRYABLE_STATUSES),
+            ("agent final tick", ubs.agent.config.FINAL_TICK_RETRYABLE_STATUSES),
+            ("agent final tick date", ubs.agent.config.FINAL_TICK_DATE_RETRYABLE_STATUSES),
             ("agent robustness", ubs.agent.evaluation.robustness.ROBUST_RETRYABLE_STATUSES),
             ("regression rules", REGRESSION_RETRYABLE_STATUSES),
             ("node robustness", node.ROBUST_RETRYABLE_STATUSES),

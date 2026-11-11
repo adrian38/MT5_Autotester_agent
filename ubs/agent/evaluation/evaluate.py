@@ -11,7 +11,7 @@ from ubs.score import ScoreConfig, ScoreResult, score_report_file
 from ubs.selection import FITNESS_TARGET_FINAL_TICK_6M, SelectionPrediction
 from ubs.set_utils import write_set_use_every_tick
 from ubs.tester_diagnostics import TRADE_DISABLED_STATUS, trade_disabled_metadata, execution_failure_metadata, execution_failure_reason
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
     SELECTION_FITNESS_APPLIED_SCALE,
     SYMBOL_NOT_EXIST_STATUS,

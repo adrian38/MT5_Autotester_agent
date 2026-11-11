@@ -13,7 +13,7 @@ class ManagerNodeSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp)
             (project / "ubs_agent.py").write_text(
-                "from ubs_agent_cli import main\n",
+                "from ubs.agent.cli import main\n",
                 encoding="utf-8",
             )
             config = {

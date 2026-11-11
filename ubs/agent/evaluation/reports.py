@@ -18,7 +18,7 @@ from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
 from ubs.tester_diagnostics import execution_failure_metadata, journal_symbol_missing
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
 )
 

@@ -149,10 +149,10 @@ from ubs.weights import (
     MUTATION_SCORE_FULL_STRENGTH,
     score_aware_percentile_multipliers,
 )
-from ubs_agent_cli import (
+from ubs.agent.cli import (
     parse_args,
 )
-from ubs_agent_config import (
+from ubs.agent.config import (
     diag_args_summary,
     diag_log,
 )
@@ -162,10 +162,10 @@ from ubs.agent.run.main import (
 
 
 # Reexportados para no cambiar a los consumidores de `ubs_agent`.
-from ubs_agent_cli import (  # noqa: F401
+from ubs.agent.cli import (  # noqa: F401
     parse_args,
 )
-from ubs_agent_config import (  # noqa: F401
+from ubs.agent.config import (  # noqa: F401
     ALLOWED_MUTATION_KEYS,
     ALLOWED_MUTATION_PREFIXES,
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
@@ -277,7 +277,7 @@ from ubs.agent.final_tick.rescore import (  # noqa: F401
     reconcile_final_tick_reports,
     rescore_final_tick_only,
 )
-from ubs_agent_history import (  # noqa: F401
+from ubs.agent.history import (  # noqa: F401
     HISTORY_PROBE_FINAL_STATUSES,
     evaluate_generation,
     history_probe_latest_statuses,

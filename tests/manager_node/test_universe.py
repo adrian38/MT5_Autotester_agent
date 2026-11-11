@@ -203,10 +203,10 @@ class ManagerNodeUniverseTests(unittest.TestCase):
         self.assertNotIn("--dry-run", command)
 
     def test_split_agent_facade_still_builds_the_probe_command(self):
-        # El parser vive en `ubs_agent_cli.py`: la fachada no declara ni un
+        # El parser vive en `ubs/agent/cli.py`: la fachada no declara ni un
         # literal `--opcion` y no se le puede exigir el del sondeo.
         (self.root / "ubs_agent.py").write_text(
-            "from ubs_agent_cli import main\n", encoding="utf-8",
+            "from ubs.agent.cli import main\n", encoding="utf-8",
         )
 
         command, _cwd = build_history_command(self.config, self.service.history_dates())

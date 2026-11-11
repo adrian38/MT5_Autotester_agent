@@ -11,7 +11,7 @@ from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, score_report_file
 from ubs.risk_profit import robustness_result_status
-from ubs_agent_config import (
+from ubs.agent.config import (
     SYMBOL_NOT_EXIST_STATUS,
 )
 from ubs.agent.evaluation.evaluate import (

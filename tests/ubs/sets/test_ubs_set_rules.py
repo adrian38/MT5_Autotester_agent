@@ -228,7 +228,7 @@ class NfpRuleIntegrationTests(unittest.TestCase):
 
     def test_the_rule_keys_cannot_be_made_agent_mutable(self) -> None:
         rule_keys = (*NFP_RULE_KEYS, ADJUST_LOTSIZE_KEY, ONLY_UP_KEY)
-        with patch("ubs_agent_config.load_mutation_overrides", return_value=({}, set(rule_keys))):
+        with patch("ubs.agent.config.load_mutation_overrides", return_value=({}, set(rule_keys))):
             for key in rule_keys:
                 self.assertFalse(is_agent_mutable_key(key), key)
 

@@ -30,7 +30,7 @@ from ubs.strategies import (
 )
 from ubs.universe import load_asset_universe
 from ubs.weights import score_aware_percentile_multipliers
-from ubs_agent_config import (
+from ubs.agent.config import (
     CORE_MUTATION_KEYS,
     LEGACY_TIMEFRAME_TO_ENUM,
     TIMEFRAME_TO_ENUM,

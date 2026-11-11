@@ -7,7 +7,7 @@ from ubs.agent.final_tick.entry import evaluate_candidate_final_tick
 from ubs.agent.final_tick.rescore import (
     rescore_final_tick_only,
 )
-from ubs_agent_history import (
+from ubs.agent.history import (
     probe_universe_history,
 )
 from ubs.agent.rescore.main import (

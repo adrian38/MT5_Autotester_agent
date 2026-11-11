@@ -14,7 +14,7 @@ from ubs.selection import (
     DISCOVERY_UNIVERSE_FEEDBACK_DEFAULT,
 )
 from ubs.universe import canonical_symbol
-from ubs_agent_config import (
+from ubs.agent.config import (
     DISCOVERY_GROUP_FEEDBACK_EXP_LIMIT,
     DISCOVERY_GROUP_FEEDBACK_TEMPERATURE,
     DIVERSITY_REROLL_ATTEMPTS,

@@ -21,7 +21,7 @@ from ubs.universe import (
     load_disabled_symbols,
     load_seed_enabled_disabled_symbols,
 )
-from ubs_agent_config import (
+from ubs.agent.config import (
     BASE_DIR,
     diag_log,
     generation_random_stream,

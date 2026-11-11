@@ -13,7 +13,7 @@ from ubs.models import Variant
 from ubs.score import ScoreConfig
 from ubs.universe import load_asset_universe
 from ubs.agent.evaluation.reports import set_symbol_missing_in_terminal
-from ubs_agent_config import (
+from ubs.agent.config import (
     EXPERIMENTAL_LONG_TIMEFRAMES,
     SYMBOL_NOT_EXIST_STATUS,
     TIMEFRAME_UNIVERSE,

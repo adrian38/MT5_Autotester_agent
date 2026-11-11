@@ -35,7 +35,7 @@ import sqlite3
 from ubs.account import account_memory_path, normalize_account_type, normalize_broker
 from ubs.db import connect_memory
 from ubs.score import ScoreResult
-from ubs_agent_config import LosslessControlGate
+from ubs.agent.config import LosslessControlGate
 from ubs.agent.final_tick.evaluate import final_tick_status_from_similarity
 from ubs.agent.final_tick.similarity import DEFAULT_MAX_DD_GAP_PP, final_tick_similarity
 

@@ -17,7 +17,7 @@ from ubs.selection import (
     estimate_discovery_target_policy_mix,
 )
 from ubs.universe import canonical_symbol
-from ubs_agent_config import (
+from ubs.agent.config import (
     DISCOVERY_EXPLOITABLE_SEED_MIN_RATIO,
     DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
     TIMEFRAME_UNIVERSE,

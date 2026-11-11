@@ -11,7 +11,7 @@ from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
 from ubs.strategies import VALID_RUN_STRATEGIES
 from ubs.universe import canonical_symbol, seed_symbol_disabled
-from ubs_agent_config import (
+from ubs.agent.config import (
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
     ASSET_UNSEEDED_FORCE_PROB_LATE,
     BASE_DIR,

@@ -15,7 +15,7 @@ from ubs.memory import AgentMemory
 from ubs.models import Variant
 from ubs.score import ScoreConfig, ScoreResult, run_is_lossless, score_report_file
 from ubs.agent.final_tick.similarity import final_tick_similarity
-from ubs_agent_config import (
+from ubs.agent.config import (
     FINAL_TICK_6M_MIN_DAYS,
     FINAL_TICK_DATE_RETRYABLE_STATUSES,
     FINAL_TICK_RETRYABLE_STATUSES,

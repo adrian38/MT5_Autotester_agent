@@ -50,7 +50,7 @@ from ubs.regression_rules import (
 )
 from ubs.score import ScoreConfig
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
-from ubs_agent_config import (
+from ubs.agent.config import (
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
     ASSET_UNSEEDED_FORCE_PROB_LATE,
     BASE_DIR,

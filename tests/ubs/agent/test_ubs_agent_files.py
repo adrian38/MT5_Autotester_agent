@@ -1,6 +1,6 @@
 import ubs.agent.evaluation.evaluate
 import ubs.agent.final_tick.rescore
-import ubs_agent_config
+import ubs.agent.config
 import ubs.agent.final_tick.evaluate
 import ubs.agent.evaluation.reports
 import json

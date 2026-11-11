@@ -20,7 +20,7 @@ from ubs.selection import DISCOVERY_SOURCE_MIX_FLOOR
 from ubs.set_rules import SET_RULE_KEYS
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[2]
 MUTATION_OVERRIDES_FILE = BASE_DIR / "outputs" / "ubs_mutation_overrides.json"
 GLOBAL_PARAMS_FILE = BASE_DIR / "outputs" / "ubs_global_params.json"
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
