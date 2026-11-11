@@ -643,6 +643,11 @@ Only history quality plus the drawdown/trade-count comparison can prevent an
 otherwise valid pair from being accepted; missing or insufficient samples remain
 technical/pending states rather than economic rejections.
 
+Seed Final Tick is the scoped exception: both its probe and long-window stage
+also require OHLC and Every Tick to keep score and normalized net profit on the
+same side of zero and profit factor on the same side of 1.0. The seed adapter
+enables this gate without changing candidate Final Tick.
+
 The short Final Tick probe is a discard filter, not the final live-use gate.
 `accepted` advances to Final Tick 6M; `rejected` is terminal and invalidates any
 downstream 6M evidence. `pending_ohlc_trades` may also advance because the longer
@@ -1577,6 +1582,8 @@ forma implícita; la acción manual Regression continúa siendo independiente.
 ### Final Tick similarity — economic diagnostics in 6M
 
 `final_tick_similarity()` records the PF floor and lossless 6M thresholds in `similarity_json.checks`, but they are informational. They expose `meets_floor`/`meets_limit` without adding rejection reasons. Final Tick validates behavioral reproduction between OHLC and Every Tick; economic level, score, profit factor, net profit, recovery, and positive-month ratio do not decide that comparison.
+Seed Final Tick is stricter: its adapter enables the economic-direction gate for
+score, normalized net profit, and profit-factor regime in both seed stages.
 
 ### UBS Portafolio Mensual
 

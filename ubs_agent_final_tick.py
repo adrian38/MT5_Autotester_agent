@@ -381,6 +381,9 @@ def _final_tick_similarity_verdict(
         max_dd_gap_pp=args.final_tick_max_dd_gap_pp,
         min_model_profit_factor=float(score_config.min_profit_factor) if is_six_month else None,
         lossless_control_gate=lossless_control_gate_from_args(args) if is_six_month else None,
+        require_economic_direction=bool(
+            getattr(record.memory, "require_economic_direction_similarity", False)
+        ),
     )
     return record.write(
         final_tick_status_from_similarity(similarity) or "rejected",

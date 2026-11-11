@@ -567,10 +567,13 @@ requirement changes or a debt item is opened/closed.
 - **FR-1.9.14** `ubs_agent.py --retry-seed-path <path>` MUST relaunch one UBS
   seed backtest and update its existing `seed_scores` row.
 - **FR-1.9.15** `--evaluate-seed-final-tick` MUST reuse the candidate Final Tick
-  OHLC/real-tick execution and similarity rules for active `seed_scores` rows
-  whose base status is `accepted`, while persisting evidence in the independent
-  `seed_final_tick` and `seed_final_tick_6m` tables. It MUST NOT create synthetic
-  candidate rows or make a seed eligible for a candidate portfolio.
+  OHLC/real-tick execution and base similarity rules for active `seed_scores`
+  rows whose base status is `accepted`, while persisting evidence in the
+  independent `seed_final_tick` and `seed_final_tick_6m` tables. Both seed
+  stages MUST additionally require matching economic direction: score and
+  normalized net profit on the same side of zero, and profit factor on the same
+  side of 1.0. It MUST NOT create synthetic candidate rows, alter the candidate
+  Final Tick contract, or make a seed eligible for a candidate portfolio.
 - **FR-1.9.16** Seed Final Tick 6M MUST require a current short-probe status of
   `accepted` or `pending_ohlc_trades`. A changed seed mtime/size MUST make both
   stored stages stale, and loss of short-probe eligibility MUST invalidate its

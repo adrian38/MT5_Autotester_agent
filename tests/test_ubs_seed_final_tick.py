@@ -58,6 +58,9 @@ class UBSSeedFinalTickTests(unittest.TestCase):
             ["ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m"],
         )
 
+    def test_seed_adapter_enables_strict_economic_similarity(self) -> None:
+        self.assertTrue(self.adapter.require_economic_direction_similarity)
+
     def test_probe_result_gates_six_month_stage(self) -> None:
         self.assertEqual(len(eligible_seed_final_tick_rows(self.memory, "probe")), 1)
         self.assertEqual(eligible_seed_final_tick_rows(self.memory, "six_month"), [])

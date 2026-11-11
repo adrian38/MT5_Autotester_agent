@@ -72,6 +72,8 @@ def seed_final_tick_cohort_id(rows: list, stage: str) -> int:
 class SeedFinalTickMemoryAdapter:
     """Adapta las seeds al motor Final Tick sin mezclarlas con candidatos."""
 
+    require_economic_direction_similarity = True
+
     def __init__(self, memory, output_dir: Path, run_id: int = 1) -> None:
         self._memory = memory
         self._output_dir = output_dir / "seed_final_tick_runs"

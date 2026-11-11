@@ -277,6 +277,54 @@ class UBSAgentVariantTests(unittest.TestCase):
         self.assertNotIn("net_profit", result["reasons"])
         self.assertFalse(result["checks"]["net_profit"]["checked"])
 
+    def test_seed_similarity_can_require_matching_economic_direction(self) -> None:
+        common = dict(
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+        )
+        ohlc = score(208.5, net_profit=248.5, profit_factor=3.56)
+        tick = score(-4.7, net_profit=5.3, profit_factor=1.03)
+
+        regular = final_tick_similarity(ohlc, tick, **common)
+        seed = final_tick_similarity(
+            ohlc, tick, require_economic_direction=True, **common,
+        )
+
+        self.assertTrue(regular["accepted"])
+        self.assertFalse(seed["accepted"])
+        self.assertEqual(seed["reasons"], ["economic_direction"])
+        self.assertFalse(seed["checks"]["economic_direction"]["components"]["score"]["matches"])
+
+    def test_seed_economic_direction_checks_each_component(self) -> None:
+        common = dict(
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+            require_economic_direction=True,
+        )
+        cases = {
+            "score": (score(10.0), score(-10.0)),
+            "net_profit": (
+                score(10.0, net_profit=10.0), score(10.0, net_profit=-10.0),
+            ),
+            "profit_factor": (
+                score(10.0, profit_factor=2.0), score(10.0, profit_factor=0.8),
+            ),
+        }
+        for component, (ohlc, tick) in cases.items():
+            with self.subTest(component=component):
+                result = final_tick_similarity(ohlc, tick, **common)
+                self.assertFalse(result["accepted"])
+                self.assertFalse(
+                    result["checks"]["economic_direction"]["components"]
+                    [component]["matches"]
+                )
+
     def test_final_tick_similarity_keeps_large_profit_factor_drift_informational(self) -> None:
         result = final_tick_similarity(
             score(10.0, profit_factor=2.0),

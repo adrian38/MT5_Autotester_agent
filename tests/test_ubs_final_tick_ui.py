@@ -70,6 +70,25 @@ class UBSFinalTickReasonTests(unittest.TestCase):
             "historico/contexto pendiente: calidad 99% (minimo 80%)",
         )
 
+    def test_economic_direction_names_the_divergent_components(self) -> None:
+        reason = self.logic._ubs_final_tick_reason(
+            "rejected",
+            {
+                "reasons": ["economic_direction"],
+                "checks": {
+                    "economic_direction": {
+                        "components": {
+                            "score": {"matches": False},
+                            "net_profit": {"matches": True},
+                            "profit_factor": {"matches": False},
+                        }
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(reason, "direccion economica distinta: score, PF")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -340,6 +340,8 @@ class UBSFinalTickRowsMixin:
             return (
                 f"PF minimo: OHLC {self._format_ubs_number(ohlc)} / tick {self._format_ubs_number(tick)} < {self._format_ubs_number(minimum)}"
             )
+        if reason == "economic_direction":
+            return self._economic_direction_reason(checks)
         # Compatibilidad visual con blobs antiguos que aun guardan estas
         # causas; el clasificador actual las conserva solo como diagnosticos.
         absolute_labels = {
@@ -374,6 +376,18 @@ class UBSFinalTickRowsMixin:
             return label
         detail = f"{label}: {self._format_ubs_number(delta)}% > {self._format_ubs_number(maximum)}%"
         return detail + self._final_tick_gap_detail(check)
+
+    @staticmethod
+    def _economic_direction_reason(checks: object) -> str:
+        check = checks.get("economic_direction", {}) if isinstance(checks, dict) else {}
+        components = check.get("components", {}) if isinstance(check, dict) else {}
+        labels = {"score": "score", "net_profit": "net", "profit_factor": "PF"}
+        failed = [
+            labels.get(str(name), str(name))
+            for name, detail in components.items()
+            if isinstance(detail, dict) and not detail.get("matches", False)
+        ] if isinstance(components, dict) else []
+        return "direccion economica distinta" + (f": {', '.join(failed)}" if failed else "")
 
     def _final_tick_gap_detail(self, check: object) -> str:
         """Banda absoluta de la causa, cuando la comprobacion la trae.

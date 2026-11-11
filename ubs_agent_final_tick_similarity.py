@@ -14,6 +14,38 @@ from ubs_agent_robustness import (
 DEFAULT_MAX_DD_GAP_PP = 3.0
 
 
+def _economic_direction_check(ohlc_result, real_tick_result, checks, required):
+    """Comprueba que ambos modelos conservan la lectura economica basica."""
+    comparisons = {
+        "score": {
+            "ohlc": float(ohlc_result.score),
+            "real_tick": float(real_tick_result.score),
+            "matches": (float(ohlc_result.score) >= 0) == (float(real_tick_result.score) >= 0),
+        },
+        "net_profit": {
+            "ohlc": float(ohlc_result.normalized_net_profit),
+            "real_tick": float(real_tick_result.normalized_net_profit),
+            "matches": (float(ohlc_result.normalized_net_profit) >= 0)
+            == (float(real_tick_result.normalized_net_profit) >= 0),
+        },
+        "profit_factor": {
+            "ohlc": float(ohlc_result.profit_factor),
+            "real_tick": float(real_tick_result.profit_factor),
+            "matches": (float(ohlc_result.profit_factor) >= 1.0)
+            == (float(real_tick_result.profit_factor) >= 1.0),
+        },
+    }
+    matches = all(item["matches"] for item in comparisons.values())
+    checks["economic_direction"] = {
+        "accepted": matches if required else True,
+        "matches": matches,
+        "required": bool(required),
+        "checked": bool(required),
+        "components": comparisons,
+    }
+    return matches
+
+
 def _final_tick_net_check(ohlc_result, real_tick_result, max_net_delta_pct, checks):
     """Compara el beneficio neto normalizado entre OHLC y Real Tick."""
     ohlc_net = float(ohlc_result.normalized_net_profit)
@@ -214,11 +246,12 @@ def final_tick_similarity(
     max_dd_gap_pp: float = DEFAULT_MAX_DD_GAP_PP,
     min_model_profit_factor: float | None = None,
     lossless_control_gate: LosslessControlGate | None = None,
+    require_economic_direction: bool = False,
 ) -> dict[str, object]:
     """Valida que OHLC y Every Tick reproduzcan un comportamiento parecido.
 
-    Operaciones y drawdown miden comportamiento y bloquean. Beneficio, score,
-    PF y puertas economicas absolutas son diagnosticos, no comportamiento.
+    Operaciones y drawdown miden comportamiento y bloquean. Las pruebas de
+    seeds pueden exigir ademas que score, beneficio y PF conserven direccion.
 
     El drawdown pasa con la razon relativa o con la banda absoluta
     ``max_dd_gap_pp``: sin ella el mismo criterio es tanto mas estricto cuanto
@@ -240,6 +273,10 @@ def final_tick_similarity(
 
     # PF relativo y su piso 6M son informacionales.
     _final_tick_profit_factor_check(ohlc_result, real_tick_result, max_pf_delta_pct, min_model_profit_factor, checks, lossless_control, reasons)
+    if not _economic_direction_check(
+        ohlc_result, real_tick_result, checks, require_economic_direction,
+    ) and require_economic_direction:
+        reasons.append("economic_direction")
 
     # 3. Comportamiento — drawdown y numero de operaciones deben parecerse.
     tick_dd = _final_tick_drawdown_check(

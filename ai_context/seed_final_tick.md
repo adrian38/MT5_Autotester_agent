@@ -22,11 +22,14 @@ The 6M stage accepts only seeds whose current short probe is `accepted` or
 evaluation; a changed source seed therefore appears pending rather than reusing
 stale evidence. A failed short probe removes downstream 6M evidence.
 
-Both seed screens share the candidate Final Tick classification. Their purpose
-is to verify that OHLC reproduces Every Tick behavior closely enough. Trade-count
-and drawdown differences remain symmetric rejection criteria; score, net-profit,
-relative profit-factor differences, PF floors, and lossless economic controls
-are result diagnostics and do not prove behavioral divergence by themselves.
+Both seed screens reuse the candidate Final Tick classification but enable a
+seed-only strict economic-direction gate. Besides the symmetric trade-count and
+drawdown criteria, OHLC and Every Tick must stay on the same side of zero for
+score and normalized net profit, and on the same side of 1.0 for profit factor.
+The magnitude of score, net-profit and relative profit-factor differences, PF
+floors, and lossless economic controls remain diagnostics. Candidate Final Tick
+keeps its original behavioral-only contract; the stricter gate applies to both
+seed probe and seed long-window validation through the seed adapter.
 A valid Real Tick report whose only failed
 criterion is the absolute minimum trade sample is stored as
 `pending_tick_trades`, not `rejected`; an additional failed criterion still
