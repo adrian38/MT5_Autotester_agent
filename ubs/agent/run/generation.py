@@ -50,7 +50,7 @@ from ubs_agent_variants import (
     run_backtests,
 )
 
-from ubs_agent_run_setup import _AgentSetup
+from ubs.agent.run.setup import _AgentSetup
 
 
 @dataclass

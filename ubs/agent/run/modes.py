@@ -27,7 +27,7 @@ from ubs_agent_retry import (
 from ubs_agent_robustness import (
     evaluate_candidate_robustness,
 )
-from ubs_agent_run_config import regression_runtime
+from ubs.agent.run.config import regression_runtime
 from ubs_agent_seed_scores import (
     evaluate_seed_scores,
     rescore_seed_scores_only,

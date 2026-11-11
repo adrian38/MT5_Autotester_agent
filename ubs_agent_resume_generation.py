@@ -29,14 +29,14 @@ from ubs_agent_evaluate import (
 from ubs_agent_history import (
     evaluate_generation,
 )
-from ubs_agent_run_config import (
+from ubs.agent.run.config import (
     restore_run_unseeded_probabilities,
     restored_discovery_current_target_probability,
     restored_discovery_current_timeframe_probability,
     restored_discovery_exploitable_ratio,
     restored_discovery_universe_feedback_probability,
 )
-from ubs_agent_run_generation import (
+from ubs.agent.run.generation import (
     _choose_target,
     _generation_feedback,
     _next_seed_pool,

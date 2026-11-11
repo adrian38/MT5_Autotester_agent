@@ -35,7 +35,7 @@ from ubs_agent_policy import (
     production_viable_source_seeds,
     unseeded_universe_targets,
 )
-from ubs_agent_run_config import (
+from ubs.agent.run.config import (
     restore_run_unseeded_probabilities,
     restored_discovery_current_target_probability,
     restored_discovery_current_timeframe_probability,

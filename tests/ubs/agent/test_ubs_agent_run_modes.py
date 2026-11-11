@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import ubs_agent_run_modes as run_modes
+import ubs.agent.run.modes as run_modes
 
 
 MODE_FLAGS = (

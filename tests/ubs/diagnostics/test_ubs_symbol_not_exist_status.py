@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import ubs_agent
 import ubs_agent_universe
 import ubs_agent_sets
-import ubs_agent_run_config
+import ubs.agent.run.config
 import ubs_agent_robustness
 import ubs_agent_evaluate
 import ubs_agent_config
@@ -273,7 +273,7 @@ class RegressionRuntimeHookTests(unittest.TestCase):
             args = argparse.Namespace(assets=str(assets), symbol_map="")
             ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
-            runtime = ubs_agent_run_config.regression_runtime(args)
+            runtime = ubs.agent.run.config.regression_runtime(args)
 
             self.assertIsNotNone(runtime.missing_report_status)
             self.assertEqual(runtime.missing_report_status("XAUUSD"), "no_report")
@@ -283,10 +283,10 @@ class RegressionRuntimeHookTests(unittest.TestCase):
             ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
     def test_runtime_without_args_keeps_previous_behaviour(self) -> None:
-        self.assertIsNone(ubs_agent_run_config.regression_runtime().missing_report_status)
+        self.assertIsNone(ubs.agent.run.config.regression_runtime().missing_report_status)
 
     def test_runtime_exposes_the_stage_copy_that_repairs_spelling(self) -> None:
-        self.assertIs(ubs_agent_run_config.regression_runtime().write_stage_set, ubs_agent_sets.write_retry_set)
+        self.assertIs(ubs.agent.run.config.regression_runtime().write_stage_set, ubs_agent_sets.write_retry_set)
 
 
 

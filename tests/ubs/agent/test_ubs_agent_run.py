@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import ubs_agent_run
+import ubs.agent.run.main
 import ubs_agent_robustness
 
 
@@ -22,10 +22,10 @@ class AgentRunTests(unittest.TestCase):
                 prepared_manifest=root/'batch.json')
             api = SimpleNamespace(load_mutation_overrides=Mock())
             memory = Mock()
-            with (patch.object(ubs_agent_run, '_score_config_from_args', return_value=Mock()),
-                  patch.object(ubs_agent_run, 'AgentMemory', return_value=memory),
+            with (patch.object(ubs.agent.run.main, '_score_config_from_args', return_value=Mock()),
+                  patch.object(ubs.agent.run.main, 'AgentMemory', return_value=memory),
                   patch('ubs.prepared.run_prepared', return_value=7) as prepared):
-                result = ubs_agent_run.run_agent(args, api)
+                result = ubs.agent.run.main.run_agent(args, api)
         self.assertEqual(result, 7)
         self.assertIs(prepared.call_args.args[3], api)
         memory.close.assert_called_once_with()

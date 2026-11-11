@@ -35,7 +35,7 @@ from ubs_agent_evaluate import (
     select_next_generation_survivors,
     select_survivors,
 )
-from ubs_agent_run_modes import run_standalone_mode
+from ubs.agent.run.modes import run_standalone_mode
 from ubs_agent_policy import (
     apply_discovery_target_policy_schedule,
     discovery_ranked_seed_selection,
@@ -44,7 +44,7 @@ from ubs_agent_policy import (
     production_viable_source_seeds,
     unseeded_universe_targets,
 )
-from ubs_agent_run_config import build_run_config
+from ubs.agent.run.config import build_run_config
 from ubs_agent_seeds_plan import (
     TargetDiversityLimiter,
     apply_reserved_timeframe,
@@ -71,7 +71,7 @@ from ubs_agent_variants import (
     run_backtests,
 )
 
-from ubs_agent_run_setup import (  # noqa: F401
+from ubs.agent.run.setup import (  # noqa: F401
     _AgentSetup,
     _apply_discovery_mixes,
     _build_setup,
@@ -79,7 +79,7 @@ from ubs_agent_run_setup import (  # noqa: F401
     _print_pass_config,
     _print_universe_summary,
 )
-from ubs_agent_run_generation import _run_generations  # noqa: F401
+from ubs.agent.run.generation import _run_generations  # noqa: F401
 
 
 def _score_config_from_args(args: argparse.Namespace) -> ScoreConfig:

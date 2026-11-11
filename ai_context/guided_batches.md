@@ -1,7 +1,7 @@
 # Prepared Discovery batches
 
 The `ubs_agent.py` facade must pass its own module API into
-`ubs_agent_run.run_agent`. Prepared validation consumes reexported policy helpers
+`ubs.agent.run.main.run_agent`. Prepared validation consumes reexported policy helpers
 such as `load_mutation_overrides`; passing the split runner module breaks every
 prepared batch before a run is created.
 

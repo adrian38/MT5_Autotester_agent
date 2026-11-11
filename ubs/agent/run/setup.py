@@ -27,7 +27,7 @@ from ubs_agent_policy import (
     discovery_source_mix_feedback,
     discovery_target_policy_feedback,
 )
-from ubs_agent_run_config import build_run_config
+from ubs.agent.run.config import build_run_config
 from ubs_agent_seeds_plan import (
     asset_group_map,
     disabled_symbols_file_for_account,

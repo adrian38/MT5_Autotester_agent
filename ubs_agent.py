@@ -156,7 +156,7 @@ from ubs_agent_config import (
     diag_args_summary,
     diag_log,
 )
-from ubs_agent_run import (
+from ubs.agent.run.main import (
     run_agent,
 )
 
@@ -344,10 +344,10 @@ from ubs_agent_robustness import (  # noqa: F401
     evaluate_candidate_robustness,
     robust_status_pending_for_retry,
 )
-from ubs_agent_run import (  # noqa: F401
+from ubs.agent.run.main import (  # noqa: F401
     run_agent,
 )
-from ubs_agent_run_config import (  # noqa: F401
+from ubs.agent.run.config import (  # noqa: F401
     build_run_config,
     json_safe,
     regression_runtime,
