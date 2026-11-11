@@ -19,7 +19,7 @@ from ubs_agent import (
     recreate_work_dir,
     resolve_workspace_path,
 )
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 def _axi_tick_args() -> SimpleNamespace:

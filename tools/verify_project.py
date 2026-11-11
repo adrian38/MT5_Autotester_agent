@@ -32,7 +32,8 @@ def command_specs(*, include_full_suite: bool = True) -> list[CommandSpec]:
     ]
     if include_full_suite:
         specs.append(CommandSpec(
-            "suite IC", (python, "-m", "unittest", "discover", "-s", "tests"),
+            "suite IC",
+            (python, "-m", "unittest", "discover", "-s", "tests", "-t", "."),
         ))
     return specs
 

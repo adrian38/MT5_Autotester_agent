@@ -15,7 +15,7 @@ from portfolio_manager.ubs_portfolio import (
     optimize_portfolio,
     portfolio_margin_summary,
 )
-from tests.ubs_portfolio_fixtures import make_strategy
+from tests.ubs.portfolio.ubs_portfolio_fixtures import make_strategy
 
 
 class UBSPortfolioRepairTests(unittest.TestCase):

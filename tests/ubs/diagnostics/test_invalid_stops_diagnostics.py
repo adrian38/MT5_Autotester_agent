@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.test_ubs_agent_files import score
+from tests.ubs.agent.test_ubs_agent_files import score
 from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig

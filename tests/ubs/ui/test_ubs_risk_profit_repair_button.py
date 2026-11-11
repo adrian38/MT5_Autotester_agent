@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tests.ubs_risk_profit_repair_fixtures import SCHEMA, metrics, stored
+from tests.ubs.portfolio.ubs_risk_profit_repair_fixtures import SCHEMA, metrics, stored
 from ubs.risk_profit_repair import scan_risk_profit_restatements
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 

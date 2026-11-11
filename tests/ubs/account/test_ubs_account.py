@@ -19,7 +19,7 @@ from ubs.account import (
     normalize_account_type,
     normalize_broker,
 )
-from tests.ubs_account_fixtures import (
+from tests.ubs.account.ubs_account_fixtures import (
     _CollectingTree,
     _FakeAgent,
     _FakeMonthlyPortfolio,

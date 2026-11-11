@@ -24,7 +24,7 @@ from ubs_agent import (
     write_set_force_symbol,
 )
 from run_tests import infer_period_from_set, load_set_params, parse_symbol_map
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 from ubs_agent_seed_scores import _check_seed_sets, _filter_invalid_seeds, _score_seed_reports
 
 

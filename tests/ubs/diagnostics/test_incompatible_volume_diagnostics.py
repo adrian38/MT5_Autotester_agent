@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.test_ubs_agent_files import score
-from tests import test_invalid_stops_diagnostics as fixtures
+from tests.ubs.agent.test_ubs_agent_files import score
+from tests.ubs.diagnostics import test_invalid_stops_diagnostics as fixtures
 from ubs.tester_diagnostics import incompatible_volume_metadata
 from ubs_agent import evaluate_variant_report, rescore_candidate_scores_only, classify_zero_trade_robustness
 from ubs.score import ScoreConfig

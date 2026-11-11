@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests import PROJECT_ROOT
 from ubs.normalization import net_profit_normalization
 from ubs.score import (
     SCORE_FORMULA_VERSION,
@@ -160,7 +161,7 @@ class UBSScoreTests(unittest.TestCase):
             )
 
     def test_roboforex_profile_uses_contract_measured_symbol_factors(self) -> None:
-        base = Path(__file__).resolve().parent.parent
+        base = PROJECT_ROOT
         payload = json.loads(
             (base / "assets" / "roboforex_normalization.json").read_text(encoding="utf-8-sig")
         )
@@ -185,7 +186,7 @@ class UBSScoreTests(unittest.TestCase):
         )
 
     def test_ictrading_profile_uses_contract_measured_symbol_factors(self) -> None:
-        base = Path(__file__).resolve().parent.parent
+        base = PROJECT_ROOT
         payload = json.loads(
             (base / "assets" / "ictrading_normalization.json").read_text(encoding="utf-8-sig")
         )

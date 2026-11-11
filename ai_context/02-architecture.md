@@ -95,8 +95,18 @@
 |   |-- manager_node/            # Embedded manager-node tests and fixtures
 |   |-- portfolio/               # Report parsing and portfolio calculations
 |   |-- quality/                 # Repository guards and their baselines
+|   |-- ubs/                     # UBS domain tests
+|   |   |-- account/             # Broker/account isolation and migrations
+|   |   |-- agent/               # Agent orchestration and execution
+|   |   |-- diagnostics/         # Reports, symbols and terminal diagnostics
+|   |   |-- final_tick/          # Final Tick and regression stages
+|   |   |-- portfolio/           # UBS portfolio persistence and repair
+|   |   |-- scoring/             # Scores, normalization, selection and weights
+|   |   |-- seeds/               # Seed imports, metadata and evaluation
+|   |   |-- sets/                # Set rules, mutation and staging
+|   |   `-- ui/                  # UBS stage UI tests
 |   |-- ui/                      # App composition, paths, theme and settings
-|   `-- test_ubs_*.py            # UBS suites, pending their domain split
+|   `-- __init__.py              # Shared PROJECT_ROOT test helper
 |-- tools/
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
@@ -132,8 +142,10 @@ Tests are grouped by the subsystem they exercise. Fixtures stay beside the
 suite that owns them, and repository guard baselines live under
 `tests/quality/`. Subsystem groups are importable packages with an
 `__init__.py`, while
-`python -m unittest discover -s tests` remains the repository-wide discovery
+`python -m unittest discover -s tests -t .` remains the repository-wide discovery
 contract.
+The root of `tests/` contains no test modules; `tests/__init__.py` only exposes
+the repository root used by tests that inspect source files.
 
 ## Main Module Responsibilities
 

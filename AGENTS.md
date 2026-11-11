@@ -180,7 +180,7 @@ python -m tools.verify_project
 ```
 
 La primera ejecuta auditorías y guardas; la segunda añade
-`python -m unittest discover -s tests`. No usar `pytest`: no forma parte del
+`python -m unittest discover -s tests -t .`. No usar `pytest`: no forma parte del
 contrato instalado. La puerta no debe lanzar MT5 ni alterar memoria, reportes,
 sets o configuración operativa.
 

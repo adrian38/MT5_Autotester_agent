@@ -27,7 +27,7 @@ from ubs_agent import (
     unseeded_asset_force_probability,
     unseeded_timeframe_force_probability,
 )
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 class UBSAgentDiscoveryTests(unittest.TestCase):

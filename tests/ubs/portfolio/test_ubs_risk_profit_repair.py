@@ -13,7 +13,7 @@ from ubs.risk_profit_repair import (
     apply_risk_profit_restatements,
     scan_risk_profit_restatements,
 )
-from tests.ubs_risk_profit_repair_fixtures import (
+from tests.ubs.portfolio.ubs_risk_profit_repair_fixtures import (
     BASE_THRESHOLDS,
     BASE_WINDOW,
     LENIENT_THRESHOLDS,

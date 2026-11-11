@@ -15,7 +15,7 @@ from portfolio_manager.ubs_portfolio import (
     slice_strategy_sets_to_month,
     validate_strict_monthly_portfolio,
 )
-from tests.ubs_portfolio_fixtures import make_strategy
+from tests.ubs.portfolio.ubs_portfolio_fixtures import make_strategy
 from ubs.universe import load_asset_universe
 
 

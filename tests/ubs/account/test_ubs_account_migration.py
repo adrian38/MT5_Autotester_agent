@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.ubs_account_fixtures import _FakeAgent
+from tests.ubs.account.ubs_account_fixtures import _FakeAgent
 from ubs.account import (
     account_disabled_symbols_path,
     account_memory_path,

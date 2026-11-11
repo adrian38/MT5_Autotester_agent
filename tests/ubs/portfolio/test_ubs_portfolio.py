@@ -25,7 +25,7 @@ from portfolio_manager.ubs_portfolio import (
     summarize_robust_rows,
     validate_strict_monthly_portfolio,
 )
-from tests.ubs_portfolio_fixtures import make_strategy
+from tests.ubs.portfolio.ubs_portfolio_fixtures import make_strategy
 
 
 class UBSPortfolioOptimizerTests(unittest.TestCase):

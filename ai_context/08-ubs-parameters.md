@@ -424,4 +424,5 @@ Add the constants and the decision to `ubs/set_rules.py`, extend
 `apply_nfp_rules_text()` or add a sibling applied from
 `normalize_generated_set_text()`, add the keys to `RULE_LOCKED_KEYS` and to
 `ubs_generate_sets.FROZEN_EXACT`, cover it in
-`tests/test_ubs_set_rules.py`, and run `ubs_set_rules.py` over the history.
+`tests/ubs/sets/test_ubs_set_rules.py`, and run `ubs_set_rules.py` over the
+history.

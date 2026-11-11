@@ -22,7 +22,7 @@ from ubs_agent import (
     select_next_seed_survivors,
     select_survivors,
 )
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 class UBSAgentSelectionTests(unittest.TestCase):

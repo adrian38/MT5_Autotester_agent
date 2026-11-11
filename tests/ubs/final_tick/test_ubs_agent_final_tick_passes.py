@@ -24,7 +24,7 @@ from ubs_agent import (
     run_backtests,
     validate_final_tick_stage_dates,
 )
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 class UBSAgentFinalTickPassTests(unittest.TestCase):

@@ -19,7 +19,7 @@ from ubs_agent import (
     robust_status_pending_for_retry,
     rescore_final_tick_only,
 )
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 class _Cursor:

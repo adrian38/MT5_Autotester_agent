@@ -18,7 +18,7 @@ from ubs_agent import (
     reconcile_seed_eval_reports,
     tester_log_no_history_metadata,
 )
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 class UBSAgentStatusTests(unittest.TestCase):

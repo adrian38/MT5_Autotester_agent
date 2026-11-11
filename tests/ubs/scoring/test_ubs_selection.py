@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.ubs_selection_fixtures import metrics
+from tests.ubs.scoring.ubs_selection_fixtures import metrics
 from ubs.memory import AgentMemory
 from ubs.selection import (
     descendant_fitness_predictions,

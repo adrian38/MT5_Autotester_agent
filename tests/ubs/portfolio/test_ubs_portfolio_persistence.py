@@ -6,8 +6,8 @@ import unittest
 
 from portfolio_manager.ubs_portfolio import PortfolioType
 from ui.ubs_portfolio_logic import PORTFOLIO_TYPE_BATCH_SPECS, UBSPortfolioLogicMixin
-from tests.ubs_portfolio_fixtures import make_strategy
-from tests.ubs_portfolio_persistence_fixtures import _PortfolioLogic
+from tests.ubs.portfolio.ubs_portfolio_fixtures import make_strategy
+from tests.ubs.portfolio.ubs_portfolio_persistence_fixtures import _PortfolioLogic
 
 
 class UBSPortfolioPersistenceTests(unittest.TestCase):

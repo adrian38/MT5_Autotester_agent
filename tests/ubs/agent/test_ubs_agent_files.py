@@ -29,7 +29,7 @@ from ubs_agent import (
     select_next_generation_survivors,
 )
 from run_tests import normalize_set_symbol, parse_symbol_map
-from tests.ubs_agent_files_fixtures import score
+from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 def _final_tick_reconcile_fixture(root: Path):
