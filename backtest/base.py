@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 CONFIG_DIR = BASE_DIR / "configs"

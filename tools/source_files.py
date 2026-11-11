@@ -6,8 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNED_ROOTS = (
-    "manager_node_runtime", "parsers", "portfolio_manager", "tests", "tools",
-    "ubs", "ui",
+    "backtest", "manager_node_runtime", "parsers", "portfolio_manager", "tests",
+    "tools", "ubs", "ui",
 )
 SKIP_PARTS = {
     ".git", "__pycache__", ".venv", "build", "build_installer", "configs",

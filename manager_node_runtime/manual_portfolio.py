@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from portfolio_manager.ubs_portfolio import PortfolioResult, StrategyAllocation
-from run_tests_experts import safe_name
-from run_tests_symbols import infer_tester_fields_from_set, load_set_params
+from backtest.experts import safe_name
+from backtest.symbols import infer_tester_fields_from_set, load_set_params
 from ubs.db import connect_memory
 from ubs.set_rules import normalize_generated_set_text
 from ubs.set_utils import read_set_with_encoding, set_use_every_tick_text, write_set_text

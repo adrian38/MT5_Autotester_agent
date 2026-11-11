@@ -10,7 +10,7 @@
 |-- ubs_prepare_sets.py          # UBS source-set normalization/import helper (CLI)
 |-- compile_mq5.py               # MetaEditor compile runner (CLI)
 |-- compile_and_backtest.py      # Orchestrates compile then backtest (CLI)
-|-- run_tests.py                 # Batch Strategy Tester runner (CLI)
+|-- run_tests.py                 # Batch Strategy Tester runner (CLI facade over backtest/)
 |-- mt5_env.py                   # .env/env-var path resolution helpers
 |-- telegram_notify.py           # Optional Telegram notification helper
 |-- pyproject.toml               # Project metadata and dependencies
@@ -48,6 +48,20 @@
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
 |   `-- ubs_universe_logic.py    # UBS Universe enable/weights logic
+|
+|-- backtest/                    # Strategy Tester runner implementation
+|   |-- __init__.py
+|   |-- base.py                  # BASE_DIR, tester constants and shared dataclasses
+|   |-- cli.py                   # Runner argument parser
+|   |-- experts.py               # Expert/set discovery and tester .ini creation
+|   |-- logging.py               # Run logger and action rate limiting
+|   |-- main.py                  # Job building, validation and run orchestration
+|   |-- parallel.py              # Runner failure summaries for parallel runs
+|   |-- reports.py               # Report discovery, journals and Model=4 history
+|   |-- runner.py                # Single job execution and parallel dispatch
+|   |-- symbols.py               # Symbol/timeframe inference, aliases and suffixes
+|   |-- terminals.py             # Terminal profiles, data dirs and release waits
+|   `-- watchdog.py              # MT5 stall detection, restarts and history sync
 |
 |-- ubs/                         # UBS agent support library
 |   |-- __init__.py
@@ -161,6 +175,15 @@ the repository root used by tests that inspect source files.
 ## Main Module Responsibilities
 
 ### `run_tests.py`
+
+The implementation lives in the `backtest/` package; `run_tests.py` keeps the
+`main()` entry point and re-exports every public name so `import run_tests`
+callers, the `run-tests` console script and the PyInstaller build are unchanged.
+Each module keeps its own `REPORT_DIR`/`CONFIG_DIR`/`LOG_DIR` reference, so the
+launchers that redirect those folders (the live audit tester and the manual
+check) must repoint `run_tests` **and** every `backtest.*` module in
+`sys.modules`; repointing only the facade leaves the reports in the project
+folders.
 
 Owns the Strategy Tester workflow:
 

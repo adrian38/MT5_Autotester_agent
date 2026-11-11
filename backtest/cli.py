@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from run_tests_base import TEMPLATE_FILE, UI_SETTINGS_FILE
+from backtest.base import TEMPLATE_FILE, UI_SETTINGS_FILE
 
 
 def _add_terminal_arguments(parser: argparse.ArgumentParser) -> None:

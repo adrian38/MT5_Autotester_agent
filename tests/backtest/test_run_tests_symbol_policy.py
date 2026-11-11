@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import run_tests
-import run_tests_runner
+from backtest import runner as run_tests_runner
 
 
 class ListLogger:

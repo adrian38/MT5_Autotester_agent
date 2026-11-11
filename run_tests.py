@@ -18,7 +18,7 @@ from pathlib import Path
 from mt5_env import MT5_TERMINAL_ENV, terminal_path_from_env
 
 # Reexportados para no cambiar a los consumidores de `run_tests`.
-from run_tests_base import (  # noqa: F401
+from backtest.base import (  # noqa: F401
     BASE_DIR,
     CONFIG_DIR,
     DEFAULT_MT5_PATHS,
@@ -49,19 +49,19 @@ from run_tests_base import (  # noqa: F401
     TerminalProfile,
     TesterSettings,
 )
-from run_tests_cli import parse_args  # noqa: F401
-from run_tests_logging import ActionRateLimiter, RunLogger  # noqa: F401
-from run_tests_watchdog import (  # noqa: F401
+from backtest.cli import parse_args  # noqa: F401
+from backtest.logging import ActionRateLimiter, RunLogger  # noqa: F401
+from backtest.watchdog import (  # noqa: F401
     terminate_process_tree,
     wait_for_mt5_process,
 )
-from run_tests_runner import (  # noqa: F401
+from backtest.runner import (  # noqa: F401
     quote_command,
     run_backtest_job,
     run_jobs_parallel,
     run_test,
 )
-from run_tests_terminals import (  # noqa: F401
+from backtest.terminals import (  # noqa: F401
     TerminalStillRunningError,
     discover_terminal_data_dirs,
     find_matching_running_terminals,
@@ -86,7 +86,7 @@ from run_tests_terminals import (  # noqa: F401
     wait_for_terminal_release,
     get_running_terminal_processes,
 )
-from run_tests_experts import (  # noqa: F401
+from backtest.experts import (  # noqa: F401
     TESTER_DEFAULTS,
     copy_set_file_to_tester_profiles,
     create_ini,
@@ -108,7 +108,7 @@ from run_tests_experts import (  # noqa: F401
     safe_name,
     validate_terminal_profiles,
 )
-from run_tests_reports import (  # noqa: F401
+from backtest.reports import (  # noqa: F401
     _mt5_report_integer_metric,
     _read_mt5_report_text,
     copy_reports_to_project,
@@ -137,7 +137,7 @@ from run_tests_reports import (  # noqa: F401
     write_tester_journal_sidecars,
     write_tester_journal_snapshot,
 )
-from run_tests_symbols import (  # noqa: F401
+from backtest.symbols import (  # noqa: F401
     EXCHANGE_SYMBOL_SUFFIXES,
     EXPLICIT_SYMBOLS,
     FOREX_SYMBOLS,
@@ -160,7 +160,7 @@ from run_tests_symbols import (  # noqa: F401
     read_set_text,
     validate_set_symbol,
 )
-from run_tests_main import (  # noqa: F401
+from backtest.main import (  # noqa: F401
     build_jobs,
     expert_sources,
     load_run_template,

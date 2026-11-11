@@ -9,9 +9,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from run_tests_parallel import run_parallel_jobs
+from backtest.parallel import run_parallel_jobs
 
-from run_tests_base import (
+from backtest.base import (
     MODEL4_NO_HISTORY_EXIT_CODE,
     MODEL4_NO_HISTORY_RETRY_DELAY_SECONDS,
     NO_WINDOW,
@@ -24,17 +24,17 @@ from run_tests_base import (
     TerminalProfile,
     TesterSettings,
 )
-from run_tests_experts import (
+from backtest.experts import (
     copy_set_file_to_tester_profiles,
     create_ini,
     job_uses_profile_ubs_expert,
     profile_expert_for_job,
 )
-from run_tests_logging import (
+from backtest.logging import (
     _WATCHDOG_RESTART_LIMITER,
     _WATCHDOG_TERMINATE_LIMITER,
 )
-from run_tests_reports import (
+from backtest.reports import (
     copy_reports_to_project,
     delete_test_artifacts,
     delete_existing_report_files,
@@ -58,8 +58,8 @@ from run_tests_reports import (
     write_tester_journal_sidecars,
     write_tester_journal_snapshot,
 )
-from run_tests_watchdog import wait_for_mt5_process
-from run_tests_terminals import (
+from backtest.watchdog import wait_for_mt5_process
+from backtest.terminals import (
     TerminalStillRunningError,
     log_runner_diagnostics,
     settings_from_profile,

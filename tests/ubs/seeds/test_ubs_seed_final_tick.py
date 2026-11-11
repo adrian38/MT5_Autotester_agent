@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run_tests_symbols import infer_period_from_path
+from backtest.symbols import infer_period_from_path
 from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs.agent.final_tick.pass_stage import _final_tick_set_names
 from ubs.agent.seeds.final_tick import (

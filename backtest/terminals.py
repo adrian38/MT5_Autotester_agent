@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from mt5_env import MT5_TERMINAL_ENV, terminal_path_from_env
-from run_tests_base import (
+from backtest.base import (
     DEFAULT_MT5_PATHS,
     DEFAULT_TESTER_MAX_RUNTIME_SECONDS,
     DEFAULT_TESTER_STALL_AFTER_SECONDS,

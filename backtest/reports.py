@@ -10,13 +10,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from run_tests_base import (
+from backtest.base import (
     BASE_DIR,
     MT5_TESTER_ABORT_CODES,
     REPORT_DIR,
     HistoryCacheRotation,
 )
-from run_tests_symbols import normalize_set_symbol
+from backtest.symbols import normalize_set_symbol
 
 
 def delete_test_artifacts(ini_path: Path, report_path: Path, logger: RunLogger) -> None:

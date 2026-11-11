@@ -4,8 +4,8 @@ import configparser
 from unittest.mock import patch
 
 import run_tests
-import run_tests_runner
-import run_tests_reports
+from backtest import reports as run_tests_reports
+from backtest import runner as run_tests_runner
 from tests.backtest.run_tests_report_fixtures import ListLogger
 
 

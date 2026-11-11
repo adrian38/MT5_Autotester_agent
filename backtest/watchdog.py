@@ -8,14 +8,14 @@ import sys
 import time
 from pathlib import Path
 
-from run_tests_base import (
+from backtest.base import (
     NO_WINDOW,
     REPORT_SAVE_CHECK_INTERVAL,
     REPORT_SAVE_STALL_SECONDS,
     TESTER_STUCK_MARKERS,
 )
-from run_tests_logging import _WATCHDOG_TERMINATE_LIMITER
-from run_tests_reports import (
+from backtest.logging import _WATCHDOG_TERMINATE_LIMITER
+from backtest.reports import (
     find_tester_journal_log,
     fresh_report_signature,
     read_tester_journal_tail,

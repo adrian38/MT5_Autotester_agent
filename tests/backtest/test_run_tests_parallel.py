@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import dataclass
 
-from run_tests_parallel import run_parallel_jobs, runner_failure_summary
+from backtest.parallel import run_parallel_jobs, runner_failure_summary
 
 
 @dataclass(frozen=True)

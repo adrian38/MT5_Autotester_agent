@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 
 from mt5_env import MT5_TERMINAL_ENV
-from run_tests_base import (
+from backtest.base import (
     BASE_DIR,
     EXPERTS_FILE,
     RUNNING_TERMINAL_EXIT_CODE,
@@ -13,8 +13,8 @@ from run_tests_base import (
     TerminalProfile,
     TesterSettings,
 )
-from run_tests_logging import RunLogger
-from run_tests_experts import (
+from backtest.logging import RunLogger
+from backtest.experts import (
     copy_set_file_to_tester_profiles,
     create_ini,
     expert_from_cli_value,
@@ -26,14 +26,14 @@ from run_tests_experts import (
     missing_experts_in_terminal_data_dirs,
     validate_terminal_profiles,
 )
-from run_tests_reports import (
+from backtest.reports import (
     delete_test_artifacts,
     ini_symbol_missing_from_universe,
     load_universe_symbols,
 )
-from run_tests_runner import run_jobs_parallel, run_test
-from run_tests_symbols import load_symbol_suffix_universe, parse_symbol_map
-from run_tests_terminals import (
+from backtest.runner import run_jobs_parallel, run_test
+from backtest.symbols import load_symbol_suffix_universe, parse_symbol_map
+from backtest.terminals import (
     discover_terminal_data_dirs,
     find_matching_running_terminals,
     find_mt5_path,

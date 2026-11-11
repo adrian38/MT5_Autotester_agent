@@ -12,7 +12,7 @@ import configparser
 import re
 from pathlib import Path
 
-from run_tests_symbols import normalize_set_symbol
+from backtest.symbols import normalize_set_symbol
 
 
 _UNSUFFIXED_AXI_SERVERS = frozenset({"axi-us50-live"})

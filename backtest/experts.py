@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from run_tests_base import (
+from backtest.base import (
     CONFIG_DIR,
     REPORT_DIR,
     EXPERTS_FILE,
@@ -17,7 +17,7 @@ from run_tests_base import (
     BacktestJob,
     TerminalProfile,
 )
-from run_tests_symbols import (
+from backtest.symbols import (
     apply_symbol_map,
     apply_symbol_suffix,
     infer_period_from_path,
@@ -28,8 +28,8 @@ from run_tests_symbols import (
     read_set_text,
     validate_set_symbol,
 )
-from run_tests_reports import delete_test_artifacts
-from run_tests_terminals import (
+from backtest.reports import delete_test_artifacts
+from backtest.terminals import (
     profile_data_dir,
     terminal_data_dir_from_experts_dir,
 )

@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import run_tests_watchdog
+from backtest import watchdog as run_tests_watchdog
 
 
 class HistorySyncSignatureTests(unittest.TestCase):

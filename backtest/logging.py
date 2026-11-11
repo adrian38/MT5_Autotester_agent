@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from run_tests_base import (
+from backtest.base import (
     LOG_DIR,
     RUN_LOG_QUEUE_MAX_BATCHES,
     WATCHDOG_RESTART_MIN_INTERVAL_SECONDS,
