@@ -3,8 +3,8 @@ from __future__ import annotations
 
 
 from ubs.regression import evaluate_candidate_regression, rescore_regression_only
-from ubs_agent_final_tick_entry import evaluate_candidate_final_tick
-from ubs_agent_final_tick_rescore import (
+from ubs.agent.final_tick.entry import evaluate_candidate_final_tick
+from ubs.agent.final_tick.rescore import (
     rescore_final_tick_only,
 )
 from ubs_agent_history import (

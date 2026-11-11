@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ubs.path_utils import resolve_workspace_path
-from ubs_agent_final_tick import normalize_final_tick_stage
-from ubs_agent_final_tick_entry import evaluate_candidate_final_tick
+from ubs.agent.final_tick.evaluate import normalize_final_tick_stage
+from ubs.agent.final_tick.entry import evaluate_candidate_final_tick
 
 
 SEED_FINAL_TICK_TABLES = {

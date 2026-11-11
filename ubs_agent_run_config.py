@@ -55,7 +55,7 @@ from ubs_agent_evaluate import (
     recreate_work_dir,
     remove_report_artifacts,
 )
-from ubs_agent_final_tick import (
+from ubs.agent.final_tick.evaluate import (
     _read_ohlc_report_cfg_dates,
 )
 from ubs_agent_reports import (

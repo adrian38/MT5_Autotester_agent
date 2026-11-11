@@ -36,8 +36,8 @@ from ubs.account import account_memory_path, normalize_account_type, normalize_b
 from ubs.db import connect_memory
 from ubs.score import ScoreResult
 from ubs_agent_config import LosslessControlGate
-from ubs_agent_final_tick import final_tick_status_from_similarity
-from ubs_agent_final_tick_similarity import DEFAULT_MAX_DD_GAP_PP, final_tick_similarity
+from ubs.agent.final_tick.evaluate import final_tick_status_from_similarity
+from ubs.agent.final_tick.similarity import DEFAULT_MAX_DD_GAP_PP, final_tick_similarity
 
 
 STAGE_TABLES = (

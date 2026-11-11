@@ -1,8 +1,8 @@
-import ubs_agent_final_tick_entry
+import ubs.agent.final_tick.entry
 import ubs_agent_sets
-import ubs_agent_final_tick
-import ubs_agent_final_tick_ohlc
-import ubs_agent_final_tick_pass
+import ubs.agent.final_tick.evaluate
+import ubs.agent.final_tick.ohlc
+import ubs.agent.final_tick.pass_stage
 import ubs_agent_universe
 import contextlib
 import io
@@ -189,20 +189,20 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             )
             recorder = Mock()
             with (
-                patch.object(ubs_agent_final_tick_ohlc, "find_report_for_set", return_value=report),
+                patch.object(ubs.agent.final_tick.ohlc, "find_report_for_set", return_value=report),
                 patch.object(
-                    ubs_agent_final_tick_ohlc, "score_report_file",
+                    ubs.agent.final_tick.ohlc, "score_report_file",
                     return_value=score(
                         -75.0, symbol="BTCUSD", timeframe="H1", trades=0,
                         history_quality=0.0, accepted=False,
                     ),
                 ),
                 patch.object(
-                    ubs_agent_final_tick_ohlc, "tester_log_no_history_metadata",
+                    ubs.agent.final_tick.ohlc, "tester_log_no_history_metadata",
                     return_value={"reasons": ["no_history_data"]},
                 ),
             ):
-                result = ubs_agent_final_tick_ohlc._fresh_ohlc_result(
+                result = ubs.agent.final_tick.ohlc._fresh_ohlc_result(
                     args, ScoreConfig(), {}, {"id": 85666}, variant, 0.0, 4, recorder,
                 )
 
@@ -243,7 +243,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
                     deferred_out.extend([{"id": 1}, {"id": 2}])
             return 0
 
-        with patch("ubs_agent_final_tick_entry._evaluate_candidate_final_tick_pass", side_effect=fake_pass):
+        with patch("ubs.agent.final_tick.entry._evaluate_candidate_final_tick_pass", side_effect=fake_pass):
             code = evaluate_candidate_final_tick(args, Mock(), ScoreConfig())
 
         self.assertEqual(code, 0)
@@ -260,7 +260,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
         )
 
         with patch(
-            "ubs_agent_final_tick_entry._evaluate_candidate_final_tick_pass", return_value=0
+            "ubs.agent.final_tick.entry._evaluate_candidate_final_tick_pass", return_value=0
         ) as pass_mock:
             self.assertEqual(evaluate_candidate_final_tick(args, Mock(), ScoreConfig()), 0)
         self.assertEqual(pass_mock.call_count, 1)
@@ -271,7 +271,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             return 1
 
         with patch(
-            "ubs_agent_final_tick_entry._evaluate_candidate_final_tick_pass", side_effect=failing_pass
+            "ubs.agent.final_tick.entry._evaluate_candidate_final_tick_pass", side_effect=failing_pass
         ) as pass_mock:
             self.assertEqual(evaluate_candidate_final_tick(args, Mock(), ScoreConfig()), 1)
         self.assertEqual(pass_mock.call_count, 1)
@@ -360,11 +360,11 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             )
             output = io.StringIO()
             with (
-                patch("ubs_agent_final_tick_pass.split_retired_symbols", side_effect=lambda r, _a: (r, [])),
-                patch("ubs_agent_final_tick_pass.variant_from_candidate_row", return_value=variant),
+                patch("ubs.agent.final_tick.pass_stage.split_retired_symbols", side_effect=lambda r, _a: (r, [])),
+                patch("ubs.agent.final_tick.pass_stage.variant_from_candidate_row", return_value=variant),
                 patch("ubs_agent_sets.write_set_use_every_tick"),
                 patch(
-                    "ubs_agent_final_tick._read_ohlc_report_cfg_dates",
+                    "ubs.agent.final_tick.evaluate._read_ohlc_report_cfg_dates",
                     return_value=("2026.01.01", "2026.06.30"),
                 ),
                 contextlib.redirect_stdout(output),

@@ -1,6 +1,6 @@
-import ubs_agent_final_tick_pass
-import ubs_agent_final_tick
-import ubs_agent_final_tick_rescore
+import ubs.agent.final_tick.pass_stage
+import ubs.agent.final_tick.evaluate
+import ubs.agent.final_tick.rescore
 import ubs_agent_reports
 import json
 import tempfile
@@ -138,11 +138,11 @@ class UBSAgentReconcileTests(unittest.TestCase):
                 policy="generated",
             )
             with (
-                patch("ubs_agent_final_tick_rescore.variant_from_candidate_row", return_value=variant),
-                patch("ubs_agent_final_tick_rescore._read_ohlc_report_cfg_dates", return_value=("", "")),
-                patch("ubs_agent_final_tick_rescore.score_report_file", return_value=score(80.0, symbol="EURUSD", timeframe="H1", trades=10)),
-                patch("ubs_agent_final_tick_rescore.report_matches_variant", return_value=(True, "")),
-                patch("ubs_agent_final_tick_rescore._evaluate_final_tick_tick_report") as evaluate_tick,
+                patch("ubs.agent.final_tick.rescore.variant_from_candidate_row", return_value=variant),
+                patch("ubs.agent.final_tick.rescore._read_ohlc_report_cfg_dates", return_value=("", "")),
+                patch("ubs.agent.final_tick.rescore.score_report_file", return_value=score(80.0, symbol="EURUSD", timeframe="H1", trades=10)),
+                patch("ubs.agent.final_tick.rescore.report_matches_variant", return_value=(True, "")),
+                patch("ubs.agent.final_tick.rescore._evaluate_final_tick_tick_report") as evaluate_tick,
             ):
                 rescore_final_tick_only(args, _RowsMemory([row]), ScoreConfig())
 
@@ -167,18 +167,18 @@ class UBSAgentReconcileTests(unittest.TestCase):
                 policy="generated",
             )
             with (
-                patch("ubs_agent_final_tick_rescore.find_report_for_set", side_effect=[ohlc_report, tick_report]),
+                patch("ubs.agent.final_tick.rescore.find_report_for_set", side_effect=[ohlc_report, tick_report]),
                 patch(
-                    "ubs_agent_final_tick_rescore._read_ohlc_report_cfg_dates",
+                    "ubs.agent.final_tick.rescore._read_ohlc_report_cfg_dates",
                     return_value=("2026.01.01", "2026.06.30"),
                 ),
-                patch("ubs_agent_final_tick_rescore.variant_from_candidate_row", return_value=variant),
+                patch("ubs.agent.final_tick.rescore.variant_from_candidate_row", return_value=variant),
                 patch(
-                    "ubs_agent_final_tick_rescore.score_report_file",
+                    "ubs.agent.final_tick.rescore.score_report_file",
                     return_value=score(80.0, symbol="EURUSD", timeframe="H1", trades=10),
                 ) as score_report,
-                patch("ubs_agent_final_tick_rescore.report_matches_variant", return_value=(True, "")),
-                patch("ubs_agent_final_tick_rescore._evaluate_final_tick_tick_report", return_value=True) as evaluate_tick,
+                patch("ubs.agent.final_tick.rescore.report_matches_variant", return_value=(True, "")),
+                patch("ubs.agent.final_tick.rescore._evaluate_final_tick_tick_report", return_value=True) as evaluate_tick,
             ):
                 reconcile_final_tick_reports(
                     _PendingRowMemory(source_set),
@@ -222,7 +222,7 @@ class UBSAgentReconcileTests(unittest.TestCase):
             latest_run=lambda: None,
             path=Path("memory.sqlite"),
         )
-        with patch("ubs_agent_final_tick_pass.reconcile_final_tick_reports", return_value={}) as reconcile:
+        with patch("ubs.agent.final_tick.pass_stage.reconcile_final_tick_reports", return_value={}) as reconcile:
             code = evaluate_candidate_final_tick(args, memory, ScoreConfig())
 
         self.assertEqual(code, 0)
@@ -261,7 +261,7 @@ class UBSAgentReconcileTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with patch(
-                "ubs_agent_final_tick.score_report_file",
+                "ubs.agent.final_tick.evaluate.score_report_file",
                 return_value=score(-55.0, symbol="", timeframe="M0", trades=0, history_quality=0.0),
             ):
                 handled = _evaluate_final_tick_tick_report(
@@ -302,7 +302,7 @@ class UBSAgentReconcileTests(unittest.TestCase):
         status_counts: dict[str, int] = {}
 
         with patch(
-            "ubs_agent_final_tick.score_report_file",
+            "ubs.agent.final_tick.evaluate.score_report_file",
             return_value=score(
                 -55.0,
                 symbol="XAUUSD.sa",

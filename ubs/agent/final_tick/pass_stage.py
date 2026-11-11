@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from run_tests import RUNNING_TERMINAL_EXIT_CODE, parse_symbol_map
-from ubs_agent_final_tick_ohlc import (
+from ubs.agent.final_tick.ohlc import (
     _final_tick_rows_in_scope,
     _final_tick_run_ohlc,
     collect_final_tick_ohlc_results,
@@ -26,7 +26,7 @@ from ubs_agent_evaluate import (
     recreate_work_dir,
     remove_report_artifacts,
 )
-from ubs_agent_final_tick import (
+from ubs.agent.final_tick.evaluate import (
     _evaluate_final_tick_tick_report,
     _read_ohlc_report_cfg_dates,
     final_tick_dates_match,
@@ -39,7 +39,7 @@ from ubs_agent_final_tick import (
     normalize_final_tick_stage,
     validate_final_tick_stage_dates,
 )
-from ubs_agent_final_tick_rescore import (
+from ubs.agent.final_tick.rescore import (
     reconcile_final_tick_reports,
 )
 from ubs_agent_reports import find_report_for_set
@@ -481,5 +481,4 @@ def _evaluate_candidate_final_tick_pass(
         copied, final_dir, ohlc_dir, real_tick_dir, ohlc_sets_unchanged,
         stored_dates_match, resume_pending_dir, final_tick_stage,
     )
-
 

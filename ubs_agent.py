@@ -250,7 +250,7 @@ from ubs_agent_evaluate import (  # noqa: F401
     select_next_seed_survivors,
     select_survivors,
 )
-from ubs_agent_final_tick import (  # noqa: F401
+from ubs.agent.final_tick.evaluate import (  # noqa: F401
     FINAL_TICK_PENDING_HISTORY_REASONS,
     _evaluate_final_tick_tick_report,
     _read_ohlc_report_cfg_dates,
@@ -268,11 +268,11 @@ from ubs_agent_final_tick import (  # noqa: F401
     normalize_final_tick_stage,
     validate_final_tick_stage_dates,
 )
-from ubs_agent_final_tick_entry import evaluate_candidate_final_tick  # noqa: F401
-from ubs_agent_final_tick_pass import (  # noqa: F401
+from ubs.agent.final_tick.entry import evaluate_candidate_final_tick  # noqa: F401
+from ubs.agent.final_tick.pass_stage import (  # noqa: F401
     _evaluate_candidate_final_tick_pass,
 )
-from ubs_agent_final_tick_rescore import (  # noqa: F401
+from ubs.agent.final_tick.rescore import (  # noqa: F401
     _rescore_final_tick_from_reports,
     reconcile_final_tick_reports,
     rescore_final_tick_only,

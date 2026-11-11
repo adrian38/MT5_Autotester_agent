@@ -11,8 +11,8 @@ from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_can
 from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, score_report_file
-from ubs_agent_final_tick_similarity import DEFAULT_MAX_DD_GAP_PP
-from ubs_agent_final_tick import (
+from ubs.agent.final_tick.similarity import DEFAULT_MAX_DD_GAP_PP
+from ubs.agent.final_tick.evaluate import (
     _evaluate_final_tick_tick_report,
     _read_ohlc_report_cfg_dates,
     final_tick_ohlc_trades_pending_payload,

@@ -6,9 +6,9 @@ import sqlite3
 
 from ubs.memory import AgentMemory
 from ubs.score import ScoreConfig
-from ubs_agent_final_tick import final_tick_stage_label, normalize_final_tick_stage
+from ubs.agent.final_tick.evaluate import final_tick_stage_label, normalize_final_tick_stage
 
-from ubs_agent_final_tick_pass import _evaluate_candidate_final_tick_pass
+from ubs.agent.final_tick.pass_stage import _evaluate_candidate_final_tick_pass
 
 
 def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:

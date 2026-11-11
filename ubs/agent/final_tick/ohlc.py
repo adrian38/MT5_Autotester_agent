@@ -15,7 +15,7 @@ from ubs_agent_evaluate import (
     prepare_final_tick_exec_dir,
     remove_report_artifacts,
 )
-from ubs_agent_final_tick import (
+from ubs.agent.final_tick.evaluate import (
     _read_ohlc_report_cfg_dates,
     final_tick_dates_match,
     final_tick_ohlc_retry_exhausted_for_dates,
