@@ -326,7 +326,7 @@ from ubs.agent.rescore.main import (  # noqa: F401
     rescore_robustness_only,
     robustness_degradation_config,
 )
-from ubs_agent_resume import (  # noqa: F401
+from ubs.agent.resume.main import (  # noqa: F401
     resume_last_run,
 )
 from ubs.agent.evaluation.retry import (  # noqa: F401

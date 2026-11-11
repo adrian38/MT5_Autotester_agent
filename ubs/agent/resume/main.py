@@ -70,7 +70,7 @@ from ubs.agent.evaluation.variants import (
 )
 
 
-from ubs_agent_resume_generation import (
+from ubs.agent.resume.generation import (
     build_resume_context,
     latest_run_seeds,
     resume_generations,

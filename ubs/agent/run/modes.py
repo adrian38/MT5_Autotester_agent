@@ -14,7 +14,7 @@ from ubs.agent.rescore.main import (
     rescore_candidate_scores_only,
     rescore_robustness_only,
 )
-from ubs_agent_resume import (
+from ubs.agent.resume.main import (
     resume_last_run,
 )
 from ubs.agent.evaluation.retry import (

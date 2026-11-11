@@ -56,6 +56,7 @@
 |   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
 |   |   |-- generation/          # Target policies, universe and set generation
 |   |   |-- rescore/             # Candidate and robustness rescoring
+|   |   |-- resume/              # Cycle resume and regeneration
 |   |   |-- run/                 # Cycle configuration, setup and execution
 |   |   `-- seeds/               # Seed planning, scoring, retry and Final Tick
 |   |-- models.py                # Shared Seed/Variant dataclasses
