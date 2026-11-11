@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
-COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
+COMPILE_ROOT_FILE = BASE_DIR / "config" / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 TRUE_VALUES = {"1", "true", "yes", "on", "si"}

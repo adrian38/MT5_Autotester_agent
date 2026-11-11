@@ -73,19 +73,29 @@ Copy-Item -LiteralPath (Join-Path $PyInstallerOut "compile_mq5.exe") -Destinatio
 Copy-Item -LiteralPath (Join-Path $PyInstallerOut "run_tests.exe") -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $PyInstallerOut "compile_and_backtest.exe") -Destination $StageDir
 
+# A la raiz de la instalacion: lo que la aplicacion lee de `BASE_DIR`, mas el
+# ejemplo de `.env`, que se copia a mano una vez y por eso viaja al lado.
 $contentFiles = @(
     "README.md",
     "config/.env.example",
     ".env",
-    "tester_template.ini",
-    "compile_root.txt",
-    "experts_root.txt",
-    "experts_list.txt"
+    "tester_template.ini"
 )
 foreach ($file in $contentFiles) {
     $source = Join-Path $Root $file
     if (Test-Path $source) {
         Copy-Item -LiteralPath $source -Destination $StageDir -Force
+    }
+}
+
+# A `config/` de la instalacion: las tres listas que edita el usuario, que es
+# donde las buscan `backtest/base.py`, `compile_mq5.py` y la interfaz.
+$ConfigDest = Join-Path $StageDir "config"
+New-Item -ItemType Directory -Path $ConfigDest -Force | Out-Null
+foreach ($file in @("compile_root.txt", "experts_root.txt", "experts_list.txt")) {
+    $source = Join-Path $Root (Join-Path "config" $file)
+    if (Test-Path $source) {
+        Copy-Item -LiteralPath $source -Destination $ConfigDest -Force
     }
 }
 

@@ -7,7 +7,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
-COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
+COMPILE_ROOT_FILE = BASE_DIR / "config" / "compile_root.txt"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mt5-path", help="Ruta completa a terminal64.exe.")
     parser.add_argument("--data-dir", help="Carpeta de datos del terminal MT5.")
     parser.add_argument("--metaeditor-path", help="Ruta completa a MetaEditor64.exe.")
-    parser.add_argument("--source-dir", help="Carpeta raiz de .mq5/.ex5. Si no se indica, lee compile_root.txt.")
+    parser.add_argument("--source-dir", help="Carpeta raiz de .mq5/.ex5. Si no se indica, lee config/compile_root.txt.")
     parser.add_argument("--source-file", help="Nombre o ruta de un .mq5 concreto dentro de --source-dir.")
     parser.add_argument("--template", help="Archivo .ini general para backtest.")
     parser.add_argument("--symbol-suffix", default="", help="Sufijo a agregar al simbolo del template.")

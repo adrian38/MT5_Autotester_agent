@@ -90,11 +90,11 @@ machine-specific absolute paths.
 
 The project also uses simple text files for source discovery:
 
-- `compile_root.txt`: first active non-comment line points to `.mq5` source
+- `config/compile_root.txt`: first active non-comment line points to `.mq5` source
   directory.
-- `experts_root.txt`: first active non-comment line points to `.ex5` discovery
+- `config/experts_root.txt`: first active non-comment line points to `.ex5` discovery
   directory.
-- `experts_list.txt`: explicit `.ex5` paths relative to MT5 `MQL5/Experts`.
+- `config/experts_list.txt`: explicit `.ex5` paths relative to MT5 `MQL5/Experts`.
 
 ## Generated Directories
 

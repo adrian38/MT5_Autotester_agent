@@ -19,7 +19,7 @@ requirement changes or a debt item is opened/closed.
   `shutil.which("MetaEditor64.exe")`.
 - **FR-1.1.3** Source discovery for batch compilation MUST follow: CLI
   `--source-file` (single) → `--source-dir` → first active line of
-  `compile_root.txt` → current directory.
+  `config/compile_root.txt` → current directory.
 - **FR-1.1.4** Compilation MUST always be sequential, never concurrent, regardless
   of multiterminal settings.
 - **FR-1.1.5** Per-file compile logs MUST be written under `logs/` as
@@ -34,8 +34,8 @@ requirement changes or a debt item is opened/closed.
   `MT5_TERMINAL_PATH` / `MT5_PATH` → known install defaults →
   `shutil.which("terminal64.exe")`.
 - **FR-1.2.3** Expert path resolution MUST follow: CLI `--expert` → `.ex5` files
-  in `--experts-dir` → first active line of `experts_root.txt` →
-  `experts_list.txt` entries.
+  in `--experts-dir` → first active line of `config/experts_root.txt` →
+  `config/experts_list.txt` entries.
 - **FR-1.2.4** Before each real backtest the runner MUST delete any stale report
   artifacts (HTML + images + `.set`) that share the same report name, to prevent
   stale-report reads.

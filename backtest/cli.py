@@ -46,7 +46,7 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
     """Expertos, ficheros .set y como inferir el contexto del tester."""
     parser.add_argument(
         "--experts-dir",
-        help="Carpeta donde buscar .ex5. Si se usa, no lee experts_list.txt.",
+        help="Carpeta donde buscar .ex5. Si se usa, no lee config/experts_list.txt.",
     )
     parser.add_argument("--expert", help="Nombre o ruta de un Expert Advisor concreto .ex5/.mq5.")
     parser.add_argument(
@@ -168,7 +168,7 @@ def _add_watchdog_arguments(parser: argparse.ArgumentParser) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ejecuta backtests de MT5 en serie para los EA listados en experts_list.txt."
+        description="Ejecuta backtests de MT5 en serie para los EA listados en config/experts_list.txt."
     )
     _add_terminal_arguments(parser)
     _add_input_arguments(parser)

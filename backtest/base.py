@@ -13,8 +13,10 @@ if getattr(sys, "frozen", False):
 CONFIG_DIR = BASE_DIR / "configs"
 REPORT_DIR = BASE_DIR / "reports"
 LOG_DIR = BASE_DIR / "logs"
-EXPERTS_FILE = BASE_DIR / "experts_list.txt"
-EXPERTS_ROOT_FILE = BASE_DIR / "experts_root.txt"
+# Las tres listas que edita el usuario viven en `config/`, no en la raiz.
+# `configs/` -con ese es- es otra cosa: los `.ini` que el runner genera.
+EXPERTS_FILE = BASE_DIR / "config" / "experts_list.txt"
+EXPERTS_ROOT_FILE = BASE_DIR / "config" / "experts_root.txt"
 TEMPLATE_FILE = BASE_DIR / "tester_template.ini"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)

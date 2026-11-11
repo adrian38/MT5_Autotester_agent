@@ -35,7 +35,7 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
 
 `compile_mq5.py`:
 
-1. Determine source directory from CLI `--source-dir` or `compile_root.txt`.
+1. Determine source directory from CLI `--source-dir` or `config/compile_root.txt`.
 2. If `--source-file` is provided, compile only that `.mq5`.
 3. Otherwise compile root-level `*.mq5`. The current implementation accepts a
    `--recursive` flag but source discovery uses `glob("*.mq5")`; verify before
@@ -56,8 +56,8 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
 3. Resolve experts:
    - specific `--expert`;
    - `.ex5` files in `--experts-dir`;
-   - first active line of `experts_root.txt`;
-   - entries in `experts_list.txt`.
+   - first active line of `config/experts_root.txt`;
+   - entries in `config/experts_list.txt`.
 4. Resolve `.set` files from `--set-dir` and/or repeated `--set-file`.
 5. Load `tester_template.ini`.
 6. For each expert or expert/set combination:

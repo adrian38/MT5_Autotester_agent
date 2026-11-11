@@ -1,18 +1,30 @@
 # MT5 Autotester
 
-Ejecuta backtests de RoboForex MetaTrader 5 en serie usando un `.ini` general y la lista de Expert Advisors de `experts_list.txt`.
+Ejecuta backtests de RoboForex MetaTrader 5 en serie usando un `.ini` general y la lista de Expert Advisors de `config/experts_list.txt`.
+
+## Instalacion
+
+```powershell
+pip install -e .[ui,mt5]
+```
+
+`mt5` trae la API del terminal, que usa el auditor de cuentas reales; `packaging`
+añade PyInstaller y sólo hace falta para generar el instalador.
 
 ## Estructura
 
 ```text
-D:\TRADING\MT5_Autotester
-|-- run_tests.py
-|-- tester_template.ini
-|-- experts_list.txt
-|-- configs\
+MT5_Autotester_agent
+|-- run_tests.py            lanzador de backtests
+|-- tester_template.ini     parametros comunes del tester
+|-- config\                 lo que editas tu: las tres listas y las plantillas
+|-- configs\                los .ini que genera el lanzador
 |-- logs\
 `-- reports\
 ```
+
+La estructura completa, con los paquetes, esta en
+[ai_context/02-architecture.md](ai_context/02-architecture.md).
 
 ## Configuracion general
 
@@ -34,7 +46,7 @@ ReplaceReport=1
 ShutdownTerminal=1
 ```
 
-El script rellena automaticamente `Expert` y `Report` para cada estrategia de `experts_list.txt`. En este terminal RoboForex, `Model=1` corresponde a `OHLC en M1`.
+El script rellena automaticamente `Expert` y `Report` para cada estrategia de `config/experts_list.txt`. En este terminal RoboForex, `Model=1` corresponde a `OHLC en M1`.
 
 ## Rutas del terminal MT5
 
@@ -56,14 +68,14 @@ Tambien puedes definir esas mismas variables como variables de entorno de Window
 
 ## Preparar la lista de EAs
 
-Edita `experts_list.txt` con rutas relativas a la carpeta `MQL5` de MT5:
+Edita `config/experts_list.txt` con rutas relativas a la carpeta `MQL5` de MT5:
 
 ```text
 Experts\Strategy 2.7.12.ex5
 Experts\Strategy 3.3.19.ex5
 ```
 
-Tambien puedes saltarte `experts_list.txt` y coger todos los `.ex5` de la raiz de una carpeta:
+Tambien puedes saltarte `config/experts_list.txt` y coger todos los `.ex5` de la raiz de una carpeta:
 
 ```powershell
 python .\run_tests.py --experts-dir "C:\Users\Adrian\AppData\Roaming\MetaQuotes\Terminal\2BA1EC2B1F7155D72C3AAB96B4870673\MQL5\Experts"
@@ -75,13 +87,13 @@ Para procesar todos los `.ex5` de esa misma carpeta, usa `--recursive`:
 python .\run_tests.py --experts-dir "C:\Users\Adrian\AppData\Roaming\MetaQuotes\Terminal\2BA1EC2B1F7155D72C3AAB96B4870673\MQL5\Experts" --recursive
 ```
 
-Si no quieres pasar la ruta por consola, ponla en `experts_root.txt`:
+Si no quieres pasar la ruta por consola, ponla en `config/experts_root.txt`:
 
 ```text
 C:\Users\Adrian\AppData\Roaming\MetaQuotes\Terminal\2BA1EC2B1F7155D72C3AAB96B4870673\MQL5\Experts
 ```
 
-Cuando `experts_root.txt` tiene una ruta activa, el script ignora `experts_list.txt` y usa todos los `.ex5` de esa carpeta.
+Cuando `config/experts_root.txt` tiene una ruta activa, el script ignora `config/experts_list.txt` y usa todos los `.ex5` de esa carpeta.
 
 ## Probar sin abrir MT5
 
@@ -151,7 +163,7 @@ MT5 guarda primero los reportes en su carpeta de datos; el script los detecta y 
 
 ## Compilar .mq5 a .ex5
 
-Para compilar todos los `.mq5` de la raiz de una carpeta, escribe la carpeta en `compile_root.txt`:
+Para compilar todos los `.mq5` de la raiz de una carpeta, escribe la carpeta en `config/compile_root.txt`:
 
 ```text
 C:\Users\Adrian\AppData\Roaming\MetaQuotes\Terminal\2BA1EC2B1F7155D72C3AAB96B4870673\MQL5\Experts
@@ -185,7 +197,7 @@ Los logs quedan en `logs\compile_*.log` y `logs\last_compile.log`.
 
 ## Compilar y ejecutar backtests
 
-Para compilar los `.mq5` de `compile_root.txt` y luego lanzar backtests sobre los `.ex5` de esa misma carpeta:
+Para compilar los `.mq5` de `config/compile_root.txt` y luego lanzar backtests sobre los `.ex5` de esa misma carpeta:
 
 ```powershell
 python .\compile_and_backtest.py

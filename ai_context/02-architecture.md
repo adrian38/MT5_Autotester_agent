@@ -13,9 +13,6 @@
 |-- pyproject.toml               # Project metadata and dependencies
 |-- tester_template.ini          # Base MT5 Strategy Tester config
 |-- ui_settings.ini              # UI runtime settings, paths, theme
-|-- experts_list.txt             # Optional explicit .ex5 list
-|-- experts_root.txt             # Optional root folder for .ex5 discovery
-|-- compile_root.txt             # Optional root folder for .mq5 discovery
 |
 |-- ui/                          # UI screen mixin modules (view/logic pairs per tab)
 |   |-- __init__.py
@@ -142,7 +139,10 @@
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
 |-- assets/                      # App icons and RoboForex asset universe
-|-- config/                      # Templates copied by hand once
+|-- config/                      # What the user edits, and the one-off templates
+|   |-- experts_list.txt         # Optional explicit .ex5 list
+|   |-- experts_root.txt         # Optional root folder for .ex5 discovery
+|   |-- compile_root.txt         # Optional root folder for .mq5 discovery
 |   |-- .env.example             # Expected .env format
 |   `-- manager_node.example.json  # Template for manager_node.json
 |-- docs/                        # Documents for people, not agent notes
@@ -200,7 +200,7 @@ Owns the Strategy Tester workflow:
 
 - Resolve MT5 terminal path.
 - Resolve terminal data directory.
-- Load experts from `experts_list.txt`, `experts_root.txt`, CLI `--experts-dir`,
+- Load experts from `config/experts_list.txt`, `config/experts_root.txt`, CLI `--experts-dir`,
   or a specific `--expert`.
 - Load `.set` files and infer tester `Symbol`/`Period` when requested.
 - Generate per-run `.ini` files.
@@ -424,7 +424,7 @@ Standalone CLI for simple set mutation without agent memory. Has its own
 Owns MetaEditor compilation:
 
 - Resolve `MetaEditor64.exe`, directly or from the MT5 terminal path.
-- Load `.mq5` sources from `compile_root.txt` or CLI `--source-dir`.
+- Load `.mq5` sources from `config/compile_root.txt` or CLI `--source-dir`.
 - Compile a single file or all root-level `.mq5` files.
 - Verify that expected `.ex5` outputs are created or updated.
 - Write compile logs under `logs/`.

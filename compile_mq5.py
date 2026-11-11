@@ -13,7 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
-COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
+COMPILE_ROOT_FILE = BASE_DIR / "config" / "compile_root.txt"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 DEFAULT_METAEDITOR_PATHS = (
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compila archivos .mq5 a .ex5 usando MetaEditor64.exe.")
     parser.add_argument("--metaeditor-path", help="Ruta completa a MetaEditor64.exe.")
     parser.add_argument("--mt5-path", help="Ruta a terminal64.exe; se usa para deducir MetaEditor64.exe.")
-    parser.add_argument("--source-dir", help="Carpeta raiz donde buscar .mq5. Si no se indica, lee compile_root.txt.")
+    parser.add_argument("--source-dir", help="Carpeta raiz donde buscar .mq5. Si no se indica, lee config/compile_root.txt.")
     parser.add_argument("--source-file", help="Nombre o ruta de un .mq5 concreto dentro de --source-dir.")
     parser.add_argument("--recursive", action="store_true", help="Procesar todos los .mq5 de la carpeta indicada.")
     parser.add_argument("--dry-run", action="store_true", help="Muestra comandos, pero no compila.")

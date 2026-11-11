@@ -10,6 +10,10 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["Pillow"]
+# La API del terminal. Es opcional de verdad: el auditor la importa dentro de
+# un `try/ImportError` y sigue sin ella; sin esto, sus comprobaciones de cuenta
+# se saltan.
+mt5 = ["MetaTrader5"]
 packaging = ["pyinstaller"]
 
 [project.scripts]

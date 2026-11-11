@@ -144,13 +144,12 @@ y una vez dentro no vuelve a salir. Antes de dejar un fichero nuevo en la raíz:
 
 | En la raíz | Por qué no puede moverse |
 | --- | --- |
-| `pyproject.toml`, `requirements.txt` | manifiestos de empaquetado y dependencias |
+| `pyproject.toml` | el manifiesto, y el único: `requirements.txt` decía otra cosa -le faltaban dos y le sobraba una- y salió el 2026-11-12 |
 | `.gitignore`, `.gitattributes`, `.mcp.json` | contratos de Git y del servidor MCP |
 | `README.md`, `AGENTS.md`, `CLAUDE.md` | lectura obligatoria; se descubren por nombre en la raíz |
 | `app_ui.py`, `run_tests.py`, `compile_mq5.py`, `compile_and_backtest.py`, `ubs_agent.py` | puntos de entrada: `[project.scripts]`, los `.exe` del instalador y lo que la interfaz lanza por nombre |
 | `manager_node_lifecycle.py` | la guarda de paridad del manager lo lee por esta ruta exacta en cada copia |
-| `experts_list.txt`, `experts_root.txt`, `compile_root.txt` | los busca `backtest/base.py` por nombre desde `BASE_DIR` |
-| `tester_template.ini`, `ui_settings.ini`, `manager_node.json`, `.env` | configuración viva del equipo, ignorada por Git; es la ruta que leen la aplicación y el nodo |
+| `tester_template.ini`, `ui_settings.ini`, `manager_node.json`, `.env` | configuración viva del equipo, **ignorada por Git**: moverla la perdería en las otras tres copias, y `ui_settings.ini` lo nombra además el `guided_controller.py` congelado |
 
 Y cada carpeta tiene un dueño:
 
@@ -165,7 +164,7 @@ Y cada carpeta tiene un dueño:
 | `tests/` | las pruebas, una carpeta por subsistema; ningún `test_*.py` suelto |
 | `tools/` | comandos de verificación, auditoría y empaquetado |
 | `ai_context/` | notas duraderas, con su línea en `ai_context/main.md` |
-| `config/` | plantillas que se copian a mano una vez |
+| `config/` | lo que edita el usuario -las tres listas de rutas- y las plantillas que se copian a mano una vez. **No es `configs/`**, que son los `.ini` que genera el lanzador |
 | `docs/` | documentos para leer, como `docs/requirements.md` |
 | `assets/` | iconos y el universo de activos por broker |
 | `scripts/` | lanzadores de doble clic y limpiezas de PowerShell |

@@ -22,7 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
-COMPILE_ROOT_FILE = BASE_DIR / "compile_root.txt"
+COMPILE_ROOT_FILE = BASE_DIR / "config" / "compile_root.txt"
 UI_SETTINGS_FILE = BASE_DIR / "ui_settings.ini"
 TEMPLATE_FIELD_DEFAULTS = {
     "Symbol": "XAUUSD",

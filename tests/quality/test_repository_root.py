@@ -34,7 +34,6 @@ DIRS_HEADING = "Y cada carpeta tiene un dueño:"
 #: primera tabla de `AGENTS.md`.
 ROOT_FILES = frozenset({
     "pyproject.toml",
-    "requirements.txt",
     ".gitignore",
     ".gitattributes",
     ".mcp.json",
@@ -47,9 +46,6 @@ ROOT_FILES = frozenset({
     "compile_and_backtest.py",
     "ubs_agent.py",
     "manager_node_lifecycle.py",
-    "experts_list.txt",
-    "experts_root.txt",
-    "compile_root.txt",
     "tester_template.ini",
     "ui_settings.ini",
     "manager_node.json",
