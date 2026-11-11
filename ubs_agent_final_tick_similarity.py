@@ -46,6 +46,39 @@ def _economic_direction_check(ohlc_result, real_tick_result, checks, required):
     return matches
 
 
+def _better_tick_drawdown_rescue(
+    ohlc_result, real_tick_result, reasons, checks, enabled,
+):
+    """Rescata el DD cuando Every Tick domina claramente a OHLC."""
+    economic_checks = {
+        "score": float(real_tick_result.score) >= float(ohlc_result.score),
+        "net_profit": float(real_tick_result.normalized_net_profit)
+        >= float(ohlc_result.normalized_net_profit),
+        "profit_factor": float(real_tick_result.profit_factor)
+        >= float(ohlc_result.profit_factor),
+        "recovery_factor": float(real_tick_result.recovery_factor)
+        >= float(ohlc_result.recovery_factor),
+    }
+    tick_has_lower_dd = (
+        float(real_tick_result.drawdown_pct) < float(ohlc_result.drawdown_pct)
+    )
+    eligible = reasons == ["drawdown_pct"]
+    rescued = bool(
+        enabled and eligible and tick_has_lower_dd and all(economic_checks.values())
+    )
+    checks["better_tick_drawdown_rescue"] = {
+        "enabled": bool(enabled),
+        "eligible": eligible,
+        "rescued": rescued,
+        "tick_has_lower_drawdown": tick_has_lower_dd,
+        "economic_improvements": economic_checks,
+        "accepted": True,
+        "checked": bool(enabled),
+    }
+    if rescued:
+        reasons.remove("drawdown_pct")
+
+
 def _final_tick_net_check(ohlc_result, real_tick_result, max_net_delta_pct, checks):
     """Compara el beneficio neto normalizado entre OHLC y Real Tick."""
     ohlc_net = float(ohlc_result.normalized_net_profit)
@@ -247,6 +280,7 @@ def final_tick_similarity(
     min_model_profit_factor: float | None = None,
     lossless_control_gate: LosslessControlGate | None = None,
     require_economic_direction: bool = False,
+    allow_better_tick_drawdown_rescue: bool = False,
 ) -> dict[str, object]:
     """Valida que OHLC y Every Tick reproduzcan un comportamiento parecido.
 
@@ -285,6 +319,9 @@ def final_tick_similarity(
     )
 
     tick_trades = _final_tick_trades_check(ohlc_result, real_tick_result, max_trades_delta_pct, checks, reasons)
+    _better_tick_drawdown_rescue(
+        ohlc_result, real_tick_result, reasons, checks, allow_better_tick_drawdown_rescue,
+    )
 
     # 4. Los antiguos controles absolutos 6M quedan auditables, no bloquean.
     _final_tick_absolute_gate(real_tick_result, lossless_control_gate, absolute_gate, checks, reasons, tick_dd, tick_trades)

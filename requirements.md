@@ -572,8 +572,12 @@ requirement changes or a debt item is opened/closed.
   independent `seed_final_tick` and `seed_final_tick_6m` tables. Both seed
   stages MUST additionally require matching economic direction: score and
   normalized net profit on the same side of zero, and profit factor on the same
-  side of 1.0. It MUST NOT create synthetic candidate rows, alter the candidate
-  Final Tick contract, or make a seed eligible for a candidate portfolio.
+  side of 1.0. A seed MUST rescue a drawdown-only failure when Every Tick has
+  lower drawdown and no worse score, normalized net profit, profit factor, or
+  recovery, regardless of the magnitude of the favorable drawdown difference.
+  Trade-count failures and any other simultaneous reason MUST NOT be rescued.
+  It MUST NOT create synthetic candidate rows, alter the candidate Final Tick
+  contract, or make a seed eligible for a candidate portfolio.
 - **FR-1.9.16** Seed Final Tick 6M MUST require a current short-probe status of
   `accepted` or `pending_ohlc_trades`. A changed seed mtime/size MUST make both
   stored stages stale, and loss of short-probe eligibility MUST invalidate its

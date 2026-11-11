@@ -647,6 +647,11 @@ Seed Final Tick is the scoped exception: both its probe and long-window stage
 also require OHLC and Every Tick to keep score and normalized net profit on the
 same side of zero and profit factor on the same side of 1.0. The seed adapter
 enables this gate without changing candidate Final Tick.
+It also enables an asymmetric drawdown-only rescue: a seed passes regardless of
+the favorable DD-gap magnitude when Every Tick has lower drawdown and no worse
+score, normalized net profit, profit factor, or recovery. Every Tick is the
+authoritative model for later audits. Other causes and trade-count failures are
+never rescued.
 
 The short Final Tick probe is a discard filter, not the final live-use gate.
 `accepted` advances to Final Tick 6M; `rejected` is terminal and invalidates any

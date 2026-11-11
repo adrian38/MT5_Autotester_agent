@@ -73,6 +73,7 @@ class SeedFinalTickMemoryAdapter:
     """Adapta las seeds al motor Final Tick sin mezclarlas con candidatos."""
 
     require_economic_direction_similarity = True
+    allow_better_tick_drawdown_rescue = True
 
     def __init__(self, memory, output_dir: Path, run_id: int = 1) -> None:
         self._memory = memory

@@ -384,6 +384,9 @@ def _final_tick_similarity_verdict(
         require_economic_direction=bool(
             getattr(record.memory, "require_economic_direction_similarity", False)
         ),
+        allow_better_tick_drawdown_rescue=bool(
+            getattr(record.memory, "allow_better_tick_drawdown_rescue", False)
+        ),
     )
     return record.write(
         final_tick_status_from_similarity(similarity) or "rejected",

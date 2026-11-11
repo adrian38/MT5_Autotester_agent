@@ -30,6 +30,12 @@ The magnitude of score, net-profit and relative profit-factor differences, PF
 floors, and lossless economic controls remain diagnostics. Candidate Final Tick
 keeps its original behavioral-only contract; the stricter gate applies to both
 seed probe and seed long-window validation through the seed adapter.
+A seed-only asymmetric rescue accepts a drawdown-only failure when Every Tick
+has lower drawdown and does not worsen score, normalized net profit, profit
+factor, or recovery. The magnitude of the favorable drawdown difference is not
+capped because Every Tick is the authoritative model used by later audits. A
+trade-count failure, another simultaneous reason, a worse tick drawdown, or
+worse economic evidence disables the rescue.
 A valid Real Tick report whose only failed
 criterion is the absolute minimum trade sample is stored as
 `pending_tick_trades`, not `rejected`; an additional failed criterion still

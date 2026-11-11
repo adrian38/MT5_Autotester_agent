@@ -325,6 +325,75 @@ class UBSAgentVariantTests(unittest.TestCase):
                     [component]["matches"]
                 )
 
+    def test_seed_rescues_a_drawdown_failure_when_tick_is_better(self) -> None:
+        common = dict(
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+            require_economic_direction=True,
+        )
+        ohlc = score(
+            -73.6732, net_profit=-177.55, profit_factor=0.5538,
+            drawdown_pct=11.42, trades=146,
+        )
+        tick = score(
+            -62.1091, net_profit=-104.89, profit_factor=0.6109,
+            drawdown_pct=7.14, trades=146,
+        )
+
+        regular = final_tick_similarity(ohlc, tick, **common)
+        seed = final_tick_similarity(
+            ohlc, tick, allow_better_tick_drawdown_rescue=True, **common,
+        )
+
+        self.assertEqual(regular["reasons"], ["drawdown_pct"])
+        self.assertTrue(seed["accepted"])
+        self.assertTrue(seed["checks"]["better_tick_drawdown_rescue"]["rescued"])
+
+    def test_seed_does_not_rescue_worse_tick_or_another_failure(self) -> None:
+        common = dict(
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+            require_economic_direction=True,
+            allow_better_tick_drawdown_rescue=True,
+        )
+        cases = (
+            (score(10.0, drawdown_pct=7.14), score(20.0, drawdown_pct=11.42)),
+            (score(10.0, drawdown_pct=11.42, trades=100),
+             score(20.0, drawdown_pct=7.14, trades=40)),
+            (score(20.0, drawdown_pct=11.42), score(10.0, drawdown_pct=7.14)),
+        )
+        for ohlc, tick in cases:
+            with self.subTest(ohlc_dd=ohlc.drawdown_pct, tick_dd=tick.drawdown_pct):
+                result = final_tick_similarity(ohlc, tick, **common)
+                self.assertFalse(result["accepted"])
+                self.assertFalse(
+                    result["checks"]["better_tick_drawdown_rescue"]["rescued"]
+                )
+
+    def test_seed_rescues_the_large_gold_phantom_dd_improvement(self) -> None:
+        result = final_tick_similarity(
+            score(10.0325, net_profit=141.6, profit_factor=1.5244,
+                  drawdown_pct=22.48, trades=97),
+            score(93.8514, net_profit=206.79, profit_factor=2.1739,
+                  drawdown_pct=10.79, trades=97),
+            min_history_quality=80.0,
+            max_net_delta_pct=35.0,
+            max_pf_delta_pct=35.0,
+            max_dd_delta_pct=35.0,
+            max_trades_delta_pct=35.0,
+            require_economic_direction=True,
+            allow_better_tick_drawdown_rescue=True,
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["checks"]["better_tick_drawdown_rescue"]["rescued"])
+
     def test_final_tick_similarity_keeps_large_profit_factor_drift_informational(self) -> None:
         result = final_tick_similarity(
             score(10.0, profit_factor=2.0),
