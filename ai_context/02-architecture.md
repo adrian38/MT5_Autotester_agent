@@ -52,7 +52,8 @@
 |-- ubs/                         # UBS agent support library
 |   |-- __init__.py
 |   |-- agent/                   # UBS orchestration implementation
-|   |   `-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
+|   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
+|   |   `-- rescore/             # Candidate and robustness rescoring
 |   |-- models.py                # Shared Seed/Variant dataclasses
 |   |-- db.py                    # SQLite connection defaults for UBS memory
 |   |-- memory.py                # SQLite persistence and row mapping

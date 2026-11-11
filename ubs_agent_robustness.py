@@ -23,7 +23,7 @@ from ubs_agent_reports import (
     find_report_for_set,
     report_matches_variant,
 )
-from ubs_agent_rescore import (
+from ubs.agent.rescore.main import (
     apply_robustness_degradation,
     robustness_degradation_config,
 )

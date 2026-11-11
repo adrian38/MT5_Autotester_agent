@@ -27,7 +27,7 @@ from ubs_agent_reports import (
     find_report_for_set,
     report_matches_variant,
 )
-from ubs_agent_rescore import (
+from ubs.agent.rescore.main import (
     _batched_memory_updates,
     _rescore_metrics_json,
 )

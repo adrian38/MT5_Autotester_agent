@@ -313,7 +313,7 @@ from ubs_agent_reports import (  # noqa: F401
     tester_log_invalid_stops_metadata,
     tester_log_no_history_metadata,
 )
-from ubs_agent_rescore import (  # noqa: F401
+from ubs.agent.rescore.main import (  # noqa: F401
     _batched_memory_updates,
     _rescore_candidate_scores_from_reports,
     _rescore_metrics_json,

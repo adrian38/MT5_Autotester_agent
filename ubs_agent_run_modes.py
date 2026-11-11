@@ -10,7 +10,7 @@ from ubs.agent.final_tick.rescore import (
 from ubs_agent_history import (
     probe_universe_history,
 )
-from ubs_agent_rescore import (
+from ubs.agent.rescore.main import (
     rescore_candidate_scores_only,
     rescore_robustness_only,
 )

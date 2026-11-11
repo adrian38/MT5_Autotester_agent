@@ -41,7 +41,7 @@ from ubs_agent_reports import (
     find_report_for_set,
     report_matches_variant,
 )
-from ubs_agent_rescore_base import (  # noqa: F401
+from ubs.agent.rescore.base import (  # noqa: F401
     _rescore_metrics_json,
     _run_execution_dates,
     _stored_or_discovered_report,
@@ -49,7 +49,7 @@ from ubs_agent_rescore_base import (  # noqa: F401
     apply_robustness_degradation,
     robustness_degradation_config,
 )
-from ubs_agent_rescore_robustness import _rescore_robustness_from_reports  # noqa: F401
+from ubs.agent.rescore.robustness import _rescore_robustness_from_reports  # noqa: F401
 from ubs_agent_universe import (
     score_config_for_variant,
 )
