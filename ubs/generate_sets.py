@@ -18,7 +18,7 @@ from ubs.set_utils import (
 )
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = BASE_DIR / "sets" / "ubs_ready"
 DEFAULT_OUTPUT = BASE_DIR / "outputs" / "ubs_generations"
 DEFAULT_TEMPLATE = BASE_DIR / "tester_template.ini"

@@ -31,7 +31,7 @@ from run_tests import (
     parse_symbol_map,
     tester_journal_sidecar_path,
 )
-from ubs_generate_sets import format_like, parse_numeric
+from ubs.generate_sets import format_like, parse_numeric
 from ubs.account import (
     ACCOUNT_TYPES,
     BROKERS,

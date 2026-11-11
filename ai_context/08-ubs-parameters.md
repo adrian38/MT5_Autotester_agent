@@ -349,7 +349,7 @@ fronts at once:
 1. **Creation.** Every path that mints a `.set` normalizes through
    `normalize_generated_set_text()` — agent variants
    (`ubs.agent.evaluation.variants.create_variant`), the legacy generator
-   (`ubs_generate_sets.mutate_text`), seed preparation (`ubs_prepare_sets.py`)
+   (`ubs.generate_sets.mutate_text`), seed preparation (`ubs/prepare_sets.py`)
    and seed import/dedup (`ui/ubs_seeds_import.py`,
    `ui/ubs_seeds_duplicates.py`). Stage copies (robustness, regression, Final
    Tick, retries) inherit the values from their already-compliant source.
@@ -357,13 +357,13 @@ fronts at once:
    (`ubs/agent/config.py`). `is_agent_mutable_key()` denies them *before*
    reading `ubs_mutation_overrides.json`, so neither a `mutable_override` nor
    the *Toggle inamovible/mutable* button can unfreeze them; the UBS Parámetros
-   table shows them as `⛓ regla`. `ubs_generate_sets.FROZEN_EXACT` mirrors the
+   table shows them as `⛓ regla`. `ubs.generate_sets.FROZEN_EXACT` mirrors the
    same keys for the legacy generator.
 3. **Repair and audit.** `repair_seed_backtest_set()` re-applies the rules, and
    `validate_seed_backtest_set()` reports a violation as a seed issue.
 
 Existing `.set` files are brought in line by
-[`ubs_set_rules.py`](../ubs_set_rules.py) — UI: *UBS Parámetros → Aplicar
+[`ubs/set_rules_sweep.py`](../ubs/set_rules_sweep.py) — UI: *UBS Parámetros → Aplicar
 reglas a todos los sets* (`Sí` applies, `No` simulates). It sweeps `sets/`,
 `live_sets/`, `sets_1.7/`, `MQL5/Profiles/Tester/` and `outputs/`, rewrites
 only the files that break a rule, copies each one to `outputs/backups/` first
@@ -423,6 +423,6 @@ invented keys.
 Add the constants and the decision to `ubs/set_rules.py`, extend
 `apply_nfp_rules_text()` or add a sibling applied from
 `normalize_generated_set_text()`, add the keys to `RULE_LOCKED_KEYS` and to
-`ubs_generate_sets.FROZEN_EXACT`, cover it in
-`tests/ubs/sets/test_ubs_set_rules.py`, and run `ubs_set_rules.py` over the
+`ubs.generate_sets.FROZEN_EXACT`, cover it in
+`tests/ubs/sets/test_ubs_set_rules.py`, and run `ubs/set_rules_sweep.py` over the
 history.

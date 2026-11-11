@@ -13,7 +13,7 @@ from ubs.version_rules import (
     version_rule,
 )
 from ui.ubs_seeds_import import UBSSeedsImportMixin
-from ubs_prepare_sets import seed_target
+from ubs.prepare_sets import seed_target
 
 
 class UBSVersionRulesTests(unittest.TestCase):

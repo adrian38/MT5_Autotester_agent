@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from ubs_generate_sets import format_like
+from ubs.generate_sets import format_like
 from ubs.models import Seed, Variant
 from ubs.set_rules import normalize_generated_set_text
 from ubs.set_utils import (

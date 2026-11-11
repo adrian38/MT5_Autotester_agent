@@ -16,7 +16,7 @@ from run_tests import (
     normalize_set_symbol,
     parse_symbol_map,
 )
-from ubs_generate_sets import parse_numeric
+from ubs.generate_sets import parse_numeric
 from ubs.account import DEFAULT_BROKER, normalize_broker
 from ubs.memory import AgentMemory
 from ubs.models import Seed

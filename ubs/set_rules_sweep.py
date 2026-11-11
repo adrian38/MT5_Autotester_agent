@@ -19,7 +19,7 @@ from ubs.set_rules import ADJUST_LOTSIZE_KEY, NFP_RULE_KEYS, ONLY_UP_KEY, apply_
 from ubs.set_utils import read_set_with_encoding, write_set_text
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_ROOTS = ("sets", "live_sets", "sets_1.7", "MQL5/Profiles/Tester", "outputs")
 BACKUP_ROOT = BASE_DIR / "outputs" / "backups"
 # Las copias de seguridad son el estado anterior a la regla: barrerlas las

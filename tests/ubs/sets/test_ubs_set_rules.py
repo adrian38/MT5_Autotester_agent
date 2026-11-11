@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import ubs_generate_sets
-import ubs_set_rules
+from ubs import generate_sets as ubs_generate_sets
+from ubs import set_rules_sweep as ubs_set_rules
 from ubs.set_rules import (
     ADJUST_LOTSIZE_KEY,
     ADJUST_LOTSIZE_RULE_VALUE,

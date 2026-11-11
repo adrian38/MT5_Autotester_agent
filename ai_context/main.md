@@ -72,7 +72,7 @@ batch wrappers.
 - UBS parameter mutability is defined by `is_agent_mutable_key()` in
   `ubs_agent.py` — NOT by the Y/N flag in `.set` files (that is the MT5
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
-  `ubs_generate_sets.py` (which has different constants). Always use
+  `ubs/generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
 - **`.set` generation rules are invariants, not preferences.** They live in
   `ubs/set_rules.py` and are listed in
@@ -88,7 +88,7 @@ batch wrappers.
   V6 contract has no strategy `3`; legacy Range seeds are invalid and must not
   reach MT5. `NFP_CloseOpenTrades`/`NFP_ClosePendingOrders` remain `true` and
   `NFP_MinutesBefore`/`NFP_MinutesAfter` `50`/`30` in every set. Existing `.set`
-  files are brought in line with `ubs_set_rules.py` (UI: *UBS Parámetros →
+  files are brought in line with `ubs/set_rules_sweep.py` (UI: *UBS Parámetros →
   Aplicar reglas a todos los sets*), which backs up what it rewrites.
 - UBS stage `.set` copies enforce `UseEveryTick`: `false` for generated/base
   results, OOS robustness, backward regression, and the OHLC copies in short

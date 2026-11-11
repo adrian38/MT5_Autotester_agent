@@ -34,7 +34,7 @@ def set_rules_summary() -> str:
 
 
 class UBSSetRulesLogicMixin:
-    """Lanza `ubs_set_rules.py` sobre todo el historico de .set."""
+    """Lanza `ubs/set_rules_sweep.py` sobre todo el historico de .set."""
 
     def _ubs_apply_set_rules(self) -> None:
         answer = messagebox.askyesnocancel(
@@ -52,4 +52,4 @@ class UBSSetRulesLogicMixin:
         self.status_text.set(
             "Simulando reglas de generación" if args else "Aplicando reglas de generación"
         )
-        self._run_script("ubs_set_rules.py", args)
+        self._run_script("ubs/set_rules_sweep.py", args)

@@ -12,7 +12,7 @@ from ubs.set_utils import (
     write_set_use_every_tick,
 )
 from ubs_agent import create_variant, is_agent_mutable_key
-from ubs_generate_sets import mutate_text
+from ubs.generate_sets import mutate_text
 
 
 class UBSSetStageParameterTests(unittest.TestCase):

@@ -16,7 +16,7 @@ from ubs.set_utils import (
 )
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = Path(
     r"C:\Users\Adrian\Adrian\TRADING\UBS_bot+settings\UBS_bot+settings\UBS_SETS_ORDERED\UBS_Sets"
 )

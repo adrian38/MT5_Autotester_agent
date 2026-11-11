@@ -454,7 +454,6 @@ class AppProcessMixin:
             "compile_mq5.py": "Compilando .mq5",
             "run_tests.py": "Ejecutando backtests",
             "compile_and_backtest.py": "Compilando y backtesteando",
-            "ubs_generate_sets.py": "Generando sets UBS",
             "ubs_agent.py": "Agente UBS",
         }
         return labels.get(script_name, script_name)
@@ -463,9 +462,19 @@ class AppProcessMixin:
         return " ".join(f'"{part}"' if " " in part else part for part in command)
 
     def _script_command(self, script_name: str, args: list[str]) -> list[str]:
+        """La orden del script: por ruta si esta en la raiz, por modulo si no.
+
+        Un `.py` de dentro de un paquete lanzado por su ruta pone su propia
+        carpeta en `sys.path[0]` y no la raiz del proyecto, asi que su
+        `from ubs.x import ...` no resuelve. Esos se lanzan con `-m`, que es lo
+        que hace valer el `cwd=BASE_DIR` de arriba.
+        """
+        script = Path(script_name)
         if getattr(sys, "frozen", False):
-            exe_path = BASE_DIR / Path(script_name).with_suffix(".exe")
+            exe_path = BASE_DIR / script.with_suffix(".exe")
             return [str(exe_path), *args]
+        if script.parent != Path("."):
+            return [sys.executable, "-m", ".".join(script.with_suffix("").parts), *args]
         return [sys.executable, str(BASE_DIR / script_name), *args]
 
     def _console_tail(self, max_chars: int = 4000) -> str:

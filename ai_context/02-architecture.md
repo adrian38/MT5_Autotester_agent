@@ -6,8 +6,6 @@
 .
 |-- app_ui.py                    # Tkinter app entry point and composition root
 |-- ubs_agent.py                 # UBS set-generation/scoring agent (CLI)
-|-- ubs_generate_sets.py         # UBS set mutation/generation helpers (standalone CLI)
-|-- ubs_prepare_sets.py          # UBS source-set normalization/import helper (CLI)
 |-- compile_mq5.py               # MetaEditor compile runner (CLI)
 |-- compile_and_backtest.py      # Orchestrates compile then backtest (CLI)
 |-- run_tests.py                 # Batch Strategy Tester runner (CLI facade over backtest/)
@@ -76,6 +74,9 @@
 |   |   |-- resume/              # Cycle resume and regeneration
 |   |   |-- run/                 # Cycle configuration, setup and execution
 |   |   `-- seeds/               # Seed planning, scoring, retry and Final Tick
+|   |-- generate_sets.py         # Legacy set mutation/generation CLI (no agent memory)
+|   |-- prepare_sets.py          # Source-set normalization/import CLI
+|   |-- set_rules_sweep.py       # Applies ubs/set_rules.py over the existing .set history
 |   |-- models.py                # Shared Seed/Variant dataclasses
 |   |-- db.py                    # SQLite connection defaults for UBS memory
 |   |-- memory.py                # SQLite persistence and row mapping
@@ -401,11 +402,11 @@ Scores MT5 reports for UBS:
 - `ScoreResult.reasons` is a tuple of failing metric names. Empty = accepted.
 - All results serialised via `ScoreResult.to_json()` into `metrics_json` column.
 
-### `ubs_generate_sets.py`
+### `ubs/generate_sets.py`
 
 Standalone CLI for simple set mutation without agent memory. Has its own
 `is_mutable_key()` with different constants than `ubs_agent.py`. **Do not use
-`ubs_generate_sets.is_mutable_key()` to reason about agent behavior** — use
+`ubs.generate_sets.is_mutable_key()` to reason about agent behavior** — use
 `ubs_agent.is_agent_mutable_key()` instead.
 
 ### `compile_mq5.py`

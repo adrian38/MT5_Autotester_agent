@@ -1256,7 +1256,7 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
   and apply weights once active seeds are evaluated or quarantined as mismatch.
 
 - **2025-06** — Fixed `is_agent_mutable_key()` link. The UI previously used
-  `is_mutable_key()` from `ubs_generate_sets.py` which has different constants
+  `is_mutable_key()` from `ubs/generate_sets.py` which has different constants
   from the actual agent mutation logic in `ubs_agent.py`. Now uses
   `is_agent_mutable_key()` defined in `ubs_agent.py` with the correct constants.
 

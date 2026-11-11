@@ -31,7 +31,7 @@ class UBSSeedsImportMixin:
         from ubs.strategies import VALID_RUN_STRATEGIES
         from ubs.v6_parameters import UBS_VERSION
         from ubs.version_rules import filter_set_parameters_for_version
-        from ubs_prepare_sets import seed_target
+        from ubs.prepare_sets import seed_target
 
         try:
             text, encoding = read_set_with_encoding(source)
