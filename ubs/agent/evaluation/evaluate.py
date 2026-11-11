@@ -16,7 +16,7 @@ from ubs_agent_config import (
     SELECTION_FITNESS_APPLIED_SCALE,
     SYMBOL_NOT_EXIST_STATUS,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     find_report_for_set,
     record_history_probe_status,
     record_score_with_metadata,

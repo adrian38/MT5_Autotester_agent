@@ -52,6 +52,7 @@
 |-- ubs/                         # UBS agent support library
 |   |-- __init__.py
 |   |-- agent/                   # UBS orchestration implementation
+|   |   |-- evaluation/          # Reports, retries, robustness and variant evaluation
 |   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
 |   |   |-- generation/          # Target policies, universe and set generation
 |   |   |-- rescore/             # Candidate and robustness rescoring

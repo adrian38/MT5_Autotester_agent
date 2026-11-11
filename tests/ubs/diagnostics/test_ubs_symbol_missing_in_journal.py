@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import ubs_agent_reports
+import ubs.agent.evaluation.reports
 from ubs.tester_diagnostics import journal_symbol_missing
 
 
@@ -48,21 +48,21 @@ class SetSymbolMissingInTerminalTests(unittest.TestCase):
             )
             set_path = base / f"{stem}.set"
 
-            with patch.object(ubs_agent_reports, "BASE_DIR", base):
+            with patch.object(ubs.agent.evaluation.reports, "BASE_DIR", base):
                 self.assertTrue(
-                    ubs_agent_reports.set_symbol_missing_in_terminal(set_path, "DXY_U6")
+                    ubs.agent.evaluation.reports.set_symbol_missing_in_terminal(set_path, "DXY_U6")
                 )
                 self.assertFalse(
-                    ubs_agent_reports.set_symbol_missing_in_terminal(set_path, "US500")
+                    ubs.agent.evaluation.reports.set_symbol_missing_in_terminal(set_path, "US500")
                 )
 
     def test_without_any_journal_it_cannot_claim_the_symbol_is_gone(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             (base / "reports").mkdir()
-            with patch.object(ubs_agent_reports, "BASE_DIR", base):
+            with patch.object(ubs.agent.evaluation.reports, "BASE_DIR", base):
                 self.assertFalse(
-                    ubs_agent_reports.set_symbol_missing_in_terminal(
+                    ubs.agent.evaluation.reports.set_symbol_missing_in_terminal(
                         base / "DXY_U6_M15_bf04fa.set", "DXY_U6"
                     )
                 )

@@ -51,14 +51,14 @@ from ubs_agent_config import (
     TF_UNSEEDED_FORCE_PROB_LATE,
     probability_argument,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     recreate_work_dir,
     remove_report_artifacts,
 )
 from ubs.agent.final_tick.evaluate import (
     _read_ohlc_report_cfg_dates,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     find_report_for_set,
     find_watchdog_snapshot_for_set,
     report_has_empty_tester_context,
@@ -75,7 +75,7 @@ from ubs.agent.generation.universe import (
     missing_report_status,
     target_timeframe_universe,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     run_backtests,
 )
 

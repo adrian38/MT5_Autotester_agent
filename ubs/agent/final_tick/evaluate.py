@@ -21,12 +21,12 @@ from ubs_agent_config import (
     FINAL_TICK_RETRYABLE_STATUSES,
     LosslessControlGate,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     report_has_empty_tester_context,
     report_matches_variant,
     tester_log_no_history_metadata,
 )
-from ubs_agent_robustness import (
+from ubs.agent.evaluation.robustness import (
     _bounded_profit_factor,
     _relative_delta_pct,
 )

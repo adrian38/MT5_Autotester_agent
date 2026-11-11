@@ -14,11 +14,11 @@ from ubs.risk_profit import robustness_result_status
 from ubs_agent_config import (
     SYMBOL_NOT_EXIST_STATUS,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     recreate_work_dir,
     remove_report_artifacts,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     classify_zero_trade_robustness,
     find_report_for_set,
     report_matches_variant,
@@ -36,7 +36,7 @@ from ubs.agent.generation.universe import (
     score_config_for_variant,
     split_retired_symbols,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     run_backtests,
 )
 

@@ -21,7 +21,7 @@ from ubs_agent_config import (
     diag_log,
     generation_random_stream,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     generation_feedback_terminal_stage,
     generation_fitness_target,
     generation_seed_fitness_predictions,
@@ -65,7 +65,7 @@ from ubs.agent.generation.targets import (
 from ubs.agent.generation.universe import (
     target_timeframe_universe,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     create_variant,
 )
 

@@ -17,7 +17,7 @@ from ubs_agent_config import (
     BASE_DIR,
     DEFAULT_OUTPUT,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     copy_accepted,
     evaluate_seed_report,
     evaluate_variant,
@@ -25,7 +25,7 @@ from ubs_agent_evaluate import (
     remove_candidate_copies,
     remove_report_artifacts,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     find_report_for_set,
 )
 from ubs.agent.generation.sets import (
@@ -39,7 +39,7 @@ from ubs.agent.generation.universe import (
     missing_report_status,
 )
 from ubs.agent.seeds.retry import retry_seed  # noqa: F401
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     run_backtests,
 )
 

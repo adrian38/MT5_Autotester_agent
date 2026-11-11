@@ -28,10 +28,10 @@ from ubs.universe import (
 from ubs_agent_config import (
     BASE_DIR,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     evaluate_seed_report,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     find_report_for_set,
     report_has_empty_tester_context,
     report_matches_variant,
@@ -47,7 +47,7 @@ from ubs.agent.generation.sets import (
 from ubs.agent.generation.universe import (
     missing_report_status,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     run_backtests,
 )
 

@@ -231,7 +231,7 @@ from ubs_agent_config import (  # noqa: F401
     save_global_params,
     save_mutation_overrides,
 )
-from ubs_agent_evaluate import (  # noqa: F401
+from ubs.agent.evaluation.evaluate import (  # noqa: F401
     copy_accepted,
     count_valid_existing_reports,
     evaluate_history_probe,
@@ -295,7 +295,7 @@ from ubs.agent.generation.policy import (  # noqa: F401
     target_symbol_options_for_seed,
     unseeded_universe_targets,
 )
-from ubs_agent_reports import (  # noqa: F401
+from ubs.agent.evaluation.reports import (  # noqa: F401
     REPORT_SUFFIXES,
     WATCHDOG_SUFFIX,
     _REPORTS_NAME_INDEX,
@@ -329,7 +329,7 @@ from ubs.agent.rescore.main import (  # noqa: F401
 from ubs_agent_resume import (  # noqa: F401
     resume_last_run,
 )
-from ubs_agent_retry import (  # noqa: F401
+from ubs.agent.evaluation.retry import (  # noqa: F401
     _retry_single_candidate,
     retry_candidate,
     retry_full_run,
@@ -337,7 +337,7 @@ from ubs_agent_retry import (  # noqa: F401
     retry_run_mismatches,
     retry_seed,
 )
-from ubs_agent_robustness import (  # noqa: F401
+from ubs.agent.evaluation.robustness import (  # noqa: F401
     ROBUST_RETRYABLE_STATUSES,
     _bounded_profit_factor,
     _relative_delta_pct,
@@ -432,7 +432,7 @@ from ubs.agent.generation.universe import (  # noqa: F401
     target_timeframe_universe,
     variant_symbol_not_offered,
 )
-from ubs_agent_variants import (  # noqa: F401
+from ubs.agent.evaluation.variants import (  # noqa: F401
     create_history_probe_variant,
     create_variant,
     run_backtests,

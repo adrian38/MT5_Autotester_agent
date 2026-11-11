@@ -11,7 +11,7 @@ from ubs.path_utils import resolve_workspace_path
 from ubs.risk_profit import robustness_result_status
 from ubs.score import ScoreConfig, score_report_file
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
-from ubs_agent_reports import classify_zero_trade_robustness, report_matches_variant
+from ubs.agent.evaluation.reports import classify_zero_trade_robustness, report_matches_variant
 from ubs.agent.rescore.base import (
     _stored_or_discovered_report,
     _stored_score_config,

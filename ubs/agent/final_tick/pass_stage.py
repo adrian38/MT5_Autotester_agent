@@ -20,7 +20,7 @@ from ubs.set_utils import safe_part, set_matches_use_every_tick_source
 from ubs_agent_config import (
     SYMBOL_NOT_EXIST_STATUS,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     count_valid_existing_reports,
     prepare_final_tick_exec_dir,
     recreate_work_dir,
@@ -42,7 +42,7 @@ from ubs.agent.final_tick.evaluate import (
 from ubs.agent.final_tick.rescore import (
     reconcile_final_tick_reports,
 )
-from ubs_agent_reports import find_report_for_set
+from ubs.agent.evaluation.reports import find_report_for_set
 from ubs.agent.generation.sets import (
     write_retry_set,
 )
@@ -51,7 +51,7 @@ from ubs.agent.generation.universe import (
     missing_report_status,
     split_retired_symbols,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     run_backtests,
 )
 

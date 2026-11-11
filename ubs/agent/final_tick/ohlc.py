@@ -10,7 +10,7 @@ import time
 from ubs.score import ScoreResult, score_report_file
 
 from run_tests import RUNNING_TERMINAL_EXIT_CODE, report_has_empty_tester_data
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     count_valid_existing_reports,
     prepare_final_tick_exec_dir,
     remove_report_artifacts,
@@ -24,12 +24,12 @@ from ubs.agent.final_tick.evaluate import (
     final_tick_row_pending_for_dates,
     validate_final_tick_stage_dates,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     find_report_for_set,
     report_matches_variant,
     tester_log_no_history_metadata,
 )
-from ubs_agent_variants import run_backtests
+from ubs.agent.evaluation.variants import run_backtests
 from ubs.agent.generation.universe import (
     min_trades_for_period,
     missing_report_status,

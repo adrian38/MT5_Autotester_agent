@@ -1,5 +1,5 @@
 import ubs.agent.rescore.main
-import ubs_agent_evaluate
+import ubs.agent.evaluation.evaluate
 import argparse
 import json
 import sqlite3

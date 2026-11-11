@@ -22,7 +22,7 @@ from ubs_agent_config import (
     diag_log,
     generation_random_stream,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     generation_fitness_target,
     select_next_generation_survivors,
 )
@@ -55,7 +55,7 @@ from ubs.agent.seeds.plan import (
     seeds_from_variants,
 )
 from ubs.agent.generation.universe import target_timeframe_universe
-from ubs_agent_variants import create_variant
+from ubs.agent.evaluation.variants import create_variant
 
 
 @dataclass

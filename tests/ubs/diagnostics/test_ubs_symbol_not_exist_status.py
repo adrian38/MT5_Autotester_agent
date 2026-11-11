@@ -9,8 +9,8 @@ import ubs_agent
 import ubs.agent.generation.universe
 import ubs.agent.generation.sets
 import ubs.agent.run.config
-import ubs_agent_robustness
-import ubs_agent_evaluate
+import ubs.agent.evaluation.robustness
+import ubs.agent.evaluation.evaluate
 import ubs_agent_config
 from ubs.models import Seed, Variant
 
@@ -65,8 +65,8 @@ class EvaluateVariantWithoutReportTests(unittest.TestCase):
         memory = Mock()
         variant = make_variant("EEX.NYSE")
 
-        with patch.object(ubs_agent_evaluate, "find_report_for_set", return_value=None):
-            status, result = ubs_agent_evaluate.evaluate_variant(
+        with patch.object(ubs.agent.evaluation.evaluate, "find_report_for_set", return_value=None):
+            status, result = ubs.agent.evaluation.evaluate.evaluate_variant(
                 memory,
                 variant,
                 Mock(),
@@ -90,8 +90,8 @@ class EvaluateVariantWithoutReportTests(unittest.TestCase):
         memory = Mock()
         variant = make_variant("USDRUB")
 
-        with patch.object(ubs_agent_evaluate, "find_report_for_set", return_value=None):
-            status, _result = ubs_agent_evaluate.evaluate_variant(
+        with patch.object(ubs.agent.evaluation.evaluate, "find_report_for_set", return_value=None):
+            status, _result = ubs.agent.evaluation.evaluate.evaluate_variant(
                 memory,
                 variant,
                 Mock(),
@@ -106,8 +106,8 @@ class EvaluateVariantWithoutReportTests(unittest.TestCase):
     def test_without_universe_nothing_is_marked_terminal(self) -> None:
         memory = Mock()
 
-        with patch.object(ubs_agent_evaluate, "find_report_for_set", return_value=None):
-            status, _result = ubs_agent_evaluate.evaluate_variant(
+        with patch.object(ubs.agent.evaluation.evaluate, "find_report_for_set", return_value=None):
+            status, _result = ubs.agent.evaluation.evaluate.evaluate_variant(
                 memory,
                 make_variant("EEX.NYSE"),
                 Mock(),
@@ -300,7 +300,7 @@ class StageRetrySetsTests(unittest.TestCase):
         for name, retryable in (
             ("agent final tick", ubs_agent_config.FINAL_TICK_RETRYABLE_STATUSES),
             ("agent final tick date", ubs_agent_config.FINAL_TICK_DATE_RETRYABLE_STATUSES),
-            ("agent robustness", ubs_agent_robustness.ROBUST_RETRYABLE_STATUSES),
+            ("agent robustness", ubs.agent.evaluation.robustness.ROBUST_RETRYABLE_STATUSES),
             ("regression rules", REGRESSION_RETRYABLE_STATUSES),
             ("node robustness", node.ROBUST_RETRYABLE_STATUSES),
             ("node final tick", node.FINAL_TICK_RETRYABLE_STATUSES),

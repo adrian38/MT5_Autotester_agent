@@ -1,4 +1,4 @@
-import ubs_agent_evaluate
+import ubs.agent.evaluation.evaluate
 import argparse
 import json
 import tempfile
@@ -48,7 +48,7 @@ class IncompatibleVolumeTests(unittest.TestCase):
 
     def test_evaluation_rescore_and_card_snapshot(self):
         memory, seed, variant = self.fixture.memory()
-        with patch("ubs_agent_evaluate.score_report_file", return_value=score(-55, symbol="KNDI.NAS", timeframe="M30", trades=0)):
+        with patch("ubs.agent.evaluation.evaluate.score_report_file", return_value=score(-55, symbol="KNDI.NAS", timeframe="M30", trades=0)):
             status, _ = evaluate_variant_report(memory, variant, self.report, ScoreConfig(), {}, "ICTRADING")
         self.assertEqual(status, "rejected")
         self.assertEqual(classify_zero_trade_robustness(self.report, variant)[1]["failure_type"], "incompatible_volume")

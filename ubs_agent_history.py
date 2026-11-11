@@ -24,7 +24,7 @@ from ubs_agent_config import (
     BASE_DIR,
     TIMEFRAME_TO_ENUM,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     copy_accepted,
     evaluate_history_probe,
     evaluate_variants,
@@ -38,7 +38,7 @@ from ubs.agent.seeds.plan import (
 from ubs.agent.generation.universe import (
     broker_universe_symbols,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     create_history_probe_variant,
     run_backtests,
 )

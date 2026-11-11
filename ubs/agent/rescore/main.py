@@ -32,11 +32,11 @@ from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, ScoreResult, rescore_result, score_report_file
 from ubs.risk_profit import RiskProfitConfig, combine_robustness_profit_gate, robustness_result_status
 from ubs.weights import DEFAULT_ROBUST_NEGATIVE_BONUS, DEFAULT_ROBUST_POSITIVE_BONUS
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     evaluate_history_probe,
     evaluate_variant_report,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     classify_zero_trade_robustness,
     find_report_for_set,
     report_matches_variant,

@@ -24,7 +24,7 @@ from ubs.degradation import (
     evaluate_robustness_degradation,
 )
 from ubs.path_utils import resolve_workspace_path
-from ubs_agent_reports import find_report_for_set
+from ubs.agent.evaluation.reports import find_report_for_set
 from ubs.risk_profit import RiskProfitConfig, combine_robustness_profit_gate
 from ubs.score import ScoreConfig, ScoreResult, rescore_result
 

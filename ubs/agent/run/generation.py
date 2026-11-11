@@ -11,7 +11,7 @@ from ubs_agent_config import (
     diag_log,
     generation_random_stream,
 )
-from ubs_agent_evaluate import (
+from ubs.agent.evaluation.evaluate import (
     copy_accepted,
     evaluate_variants,
     generation_feedback_terminal_stage,
@@ -45,7 +45,7 @@ from ubs.agent.generation.targets import (
 from ubs.agent.generation.universe import (
     broker_universe_symbols,
 )
-from ubs_agent_variants import (
+from ubs.agent.evaluation.variants import (
     create_variant,
     run_backtests,
 )

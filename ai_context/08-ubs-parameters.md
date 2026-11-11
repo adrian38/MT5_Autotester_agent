@@ -348,7 +348,7 @@ fronts at once:
 
 1. **Creation.** Every path that mints a `.set` normalizes through
    `normalize_generated_set_text()` — agent variants
-   (`ubs_agent_variants.create_variant`), the legacy generator
+   (`ubs.agent.evaluation.variants.create_variant`), the legacy generator
    (`ubs_generate_sets.mutate_text`), seed preparation (`ubs_prepare_sets.py`)
    and seed import/dedup (`ui/ubs_seeds_import.py`,
    `ui/ubs_seeds_duplicates.py`). Stage copies (robustness, regression, Final

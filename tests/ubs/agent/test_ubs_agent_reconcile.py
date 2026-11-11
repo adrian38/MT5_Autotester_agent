@@ -1,7 +1,7 @@
 import ubs.agent.final_tick.pass_stage
 import ubs.agent.final_tick.evaluate
 import ubs.agent.final_tick.rescore
-import ubs_agent_reports
+import ubs.agent.evaluation.reports
 import json
 import tempfile
 import unittest

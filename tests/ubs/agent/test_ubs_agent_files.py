@@ -1,8 +1,8 @@
-import ubs_agent_evaluate
+import ubs.agent.evaluation.evaluate
 import ubs.agent.final_tick.rescore
 import ubs_agent_config
 import ubs.agent.final_tick.evaluate
-import ubs_agent_reports
+import ubs.agent.evaluation.reports
 import json
 import random
 import tempfile
@@ -172,7 +172,7 @@ class UBSSetsFileTests(unittest.TestCase):
             snapshot = reports / "candidate.watchdog_attempt_1.mt5log.txt"
             snapshot.write_text("watchdog evidence", encoding="utf-8")
 
-            with patch("ubs_agent_reports.BASE_DIR", root):
+            with patch("ubs.agent.evaluation.reports.BASE_DIR", root):
                 self.assertIsNone(find_report_for_set(set_path))
                 self.assertEqual(find_watchdog_snapshot_for_set(set_path), snapshot)
 
@@ -357,7 +357,7 @@ class UBSSetsFileTests(unittest.TestCase):
         )
         memory = Memory()
 
-        with patch("ubs_agent_evaluate.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
+        with patch("ubs.agent.evaluation.evaluate.score_report_file", return_value=score(-55.0, symbol="", timeframe="M0", trades=0)):
             status, _result = evaluate_variant_report(
                 memory,
                 variant,
@@ -395,7 +395,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 memory.record_variant(run_id, 1, variant)
 
                 with patch(
-                    "ubs_agent_evaluate.score_report_file",
+                    "ubs.agent.evaluation.evaluate.score_report_file",
                     return_value=score(-55.0, symbol="", timeframe="M0", trades=0),
                 ):
                     status, _result = evaluate_variant_report(
@@ -438,7 +438,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 memory.record_variant(run_id, 1, variant)
 
                 with patch(
-                    "ubs_agent_evaluate.score_report_file",
+                    "ubs.agent.evaluation.evaluate.score_report_file",
                     return_value=score(-55.0, symbol="GBPTRY", timeframe="H1", trades=0),
                 ):
                     status, _result = evaluate_variant_report(
@@ -476,7 +476,7 @@ class UBSSetsFileTests(unittest.TestCase):
                 variant = Variant(root / "candidate.set", seed, "EURUSD", "H1", (), (), "test")
                 memory.record_variant(run_id, 1, variant)
                 with patch(
-                    "ubs_agent_evaluate.score_report_file",
+                    "ubs.agent.evaluation.evaluate.score_report_file",
                     return_value=score(-55.0, symbol="EURUSD", timeframe="H1", trades=0),
                 ):
                     status, _result = evaluate_variant_report(

@@ -23,7 +23,7 @@ from ubs.agent.final_tick.evaluate import (
     lossless_control_gate_from_args,
     normalize_final_tick_stage,
 )
-from ubs_agent_reports import (
+from ubs.agent.evaluation.reports import (
     find_report_for_set,
     report_matches_variant,
 )
