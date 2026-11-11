@@ -75,7 +75,7 @@ Copy-Item -LiteralPath (Join-Path $PyInstallerOut "compile_and_backtest.exe") -D
 
 $contentFiles = @(
     "README.md",
-    ".env.example",
+    "config/.env.example",
     ".env",
     "tester_template.ini",
     "compile_root.txt",

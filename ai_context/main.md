@@ -120,7 +120,8 @@ batch wrappers.
   leverage caps). `assets/<broker>_normalization.json` is shared: this project
   scores with it, the manager inverts it into notional per position. The
   dependency is one-way — nothing here reads the manager. Before "fixing" one of
-  those files, check who consumes each field; see § 1.16 of `requirements.md`.
+  those files, check who consumes each field; see § 1.16 of
+  `docs/requirements.md`.
 
 ## Topic Index
 

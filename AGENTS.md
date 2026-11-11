@@ -65,7 +65,7 @@ Manager changes are allowed only in the separate
 `MT5_Autotester_agent_manager` repository on branch `dev`.
 
 For functional requirements and the technical-debt backlog, see
-[requirements.md](requirements.md).
+[docs/requirements.md](docs/requirements.md).
 
 ## Matriz de escritura por repositorio y rama
 

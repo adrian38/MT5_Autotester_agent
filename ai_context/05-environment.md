@@ -18,7 +18,8 @@ Supported variables:
 | `TELEGRAM_BOT_TOKEN` | Optional Telegram bot token. |
 | `TELEGRAM_CHAT_ID` | Optional Telegram chat ID. |
 
-`.env.example` documents the expected format.
+`config/.env.example` documents the expected format; se copia a mano a `.env`
+en la raiz, que es de donde se lee.
 
 ## UI Settings
 

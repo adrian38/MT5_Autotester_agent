@@ -142,7 +142,12 @@
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
 |-- assets/                      # App icons and RoboForex asset universe
-`-- scripts/                     # PowerShell cleanup helpers for MT5 data
+|-- config/                      # Templates copied by hand once
+|   |-- .env.example             # Expected .env format
+|   `-- manager_node.example.json  # Template for manager_node.json
+|-- docs/                        # Documents for people, not agent notes
+|   `-- requirements.md          # Functional requirements and debt backlog
+`-- scripts/                     # Cleanup helpers and double-click launchers
 ```
 
 ## Composition Root

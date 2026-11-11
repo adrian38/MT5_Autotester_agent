@@ -63,4 +63,4 @@ differs per clone (`G-TRADING-MT5_Autotester_agent` for RoboForex,
 checkout you are actually in.
 
 For functional requirements and the technical-debt backlog, see
-[requirements.md](requirements.md).
+[docs/requirements.md](docs/requirements.md).
