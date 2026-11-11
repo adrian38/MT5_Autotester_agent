@@ -30,7 +30,7 @@ from ubs_agent_evaluate import (
 from ubs_agent_history import (
     evaluate_generation,
 )
-from ubs_agent_policy import (
+from ubs.agent.generation.policy import (
     discovery_ranked_seed_selection,
     production_viable_source_seeds,
     unseeded_universe_targets,
@@ -59,10 +59,10 @@ from ubs.agent.seeds.plan import (
     target_symbol_cap_ratio,
     timeframe_plan_summary,
 )
-from ubs_agent_targets import (
+from ubs.agent.generation.targets import (
     choose_diverse_target,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     target_timeframe_universe,
 )
 from ubs_agent_variants import (

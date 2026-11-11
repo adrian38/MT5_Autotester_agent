@@ -53,6 +53,7 @@
 |   |-- __init__.py
 |   |-- agent/                   # UBS orchestration implementation
 |   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
+|   |   |-- generation/          # Target policies, universe and set generation
 |   |   |-- rescore/             # Candidate and robustness rescoring
 |   |   |-- run/                 # Cycle configuration, setup and execution
 |   |   `-- seeds/               # Seed planning, scoring, retry and Final Tick

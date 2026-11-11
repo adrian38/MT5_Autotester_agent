@@ -18,7 +18,7 @@ from ubs.agent.rescore.base import (
     apply_robustness_degradation,
     robustness_degradation_config,
 )
-from ubs_agent_universe import score_config_for_variant
+from ubs.agent.generation.universe import score_config_for_variant
 
 
 def _rescore_robustness_rows(memory: AgentMemory) -> list:

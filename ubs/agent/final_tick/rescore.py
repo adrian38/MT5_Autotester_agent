@@ -31,7 +31,7 @@ from ubs.agent.rescore.main import (
     _batched_memory_updates,
     _rescore_metrics_json,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     min_trades_for_period,
     missing_report_status,
     score_config_for_variant,

@@ -20,7 +20,7 @@ from ubs_agent_evaluate import (
     select_next_generation_survivors,
     select_survivors,
 )
-from ubs_agent_policy import (
+from ubs.agent.generation.policy import (
     discovery_ranked_seed_selection,
     production_viable_source_seeds,
     unseeded_universe_targets,
@@ -39,10 +39,10 @@ from ubs.agent.seeds.plan import (
     timeframe_plan_summary,
     variant_as_next_seed,
 )
-from ubs_agent_targets import (
+from ubs.agent.generation.targets import (
     choose_diverse_target,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     broker_universe_symbols,
 )
 from ubs_agent_variants import (

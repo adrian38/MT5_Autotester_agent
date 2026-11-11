@@ -30,7 +30,7 @@ from ubs_agent_robustness import (
     _bounded_profit_factor,
     _relative_delta_pct,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     score_config_for_variant,
 )
 

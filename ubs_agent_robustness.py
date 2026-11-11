@@ -27,10 +27,10 @@ from ubs.agent.rescore.main import (
     apply_robustness_degradation,
     robustness_degradation_config,
 )
-from ubs_agent_sets import (
+from ubs.agent.generation.sets import (
     write_retry_set,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     format_retired_symbol_rows,
     missing_report_status,
     score_config_for_variant,

@@ -29,7 +29,7 @@ from ubs.agent.seeds.plan import (
     TargetDiversityLimiter,
     seeds_from_survivors,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     score_config_for_variant,
     variant_missing_report_status,
     variant_symbol_not_offered,

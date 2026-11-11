@@ -30,7 +30,7 @@ from ubs_agent_reports import (
     tester_log_no_history_metadata,
 )
 from ubs_agent_variants import run_backtests
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     min_trades_for_period,
     missing_report_status,
     score_config_for_variant,

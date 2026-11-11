@@ -50,7 +50,7 @@ from ubs.agent.rescore.base import (  # noqa: F401
     robustness_degradation_config,
 )
 from ubs.agent.rescore.robustness import _rescore_robustness_from_reports  # noqa: F401
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     score_config_for_variant,
 )
 

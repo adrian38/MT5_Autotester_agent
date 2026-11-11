@@ -28,13 +28,13 @@ from ubs_agent_evaluate import (
 from ubs_agent_reports import (
     find_report_for_set,
 )
-from ubs_agent_sets import (
+from ubs.agent.generation.sets import (
     copy_seed_for_backtest,
     record_invalid_seed,
     validate_seed_backtest_set,
     write_retry_set,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     broker_universe_symbols,
     missing_report_status,
 )

@@ -25,7 +25,7 @@ from ubs_agent_config import (
     load_global_params,
     load_mutation_overrides,
 )
-from ubs_agent_sets import (
+from ubs.agent.generation.sets import (
     line_candidates,
     replace_existing_current_value,
     replace_or_add_plain_key,

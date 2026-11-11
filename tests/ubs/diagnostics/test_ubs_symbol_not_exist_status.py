@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import ubs_agent
-import ubs_agent_universe
-import ubs_agent_sets
+import ubs.agent.generation.universe
+import ubs.agent.generation.sets
 import ubs.agent.run.config
 import ubs_agent_robustness
 import ubs_agent_evaluate
@@ -39,25 +39,25 @@ class VariantSymbolNotOfferedTests(unittest.TestCase):
     def test_flags_symbol_absent_from_universe(self) -> None:
         universe = {"EEX.NYSE-24", "XAUUSD", "USTEC"}
 
-        self.assertTrue(ubs_agent_universe.variant_symbol_not_offered(make_variant("EEX.NYSE"), universe, {}))
-        self.assertTrue(ubs_agent_universe.variant_symbol_not_offered(make_variant("LBRDK.NAS"), universe, {}))
+        self.assertTrue(ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("EEX.NYSE"), universe, {}))
+        self.assertTrue(ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("LBRDK.NAS"), universe, {}))
 
     def test_symbol_in_universe_is_never_flagged(self) -> None:
         universe = {"EEX.NYSE-24", "XAUUSD", "USTEC"}
 
-        self.assertFalse(ubs_agent_universe.variant_symbol_not_offered(make_variant("XAUUSD"), universe, {}))
-        self.assertFalse(ubs_agent_universe.variant_symbol_not_offered(make_variant("xauusd"), universe, {}))
+        self.assertFalse(ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("XAUUSD"), universe, {}))
+        self.assertFalse(ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("xauusd"), universe, {}))
         self.assertFalse(
-            ubs_agent_universe.variant_symbol_not_offered(make_variant("EEX.NYSE-24"), universe, {})
+            ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("EEX.NYSE-24"), universe, {})
         )
         # El mapa de simbolos del broker se aplica antes de comparar.
         self.assertFalse(
-            ubs_agent_universe.variant_symbol_not_offered(make_variant("US100"), universe, {"US100": "USTEC"})
+            ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("US100"), universe, {"US100": "USTEC"})
         )
 
     def test_empty_universe_and_empty_symbol_are_not_flagged(self) -> None:
-        self.assertFalse(ubs_agent_universe.variant_symbol_not_offered(make_variant("EEX.NYSE"), set(), {}))
-        self.assertFalse(ubs_agent_universe.variant_symbol_not_offered(make_variant(""), {"XAUUSD"}, {}))
+        self.assertFalse(ubs.agent.generation.universe.variant_symbol_not_offered(make_variant("EEX.NYSE"), set(), {}))
+        self.assertFalse(ubs.agent.generation.universe.variant_symbol_not_offered(make_variant(""), {"XAUUSD"}, {}))
 
 
 class EvaluateVariantWithoutReportTests(unittest.TestCase):
@@ -149,12 +149,12 @@ class AliasTargetsAreNotRetiredTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+            ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
-            universe = ubs_agent_universe.broker_universe_symbols(argparse.Namespace(assets=str(assets)))
+            universe = ubs.agent.generation.universe.broker_universe_symbols(argparse.Namespace(assets=str(assets)))
 
             self.assertEqual(universe, {"USTEC", "US500", "US100", "CRUDEOIL"})
-            ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+            ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
     def test_alias_target_is_never_flagged_with_empty_symbol_map(self) -> None:
         # symbol_map vacio es el caso real de ICTrading (symbol_map_enabled=0).
@@ -163,7 +163,7 @@ class AliasTargetsAreNotRetiredTests(unittest.TestCase):
         for alias in ("US100", "CRUDEOIL"):
             with self.subTest(alias=alias):
                 self.assertFalse(
-                    ubs_agent_universe.variant_symbol_not_offered(make_variant(alias), universe, {})
+                    ubs.agent.generation.universe.variant_symbol_not_offered(make_variant(alias), universe, {})
                 )
 
 
@@ -175,33 +175,33 @@ class MissingReportStatusTests(unittest.TestCase):
         self.assets = Path(self.temp.name) / "assets.ini"
         write_universe(self.assets, ["XAUUSD", "USDRUB"])
         self.args = argparse.Namespace(assets=str(self.assets), symbol_map="")
-        ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
     def tearDown(self) -> None:
-        ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
         self.temp.cleanup()
 
     def test_retired_symbol_gets_terminal_status(self) -> None:
         self.assertEqual(
-            ubs_agent_universe.missing_report_status("EEX.NYSE", self.args),
+            ubs.agent.generation.universe.missing_report_status("EEX.NYSE", self.args),
             ubs_agent_config.SYMBOL_NOT_EXIST_STATUS,
         )
 
     def test_live_and_manually_disabled_symbols_stay_retryable(self) -> None:
-        self.assertEqual(ubs_agent_universe.missing_report_status("XAUUSD", self.args), "no_report")
+        self.assertEqual(ubs.agent.generation.universe.missing_report_status("XAUUSD", self.args), "no_report")
         # USDRUB esta deshabilitado a mano en IC pero sigue en el universo.
-        self.assertEqual(ubs_agent_universe.missing_report_status("USDRUB", self.args), "no_report")
+        self.assertEqual(ubs.agent.generation.universe.missing_report_status("USDRUB", self.args), "no_report")
 
     def test_without_universe_stays_retryable(self) -> None:
         self.assertEqual(
-            ubs_agent_universe.missing_report_status("EEX.NYSE", argparse.Namespace(assets="")),
+            ubs.agent.generation.universe.missing_report_status("EEX.NYSE", argparse.Namespace(assets="")),
             "no_report",
         )
 
     def test_broken_symbol_map_does_not_raise(self) -> None:
         args = argparse.Namespace(assets=str(self.assets), symbol_map="esto=no=es=valido,,")
         self.assertIn(
-            ubs_agent_universe.missing_report_status("XAUUSD", args),
+            ubs.agent.generation.universe.missing_report_status("XAUUSD", args),
             {"no_report", ubs_agent_config.SYMBOL_NOT_EXIST_STATUS},
         )
 
@@ -214,10 +214,10 @@ class SplitRetiredSymbolsTests(unittest.TestCase):
         assets = Path(self.temp.name) / "assets.ini"
         write_universe(assets, ["XAUUSD", "USDRUB"])
         self.args = argparse.Namespace(assets=str(assets), symbol_map="")
-        ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
     def tearDown(self) -> None:
-        ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
         self.temp.cleanup()
 
     def test_splits_plain_rows(self) -> None:
@@ -227,7 +227,7 @@ class SplitRetiredSymbolsTests(unittest.TestCase):
             {"id": 3, "target_symbol": "USDRUB"},
         ]
 
-        kept, retired = ubs_agent_universe.split_retired_symbols(rows, self.args)
+        kept, retired = ubs.agent.generation.universe.split_retired_symbols(rows, self.args)
 
         self.assertEqual([row["id"] for row in kept], [1, 3])
         self.assertEqual([row["id"] for row in retired], [2])
@@ -238,7 +238,7 @@ class SplitRetiredSymbolsTests(unittest.TestCase):
             ({"id": 2, "target_symbol": "XAUUSD"}, Path("b.set")),
         ]
 
-        kept, retired = ubs_agent_universe.split_retired_symbols(
+        kept, retired = ubs.agent.generation.universe.split_retired_symbols(
             pairs, self.args, row_of=lambda item: item[0]
         )
 
@@ -248,7 +248,7 @@ class SplitRetiredSymbolsTests(unittest.TestCase):
     def test_empty_universe_keeps_everything(self) -> None:
         rows = [{"id": 1, "target_symbol": "EEX.NYSE"}]
 
-        kept, retired = ubs_agent_universe.split_retired_symbols(rows, argparse.Namespace(assets=""))
+        kept, retired = ubs.agent.generation.universe.split_retired_symbols(rows, argparse.Namespace(assets=""))
 
         self.assertEqual(kept, rows)
         self.assertEqual(retired, [])
@@ -261,7 +261,7 @@ class SplitRetiredSymbolsTests(unittest.TestCase):
         ]
 
         self.assertEqual(
-            ubs_agent_universe.format_retired_symbol_rows(retired), "Corn_U6 x1, EEX.NYSE x2"
+            ubs.agent.generation.universe.format_retired_symbol_rows(retired), "Corn_U6 x1, EEX.NYSE x2"
         )
 
 
@@ -271,7 +271,7 @@ class RegressionRuntimeHookTests(unittest.TestCase):
             assets = Path(temp_dir) / "assets.ini"
             write_universe(assets, ["XAUUSD"])
             args = argparse.Namespace(assets=str(assets), symbol_map="")
-            ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+            ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
             runtime = ubs.agent.run.config.regression_runtime(args)
 
@@ -280,13 +280,13 @@ class RegressionRuntimeHookTests(unittest.TestCase):
             self.assertEqual(
                 runtime.missing_report_status("EEX.NYSE"), ubs_agent_config.SYMBOL_NOT_EXIST_STATUS
             )
-            ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+            ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
     def test_runtime_without_args_keeps_previous_behaviour(self) -> None:
         self.assertIsNone(ubs.agent.run.config.regression_runtime().missing_report_status)
 
     def test_runtime_exposes_the_stage_copy_that_repairs_spelling(self) -> None:
-        self.assertIs(ubs.agent.run.config.regression_runtime().write_stage_set, ubs_agent_sets.write_retry_set)
+        self.assertIs(ubs.agent.run.config.regression_runtime().write_stage_set, ubs.agent.generation.sets.write_retry_set)
 
 
 
@@ -315,27 +315,27 @@ class BrokerUniverseSymbolsTests(unittest.TestCase):
             assets = Path(temp_dir) / "ictrading_assets.ini"
             write_universe(assets, ["EURUSD", "usdrub"])
             args = argparse.Namespace(assets=str(assets))
-            ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+            ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
-            self.assertEqual(ubs_agent_universe.broker_universe_symbols(args), {"EURUSD", "USDRUB"})
+            self.assertEqual(ubs.agent.generation.universe.broker_universe_symbols(args), {"EURUSD", "USDRUB"})
             # Cache hit con el mismo mtime.
-            self.assertEqual(ubs_agent_universe.broker_universe_symbols(args), {"EURUSD", "USDRUB"})
+            self.assertEqual(ubs.agent.generation.universe.broker_universe_symbols(args), {"EURUSD", "USDRUB"})
 
             write_universe(assets, ["EURUSD"])
             stat = assets.stat()
             os.utime(assets, (stat.st_atime, stat.st_mtime + 10))
 
-            self.assertEqual(ubs_agent_universe.broker_universe_symbols(args), {"EURUSD"})
-            ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+            self.assertEqual(ubs.agent.generation.universe.broker_universe_symbols(args), {"EURUSD"})
+            ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
 
     def test_missing_or_unset_assets_yields_empty_set(self) -> None:
-        ubs_agent_universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
-        self.assertEqual(ubs_agent_universe.broker_universe_symbols(argparse.Namespace(assets="")), set())
-        self.assertEqual(ubs_agent_universe.broker_universe_symbols(argparse.Namespace()), set())
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        self.assertEqual(ubs.agent.generation.universe.broker_universe_symbols(argparse.Namespace(assets="")), set())
+        self.assertEqual(ubs.agent.generation.universe.broker_universe_symbols(argparse.Namespace()), set())
         with tempfile.TemporaryDirectory() as temp_dir:
             missing = Path(temp_dir) / "nope.ini"
             self.assertEqual(
-                ubs_agent_universe.broker_universe_symbols(argparse.Namespace(assets=str(missing))), set()
+                ubs.agent.generation.universe.broker_universe_symbols(argparse.Namespace(assets=str(missing))), set()
             )
 
 

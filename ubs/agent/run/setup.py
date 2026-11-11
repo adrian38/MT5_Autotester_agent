@@ -22,7 +22,7 @@ from ubs.universe import (
 from ubs_agent_config import (
     BASE_DIR,
 )
-from ubs_agent_policy import (
+from ubs.agent.generation.policy import (
     apply_discovery_target_policy_schedule,
     discovery_source_mix_feedback,
     discovery_target_policy_feedback,
@@ -33,7 +33,7 @@ from ubs.agent.seeds.plan import (
     disabled_symbols_file_for_account,
     generation_source_seeds,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     target_timeframe_universe,
 )
 

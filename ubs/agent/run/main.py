@@ -36,7 +36,7 @@ from ubs_agent_evaluate import (
     select_survivors,
 )
 from ubs.agent.run.modes import run_standalone_mode
-from ubs_agent_policy import (
+from ubs.agent.generation.policy import (
     apply_discovery_target_policy_schedule,
     discovery_ranked_seed_selection,
     discovery_source_mix_feedback,
@@ -62,10 +62,10 @@ from ubs.agent.seeds.plan import (
     timeframe_plan_summary,
     variant_as_next_seed,
 )
-from ubs_agent_targets import (
+from ubs.agent.generation.targets import (
     choose_diverse_target,
 )
-from ubs_agent_universe import broker_universe_symbols, target_timeframe_universe
+from ubs.agent.generation.universe import broker_universe_symbols, target_timeframe_universe
 from ubs_agent_variants import (
     create_variant,
     run_backtests,

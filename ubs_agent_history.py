@@ -35,7 +35,7 @@ from ubs.agent.seeds.plan import (
     disabled_symbols_file_for_account,
     generation_source_seeds,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     broker_universe_symbols,
 )
 from ubs_agent_variants import (

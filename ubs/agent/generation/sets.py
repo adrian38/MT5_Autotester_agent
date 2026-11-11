@@ -36,7 +36,7 @@ from ubs_agent_config import (
     TIMEFRAME_TO_ENUM,
     is_agent_mutable_key,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     current_set_symbol,
 )
 

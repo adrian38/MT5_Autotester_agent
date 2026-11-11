@@ -39,12 +39,12 @@ from ubs_agent_reports import (
 from ubs.agent.seeds.plan import (
     disabled_symbols_file_for_account,
 )
-from ubs_agent_sets import (
+from ubs.agent.generation.sets import (
     copy_seed_for_backtest,
     record_invalid_seed,
     validate_seed_backtest_set,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     missing_report_status,
 )
 from ubs_agent_variants import (

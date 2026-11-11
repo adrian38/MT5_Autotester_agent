@@ -19,7 +19,7 @@ from ubs.memory import metrics_have_empty_tester_context
 from ubs.path_utils import resolve_workspace_path
 from ubs.seeds import seed_from_path
 from ubs.tester_diagnostics import execution_failure_reason
-from ubs_agent_sets import validate_seed_backtest_set
+from ubs.agent.generation.sets import validate_seed_backtest_set
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent

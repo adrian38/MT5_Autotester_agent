@@ -1,9 +1,9 @@
 import ubs.agent.final_tick.entry
-import ubs_agent_sets
+import ubs.agent.generation.sets
 import ubs.agent.final_tick.evaluate
 import ubs.agent.final_tick.ohlc
 import ubs.agent.final_tick.pass_stage
-import ubs_agent_universe
+import ubs.agent.generation.universe
 import contextlib
 import io
 import json
@@ -362,7 +362,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             with (
                 patch("ubs.agent.final_tick.pass_stage.split_retired_symbols", side_effect=lambda r, _a: (r, [])),
                 patch("ubs.agent.final_tick.pass_stage.variant_from_candidate_row", return_value=variant),
-                patch("ubs_agent_sets.write_set_use_every_tick"),
+                patch("ubs.agent.generation.sets.write_set_use_every_tick"),
                 patch(
                     "ubs.agent.final_tick.evaluate._read_ohlc_report_cfg_dates",
                     return_value=("2026.01.01", "2026.06.30"),

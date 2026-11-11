@@ -19,7 +19,7 @@ from ubs.set_rules import (
     set_line_values,
 )
 from ubs_agent import is_agent_mutable_key
-from ubs_agent_sets import repair_seed_backtest_set
+from ubs.agent.generation.sets import repair_seed_backtest_set
 
 
 def set_text(run_strategy: str, enable_nfp: str, **overrides: str) -> str:

@@ -54,7 +54,7 @@ from ubs.agent.seeds.plan import (
     seeds_from_survivors,
     seeds_from_variants,
 )
-from ubs_agent_universe import target_timeframe_universe
+from ubs.agent.generation.universe import target_timeframe_universe
 from ubs_agent_variants import create_variant
 
 

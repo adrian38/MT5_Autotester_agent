@@ -22,7 +22,7 @@ from ubs_agent_config import (
     PRODUCTION_DIVERSITY_REROLL_ATTEMPTS,
     TIMEFRAME_UNIVERSE,
 )
-from ubs_agent_policy import (
+from ubs.agent.generation.policy import (
     related_assets,
     target_symbol_disabled,
     target_symbol_options_for_seed,
@@ -30,7 +30,7 @@ from ubs_agent_policy import (
 from ubs.agent.seeds.plan import (
     TargetDiversityLimiter,
 )
-from ubs_agent_target_types import DiverseTargetOptions
+from ubs.agent.generation.target_types import DiverseTargetOptions
 
 
 @dataclass

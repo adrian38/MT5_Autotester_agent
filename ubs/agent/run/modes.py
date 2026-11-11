@@ -33,7 +33,7 @@ from ubs.agent.seeds.scores import (
     rescore_seed_scores_only,
 )
 from ubs.agent.seeds.final_tick import evaluate_seed_final_tick
-from ubs_agent_universe import regression_score_config
+from ubs.agent.generation.universe import regression_score_config
 
 
 def _run_and_close(action, args, memory, score_config) -> int:

@@ -68,10 +68,10 @@ from ubs_agent_reports import (
 from ubs.agent.seeds.plan import (
     target_symbol_cap_ratio,
 )
-from ubs_agent_sets import (
+from ubs.agent.generation.sets import (
     write_retry_set,
 )
-from ubs_agent_universe import (
+from ubs.agent.generation.universe import (
     missing_report_status,
     target_timeframe_universe,
 )

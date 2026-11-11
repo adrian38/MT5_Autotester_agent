@@ -284,7 +284,7 @@ from ubs_agent_history import (  # noqa: F401
     probe_universe_history,
     select_history_probe_seed,
 )
-from ubs_agent_policy import (  # noqa: F401
+from ubs.agent.generation.policy import (  # noqa: F401
     apply_discovery_target_policy_schedule,
     discovery_ranked_seed_selection,
     discovery_source_mix_feedback,
@@ -390,7 +390,7 @@ from ubs.agent.seeds.plan import (  # noqa: F401
     unseeded_timeframe_force_probability,
     variant_as_next_seed,
 )
-from ubs_agent_sets import (  # noqa: F401
+from ubs.agent.generation.sets import (  # noqa: F401
     _set_param_active,
     copy_seed_for_backtest,
     infer_missing_run_strategy_from_set,
@@ -407,7 +407,7 @@ from ubs_agent_sets import (  # noqa: F401
     write_retry_set,
     write_set_force_symbol,
 )
-from ubs_agent_targets import (  # noqa: F401
+from ubs.agent.generation.targets import (  # noqa: F401
     choose_diverse_target,
     choose_group_guided_unseeded_symbol,
     choose_target_period,
@@ -416,7 +416,7 @@ from ubs_agent_targets import (  # noqa: F401
     filter_timeframe_universe,
     related_timeframes,
 )
-from ubs_agent_universe import (  # noqa: F401
+from ubs.agent.generation.universe import (  # noqa: F401
     _BROKER_UNIVERSE_SYMBOLS_CACHE,
     _row_target_symbol,
     broker_universe_symbols,
