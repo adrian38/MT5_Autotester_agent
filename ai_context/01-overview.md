@@ -57,13 +57,14 @@ The CLI scripts are the automation core:
   robustness OOS for accepted candidates, and update the active
   `outputs/ubs_memory_{BROKER}_{ACCOUNT}.sqlite`.
 
-Batch files call those scripts for double-click usage:
+Batch files in `scripts/` call those scripts for double-click usage. Each one
+`cd`s to the repository root first, so they work from their own folder:
 
-- `compile_mq5.bat`
-- `run_backtests.bat`
-- `compile_and_backtest.bat`
-- `dry_run.bat`
-- `run_ui.bat`
+- `scripts/compile_mq5.bat`
+- `scripts/run_backtests.bat`
+- `scripts/compile_and_backtest.bat`
+- `scripts/dry_run.bat`
+- `scripts/run_ui.bat`
 
 ### 3. Portfolio Workflow
 

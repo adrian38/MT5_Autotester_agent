@@ -91,7 +91,7 @@ python .\run_tests.py --dry-run
 
 Esto genera los `.ini` dentro de `configs` y muestra los comandos que se ejecutarian.
 
-Tambien puedes hacer doble clic en `dry_run.bat`.
+Tambien puedes hacer doble clic en `scripts\dry_run.bat`.
 
 ## Ejecutar backtests
 
@@ -99,7 +99,7 @@ Tambien puedes hacer doble clic en `dry_run.bat`.
 python .\run_tests.py
 ```
 
-Tambien puedes hacer doble clic en `run_backtests.bat`.
+Tambien puedes hacer doble clic en `scripts\run_backtests.bat`.
 
 ## Interfaz grafica
 
@@ -109,7 +109,7 @@ Puedes abrir una UI de escritorio para editar rutas, ajustar el `tester_template
 python .\app_ui.py
 ```
 
-Tambien puedes hacer doble clic en `run_ui.bat`. La UI usa los mismos scripts del proyecto y ejecuta en modo real; si quieres validar sin abrir MT5, usa las opciones `--dry-run` desde consola.
+Tambien puedes hacer doble clic en `scripts\run_ui.bat`. La UI usa los mismos scripts del proyecto y ejecuta en modo real; si quieres validar sin abrir MT5, usa las opciones `--dry-run` desde consola.
 
 En la pestana `Configuracion`, `Archivo .mq5` es obligatorio cuando `Recursivo` esta apagado. Si escribes un nombre como `Strategy 1.4.14.mq5`, la UI compila solo ese archivo y el flujo completo usa su `.ex5` para el backtest. Si activas `Recursivo`, se usan solo los `.mq5` y `.ex5` encontrados directamente en `Carpeta .mq5`; no se entra en subcarpetas.
 
@@ -134,7 +134,7 @@ python .\run_tests.py --mt5-path "C:\Program Files\RoboForex MT5 Terminal\termin
 Con el `.bat`, puedes pasar parametros desde PowerShell asi:
 
 ```powershell
-.\run_backtests.bat --mt5-path "C:\TuRuta\MetaTrader 5\terminal64.exe"
+.\scripts\run_backtests.bat --mt5-path "C:\TuRuta\MetaTrader 5\terminal64.exe"
 ```
 
 ## Cambiar parametros
@@ -194,7 +194,7 @@ python .\compile_and_backtest.py
 O con doble clic:
 
 ```text
-compile_and_backtest.bat
+scripts\compile_and_backtest.bat
 ```
 
 En otra PC puedes cambiar `.env` o sobrescribir la ruta por consola:

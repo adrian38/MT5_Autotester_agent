@@ -96,11 +96,14 @@ if (Test-Path $IconPng) {
     Copy-Item -LiteralPath $IconPng -Destination $StageDir -Force
 }
 
+# Solo los .ps1 de limpieza. Los .bat de `scripts/` lanzan los `.py` del
+# proyecto y la instalacion no los tiene -lleva los cuatro .exe-, asi que
+# copiarlos dejaria atajos que no pueden funcionar.
 $ScriptsSource = Join-Path $Root "scripts"
 if (Test-Path $ScriptsSource) {
     $ScriptsDest = Join-Path $StageDir "scripts"
     New-Item -ItemType Directory -Path $ScriptsDest -Force | Out-Null
-    Get-ChildItem -LiteralPath $ScriptsSource -File | ForEach-Object {
+    Get-ChildItem -LiteralPath $ScriptsSource -File -Filter *.ps1 | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $ScriptsDest -Force
     }
 }
