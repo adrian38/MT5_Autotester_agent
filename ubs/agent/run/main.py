@@ -45,7 +45,7 @@ from ubs_agent_policy import (
     unseeded_universe_targets,
 )
 from ubs.agent.run.config import build_run_config
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     TargetDiversityLimiter,
     apply_reserved_timeframe,
     asset_group_map,

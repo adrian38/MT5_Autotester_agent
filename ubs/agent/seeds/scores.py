@@ -36,7 +36,7 @@ from ubs_agent_reports import (
     report_has_empty_tester_context,
     report_matches_variant,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     disabled_symbols_file_for_account,
 )
 from ubs_agent_sets import (

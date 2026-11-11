@@ -8,7 +8,7 @@ from pathlib import Path
 from run_tests_symbols import infer_period_from_path
 from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs.agent.final_tick.pass_stage import _final_tick_set_names
-from ubs_agent_seed_final_tick import (
+from ubs.agent.seeds.final_tick import (
     SeedFinalTickMemoryAdapter,
     eligible_seed_final_tick_rows,
     seed_final_tick_cohort_id,

@@ -38,7 +38,7 @@ from ubs_agent_universe import (
     broker_universe_symbols,
     missing_report_status,
 )
-from ubs_agent_retry_seed import retry_seed  # noqa: F401
+from ubs.agent.seeds.retry import retry_seed  # noqa: F401
 from ubs_agent_variants import (
     run_backtests,
 )

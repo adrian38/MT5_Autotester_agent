@@ -45,7 +45,7 @@ from ubs.agent.run.generation import (
     _selection_pool,
     _target_plan,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     apply_reserved_timeframe,
     asset_group_map,
     disabled_symbols_file_for_account,

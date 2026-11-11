@@ -54,7 +54,8 @@
 |   |-- agent/                   # UBS orchestration implementation
 |   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
 |   |   |-- rescore/             # Candidate and robustness rescoring
-|   |   `-- run/                 # Cycle configuration, setup and execution
+|   |   |-- run/                 # Cycle configuration, setup and execution
+|   |   `-- seeds/               # Seed planning, scoring, retry and Final Tick
 |   |-- models.py                # Shared Seed/Variant dataclasses
 |   |-- db.py                    # SQLite connection defaults for UBS memory
 |   |-- memory.py                # SQLite persistence and row mapping

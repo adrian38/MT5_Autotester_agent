@@ -28,11 +28,11 @@ from ubs_agent_robustness import (
     evaluate_candidate_robustness,
 )
 from ubs.agent.run.config import regression_runtime
-from ubs_agent_seed_scores import (
+from ubs.agent.seeds.scores import (
     evaluate_seed_scores,
     rescore_seed_scores_only,
 )
-from ubs_agent_seed_final_tick import evaluate_seed_final_tick
+from ubs.agent.seeds.final_tick import evaluate_seed_final_tick
 from ubs_agent_universe import regression_score_config
 
 

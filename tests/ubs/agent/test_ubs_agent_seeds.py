@@ -25,7 +25,7 @@ from ubs_agent import (
 )
 from run_tests import infer_period_from_set, load_set_params, parse_symbol_map
 from tests.ubs.agent.ubs_agent_files_fixtures import score
-from ubs_agent_seed_scores import _check_seed_sets, _filter_invalid_seeds, _score_seed_reports
+from ubs.agent.seeds.scores import _check_seed_sets, _filter_invalid_seeds, _score_seed_reports
 
 
 class UBSAgentSeedTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class UBSAgentSeedTests(unittest.TestCase):
         self.assertEqual(result[4], [seed])
         self.assertEqual(result[5], 0)
 
-    @patch("ubs_agent_seed_scores.record_invalid_seed")
+    @patch("ubs.agent.seeds.scores.record_invalid_seed")
     def test_unchanged_unsupported_strategy_is_reclassified_without_backtest(
         self, record_invalid,
     ) -> None:
@@ -73,8 +73,8 @@ class UBSAgentSeedTests(unittest.TestCase):
         self.assertIn("Run_Strategy=3 no soportado por UBS V6", reasons[str(path)][0])
         record_invalid.assert_called_once_with(ANY, seed, reasons[str(path)])
 
-    @patch("ubs_agent_seed_scores.evaluate_seed_report")
-    @patch("ubs_agent_seed_scores.find_report_for_set")
+    @patch("ubs.agent.seeds.scores.evaluate_seed_report")
+    @patch("ubs.agent.seeds.scores.find_report_for_set")
     def test_score_seed_reports_initializes_counters_and_preserves_blocked_count(
         self, find_report, evaluate_report,
     ) -> None:

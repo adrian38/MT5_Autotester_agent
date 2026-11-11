@@ -25,7 +25,7 @@ from ubs_agent_policy import (
     production_viable_source_seeds,
     unseeded_universe_targets,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     TargetDiversityLimiter,
     apply_reserved_timeframe,
     configured_unseeded_force_probabilities,

@@ -22,7 +22,7 @@ from ubs_agent_config import (
     DISCOVERY_SEED_SYMBOL_RESERVE_RATIO,
     TIMEFRAME_UNIVERSE,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     capped_count,
     ranked_seed_selection,
 )

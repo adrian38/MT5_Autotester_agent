@@ -27,7 +27,7 @@ from ubs_agent_policy import (
     target_symbol_disabled,
     target_symbol_options_for_seed,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     TargetDiversityLimiter,
 )
 from ubs_agent_target_types import DiverseTargetOptions

@@ -65,7 +65,7 @@ from ubs_agent_reports import (
     report_matches_variant,
     tester_log_no_history_metadata,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     target_symbol_cap_ratio,
 )
 from ubs_agent_sets import (

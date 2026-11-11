@@ -31,7 +31,7 @@ from ubs_agent_evaluate import (
     recreate_work_dir,
     select_survivors,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     disabled_symbols_file_for_account,
     generation_source_seeds,
 )

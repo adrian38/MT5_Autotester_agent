@@ -357,7 +357,7 @@ from ubs.agent.run.config import (  # noqa: F401
     restored_discovery_exploitable_ratio,
     restored_discovery_universe_feedback_probability,
 )
-from ubs_agent_seed_scores import (  # noqa: F401
+from ubs.agent.seeds.scores import (  # noqa: F401
     _parse_eval_dir_timestamp,
     _seed_override_updated_at,
     evaluate_seed_scores,
@@ -366,7 +366,7 @@ from ubs_agent_seed_scores import (  # noqa: F401
     rescore_existing_seed_scores,
     rescore_seed_scores_only,
 )
-from ubs_agent_seeds_plan import (  # noqa: F401
+from ubs.agent.seeds.plan import (  # noqa: F401
     TargetDiversityLimiter,
     apply_reserved_timeframe,
     asset_group_map,

@@ -42,7 +42,7 @@ from ubs.agent.run.config import (
     restored_discovery_exploitable_ratio,
     restored_discovery_universe_feedback_probability,
 )
-from ubs_agent_seeds_plan import (
+from ubs.agent.seeds.plan import (
     TargetDiversityLimiter,
     apply_reserved_timeframe,
     asset_group_map,

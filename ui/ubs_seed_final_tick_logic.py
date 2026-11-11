@@ -7,7 +7,7 @@ from tkinter import messagebox
 
 from ubs.memory import AgentMemory
 from ubs.path_utils import resolve_workspace_path
-from ubs_agent_seed_final_tick import eligible_seed_final_tick_rows
+from ubs.agent.seeds.final_tick import eligible_seed_final_tick_rows
 
 
 class UBSSeedFinalTickLogicMixin:
