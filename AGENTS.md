@@ -134,6 +134,48 @@ si algún repositorio hermano no estaba disponible o no se verificó.
 Toda nota duradera nueva en `ai_context/` debe añadirse también a
 `ai_context/main.md`; `python -m tools.ai_context_index` lo hace cumplir.
 
+## Dónde va cada cosa: la raíz es una lista cerrada
+
+La raíz había juntado 33 módulos `ubs_agent_*.py`, once `run_tests_*.py`, cinco
+`.bat`, dos plantillas y el documento de requisitos. Nadie los puso ahí con
+mala intención: **sin lista, la raíz es el sitio por defecto de cualquier cosa**,
+y una vez dentro no vuelve a salir. Antes de dejar un fichero nuevo en la raíz:
+*¿lo busca algo de verdad ahí por nombre fijo?* Si no, va a una carpeta.
+
+| En la raíz | Por qué no puede moverse |
+| --- | --- |
+| `pyproject.toml`, `requirements.txt` | manifiestos de empaquetado y dependencias |
+| `.gitignore`, `.gitattributes`, `.mcp.json` | contratos de Git y del servidor MCP |
+| `README.md`, `AGENTS.md`, `CLAUDE.md` | lectura obligatoria; se descubren por nombre en la raíz |
+| `app_ui.py`, `run_tests.py`, `compile_mq5.py`, `compile_and_backtest.py`, `ubs_agent.py` | puntos de entrada: `[project.scripts]`, los `.exe` del instalador y lo que la interfaz lanza por nombre |
+| `manager_node_lifecycle.py` | la guarda de paridad del manager lo lee por esta ruta exacta en cada copia |
+| `experts_list.txt`, `experts_root.txt`, `compile_root.txt` | los busca `backtest/base.py` por nombre desde `BASE_DIR` |
+| `tester_template.ini`, `ui_settings.ini`, `manager_node.json`, `.env` | configuración viva del equipo, ignorada por Git; es la ruta que leen la aplicación y el nodo |
+
+Y cada carpeta tiene un dueño:
+
+| Carpeta | Qué va ahí |
+| --- | --- |
+| `backtest/` | el lanzador de backtests; `run_tests.py` es su fachada |
+| `common/` | primitivas que usan todos los dominios y no son de ninguno |
+| `ubs/` | el agente UBS, con `agent/` dentro |
+| `ui/` | las pantallas, en pares vista/lógica |
+| `manager_node_runtime/` | el nodo embebido que ejecuta este agente |
+| `portfolio_manager/`, `parsers/` | informes de MT5, libros de Excel y carteras |
+| `tests/` | las pruebas, una carpeta por subsistema; ningún `test_*.py` suelto |
+| `tools/` | comandos de verificación, auditoría y empaquetado |
+| `ai_context/` | notas duraderas, con su línea en `ai_context/main.md` |
+| `config/` | plantillas que se copian a mano una vez |
+| `docs/` | documentos para leer, como `docs/requirements.md` |
+| `assets/` | iconos y el universo de activos por broker |
+| `scripts/` | lanzadores de doble clic y limpiezas de PowerShell |
+
+Lo generado y desechable —`configs/`, `logs/`, `outputs/`, `reports/`,
+`runtime/`, `sets/`, `experts/`, `tmp/`— está ignorado y no se documenta como
+responsabilidad de nadie. Lo hace cumplir
+`tests/quality/test_repository_root.py`, que falla con el nombre del intruso y
+la carpeta que le toca, y que compara estas dos tablas con sus listas.
+
 ## Tamaño y legibilidad del código
 
 El objetivo es un máximo de 60 líneas por función y 600 por fichero. Las

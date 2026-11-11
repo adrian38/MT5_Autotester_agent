@@ -144,6 +144,7 @@ batch wrappers.
 | [12-manager-universe-sync.md](12-manager-universe-sync.md) | Remote symbol sync, history probe, no_history policy, and node process control. |
 | [13-manager-status-during-repair.md](13-manager-status-during-repair.md) | Nonblocking status/log snapshots during bulk repair and stale manager cards. |
 | [node_thread_supervision.md](node_thread_supervision.md) | Why a dead node thread looks like «connection refused», and the stderr capture and supervision that answer it. |
+| [layout_del_repositorio.md](layout_del_repositorio.md) | Qué se rompe al mover un fichero de la raíz: `BASE_DIR`, los scripts que la interfaz lanza por nombre, el alcance de las guardas y el porting a los otros agentes. |
 
 ## Common Entry Points
 

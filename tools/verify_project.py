@@ -25,6 +25,7 @@ def command_specs(*, include_full_suite: bool = True) -> list[CommandSpec]:
         CommandSpec("protocolo", (python, "-m", "tools.protocol_parity")),
         CommandSpec("guardas", (
             python, "-m", "unittest", "tests.quality.test_project_rules",
+            "tests.quality.test_repository_root",
             "tests.quality.test_function_length", "tests.quality.test_file_length",
             "tests.quality.test_ai_context_index", "tests.quality.test_undefined_names",
             "tests.quality.test_verify_project",
