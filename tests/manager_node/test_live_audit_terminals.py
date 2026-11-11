@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 from manager_node_runtime.live_audit import LiveAuditController
 from manager_node_runtime.live_audit_helpers import normalize_request
-from tests.manager_node_live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
+from tests.manager_node import PROJECT_ROOT
+from tests.manager_node.live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
 
 
 class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
@@ -312,7 +313,7 @@ class LiveAuditTerminalTests(LiveAuditTestBase, unittest.TestCase):
         # La auditoria vive repartida en varios modulos; la guarda los revisa
         # todos para que dividir el fichero no la apague en silencio.
         modules = sorted(
-            (Path(__file__).resolve().parents[1] / "manager_node_runtime")
+            (PROJECT_ROOT / "manager_node_runtime")
             .glob("live_audit*.py")
         )
         self.assertGreaterEqual(len(modules), 2, msg=str(modules))

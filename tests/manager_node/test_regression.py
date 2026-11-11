@@ -415,7 +415,7 @@ class ManagerNodeRegressionTests(unittest.TestCase):
             )
             self.assertTrue(repair_steps)
             # La fase 1 usa el límite de reparación; la 2, el suyo. Detalle en
-            # tests/test_manager_node_repair_phases.py.
+            # tests/manager_node/test_repair_phases.py.
             self.assertTrue(all(
                 step["max_workers"] == 3 for step in repair_steps if step["phase"] == 1
             ))

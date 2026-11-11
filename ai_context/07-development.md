@@ -2,6 +2,18 @@
 
 ## Common Commands
 
+Run all automated tests:
+
+```powershell
+python -m unittest discover -s tests
+```
+
+Run only the embedded manager-node suite:
+
+```powershell
+python -m unittest discover -s tests/manager_node -t .
+```
+
 Run the desktop UI:
 
 ```powershell

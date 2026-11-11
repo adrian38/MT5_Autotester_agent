@@ -17,7 +17,7 @@ from manager_node_runtime.mt5_native_history_report import (
     export_native_history_report,
     validate_native_history_report,
 )
-from tests.manager_node_live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
+from tests.manager_node.live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
 
 
 def _history_deal(ticket: int, position: int, entry: int, moment: datetime, deal_type: int) -> SimpleNamespace:

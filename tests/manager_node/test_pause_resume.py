@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from manager_node_runtime.node import RESUMABLE_STATUSES, JobController
+from tests.manager_node import PROJECT_ROOT
 
 
 class FakeProcess:
@@ -225,7 +226,7 @@ class ManagerNodePauseResumeTests(unittest.TestCase):
     def test_the_node_exposes_the_pause_and_resume_endpoints(self) -> None:
         # El manager llama a estas rutas; sin ellas la interfaz recibe un 404
         # "Ruta no encontrada" al pulsar Pausar.
-        source = Path(__file__).resolve().parents[1] / "manager_node_runtime" / "node.py"
+        source = PROJECT_ROOT / "manager_node_runtime" / "node.py"
         script = source.read_text(encoding="utf-8")
         self.assertIn('self.path == "/api/v1/jobs/pause"', script)
         self.assertIn('self.path == "/api/v1/jobs/resume"', script)

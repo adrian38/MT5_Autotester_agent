@@ -88,6 +88,9 @@
 |   |-- 06-conventions.md        # Coding conventions
 |   |-- 07-development.md        # Development workflow
 |   `-- 08-ubs-parameters.md     # UBS EA parameter reference
+|-- tests/                       # Automated tests and shared test support
+|   |-- manager_node/            # Embedded manager-node tests and fixtures
+|   `-- test_*.py                # Remaining suites, split by subsystem over time
 |-- tools/
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
@@ -116,6 +119,14 @@ only when it is genuinely shell-level or generic infrastructure.
 
 The CLI scripts can still run independently and should remain usable without
 the UI.
+
+## Test Layout
+
+Tests are grouped by the subsystem they exercise. The embedded node suite lives
+under `tests/manager_node/`; its fixtures stay beside that suite. New
+subsystem groups should be importable packages with an `__init__.py`, while
+`python -m unittest discover -s tests` remains the repository-wide discovery
+contract.
 
 ## Main Module Responsibilities
 

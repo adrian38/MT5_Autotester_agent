@@ -12,7 +12,7 @@ from manager_node_runtime.portfolio_save import (
     requalify_portfolio_member_payload,
     save_portfolio_payload,
 )
-from tests.manager_node_portfolio_fixtures import CANDIDATE_STAGES, portfolio_payload
+from tests.manager_node.portfolio_fixtures import CANDIDATE_STAGES, portfolio_payload
 
 
 class ManagerNodeExclusionVerdictTests(unittest.TestCase):

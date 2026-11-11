@@ -97,7 +97,7 @@ la normalización CRLF/LF propia de Git. No se
 les añade ningún import nuevo. Un cambio exige dos commits hermanos y estas
 pruebas, según el alcance:
 
-- IC: `python -m unittest tests.test_prepared_candidates tests.test_guided_node tests.test_guided_http tests.test_manager_node_repair_phases`
+- IC: `python -m unittest tests.test_prepared_candidates tests.test_guided_node tests.test_guided_http tests.manager_node.test_repair_phases`
 - Manager: `python -m unittest tests.test_guided_routing`
 - Lab: `python -m unittest tests.test_generation tests.test_manager_bridge tests.test_feedback tests.test_cycle_worker`
 

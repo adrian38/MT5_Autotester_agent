@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from manager_node_lifecycle import EmbeddedManagerNode, relaunch_application
+from tests.manager_node import PROJECT_ROOT
 
 
 def free_port() -> int:
@@ -48,7 +49,7 @@ def health_status(port: int, token: str) -> int:
 
 class EmbeddedManagerNodeTests(unittest.TestCase):
     def test_node_starts_and_stops_with_matching_app_project(self) -> None:
-        app_base = Path(__file__).resolve().parent.parent
+        app_base = PROJECT_ROOT
         with tempfile.TemporaryDirectory() as temp:
             config_path = Path(temp) / "node.json"
             token = "test-embedded-token"
@@ -123,7 +124,7 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             self.assertIn("pertenece a otro proyecto", lifecycle.last_error)
 
     def started_lifecycle(self, temp: str, port: int, token: str) -> EmbeddedManagerNode:
-        app_base = Path(__file__).resolve().parent.parent
+        app_base = PROJECT_ROOT
         config_path = Path(temp) / "node.json"
         write_embedded_config(config_path, app_base, port, token)
         settings = configparser.ConfigParser()
@@ -202,7 +203,7 @@ class EmbeddedManagerNodeTests(unittest.TestCase):
             self.assertEqual(errors, ["ERROR al volver a escuchar el nodo: puerto ocupado"])
 
     def test_relaunch_uses_python_and_the_source_entrypoint(self) -> None:
-        entrypoint = Path(__file__).resolve().parent.parent / "app_ui.py"
+        entrypoint = PROJECT_ROOT / "app_ui.py"
         with (
             mock.patch("manager_node_lifecycle.sys.frozen", False, create=True),
             mock.patch("manager_node_lifecycle.sys.argv", ["app_ui.py", "--sample"]),

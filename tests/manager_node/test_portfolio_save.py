@@ -14,7 +14,7 @@ from manager_node_runtime.portfolio_save import (
     save_portfolio_payload,
     set_portfolio_alias_payload,
 )
-from tests.manager_node_portfolio_fixtures import portfolio_payload, portfolio_proposal
+from tests.manager_node.portfolio_fixtures import portfolio_payload, portfolio_proposal
 
 
 class ManagerNodePortfolioSaveTests(unittest.TestCase):
