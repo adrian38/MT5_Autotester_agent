@@ -4,9 +4,15 @@ from pathlib import Path
 
 
 def app_base_dir() -> Path:
+    """La raiz de la aplicacion, que es de donde se lee el `.env`.
+
+    `parents[1]` y no `parent`: este modulo vive en `common/`, un nivel por
+    debajo de la raiz. Congelado manda el ejecutable, que sigue estando en la
+    raiz de la instalacion.
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parents[1]
 
 
 BASE_DIR = app_base_dir()

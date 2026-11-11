@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-import telegram_notify
+from common import telegram_notify
 
 
 class _FakeResponse:

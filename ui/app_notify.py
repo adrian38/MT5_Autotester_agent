@@ -5,9 +5,9 @@ import json
 import sqlite3
 from pathlib import Path
 
-import telegram_notify
+from common import telegram_notify
 from ubs.db import connect_memory
-from mt5_env import env_value
+from common.mt5_env import env_value
 from run_tests import RUNNING_TERMINAL_EXIT_CODE
 from ubs.account import (
     DEFAULT_ACCOUNT_TYPE,

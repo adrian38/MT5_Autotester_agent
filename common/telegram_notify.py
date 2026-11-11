@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
-from mt5_env import env_value
+from common.mt5_env import env_value
 
 
 SERVER_AUTH_OID = "1.3.6.1.5.5.7.3.1"

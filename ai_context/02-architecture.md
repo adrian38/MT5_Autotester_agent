@@ -9,8 +9,7 @@
 |-- compile_mq5.py               # MetaEditor compile runner (CLI)
 |-- compile_and_backtest.py      # Orchestrates compile then backtest (CLI)
 |-- run_tests.py                 # Batch Strategy Tester runner (CLI facade over backtest/)
-|-- mt5_env.py                   # .env/env-var path resolution helpers
-|-- telegram_notify.py           # Optional Telegram notification helper
+|-- manager_node_lifecycle.py    # Embeds and supervises the manager node thread
 |-- pyproject.toml               # Project metadata and dependencies
 |-- tester_template.ini          # Base MT5 Strategy Tester config
 |-- ui_settings.ini              # UI runtime settings, paths, theme
@@ -46,6 +45,12 @@
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
 |   `-- ubs_universe_logic.py    # UBS Universe enable/weights logic
+|
+|-- common/                      # Primitives every domain uses and none owns
+|   |-- __init__.py
+|   |-- crash_log.py             # stderr duplication and excepthook install
+|   |-- mt5_env.py               # .env/env-var path resolution helpers
+|   `-- telegram_notify.py       # Optional Telegram notification helper
 |
 |-- backtest/                    # Strategy Tester runner implementation
 |   |-- __init__.py

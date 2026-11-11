@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from mt5_env import MT5_TERMINAL_ENV
+from common.mt5_env import MT5_TERMINAL_ENV
 from backtest.base import (
     BASE_DIR,
     EXPERTS_FILE,

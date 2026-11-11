@@ -4,7 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from compile_mq5 import find_metaeditor_path, load_compile_root
-from mt5_env import env_value, metaeditor_path_from_env, terminal_path_from_env
+from common.mt5_env import env_value, metaeditor_path_from_env, terminal_path_from_env
 from run_tests import REPORT_DIR, TEMPLATE_FILE, find_mt5_path, load_experts_root
 from ubs.account import (
     BROKERS,

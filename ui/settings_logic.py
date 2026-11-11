@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
-import telegram_notify
-from mt5_env import ENV_FILE
+from common import telegram_notify
+from common.mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, TESTER_DEFAULTS
 from ubs.account import (
     BROKERS,
@@ -280,7 +280,7 @@ class SettingsLogicMixin(SettingsCleanupMixin):
             new_lines.append(f"{name}={value}")
 
         ENV_FILE.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        import mt5_env
+        from common import mt5_env
         mt5_env._PROJECT_ENV = None
 
     def _general_agent_settings(self, symbol_maps) -> dict[str, str]:

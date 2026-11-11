@@ -8,7 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-import crash_log
+from common import crash_log
 from manager_node_lifecycle import (
     NODE_SUPERVISION_INTERVAL_MS,
     EmbeddedManagerNode,

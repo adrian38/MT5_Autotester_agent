@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import crash_log
+from common import crash_log
 
 
 class CrashLogTests(unittest.TestCase):

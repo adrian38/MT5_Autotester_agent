@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from mt5_env import MT5_METAEDITOR_ENV, MT5_TERMINAL_ENV, metaeditor_path_from_env, terminal_path_from_env
+from common.mt5_env import MT5_METAEDITOR_ENV, MT5_TERMINAL_ENV, metaeditor_path_from_env, terminal_path_from_env
 
 
 BASE_DIR = Path(__file__).resolve().parent

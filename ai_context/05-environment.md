@@ -2,8 +2,10 @@
 
 ## Environment File
 
-`mt5_env.py` reads `.env` from the app base directory. In source mode, that is
-the repository root. In PyInstaller frozen mode, it is the executable folder.
+`common/mt5_env.py` reads `.env` from the app base directory. In source mode,
+that is the repository root — `app_base_dir()` resolves `parents[1]` because the
+module lives in `common/`. In PyInstaller frozen mode, it is the executable
+folder.
 
 Supported variables:
 

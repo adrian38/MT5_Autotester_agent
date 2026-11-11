@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from mt5_env import MT5_TERMINAL_ENV, terminal_path_from_env
+from common.mt5_env import MT5_TERMINAL_ENV, terminal_path_from_env
 
 # Reexportados para no cambiar a los consumidores de `run_tests`.
 from backtest.base import (  # noqa: F401

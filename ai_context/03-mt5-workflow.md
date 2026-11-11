@@ -12,7 +12,7 @@ el portafolio y se serializa mediante la cola normal del nodo.
 MT5 path lookup order in `run_tests.py`:
 
 1. CLI `--mt5-path`.
-2. Environment variables / `.env` via `mt5_env.py`:
+2. Environment variables / `.env` via `common/mt5_env.py`:
    - `MT5_TERMINAL_PATH`
    - `MT5_PATH`
 3. Known default install locations:
