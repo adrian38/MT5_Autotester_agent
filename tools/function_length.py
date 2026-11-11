@@ -7,7 +7,7 @@ from pathlib import Path
 from tools import source_files
 from tools.source_files import ROOT, iter_python_files
 
-BASELINE_PATH = ROOT / "tests" / "function_length_baseline.json"
+BASELINE_PATH = ROOT / "tests" / "quality" / "function_length_baseline.json"
 MAX_LINES = 60
 
 

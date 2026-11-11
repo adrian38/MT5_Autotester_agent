@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 from manager_node_runtime.live_audit import LiveAuditController
 from manager_node_runtime.live_audit_helpers import normalize_request
-from tests.manager_node import PROJECT_ROOT
+from tests import PROJECT_ROOT
 from tests.manager_node.live_audit_fixtures import FakeOwner, LiveAuditTestBase, request
 
 

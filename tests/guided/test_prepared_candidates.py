@@ -9,7 +9,7 @@ from unittest import mock
 
 import ubs_agent as agent
 from manager_node_runtime import guided_batches as protocol
-from tests.test_guided_node import (
+from tests.guided.test_guided_node import (
     cross_broker_package, local_lineage_package, local_seed_package, package,
     rebuild_package, recovery_package, symbol_package,
 )

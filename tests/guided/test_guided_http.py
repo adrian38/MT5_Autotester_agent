@@ -11,7 +11,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from tests import test_prepared_candidates as prepared_fixture
+from tests import PROJECT_ROOT
+from tests.guided import test_prepared_candidates as prepared_fixture
 from manager_node_runtime.node import JobController, NodeHandler
 from ubs.prepared import run_prepared
 from ubs.score import ScoreConfig
@@ -76,7 +77,7 @@ class GuidedHTTPTests(unittest.TestCase):
         fixture = prepared_fixture.PreparedTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        manager_root = Path(__file__).resolve().parents[3] / 'MT5_Autotester_agent_manager'
+        manager_root = PROJECT_ROOT.parents[1] / 'MT5_Autotester_agent_manager'
         if not manager_root.is_dir():
             self.skipTest('Manager checkout not available for transport integration')
         root = fixture.root

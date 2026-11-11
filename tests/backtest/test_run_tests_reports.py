@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import run_tests
 import run_tests_runner
 import run_tests_watchdog
-from tests.run_tests_report_fixtures import ListLogger
+from tests.backtest.run_tests_report_fixtures import ListLogger
 
 
 def model4_retry_fixture(root):

@@ -97,7 +97,7 @@ la normalización CRLF/LF propia de Git. No se
 les añade ningún import nuevo. Un cambio exige dos commits hermanos y estas
 pruebas, según el alcance:
 
-- IC: `python -m unittest tests.test_prepared_candidates tests.test_guided_node tests.test_guided_http tests.manager_node.test_repair_phases`
+- IC: `python -m unittest tests.guided.test_prepared_candidates tests.guided.test_guided_node tests.guided.test_guided_http tests.manager_node.test_repair_phases`
 - Manager: `python -m unittest tests.test_guided_routing`
 - Lab: `python -m unittest tests.test_generation tests.test_manager_bridge tests.test_feedback tests.test_cycle_worker`
 
@@ -138,7 +138,8 @@ Toda nota duradera nueva en `ai_context/` debe añadirse también a
 
 El objetivo es un máximo de 60 líneas por función y 600 por fichero. Las
 excepciones heredadas están congeladas en
-`tests/function_length_baseline.json` y `tests/file_length_baseline.json`:
+`tests/quality/function_length_baseline.json` y
+`tests/quality/file_length_baseline.json`:
 
 - código nuevo por encima del techo falla; nunca se añade al baseline;
 - una entrada heredada no puede crecer y se elimina en cuanto baja del techo;

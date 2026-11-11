@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
+from tests import PROJECT_ROOT
 
 
 class ProjectRulesTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        cls.rules = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     def test_rules_name_the_enforced_workflow(self) -> None:
         for required in (

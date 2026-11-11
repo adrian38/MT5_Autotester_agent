@@ -89,8 +89,14 @@
 |   |-- 07-development.md        # Development workflow
 |   `-- 08-ubs-parameters.md     # UBS EA parameter reference
 |-- tests/                       # Automated tests and shared test support
+|   |-- backtest/                # Runner, report, terminal and watchdog tests
+|   |-- guided/                  # Guided-batch protocol and HTTP tests
+|   |-- integrations/            # Optional external integration tests
 |   |-- manager_node/            # Embedded manager-node tests and fixtures
-|   `-- test_*.py                # Remaining suites, split by subsystem over time
+|   |-- portfolio/               # Report parsing and portfolio calculations
+|   |-- quality/                 # Repository guards and their baselines
+|   |-- ui/                      # App composition, paths, theme and settings
+|   `-- test_ubs_*.py            # UBS suites, pending their domain split
 |-- tools/
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
@@ -122,9 +128,10 @@ the UI.
 
 ## Test Layout
 
-Tests are grouped by the subsystem they exercise. The embedded node suite lives
-under `tests/manager_node/`; its fixtures stay beside that suite. New
-subsystem groups should be importable packages with an `__init__.py`, while
+Tests are grouped by the subsystem they exercise. Fixtures stay beside the
+suite that owns them, and repository guard baselines live under
+`tests/quality/`. Subsystem groups are importable packages with an
+`__init__.py`, while
 `python -m unittest discover -s tests` remains the repository-wide discovery
 contract.
 

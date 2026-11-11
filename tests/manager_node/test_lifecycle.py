@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from manager_node_lifecycle import EmbeddedManagerNode, relaunch_application
-from tests.manager_node import PROJECT_ROOT
+from tests import PROJECT_ROOT
 
 
 def free_port() -> int:

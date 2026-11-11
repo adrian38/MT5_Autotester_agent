@@ -6,7 +6,7 @@ from unittest.mock import patch
 import run_tests
 import run_tests_runner
 import run_tests_reports
-from tests.run_tests_report_fixtures import ListLogger
+from tests.backtest.run_tests_report_fixtures import ListLogger
 
 
 class RunTestsSetAndConfigTests(unittest.TestCase):

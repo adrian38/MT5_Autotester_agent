@@ -14,6 +14,9 @@ Run only the embedded manager-node suite:
 python -m unittest discover -s tests/manager_node -t .
 ```
 
+Replace `manager_node` with `backtest`, `guided`, `integrations`, `portfolio`,
+`quality`, or `ui` to run another isolated suite.
+
 Run the desktop UI:
 
 ```powershell

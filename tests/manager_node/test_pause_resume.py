@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from manager_node_runtime.node import RESUMABLE_STATUSES, JobController
-from tests.manager_node import PROJECT_ROOT
+from tests import PROJECT_ROOT
 
 
 class FakeProcess:
