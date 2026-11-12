@@ -729,7 +729,9 @@ requirement changes or a debt item is opened/closed.
   Each screen MUST list eligible seeds and its stage status, expose continue,
   full rerun, low-quality retry, disk reconciliation, configuration persistence,
   refresh, and artifact-opening actions, and use the shared official Final Tick
-  dates and thresholds for its corresponding stage.
+  dates and thresholds for its corresponding stage. Both screens are one
+  stage-parameterized implementation and share their rules with the candidate
+  Final Tick screens per FR-1.12.34a.
 - **FR-1.12.21** The UI MUST expose robustness configuration in `UBS Agente UBS`:
   independent OOS dates, independent thresholds, positive/negative bonus values,
   and an auto-run toggle. Defaults: robust thresholds copy agent thresholds when
@@ -788,7 +790,8 @@ requirement changes or a debt item is opened/closed.
   created latest run when it appears. If no newer run exists, it MUST preserve
   the user's manual run selection.
 - **FR-1.12.29** The UI MUST include a dedicated `UBS Final Tick` tab showing
-  robust-accepted candidates from the selected/latest visible run with 21 columns:
+  robust-accepted candidates from the selected/latest visible run with 21 columns
+  (the same 21 that `UBS Final Tick 6M` shows, per FR-1.12.34a):
   SEL checkbox, run, candidate ID, generation, status, cause, symbol, TF, history
   quality %, OHLC score, OHLC net/PF/DD/trades, real-tick score, real-tick
   net/PF/DD/trades, date range, and set filename. Report open actions MUST include
@@ -836,7 +839,23 @@ requirement changes or a debt item is opened/closed.
   of at least 180 days and applies an extra PF floor check in addition to all
   normal similarity checks. It targets the same `candidate_robustness.status='accepted'`
   pool as the probe stage. The tab MUST expose **Continuar 6M**, **Reprobar 6M**,
-  and **Reintentar calidad baja** buttons plus a date configuration block.
+  and **Reintentar calidad baja** buttons plus a date configuration block. Apart
+  from the stage-specific dates and the `6M` verdict heading, it MUST be the same
+  screen as `UBS Final Tick` under FR-1.12.34a: same columns, criteria block,
+  manual actions, selection checkbox and disk reconciliation.
+- **FR-1.12.34a** The four Final Tick screens (`UBS Final Tick`,
+  `UBS Final Tick 6M`, `UBS Seeds Final Tick`, `UBS Seeds Final Tick 6M`) MUST
+  be rendered by one shared implementation parameterized by stage, so that a
+  change to a shared rule takes effect in all four without per-screen edits.
+  The shared rules are: the official threshold set and the order it is drawn in,
+  the action-button style, the verdict colour tags, the cause (`CAUSA`) text,
+  the status label, the row-selection checkbox, and the table construction.
+  Only genuinely stage-specific facts MAY differ: the SQLite table each stage
+  reads, its eligibility join, the extra 6M low-OHLC-trades retry dates, the
+  verdict column heading, and the seed screens' own column set. Both candidate
+  screens MUST reconcile already-generated reports from disk before repainting,
+  each for its own stage, and MUST restore scroll position and row selection
+  across a refresh.
 - **FR-1.12.35** The UI MUST include a `UBS Buscador` tab (`buscador`) with two
   sections: (1) a run auditor showing per-stage counts and non-final pending
   counts for a selected active-broker account+run; (2) a free-text set search

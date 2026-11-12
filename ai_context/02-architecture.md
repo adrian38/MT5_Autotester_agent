@@ -36,8 +36,13 @@
 |   |-- ubs_results_logic.py     # UBS Results/History/Compare logic
 |   |-- ubs_robustness_view.py   # UBS Robustness OOS widget/layout mixin
 |   |-- ubs_robustness_logic.py  # UBS Robustness OOS launch/table logic
+|   |-- ubs_final_tick_shared.py # Rules the four Final Tick screens share
+|   |-- ubs_final_tick_queries.py# Per-stage SQL and labels (probe vs 6M)
+|   |-- ubs_final_tick_rows.py   # Thresholds, stage dates and cause text
+|   |-- ubs_final_tick_stage.py  # Per-stage state, run picker, row marking
+|   |-- ubs_final_tick_run.py    # Final Tick launch arguments and chaining
 |   |-- ubs_final_tick_view.py   # UBS Final Tick widget/layout mixin
-|   |-- ubs_final_tick_logic.py  # UBS Final Tick launch/table logic
+|   |-- ubs_final_tick_logic.py  # UBS Final Tick panel/manual-status logic
 |   |-- ubs_seeds_view.py        # UBS Seeds widget/layout mixin
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin

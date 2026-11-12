@@ -6,6 +6,12 @@ The desktop sidebar has two seed-specific validation screens immediately below
 - `UBS Seeds Final Tick`: short OHLC versus real-tick probe.
 - `UBS Seeds Final Tick 6M`: six-month validation after an eligible probe.
 
+Both are the same screen with a different stage, and they share their widgets,
+thresholds, cause text and verdict colours with the two candidate screens
+through `ui/ubs_final_tick_shared.py`. A change to a shared rule reaches all
+four; only the stage facts (SQLite table, eligibility join, 6M retry dates,
+seed-specific columns) are parameterized.
+
 These screens run directly on active, base-accepted `seed_scores` rows. They
 reuse the candidate Final Tick runner, date validation, MT5 models, history
 quality rules, similarity thresholds, retry handling, and report reconciliation,

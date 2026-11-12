@@ -1,4 +1,8 @@
-"""Umbrales, fechas, motivos y seleccion de filas de la pantalla Final Tick."""
+"""Umbrales, fechas de etapa y motivos oficiales del Final Tick.
+
+Lo leen las cuatro pantallas: los umbrales son los mismos para todas y la
+causa se redacta aqui una sola vez.
+"""
 from __future__ import annotations
 
 import json
@@ -6,10 +10,9 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
-from tkinter import messagebox
 
 from ubs.db import connect_memory
-from ubs.path_utils import resolve_workspace_path
+from ui.ubs_final_tick_shared import is_six_month, stage_suffix
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -86,66 +89,11 @@ class UBSFinalTickRowsMixin:
             ),
         }
 
-    def _ubs_final_tick_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
-        rows = conn.execute(
-            """
-            select
-                r.id,
-                r.created_at,
-                r.hidden,
-                count(c.id) as total,
-                sum(case when c.status='accepted' and cr.status='accepted' then 1 else 0 end) as robust_ok,
-                sum(case when c.status='accepted' and cr.status='accepted' and ft.status in ('accepted', 'rejected') then 1 else 0 end) as final_done,
-                sum(case when c.status='accepted' and cr.status='accepted' and ft.status='accepted' then 1 else 0 end) as final_ok,
-                sum(case when c.status='accepted' and cr.status='accepted' and ft.status='rejected' then 1 else 0 end) as final_fail
-            from runs r
-            left join candidates c on c.run_id = r.id
-            left join candidate_robustness cr on cr.candidate_id = c.id
-            left join candidate_final_tick ft on ft.candidate_id = c.id
-            group by r.id
-            order by r.id desc
-            """
-        ).fetchall()
-        options: list[tuple[int, str]] = []
-        for row in rows:
-            run_id = int(row["id"])
-            created = str(row["created_at"] or "")[:16]
-            total = int(row["total"] or 0)
-            robust_ok = int(row["robust_ok"] or 0)
-            final_done = int(row["final_done"] or 0)
-            final_ok = int(row["final_ok"] or 0)
-            final_fail = int(row["final_fail"] or 0)
-            hidden_tag = " [arch]" if row["hidden"] else ""
-            options.append((
-                run_id,
-                f"#{run_id} | {created} | cand {total} | robust {robust_ok} | FT {final_done} OK {final_ok} FAIL {final_fail}{hidden_tag}",
-            ))
-        return options
-
-    def _selected_ubs_final_tick_run_id(self, options: list[tuple[int, str]]) -> int:
-        if not options:
-            return 0
-        newest_run_id = options[0][0]
-        latest_seen = int(getattr(self, "_ubs_final_tick_latest_seen_run_id", 0) or 0)
-        if newest_run_id > latest_seen:
-            self._ubs_final_tick_latest_seen_run_id = newest_run_id
-            return newest_run_id
-        selected = self.ubs_final_tick_run_id.get().strip()
-        match = re.search(r"#?(\d+)", selected)
-        if match:
-            run_id = int(match.group(1))
-            if any(option_id == run_id for option_id, _ in options):
-                return run_id
-        return newest_run_id
-
-    def _update_ubs_final_tick_run_combo(self, options: list[tuple[int, str]], selected_run_id: int) -> None:
-        if not hasattr(self, "ubs_final_tick_run_combo"):
-            return
-        labels = [label for _, label in options]
-        self.ubs_final_tick_run_combo.configure(values=labels)
-        selected_label = next((label for run_id, label in options if run_id == selected_run_id), "")
-        if selected_label and self.ubs_final_tick_run_id.get() != selected_label:
-            self.ubs_final_tick_run_id.set(selected_label)
+    @staticmethod
+    def _final_tick_run_id_from_label(label: object) -> int:
+        """Numero de run que lleva la etiqueta del combo, 0 si no trae ninguno."""
+        match = re.search(r"#?(\d+)", str(label or "").strip())
+        return int(match.group(1)) if match else 0
 
     def _latest_visible_ubs_run_for_final_tick(self, *, final_tick_stage: str = "probe") -> sqlite3.Row | None:
         memory_path = self._ubs_memory_path()
@@ -155,11 +103,10 @@ class UBSFinalTickRowsMixin:
         conn.row_factory = sqlite3.Row
         try:
             self._ensure_ubs_memory_schema(conn)
-            run_var = self.ubs_final_tick_6m_run_id if final_tick_stage == "six_month" else self.ubs_final_tick_run_id
-            selected = run_var.get().strip()
-            match = re.search(r"#?(\d+)", selected)
-            if match:
-                run = conn.execute("select * from runs where id=?", (int(match.group(1)),)).fetchone()
+            run_var = getattr(self, f"ubs_final_tick{stage_suffix(final_tick_stage)}_run_id")
+            run_id = self._final_tick_run_id_from_label(run_var.get())
+            if run_id:
+                run = conn.execute("select * from runs where id=?", (run_id,)).fetchone()
                 if run is not None:
                     return run
             return conn.execute("select * from runs where hidden=0 order by id desc limit 1").fetchone()
@@ -173,7 +120,7 @@ class UBSFinalTickRowsMixin:
         try:
             self._ensure_ubs_memory_schema(conn)
             final_tick_stage = str(final_tick_stage or "probe").strip().lower()
-            final_tick_table = "candidate_final_tick_6m" if final_tick_stage in {"six_month", "6m"} else "candidate_final_tick"
+            final_tick_table = "candidate_final_tick_6m" if is_six_month(final_tick_stage) else "candidate_final_tick"
             probe_join = ""
             if final_tick_table != "candidate_final_tick":
                 probe_join = (
@@ -201,8 +148,7 @@ class UBSFinalTickRowsMixin:
             conn.close()
 
     def _final_tick_stage_dates(self, final_tick_stage: str = "probe") -> tuple[str, str, str, str]:
-        stage = str(final_tick_stage or "probe").strip().lower()
-        if stage in {"six_month", "6m"}:
+        if is_six_month(final_tick_stage):
             return (
                 self.ubs_final_tick_6m_from_date.get().strip(),
                 self.ubs_final_tick_6m_to_date.get().strip(),
@@ -219,7 +165,7 @@ class UBSFinalTickRowsMixin:
     def _final_tick_effective_dates_for_row(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> tuple[str, str]:
         status = str(row["final_tick_status"] or "").strip()
         from_date, to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
-        if final_tick_stage in {"six_month", "6m"} and status == "pending_ohlc_trades" and ohlc_from and ohlc_to:
+        if is_six_month(final_tick_stage) and status == "pending_ohlc_trades" and ohlc_from and ohlc_to:
             return ohlc_from, ohlc_to
         return from_date, to_date
 
@@ -232,16 +178,16 @@ class UBSFinalTickRowsMixin:
         return stored_from == from_date and stored_to == to_date
 
     def _final_tick_row_pending_for_current_dates(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> bool:
-        stage = str(final_tick_stage or "probe").strip().lower()
+        six_month = is_six_month(final_tick_stage)
         status = str(row["final_tick_status"] or "").strip()
         if not status:
             return True
         if status in FINAL_TICK_RETRYABLE_STATUSES:
             return True
-        if stage in {"six_month", "6m"} and status == "pending_ohlc_trades":
+        if six_month and status == "pending_ohlc_trades":
             return not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
         if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
-            return stage in {"six_month", "6m"} and not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
+            return six_month and not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
         return False
 
     def _parse_ubs_final_tick_similarity(self, raw) -> dict:
@@ -404,37 +350,3 @@ class UBSFinalTickRowsMixin:
     def _metric_from_json(self, raw, key: str):
         metrics = self._parse_ubs_metrics(raw)
         return metrics.get(key)
-
-    def _selected_ubs_final_tick_info(self) -> dict[str, str]:
-        if not hasattr(self, "ubs_final_tick_tree"):
-            return {}
-        selected = self.ubs_final_tick_tree.selection()
-        if not selected:
-            return {}
-        return self.ubs_final_tick_paths.get(selected[0], {})
-
-    def _selected_ubs_final_tick_path(self, kind: str) -> Path | None:
-        info = self._selected_ubs_final_tick_info()
-        raw_path = info.get(kind, "")
-        return Path(raw_path).expanduser() if raw_path else None
-
-    def _open_selected_ubs_final_tick_set(self) -> None:
-        path = self._selected_ubs_final_tick_path("set")
-        if path is None:
-            messagebox.showinfo("Final Tick UBS", "Selecciona una fila primero.")
-            return
-        self._open_local_file(path)
-
-    def _open_selected_ubs_final_tick_ohlc_report(self) -> None:
-        path = self._selected_ubs_final_tick_path("ohlc_report")
-        if path is None:
-            messagebox.showinfo("Final Tick UBS", "Esa fila no tiene reporte OHLC asociado.")
-            return
-        self._open_local_file(path)
-
-    def _open_selected_ubs_final_tick_real_report(self) -> None:
-        path = self._selected_ubs_final_tick_path("real_report")
-        if path is None:
-            messagebox.showinfo("Final Tick UBS", "Esa fila no tiene reporte real tick asociado.")
-            return
-        self._open_local_file(path)

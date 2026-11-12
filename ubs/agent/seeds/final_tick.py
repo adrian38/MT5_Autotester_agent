@@ -42,6 +42,7 @@ def _seed_stage_query(stage: str) -> str:
                ft.real_tick_metrics_json as ft_real_tick_metrics_json,
                ft.similarity_json as ft_similarity_json,
                ft.history_quality as ft_history_quality,
+               ft.min_history_quality as ft_min_history_quality,
                ft.ohlc_score as ft_ohlc_score,
                ft.real_tick_score as ft_real_tick_score,
                ft.evaluated_at as ft_evaluated_at

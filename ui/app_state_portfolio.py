@@ -391,6 +391,7 @@ class AppPortfolioStateMixin:
         self._ubs_results_latest_seen_run_id = 0
         self._ubs_robust_latest_seen_run_id = 0
         self._ubs_final_tick_latest_seen_run_id = 0
+        self._ubs_final_tick_6m_latest_seen_run_id = 0
         self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
@@ -399,6 +400,7 @@ class AppPortfolioStateMixin:
         self.ubs_final_tick_paths: dict[str, dict[str, str]] = {}
         self.ubs_final_tick_checked: set[str] = set()
         self.ubs_final_tick_6m_paths: dict[str, dict[str, str]] = {}
+        self.ubs_final_tick_6m_checked: set[str] = set()
         self.ubs_regression_paths: dict[str, dict[str, str]] = {}
         self.ubs_regression_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}
