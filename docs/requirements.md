@@ -1222,6 +1222,15 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 
 ### 2.8 Resolved debt
 
+- **2026-11** — Added the `UBS Auditor` tab: it compares the stage rules stored
+  in every memory row with the ones configured now, summarizes the rows that
+  never reached a final state, chains `--rescore-*-only` for the stages whose
+  rules moved, and routes a stage's pending rows to that stage's own runner.
+  `ubs/stage_rules_audit.py` + `ui/ubs_auditor_view.py` +
+  `ui/ubs_auditor_logic.py`. `_run_ubs_robustness_for_latest_run()` and
+  `_run_ubs_final_tick_for_latest_run()` gained `run_id_override`, as the
+  regression runner already had.
+
 - **2026-07** - Added the independent backward regression stage after Final
   Tick 6M: exact-date 2017-2019 Model=1 validation, `candidate_regression`
   persistence, neutral technical states, configurable points, fifth-stage

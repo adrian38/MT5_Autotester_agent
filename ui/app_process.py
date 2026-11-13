@@ -218,6 +218,7 @@ class AppProcessMixin:
         if code != 0:
             return False
         for hook in (
+            "_maybe_auto_run_ubs_auditor_rescore",
             "_maybe_auto_run_ubs_robustness",
             "_maybe_auto_run_ubs_final_tick",
             "_maybe_auto_run_ubs_regression",

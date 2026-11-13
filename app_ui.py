@@ -28,6 +28,8 @@ from ui.ubs_monthly_portfolio_logic import UBSMonthlyPortfolioLogicMixin
 from ui.ubs_monthly_portfolio_view import UBSMonthlyPortfolioViewMixin
 from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_search_view import UBSSearchViewMixin
+from ui.ubs_auditor_logic import UBSAuditorLogicMixin
+from ui.ubs_auditor_view import UBSAuditorViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
 from ui.ubs_params_view import UBSParamsViewMixin
 from ui.ubs_set_rules_logic import UBSSetRulesLogicMixin
@@ -112,6 +114,8 @@ class MT5AutotesterUI(
     UBSMonthlyPortfolioLogicMixin,
     UBSSearchViewMixin,
     UBSSearchLogicMixin,
+    UBSAuditorViewMixin,
+    UBSAuditorLogicMixin,
     SettingsViewMixin,
     SettingsLogicMixin,
     UBSAgentViewMixin,
@@ -403,6 +407,7 @@ class MT5AutotesterUI(
             ("portfolio", self._refresh_portfolio_count),
             ("ubs_portfolios", self._refresh_ubs_portfolios),
             ("ubs_monthly_portfolios", self._refresh_ubs_monthly_portfolios),
+            ("ubs_auditor", self._refresh_ubs_auditor),
             ("last_log", self._refresh_last_log),
             ("multiterminal", self._refresh_multiterminal_tree),
         ):

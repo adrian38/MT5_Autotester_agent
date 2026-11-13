@@ -148,17 +148,20 @@ class UBSFinalTickRunMixin:
         auto: bool = False,
         pending_only: bool = True,
         final_tick_stage: str = "probe",
+        run_id_override: int = 0,
     ) -> bool:
         final_tick_stage = "six_month" if is_six_month(final_tick_stage) else "probe"
         label = stage_label(final_tick_stage)
         status_var = self._final_tick_attr(final_tick_stage, "status")
         try:
-            run = self._latest_visible_ubs_run_for_final_tick(final_tick_stage=final_tick_stage)
-            if run is None:
-                if not auto:
-                    messagebox.showinfo("Final Tick UBS", f"No hay run visible para {label}.")
-                return False
-            run_id = int(run["id"])
+            run_id = int(run_id_override or 0)
+            if run_id <= 0:
+                run = self._latest_visible_ubs_run_for_final_tick(final_tick_stage=final_tick_stage)
+                if run is None:
+                    if not auto:
+                        messagebox.showinfo("Final Tick UBS", f"No hay run visible para {label}.")
+                    return False
+                run_id = int(run["id"])
             rows = self._accepted_candidates_for_final_tick(run_id, final_tick_stage=final_tick_stage)
             rows = [row for row in rows if resolve_workspace_path(row["set_path"]).exists()]
             if pending_only:

@@ -323,6 +323,16 @@ class AppPortfolioStateMixin:
         self.ubs_audit_status = tk.StringVar(value="Selecciona cuenta/run y genera auditoria.")
         self.ubs_search_paths: dict[str, dict[str, str]] = {}
         self.ubs_audit_report_path = tk.StringVar(value="")
+        self.ubs_auditor_account = tk.StringVar(value=f"{self._ubs_broker()}/{self._ubs_account_type()}")
+        self.ubs_auditor_run_id = tk.StringVar(value="Toda la memoria")
+        self.ubs_auditor_status = tk.StringVar(
+            value="Elige cuenta y run, y audita reglas o pendientes."
+        )
+        # Lo que dejo la ultima auditoria de reglas, la etapa de cada fila de la
+        # tabla y la cola de repuntuados que queda por lanzar.
+        self._ubs_auditor_audits: tuple = ()
+        self.ubs_auditor_row_stage: dict[str, str] = {}
+        self._ubs_auditor_rescore_queue: list[str] = []
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")

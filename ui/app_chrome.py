@@ -24,7 +24,7 @@ SIDEBAR_ITEMS = (
     ("ubs_universo", "UBS  Universo"), ("ubs_comparar", "UBS  Comparar"),
     ("ubs_params", "UBS  Parámetros"), ("portafolio_ubs", "UBS  Portafolio"),
     ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
-    ("buscador", "UBS  Buscador"),
+    ("buscador", "UBS  Buscador"), ("ubs_auditor", "UBS  Auditor"),
 )
 SIDEBAR_WIDTH = 268
 SIDEBAR_HORIZONTAL_PADDING = 16
@@ -234,7 +234,7 @@ class AppChromeMixin:
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "ubs_auditor", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -257,6 +257,7 @@ class AppChromeMixin:
         self._build_ubs_portfolio(self.section_frames["portafolio_ubs"])
         self._build_ubs_monthly_portfolio(self.section_frames["portafolio_ubs_mensual"])
         self._build_ubs_search(self.section_frames["buscador"])
+        self._build_ubs_auditor(self.section_frames["ubs_auditor"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
         self._build_files(self.section_frames["archivos"])

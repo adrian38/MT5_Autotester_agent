@@ -239,14 +239,17 @@ class UBSRobustnessLogicMixin(UBSRobustnessRowsMixin):
         auto: bool = False,
         pending_only: bool = True,
         candidate_ids: list[int] | None = None,
+        run_id_override: int = 0,
     ) -> bool:
         try:
-            run = self._latest_visible_ubs_run()
-            if run is None:
-                if not auto:
-                    messagebox.showinfo("Robustez UBS", "No hay run visible para robustez.")
-                return False
-            run_id = int(run["id"])
+            run_id = int(run_id_override or 0)
+            if run_id <= 0:
+                run = self._latest_visible_ubs_run()
+                if run is None:
+                    if not auto:
+                        messagebox.showinfo("Robustez UBS", "No hay run visible para robustez.")
+                    return False
+                run_id = int(run["id"])
             rows = self._accepted_candidates_for_robustness(run_id)
             rows = [row for row in rows if resolve_workspace_path(row["set_path"]).exists()]
             selected_ids = {int(value) for value in (candidate_ids or [])}

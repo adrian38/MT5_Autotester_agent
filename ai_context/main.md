@@ -1555,6 +1555,45 @@ A new tab `buscador` ("UBS Buscador", `ui/ubs_search_view.py` + `ui/ubs_search_l
 
 State: `self.ubs_search_query`, `self.ubs_search_status`, `self.ubs_search_paths`, `self.ubs_audit_account`, `self.ubs_audit_run_id`.
 
+### UBS Auditor tab (stage-rule drift + state repair)
+
+Tab `ubs_auditor` ("UBS Auditor", `ui/ubs_auditor_view.py` +
+`ui/ubs_auditor_logic.py`), over the pure audit in
+[`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py). Stage rules change
+often, and every row stores the rules it was judged with: the four Final Tick
+tables store their deltas and minimum history quality, `candidate_robustness`
+its bonuses and window, `candidate_regression` its points, and base/seed rows
+carry their `score_config` inside `metrics_json`. The screen compares that with
+what Configuración holds now — no HTML is reparsed.
+
+Scope selectors: any account of the active broker, and one run or the whole
+memory. Four actions:
+
+- **Auditar reglas** — per stage, each rule whose stored value differs, the
+  value configured now, the stored values with their row counts, affected rows
+  and how many of them already carry a verdict. It also reports rows without a
+  stored `score_config` and the rules a stage applies but does not store
+  (Final Tick minimum trades), which this audit cannot see.
+- **Consultar pendientes** — per stage, rows whose status is not
+  `accepted`/`rejected`, broken down by status. Final statuses come from
+  `AUDIT_FINAL_STATUSES` in `ui/ubs_search_audit_base.py`; the module itself
+  decides nothing about that.
+- **Arreglar reglas** — chains one `--rescore-*-only` per affected stage, in
+  `STAGE_SPECS` order, targeting the audited account's `--memory`. The agent
+  serves one mode per process, so the next stage starts from
+  `_maybe_auto_run_ubs_auditor_rescore()` when the previous one exits 0, and the
+  queue is dropped otherwise. Rescoring never opens MT5 and it covers the whole
+  account memory, not only the audited run. `seed_final_tick` and
+  `seed_final_tick_6m` have no rescore mode: they are reported and left out.
+- **Arreglar pendientes** — routes the selected stage to its own runner
+  (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
+  pending runs), which owns the retryable statuses and dates. This opens MT5
+  and requires the audited account to be the active UBS account.
+
+State: `self.ubs_auditor_account`, `self.ubs_auditor_run_id`,
+`self.ubs_auditor_status`, `self._ubs_auditor_audits`,
+`self.ubs_auditor_row_stage`, `self._ubs_auditor_rescore_queue`.
+
 ### Multiterminal — Limpiar Tester button
 
 A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It scans configured MT5 data directories and safely removes disposable Tester files:
