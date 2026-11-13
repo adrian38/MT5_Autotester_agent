@@ -10,13 +10,18 @@ import tkinter as tk
 from tkinter import ttk
 
 
+# `kind` dice en palabras que es la fila (al dia, regla movida, pendientes...)
+# para que las demas columnas se lean sin adivinar: las dos consultas llenan la
+# misma tabla y sin esa columna "FILAS" tan pronto es el total de la etapa como
+# las filas que arrastra una regla.
 AUDITOR_COLUMNS = (
-    ("stage", "ETAPA", 150),
-    ("item", "REGLA / ESTADO", 210),
-    ("current", "AHORA", 110),
-    ("stored", "GUARDADO (FILAS)", 420),
-    ("rows", "FILAS", 70),
-    ("verdicts", "VEREDICTOS", 90),
+    ("stage", "ETAPA", 120),
+    ("kind", "QUE PASA", 150),
+    ("item", "REGLA", 190),
+    ("current", "AHORA", 85),
+    ("stored", "DETALLE (VALOR Y FILAS)", 300),
+    ("rows", "FILAS", 60),
+    ("verdicts", "CON VEREDICTO", 105),
 )
 
 
@@ -36,16 +41,21 @@ class UBSAuditorViewMixin:
         return panel, bar
 
     def _build_ubs_auditor_actions(self, bar):
+        # La ayuda va en su propia fila: compartiendo fila con los botones se
+        # quedaba recortada en cuanto la ventana se estrechaba.
         tk.Label(
             bar,
             text=(
-                "Compara las reglas guardadas en cada fila con las de Configuracion "
-                "y resume los estados que no son finales."
+                "Auditar reglas compara los umbrales con los que se juzgo cada fila "
+                "con los de Configuracion; Consultar pendientes lista las filas que "
+                "no llegaron a un estado final."
             ),
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 3))
+            anchor="w",
+            justify="left",
+        ).grid(row=2, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 6))
         actions = [
             ("Auditar reglas", self._audit_ubs_stage_rules_clicked, self.colors["accent"], "#ffffff"),
             ("Consultar pendientes", self._audit_ubs_pending_states_clicked,
@@ -111,6 +121,7 @@ class UBSAuditorViewMixin:
             self.ubs_auditor_tree.column(
                 column, width=width, minwidth=60, anchor="center", stretch=False
             )
+        self.ubs_auditor_tree.column("item", anchor="w")
         self.ubs_auditor_tree.column("stored", anchor="w")
         self.ubs_auditor_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
         self.ubs_auditor_tree.tag_configure("rejected", foreground=self.colors["danger"])

@@ -252,7 +252,7 @@ class PendingStatesAuditTests(unittest.TestCase):
 
 
 class StagesToRescoreTests(unittest.TestCase):
-    def test_shared_final_tick_mode_is_not_launched_twice(self) -> None:
+    def test_both_final_tick_tables_enter_the_queue(self) -> None:
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")
         conn.execute(
@@ -272,7 +272,7 @@ class StagesToRescoreTests(unittest.TestCase):
             stages=("final_tick", "final_tick_6m"),
         )
 
-        self.assertEqual(stages_to_rescore(audits), ("final_tick",))
+        self.assertEqual(stages_to_rescore(audits), ("final_tick", "final_tick_6m"))
 
     def test_stage_without_rescore_mode_is_left_out(self) -> None:
         conn = memory()

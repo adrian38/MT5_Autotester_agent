@@ -1567,7 +1567,10 @@ carry their `score_config` inside `metrics_json`. The screen compares that with
 what Configuración holds now — no HTML is reparsed.
 
 Scope selectors: any account of the active broker, and one run or the whole
-memory. Four actions:
+memory. Both queries fill the same table, so its `QUE PASA` column names what
+each row is (`Al dia`, `Regla movida`, `Regla ciega`, `Sin saber`, `Sin tabla`,
+`Pendientes`); without it `FILAS` reads as the stage total on one row and as
+the rows a moved rule drags on the next. Four actions:
 
 - **Auditar reglas** — per stage, each rule whose stored value differs, the
   value configured now, the stored values with their row counts, affected rows
@@ -1583,8 +1586,11 @@ memory. Four actions:
   serves one mode per process, so the next stage starts from
   `_maybe_auto_run_ubs_auditor_rescore()` when the previous one exits 0, and the
   queue is dropped otherwise. Rescoring never opens MT5 and it covers the whole
-  account memory, not only the audited run. `seed_final_tick` and
-  `seed_final_tick_6m` have no rescore mode: they are reported and left out.
+  account memory, not only the audited run. `final_tick` and `final_tick_6m`
+  share the `--rescore-final-tick-only` flag but are queued separately, each
+  with its own `--final-tick-stage` and dates, because each one rescores its
+  own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
+  they are reported and left out.
 - **Arreglar pendientes** — routes the selected stage to its own runner
   (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
   pending runs), which owns the retryable statuses and dates. This opens MT5

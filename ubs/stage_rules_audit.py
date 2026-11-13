@@ -511,17 +511,14 @@ def audit_pending_states(
 def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     """Etapas con reglas movidas y con un repuntuado que las pueda arreglar.
 
-    Final Tick corto y 6M comparten modo de repuntuado, asi que el orden de
-    `STAGE_SPECS` decide cual se lanza primero y el flag no se repite.
+    Final Tick corto y 6M comparten el flag `--rescore-final-tick-only`, pero
+    cada uno repuntua su propia tabla con sus propias fechas y lo que los
+    separa es `--final-tick-stage`. El flag se repite a proposito: si solo
+    entrara el primero, la tabla 6M se quedaria con las reglas viejas y la
+    siguiente auditoria volveria a denunciarla.
     """
-    flags: list[str] = []
-    stages: list[str] = []
-    for audit in audits:
-        if not audit.findings:
-            continue
-        spec = stage_spec(audit.stage)
-        if not spec.rescore_flag or spec.rescore_flag in flags:
-            continue
-        flags.append(spec.rescore_flag)
-        stages.append(spec.key)
-    return tuple(stages)
+    return tuple(
+        audit.stage
+        for audit in audits
+        if audit.findings and stage_spec(audit.stage).rescore_flag
+    )

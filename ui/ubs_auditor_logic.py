@@ -247,27 +247,30 @@ class UBSAuditorLogicMixin:
         moved = 0
         for audit in audits:
             if audit.missing_table:
-                rows.append((audit.stage, audit.stage_label, "Etapa sin tabla en esta memoria",
+                rows.append((audit.stage, audit.stage_label, "Sin tabla",
+                             "esta memoria no tiene la tabla de la etapa",
                              "", "", "", "", "pending"))
                 continue
             if not audit.findings:
-                rows.append((audit.stage, audit.stage_label, "Reglas al dia",
+                rows.append((audit.stage, audit.stage_label, "Al dia",
+                             "se juzgaron con las reglas de ahora",
                              "", "", str(audit.rows), str(audit.verdicts), "accepted"))
             for finding in audit.findings:
                 moved += 1
                 rows.append((
-                    audit.stage, audit.stage_label, finding.rule_label,
+                    audit.stage, audit.stage_label, "Regla movida", finding.rule_label,
                     finding.current, finding.stored_summary(),
                     str(finding.rows), str(finding.verdicts), "rejected",
                 ))
             if audit.unknown:
-                rows.append((audit.stage, audit.stage_label,
-                             "Filas sin score_config guardado", "", "",
+                rows.append((audit.stage, audit.stage_label, "Sin saber",
+                             "la fila no guardo con que reglas se juzgo", "", "",
                              str(audit.unknown), "", "pending"))
             if audit.non_auditable:
-                rows.append((audit.stage, audit.stage_label,
-                             "Reglas que la fila no guarda", "",
-                             ", ".join(audit.non_auditable), "", "", "pending"))
+                rows.append((audit.stage, audit.stage_label, "Regla ciega",
+                             ", ".join(audit.non_auditable), "",
+                             "la fila no la guarda: cambiarla no se ve desde aqui",
+                             "", "", "pending"))
         self._populate_ubs_auditor_rows(rows)
         scope = self._ubs_auditor_scope_label()
         if moved:
@@ -301,16 +304,21 @@ class UBSAuditorLogicMixin:
         pending_total = 0
         for summary in summaries:
             if summary.missing_table:
-                rows.append((summary.stage, summary.stage_label,
-                             "Etapa sin tabla en esta memoria", "", "", "", "", "pending"))
+                rows.append((summary.stage, summary.stage_label, "Sin tabla",
+                             "esta memoria no tiene la tabla de la etapa",
+                             "", "", "", "", "pending"))
                 continue
             if not summary.pending:
-                rows.append((summary.stage, summary.stage_label, "Sin pendientes", "", "",
+                rows.append((summary.stage, summary.stage_label, "Al dia",
+                             "todas las filas en estado final", "", "",
                              str(summary.rows), "", "accepted"))
                 continue
             pending_total += summary.pending
-            detail = ", ".join(f"{status}={count}" for status, count in summary.by_status)
-            rows.append((summary.stage, summary.stage_label, "Pendientes", "", detail,
+            # Mismo formato que los hallazgos, "valor (filas)", para que la
+            # columna ancha se lea igual venga de la consulta que venga.
+            detail = ", ".join(f"{status} ({count})" for status, count in summary.by_status)
+            rows.append((summary.stage, summary.stage_label, "Pendientes",
+                         "sin estado final", "", detail,
                          str(summary.pending), "", "rejected"))
         self._populate_ubs_auditor_rows(rows)
         scope = self._ubs_auditor_scope_label()
@@ -329,11 +337,11 @@ class UBSAuditorLogicMixin:
         for item in tree.get_children():
             tree.delete(item)
         self.ubs_auditor_row_stage = {}
-        for stage, stage_label, item_label, current, stored, count, verdicts, tag in rows:
+        for stage, stage_label, kind, item_label, current, stored, count, verdicts, tag in rows:
             item = tree.insert(
                 "",
                 "end",
-                values=(stage_label, item_label, current, stored, count, verdicts),
+                values=(stage_label, kind, item_label, current, stored, count, verdicts),
                 tags=(tag,),
             )
             self.ubs_auditor_row_stage[item] = stage
@@ -482,7 +490,7 @@ class UBSAuditorLogicMixin:
             return
         self._ubs_auditor_rescore_queue = list(stages[1:])
         self.ubs_auditor_status.set(
-            f"Repuntuando {stages[0]}: {len(stages)} etapa(s) en cola."
+            f"Repuntuando {stage_spec(stages[0]).label}: {len(stages)} etapa(s) en cola."
         )
         self._run_script("ubs_agent.py", first_args)
 
