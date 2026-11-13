@@ -1,8 +1,10 @@
 """Pantalla UBS Auditor: una tabla y cuatro acciones.
 
 Las dos consultas (reglas movidas y estados pendientes) llenan la misma tabla,
-porque las dos responden a lo mismo: que etapa esta fuera de sitio y cuantas
-filas arrastra. Los dos arreglos van detras, en el mismo orden en que se usan.
+porque las dos responden a lo mismo: que etapa esta fuera de sitio y a cuantas
+semillas o candidatos arrastra. La tabla es un arbol de una fila por etapa, en
+el orden del embudo, con el detalle colgando de ella. Los dos arreglos van
+detras, en el mismo orden en que se usan.
 """
 from __future__ import annotations
 
@@ -10,19 +12,19 @@ import tkinter as tk
 from tkinter import ttk
 
 
-# `kind` dice en palabras que es la fila (al dia, regla movida, pendientes...)
-# para que las demas columnas se lean sin adivinar: las dos consultas llenan la
-# misma tabla y sin esa columna "CUANTOS" tan pronto es el total de la etapa
-# como lo que arrastra una regla. Y "CUANTOS" cuenta en voz alta -«1046
-# candidatos», «322 semillas»- porque «filas» no le dice nada a nadie.
+# La etapa es la columna de arbol (#0): cada etapa es una fila y su detalle
+# cuelga de ella, asi que el nombre no se repite. `kind` dice en palabras que
+# es la fila (al dia, 2 reglas movidas, regla ciega, pendientes...) para que
+# las demas columnas se lean sin adivinar, y "CUANTOS" cuenta en voz alta
+# -«1046 candidatos», «322 semillas»- porque «filas» no le dice nada a nadie.
+AUDITOR_STAGE_COLUMN_WIDTH = 170
 AUDITOR_COLUMNS = (
-    ("stage", "ETAPA", 120),
-    ("kind", "QUE PASA", 150),
+    ("kind", "QUE PASA", 130),
     ("item", "REGLA", 190),
-    ("current", "AHORA", 85),
-    ("stored", "DETALLE (VALOR Y CUANTOS)", 290),
-    ("rows", "CUANTOS", 150),
-    ("verdicts", "YA JUZGADOS", 100),
+    ("current", "AHORA", 80),
+    ("stored", "DETALLE (VALOR Y CUANTOS)", 270),
+    ("rows", "CUANTOS", 130),
+    ("verdicts", "YA JUZGADOS", 95),
 )
 
 
@@ -47,16 +49,17 @@ class UBSAuditorViewMixin:
         tk.Label(
             bar,
             text=(
-                "Auditar reglas compara los umbrales con los que se juzgo cada semilla "
-                "o candidato con los de Configuracion; Consultar pendientes lista los "
-                "que no llegaron a un estado final. Semillas y candidatos son .set: "
-                "el de partida y el que genero el agente a partir de el."
+                "Semillas y candidatos son .set: el de partida y el que genero el "
+                "agente a partir de el. Auditar reglas compara los umbrales con los "
+                "que se juzgo cada uno con los de Configuracion; Consultar pendientes "
+                "lista los que no llegaron a un estado final."
             ),
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
             font=("Segoe UI", 9),
             anchor="w",
             justify="left",
+            wraplength=760,
         ).grid(row=2, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 6))
         actions = [
             ("Auditar reglas", self._audit_ubs_stage_rules_clicked, self.colors["accent"], "#ffffff"),
@@ -116,7 +119,11 @@ class UBSAuditorViewMixin:
         table_frame.rowconfigure(0, weight=1)
         columns = tuple(column for column, _heading, _width in AUDITOR_COLUMNS)
         self.ubs_auditor_tree = ttk.Treeview(
-            table_frame, columns=columns, show="headings", height=16, selectmode="browse"
+            table_frame, columns=columns, show="tree headings", height=16, selectmode="browse"
+        )
+        self.ubs_auditor_tree.heading("#0", text="ETAPA")
+        self.ubs_auditor_tree.column(
+            "#0", width=AUDITOR_STAGE_COLUMN_WIDTH, minwidth=140, anchor="w", stretch=False
         )
         for column, heading, width in AUDITOR_COLUMNS:
             self.ubs_auditor_tree.heading(column, text=heading)

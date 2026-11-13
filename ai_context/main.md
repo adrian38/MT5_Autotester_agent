@@ -1570,10 +1570,12 @@ Scope selectors: any account of the active broker, and one run or the whole
 memory. `STAGE_SPECS` is ordered like the funnel and like the sidebar — Seeds,
 Seeds Final Tick, Seeds Final Tick 6M, Resultados, Robustez, Final Tick, Final
 Tick 6M, Regresiva — and each `label` is its screen's name, so the audit reads
-top-down and names nothing twice. Both queries fill the same table, so its `QUE PASA` column names what
-each row is (`Al dia`, `Regla movida`, `Regla ciega`, `Sin saber`, `Sin tabla`,
-`Pendientes`); without it `CUANTOS` reads as the stage total on one row and as
-what a moved rule drags on the next. `CUANTOS` counts out loud — "1046
+top-down and names nothing twice. Both queries fill the same tree: one row per
+stage (the `#0` column), with its findings, blind rules and `score_config`-less
+rows hanging from it, so the stage name is never repeated and a stage opens by
+itself only when a rule moved. The `QUE PASA` column names what each row is
+(`Al dia`, `N reglas movidas`, `Regla movida`, `Regla ciega`, `Sin saber`,
+`Sin tabla`, `Pendientes`). `CUANTOS` counts out loud — "1046
 candidatos", "322 semillas" — from `StageSpec.unit`, since a bare row count
 means nothing to the operator; `_tree_sort_value()` falls back to the leading
 number so that column still sorts numerically. Four actions:

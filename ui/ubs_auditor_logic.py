@@ -41,6 +41,13 @@ def _counted(count: int, stage_key: str) -> str:
     return f"{count} {stage_spec(stage_key).unit}"
 
 
+def _moved_rules(count: int) -> str:
+    """Veredicto de la etapa, que es lo que se lee sin desplegarla."""
+    if not count:
+        return "Al dia"
+    return "1 regla movida" if count == 1 else f"{count} reglas movidas"
+
+
 class UBSAuditorLogicMixin:
     """Auditoria de reglas por etapa, resumen de pendientes y sus arreglos."""
 
@@ -248,36 +255,43 @@ class UBSAuditorLogicMixin:
             conn.close()
 
         self._ubs_auditor_audits = tuple(audits)
-        rows: list[tuple] = []
+        groups: list[tuple] = []
         moved = 0
         for audit in audits:
             if audit.missing_table:
-                rows.append((audit.stage, audit.stage_label, "Sin tabla",
-                             "esta memoria no tiene la tabla de la etapa",
-                             "", "", "", "", "pending"))
+                groups.append((audit.stage, audit.stage_label, (
+                    "Sin tabla", "esta memoria no tiene la tabla de la etapa",
+                    "", "", "", "",
+                ), "pending", ()))
                 continue
-            if not audit.findings:
-                rows.append((audit.stage, audit.stage_label, "Al dia",
-                             "se juzgaron con las reglas de ahora",
-                             "", "", _counted(audit.rows, audit.stage),
-                             str(audit.verdicts), "accepted"))
+            children: list[tuple] = []
             for finding in audit.findings:
                 moved += 1
-                rows.append((
-                    audit.stage, audit.stage_label, "Regla movida", finding.rule_label,
-                    finding.current, finding.stored_summary(),
-                    _counted(finding.rows, audit.stage), str(finding.verdicts), "rejected",
-                ))
+                children.append(((
+                    "Regla movida", finding.rule_label, finding.current,
+                    finding.stored_summary(), _counted(finding.rows, audit.stage),
+                    str(finding.verdicts),
+                ), "rejected"))
             if audit.unknown:
-                rows.append((audit.stage, audit.stage_label, "Sin saber",
-                             "no guardaron con que reglas se les juzgo", "", "",
-                             _counted(audit.unknown, audit.stage), "", "pending"))
+                children.append(((
+                    "Sin saber", "no guardaron con que reglas se les juzgo", "", "",
+                    _counted(audit.unknown, audit.stage), "",
+                ), "pending"))
             if audit.non_auditable:
-                rows.append((audit.stage, audit.stage_label, "Regla ciega",
-                             ", ".join(audit.non_auditable), "",
-                             "no se guarda en la memoria: cambiarla no se ve desde aqui",
-                             "", "", "pending"))
-        self._populate_ubs_auditor_rows(rows)
+                children.append(((
+                    "Regla ciega", ", ".join(audit.non_auditable), "",
+                    "no se guarda en la memoria: cambiarla no se ve desde aqui", "", "",
+                ), "pending"))
+            summary = (
+                f"afecta a {_counted(audit.affected, audit.stage)}"
+                if audit.findings
+                else "se juzgaron con las reglas de ahora"
+            )
+            groups.append((audit.stage, audit.stage_label, (
+                _moved_rules(len(audit.findings)), "", "", summary,
+                _counted(audit.rows, audit.stage), str(audit.verdicts),
+            ), "rejected" if audit.findings else "accepted", tuple(children)))
+        self._populate_ubs_auditor_rows(groups)
         scope = self._ubs_auditor_scope_label()
         if moved:
             affected = sum(audit.affected for audit in audits)
@@ -306,27 +320,30 @@ class UBSAuditorLogicMixin:
             conn.close()
 
         self._ubs_auditor_audits = ()
-        rows: list[tuple] = []
+        groups: list[tuple] = []
         pending_total = 0
         for summary in summaries:
             if summary.missing_table:
-                rows.append((summary.stage, summary.stage_label, "Sin tabla",
-                             "esta memoria no tiene la tabla de la etapa",
-                             "", "", "", "", "pending"))
+                groups.append((summary.stage, summary.stage_label, (
+                    "Sin tabla", "esta memoria no tiene la tabla de la etapa",
+                    "", "", "", "",
+                ), "pending", ()))
                 continue
             if not summary.pending:
-                rows.append((summary.stage, summary.stage_label, "Al dia",
-                             "todos en estado final", "", "",
-                             _counted(summary.rows, summary.stage), "", "accepted"))
+                groups.append((summary.stage, summary.stage_label, (
+                    "Al dia", "todos en estado final", "", "",
+                    _counted(summary.rows, summary.stage), "",
+                ), "accepted", ()))
                 continue
             pending_total += summary.pending
             # Mismo formato que los hallazgos, «valor (cuantos)», para que la
             # columna ancha se lea igual venga de la consulta que venga.
             detail = ", ".join(f"{status} ({count})" for status, count in summary.by_status)
-            rows.append((summary.stage, summary.stage_label, "Pendientes",
-                         "se quedaron sin estado final", "", detail,
-                         _counted(summary.pending, summary.stage), "", "rejected"))
-        self._populate_ubs_auditor_rows(rows)
+            groups.append((summary.stage, summary.stage_label, (
+                "Pendientes", "se quedaron sin estado final", "", detail,
+                _counted(summary.pending, summary.stage), "",
+            ), "rejected", ()))
+        self._populate_ubs_auditor_rows(groups)
         scope = self._ubs_auditor_scope_label()
         if pending_total:
             self.ubs_auditor_status.set(
@@ -336,21 +353,32 @@ class UBSAuditorLogicMixin:
         else:
             self.ubs_auditor_status.set(f"{scope}: todas las etapas en estado final.")
 
-    def _populate_ubs_auditor_rows(self, rows) -> None:
+    def _populate_ubs_auditor_rows(self, groups) -> None:
+        """Una fila por etapa, y su detalle colgando de ella.
+
+        Antes cada hallazgo era una fila suelta que repetia el nombre de la
+        etapa, y ocho etapas se leian como veinte. Ahora la etapa se resume en
+        su propia fila y solo se despliega sola cuando hay reglas movidas.
+        """
         tree = getattr(self, "ubs_auditor_tree", None)
         if tree is None:
             return
         for item in tree.get_children():
             tree.delete(item)
         self.ubs_auditor_row_stage = {}
-        for stage, stage_label, kind, item_label, current, stored, count, verdicts, tag in rows:
-            item = tree.insert(
+        for stage, stage_label, values, tag, children in groups:
+            parent = tree.insert(
                 "",
                 "end",
-                values=(stage_label, kind, item_label, current, stored, count, verdicts),
+                text=f" {stage_label}",
+                values=values,
                 tags=(tag,),
+                open=any(child_tag == "rejected" for _values, child_tag in children),
             )
-            self.ubs_auditor_row_stage[item] = stage
+            self.ubs_auditor_row_stage[parent] = stage
+            for child_values, child_tag in children:
+                item = tree.insert(parent, "end", values=child_values, tags=(child_tag,))
+                self.ubs_auditor_row_stage[item] = stage
 
     def _selected_ubs_auditor_stage(self) -> str:
         tree = getattr(self, "ubs_auditor_tree", None)
