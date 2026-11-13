@@ -36,6 +36,11 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
 
+def _counted(count: int, stage_key: str) -> str:
+    """Cuenta con lo que cuenta: «1046 candidatos», no «1046 filas»."""
+    return f"{count} {stage_spec(stage_key).unit}"
+
+
 class UBSAuditorLogicMixin:
     """Auditoria de reglas por etapa, resumen de pendientes y sus arreglos."""
 
@@ -254,22 +259,23 @@ class UBSAuditorLogicMixin:
             if not audit.findings:
                 rows.append((audit.stage, audit.stage_label, "Al dia",
                              "se juzgaron con las reglas de ahora",
-                             "", "", str(audit.rows), str(audit.verdicts), "accepted"))
+                             "", "", _counted(audit.rows, audit.stage),
+                             str(audit.verdicts), "accepted"))
             for finding in audit.findings:
                 moved += 1
                 rows.append((
                     audit.stage, audit.stage_label, "Regla movida", finding.rule_label,
                     finding.current, finding.stored_summary(),
-                    str(finding.rows), str(finding.verdicts), "rejected",
+                    _counted(finding.rows, audit.stage), str(finding.verdicts), "rejected",
                 ))
             if audit.unknown:
                 rows.append((audit.stage, audit.stage_label, "Sin saber",
-                             "la fila no guardo con que reglas se juzgo", "", "",
-                             str(audit.unknown), "", "pending"))
+                             "no guardaron con que reglas se les juzgo", "", "",
+                             _counted(audit.unknown, audit.stage), "", "pending"))
             if audit.non_auditable:
                 rows.append((audit.stage, audit.stage_label, "Regla ciega",
                              ", ".join(audit.non_auditable), "",
-                             "la fila no la guarda: cambiarla no se ve desde aqui",
+                             "no se guarda en la memoria: cambiarla no se ve desde aqui",
                              "", "", "pending"))
         self._populate_ubs_auditor_rows(rows)
         scope = self._ubs_auditor_scope_label()
@@ -278,7 +284,7 @@ class UBSAuditorLogicMixin:
             stages = sum(1 for audit in audits if audit.findings)
             self.ubs_auditor_status.set(
                 f"{scope}: {moved} regla(s) movida(s) en {stages} etapa(s); "
-                f"{affected} fila(s) afectada(s)."
+                f"{affected} semilla(s)/candidato(s) afectado(s), sumando etapas."
             )
         else:
             self.ubs_auditor_status.set(f"{scope}: ninguna etapa se juzgo con otras reglas.")
@@ -310,21 +316,21 @@ class UBSAuditorLogicMixin:
                 continue
             if not summary.pending:
                 rows.append((summary.stage, summary.stage_label, "Al dia",
-                             "todas las filas en estado final", "", "",
-                             str(summary.rows), "", "accepted"))
+                             "todos en estado final", "", "",
+                             _counted(summary.rows, summary.stage), "", "accepted"))
                 continue
             pending_total += summary.pending
-            # Mismo formato que los hallazgos, "valor (filas)", para que la
+            # Mismo formato que los hallazgos, «valor (cuantos)», para que la
             # columna ancha se lea igual venga de la consulta que venga.
             detail = ", ".join(f"{status} ({count})" for status, count in summary.by_status)
             rows.append((summary.stage, summary.stage_label, "Pendientes",
-                         "sin estado final", "", detail,
-                         str(summary.pending), "", "rejected"))
+                         "se quedaron sin estado final", "", detail,
+                         _counted(summary.pending, summary.stage), "", "rejected"))
         self._populate_ubs_auditor_rows(rows)
         scope = self._ubs_auditor_scope_label()
         if pending_total:
             self.ubs_auditor_status.set(
-                f"{scope}: {pending_total} fila(s) sin estado final. "
+                f"{scope}: {pending_total} semilla(s)/candidato(s) sin estado final. "
                 "Marca una etapa y pulsa Arreglar pendientes."
             )
         else:

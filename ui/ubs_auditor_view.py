@@ -12,16 +12,17 @@ from tkinter import ttk
 
 # `kind` dice en palabras que es la fila (al dia, regla movida, pendientes...)
 # para que las demas columnas se lean sin adivinar: las dos consultas llenan la
-# misma tabla y sin esa columna "FILAS" tan pronto es el total de la etapa como
-# las filas que arrastra una regla.
+# misma tabla y sin esa columna "CUANTOS" tan pronto es el total de la etapa
+# como lo que arrastra una regla. Y "CUANTOS" cuenta en voz alta -«1046
+# candidatos», «322 semillas»- porque «filas» no le dice nada a nadie.
 AUDITOR_COLUMNS = (
     ("stage", "ETAPA", 120),
     ("kind", "QUE PASA", 150),
     ("item", "REGLA", 190),
     ("current", "AHORA", 85),
-    ("stored", "DETALLE (VALOR Y FILAS)", 300),
-    ("rows", "FILAS", 60),
-    ("verdicts", "CON VEREDICTO", 105),
+    ("stored", "DETALLE (VALOR Y CUANTOS)", 290),
+    ("rows", "CUANTOS", 150),
+    ("verdicts", "YA JUZGADOS", 100),
 )
 
 
@@ -46,9 +47,10 @@ class UBSAuditorViewMixin:
         tk.Label(
             bar,
             text=(
-                "Auditar reglas compara los umbrales con los que se juzgo cada fila "
-                "con los de Configuracion; Consultar pendientes lista las filas que "
-                "no llegaron a un estado final."
+                "Auditar reglas compara los umbrales con los que se juzgo cada semilla "
+                "o candidato con los de Configuracion; Consultar pendientes lista los "
+                "que no llegaron a un estado final. Semillas y candidatos son .set: "
+                "el de partida y el que genero el agente a partir de el."
             ),
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
@@ -122,6 +124,7 @@ class UBSAuditorViewMixin:
                 column, width=width, minwidth=60, anchor="center", stretch=False
             )
         self.ubs_auditor_tree.column("item", anchor="w")
+        self.ubs_auditor_tree.column("rows", anchor="w")
         self.ubs_auditor_tree.column("stored", anchor="w")
         self.ubs_auditor_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
         self.ubs_auditor_tree.tag_configure("rejected", foreground=self.colors["danger"])

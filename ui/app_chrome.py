@@ -215,6 +215,12 @@ class AppChromeMixin:
         try:
             return (0, float(numeric))
         except ValueError:
+            pass
+        # Una celda que cuenta en voz alta ("1046 candidatos") ordena por el
+        # numero; si el primer trozo no es uno, se ordena como texto.
+        try:
+            return (0, float(numeric.split(" ", 1)[0]))
+        except ValueError:
             return (1, raw.casefold())
 
     def _checkbox_text(self, checked: bool) -> str:

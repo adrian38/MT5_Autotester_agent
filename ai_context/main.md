@@ -1569,8 +1569,11 @@ what Configuración holds now — no HTML is reparsed.
 Scope selectors: any account of the active broker, and one run or the whole
 memory. Both queries fill the same table, so its `QUE PASA` column names what
 each row is (`Al dia`, `Regla movida`, `Regla ciega`, `Sin saber`, `Sin tabla`,
-`Pendientes`); without it `FILAS` reads as the stage total on one row and as
-the rows a moved rule drags on the next. Four actions:
+`Pendientes`); without it `CUANTOS` reads as the stage total on one row and as
+what a moved rule drags on the next. `CUANTOS` counts out loud — "1046
+candidatos", "322 semillas" — from `StageSpec.unit`, since a bare row count
+means nothing to the operator; `_tree_sort_value()` falls back to the leading
+number so that column still sorts numerically. Four actions:
 
 - **Auditar reglas** — per stage, each rule whose stored value differs, the
   value configured now, the stored values with their row counts, affected rows

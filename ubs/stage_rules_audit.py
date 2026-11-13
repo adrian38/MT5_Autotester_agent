@@ -50,6 +50,9 @@ class StageSpec:
     table: str
     id_column: str
     rules: tuple[RuleSpec, ...]
+    # Que es una fila de esta tabla, para poder contar en voz alta: las etapas
+    # de semilla puntuan el .set de partida y las demas, el .set generado.
+    unit: str = "candidatos"
     run_column: str = ""
     metrics_column: str = ""
     rescore_flag: str = ""
@@ -139,6 +142,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="seed_scores",
         id_column="id",
         rules=SCORE_RULES,
+        unit="semillas",
         metrics_column="metrics_json",
         rescore_flag="--rescore-seeds-only",
         row_filter="active=1",
@@ -196,6 +200,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="seed_final_tick",
         id_column="seed_id",
         rules=FINAL_TICK_RULES,
+        unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
     ),
     StageSpec(
@@ -204,6 +209,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="seed_final_tick_6m",
         id_column="seed_id",
         rules=FINAL_TICK_RULES,
+        unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
     ),
     StageSpec(
