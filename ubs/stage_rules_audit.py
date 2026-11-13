@@ -135,6 +135,10 @@ FINAL_TICK_BLIND_RULES = (
     "MN min ops",
 )
 
+# En el orden del pipeline, que es el de la barra lateral: Seeds, Seeds Final
+# Tick, Seeds Final Tick 6M, Resultados, Robustez, Final Tick, Final Tick 6M,
+# Regresiva. La auditoria se lee de arriba abajo como se recorre el embudo, y
+# los nombres son los de las pantallas para no inventar un segundo vocabulario.
 STAGE_SPECS: tuple[StageSpec, ...] = (
     StageSpec(
         key="seeds",
@@ -148,8 +152,26 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         row_filter="active=1",
     ),
     StageSpec(
+        key="seed_final_tick",
+        label="Seeds Final Tick",
+        table="seed_final_tick",
+        id_column="seed_id",
+        rules=FINAL_TICK_RULES,
+        unit="semillas",
+        non_auditable=FINAL_TICK_BLIND_RULES,
+    ),
+    StageSpec(
+        key="seed_final_tick_6m",
+        label="Seeds Final Tick 6M",
+        table="seed_final_tick_6m",
+        id_column="seed_id",
+        rules=FINAL_TICK_RULES,
+        unit="semillas",
+        non_auditable=FINAL_TICK_BLIND_RULES,
+    ),
+    StageSpec(
         key="candidates",
-        label="Base",
+        label="Resultados",
         table="candidates",
         id_column="id",
         rules=SCORE_RULES,
@@ -192,24 +214,6 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         rules=FINAL_TICK_RULES,
         run_column="run_id",
         rescore_flag="--rescore-final-tick-only",
-        non_auditable=FINAL_TICK_BLIND_RULES,
-    ),
-    StageSpec(
-        key="seed_final_tick",
-        label="Seeds Final Tick",
-        table="seed_final_tick",
-        id_column="seed_id",
-        rules=FINAL_TICK_RULES,
-        unit="semillas",
-        non_auditable=FINAL_TICK_BLIND_RULES,
-    ),
-    StageSpec(
-        key="seed_final_tick_6m",
-        label="Seeds Final Tick 6M",
-        table="seed_final_tick_6m",
-        id_column="seed_id",
-        rules=FINAL_TICK_RULES,
-        unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
     ),
     StageSpec(

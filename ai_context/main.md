@@ -1567,7 +1567,10 @@ carry their `score_config` inside `metrics_json`. The screen compares that with
 what Configuración holds now — no HTML is reparsed.
 
 Scope selectors: any account of the active broker, and one run or the whole
-memory. Both queries fill the same table, so its `QUE PASA` column names what
+memory. `STAGE_SPECS` is ordered like the funnel and like the sidebar — Seeds,
+Seeds Final Tick, Seeds Final Tick 6M, Resultados, Robustez, Final Tick, Final
+Tick 6M, Regresiva — and each `label` is its screen's name, so the audit reads
+top-down and names nothing twice. Both queries fill the same table, so its `QUE PASA` column names what
 each row is (`Al dia`, `Regla movida`, `Regla ciega`, `Sin saber`, `Sin tabla`,
 `Pendientes`); without it `CUANTOS` reads as the stage total on one row and as
 what a moved rule drags on the next. `CUANTOS` counts out loud — "1046
