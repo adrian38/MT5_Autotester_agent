@@ -569,7 +569,14 @@ enter this queue.
     scores 25.9% and passed. Stored per row in `max_dd_gap_pp`, and reported in
     `similarity_json` as `gap_pp` / `max_gap_pp` / `within_gap`.
     `tools/repair_final_tick_dd_band.py` re-applies the verdict to rows already
-    in memory, seeds included, without opening MT5.
+    in memory, seeds included, without opening MT5. The screens pass it like
+    every other threshold, through `_final_tick_threshold_args()` in
+    [`ui/ubs_final_tick_run.py`](../ui/ubs_final_tick_run.py) — the one builder
+    the four Final Tick screens share. It used to be the only one missing from
+    that list, so a run judged with the `3.0` default while the Auditor's
+    rescore, which did pass it, judged with whatever Configuración held: the
+    same row, two verdicts, depending on who looked at it. Any threshold added
+    to the screens goes in that list, or it decides nothing.
 - The agent copies each robust-accepted `.set` twice under
   `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/...`: one OHLC batch with `Model=1` and
   one real-tick batch with `Model=4` (`Every tick based on real ticks`).

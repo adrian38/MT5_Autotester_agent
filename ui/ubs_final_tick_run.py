@@ -33,6 +33,27 @@ class UBSFinalTickRunMixin:
                     raise ValueError(f"Final Tick 6M OHLC retry invalido: {ohlc_date_error}")
         return from_date, to_date, ohlc_from_date, ohlc_to_date
 
+    @staticmethod
+    def _final_tick_threshold_args(thresholds: dict) -> list[str]:
+        """Los nueve umbrales que deciden el veredicto, camino del agente.
+
+        Van los nueve y juntos a proposito: `dd_gap_pp` se quedo fuera de esta
+        lista, asi que al correr decidia el 3.0 por defecto del agente mientras
+        el repuntuado del Auditor -que si lo pasaba- decidia con el valor de
+        Configuracion. La misma fila, dos veredictos, segun quien la juzgara.
+        """
+        return [
+            "--final-tick-min-history-quality", str(thresholds["min_quality"]),
+            "--final-tick-min-ohlc-trades", str(thresholds["min_ohlc_trades"]),
+            "--final-tick-min-trades-w1", str(thresholds["min_trades_w1"]),
+            "--final-tick-min-trades-mn", str(thresholds["min_trades_mn"]),
+            "--final-tick-max-net-delta-pct", str(thresholds["net_delta"]),
+            "--final-tick-max-pf-delta-pct", str(thresholds["pf_delta"]),
+            "--final-tick-max-dd-delta-pct", str(thresholds["dd_delta"]),
+            "--final-tick-max-dd-gap-pp", str(thresholds["dd_gap_pp"]),
+            "--final-tick-max-trades-delta-pct", str(thresholds["trades_delta"]),
+        ]
+
     def _ubs_final_tick_args(
         self,
         run_id: int,
@@ -56,14 +77,7 @@ class UBSFinalTickRunMixin:
             "--final-tick-stage", final_tick_stage,
             "--from-date", from_date,
             "--to-date", to_date,
-            "--final-tick-min-history-quality", str(thresholds["min_quality"]),
-            "--final-tick-min-ohlc-trades", str(thresholds["min_ohlc_trades"]),
-            "--final-tick-min-trades-w1", str(thresholds["min_trades_w1"]),
-            "--final-tick-min-trades-mn", str(thresholds["min_trades_mn"]),
-            "--final-tick-max-net-delta-pct", str(thresholds["net_delta"]),
-            "--final-tick-max-pf-delta-pct", str(thresholds["pf_delta"]),
-            "--final-tick-max-dd-delta-pct", str(thresholds["dd_delta"]),
-            "--final-tick-max-trades-delta-pct", str(thresholds["trades_delta"]),
+            *self._final_tick_threshold_args(thresholds),
             "--delay", str(self.delay.get()),
         ]
         if ohlc_from_date and ohlc_to_date:
