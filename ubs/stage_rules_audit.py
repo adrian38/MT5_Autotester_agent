@@ -14,9 +14,10 @@ rejected, solo dice sobre que periodo corrio la fila (ver la cabecera de
 ninguna ventana -la fecha vacia de la que no ha corrido, o el cero que MT5
 escribe en un reporte sin periodo-, y la que ademas tiene veredicto lo dio
 sobre una ventana que no existe, asi que no vale por mucho que sus umbrales
-coincidan. `offwindow` son las que corrieron sobre un periodo que ya no es el
-configurado: ahi el veredicto esta bien dado y lo unico que cambia es volver a
-correrlas.
+coincidan. Que la ventana guardada sea otra distinta de la configurada no se
+compara siquiera: el veredicto vale para el periodo que corrio, nadie lo vuelve
+a dar y ninguna regla se movio, asi que esta auditoria no tiene nada que decir
+de ello.
 
 Un cambio de regla no siempre se ve en lo guardado: cuando lo que cambia es el
 codigo que aplica los umbrales -y no los umbrales- la fila guarda los mismos
@@ -191,13 +192,6 @@ class _StageTally:
     # distintos -la vacia de la que no ha corrido y el cero de MT5- y decir
     # "vacia o 1970.01.01" obligaba a ir a mirar cual de los dos era.
     undated_values: dict[str, int] = field(default_factory=dict)
-    offwindow: set[int] = field(default_factory=set)
-    offwindow_verdicts: set[int] = field(default_factory=set)
-    # Lo mismo que `counts`/`ids`/`verdicts`, pero para las fechas: cada una
-    # lleva su cuenta aparte porque cada una se dice en su propia fila.
-    offwindow_counts: dict[str, dict[str, int]] = field(default_factory=dict)
-    offwindow_ids: dict[str, list[int]] = field(default_factory=dict)
-    offwindow_field_verdicts: dict[str, int] = field(default_factory=dict)
     stale: set[int] = field(default_factory=set)
     stale_verdicts: set[int] = field(default_factory=set)
     rows: int = 0
@@ -230,33 +224,6 @@ class _StageTally:
         self.bend(row_id, is_verdict=is_verdict)
         for value in values:
             self.undated_values[value] = self.undated_values.get(value, 0) + 1
-
-    def record_offwindow(
-        self, values: dict[str, str], row_id: int, *, is_verdict: bool
-    ) -> None:
-        """Una fila que corrio sobre un periodo que ya no es el configurado.
-
-        No cuenta como veredicto torcido ni como fila afectada: su veredicto es
-        valido para el periodo que corrio, y nadie lo va a volver a dar. El
-        propio runner lo dice -`final_tick_row_pending_for_dates()` ignora la
-        ventana en cuanto la fila tiene veredicto-, asi que exigir repetir la
-        etapa era pedir un trabajo que ningun boton hace. Se dice y ya.
-
-        `values` trae el valor guardado de cada fecha movida, por su clave,
-        porque cada fecha se cuenta y se dice por separado. La fila, en cambio,
-        se cuenta una vez aunque se le hayan movido las dos.
-        """
-        self.offwindow.add(row_id)
-        if is_verdict:
-            self.offwindow_verdicts.add(row_id)
-        for key, value in values.items():
-            counts = self.offwindow_counts.setdefault(key, {})
-            counts[value] = counts.get(value, 0) + 1
-            self.offwindow_ids.setdefault(key, []).append(row_id)
-            if is_verdict:
-                self.offwindow_field_verdicts[key] = (
-                    self.offwindow_field_verdicts.get(key, 0) + 1
-                )
 
     def record(self, rule: RuleSpec, stored: object, row_id: int, *, is_verdict: bool) -> None:
         counts = self.counts.setdefault(rule.key, {})
@@ -328,70 +295,28 @@ def _tally_window_row(
     columns: set[str],
     is_verdict: bool,
 ) -> None:
-    """La ventana de la fila: la que falta, o la que ya no es la configurada.
+    """Si la fila no guarda ninguna ventana, y por que.
 
-    Se mira aparte de las reglas porque no es una: no decide accepted ni
-    rejected, solo dice sobre que periodo corrio. De las dos cosas que pueden
-    pasarle, una fila puede traer las dos -la fecha de arranque sin poner y la
-    de cierre movida- y entonces cuenta en cada una.
+    Solo eso. Que la ventana sea otra distinta de la configurada no se mira:
+    no decide accepted ni rejected, su veredicto vale para el periodo que
+    corrio, nadie lo vuelve a dar -`final_tick_row_pending_for_dates()` deja de
+    mirar la fecha en cuanto hay veredicto- y esta pantalla contesta a otra
+    pregunta. Se llego a contar y a pintar en gris, y era ruido debajo de una
+    etapa que ya decia «Al dia».
 
-    Cada fecha movida se devuelve por su clave, porque cada una se dice en su
-    propia fila: juntarlas en una sola celda obligaba a escribir «Desde» delante
-    de cada valor para saber cual era, y entonces ni la celda ni la columna de
-    al lado daban de si.
+    Lo que si importa es la fila que no tiene ventana ninguna: la fecha vacia
+    de la que no ha corrido, o el cero que MT5 escribe sin periodo. Una fila
+    puede traer las dos y entonces cuenta en cada motivo.
     """
     undated: set[str] = set()
-    elsewhere: dict[str, str] = {}
     for window_field in spec.window:
-        if window_field.key not in expected:
-            continue
         stored, present = _stored_rule_value(
             row, window_field, columns=columns, score_config=None
         )
-        if not present:
-            continue
-        if missing_window_date(stored):
+        if present and missing_window_date(stored):
             undated.add(_undated_reason(stored))
-            continue
-        if _same_value(stored, expected[window_field.key], window_field.kind):
-            continue
-        elsewhere[window_field.key] = _display(stored, window_field.kind)
     if undated:
         tally.record_undated(undated, row_id, is_verdict=is_verdict)
-    if elsewhere:
-        tally.record_offwindow(elsewhere, row_id, is_verdict=is_verdict)
-
-
-def _window_findings(
-    spec: StageSpec, expected: Mapping[str, object], tally: _StageTally
-) -> tuple[RuleFinding, ...]:
-    """Cada fecha que ya no es la configurada, con lo que guardo cada fila.
-
-    Misma forma que un hallazgo de regla porque se lee igual -que hay ahora,
-    con que se corrio y a cuantos alcanza- y se pinta en las mismas columnas.
-    Lo que cambia es el tono: esto no torcio ningun veredicto.
-    """
-    findings: list[RuleFinding] = []
-    for window_field in spec.window:
-        counts = tally.offwindow_counts.get(window_field.key)
-        if not counts:
-            continue
-        ids = tally.offwindow_ids.get(window_field.key, [])
-        findings.append(
-            RuleFinding(
-                stage=spec.key,
-                stage_label=spec.label,
-                rule=window_field.key,
-                rule_label=window_field.label,
-                current=_display(expected[window_field.key], window_field.kind),
-                stored=_by_count(counts),
-                rows=len(ids),
-                verdicts=tally.offwindow_field_verdicts.get(window_field.key, 0),
-                ids=tuple(ids[:MAX_REPORTED_IDS]),
-            )
-        )
-    return tuple(findings)
-
 
 def _stage_findings(
     spec: StageSpec, expected: Mapping[str, object], tally: _StageTally
@@ -472,9 +397,6 @@ def _stage_audit(
         undated=len(tally.undated),
         undated_verdicts=len(tally.undated_verdicts),
         undated_stored=_by_count(tally.undated_values),
-        offwindow=len(tally.offwindow),
-        offwindow_verdicts=len(tally.offwindow_verdicts),
-        window_findings=_window_findings(spec, expected, tally),
         stale=len(tally.stale),
         stale_verdicts=len(tally.stale_verdicts),
         findings=_stage_findings(spec, expected, tally),

@@ -423,38 +423,32 @@ class RuleGroupTests(unittest.TestCase):
         self.assertIn(RULE_CHANGED_AT[:10], child_values[3])
         self.assertNotIn(RULE_CHANGED_AT[10:], child_values[3])
 
-    def test_a_changed_rule_nobody_judged_hangs_muted(self) -> None:
-        """Lo que no tiene veredicto no arrastra: se dice, pero no en rojo."""
-        _stage, _label, values, tag, children = _rule_group(_audit_row(stale=1046))
+    def test_nothing_that_lacks_a_verdict_hangs_at_all(self) -> None:
+        """Al dia y sin nada colgando: la etapa no tiene de que hablar.
+
+        Filas selladas antes del cambio pero sin veredicto, filas sin fecha
+        que no han corrido, filas sin configuracion guardada: ninguna se juzgo
+        con una regla vieja, que es lo unico que este boton contesta. Colgaban
+        en gris y eran tres lineas de ruido bajo una etapa verde.
+        """
+        _stage, _label, values, tag, children = _rule_group(
+            _audit_row(stale=1046, undated=1045, unknown=86237)
+        )
 
         self.assertEqual(tag, "accepted")
         self.assertEqual(values[0], "Al dia")
         self.assertEqual(values[4], "0 de 10 candidatos")
-        self.assertEqual(children[0][1], "pending")
+        self.assertEqual(children, ())
 
-    def test_another_window_is_a_fact_not_a_problem(self) -> None:
-        """Corrieron sobre otro periodo, y su veredicto vale igual.
-
-        Ninguna regla se movio, asi que la etapa esta al dia y en verde. El
-        dato cuelga apagado, con una fila por fecha para que el valor quepa
-        entero, y sin cuenta en «a cuantos afecta»: no afecta a ninguno.
-        """
-        window = SimpleNamespace(
-            rule="from_date", rule_label="Desde", current="2025.06.30",
-            stored=(("2026.01.01", 2396), ("2025.09.01", 8)),
-            rows=2404, verdicts=2404,
-        )
+    def test_a_moved_rule_that_reached_no_verdict_hangs_either(self) -> None:
+        """Se movio, pero lo que alcanza correra con la regla de ahora."""
         _stage, _label, values, tag, children = _rule_group(
-            _audit_row(window_findings=(window,), offwindow=2404, offwindow_verdicts=2404)
+            _audit_row(findings=(_finding(verdicts=0),))
         )
 
         self.assertEqual(values[0], "Al dia")
         self.assertEqual(tag, "accepted")
-        self.assertEqual(children[0][1], "pending")
-        self.assertEqual(
-            children[0][0],
-            ("Otra ventana", "Desde", "2025.06.30", "2026.01.01 (2396), 2025.09.01 (8)", ""),
-        )
+        self.assertEqual(children, ())
 
     def test_the_invalid_dates_name_themselves_with_their_counts(self) -> None:
         _stage, _label, _values, _tag, children = _rule_group(

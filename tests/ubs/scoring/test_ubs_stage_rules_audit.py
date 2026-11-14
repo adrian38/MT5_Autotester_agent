@@ -124,12 +124,12 @@ class StageRulesAuditTests(unittest.TestCase):
             audit.undated_stored, (("no ha corrido", 2), ("reporte sin periodo", 2))
         )
 
-    def test_a_real_date_move_is_reported_as_window_not_as_rule(self) -> None:
-        """La ventana se dice, pero no como regla movida: no juzga nada.
+    def test_a_window_that_is_simply_another_one_is_not_looked_at(self) -> None:
+        """Esta pantalla no compara ventanas, y por eso no dice nada de ella.
 
-        La fila corrio sobre ese periodo y su veredicto esta bien dado, asi que
-        tampoco cuenta como afectada: no hay nada que arreglarle. Se cuenta y
-        se ensena, fecha por fecha, y ahi acaba.
+        La fila corrio sobre ese periodo, su veredicto vale, nadie lo vuelve a
+        dar y ninguna regla se movio. Contarla llenaba la etapa de lineas en
+        gris que no contestaban a lo que el boton pregunta.
         """
         conn = memory()
         insert_final_tick(
@@ -145,10 +145,7 @@ class StageRulesAuditTests(unittest.TestCase):
         )[0]
 
         self.assertEqual(audit.findings, ())
-        self.assertEqual(audit.offwindow_verdicts, 1)
-        self.assertEqual([w.rule for w in audit.window_findings], ["from_date"])
-        self.assertEqual(audit.window_findings[0].stored, (("2026.01.01", 1),))
-        self.assertEqual(audit.window_findings[0].current, "2026.05.01")
+        self.assertEqual(audit.undated, 0)
         self.assertEqual(audit.affected_verdicts, 0)
 
     def test_affected_verdicts_count_each_row_once(self) -> None:
@@ -198,20 +195,6 @@ class StageRulesAuditTests(unittest.TestCase):
 
         self.assertEqual(audits[0].findings, ())
         self.assertEqual(audits[0].verdicts, 1)
-
-    def test_dates_are_compared_as_text(self) -> None:
-        conn = memory()
-        insert_final_tick(conn, 1, run_id=7, status="accepted", from_date="2026.04.01")
-
-        audits = audit_stage_rules(
-            conn,
-            {"final_tick": CURRENT_FINAL_TICK},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )
-
-        self.assertEqual(audits[0].window_findings[0].stored, (("2026.04.01", 1),))
-        self.assertEqual(audits[0].window_findings[0].current, "2026.05.01")
 
     def test_score_config_lives_inside_metrics_json(self) -> None:
         conn = memory()

@@ -189,7 +189,6 @@ class StagesToRescoreTests(unittest.TestCase):
         )
 
         self.assertEqual(audits[0].findings, ())
-        self.assertEqual(audits[0].offwindow_verdicts, 1)
         self.assertEqual(stages_to_rescore(audits), ())
         self.assertEqual(stages_to_repeat(audits), ())
 
@@ -271,7 +270,6 @@ class StagesToRescoreTests(unittest.TestCase):
         )
 
         self.assertEqual([f.rule for f in audits[0].findings], ["max_pf_delta_pct"])
-        self.assertEqual(audits[0].offwindow_verdicts, 1)
         self.assertEqual(stages_to_rescore(audits), ("final_tick",))
         self.assertEqual(stages_to_repeat(audits), ())
 

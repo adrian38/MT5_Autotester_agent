@@ -1612,7 +1612,7 @@ means one thing on every row:
 
 | Column | Rules query | Pending query |
 |--------|-------------|---------------|
-| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `N sin fecha valida`, `Otra ventana`, `Sin saber`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
+| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `N sin fecha valida`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
 | `item` | `REGLA`: the moved rule's label | hidden |
 | `current` | `AHORA`: what Configuración holds | hidden |
 | `stored` | `SE JUZGO CON`: stored values with their counts | `EN QUE ESTADO SE QUEDARON`: statuses with their counts |
@@ -1681,39 +1681,38 @@ means nothing unless you know that 1970.01.01 *is* the absence of a window —
   no `rescore_flag` has nobody to do that, so there it still asks for a repeat.
   The rescore reaches the row even when its OHLC report is not on this machine:
   `_rescored_window()` falls back to the dates the row itself stored.
-- **without a verdict** — the row simply has not run. It hangs off the stage as
-  a muted child and `Consultar pendientes` is where it belongs.
+- **without a verdict** — the row simply has not run. Nothing hangs off the
+  stage for it; `Consultar pendientes` is where it belongs and where it already
+  appears.
 
-A row whose window is a real date but no longer the configured one is the other
-half, and it is **not a problem at all** — the hardest part of this to get
-right. `StageAudit.offwindow` / `offwindow_verdicts` count the rows and
-`window_findings` details them date by date, filled by `_tally_window_row()`.
-The stage still reads `Al dia`, the child hangs muted as `Otra ventana` with
-the field's own label, today's value and the stored ones, and the `A CUANTOS
-AFECTA` cell is left empty, because the answer is none: that verdict is valid
-for the period it ran over.
+#### Only what the button asks (nothing hangs in grey)
 
-**Nobody re-runs those rows, and the runner says so.**
-`final_tick_row_pending_for_dates()`
+`_rule_children()` hangs a child **only** when a verdict was given under a rule
+that is no longer today's. That is the whole question this button answers.
+Three things used to hang in grey under stages that read `Al dia`, and none of
+them answered it: a rule that moved but reached no verdict, a row with no
+window that had not run, and a row whose window is simply another one. The
+screen now stays silent about all three — a stage with nothing to say shows no
+children at all, and the whole table can legitimately be eight green lines.
+
+The third one is worth stating plainly, because two earlier versions got it
+wrong in opposite directions. **A window that is merely different is not
+compared at all.** `_tally_window_row()` reads the window columns looking only
+for a *missing* window; it never checks whether the stored one matches
+Configuración. The verdict is valid for the period it ran over, and **nobody
+re-runs those rows**: `final_tick_row_pending_for_dates()`
 ([`evaluate.py`](../ubs/agent/final_tick/evaluate.py)) stops looking at the
 window the moment a row holds a verdict — the date only decides for rows
-already in `pending_ohlc_trades` / `pending_history_quality`. So pressing the
-6M stage's own button skips all 2404 of them one by one. Two earlier versions
-of this screen got it wrong in opposite directions: first `Desde` was a
+already in `pending_ohlc_trades` / `pending_history_quality`, so pressing the
+6M stage's own button skips all 2404 of them one by one. First `Desde` was a
 `RuleSpec` like any threshold, so the stage read `1 regla movida` and entered
-the rescore queue, walking all 3450 rows of `candidate_final_tick_6m` to
-rewrite every verdict with the value it already had (the window is re-read from
-the OHLC report, so no rescore moves it); then it was red and in
+the rescore queue, walking 3450 rows of `candidate_final_tick_6m` to rewrite
+every verdict with the value it already had (the window is re-read from the
+OHLC report, so no rescore moves it). Then it was red and in
 `stages_to_repeat()`, sending 2404 candidates back through MT5 for work no
-button performs. It is configuration drift, and the screen states it without
-asking for anything.
-
-One row per date, never merged. Collapsing `Desde` and `Hasta` into one cell
-forced writing the field name in front of every value (`Desde 2026.01.01`),
-and then neither that cell nor `AHORA` — which had to hold a whole
-`from -> to` — fit their columns: `QUE PASA`, `AHORA` and `SE JUZGO CON` all
-came out clipped mid-value, which is the thing `_values_cell()` exists to
-prevent.
+button performs. Then it hung in grey, which was merely noise. It is
+configuration, it belongs to whoever sets the dates, and this screen says
+nothing about it.
 
 #### Which button actually fixes what
 

@@ -369,15 +369,6 @@ class StageAudit:
     # Por que no tienen ventana y a cuantas filas alcanza cada motivo: no es lo
     # mismo la que no ha corrido que la que corrio sin producir nada.
     undated_stored: tuple[tuple[str, int], ...] = ()
-    # Filas que corrieron sobre una ventana distinta de la configurada. Se
-    # cuentan y se dicen, pero no son un problema: su veredicto vale para el
-    # periodo que corrieron, el runner no las vuelve a correr por la fecha
-    # -`final_tick_row_pending_for_dates()` la ignora en cuanto hay veredicto- y
-    # ninguna regla se movio. `window_findings` lo detalla fecha por fecha, con
-    # la misma forma que un hallazgo de regla.
-    offwindow: int = 0
-    offwindow_verdicts: int = 0
-    window_findings: tuple[RuleFinding, ...] = ()
     # Filas selladas antes de `rules_changed_at`: sus umbrales son los de hoy,
     # pero la regla que los aplico no. Las que ya tienen veredicto son las que
     # pueden cambiar al repuntuar, igual que en un umbral movido.

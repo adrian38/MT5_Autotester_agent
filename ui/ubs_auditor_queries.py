@@ -216,6 +216,13 @@ def _pending_status_line(pending: int, missing: int, scope: str) -> str:
 def _rule_children(audit) -> tuple:
     """El detalle que cuelga de una etapa en la auditoria de reglas.
 
+    Solo cuelga lo que contesta a la pregunta del boton: que se juzgo con una
+    regla que ya no es la de ahora. Nada mas. Llego a colgar tambien lo que no
+    habia corrido, lo que no guardo su configuracion y lo que corrio sobre otra
+    ventana, todo en gris, y ninguna de las tres cosas contestaba a eso: eran
+    tres lineas de ruido bajo una etapa que ya decia «Al dia». Lo que esta
+    pendiente se cuenta en Consultar pendientes, que es su sitio.
+
     Todas las cuentas son de veredictos. Una fila pendiente guarda el valor
     viejo igual que las demas, pero el repuntuado no la toca -no hay nada que
     volver a puntuar- y cuando corra lo hara con la regla de ahora: contarla
@@ -226,11 +233,15 @@ def _rule_children(audit) -> tuple:
         # El hijo no repite «Regla movida»: la columna REGLA ya dice cual es,
         # y la palabra sobraba en todas y cada una de ellas. Toda regla movida
         # la endereza el boton, asi que no hay nada que advertir aqui.
+        if not finding.verdicts:
+            # Se movio, pero no alcanzo a ningun veredicto: lo que siga
+            # pendiente correra con la regla de ahora. No hay nada que decir.
+            continue
         children.append((("",
             finding.rule_label, finding.current, _stored_cell(finding),
             _of_total(finding.verdicts, audit.rows, audit.stage),
-        ), "rejected" if finding.verdicts else "pending"))
-    if audit.stale:
+        ), "rejected"))
+    if audit.stale_verdicts:
         # No hay regla que senalar: lo que cambio fue como se aplican todas,
         # asi que la fila habla de la etapa entera.
         spec = stage_spec(audit.stage)
@@ -238,26 +249,16 @@ def _rule_children(audit) -> tuple:
             "Regla cambiada", "(toda la etapa)", "",
             f"{spec.rules_change_note} ({spec.rules_changed_at[:10]})",
             _of_total(audit.stale_verdicts, audit.rows, audit.stage),
-        ), "rejected" if audit.stale_verdicts else "pending"))
-    if audit.undated:
+        ), "rejected"))
+    if audit.undated_verdicts:
+        # Esta si: el veredicto se dio sobre una ventana que no existe, asi que
+        # no vale, y el repuntuado lo devuelve a pendiente. La fila sin fecha
+        # que ademas no tiene veredicto no cuelga de aqui: no se juzgo con
+        # ninguna regla, ni vieja ni nueva.
         children.append(((
             "Sin fecha valida", "", "", _values_cell(audit.undated_stored),
             _of_total(audit.undated_verdicts, audit.rows, audit.stage),
-        ), "rejected" if audit.undated_verdicts else "pending"))
-    for window in audit.window_findings:
-        # Una fila por fecha, como cualquier hallazgo, porque la de al lado ya
-        # dice cual es y asi el valor cabe entero. Apagada y sin cuenta en «a
-        # cuantos afecta»: no hay veredicto torcido que contar, solo filas que
-        # corrieron sobre otro periodo. Cuantas, lo dice su propia celda.
-        children.append(((
-            "Otra ventana", window.rule_label, window.current,
-            _stored_cell(window), "",
-        ), "pending"))
-    if audit.unknown:
-        children.append(((
-            "Sin saber", "", "", "(no lo guardaron)",
-            _of_total(0, audit.rows, audit.stage),
-        ), "pending"))
+        ), "rejected"))
     return tuple(children)
 
 
