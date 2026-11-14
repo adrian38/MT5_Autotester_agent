@@ -25,6 +25,11 @@ from tkinter import ttk
 # ETAPA es la primera y se va con la barra horizontal, y una tabla que nace
 # desplazada esconde justo lo que se viene a mirar. La columna ancha estira
 # para quedarse con lo que sobre.
+# Ancho al que envuelven las dos lineas de texto que van debajo de la barra, a
+# lo ancho del panel: el resumen de la consulta y las reglas ciegas. Las dos
+# crecen con lo que encuentre la auditoria, y sin envolver se cortaban por
+# donde cayera.
+AUDITOR_TEXT_WRAPLENGTH = 900
 AUDITOR_STAGE_COLUMN_WIDTH = 140
 AUDITOR_COLUMNS = ("kind", "item", "current", "stored", "affected", "judged")
 AUDITOR_RULE_LAYOUT = (
@@ -127,9 +132,16 @@ class UBSAuditorViewMixin:
         self.ubs_auditor_run_combo.grid(row=0, column=3, sticky="ew")
 
     def _build_ubs_auditor_table(self, panel):
-        ttk.Label(panel, textvariable=self.ubs_auditor_status, style="Muted.TLabel").grid(
-            row=2, column=0, sticky="ew", padx=20, pady=(6, 6)
-        )
+        # Lo que el resumen deja para el final es justo lo que no se arregla
+        # pulsando un boton -las etapas que hay que repetir enteras-, asi que
+        # cortarlo por donde cayera escondia la unica parte accionable.
+        ttk.Label(
+            panel,
+            textvariable=self.ubs_auditor_status,
+            style="Muted.TLabel",
+            wraplength=AUDITOR_TEXT_WRAPLENGTH,
+            justify="left",
+        ).grid(row=2, column=0, sticky="ew", padx=20, pady=(6, 6))
 
         table_frame = ttk.Frame(panel, style="Panel.TFrame")
         table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 6))
@@ -163,7 +175,7 @@ class UBSAuditorViewMixin:
             panel,
             textvariable=self.ubs_auditor_blind_rules,
             style="Muted.TLabel",
-            wraplength=900,
+            wraplength=AUDITOR_TEXT_WRAPLENGTH,
             justify="left",
         ).grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 16))
 

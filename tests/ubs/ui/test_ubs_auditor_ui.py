@@ -29,6 +29,7 @@ from ui.ubs_auditor_view import (
     AUDITOR_PENDING_LAYOUT,
     AUDITOR_RULE_LAYOUT,
     AUDITOR_STAGE_COLUMN_WIDTH,
+    AUDITOR_TEXT_WRAPLENGTH,
 )
 
 
@@ -462,6 +463,10 @@ class TableLayoutTests(unittest.TestCase):
         for layout in (AUDITOR_RULE_LAYOUT, AUDITOR_PENDING_LAYOUT):
             total = AUDITOR_STAGE_COLUMN_WIDTH + sum(width for _c, _h, width, _s in layout)
             self.assertLessEqual(total, AUDITOR_TABLE_BUDGET, layout[0][1])
+
+    def test_the_lines_of_text_wrap_inside_the_panel(self) -> None:
+        """El resumen crece con lo que encuentre y tiene que caber envuelto."""
+        self.assertLessEqual(AUDITOR_TEXT_WRAPLENGTH, AUDITOR_TABLE_BUDGET)
 
     def test_each_layout_has_one_column_that_takes_the_slack(self) -> None:
         for layout in (AUDITOR_RULE_LAYOUT, AUDITOR_PENDING_LAYOUT):
