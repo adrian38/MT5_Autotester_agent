@@ -203,6 +203,50 @@ class RescoreArgsTests(unittest.TestCase):
             harness._ubs_auditor_rescore_args("seed_final_tick")
 
 
+class StagesToRescoreTests(unittest.TestCase):
+    """Que etapas entran al pulsar el boton, con y sin etapa marcada."""
+
+    @staticmethod
+    def _harness(selected: str) -> AuditorHarness:
+        harness = AuditorHarness()
+        harness._selected_ubs_auditor_stage = lambda: selected
+        return harness
+
+    def test_a_marked_stage_rescores_even_with_nothing_found(self) -> None:
+        """Las reglas ciegas no se ven, y el repuntuado si las aplica.
+
+        Sin esto no habia forma de pedirlo: la auditoria no puede denunciar un
+        minimo de operaciones que la etapa no guarda, y el boton se negaba a
+        correr por no tener nada que ensenar.
+        """
+        harness = self._harness("final_tick")
+
+        stages, by_hand = harness._ubs_auditor_stages_to_rescore(())
+
+        self.assertEqual(stages, ["final_tick"])
+        self.assertTrue(by_hand)
+
+    def test_a_marked_stage_without_rescore_mode_falls_back(self) -> None:
+        harness = self._harness("seed_final_tick")
+
+        stages, by_hand = harness._ubs_auditor_stages_to_rescore(())
+
+        self.assertEqual(stages, [])
+        self.assertFalse(by_hand)
+
+    def test_without_a_mark_the_audit_decides(self) -> None:
+        harness = self._harness("")
+        audit = SimpleNamespace(
+            stage="robustness", findings=(SimpleNamespace(fix="rescore"),),
+            stale_verdicts=0,
+        )
+
+        stages, by_hand = harness._ubs_auditor_stages_to_rescore((audit,))
+
+        self.assertEqual(stages, ["robustness"])
+        self.assertFalse(by_hand)
+
+
 class RescoreQueueTests(unittest.TestCase):
     def test_next_stage_runs_when_the_previous_one_succeeds(self) -> None:
         harness = AuditorHarness()

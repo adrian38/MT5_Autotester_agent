@@ -62,7 +62,8 @@ def _blind_rules_note() -> str:
     ]
     return (
         "Reglas ciegas, que la etapa aplica pero no guarda, asi que moverlas no "
-        "se ve desde aqui: " + "; ".join(parts) + "."
+        "se ve desde aqui: " + "; ".join(parts) + ". El repuntuado si las aplica: "
+        "si moviste una, marca la etapa en la tabla y pulsa Repuntuar afectados."
     )
 
 

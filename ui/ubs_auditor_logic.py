@@ -11,6 +11,9 @@ arreglos:
   abrir MT5, encadenando un `--rescore-*-only` por etapa: el agente atiende un
   modo por proceso, asi que el siguiente sale cuando el anterior termina bien.
   El repuntuado recorre toda la memoria de la cuenta, no solo el run auditado.
+  Con una etapa marcada repuntua esa, la haya denunciado la auditoria o no,
+  que es la unica forma de aplicar una regla ciega: el repuntuado las aplica
+  aunque la etapa no las guarde y aqui no se puedan ver.
 - **Arreglar pendientes** delega en el runner de cada etapa, que es el unico
   que sabe que estado se puede reintentar y con que fechas. Eso si abre MT5, y
   por eso exige que la cuenta auditada sea la cuenta UBS activa. Cubre los dos
@@ -314,32 +317,59 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin):
         args.extend(self._effective_symbol_suffix_args())
         return args
 
+    def _ubs_auditor_stages_to_rescore(self, audits) -> tuple[list[str], bool]:
+        """Que etapas repuntuar: la que haya marcada, y si no, las que salieron.
+
+        La auditoria no lo ve todo. Cada etapa aplica reglas que no guarda -el
+        Final Tick, tres minimos de operaciones; la robustez, sus retenciones-
+        y el repuntuado si las aplica, asi que moverlas cambia veredictos sin
+        que aqui se encuentre nada. Marcar la etapa es como se pide eso: el
+        repuntuado reescribe el accepted/rejected con las reglas de ahora, lo
+        haya demostrado la auditoria o no.
+        """
+        selected = self._selected_ubs_auditor_stage()
+        if selected and stage_spec(selected).rescore_flag:
+            return [selected], True
+        return list(stages_to_rescore(audits)), False
+
+    def _explain_nothing_to_rescore(self, audits, selected: str) -> None:
+        """Por que la cola salio vacia, y como repuntuar de todos modos."""
+        parts = ["La auditoria no encontro nada que un repuntuado arregle."]
+        repeat = [stage_spec(stage).label for stage in stages_to_repeat(audits)]
+        if repeat:
+            parts.append("Hay que repetir la etapa en: " + ", ".join(repeat) + ".")
+        if selected:
+            parts.append(
+                f"{stage_spec(selected).label} no se puede repuntuar desde SQLite."
+            )
+        else:
+            parts.append(
+                "Las reglas ciegas no se ven desde aqui: si moviste una, marca la "
+                "etapa en la tabla y vuelve a pulsar para repuntuarla igualmente."
+            )
+        messagebox.showinfo("Auditor UBS", "\n\n".join(parts))
+
     def _rescore_ubs_affected_clicked(self) -> None:
         audits = getattr(self, "_ubs_auditor_audits", ())
         if not audits:
             messagebox.showinfo("Auditor UBS", "Audita las reglas antes de repuntuar.")
             return
-        stages = list(stages_to_rescore(audits))
-        blind = [stage_spec(stage).label for stage in stages_to_repeat(audits)]
+        stages, by_hand = self._ubs_auditor_stages_to_rescore(audits)
         if not stages:
-            message = (
-                "Ninguna etapa con reglas movidas o cambiadas se puede repuntuar "
-                "desde SQLite."
-            )
-            if blind:
-                message += "\n\nHay que repetir la etapa en: " + ", ".join(blind)
-            messagebox.showinfo("Auditor UBS", message)
+            self._explain_nothing_to_rescore(audits, self._selected_ubs_auditor_stage())
             return
         labels = [stage_spec(stage).label for stage in stages]
+        repeat = [stage_spec(stage).label for stage in stages_to_repeat(audits)]
         details = [
             f"Cuenta: {self.ubs_auditor_account.get()}",
-            f"Etapas a repuntuar: {', '.join(labels)}",
+            f"Etapas a repuntuar: {', '.join(labels)}"
+            + (" (marcada a mano, la audite o no)" if by_hand else ""),
             "Se reescribe el accepted/rejected de lo ya guardado con las reglas "
             "actuales; no abre MT5.",
             "El repuntuado recorre toda la memoria de la cuenta, no solo el run auditado.",
         ]
-        if blind:
-            details.append("Sin repuntuado (hay que repetir la etapa): " + ", ".join(blind))
+        if repeat:
+            details.append("Sin repuntuado (hay que repetir la etapa): " + ", ".join(repeat))
         if not self._confirm_execution_start(
             "Confirmar repuntuado de afectados", len(stages), details
         ):

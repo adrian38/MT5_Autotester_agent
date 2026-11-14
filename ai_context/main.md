@@ -1723,6 +1723,14 @@ no `--rescore-*-only`.
   with its own `--final-tick-stage` and dates, because each one rescores its
   own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
   they are reported, through `stages_to_repeat()`, as stages to run again.
+  With a stage selected in the table it rescores that one instead, whether or
+  not the audit found anything (`_ubs_auditor_stages_to_rescore()`). That is
+  the only way to apply a blind rule: the rescore *does* apply the three Final
+  Tick minimum-trade limits and the robustness retentions, which the stage does
+  not store and the audit therefore cannot see, so without this the button
+  refused to run over a change that would really have moved verdicts. When
+  nothing is queued, `_explain_nothing_to_rescore()` says what has to be
+  repeated instead and points at the selection.
 - **Arreglar pendientes** — routes the selected stage to its own runner
   (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
   pending runs), which owns the retryable statuses and dates. This opens MT5
