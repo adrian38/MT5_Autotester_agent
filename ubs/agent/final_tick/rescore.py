@@ -218,7 +218,7 @@ def _rescore_final_tick_thresholds(
 
 def _record_rescored_final_tick(
     memory: AgentMemory, candidate_id: int, run_id: int, status: str, ohlc_result,
-    thresholds: argparse.Namespace, ohlc_report: Path, real_tick_report: Path | None,
+    thresholds: argparse.Namespace, ohlc_report: Path | None, real_tick_report: Path | None,
     details: str | None = None, history_quality: float | None = None,
 ) -> None:
     """Guarda el estado repuntuado con los umbrales que lo decidieron."""
@@ -293,9 +293,25 @@ def _rescore_ohlc_result(
     return ohlc_result
 
 
+def _rescored_window(args: argparse.Namespace, row, ohlc_report: Path | None) -> tuple[str, str]:
+    """La ventana sobre la que se juzgo la fila.
+
+    Manda la del reporte, que es la que de verdad corrio; cuando no se puede
+    leer -no existe, o quedo apuntando al disco de otra maquina- queda la que
+    guardo la fila. Si esa tampoco es una ventana, `_demote_if_windowless()` lo
+    vera y devolvera la fila a pendiente.
+    """
+    readable = ohlc_report is not None and ohlc_report.exists()
+    report_from, report_to = _read_ohlc_report_cfg_dates(ohlc_report) if readable else ("", "")
+    return (
+        report_from or str(row["ft_from_date"] or args.from_date or ""),
+        report_to or str(row["ft_to_date"] or args.to_date or ""),
+    )
+
+
 def _demote_if_windowless(
     memory: AgentMemory, candidate_id: int, run_id: int, thresholds,
-    ohlc_report: Path, real_tick_report: Path | None, status_counts: dict[str, int],
+    ohlc_report: Path | None, real_tick_report: Path | None, status_counts: dict[str, int],
 ) -> bool:
     """Devuelve a pendiente la fila cuyo reporte OHLC no trae periodo.
 
@@ -328,17 +344,14 @@ def _rescore_final_tick_row(
     real_tick_report_raw = str(row["ft_real_tick_report_path"] or "").strip()
     ohlc_report = Path(ohlc_report_raw) if ohlc_report_raw else None
     real_tick_report = Path(real_tick_report_raw) if real_tick_report_raw else None
-    if ohlc_report is None or not ohlc_report.exists():
-        return False
-    from_date, to_date = _read_ohlc_report_cfg_dates(ohlc_report)
-    thresholds = _rescore_final_tick_thresholds(
-        args,
-        from_date or str(row["ft_from_date"] or args.from_date or ""),
-        to_date or str(row["ft_to_date"] or args.to_date or ""),
-    )
+    thresholds = _rescore_final_tick_thresholds(args, *_rescored_window(args, row, ohlc_report))
+    # Antes de exigir el reporte: un veredicto sin ventana no vale tenga o no
+    # tenga reporte en disco, y si no lo tiene menos todavia.
     if _demote_if_windowless(memory, candidate_id, run_id, thresholds,
                              ohlc_report, real_tick_report, status_counts):
         return True
+    if ohlc_report is None or not ohlc_report.exists():
+        return False
     original_variant = variant_from_candidate_row(row)
     ohlc_variant = _rescore_stage_variant(original_variant, ohlc_report, "final_tick_ohlc_rescore")
 
