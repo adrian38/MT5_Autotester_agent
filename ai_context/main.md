@@ -1633,6 +1633,28 @@ two are not the same problem. The two cases:
 - **without a verdict** — the row simply has not run. It hangs off the stage as
   a muted child and `Consultar pendientes` is where it belongs.
 
+#### Which button actually fixes each finding
+
+Not every finding is repaired by a rescore, and the screen used to send them
+all to the same button. `RuleSpec.fix` says which: `"rescore"` (re-judge what is
+stored) or `"repeat"` (run the stage again under MT5). `WINDOW_RULES` —
+`from_date`/`to_date`, shared by Final Tick, Robustez and Regresiva — are
+`"repeat"`, because they are not a threshold applied at scoring time but the
+window the backtest ran over, and **no rescore moves them**: Final Tick re-reads
+them from the OHLC report (`_read_ohlc_report_cfg_dates`), the robustness
+rescore does not write those columns at all, and the regression rescore skips
+any row whose stored window differs (`window_mismatch`). Changing the window in
+Configuración does not leave the old rows mis-scored; it leaves them run over
+another window, and only repeating the stage changes that.
+
+`stages_to_rescore()` therefore requires a finding whose `fix` is `"rescore"`
+(or a rescorable declared change), not merely that the stage has a
+`rescore_flag` — otherwise pressing the button ran the whole rescore to leave
+the row exactly as red. `stages_to_repeat()` takes the `"repeat"` ones plus any
+stage with no `rescore_flag` at all. In the table, a finding the button cannot
+fix says `Hay que repetir` in `QUE PASA`, the column a rescorable finding
+leaves blank.
+
 #### Declared rule changes (the stored values cannot show them)
 
 When what changes is the code that applies the thresholds and not the

@@ -14,26 +14,23 @@ sobre ninguna ventana. Se cuenta aparte (`undated`), y si ademas tiene
 veredicto, ese veredicto no vale y la etapa no esta al dia por mucho que sus
 umbrales coincidan.
 
-Un cambio de regla no siempre se ve en lo guardado. Cuando lo que cambia es el
-codigo que aplica los umbrales -y no los umbrales- la fila sigue guardando los
-mismos numeros y la comparacion no encuentra nada, por mucho que el veredicto
-haya nacido con otra regla. Eso se declara a mano: `StageSpec.rules_changed_at`
-lleva el momento desde el que la regla nueva esta en vigor, y toda fila sellada
-antes se cuenta como juzgada con la vieja. El sello es `judged_column`, que ya
-existe en las ocho tablas, asi que el aviso se apaga solo en cuanto la fila se
-vuelve a juzgar; declarar la fecha es el unico paso manual, y va en el mismo
-commit que cambia la regla.
+Un cambio de regla no siempre se ve en lo guardado: cuando lo que cambia es el
+codigo que aplica los umbrales -y no los umbrales- la fila guarda los mismos
+numeros y la comparacion no encuentra nada. Eso se declara a mano en
+`StageSpec.rules_changed_at`, y toda fila sellada antes (`judged_column`) se
+cuenta como juzgada con la vieja, asi que el aviso se apaga solo en cuanto se
+vuelve a juzgar.
 
-Una etapa tampoco esta al dia cuando le faltan filas. Quien pasa de rejected a
-accepted se vuelve elegible para la etapa siguiente, y alli no se queda
-pendiente: no tiene fila ninguna, asi que no sale en ningun recuento de
-estados. `StageSpec.upstream_sql` cuenta esos, los que deberian tener fila y no
-la tienen.
+Una etapa tampoco esta al dia cuando le faltan filas: quien pasa de rejected a
+accepted se vuelve elegible para la siguiente y alli no se queda pendiente, es
+que no tiene fila. `StageSpec.upstream_sql` cuenta esos.
 
-Lo que una etapa no guarda no se puede auditar asi: cada `StageSpec` declara en
-`non_auditable` sus reglas ciegas para que la pantalla lo diga en vez de
-callarlo. Aqui no se decide que estado es final ni que estado es reintentable:
-lo primero lo pasa quien llama, y lo segundo pertenece al runner de cada etapa.
+Nada de esto dice como se arregla, y no todo se arregla igual: cada `RuleSpec`
+y cada cambio declarado llevan su `fix`, y de ahi salen `stages_to_rescore()` y
+`stages_to_repeat()`. Lo que una etapa no guarda no se puede auditar: cada
+`StageSpec` declara en `non_auditable` sus reglas ciegas para que la pantalla
+lo diga en vez de callarlo. Aqui tampoco se decide que estado es final ni cual
+es reintentable: lo primero lo pasa quien llama, lo segundo es del runner.
 
 El catalogo de etapas vive en `ubs/stage_specs.py` y se reexporta desde aqui,
 que es donde lo pide todo el mundo. Aqui quedan las consultas que lo recorren.
@@ -105,6 +102,8 @@ class RuleFinding:
     rows: int
     verdicts: int
     ids: tuple[int, ...] = ()
+    # Lo que hace falta para ponerla al dia, copiado de su `RuleSpec`.
+    fix: str = "rescore"
 
     def stored_summary(self) -> str:
         return ", ".join(f"{value} ({count})" for value, count in self.stored) or "sin dato"
@@ -420,6 +419,7 @@ def _stage_findings(
                 rows=len(ids),
                 verdicts=tally.verdicts.get(rule.key, 0),
                 ids=tuple(ids[:MAX_REPORTED_IDS]),
+                fix=rule.fix,
             )
         )
     return tuple(findings)
@@ -550,22 +550,24 @@ def audit_pending_states(
     return summaries
 
 
-def _stale_rescorable(audit: StageAudit, spec: StageSpec) -> bool:
-    """Si el cambio de regla declarado se arregla repuntuando lo guardado.
+def _needs(audit: StageAudit, spec: StageSpec, fix: str) -> bool:
+    """Si a la etapa le hace falta ese arreglo por algo de lo que encontro.
 
     Manda `stale_verdicts` y no `stale`: lo que no tiene veredicto no hay quien
-    lo repuntue, y encolar la etapa por ello la dejaba en la cola para siempre.
+    lo repuntue ni por que repetirlo, y contarlo la dejaba en cola para siempre.
     """
-    return bool(audit.stale_verdicts) and spec.rules_change_fix == "rescore"
+    if any(finding.fix == fix for finding in audit.findings):
+        return True
+    return bool(audit.stale_verdicts) and spec.rules_change_fix == fix
 
 
 def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
-    """Etapas tocadas y con un repuntuado que las pueda arreglar.
+    """Etapas tocadas y con un repuntuado que de verdad las arregle.
 
-    Tocadas son las de umbrales movidos y las del cambio de regla declarado
-    que se arregla desde SQLite; un cambio marcado `repeat` no entra aqui por
-    mucho repuntuado que tenga la etapa, porque lo que cambio no esta en lo
-    guardado.
+    No basta con que la etapa tenga `rescore_flag`: la ventana movida no la
+    mueve ningun repuntuado, asi que una etapa cuyo unico hallazgo sea una
+    fecha no entra aqui. Antes si entraba, y el boton corria entero para dejar
+    la fila exactamente igual de roja.
 
     Final Tick corto y 6M comparten el flag `--rescore-final-tick-only`, pero
     cada uno repuntua su propia tabla con sus propias fechas y lo que los
@@ -573,28 +575,26 @@ def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     entrara el primero, la tabla 6M se quedaria con las reglas viejas y la
     siguiente auditoria volveria a denunciarla.
     """
-    stages: list[str] = []
-    for audit in audits:
-        spec = stage_spec(audit.stage)
-        if not spec.rescore_flag:
-            continue
-        if audit.findings or _stale_rescorable(audit, spec):
-            stages.append(audit.stage)
-    return tuple(stages)
+    return tuple(
+        audit.stage
+        for audit in audits
+        if stage_spec(audit.stage).rescore_flag
+        and _needs(audit, stage_spec(audit.stage), "rescore")
+    )
 
 
 def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
-    """Etapas tocadas que ningun repuntuado arregla: hay que repetirlas.
+    """Etapas que ningun repuntuado pone al dia: hay que repetirlas con MT5.
 
-    Son las dos caras de lo mismo: una etapa sin `rescore_flag` cuyos umbrales
-    se movieron, y una cuyo cambio de regla declarado se marco `repeat` porque
-    lo que cambio no se puede recalcular desde lo guardado.
+    Tres caras de lo mismo: la ventana movida, el cambio de regla declarado que
+    no se recalcula desde lo guardado, y la etapa sin `rescore_flag` -las dos
+    Seeds Final Tick- a la que cualquier hallazgo le obliga a repetir.
     """
     stages: list[str] = []
     for audit in audits:
         spec = stage_spec(audit.stage)
-        if audit.findings and not spec.rescore_flag:
+        if _needs(audit, spec, "repeat"):
             stages.append(audit.stage)
-        elif audit.stale_verdicts and spec.rules_change_fix == "repeat":
+        elif not spec.rescore_flag and (audit.findings or audit.stale_verdicts):
             stages.append(audit.stage)
     return tuple(stages)

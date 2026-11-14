@@ -26,6 +26,22 @@ class RuleSpec:
     kind: str = "number"
     column: str = ""
     score_field: str = ""
+    # Que hace falta para ponerla al dia: volver a puntuar lo guardado
+    # ("rescore") o repetir la etapa con MT5 ("repeat"), cuando lo que la regla
+    # describe no es como se juzgo sino con que se produjo.
+    fix: str = "rescore"
+
+
+# Las fechas no son un umbral que se aplique al puntuar: son la ventana sobre
+# la que corrio el backtest, y ningun repuntuado las mueve. Final Tick las
+# relee del reporte OHLC (`_read_ohlc_report_cfg_dates`), robustez no las
+# reescribe, y la regresiva se salta la fila cuya ventana no coincide. Cambiar
+# la ventana en Configuracion no deja las filas viejas mal puntuadas: las deja
+# corridas sobre otra ventana, y eso solo lo arregla repetir la etapa.
+WINDOW_RULES: tuple[RuleSpec, ...] = (
+    RuleSpec("from_date", "Desde", kind="date", column="from_date", fix="repeat"),
+    RuleSpec("to_date", "Hasta", kind="date", column="to_date", fix="repeat"),
+)
 
 
 @dataclass(frozen=True)
@@ -78,8 +94,7 @@ FINAL_TICK_RULES: tuple[RuleSpec, ...] = (
     RuleSpec("max_dd_delta_pct", "Delta DD %", column="max_dd_delta_pct"),
     RuleSpec("max_trades_delta_pct", "Delta trades %", column="max_trades_delta_pct"),
     RuleSpec("max_dd_gap_pp", "Banda DD pp", column="max_dd_gap_pp"),
-    RuleSpec("from_date", "Desde", kind="date", column="from_date"),
-    RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
+    *WINDOW_RULES,
 )
 
 # Minimos de operaciones que el Final Tick aplica pero no guarda en su fila:
@@ -223,8 +238,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
             *SCORE_RULES,
             RuleSpec("positive_bonus", "Bonus positivo", column="positive_bonus"),
             RuleSpec("negative_bonus", "Bonus negativo", column="negative_bonus"),
-            RuleSpec("from_date", "Desde", kind="date", column="from_date"),
-            RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
+            *WINDOW_RULES,
         ),
         run_column="run_id",
         metrics_column="metrics_json",
@@ -266,8 +280,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         rules=(
             RuleSpec("positive_points", "Puntos OK", column="positive_points"),
             RuleSpec("negative_points", "Puntos FAIL", column="negative_points"),
-            RuleSpec("from_date", "Desde", kind="date", column="from_date"),
-            RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
+            *WINDOW_RULES,
         ),
         run_column="run_id",
         rescore_flag="--rescore-regression-only",

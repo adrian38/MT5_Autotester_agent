@@ -368,6 +368,19 @@ class RuleGroupTests(unittest.TestCase):
         self.assertEqual(values[4], "0 de 10 candidatos")
         self.assertEqual(children[0][1], "pending")
 
+    def test_a_finding_the_button_cannot_fix_says_so(self) -> None:
+        """La ventana movida no se repuntua: la fila corrio sobre otras fechas."""
+        window = SimpleNamespace(
+            rule="from_date", rule_label="Desde", current="2025.06.30",
+            stored=(("2026.01.01", 2396),), rows=2404, verdicts=2404, fix="repeat",
+        )
+        _stage, _label, _values, _tag, children = _rule_group(
+            _audit_row(findings=(window,), affected=2404, affected_verdicts=2404)
+        )
+
+        self.assertEqual(children[0][0][0], "Hay que repetir")
+        self.assertEqual(children[0][0][1], "Desde")
+
     def test_the_invalid_dates_name_themselves_with_their_counts(self) -> None:
         _stage, _label, _values, _tag, children = _rule_group(
             _audit_row(undated=3, undated_verdicts=1,

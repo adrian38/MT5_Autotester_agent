@@ -201,9 +201,12 @@ def _rule_children(audit) -> tuple:
     children: list[tuple] = []
     for finding in audit.findings:
         # El hijo no repite «Regla movida»: la columna REGLA ya dice cual es,
-        # y la palabra sobraba en todas y cada una de ellas.
+        # y la palabra sobraba en todas y cada una de ellas. La columna se gana
+        # cuando el hallazgo no lo arregla el boton: la ventana movida dice que
+        # la fila corrio sobre otras fechas, y eso se repite, no se repuntua.
         children.append(((
-            "", finding.rule_label, finding.current, _stored_cell(finding),
+            "" if finding.fix == "rescore" else "Hay que repetir",
+            finding.rule_label, finding.current, _stored_cell(finding),
             _of_total(finding.rows, audit.rows, audit.stage),
             str(finding.verdicts),
         ), "rejected"))
