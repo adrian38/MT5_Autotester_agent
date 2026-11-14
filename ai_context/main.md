@@ -1593,8 +1593,16 @@ means one thing on every row:
 | `item` | `REGLA`: the moved rule's label | hidden |
 | `current` | `AHORA`: what Configuración holds | hidden |
 | `stored` | `SE JUZGO CON`: stored values with their counts | `EN QUE ESTADO SE QUEDARON`: statuses with their counts |
-| `affected` | `A CUANTOS AFECTA` | `CUANTOS FALTAN` |
-| `judged` | `YA JUZGADOS`: of those affected, how many carry a verdict | hidden |
+| `affected` | `A CUANTOS AFECTA`: how many **verdicts** | `CUANTOS FALTAN` |
+
+Everything the rules query counts is verdicts, because a verdict is the only
+thing a rule can have bent and the only thing a rescore can straighten: a
+pending row stores the old value like any other, but nothing re-scores it and
+when it runs it runs under today's rule. Counting rows instead gave a child
+reading "303 de 303" under a stage reading "207 de 303", and a `YA JUZGADOS`
+column that, once this was fixed, repeated the same number — so that column is
+gone. A finding, a declared change or an invalid date that reaches no verdict
+still hangs off the stage, muted, and leaves it green.
 
 `_of_total()` writes the count and what it is measured against in one cell —
 "2 de 3798 candidatos", from `StageSpec.unit` — because the affected count and

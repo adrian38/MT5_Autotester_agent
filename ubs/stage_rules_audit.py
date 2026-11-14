@@ -493,12 +493,13 @@ def audit_pending_states(
 
 
 def _needs(audit: StageAudit, spec: StageSpec, fix: str) -> bool:
-    """Si a la etapa le hace falta ese arreglo por algo de lo que encontro.
+    """Si a la etapa le hace falta ese arreglo por un veredicto que encontro.
 
-    Manda `stale_verdicts` y no `stale`: lo que no tiene veredicto no hay quien
-    lo repuntue ni por que repetirlo, y contarlo la dejaba en cola para siempre.
+    Siempre veredictos: lo que sigue pendiente no hay quien lo repuntue ni por
+    que repetirlo -cuando corra, correra con la regla de ahora-, y contarlo
+    dejaba la etapa en cola para siempre.
     """
-    if any(finding.fix == fix for finding in audit.findings):
+    if any(finding.fix == fix and finding.verdicts for finding in audit.findings):
         return True
     return bool(audit.stale_verdicts) and spec.rules_change_fix == fix
 
@@ -538,6 +539,8 @@ def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
         spec = stage_spec(audit.stage)
         if _needs(audit, spec, "repeat") or audit.undated_verdicts:
             stages.append(audit.stage)
-        elif not spec.rescore_flag and (audit.findings or audit.stale_verdicts):
+        elif not spec.rescore_flag and (
+            any(finding.verdicts for finding in audit.findings) or audit.stale_verdicts
+        ):
             stages.append(audit.stage)
     return tuple(stages)

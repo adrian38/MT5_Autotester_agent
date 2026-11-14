@@ -31,14 +31,18 @@ from tkinter import ttk
 # donde cayera.
 AUDITOR_TEXT_WRAPLENGTH = 900
 AUDITOR_STAGE_COLUMN_WIDTH = 140
-AUDITOR_COLUMNS = ("kind", "item", "current", "stored", "affected", "judged")
+# No hay columna de «ya juzgados» porque seria la misma cifra: el repuntuado
+# solo puede cambiar un veredicto, asi que una fila pendiente no esta afectada
+# por mucho que guarde el valor viejo -cuando corra, correra con la regla de
+# ahora-. «A CUANTOS AFECTA» cuenta veredictos, y el total que lleva al lado
+# dice contra que etapa se mide.
+AUDITOR_COLUMNS = ("kind", "item", "current", "stored", "affected")
 AUDITOR_RULE_LAYOUT = (
-    ("kind", "QUE PASA", 110, False),
-    ("item", "REGLA", 130, False),
-    ("current", "AHORA", 85, False),
-    ("stored", "SE JUZGO CON", 180, True),
-    ("affected", "A CUANTOS AFECTA", 165, False),
-    ("judged", "YA JUZGADOS", 100, False),
+    ("kind", "QUE PASA", 120, False),
+    ("item", "REGLA", 140, False),
+    ("current", "AHORA", 90, False),
+    ("stored", "SE JUZGO CON", 220, True),
+    ("affected", "A CUANTOS AFECTA", 180, False),
 )
 AUDITOR_PENDING_LAYOUT = (
     ("kind", "QUE PASA", 150, False),
@@ -74,8 +78,8 @@ class UBSAuditorViewMixin:
                 "etapa cuya regla cambio sin mover un umbral; Consultar pendientes "
                 "lista los que se quedaron a medias y los que, por haberse vuelto "
                 "elegibles al repuntuar, no tienen fila todavia. «A cuantos afecta» "
-                "son los que se juzgaron con otra regla, y «Ya juzgados», cuantos de "
-                "ellos tienen veredicto: solo esos pueden cambiar al repuntuar."
+                "cuenta veredictos, que es lo unico que el repuntuado puede cambiar: "
+                "lo que sigue pendiente se juzgara con la regla de ahora al correr."
             ),
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],

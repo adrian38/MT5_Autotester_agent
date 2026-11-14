@@ -91,6 +91,15 @@ def _values_cell(values) -> str:
     return f"{summary} +{rest} mas" if rest > 0 else summary
 
 
+def _moved_verdicts(audit) -> int:
+    """Reglas movidas que llegaron a torcer un veredicto.
+
+    Una regla movida que solo alcanza a filas pendientes no ha torcido nada:
+    esas filas se juzgaran con el valor de ahora en cuanto corran.
+    """
+    return sum(1 for finding in audit.findings if finding.verdicts)
+
+
 def _stage_headline(audit) -> str:
     """Veredicto de la etapa, que es lo que se lee sin desplegarla.
 
@@ -104,7 +113,7 @@ def _stage_headline(audit) -> str:
     se explican. Lo unico que la cabecera tiene que hacer bien es no decir «Al
     dia».
     """
-    count = len(audit.findings)
+    count = _moved_verdicts(audit)
     if count:
         return "1 regla movida" if count == 1 else f"{count} reglas movidas"
     if audit.stale_verdicts:
@@ -115,31 +124,33 @@ def _stage_headline(audit) -> str:
     return "Al dia"
 
 
-def _rules_status_line(audits, moved: int, scope: str) -> str:
+def _rules_status_line(audits, scope: str) -> str:
     """Resumen de una linea de la auditoria de reglas.
 
     Las tres cosas que puede encontrar son independientes y se dicen por
     separado: un umbral movido, una regla que cambio sin mover un umbral, y una
     fila juzgada sobre una ventana que no existe. Mezclarlas en una sola frase
-    hacia que arreglar una pareciera arreglarlas todas, y solo el repuntuado
-    arregla las dos primeras.
+    hacia que arreglar una pareciera arreglarlas todas.
+
+    Todo lo que cuenta son veredictos, que es lo unico que se puede torcer y lo
+    unico que un repuntuado puede enderezar.
     """
+    moved = sum(_moved_verdicts(audit) for audit in audits)
     changed = sum(1 for audit in audits if audit.stale_verdicts)
     parts: list[str] = []
     if moved:
-        stages = sum(1 for audit in audits if audit.findings)
+        stages = sum(1 for audit in audits if _moved_verdicts(audit))
         parts.append(f"{stages} etapa(s) con {moved} regla(s) movida(s)")
     if changed:
         rows = sum(audit.stale_verdicts for audit in audits)
-        parts.append(f"{changed} etapa(s) con la regla cambiada ({rows} fila(s))")
+        parts.append(f"{changed} etapa(s) con la regla cambiada ({rows} veredicto(s))")
     if not parts:
-        head = f"{scope}: ninguna etapa se juzgo con otras reglas."
+        head = f"{scope}: ningun veredicto se dio con otras reglas."
     else:
-        affected = sum(audit.affected for audit in audits)
-        judged = sum(audit.affected_verdicts for audit in audits)
+        affected = sum(audit.affected_verdicts for audit in audits)
         head = (
-            f"{scope}: {'; '.join(parts)}. Afecta a {affected} semilla(s)/candidato(s) "
-            f"sumando etapas, {judged} de ellos ya juzgados."
+            f"{scope}: {'; '.join(parts)}. Afecta a {affected} veredicto(s) de "
+            "semilla o candidato, sumando etapas."
         )
     return head + _repeat_tail(audits)
 
@@ -161,10 +172,9 @@ def _repeat_tail(audits) -> str:
             "la etapa."
         )
     if undated:
-        tail += (
-            f" Ademas, {undated} se juzgaron sin una fecha valida: repite su "
-            "etapa, el repuntuado no los arregla."
-        )
+        # La lista de arriba ya dijo que repetir; esto dice por que entro uno
+        # de ellos, que no se ve mirando los umbrales.
+        tail += f" De esos, {undated} se juzgaron sin una ventana que existiera."
     return tail
 
 
@@ -198,7 +208,13 @@ def _pending_status_line(pending: int, missing: int, scope: str) -> str:
 
 
 def _rule_children(audit) -> tuple:
-    """El detalle que cuelga de una etapa en la auditoria de reglas."""
+    """El detalle que cuelga de una etapa en la auditoria de reglas.
+
+    Todas las cuentas son de veredictos. Una fila pendiente guarda el valor
+    viejo igual que las demas, pero el repuntuado no la toca -no hay nada que
+    volver a puntuar- y cuando corra lo hara con la regla de ahora: contarla
+    daba una hija diciendo «303 de 303» bajo una etapa que decia «207 de 303».
+    """
     children: list[tuple] = []
     for finding in audit.findings:
         # El hijo no repite «Regla movida»: la columna REGLA ya dice cual es,
@@ -208,31 +224,26 @@ def _rule_children(audit) -> tuple:
         children.append(((
             "" if finding.fix == "rescore" else "Hay que repetir",
             finding.rule_label, finding.current, _stored_cell(finding),
-            _of_total(finding.rows, audit.rows, audit.stage),
-            str(finding.verdicts),
-        ), "rejected"))
+            _of_total(finding.verdicts, audit.rows, audit.stage),
+        ), "rejected" if finding.verdicts else "pending"))
     if audit.stale:
         # No hay regla que senalar: lo que cambio fue como se aplican todas,
-        # asi que la fila habla de la etapa entera. Rojo solo si alguna llego a
-        # veredicto: las demas se juzgaran con la regla de ahora en cuanto
-        # corran, y de eso ya habla Consultar pendientes.
+        # asi que la fila habla de la etapa entera.
         spec = stage_spec(audit.stage)
         children.append(((
             "Regla cambiada", "(toda la etapa)", "",
             f"{spec.rules_change_note} ({spec.rules_changed_at[:10]})",
-            _of_total(audit.stale, audit.rows, audit.stage),
-            str(audit.stale_verdicts),
+            _of_total(audit.stale_verdicts, audit.rows, audit.stage),
         ), "rejected" if audit.stale_verdicts else "pending"))
     if audit.undated:
         children.append(((
             "Sin fecha valida", "", "", _values_cell(audit.undated_stored),
-            _of_total(audit.undated, audit.rows, audit.stage),
-            str(audit.undated_verdicts),
+            _of_total(audit.undated_verdicts, audit.rows, audit.stage),
         ), "rejected" if audit.undated_verdicts else "pending"))
     if audit.unknown:
         children.append(((
             "Sin saber", "", "", "(no lo guardaron)",
-            _of_total(audit.unknown, audit.rows, audit.stage), "",
+            _of_total(0, audit.rows, audit.stage),
         ), "pending"))
     return tuple(children)
 
@@ -241,13 +252,12 @@ def _rule_group(audit) -> tuple:
     """Una etapa de la auditoria de reglas: su resumen y lo que cuelga de el."""
     if audit.missing_table:
         return (audit.stage, audit.stage_label, (
-            "Sin tabla", "", "", "la memoria no tiene su tabla", "", "",
+            "Sin tabla", "", "", "la memoria no tiene su tabla", "",
         ), "pending", ())
-    broken = audit.findings or audit.stale_verdicts or audit.undated_verdicts
+    broken = _moved_verdicts(audit) or audit.stale_verdicts or audit.undated_verdicts
     return (audit.stage, audit.stage_label, (
         _stage_headline(audit), "", "", "",
-        _of_total(audit.affected, audit.rows, audit.stage),
-        str(audit.affected_verdicts),
+        _of_total(audit.affected_verdicts, audit.rows, audit.stage),
     ), "rejected" if broken else "accepted", _rule_children(audit))
 
 
@@ -255,7 +265,7 @@ def _pending_group(summary) -> tuple:
     """Una etapa de la consulta de pendientes, con sus dos huecos separados."""
     if summary.missing_table:
         return (summary.stage, summary.stage_label, (
-            "Sin tabla", "", "", "la memoria no tiene su tabla", "", "",
+            "Sin tabla", "", "", "la memoria no tiene su tabla", "",
         ), "pending", ())
     # Los que nunca llegaron a tener fila cuentan para el tamano de la etapa:
     # son parte de lo que deberia estar juzgado, y sin ellos el «de cuantos» se
@@ -263,7 +273,7 @@ def _pending_group(summary) -> tuple:
     total = summary.rows + summary.missing
     if not summary.pending and not summary.missing:
         return (summary.stage, summary.stage_label, (
-            "Al dia", "", "", "", _of_total(0, total, summary.stage), "",
+            "Al dia", "", "", "", _of_total(0, total, summary.stage),
         ), "accepted", ())
     children: list[tuple] = []
     if summary.pending:
@@ -272,16 +282,16 @@ def _pending_group(summary) -> tuple:
         detail = ", ".join(f"{status} ({count})" for status, count in summary.by_status)
         children.append(((
             "Se quedaron a medias", "", "", detail,
-            _of_total(summary.pending, total, summary.stage), "",
+            _of_total(summary.pending, total, summary.stage),
         ), "rejected"))
     if summary.missing:
         children.append(((
             "Sin fila todavia", "", "", "(elegibles que no han corrido)",
-            _of_total(summary.missing, total, summary.stage), "",
+            _of_total(summary.missing, total, summary.stage),
         ), "rejected"))
     return (summary.stage, summary.stage_label, (
         _pending_headline(summary), "", "", "",
-        _of_total(summary.pending + summary.missing, total, summary.stage), "",
+        _of_total(summary.pending + summary.missing, total, summary.stage),
     ), "rejected", tuple(children))
 
 
@@ -324,13 +334,12 @@ class UBSAuditorQueriesMixin:
             conn.close()
 
         self._ubs_auditor_audits = tuple(audits)
-        moved = sum(len(audit.findings) for audit in audits)
         self._populate_ubs_auditor_rows(
             [_rule_group(audit) for audit in audits], AUDITOR_RULE_LAYOUT
         )
         self.ubs_auditor_blind_rules.set(_blind_rules_note())
         self.ubs_auditor_status.set(
-            _rules_status_line(audits, moved, self._ubs_auditor_scope_label())
+            _rules_status_line(audits, self._ubs_auditor_scope_label())
         )
 
     def _audit_ubs_pending_states_clicked(self) -> None:

@@ -223,7 +223,7 @@ class StagesToRescoreTests(unittest.TestCase):
     def test_without_a_mark_the_audit_narrows_it_down(self) -> None:
         harness = self._harness("")
         audit = SimpleNamespace(
-            stage="robustness", findings=(SimpleNamespace(fix="rescore"),),
+            stage="robustness", findings=(_finding(fix="rescore", verdicts=4),),
             stale_verdicts=0, undated_verdicts=0,
         )
 
@@ -310,9 +310,9 @@ class StageHeadlineTests(unittest.TestCase):
     """Lo que se lee de una etapa sin desplegarla."""
 
     @staticmethod
-    def _audit(*, findings=(), undated=0, undated_verdicts=0, stale=0, stale_verdicts=None):
+    def _audit(*, moved=0, undated=0, undated_verdicts=0, stale=0, stale_verdicts=None):
         return SimpleNamespace(
-            findings=findings,
+            findings=tuple(_finding(verdicts=1) for _ in range(moved)),
             undated=undated,
             undated_verdicts=undated_verdicts,
             stale=stale,
@@ -320,8 +320,15 @@ class StageHeadlineTests(unittest.TestCase):
         )
 
     def test_moved_rules_win_the_headline(self) -> None:
-        self.assertEqual(_stage_headline(self._audit(findings=("a", "b"))), "2 reglas movidas")
-        self.assertEqual(_stage_headline(self._audit(findings=("a",))), "1 regla movida")
+        self.assertEqual(_stage_headline(self._audit(moved=2)), "2 reglas movidas")
+        self.assertEqual(_stage_headline(self._audit(moved=1)), "1 regla movida")
+
+    def test_a_moved_rule_nobody_judged_is_not_a_moved_rule_yet(self) -> None:
+        """Alcanza solo a pendientes: se juzgaran con el valor de ahora."""
+        audit = self._audit()
+        audit.findings = (_finding(verdicts=0),)
+
+        self.assertEqual(_stage_headline(audit), "Al dia")
 
     def test_a_changed_rule_also_takes_the_stage_out_of_date(self) -> None:
         """Sin un umbral movido, la etapa sigue sin estar al dia."""
@@ -333,7 +340,7 @@ class StageHeadlineTests(unittest.TestCase):
         self.assertEqual(_stage_headline(audit), "Al dia")
 
     def test_a_moved_rule_is_more_concrete_than_a_changed_one(self) -> None:
-        audit = self._audit(findings=("a",), stale=12)
+        audit = self._audit(moved=1, stale=12)
 
         self.assertEqual(_stage_headline(audit), "1 regla movida")
 
@@ -349,6 +356,16 @@ class StageHeadlineTests(unittest.TestCase):
 
     def test_nothing_wrong_reads_as_up_to_date(self) -> None:
         self.assertEqual(_stage_headline(self._audit()), "Al dia")
+
+
+def _finding(**overrides):
+    """Un hallazgo de pega: una regla movida con sus filas y sus veredictos."""
+    values = {
+        "rule": "max_pf_delta_pct", "rule_label": "Delta PF %", "current": "30",
+        "stored": (("35", 4),), "rows": 4, "verdicts": 4, "fix": "rescore",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def _audit_row(**overrides):
@@ -394,7 +411,7 @@ class RuleGroupTests(unittest.TestCase):
 
         self.assertEqual(tag, "rejected")
         self.assertEqual(values[0], "Regla cambiada")
-        self.assertEqual(values[4], "4 de 10 candidatos")
+        self.assertEqual(values[4], "3 de 10 candidatos")
         self.assertEqual(len(children), 1)
         child_values, child_tag = children[0]
         self.assertEqual(child_tag, "rejected")
@@ -405,7 +422,6 @@ class RuleGroupTests(unittest.TestCase):
         self.assertIn(spec.rules_change_note, child_values[3])
         self.assertIn(spec.rules_changed_at[:10], child_values[3])
         self.assertNotIn(spec.rules_changed_at[10:], child_values[3])
-        self.assertEqual(child_values[5], "3")
 
     def test_a_changed_rule_nobody_judged_hangs_muted(self) -> None:
         """Lo que no tiene veredicto no arrastra: se dice, pero no en rojo."""
@@ -485,23 +501,20 @@ class PendingGroupTests(unittest.TestCase):
 class StatusLineTests(unittest.TestCase):
     def test_a_changed_rule_is_said_apart_from_a_moved_one(self) -> None:
         line = _rules_status_line(
-            (_audit_row(stale=4, stale_verdicts=3, affected=4, affected_verdicts=3),),
-            0,
+            (_audit_row(stale=4, stale_verdicts=3, affected_verdicts=3),),
             "ICTRADING/REAL | run #7",
         )
 
-        # Cuenta las juzgadas: son las unicas que el repuntuado puede cambiar.
-        self.assertIn("1 etapa(s) con la regla cambiada (3 fila(s))", line)
+        # Cuenta veredictos: son los unicos que el repuntuado puede cambiar.
+        self.assertIn("1 etapa(s) con la regla cambiada (3 veredicto(s))", line)
         self.assertNotIn("regla(s) movida(s)", line)
-        self.assertIn("3 de ellos ya juzgados", line)
+        self.assertIn("Afecta a 3 veredicto(s)", line)
 
     def test_what_the_rescore_cannot_reach_is_said_in_the_same_line(self) -> None:
         """Lo que sigue rojo despues de repuntuar tiene que explicarse solo."""
         line = _rules_status_line(
             (_audit_row(stage="seed_final_tick", stage_label="Seeds Final Tick",
-                        stale=303, stale_verdicts=207, affected=207,
-                        affected_verdicts=207),),
-            0,
+                        stale=303, stale_verdicts=207, affected_verdicts=207),),
             "ICTRADING/STANDARD | toda la memoria",
         )
 
@@ -509,9 +522,9 @@ class StatusLineTests(unittest.TestCase):
         self.assertIn("hay que repetir la etapa", line)
 
     def test_nothing_found_says_so(self) -> None:
-        line = _rules_status_line((_audit_row(),), 0, "ICTRADING/REAL | run #7")
+        line = _rules_status_line((_audit_row(),), "ICTRADING/REAL | run #7")
 
-        self.assertIn("ninguna etapa se juzgo con otras reglas", line)
+        self.assertIn("ningun veredicto se dio con otras reglas", line)
 
 
 class TableLayoutTests(unittest.TestCase):
