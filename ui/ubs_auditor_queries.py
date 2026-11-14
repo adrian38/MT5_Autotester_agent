@@ -20,6 +20,7 @@ from ubs.stage_rules_audit import (
     audit_pending_states,
     audit_stage_rules,
     stage_spec,
+    stages_to_repeat,
 )
 from ui.ubs_auditor_view import AUDITOR_PENDING_LAYOUT, AUDITOR_RULE_LAYOUT
 from ui.ubs_search_audit_base import AUDIT_FINAL_STATUSES
@@ -73,8 +74,18 @@ def _stored_cell(finding) -> str:
     Van ordenados por cuantos arrastra cada uno, asi que los dos primeros son
     los que explican casi todo y el resto se cuenta.
     """
-    shown = finding.stored[:MAX_STORED_VALUES_SHOWN]
-    rest = len(finding.stored) - len(shown)
+    return _values_cell(finding.stored)
+
+
+def _values_cell(values) -> str:
+    """«valor (cuantos)», recortado, para cualquier celda de la columna ancha.
+
+    Lo comparten los umbrales movidos y las fechas que no son fechas: las dos
+    responden a «se juzgo con», y la segunda decia «(vacia o 1970.01.01)», una
+    adivinanza de las dos que podia ser, cuando el dato estaba en la fila.
+    """
+    shown = tuple(values)[:MAX_STORED_VALUES_SHOWN]
+    rest = len(values) - len(shown)
     summary = ", ".join(f"{value} ({count})" for value, count in shown) or "sin dato"
     return f"{summary} +{rest} mas" if rest > 0 else summary
 
@@ -95,7 +106,7 @@ def _stage_headline(audit) -> str:
     count = len(audit.findings)
     if count:
         return "1 regla movida" if count == 1 else f"{count} reglas movidas"
-    if audit.stale:
+    if audit.stale_verdicts:
         return "Regla cambiada"
     broken = audit.undated_verdicts
     if broken:
@@ -112,14 +123,13 @@ def _rules_status_line(audits, moved: int, scope: str) -> str:
     hacia que arreglar una pareciera arreglarlas todas, y solo el repuntuado
     arregla las dos primeras.
     """
-    changed = sum(1 for audit in audits if audit.stale)
-    undated = sum(audit.undated_verdicts for audit in audits)
+    changed = sum(1 for audit in audits if audit.stale_verdicts)
     parts: list[str] = []
     if moved:
         stages = sum(1 for audit in audits if audit.findings)
         parts.append(f"{stages} etapa(s) con {moved} regla(s) movida(s)")
     if changed:
-        rows = sum(audit.stale for audit in audits)
+        rows = sum(audit.stale_verdicts for audit in audits)
         parts.append(f"{changed} etapa(s) con la regla cambiada ({rows} fila(s))")
     if not parts:
         head = f"{scope}: ninguna etapa se juzgo con otras reglas."
@@ -130,14 +140,31 @@ def _rules_status_line(audits, moved: int, scope: str) -> str:
             f"{scope}: {'; '.join(parts)}. Afecta a {affected} semilla(s)/candidato(s) "
             f"sumando etapas, {judged} de ellos ya juzgados."
         )
-    if not undated:
-        return head
-    # La coletilla va suelta porque una etapa puede tener los umbrales de hoy y
-    # aun asi filas juzgadas sobre una ventana imposible.
-    return (
-        f"{head} Ademas, {undated} se juzgaron sin una fecha valida: repite su "
-        "etapa, el repuntuado no los arregla."
-    )
+    return head + _repeat_tail(audits)
+
+
+def _repeat_tail(audits) -> str:
+    """Lo que el repuntuado no arregla, dicho en la misma linea.
+
+    Son las dos unicas cosas que siguen rojas despues de pulsar Repuntuar
+    afectados, y sin decirlo la pantalla parecia no haberse enterado: la etapa
+    sin repuntuado, que hay que repetir entera, y la fila juzgada sobre una
+    ventana imposible, cuyo reporte guardado es la parte rota.
+    """
+    repeat = [stage_spec(stage).label for stage in stages_to_repeat(audits)]
+    undated = sum(audit.undated_verdicts for audit in audits)
+    tail = ""
+    if repeat:
+        tail += (
+            " El repuntuado no llega a " + ", ".join(repeat) + ": hay que repetir "
+            "la etapa."
+        )
+    if undated:
+        tail += (
+            f" Ademas, {undated} se juzgaron sin una fecha valida: repite su "
+            "etapa, el repuntuado no los arregla."
+        )
+    return tail
 
 
 def _pending_headline(summary) -> str:
@@ -182,19 +209,19 @@ def _rule_children(audit) -> tuple:
         ), "rejected"))
     if audit.stale:
         # No hay regla que senalar: lo que cambio fue como se aplican todas,
-        # asi que la fila habla de la etapa entera.
+        # asi que la fila habla de la etapa entera. Rojo solo si alguna llego a
+        # veredicto: las demas se juzgaran con la regla de ahora en cuanto
+        # corran, y de eso ya habla Consultar pendientes.
         spec = stage_spec(audit.stage)
         children.append(((
             "Regla cambiada", "(toda la etapa)", "",
             f"{spec.rules_change_note} ({spec.rules_changed_at[:10]})",
             _of_total(audit.stale, audit.rows, audit.stage),
             str(audit.stale_verdicts),
-        ), "rejected"))
+        ), "rejected" if audit.stale_verdicts else "pending"))
     if audit.undated:
-        # Rojo solo si alguna llego a veredicto: las demas es que aun no han
-        # corrido, y de eso ya habla Consultar pendientes.
         children.append(((
-            "Sin fecha valida", "", "", "(vacia o 1970.01.01)",
+            "Sin fecha valida", "", "", _values_cell(audit.undated_stored),
             _of_total(audit.undated, audit.rows, audit.stage),
             str(audit.undated_verdicts),
         ), "rejected" if audit.undated_verdicts else "pending"))
@@ -212,7 +239,7 @@ def _rule_group(audit) -> tuple:
         return (audit.stage, audit.stage_label, (
             "Sin tabla", "", "", "la memoria no tiene su tabla", "", "",
         ), "pending", ())
-    broken = audit.findings or audit.stale or audit.undated_verdicts
+    broken = audit.findings or audit.stale_verdicts or audit.undated_verdicts
     return (audit.stage, audit.stage_label, (
         _stage_headline(audit), "", "", "",
         _of_total(audit.affected, audit.rows, audit.stage),

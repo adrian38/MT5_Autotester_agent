@@ -186,6 +186,30 @@ class StageRulesAuditTests(unittest.TestCase):
         self.assertEqual(audit.undated, 1)
         self.assertEqual(audit.undated_verdicts, 0)
 
+    def test_the_invalid_dates_say_which_one_they_were(self) -> None:
+        """«vacia o 1970.01.01» era una adivinanza: el dato esta en la fila."""
+        conn = memory()
+        insert_final_tick(
+            conn, 1, run_id=7, status="rejected",
+            from_date="1970.01.01", to_date="1970.01.01",
+        )
+        insert_final_tick(conn, 2, run_id=7, status="pending", from_date="", to_date="")
+        # Una misma fila puede traer las dos: la vacia en una fecha y el cero
+        # en la otra, y entonces cuenta una vez en cada valor.
+        insert_final_tick(conn, 3, run_id=7, status="pending", from_date="", to_date="1970.01.01")
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        # Cada valor cuenta las filas a las que alcanza, no las celdas: la
+        # fila 1 trae el cero de MT5 en sus dos fechas y cuenta una vez.
+        self.assertEqual(audit.undated, 3)
+        self.assertEqual(audit.undated_stored, (("(vacio)", 2), ("1970.01.01", 2)))
+
     def test_a_real_date_move_is_still_reported(self) -> None:
         conn = memory()
         insert_final_tick(
@@ -338,10 +362,32 @@ class StageRulesAuditTests(unittest.TestCase):
         self.assertEqual(audit.findings, ())
         self.assertEqual(audit.stale, 2)
         self.assertEqual(audit.stale_verdicts, 1)
-        # Afectados y juzgados cuentan lo mismo que con un umbral movido: la
-        # pantalla pregunta a cuantos arrastra, no de que clase es el cambio.
-        self.assertEqual(audit.affected, 2)
+        # Arrastra solo la que tiene veredicto: la pendiente se juzgara con la
+        # regla de ahora en cuanto corra, y el repuntuado ni la mira.
+        self.assertEqual(audit.affected, 1)
         self.assertEqual(audit.affected_verdicts, 1)
+
+    def test_a_stale_row_without_a_verdict_leaves_the_stage_up_to_date(self) -> None:
+        """Un repuntuado no toca lo que no tiene veredicto: no hay que puntuar.
+
+        Contarlo dejaba la etapa en rojo despues de repuntuar, y por mucho que
+        se repitiera: la fila sigue pendiente y su sello sigue siendo viejo.
+        """
+        before, _after = before_and_after("final_tick")
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at=before)
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual(audit.stale, 1)
+        self.assertEqual(audit.stale_verdicts, 0)
+        self.assertEqual(audit.affected, 0)
+        self.assertEqual(stages_to_rescore((audit,)), ())
 
     def test_a_row_that_has_not_run_did_not_meet_the_old_rule(self) -> None:
         """Sin sello la fila no se ha juzgado, y correra con la regla de hoy."""
@@ -357,21 +403,6 @@ class StageRulesAuditTests(unittest.TestCase):
 
         self.assertEqual(audit.stale, 0)
         self.assertEqual(audit.affected, 0)
-
-    def test_a_rescored_row_stops_being_stale(self) -> None:
-        """El aviso se apaga solo: repuntuar reescribe el sello."""
-        _before, after = before_and_after("final_tick")
-        conn = memory()
-        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=after)
-
-        audit = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )[0]
-
-        self.assertEqual(audit.stale, 0)
 
     def test_missing_table_is_flagged_instead_of_raising(self) -> None:
         conn = sqlite3.connect(":memory:")

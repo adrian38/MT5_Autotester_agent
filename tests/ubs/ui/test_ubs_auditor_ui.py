@@ -261,12 +261,13 @@ class StageHeadlineTests(unittest.TestCase):
     """Lo que se lee de una etapa sin desplegarla."""
 
     @staticmethod
-    def _audit(*, findings=(), undated=0, undated_verdicts=0, stale=0):
+    def _audit(*, findings=(), undated=0, undated_verdicts=0, stale=0, stale_verdicts=None):
         return SimpleNamespace(
             findings=findings,
             undated=undated,
             undated_verdicts=undated_verdicts,
             stale=stale,
+            stale_verdicts=stale if stale_verdicts is None else stale_verdicts,
         )
 
     def test_moved_rules_win_the_headline(self) -> None:
@@ -276,6 +277,11 @@ class StageHeadlineTests(unittest.TestCase):
     def test_a_changed_rule_also_takes_the_stage_out_of_date(self) -> None:
         """Sin un umbral movido, la etapa sigue sin estar al dia."""
         self.assertEqual(_stage_headline(self._audit(stale=12)), "Regla cambiada")
+
+    def test_a_changed_rule_nobody_judged_leaves_the_stage_up_to_date(self) -> None:
+        audit = self._audit(stale=1046, stale_verdicts=0)
+
+        self.assertEqual(_stage_headline(audit), "Al dia")
 
     def test_a_moved_rule_is_more_concrete_than_a_changed_one(self) -> None:
         audit = self._audit(findings=("a",), stale=12)
@@ -309,6 +315,7 @@ def _audit_row(**overrides):
         "stale_verdicts": 0,
         "undated": 0,
         "undated_verdicts": 0,
+        "undated_stored": (),
         "unknown": 0,
         "missing_table": False,
     }
@@ -350,6 +357,23 @@ class RuleGroupTests(unittest.TestCase):
         self.assertIn(spec.rules_changed_at[:10], child_values[3])
         self.assertNotIn(spec.rules_changed_at[10:], child_values[3])
         self.assertEqual(child_values[5], "3")
+
+    def test_a_changed_rule_nobody_judged_hangs_muted(self) -> None:
+        """Lo que no tiene veredicto no arrastra: se dice, pero no en rojo."""
+        _stage, _label, values, tag, children = _rule_group(_audit_row(stale=1046))
+
+        self.assertEqual(tag, "accepted")
+        self.assertEqual(values[0], "Al dia")
+        self.assertEqual(values[4], "0 de 10 candidatos")
+        self.assertEqual(children[0][1], "pending")
+
+    def test_the_invalid_dates_name_themselves_with_their_counts(self) -> None:
+        _stage, _label, _values, _tag, children = _rule_group(
+            _audit_row(undated=3, undated_verdicts=1,
+                       undated_stored=(("(vacio)", 2), ("1970.01.01", 1)))
+        )
+
+        self.assertEqual(children[0][0][3], "(vacio) (2), 1970.01.01 (1)")
 
     def test_a_stage_with_nothing_wrong_stays_green_and_closed(self) -> None:
         _stage, _label, values, tag, children = _rule_group(_audit_row())
@@ -404,9 +428,23 @@ class StatusLineTests(unittest.TestCase):
             "ICTRADING/REAL | run #7",
         )
 
-        self.assertIn("1 etapa(s) con la regla cambiada (4 fila(s))", line)
+        # Cuenta las juzgadas: son las unicas que el repuntuado puede cambiar.
+        self.assertIn("1 etapa(s) con la regla cambiada (3 fila(s))", line)
         self.assertNotIn("regla(s) movida(s)", line)
         self.assertIn("3 de ellos ya juzgados", line)
+
+    def test_what_the_rescore_cannot_reach_is_said_in_the_same_line(self) -> None:
+        """Lo que sigue rojo despues de repuntuar tiene que explicarse solo."""
+        line = _rules_status_line(
+            (_audit_row(stage="seed_final_tick", stage_label="Seeds Final Tick",
+                        stale=303, stale_verdicts=207, affected=207,
+                        affected_verdicts=207),),
+            0,
+            "ICTRADING/STANDARD | toda la memoria",
+        )
+
+        self.assertIn("El repuntuado no llega a Seeds Final Tick", line)
+        self.assertIn("hay que repetir la etapa", line)
 
     def test_nothing_found_says_so(self) -> None:
         line = _rules_status_line((_audit_row(),), 0, "ICTRADING/REAL | run #7")

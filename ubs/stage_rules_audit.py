@@ -132,6 +132,9 @@ class StageAudit:
     # Las que no, simplemente no han corrido todavia.
     undated: int = 0
     undated_verdicts: int = 0
+    # Que fechas eran y a cuantas filas alcanza cada una: la vacia y el cero de
+    # MT5 son dos problemas distintos, y la celda tiene que decir cual toco.
+    undated_stored: tuple[tuple[str, int], ...] = ()
     # Filas selladas antes de `rules_changed_at`: sus umbrales son los de hoy,
     # pero la regla que los aplico no. Las que ya tienen veredicto son las que
     # pueden cambiar al repuntuar, igual que en un umbral movido.
@@ -310,11 +313,28 @@ class _StageTally:
     affected_verdicts: set[int] = field(default_factory=set)
     undated: set[int] = field(default_factory=set)
     undated_verdicts: set[int] = field(default_factory=set)
+    # Cuantas filas guardan cada fecha que no es una fecha. Son dos casos
+    # distintos -la vacia de la que no ha corrido y el cero de MT5- y decir
+    # "vacia o 1970.01.01" obligaba a ir a mirar cual de los dos era.
+    undated_values: dict[str, int] = field(default_factory=dict)
     stale: set[int] = field(default_factory=set)
     stale_verdicts: set[int] = field(default_factory=set)
     rows: int = 0
     row_verdicts: int = 0
     unknown: int = 0
+
+    def record_undated(self, values: set[str], row_id: int, *, is_verdict: bool) -> None:
+        """Una fila cuenta una vez por cada valor distinto que guarda.
+
+        Guarda dos fechas y puede traer la vacia en una y el cero de MT5 en la
+        otra: contar por valor y no por celda deja cada numero diciendo a
+        cuantas filas alcanza.
+        """
+        self.undated.add(row_id)
+        if is_verdict:
+            self.undated_verdicts.add(row_id)
+        for value in values:
+            self.undated_values[value] = self.undated_values.get(value, 0) + 1
 
     def record(self, rule: RuleSpec, stored: object, row_id: int, *, is_verdict: bool) -> None:
         counts = self.counts.setdefault(rule.key, {})
@@ -346,14 +366,17 @@ def _tally_stage_row(
     )
     row_id = int(row[spec.id_column] or 0)
     if _judged_before_change(row, spec, columns=columns, is_verdict=is_verdict):
-        # Cuenta como afectada igual que un umbral movido: lo que la pantalla
-        # pregunta es a cuantos arrastra el cambio, no de que clase es.
         tally.stale.add(row_id)
-        tally.affected.add(row_id)
         if is_verdict:
+            # Solo arrastra la que ya tiene veredicto, y por la misma razon que
+            # una fecha invalida: la que no ha corrido se juzgara con la regla
+            # de ahora, y un repuntuado ni la mira -no hay nada que volver a
+            # puntuar-. Contarla dejaba la etapa en rojo para siempre.
             tally.stale_verdicts.add(row_id)
+            tally.affected.add(row_id)
             tally.affected_verdicts.add(row_id)
     row_unknown = False
+    row_undated: set[str] = set()
     for rule in spec.rules:
         if rule.key not in expected:
             continue
@@ -367,13 +390,13 @@ def _tally_stage_row(
             row_unknown = row_unknown or bool(rule.score_field)
             continue
         if rule.kind == "date" and _missing_date(stored):
-            tally.undated.add(row_id)
-            if is_verdict:
-                tally.undated_verdicts.add(row_id)
+            row_undated.add(_display(stored, rule.kind))
             continue
         if _same_value(stored, expected[rule.key], rule.kind):
             continue
         tally.record(rule, stored, row_id, is_verdict=is_verdict)
+    if row_undated:
+        tally.record_undated(row_undated, row_id, is_verdict=is_verdict)
     tally.unknown += 1 if row_unknown else 0
 
 
@@ -448,6 +471,9 @@ def audit_stage_rules(
                 affected_verdicts=len(tally.affected_verdicts),
                 undated=len(tally.undated),
                 undated_verdicts=len(tally.undated_verdicts),
+                undated_stored=tuple(
+                    sorted(tally.undated_values.items(), key=lambda item: (-item[1], item[0]))
+                ),
                 stale=len(tally.stale),
                 stale_verdicts=len(tally.stale_verdicts),
                 findings=_stage_findings(spec, expected, tally),
@@ -525,8 +551,12 @@ def audit_pending_states(
 
 
 def _stale_rescorable(audit: StageAudit, spec: StageSpec) -> bool:
-    """Si el cambio de regla declarado se arregla repuntuando lo guardado."""
-    return bool(audit.stale) and spec.rules_change_fix == "rescore"
+    """Si el cambio de regla declarado se arregla repuntuando lo guardado.
+
+    Manda `stale_verdicts` y no `stale`: lo que no tiene veredicto no hay quien
+    lo repuntue, y encolar la etapa por ello la dejaba en la cola para siempre.
+    """
+    return bool(audit.stale_verdicts) and spec.rules_change_fix == "rescore"
 
 
 def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
@@ -565,6 +595,6 @@ def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
         spec = stage_spec(audit.stage)
         if audit.findings and not spec.rescore_flag:
             stages.append(audit.stage)
-        elif audit.stale and spec.rules_change_fix == "repeat":
+        elif audit.stale_verdicts and spec.rules_change_fix == "repeat":
             stages.append(audit.stage)
     return tuple(stages)

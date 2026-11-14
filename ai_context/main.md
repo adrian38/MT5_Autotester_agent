@@ -1600,9 +1600,10 @@ means one thing on every row:
 "2 de 3798 candidatos", from `StageSpec.unit` — because the affected count and
 the stage size used to sit in neighbouring columns and read as a
 contradiction; `_tree_sort_value()` falls back to the leading number so the
-column still sorts numerically. `_stored_cell()` caps the stored list at
+column still sorts numerically. `_values_cell()` caps any "valor (cuantos)" list at
 `MAX_STORED_VALUES_SHOWN` and counts the rest ("+1 mas") instead of letting the
-column cut a value in half. The widths add up to less than the table's usable
+column cut a value in half; moved thresholds (`_stored_cell()`) and invalid
+dates share it, because both answer "se juzgo con". The widths add up to less than the table's usable
 width on purpose: `ETAPA` is the first column and rides the horizontal
 scrollbar, so a wider table is born hiding the one thing the screen is opened
 for, and `stored` is the only stretching column, which takes the slack.
@@ -1618,7 +1619,10 @@ a report with no period line carries `1970.01.01`, while a row that has not run
 yet carries `''`. Neither is a finding — otherwise the screen sent a stage to be
 rescored because two broken reports and a thousand pending rows disagreed with
 today's window. They are counted as `StageAudit.undated`, split by
-`undated_verdicts`, because the two cases are not the same problem:
+`undated_verdicts`, with `undated_stored` holding which dates they actually
+were and how many rows each reaches — the cell used to read "(vacia o
+1970.01.01)", a guess between the two when the row holds the answer, and the
+two are not the same problem. The two cases:
 
 - **with a verdict** — the row was judged over an impossible window, so its
   verdict is worthless. `_stage_headline()` puts `N sin fecha valida` on the
@@ -1643,6 +1647,13 @@ A row counts as `StageAudit.stale` when its `judged_column` stamp — already
 written by the memory on all eight tables — is earlier than that instant, so
 the warning clears itself as soon as the row is judged again; an empty stamp is
 a row that has not run and will run under today's rule, so it does not count.
+Only `stale_verdicts` turns the stage red, feeds `affected` and reaches
+`stages_to_rescore()`/`stages_to_repeat()`, for the same reason `undated` is
+split: a row with no verdict will be judged under today's rule when it runs and
+a rescore never touches it (there is nothing to score again), so counting it
+left the stage red after every rescore, forever. It still hangs off the stage,
+muted, and `Consultar pendientes` is where it belongs. In ICTRADING/STANDARD
+that was 1046 `pending` rows of `candidate_final_tick_6m`.
 A stage with no stamp of its own declares `judged_column=""` (`candidates`,
 whose `created_at` is when the .set was generated and which a rescore does not
 touch): there the change cannot be split row by row, so everything already
