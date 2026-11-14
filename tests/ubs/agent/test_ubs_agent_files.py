@@ -1,4 +1,5 @@
 import ubs.agent.evaluation.evaluate
+import ubs.agent.final_tick.reconcile
 import ubs.agent.final_tick.rescore
 import ubs.agent.config
 import ubs.agent.final_tick.evaluate
@@ -194,15 +195,15 @@ class UBSSetsFileTests(unittest.TestCase):
                 score(10.0, symbol="S&P.fs", timeframe="H1", trades=20),
                 score(5.0, symbol="S&P.fs", timeframe="H1", trades=20)])
             with (
-                patch("ubs.agent.final_tick.rescore.variant_from_candidate_row", return_value=variant),
-                patch("ubs.agent.final_tick.rescore.find_report_for_set", side_effect=find_report),
+                patch("ubs.agent.final_tick.reconcile.variant_from_candidate_row", return_value=variant),
+                patch("ubs.agent.final_tick.reconcile.find_report_for_set", side_effect=find_report),
                 patch(
-                    "ubs.agent.final_tick.rescore._read_ohlc_report_cfg_dates",
+                    "ubs.agent.final_tick.reconcile._read_ohlc_report_cfg_dates",
                     return_value=("2026.01.01", "2026.06.30"),
                 ),
-                patch("ubs.agent.final_tick.rescore.score_report_file", new=score_report),
+                patch("ubs.agent.final_tick.reconcile.score_report_file", new=score_report),
                 patch("ubs.agent.final_tick.evaluate.score_report_file", new=score_report),
-                patch("ubs.agent.final_tick.rescore.report_matches_variant", return_value=(True, "")),
+                patch("ubs.agent.final_tick.reconcile.report_matches_variant", return_value=(True, "")),
                 patch(
                     "ubs.agent.final_tick.evaluate.final_tick_similarity",
                     return_value={"accepted": False, "reasons": ["profit_factor_floor"]},
