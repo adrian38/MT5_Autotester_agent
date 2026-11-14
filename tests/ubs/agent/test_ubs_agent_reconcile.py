@@ -106,6 +106,7 @@ class UBSAgentReconcileTests(unittest.TestCase):
                 "id": 42,
                 "run_id": 7,
                 "ft_run_id": 7,
+                "ft_status": "accepted",
                 "ft_ohlc_report_path": str(ohlc_report),
                 "ft_real_tick_report_path": str(tick_report),
                 "ft_from_date": "2026.05.01",

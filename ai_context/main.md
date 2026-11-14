@@ -1659,10 +1659,21 @@ means nothing unless you know that 1970.01.01 *is* the absence of a window —
   verdict is worthless. `_stage_headline()` puts `N sin fecha valida` on the
   stage in red *even when every threshold matches today's*: a stage that hides
   this behind a green `Al dia` is lying. It cannot be re-judged either — there
-  is no window to judge over — so the rescore **demotes** it:
-  `_demote_if_windowless()` writes `no_report`, a retryable status, and the row
-  leaves the rules audit for `Consultar pendientes`, where `Arreglar
-  pendientes` picks it up. That is why `stages_to_rescore()` keys off
+  is no window to judge over — so the rescore **demotes** it to `no_report`, a
+  retryable status, and the row leaves the rules audit for `Consultar
+  pendientes`, where `Arreglar pendientes` picks it up. Both rescore paths do
+  it, which matters because they are not the same one:
+  `rescore_final_tick_only()` re-judges from the metrics stored in SQLite
+  (`_rescore_stored_final_tick_row`) unless `--rescore-from-reports` is passed,
+  and the Auditor's button does not pass it — the check lived only in the
+  from-reports path at first, so the button walked all 3798 rows and left the
+  verdict exactly where it was. `_windowless_verdict()` is the one rule both
+  call, and it fires only on a row that *holds* a verdict: `pending_ohlc_trades`
+  and its kind assert nothing to retract, and rewriting them would erase the
+  state their own retry recognises them by. Demoting a Final Tick verdict also
+  drops that candidate's 6M and regression rows, which
+  `record_candidate_final_tick()` has always done — they were built on a verdict
+  that just went away. That is why `stages_to_rescore()` keys off
   `undated_verdicts` although no rule moved: it is the one case where the
   button's job is to take a verdict away rather than rewrite it. A stage with
   no `rescore_flag` has nobody to do that, so there it still asks for a repeat.

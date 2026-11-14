@@ -39,6 +39,29 @@ from ubs.agent.generation.universe import (
 )
 
 
+# Lo que cuenta como veredicto en una fila de final tick. Lo demas son estados
+# por los que la fila pasa, y de esos ya se ocupa Arreglar pendientes.
+FINAL_TICK_VERDICTS = frozenset({"accepted", "rejected"})
+
+
+def _windowless_verdict(row, from_date: object, to_date: object) -> bool:
+    """Si la fila tiene veredicto y lo dio sobre una ventana que no existe.
+
+    MT5 escribe `1970.01.01` cuando el backtest no produjo nada, asi que no hay
+    periodo sobre el que juzgar y el veredicto guardado no vale: repuntuarlo no
+    lo arregla -la parte rota es el reporte- y dejarlo lo da por bueno sobre una
+    ventana que no existio.
+
+    Solo el veredicto estorba. Una fila que ya esta en un estado por el que se
+    pasa -pendiente, sin reporte, pocas operaciones- no afirma nada que haya que
+    retirar, y reescribirla le borraria el motivo por el que su propio reintento
+    la reconoce.
+    """
+    if str(row["ft_status"] or "").strip().lower() not in FINAL_TICK_VERDICTS:
+        return False
+    return missing_window_date(from_date) or missing_window_date(to_date)
+
+
 @dataclass
 class _FinalTickStoredRescore:
     """Recuento del repuntuado de final tick desde las metricas guardadas."""
@@ -125,12 +148,34 @@ def _stored_final_tick_similarity(
     )
 
 
+def _demote_stored_if_windowless(
+    args: argparse.Namespace, memory: AgentMemory, row, tally: _FinalTickStoredRescore,
+) -> bool:
+    """Lo mismo que `_demote_if_windowless()`, desde las metricas guardadas.
+
+    Este es el camino que usa el boton Repuntuar afectados, y por eso la
+    comprobacion tiene que estar tambien aqui: las metricas de la fila se
+    midieron sobre la ventana que la fila guarda, asi que si esa ventana no
+    existe no hay nada que volver a juzgar, lo relea de donde lo relea.
+    """
+    if not _windowless_verdict(row, row["ft_from_date"], row["ft_to_date"]):
+        return False
+    _record_stored_final_tick(
+        args, memory, row, "no_report", None, None,
+        "reporte OHLC sin periodo", None, tally.stage,
+    )
+    tally.count("no_report")
+    return True
+
+
 def _rescore_stored_final_tick_row(
     args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig, row,
     tally: _FinalTickStoredRescore, is_six_month: bool,
 ) -> None:
     """Repuntua una fila de final tick desde sus metricas guardadas."""
     candidate_id = int(row["id"])
+    if _demote_stored_if_windowless(args, memory, row, tally):
+        return
     variant = variant_from_candidate_row(row)
     config = score_config_for_variant(
         score_config,
@@ -310,20 +355,16 @@ def _rescored_window(args: argparse.Namespace, row, ohlc_report: Path | None) ->
 
 
 def _demote_if_windowless(
-    memory: AgentMemory, candidate_id: int, run_id: int, thresholds,
+    memory: AgentMemory, candidate_id: int, run_id: int, row, thresholds,
     ohlc_report: Path | None, real_tick_report: Path | None, status_counts: dict[str, int],
 ) -> bool:
-    """Devuelve a pendiente la fila cuyo reporte OHLC no trae periodo.
+    """Devuelve a pendiente el veredicto dado sobre una ventana que no existe.
 
-    MT5 escribe el cero cuando el backtest no produjo nada, asi que no hay
-    ventana sobre la que juzgar y el veredicto guardado no vale. Repuntuarlo no
-    lo arregla -la parte rota es el reporte-, y dejarlo como veredicto lo daba
-    por bueno sobre una ventana que no existe. Como pendiente pasa a ser de
-    quien se ocupa Arreglar pendientes, que es quien puede volver a correrlo.
+    Lo mismo que hace el repuntuado desde SQLite en
+    `_rescore_stored_final_tick_row()`, dicho aqui para el camino que relee los
+    reportes de disco: los dos tienen que contestar igual a la misma fila.
     """
-    if not missing_window_date(thresholds.from_date) and not missing_window_date(
-        thresholds.to_date
-    ):
+    if not _windowless_verdict(row, thresholds.from_date, thresholds.to_date):
         return False
     _record_rescored_final_tick(
         memory, candidate_id, run_id, "no_report", None, thresholds,
@@ -347,7 +388,7 @@ def _rescore_final_tick_row(
     thresholds = _rescore_final_tick_thresholds(args, *_rescored_window(args, row, ohlc_report))
     # Antes de exigir el reporte: un veredicto sin ventana no vale tenga o no
     # tenga reporte en disco, y si no lo tiene menos todavia.
-    if _demote_if_windowless(memory, candidate_id, run_id, thresholds,
+    if _demote_if_windowless(memory, candidate_id, run_id, row, thresholds,
                              ohlc_report, real_tick_report, status_counts):
         return True
     if ohlc_report is None or not ohlc_report.exists():
@@ -399,6 +440,7 @@ def _rescore_final_tick_rows(memory: AgentMemory, final_tick_table: str) -> list
         select
             c.*,
             ft.run_id as ft_run_id,
+            ft.status as ft_status,
             ft.ohlc_report_path as ft_ohlc_report_path,
             ft.real_tick_report_path as ft_real_tick_report_path,
             ft.from_date as ft_from_date,

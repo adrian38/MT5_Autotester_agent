@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ubs.agent.final_tick.rescore import _rescore_final_tick_row
+from ubs.agent.final_tick.rescore import (
+    _FinalTickStoredRescore,
+    _rescore_final_tick_row,
+    _rescore_stored_final_tick_row,
+)
 from ubs.score import ScoreConfig
 
 
@@ -44,6 +48,7 @@ def _row(ohlc_report: str, *, from_date: str, to_date: str) -> dict:
         "id": 42,
         "run_id": 7,
         "ft_run_id": 7,
+        "ft_status": "accepted",
         "ft_ohlc_report_path": ohlc_report,
         "ft_real_tick_report_path": "",
         "ft_from_date": from_date,
@@ -112,6 +117,63 @@ class RescoreWindowTests(unittest.TestCase):
 
         self.assertFalse(handled)
         self.assertEqual(status_counts, {})
+        self.assertEqual(memory.calls, [])
+
+
+class StoredRescoreWindowTests(unittest.TestCase):
+    """El camino que usa de verdad el boton Repuntuar afectados.
+
+    `rescore_final_tick_only()` repuntua desde las metricas guardadas en SQLite
+    salvo que le pidan `--rescore-from-reports`, y el Auditor no se lo pide. La
+    comprobacion vivia solo en el otro camino, asi que el boton recorria las
+    3798 filas y dejaba el veredicto sin ventana igual que estaba.
+    """
+
+    @staticmethod
+    def _stored_row(status: str, from_date: str) -> dict:
+        row = _row("", from_date=from_date, to_date=from_date)
+        row.update({
+            "ft_status": status,
+            "ft_ohlc_metrics_json": "{}",
+            "ft_real_tick_metrics_json": "",
+            "set_path": "candidate.set",
+        })
+        return row
+
+    def test_the_stored_rescore_also_sends_the_verdict_back(self) -> None:
+        memory = _RecordingMemory()
+        tally = _FinalTickStoredRescore(stage="probe")
+
+        _rescore_stored_final_tick_row(
+            _args(), memory, ScoreConfig(),
+            self._stored_row("accepted", "1970.01.01"), tally, False,
+        )
+
+        self.assertEqual(tally.status_counts, {"no_report": 1})
+        self.assertEqual(memory.calls[0][:3], (42, 7, "no_report"))
+
+    def test_a_row_without_a_verdict_keeps_the_state_it_had(self) -> None:
+        """`pending_ohlc_trades` no afirma nada que haya que retirar.
+
+        Y es el estado por el que su propio reintento la reconoce: reescribirlo
+        le borraria el motivo por el que vuelve a correr.
+        """
+        memory = _RecordingMemory()
+        tally = _FinalTickStoredRescore(stage="probe")
+
+        # Sigue por el camino de siempre, que aqui se para en las metricas: lo
+        # que se comprueba es que no lo desviaron antes.
+        with patch(
+            "ubs.agent.final_tick.rescore._rescore_metrics_json",
+            side_effect=ValueError("metricas de pega"),
+        ), patch("ubs.agent.final_tick.rescore.variant_from_candidate_row"):
+            _rescore_stored_final_tick_row(
+                _args(), memory, ScoreConfig(),
+                self._stored_row("pending_ohlc_trades", "1970.01.01"), tally, False,
+            )
+
+        self.assertEqual(tally.status_counts, {})
+        self.assertEqual(tally.invalid_metrics, 1)
         self.assertEqual(memory.calls, [])
 
 
