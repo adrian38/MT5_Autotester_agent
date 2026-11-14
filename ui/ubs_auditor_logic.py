@@ -32,7 +32,6 @@ from tkinter import messagebox
 from ubs.account import account_memory_path
 from ubs.db import connect_memory
 from ubs.stage_rules_audit import (
-    STAGE_SPECS,
     stage_spec,
     stages_to_repeat,
     stages_to_rescore,
@@ -318,24 +317,35 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin):
         args.extend(self._effective_symbol_suffix_args())
         return args
 
-    def _ubs_auditor_stages_to_rescore(self, audits) -> tuple[list[str], str]:
-        """Que etapas repuntuar, de lo mas concreto a lo mas amplio.
+    def _explain_nothing_to_rescore(self, audits) -> None:
+        """Por que no hay cola, sin contradecir lo que la tabla pinta en rojo."""
+        repeat = [stage_spec(stage).label for stage in stages_to_repeat(audits)]
+        parts = [
+            "Ninguna etapa con repuntuado juzgo nada con otra regla."
+            if repeat
+            else "Ningun veredicto se dio con otras reglas."
+        ]
+        if repeat:
+            parts.append("Lo que esta en rojo hay que repetirlo: " + ", ".join(repeat) + ".")
+        parts.append(
+            "Las reglas ciegas no se ven desde aqui: si moviste una, marca la "
+            "etapa en la tabla y vuelve a pulsar para repuntuarla igualmente."
+        )
+        messagebox.showinfo("Auditor UBS", "\n\n".join(parts))
 
-        El boton repuntua siempre: su trabajo es reescribir el accepted/rejected
-        con las reglas de ahora, y la auditoria solo sirve para no recorrer ocho
-        etapas cuando ya se sabe cual toca. Cuando no sabe cual no hay motivo
-        para negarse -una regla ciega movida no deja rastro que comparar, y el
-        repuntuado si la aplica-, asi que entran todas las que tengan modo de
-        repuntuado. Negarse era pedirle a la auditoria que demostrara algo que
-        no puede ver.
+    def _ubs_auditor_stages_to_rescore(self, audits) -> tuple[list[str], str]:
+        """Que etapas repuntuar: solo donde la regla cambio.
+
+        Una etapa en la que no cambio nada no se repuntua: seria recorrer la
+        memoria entera para reescribir cada veredicto con el valor que ya
+        tenia. La excepcion es marcarla a mano, que es como se pide lo que la
+        auditoria no puede ver -una regla ciega movida no deja rastro con el
+        que comparar, y el repuntuado si la aplica-.
         """
         selected = self._selected_ubs_auditor_stage()
         if selected and stage_spec(selected).rescore_flag:
-            return [selected], "la etapa marcada"
-        found = list(stages_to_rescore(audits))
-        if found:
-            return found, "lo que encontro la auditoria"
-        return [spec.key for spec in STAGE_SPECS if spec.rescore_flag], "todas las que se pueden"
+            return [selected], "marcada a mano"
+        return list(stages_to_rescore(audits)), "donde cambio la regla"
 
     def _rescore_ubs_affected_clicked(self) -> None:
         audits = getattr(self, "_ubs_auditor_audits", ())
@@ -344,7 +354,7 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin):
             return
         stages, why = self._ubs_auditor_stages_to_rescore(audits)
         if not stages:
-            messagebox.showinfo("Auditor UBS", "Ninguna etapa tiene repuntuado desde SQLite.")
+            self._explain_nothing_to_rescore(audits)
             return
         labels = [stage_spec(stage).label for stage in stages]
         repeat = [stage_spec(stage).label for stage in stages_to_repeat(audits)]

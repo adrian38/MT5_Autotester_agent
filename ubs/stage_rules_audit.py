@@ -504,13 +504,26 @@ def _needs(audit: StageAudit, spec: StageSpec, fix: str) -> bool:
     return bool(audit.stale_verdicts) and spec.rules_change_fix == fix
 
 
-def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
-    """Etapas tocadas y con un repuntuado que de verdad las arregle.
+def _bent_a_verdict(audit: StageAudit) -> bool:
+    """Si la etapa juzgo algo con una regla que ya no es la de ahora."""
+    return bool(audit.stale_verdicts) or any(
+        finding.verdicts for finding in audit.findings
+    )
 
-    No basta con que la etapa tenga `rescore_flag`: la ventana movida no la
-    mueve ningun repuntuado, asi que una etapa cuyo unico hallazgo sea una
-    fecha no entra aqui. Esto acorta la lista de la pantalla, que repuntua
-    igual aunque aqui no salga nada.
+
+def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
+    """Etapas donde la regla de hoy no es la que juzgo, y se pueden repuntuar.
+
+    Entra la etapa en cuanto algo no cuadra, sin mirar si ese algo en concreto
+    lo arregla el repuntuado: el boton existe para volver a juzgar con las
+    reglas de ahora alli donde las reglas cambiaron, y una ventana que no se
+    puede mover no es motivo para dejar sin repuntuar todo lo demas de esa
+    etapa. Que la ventana siga pidiendo repetirla se dice aparte, en
+    `stages_to_repeat()`.
+
+    Lo que no entra es una etapa donde no cambio nada: repuntuarla igualmente
+    seria recorrer la memoria entera para reescribir cada veredicto con el
+    valor que ya tenia.
 
     Final Tick corto y 6M comparten el flag `--rescore-final-tick-only` pero se
     encolan por separado, cada uno con su `--final-tick-stage` y sus fechas,
@@ -519,8 +532,7 @@ def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     return tuple(
         audit.stage
         for audit in audits
-        if stage_spec(audit.stage).rescore_flag
-        and _needs(audit, stage_spec(audit.stage), "rescore")
+        if stage_spec(audit.stage).rescore_flag and _bent_a_verdict(audit)
     )
 
 
@@ -539,8 +551,6 @@ def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
         spec = stage_spec(audit.stage)
         if _needs(audit, spec, "repeat") or audit.undated_verdicts:
             stages.append(audit.stage)
-        elif not spec.rescore_flag and (
-            any(finding.verdicts for finding in audit.findings) or audit.stale_verdicts
-        ):
+        elif not spec.rescore_flag and _bent_a_verdict(audit):
             stages.append(audit.stage)
     return tuple(stages)

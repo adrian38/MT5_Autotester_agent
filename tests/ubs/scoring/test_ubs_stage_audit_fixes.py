@@ -166,12 +166,13 @@ class StagesToRescoreTests(unittest.TestCase):
         self.assertEqual(stages_to_rescore(audits), ())
         self.assertEqual(stages_to_repeat(audits), ())
 
-    def test_a_moved_window_is_not_something_a_rescore_can_fix(self) -> None:
-        """Ningun repuntuado mueve una fecha, asi que no encola la etapa.
+    def test_a_moved_window_rescores_and_still_asks_for_a_repeat(self) -> None:
+        """La etapa cambio de regla: se repuntua, y ademas hay que repetirla.
 
-        Final Tick la relee del reporte OHLC, robustez no la reescribe y la
-        regresiva se salta la fila cuya ventana no coincide. Encolarla hacia
-        correr el repuntuado entero para dejar la fila igual de roja.
+        Ningun repuntuado mueve una fecha -Final Tick la relee del reporte
+        OHLC, robustez no la reescribe y la regresiva se salta la fila cuya
+        ventana no coincide-, pero eso no es motivo para dejar sin repuntuar
+        todo lo demas de la etapa.
         """
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")
@@ -186,8 +187,23 @@ class StagesToRescoreTests(unittest.TestCase):
 
         self.assertEqual([f.rule for f in audits[0].findings], ["from_date"])
         self.assertEqual(audits[0].findings[0].fix, "repeat")
-        self.assertEqual(stages_to_rescore(audits), ())
+        self.assertEqual(stages_to_rescore(audits), ("final_tick",))
         self.assertEqual(stages_to_repeat(audits), ("final_tick",))
+
+    def test_a_stage_where_nothing_moved_is_not_queued(self) -> None:
+        """Repuntuarla seria reescribir cada veredicto con el valor que tenia."""
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="accepted")
+
+        audits = audit_stage_rules(
+            conn,
+            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )
+
+        self.assertEqual(audits[0].findings, ())
+        self.assertEqual(stages_to_rescore(audits), ())
 
     def test_a_moved_threshold_alongside_a_moved_window_still_rescores(self) -> None:
         """La etapa entra por el umbral, y la fecha sigue pidiendo repetirla."""

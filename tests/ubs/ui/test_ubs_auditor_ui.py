@@ -213,42 +213,33 @@ class StagesToRescoreTests(unittest.TestCase):
         return harness
 
     def test_a_marked_stage_wins(self) -> None:
+        """Marcarla es como se pide lo que la auditoria no puede ver."""
         harness = self._harness("final_tick")
 
         stages, why = harness._ubs_auditor_stages_to_rescore(())
 
         self.assertEqual(stages, ["final_tick"])
-        self.assertEqual(why, "la etapa marcada")
+        self.assertEqual(why, "marcada a mano")
 
-    def test_without_a_mark_the_audit_narrows_it_down(self) -> None:
+    def test_without_a_mark_only_where_the_rule_changed(self) -> None:
         harness = self._harness("")
         audit = SimpleNamespace(
-            stage="robustness", findings=(_finding(fix="rescore", verdicts=4),),
+            stage="robustness", findings=(_finding(verdicts=4),),
             stale_verdicts=0, undated_verdicts=0,
         )
 
         stages, why = harness._ubs_auditor_stages_to_rescore((audit,))
 
         self.assertEqual(stages, ["robustness"])
-        self.assertEqual(why, "lo que encontro la auditoria")
+        self.assertEqual(why, "donde cambio la regla")
 
-    def test_with_nothing_found_it_rescores_everything_it_can(self) -> None:
-        """El boton repuntua; la auditoria solo sirve para acortar la lista.
-
-        Negarse a correr cuando no encuentra nada era pedirle que demostrara lo
-        que no puede ver: una regla ciega movida no deja rastro que comparar, y
-        el repuntuado si la aplica.
-        """
+    def test_a_stage_where_nothing_changed_is_left_alone(self) -> None:
+        """Repuntuarla seria reescribir cada veredicto con el valor que tenia."""
         harness = self._harness("")
 
-        stages, why = harness._ubs_auditor_stages_to_rescore(())
+        stages, _why = harness._ubs_auditor_stages_to_rescore(())
 
-        self.assertEqual(why, "todas las que se pueden")
-        self.assertEqual(
-            stages,
-            [spec.key for spec in STAGE_SPECS if spec.rescore_flag],
-        )
-        self.assertNotIn("seed_final_tick", stages)
+        self.assertEqual(stages, [])
 
 
 class RescoreQueueTests(unittest.TestCase):

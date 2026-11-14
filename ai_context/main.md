@@ -1660,13 +1660,13 @@ any row whose stored window differs (`window_mismatch`). Changing the window in
 Configuración does not leave the old rows mis-scored; it leaves them run over
 another window, and only repeating the stage changes that.
 
-`stages_to_rescore()` therefore requires a finding whose `fix` is `"rescore"`
-(or a rescorable declared change), not merely that the stage has a
-`rescore_flag` — otherwise pressing the button ran the whole rescore to leave
-the row exactly as red. `stages_to_repeat()` takes the `"repeat"` ones plus any
-stage with no `rescore_flag` at all. In the table, a finding the button cannot
-fix says `Hay que repetir` in `QUE PASA`, the column a rescorable finding
-leaves blank.
+`fix` drives the advice, not the queue: `stages_to_repeat()` takes the
+`"repeat"` ones, plus any stage with no `rescore_flag` at all and any stage
+holding a verdict given over an impossible window, while `stages_to_rescore()`
+ignores `fix` entirely. In the table, a finding the button cannot undo says
+`Hay que repetir` in `QUE PASA`, the column a rescorable finding leaves blank,
+so a stage can legitimately appear in both lists: rescore what can be
+rescored, repeat it for the rest.
 
 #### Declared rule changes (the stored values cannot show them)
 
@@ -1736,15 +1736,18 @@ no `--rescore-*-only`.
   with its own `--final-tick-stage` and dates, because each one rescores its
   own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
   they are reported, through `stages_to_repeat()`, as stages to run again.
-  **The button always rescores**; the audit only shortens the list.
-  `_ubs_auditor_stages_to_rescore()` goes from narrowest to widest: the stage
-  selected in the table, else what `stages_to_rescore()` found, else every
-  stage that has a rescore mode. Refusing to run when the audit found nothing
-  was asking it to prove what it cannot see — the rescore *does* apply the
-  three Final Tick minimum-trade limits and the robustness retentions, which
-  the stage never stores, so moving one of those changes verdicts while leaving
-  the audit with nothing to compare. The confirmation dialog names which of the
-  three cases it is and what still has to be repeated instead.
+  **Only where the rule changed.** `stages_to_rescore()` takes a stage as soon
+  as something it found bent a verdict, without asking whether that particular
+  finding is one a rescore can undo: a window it cannot move is no reason to
+  leave the rest of the stage unscored, and the repeat is said separately. A
+  stage where nothing moved stays out — rescoring it would walk the whole
+  memory to rewrite every verdict with the value it already had.
+  `_ubs_auditor_stages_to_rescore()` overrides that with the stage selected in
+  the table, which is how a blind rule is asked for: the rescore *does* apply
+  the three Final Tick minimum-trade limits and the robustness retentions,
+  which the stage never stores, so moving one changes verdicts while leaving
+  the audit nothing to compare. The confirmation dialog says which of the two
+  cases it is and what has to be repeated instead.
 - **Arreglar pendientes** — routes the selected stage to its own runner
   (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
   pending runs), which owns the retryable statuses and dates. This opens MT5
