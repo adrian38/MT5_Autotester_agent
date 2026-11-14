@@ -64,7 +64,10 @@ class StageRulesAuditTests(unittest.TestCase):
         )[0]
 
         self.assertEqual([finding.rule for finding in audit.findings], [])
-        self.assertEqual(audit.affected, 0)
+        # Sigue contando como veredicto torcido -se juzgo sobre una ventana que
+        # no existe-, pero por `undated`, no por una regla movida.
+        self.assertEqual(audit.undated_verdicts, 1)
+        self.assertEqual(audit.affected_verdicts, 1)
         # Con veredicto: se juzgo sobre una ventana imposible, no esta al dia.
         self.assertEqual(audit.undated, 1)
         self.assertEqual(audit.undated_verdicts, 1)

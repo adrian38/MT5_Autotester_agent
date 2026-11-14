@@ -264,6 +264,19 @@ class _StageTally:
     row_verdicts: int = 0
     unknown: int = 0
 
+    def bend(self, row_id: int, *, is_verdict: bool) -> None:
+        """Apunta un veredicto torcido, venga de donde venga.
+
+        La etapa cuenta en «a cuantos afecta» todo lo que tiene mal juzgado, no
+        solo lo que un umbral movido explica: un veredicto dado sobre una
+        ventana que no existe esta igual de mal, y dejarlo fuera daba una etapa
+        diciendo «0 de 3798» con una hija debajo diciendo «1 de 3798».
+        """
+        if not is_verdict:
+            return
+        self.affected.add(row_id)
+        self.affected_verdicts.add(row_id)
+
     def record_undated(self, values: set[str], row_id: int, *, is_verdict: bool) -> None:
         """Una fila cuenta una vez por cada motivo distinto que trae.
 
@@ -274,6 +287,7 @@ class _StageTally:
         self.undated.add(row_id)
         if is_verdict:
             self.undated_verdicts.add(row_id)
+        self.bend(row_id, is_verdict=is_verdict)
         for value in values:
             self.undated_values[value] = self.undated_values.get(value, 0) + 1
 
@@ -283,8 +297,8 @@ class _StageTally:
         counts[label] = counts.get(label, 0) + 1
         self.ids.setdefault(rule.key, []).append(row_id)
         self.affected.add(row_id)
+        self.bend(row_id, is_verdict=is_verdict)
         if is_verdict:
-            self.affected_verdicts.add(row_id)
             self.verdicts[rule.key] = self.verdicts.get(rule.key, 0) + 1
 
 
@@ -314,8 +328,7 @@ def _tally_stage_row(
             # de ahora, y un repuntuado ni la mira -no hay nada que volver a
             # puntuar-. Contarla dejaba la etapa en rojo para siempre.
             tally.stale_verdicts.add(row_id)
-            tally.affected.add(row_id)
-            tally.affected_verdicts.add(row_id)
+        tally.bend(row_id, is_verdict=is_verdict)
     row_unknown = False
     row_undated: set[str] = set()
     for rule in spec.rules:
