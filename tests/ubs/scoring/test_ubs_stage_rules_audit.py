@@ -89,8 +89,12 @@ class StageRulesAuditTests(unittest.TestCase):
         self.assertEqual(audit.undated, 1)
         self.assertEqual(audit.undated_verdicts, 0)
 
-    def test_the_invalid_dates_say_which_one_they_were(self) -> None:
-        """«vacia o 1970.01.01» era una adivinanza: el dato esta en la fila."""
+    def test_the_invalid_dates_say_why_there_is_no_window(self) -> None:
+        """Ni «vacia o 1970.01.01» ni «1970.01.01»: el motivo, que es lo util.
+
+        El valor guardado no dice nada por si solo. Lo que separa a una fila de
+        otra es si no ha corrido o si corrio sin producir nada.
+        """
         conn = memory()
         insert_final_tick(
             conn, 1, run_id=7, status="rejected",
@@ -108,10 +112,12 @@ class StageRulesAuditTests(unittest.TestCase):
             stages=("final_tick",),
         )[0]
 
-        # Cada valor cuenta las filas a las que alcanza, no las celdas: la
+        # Cada motivo cuenta las filas a las que alcanza, no las celdas: la
         # fila 1 trae el cero de MT5 en sus dos fechas y cuenta una vez.
         self.assertEqual(audit.undated, 3)
-        self.assertEqual(audit.undated_stored, (("(vacio)", 2), ("1970.01.01", 2)))
+        self.assertEqual(
+            audit.undated_stored, (("no ha corrido", 2), ("reporte sin periodo", 2))
+        )
 
     def test_a_real_date_move_is_still_reported(self) -> None:
         conn = memory()

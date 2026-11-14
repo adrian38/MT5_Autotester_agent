@@ -1,4 +1,4 @@
-"""El catalogo de etapas del embudo UBS: que es cada una y donde esta.
+"""El vocabulario del auditor UBS: que es una etapa y que se dice de ella.
 
 `ubs/stage_rules_audit.py` se paso de las 600 lineas cuando cada etapa empezo
 a declarar tambien su cambio de regla y su join de elegibilidad. Lo que salio
@@ -10,7 +10,10 @@ mismo para quien ya lo pedia alli.
 Una etapa se describe entera en su `StageSpec`: su tabla y su clave, las
 reglas que guarda y las que aplica sin guardar (`non_auditable`), con que
 flag se repuntua, como sella el momento en que juzgo, cuando cambio su regla
-y de donde salen las filas que deberia tener.
+y de donde salen las filas que deberia tener. Detras van los tres dataclass
+con los que la auditoria contesta -`RuleFinding`, `StageAudit`,
+`PendingAudit`-, que son la otra mitad del mismo vocabulario y aqui no tocan
+SQLite: las consultas que los llenan viven en `stage_rules_audit`.
 """
 from __future__ import annotations
 
@@ -297,3 +300,74 @@ def stage_spec(key: str) -> StageSpec:
         return STAGE_SPEC_BY_KEY[str(key)]
     except KeyError:
         raise ValueError(f"Etapa UBS desconocida: {key}") from None
+
+@dataclass(frozen=True)
+class RuleFinding:
+    """Una regla cuyo valor guardado no es el que hay hoy en Configuracion."""
+
+    stage: str
+    stage_label: str
+    rule: str
+    rule_label: str
+    current: str
+    stored: tuple[tuple[str, int], ...]
+    rows: int
+    verdicts: int
+    ids: tuple[int, ...] = ()
+    # Lo que hace falta para ponerla al dia, copiado de su `RuleSpec`.
+    fix: str = "rescore"
+
+    def stored_summary(self) -> str:
+        return ", ".join(f"{value} ({count})" for value, count in self.stored) or "sin dato"
+
+
+@dataclass(frozen=True)
+class StageAudit:
+    """Lo que la auditoria encontro en una etapa."""
+
+    stage: str
+    stage_label: str
+    rows: int
+    verdicts: int
+    unknown: int
+    # Filas tocadas por al menos una regla movida o cambiada. Se cuenta aparte
+    # porque los identificadores de cada hallazgo vienen recortados por
+    # `MAX_REPORTED_IDS`.
+    affected: int = 0
+    # De las afectadas, las que ya tienen veredicto: son las unicas que pueden
+    # cambiar al repuntuar, y por eso la pantalla las cuenta aparte.
+    affected_verdicts: int = 0
+    # Filas cuya fecha guardada no es una fecha (vacia o el cero de MT5), y
+    # cuantas de ellas ya tienen veredicto. Las que lo tienen son el problema:
+    # se juzgaron sobre una ventana imposible, asi que su veredicto no vale.
+    # Las que no, simplemente no han corrido todavia.
+    undated: int = 0
+    undated_verdicts: int = 0
+    # Por que no tienen ventana y a cuantas filas alcanza cada motivo: no es lo
+    # mismo la que no ha corrido que la que corrio sin producir nada.
+    undated_stored: tuple[tuple[str, int], ...] = ()
+    # Filas selladas antes de `rules_changed_at`: sus umbrales son los de hoy,
+    # pero la regla que los aplico no. Las que ya tienen veredicto son las que
+    # pueden cambiar al repuntuar, igual que en un umbral movido.
+    stale: int = 0
+    stale_verdicts: int = 0
+    findings: tuple[RuleFinding, ...] = ()
+    missing_table: bool = False
+    non_auditable: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingAudit:
+    """Filas de una etapa que no llegaron a un estado final."""
+
+    stage: str
+    stage_label: str
+    rows: int
+    pending: int
+    by_status: tuple[tuple[str, int], ...] = ()
+    ids: tuple[int, ...] = ()
+    missing_table: bool = False
+    # Elegibles que no llegaron a tener fila: quien acaba de pasar a accepted
+    # arriba todavia no ha corrido aqui, y sin fila no cuenta como pendiente.
+    missing: int = 0
+

@@ -48,7 +48,10 @@ from ubs.stage_specs import (
     SCORE_RULES,
     STAGE_SPEC_BY_KEY,
     STAGE_SPECS,
+    PendingAudit,
+    RuleFinding,
     RuleSpec,
+    StageAudit,
     StageSpec,
     stage_spec,
 )
@@ -87,77 +90,6 @@ NUMBER_TOLERANCE = 1e-6
 # Ano hasta el que una fecha guardada se lee como el cero de MT5 y no como una
 # fecha que alguien puso.
 EPOCH_YEAR = 1970
-
-
-@dataclass(frozen=True)
-class RuleFinding:
-    """Una regla cuyo valor guardado no es el que hay hoy en Configuracion."""
-
-    stage: str
-    stage_label: str
-    rule: str
-    rule_label: str
-    current: str
-    stored: tuple[tuple[str, int], ...]
-    rows: int
-    verdicts: int
-    ids: tuple[int, ...] = ()
-    # Lo que hace falta para ponerla al dia, copiado de su `RuleSpec`.
-    fix: str = "rescore"
-
-    def stored_summary(self) -> str:
-        return ", ".join(f"{value} ({count})" for value, count in self.stored) or "sin dato"
-
-
-@dataclass(frozen=True)
-class StageAudit:
-    """Lo que la auditoria encontro en una etapa."""
-
-    stage: str
-    stage_label: str
-    rows: int
-    verdicts: int
-    unknown: int
-    # Filas tocadas por al menos una regla movida o cambiada. Se cuenta aparte
-    # porque los identificadores de cada hallazgo vienen recortados por
-    # `MAX_REPORTED_IDS`.
-    affected: int = 0
-    # De las afectadas, las que ya tienen veredicto: son las unicas que pueden
-    # cambiar al repuntuar, y por eso la pantalla las cuenta aparte.
-    affected_verdicts: int = 0
-    # Filas cuya fecha guardada no es una fecha (vacia o el cero de MT5), y
-    # cuantas de ellas ya tienen veredicto. Las que lo tienen son el problema:
-    # se juzgaron sobre una ventana imposible, asi que su veredicto no vale.
-    # Las que no, simplemente no han corrido todavia.
-    undated: int = 0
-    undated_verdicts: int = 0
-    # Que fechas eran y a cuantas filas alcanza cada una: la vacia y el cero de
-    # MT5 son dos problemas distintos, y la celda tiene que decir cual toco.
-    undated_stored: tuple[tuple[str, int], ...] = ()
-    # Filas selladas antes de `rules_changed_at`: sus umbrales son los de hoy,
-    # pero la regla que los aplico no. Las que ya tienen veredicto son las que
-    # pueden cambiar al repuntuar, igual que en un umbral movido.
-    stale: int = 0
-    stale_verdicts: int = 0
-    findings: tuple[RuleFinding, ...] = ()
-    missing_table: bool = False
-    non_auditable: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class PendingAudit:
-    """Filas de una etapa que no llegaron a un estado final."""
-
-    stage: str
-    stage_label: str
-    rows: int
-    pending: int
-    by_status: tuple[tuple[str, int], ...] = ()
-    ids: tuple[int, ...] = ()
-    missing_table: bool = False
-    # Elegibles que no llegaron a tener fila: quien acaba de pasar a accepted
-    # arriba todavia no ha corrido aqui, y sin fila no cuenta como pendiente.
-    missing: int = 0
 
 
 def _selected_specs(stages: Iterable[str] | None) -> tuple[StageSpec, ...]:
@@ -276,6 +208,16 @@ def _judged_before_change(
     return stamp < spec.rules_changed_at
 
 
+def _undated_reason(value: object) -> str:
+    """Por que la fila no tiene ventana, que es lo unico que importa de ella.
+
+    El valor guardado no dice nada por si solo -1970.01.01 es el cero que MT5
+    escribe en un reporte sin periodo- y ensenarlo obligaba a saberse esa
+    equivalencia de memoria para leer la celda.
+    """
+    return "no ha corrido" if not str(value or "").strip() else "reporte sin periodo"
+
+
 def _display(value: object, kind: str) -> str:
     if kind == "date":
         return str(value or "").strip() or "(vacio)"
@@ -323,11 +265,11 @@ class _StageTally:
     unknown: int = 0
 
     def record_undated(self, values: set[str], row_id: int, *, is_verdict: bool) -> None:
-        """Una fila cuenta una vez por cada valor distinto que guarda.
+        """Una fila cuenta una vez por cada motivo distinto que trae.
 
-        Guarda dos fechas y puede traer la vacia en una y el cero de MT5 en la
-        otra: contar por valor y no por celda deja cada numero diciendo a
-        cuantas filas alcanza.
+        Guarda dos fechas y puede no haber corrido en una y no haber producido
+        nada en la otra: contar por motivo y no por celda deja cada numero
+        diciendo a cuantas filas alcanza.
         """
         self.undated.add(row_id)
         if is_verdict:
@@ -389,7 +331,7 @@ def _tally_stage_row(
             row_unknown = row_unknown or bool(rule.score_field)
             continue
         if rule.kind == "date" and _missing_date(stored):
-            row_undated.add(_display(stored, rule.kind))
+            row_undated.add(_undated_reason(stored))
             continue
         if _same_value(stored, expected[rule.key], rule.kind):
             continue
@@ -566,14 +508,12 @@ def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
 
     No basta con que la etapa tenga `rescore_flag`: la ventana movida no la
     mueve ningun repuntuado, asi que una etapa cuyo unico hallazgo sea una
-    fecha no entra aqui. Antes si entraba, y el boton corria entero para dejar
-    la fila exactamente igual de roja.
+    fecha no entra aqui. Esto acorta la lista de la pantalla, que repuntua
+    igual aunque aqui no salga nada.
 
-    Final Tick corto y 6M comparten el flag `--rescore-final-tick-only`, pero
-    cada uno repuntua su propia tabla con sus propias fechas y lo que los
-    separa es `--final-tick-stage`. El flag se repite a proposito: si solo
-    entrara el primero, la tabla 6M se quedaria con las reglas viejas y la
-    siguiente auditoria volveria a denunciarla.
+    Final Tick corto y 6M comparten el flag `--rescore-final-tick-only` pero se
+    encolan por separado, cada uno con su `--final-tick-stage` y sus fechas,
+    porque cada uno repuntua su propia tabla.
     """
     return tuple(
         audit.stage
@@ -586,14 +526,17 @@ def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
 def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     """Etapas que ningun repuntuado pone al dia: hay que repetirlas con MT5.
 
-    Tres caras de lo mismo: la ventana movida, el cambio de regla declarado que
-    no se recalcula desde lo guardado, y la etapa sin `rescore_flag` -las dos
-    Seeds Final Tick- a la que cualquier hallazgo le obliga a repetir.
+    Cuatro caras de lo mismo: la ventana movida, el cambio de regla declarado
+    que no se recalcula desde lo guardado, la etapa sin `rescore_flag` a la que
+    cualquier hallazgo le obliga a repetir, y el veredicto dado sobre una
+    ventana imposible, cuyo reporte guardado es la parte rota. Este ultimo se
+    quedaba fuera, y la pantalla pintaba la etapa en rojo para luego no saber
+    decir que hacer con ella.
     """
     stages: list[str] = []
     for audit in audits:
         spec = stage_spec(audit.stage)
-        if _needs(audit, spec, "repeat"):
+        if _needs(audit, spec, "repeat") or audit.undated_verdicts:
             stages.append(audit.stage)
         elif not spec.rescore_flag and (audit.findings or audit.stale_verdicts):
             stages.append(audit.stage)

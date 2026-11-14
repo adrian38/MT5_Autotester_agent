@@ -1562,8 +1562,8 @@ Tab `ubs_auditor` ("UBS Auditor", `ui/ubs_auditor_view.py` +
 `ui/ubs_auditor_queries.py` for the two queries and how they become rows),
 over the pure audit in
 [`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py), whose stage catalog
-lives in [`ubs/stage_specs.py`](../ubs/stage_specs.py) and is re-exported from
-it. Stage rules change often, and every row stores the rules it was judged
+and result dataclasses live in [`ubs/stage_specs.py`](../ubs/stage_specs.py)
+— the vocabulary, no SQLite — and are re-exported from it. Stage rules change often, and every row stores the rules it was judged
 with: the four Final Tick tables store their deltas and minimum history
 quality, `candidate_robustness` its bonuses and window, `candidate_regression`
 its points, and base/seed rows carry their `score_config` inside
@@ -1619,17 +1619,22 @@ a report with no period line carries `1970.01.01`, while a row that has not run
 yet carries `''`. Neither is a finding — otherwise the screen sent a stage to be
 rescored because two broken reports and a thousand pending rows disagreed with
 today's window. They are counted as `StageAudit.undated`, split by
-`undated_verdicts`, with `undated_stored` holding which dates they actually
-were and how many rows each reaches — the cell used to read "(vacia o
-1970.01.01)", a guess between the two when the row holds the answer, and the
-two are not the same problem. The two cases:
+`undated_verdicts`, with `undated_stored` holding **why** there is no window
+and how many rows each reason reaches: `no ha corrido` (empty) or `reporte sin
+periodo` (the MT5 zero). The cell first read "(vacia o 1970.01.01)", a guess
+between the two when the row holds the answer, and then the raw value, which
+means nothing unless you know that 1970.01.01 *is* the absence of a window —
+`_undated_reason()` translates it once, here. The two cases:
 
 - **with a verdict** — the row was judged over an impossible window, so its
   verdict is worthless. `_stage_headline()` puts `N sin fecha valida` on the
   stage in red *even when every threshold matches today's*: a stage that hides
   this behind a green `Al dia` is lying. A rescore does not fix it (the stored
-  report is the broken part), so the status line says to repeat the stage, and
-  `stages_to_rescore()` does not key off it.
+  report is the broken part), so `stages_to_rescore()` does not key off it and
+  `stages_to_repeat()` does. Between those two every stage the table paints red
+  has to come out of one of them, or the screen reddens a row it cannot then
+  say anything about — which is exactly what happened while this case was in
+  neither.
 - **without a verdict** — the row simply has not run. It hangs off the stage as
   a muted child and `Consultar pendientes` is where it belongs.
 
@@ -1723,14 +1728,15 @@ no `--rescore-*-only`.
   with its own `--final-tick-stage` and dates, because each one rescores its
   own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
   they are reported, through `stages_to_repeat()`, as stages to run again.
-  With a stage selected in the table it rescores that one instead, whether or
-  not the audit found anything (`_ubs_auditor_stages_to_rescore()`). That is
-  the only way to apply a blind rule: the rescore *does* apply the three Final
-  Tick minimum-trade limits and the robustness retentions, which the stage does
-  not store and the audit therefore cannot see, so without this the button
-  refused to run over a change that would really have moved verdicts. When
-  nothing is queued, `_explain_nothing_to_rescore()` says what has to be
-  repeated instead and points at the selection.
+  **The button always rescores**; the audit only shortens the list.
+  `_ubs_auditor_stages_to_rescore()` goes from narrowest to widest: the stage
+  selected in the table, else what `stages_to_rescore()` found, else every
+  stage that has a rescore mode. Refusing to run when the audit found nothing
+  was asking it to prove what it cannot see — the rescore *does* apply the
+  three Final Tick minimum-trade limits and the robustness retentions, which
+  the stage never stores, so moving one of those changes verdicts while leaving
+  the audit with nothing to compare. The confirmation dialog names which of the
+  three cases it is and what still has to be repeated instead.
 - **Arreglar pendientes** — routes the selected stage to its own runner
   (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
   pending runs), which owns the retryable statuses and dates. This opens MT5

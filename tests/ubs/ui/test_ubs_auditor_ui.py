@@ -212,39 +212,43 @@ class StagesToRescoreTests(unittest.TestCase):
         harness._selected_ubs_auditor_stage = lambda: selected
         return harness
 
-    def test_a_marked_stage_rescores_even_with_nothing_found(self) -> None:
-        """Las reglas ciegas no se ven, y el repuntuado si las aplica.
-
-        Sin esto no habia forma de pedirlo: la auditoria no puede denunciar un
-        minimo de operaciones que la etapa no guarda, y el boton se negaba a
-        correr por no tener nada que ensenar.
-        """
+    def test_a_marked_stage_wins(self) -> None:
         harness = self._harness("final_tick")
 
-        stages, by_hand = harness._ubs_auditor_stages_to_rescore(())
+        stages, why = harness._ubs_auditor_stages_to_rescore(())
 
         self.assertEqual(stages, ["final_tick"])
-        self.assertTrue(by_hand)
+        self.assertEqual(why, "la etapa marcada")
 
-    def test_a_marked_stage_without_rescore_mode_falls_back(self) -> None:
-        harness = self._harness("seed_final_tick")
-
-        stages, by_hand = harness._ubs_auditor_stages_to_rescore(())
-
-        self.assertEqual(stages, [])
-        self.assertFalse(by_hand)
-
-    def test_without_a_mark_the_audit_decides(self) -> None:
+    def test_without_a_mark_the_audit_narrows_it_down(self) -> None:
         harness = self._harness("")
         audit = SimpleNamespace(
             stage="robustness", findings=(SimpleNamespace(fix="rescore"),),
-            stale_verdicts=0,
+            stale_verdicts=0, undated_verdicts=0,
         )
 
-        stages, by_hand = harness._ubs_auditor_stages_to_rescore((audit,))
+        stages, why = harness._ubs_auditor_stages_to_rescore((audit,))
 
         self.assertEqual(stages, ["robustness"])
-        self.assertFalse(by_hand)
+        self.assertEqual(why, "lo que encontro la auditoria")
+
+    def test_with_nothing_found_it_rescores_everything_it_can(self) -> None:
+        """El boton repuntua; la auditoria solo sirve para acortar la lista.
+
+        Negarse a correr cuando no encuentra nada era pedirle que demostrara lo
+        que no puede ver: una regla ciega movida no deja rastro que comparar, y
+        el repuntuado si la aplica.
+        """
+        harness = self._harness("")
+
+        stages, why = harness._ubs_auditor_stages_to_rescore(())
+
+        self.assertEqual(why, "todas las que se pueden")
+        self.assertEqual(
+            stages,
+            [spec.key for spec in STAGE_SPECS if spec.rescore_flag],
+        )
+        self.assertNotIn("seed_final_tick", stages)
 
 
 class RescoreQueueTests(unittest.TestCase):
