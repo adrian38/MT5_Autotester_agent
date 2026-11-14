@@ -7,6 +7,8 @@ from ubs.stage_rules_audit import (
     MAX_REPORTED_IDS,
     audit_pending_states,
     audit_stage_rules,
+    stage_spec,
+    stages_to_repeat,
     stages_to_rescore,
 )
 
@@ -65,6 +67,9 @@ def insert_final_tick(conn, candidate_id: int, *, run_id: int, status: str, **ov
         "max_dd_gap_pp": 3.0,
         "from_date": "2026.05.01",
         "to_date": "2026.05.31",
+        # Sin sello la fila no se juzgo nunca, que es lo que quieren casi todas
+        # estas pruebas: asi el cambio de regla declarado no las alcanza.
+        "evaluated_at": "",
     }
     values.update(overrides)
     conn.execute(
@@ -73,14 +78,38 @@ def insert_final_tick(conn, candidate_id: int, *, run_id: int, status: str, **ov
             candidate_id, run_id, status, min_history_quality, from_date, to_date,
             max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
             max_dd_gap_pp, evaluated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             candidate_id, run_id, status, values["min_history_quality"],
             values["from_date"], values["to_date"], values["max_net_delta_pct"],
             values["max_pf_delta_pct"], values["max_dd_delta_pct"],
             values["max_trades_delta_pct"], values["max_dd_gap_pp"],
+            values["evaluated_at"],
         ),
+    )
+
+
+def before_and_after(stage_key: str) -> tuple[str, str]:
+    """Dos sellos que rodean al cambio de regla declarado de una etapa.
+
+    Se derivan de la declaracion en vez de escribirse a mano: la fecha se
+    movera cuando la regla vuelva a cambiar, y la prueba pregunta por el antes
+    y el despues, no por un dia concreto.
+    """
+    stamp = stage_spec(stage_key).rules_changed_at
+    return f"{int(stamp[:4]) - 1}-01-01T00:00:00", "9999-01-01T00:00:00"
+
+
+def insert_robustness(conn, candidate_id: int, *, run_id: int, status: str) -> None:
+    conn.execute(
+        """
+        insert into candidate_robustness (
+            candidate_id, run_id, status, from_date, to_date,
+            positive_bonus, negative_bonus, evaluated_at
+        ) values (?, ?, ?, '2026.01.01', '2026.06.30', 70.0, -70.0, '')
+        """,
+        (candidate_id, run_id, status),
     )
 
 
@@ -109,6 +138,88 @@ class StageRulesAuditTests(unittest.TestCase):
         self.assertEqual(findings[0].verdicts, 2)
         self.assertEqual(findings[0].ids, (1, 2))
         self.assertEqual(audits["final_tick"].affected, 2)
+
+    def test_the_mt5_zero_date_is_not_a_moved_rule(self) -> None:
+        """1970.01.01 es el cero que MT5 escribe sin periodo, no un umbral.
+
+        `_read_ohlc_report_cfg_dates()` copia a la fila las fechas del reporte
+        OHLC, y un reporte sin periodo las trae a cero. Denunciarlo como regla
+        movida mandaba a repuntuar una etapa que nadie habia tocado.
+        """
+        conn = memory()
+        insert_final_tick(
+            conn, 1, run_id=7, status="rejected", max_pf_delta_pct=30.0,
+            from_date="1970.01.01", to_date="1970.01.01",
+        )
+        insert_final_tick(conn, 2, run_id=7, status="accepted", max_pf_delta_pct=30.0)
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual([finding.rule for finding in audit.findings], [])
+        self.assertEqual(audit.affected, 0)
+        # Con veredicto: se juzgo sobre una ventana imposible, no esta al dia.
+        self.assertEqual(audit.undated, 1)
+        self.assertEqual(audit.undated_verdicts, 1)
+
+    def test_an_empty_date_is_not_a_moved_rule_either(self) -> None:
+        """Una fila que aun no ha corrido no guarda fecha, no guarda otra."""
+        conn = memory()
+        insert_final_tick(
+            conn, 1, run_id=7, status="pending", max_pf_delta_pct=30.0,
+            from_date="", to_date="",
+        )
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual(audit.findings, ())
+        # Sin veredicto: no ha corrido, que es cosa de Consultar pendientes.
+        self.assertEqual(audit.undated, 1)
+        self.assertEqual(audit.undated_verdicts, 0)
+
+    def test_a_real_date_move_is_still_reported(self) -> None:
+        conn = memory()
+        insert_final_tick(
+            conn, 1, run_id=7, status="accepted",
+            max_pf_delta_pct=30.0, from_date="2026.01.01",
+        )
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual([finding.rule for finding in audit.findings], ["from_date"])
+        self.assertEqual(audit.findings[0].stored, (("2026.01.01", 1),))
+        self.assertEqual(audit.affected_verdicts, 1)
+
+    def test_affected_verdicts_count_each_row_once(self) -> None:
+        """Dos reglas movidas sobre la misma fila son una fila, no dos."""
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="accepted", max_dd_gap_pp=5.0)
+        insert_final_tick(conn, 2, run_id=7, status="pending", max_dd_gap_pp=5.0)
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual(len(audit.findings), 2)
+        self.assertEqual(audit.affected, 2)
+        self.assertEqual(audit.affected_verdicts, 1)
 
     def test_affected_rows_are_counted_past_the_reported_ids(self) -> None:
         conn = memory()
@@ -204,6 +315,64 @@ class StageRulesAuditTests(unittest.TestCase):
 
         self.assertEqual(audits[0].findings, ())
 
+    def test_a_declared_rule_change_marks_what_it_preceded(self) -> None:
+        """Los umbrales son los de hoy; lo que cambio fue como se aplican.
+
+        Un cambio asi no deja rastro en la fila -los numeros guardados siguen
+        coincidiendo-, asi que solo el sello dice quien nacio con la regla
+        vieja.
+        """
+        before, after = before_and_after("final_tick")
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=before)
+        insert_final_tick(conn, 2, run_id=7, status="pending", evaluated_at=before)
+        insert_final_tick(conn, 3, run_id=7, status="accepted", evaluated_at=after)
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual(audit.findings, ())
+        self.assertEqual(audit.stale, 2)
+        self.assertEqual(audit.stale_verdicts, 1)
+        # Afectados y juzgados cuentan lo mismo que con un umbral movido: la
+        # pantalla pregunta a cuantos arrastra, no de que clase es el cambio.
+        self.assertEqual(audit.affected, 2)
+        self.assertEqual(audit.affected_verdicts, 1)
+
+    def test_a_row_that_has_not_run_did_not_meet_the_old_rule(self) -> None:
+        """Sin sello la fila no se ha juzgado, y correra con la regla de hoy."""
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at="")
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual(audit.stale, 0)
+        self.assertEqual(audit.affected, 0)
+
+    def test_a_rescored_row_stops_being_stale(self) -> None:
+        """El aviso se apaga solo: repuntuar reescribe el sello."""
+        _before, after = before_and_after("final_tick")
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=after)
+
+        audit = audit_stage_rules(
+            conn,
+            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )[0]
+
+        self.assertEqual(audit.stale, 0)
+
     def test_missing_table_is_flagged_instead_of_raising(self) -> None:
         conn = sqlite3.connect(":memory:")
 
@@ -249,6 +418,52 @@ class PendingStatesAuditTests(unittest.TestCase):
 
         self.assertEqual(summary.pending, 0)
         self.assertEqual(summary.by_status, ())
+        self.assertEqual(summary.missing, 0)
+
+    def test_an_eligible_without_a_row_is_counted_apart(self) -> None:
+        """Quien se vuelve elegible al repuntuar no se queda pendiente: no esta.
+
+        Sin fila no hay estado que contar, asi que la etapa parecia al dia
+        mientras le faltaba por juzgar justo a quien acababa de pasar a
+        accepted en la etapa de arriba.
+        """
+        conn = memory()
+        for candidate_id in (1, 2, 3):
+            insert_candidate(conn, candidate_id, run_id=7, status="accepted", min_trades=60)
+            insert_robustness(conn, candidate_id, run_id=7, status="accepted")
+        insert_final_tick(conn, 1, run_id=7, status="accepted")
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("final_tick",)
+        )[0]
+
+        self.assertEqual(summary.rows, 1)
+        self.assertEqual(summary.pending, 0)
+        self.assertEqual(summary.missing, 2)
+
+    def test_an_eligible_without_a_row_respects_the_run_scope(self) -> None:
+        conn = memory()
+        for candidate_id, run_id in ((1, 7), (2, 8)):
+            insert_candidate(conn, candidate_id, run_id=run_id, status="accepted", min_trades=60)
+            insert_robustness(conn, candidate_id, run_id=run_id, status="accepted")
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, run_id=7, stages=("final_tick",)
+        )[0]
+
+        self.assertEqual(summary.missing, 1)
+
+    def test_a_candidate_the_stage_never_wanted_is_not_missing(self) -> None:
+        """Final Tick solo quiere a los que la robustez acepto."""
+        conn = memory()
+        insert_candidate(conn, 1, run_id=7, status="accepted", min_trades=60)
+        insert_robustness(conn, 1, run_id=7, status="rejected")
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("final_tick",)
+        )[0]
+
+        self.assertEqual(summary.missing, 0)
 
 
 class StagesToRescoreTests(unittest.TestCase):
@@ -295,6 +510,49 @@ class StagesToRescoreTests(unittest.TestCase):
 
         self.assertTrue(audits[0].findings)
         self.assertEqual(stages_to_rescore(audits), ())
+        self.assertEqual(stages_to_repeat(audits), ("seed_final_tick",))
+
+    def test_a_declared_rule_change_also_queues_the_rescore(self) -> None:
+        before, _after = before_and_after("final_tick")
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=before)
+
+        audits = audit_stage_rules(
+            conn,
+            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )
+
+        self.assertEqual(audits[0].findings, ())
+        self.assertEqual(stages_to_rescore(audits), ("final_tick",))
+        self.assertEqual(stages_to_repeat(audits), ())
+
+    def test_a_change_that_needs_the_stage_repeated_is_not_rescored(self) -> None:
+        """Seeds Final Tick no tiene repuntuado: su cambio se declara `repeat`."""
+        before, _after = before_and_after("seed_final_tick")
+        conn = memory()
+        conn.execute(
+            """
+            insert into seed_final_tick (
+                seed_id, status, min_history_quality, from_date, to_date,
+                max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
+                max_trades_delta_pct, max_dd_gap_pp, seed_mtime, seed_size, evaluated_at
+            ) values (1, 'accepted', 80.0, '2026.05.01', '2026.05.31', 35.0, 35.0, 35.0, 35.0, 3.0, 0, 0, ?)
+            """,
+            (before,),
+        )
+
+        audits = audit_stage_rules(
+            conn,
+            {"seed_final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+            final_statuses=FINAL_STATUSES,
+            stages=("seed_final_tick",),
+        )
+
+        self.assertEqual(audits[0].stale, 1)
+        self.assertEqual(stages_to_rescore(audits), ())
+        self.assertEqual(stages_to_repeat(audits), ("seed_final_tick",))
 
 
 if __name__ == "__main__":

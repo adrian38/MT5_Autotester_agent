@@ -1558,38 +1558,129 @@ State: `self.ubs_search_query`, `self.ubs_search_status`, `self.ubs_search_paths
 ### UBS Auditor tab (stage-rule drift + state repair)
 
 Tab `ubs_auditor` ("UBS Auditor", `ui/ubs_auditor_view.py` +
-`ui/ubs_auditor_logic.py`), over the pure audit in
-[`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py). Stage rules change
-often, and every row stores the rules it was judged with: the four Final Tick
-tables store their deltas and minimum history quality, `candidate_robustness`
-its bonuses and window, `candidate_regression` its points, and base/seed rows
-carry their `score_config` inside `metrics_json`. The screen compares that with
-what Configuración holds now — no HTML is reparsed.
+`ui/ubs_auditor_logic.py` for scope/rules/repairs and
+`ui/ubs_auditor_queries.py` for the two queries and how they become rows),
+over the pure audit in
+[`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py), whose stage catalog
+lives in [`ubs/stage_specs.py`](../ubs/stage_specs.py) and is re-exported from
+it. Stage rules change often, and every row stores the rules it was judged
+with: the four Final Tick tables store their deltas and minimum history
+quality, `candidate_robustness` its bonuses and window, `candidate_regression`
+its points, and base/seed rows carry their `score_config` inside
+`metrics_json`. The screen compares that with what Configuración holds now — no
+HTML is reparsed.
 
 Scope selectors: any account of the active broker, and one run or the whole
 memory. `STAGE_SPECS` is ordered like the funnel and like the sidebar — Seeds,
 Seeds Final Tick, Seeds Final Tick 6M, Resultados, Robustez, Final Tick, Final
 Tick 6M, Regresiva — and each `label` is its screen's name, so the audit reads
 top-down and names nothing twice. Both queries fill the same tree: one row per
-stage (the `#0` column), with its findings, blind rules and `score_config`-less
-rows hanging from it, so the stage name is never repeated and a stage opens by
-itself only when a rule moved. The `QUE PASA` column names what each row is
-(`Al dia`, `N reglas movidas`, `Regla movida`, `Regla ciega`, `Sin saber`,
-`Sin tabla`, `Pendientes`). `CUANTOS` counts out loud — "1046
-candidatos", "322 semillas" — from `StageSpec.unit`, since a bare row count
-means nothing to the operator; `_tree_sort_value()` falls back to the leading
-number so that column still sorts numerically. Four actions:
+stage (the `#0` column), with its findings and `score_config`-less rows hanging
+from it, so the stage name is never repeated and a stage opens by itself only
+when a rule moved.
+
+The two queries share the tree but not the columns. `AUDITOR_COLUMNS` declares
+all six; `AUDITOR_RULE_LAYOUT` and `AUDITOR_PENDING_LAYOUT` pick which ones
+each query shows, with what heading and width, and
+`_show_ubs_auditor_columns()` applies the chosen one through `displaycolumns`
+before the rows go in. Sharing the headings too meant one `DETALLE` column had
+to mean both "se juzgo con 1970.01.01 (2)" and "error (12)". Every column now
+means one thing on every row:
+
+| Column | Rules query | Pending query |
+|--------|-------------|---------------|
+| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `Sin saber`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
+| `item` | `REGLA`: the moved rule's label | hidden |
+| `current` | `AHORA`: what Configuración holds | hidden |
+| `stored` | `SE JUZGO CON`: stored values with their counts | `EN QUE ESTADO SE QUEDARON`: statuses with their counts |
+| `affected` | `A CUANTOS AFECTA` | `CUANTOS FALTAN` |
+| `judged` | `YA JUZGADOS`: of those affected, how many carry a verdict | hidden |
+
+`_of_total()` writes the count and what it is measured against in one cell —
+"2 de 3798 candidatos", from `StageSpec.unit` — because the affected count and
+the stage size used to sit in neighbouring columns and read as a
+contradiction; `_tree_sort_value()` falls back to the leading number so the
+column still sorts numerically. `_stored_cell()` caps the stored list at
+`MAX_STORED_VALUES_SHOWN` and counts the rest ("+1 mas") instead of letting the
+column cut a value in half. The widths add up to less than the table's usable
+width on purpose: `ETAPA` is the first column and rides the horizontal
+scrollbar, so a wider table is born hiding the one thing the screen is opened
+for, and `stored` is the only stretching column, which takes the slack.
+`StageSpec.non_auditable` no longer gets a row per stage — it is constant and
+four stages share it — but a single muted line under the table,
+`_blind_rules_note()`, which groups the stages that are blind to the same
+rules. Four actions:
+
+A stored date that is empty or at the MT5 zero (`_missing_date()`, year
+`EPOCH_YEAR` or earlier) is not a threshold anybody set: `candidate_final_tick`
+takes its window from the OHLC report via `_read_ohlc_report_cfg_dates()`, and
+a report with no period line carries `1970.01.01`, while a row that has not run
+yet carries `''`. Neither is a finding — otherwise the screen sent a stage to be
+rescored because two broken reports and a thousand pending rows disagreed with
+today's window. They are counted as `StageAudit.undated`, split by
+`undated_verdicts`, because the two cases are not the same problem:
+
+- **with a verdict** — the row was judged over an impossible window, so its
+  verdict is worthless. `_stage_headline()` puts `N sin fecha valida` on the
+  stage in red *even when every threshold matches today's*: a stage that hides
+  this behind a green `Al dia` is lying. A rescore does not fix it (the stored
+  report is the broken part), so the status line says to repeat the stage, and
+  `stages_to_rescore()` does not key off it.
+- **without a verdict** — the row simply has not run. It hangs off the stage as
+  a muted child and `Consultar pendientes` is where it belongs.
+
+#### Declared rule changes (the stored values cannot show them)
+
+When what changes is the code that applies the thresholds and not the
+thresholds, the row keeps storing the same numbers and the comparison finds
+nothing, although the verdict was born under another rule. That is declared by
+hand in `StageSpec`: `rules_changed_at` is the ISO instant the new rule took
+effect, `rules_change_note` what changed, and `rules_change_fix` whether a
+rescore settles it (`"rescore"`) or the stage must be run again (`"repeat"`).
+Bumping the date belongs in the same commit that changes the rule.
+
+A row counts as `StageAudit.stale` when its `judged_column` stamp — already
+written by the memory on all eight tables — is earlier than that instant, so
+the warning clears itself as soon as the row is judged again; an empty stamp is
+a row that has not run and will run under today's rule, so it does not count.
+A stage with no stamp of its own declares `judged_column=""` (`candidates`,
+whose `created_at` is when the .set was generated and which a rescore does not
+touch): there the change cannot be split row by row, so everything already
+carrying a verdict is counted, which is all that is honestly known. Stale rows
+join `affected`/`affected_verdicts` like a moved threshold, since the screen
+asks how many are dragged along, not of what kind the change is.
+`stages_to_rescore()` picks up the `"rescore"` ones and `stages_to_repeat()`
+the rest, together with the stages whose moved thresholds have no rescore mode.
+
+The four Final Tick stages carry `FINAL_TICK_SHARED_RULES_AT`
+(`2026-11-12T05:17:49`, commit `62aef74`), when they went to shared rules
+without a single threshold moving. The two seed ones are `"repeat"`: they have
+no `--rescore-*-only`.
 
 - **Auditar reglas** — per stage, each rule whose stored value differs, the
   value configured now, the stored values with their row counts, affected rows
-  and how many of them already carry a verdict. It also reports rows without a
-  stored `score_config` and the rules a stage applies but does not store
-  (Final Tick minimum trades), which this audit cannot see.
-- **Consultar pendientes** — per stage, rows whose status is not
-  `accepted`/`rejected`, broken down by status. Final statuses come from
-  `AUDIT_FINAL_STATUSES` in `ui/ubs_search_audit_base.py`; the module itself
-  decides nothing about that.
-- **Arreglar reglas** — chains one `--rescore-*-only` per affected stage, in
+  and how many of them already carry a verdict (`StageAudit.affected_verdicts`,
+  counted over distinct rows, since two moved rules on one row are still one
+  row). Those are the only ones a rescore can change. It also reports rows
+  without a stored `score_config`, and names under the table the rules a stage
+  applies but does not store (Final Tick minimum trades), which this audit
+  cannot see.
+- **Consultar pendientes** — per stage, the two ways a stage can be behind,
+  each its own child row. `Se quedaron a medias` are the rows whose status is
+  not `accepted`/`rejected`, broken down by status; final statuses come from
+  `AUDIT_FINAL_STATUSES` in `ui/ubs_search_audit_base.py` and the module itself
+  decides nothing about that. `Sin fila todavia` (`PendingAudit.missing`,
+  counted through `StageSpec.upstream_sql`) are the eligible ones that never
+  got a row at all — what a rescore leaves behind when it flips somebody from
+  rejected to accepted upstream. With no row there is no status to count, so
+  before this the stage read `Al dia` while exactly those were missing. Both
+  count toward the stage total, so `N de M` is measured against what should be
+  judged, not only against what exists. `upstream_sql` mirrors each runner's
+  own eligibility join (`ubs/memory_stages.py`,
+  `ubs/agent/seeds/final_tick.py`), which stays the source of truth.
+- **Repuntuar afectados** — the button repairs no rule: it repairs the
+  accepted/rejected of the seeds and candidates judged under another one. It
+  chains one `--rescore-*-only` per affected stage, in
   `STAGE_SPECS` order, targeting the audited account's `--memory`. The agent
   serves one mode per process, so the next stage starts from
   `_maybe_auto_run_ubs_auditor_rescore()` when the previous one exits 0, and the
@@ -1598,11 +1689,15 @@ number so that column still sorts numerically. Four actions:
   share the `--rescore-final-tick-only` flag but are queued separately, each
   with its own `--final-tick-stage` and dates, because each one rescores its
   own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
-  they are reported and left out.
+  they are reported, through `stages_to_repeat()`, as stages to run again.
 - **Arreglar pendientes** — routes the selected stage to its own runner
   (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
   pending runs), which owns the retryable statuses and dates. This opens MT5
-  and requires the audited account to be the active UBS account.
+  and requires the audited account to be the active UBS account. One button
+  covers both gaps because the runners already treat them alike: their
+  `pending_only` mode is "accepted without a row + retryable", so the newly
+  eligible rows a rescore just created are picked up with the half-finished
+  ones, and no separate "repair the updated states" action is needed.
 
 State: `self.ubs_auditor_account`, `self.ubs_auditor_run_id`,
 `self.ubs_auditor_status`, `self._ubs_auditor_audits`,

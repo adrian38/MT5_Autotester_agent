@@ -328,6 +328,7 @@ class AppPortfolioStateMixin:
         self.ubs_auditor_status = tk.StringVar(
             value="Elige cuenta y run, y audita reglas o pendientes."
         )
+        self.ubs_auditor_blind_rules = tk.StringVar(value="")
         # Lo que dejo la ultima auditoria de reglas, la etapa de cada fila de la
         # tabla y la cola de repuntuados que queda por lanzar.
         self._ubs_auditor_audits: tuple = ()

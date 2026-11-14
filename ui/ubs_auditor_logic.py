@@ -1,16 +1,22 @@
-"""Pantalla UBS Auditor: reglas movidas, pendientes y como arreglarlos.
+"""Pantalla UBS Auditor: que cuenta se audita y como se arregla lo que sale.
 
 Las reglas de las etapas cambian a menudo y la memoria guarda en cada fila las
 que se le aplicaron. `ubs/stage_rules_audit.py` compara lo guardado con lo que
-hay hoy en Configuracion; esta pantalla lo pinta y ofrece los dos arreglos:
+hay hoy en Configuracion y `ui/ubs_auditor_queries.py` lo pinta; aqui se elige
+la cuenta y el run, se reunen las reglas vigentes y se ofrecen los dos
+arreglos:
 
-- **Arreglar reglas** repuntua desde SQLite las etapas con reglas movidas, sin
-  abrir MT5. Encadena un `--rescore-*-only` por etapa: el agente atiende un
+- **Repuntuar afectados** no arregla ninguna regla: arregla el veredicto de las
+  semillas y candidatos que se juzgaron con otra. Repuntua desde SQLite, sin
+  abrir MT5, encadenando un `--rescore-*-only` por etapa: el agente atiende un
   modo por proceso, asi que el siguiente sale cuando el anterior termina bien.
   El repuntuado recorre toda la memoria de la cuenta, no solo el run auditado.
 - **Arreglar pendientes** delega en el runner de cada etapa, que es el unico
   que sabe que estado se puede reintentar y con que fechas. Eso si abre MT5, y
-  por eso exige que la cuenta auditada sea la cuenta UBS activa.
+  por eso exige que la cuenta auditada sea la cuenta UBS activa. Cubre los dos
+  huecos a la vez, porque el runner ya los trata igual: el que se quedo a
+  medias y el que acaba de volverse elegible y no tiene fila todavia -lo que
+  deja detras un repuntuado que paso a alguien de rejected a accepted-.
 """
 from __future__ import annotations
 
@@ -23,12 +29,11 @@ from tkinter import messagebox
 from ubs.account import account_memory_path
 from ubs.db import connect_memory
 from ubs.stage_rules_audit import (
-    audit_pending_states,
-    audit_stage_rules,
     stage_spec,
+    stages_to_repeat,
     stages_to_rescore,
 )
-from ui.ubs_search_audit_base import AUDIT_FINAL_STATUSES
+from ui.ubs_auditor_queries import UBSAuditorQueriesMixin
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -36,20 +41,13 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 
 
-def _counted(count: int, stage_key: str) -> str:
-    """Cuenta con lo que cuenta: «1046 candidatos», no «1046 filas»."""
-    return f"{count} {stage_spec(stage_key).unit}"
+class UBSAuditorLogicMixin(UBSAuditorQueriesMixin):
+    """Auditoria de reglas por etapa, resumen de pendientes y sus arreglos.
 
-
-def _moved_rules(count: int) -> str:
-    """Veredicto de la etapa, que es lo que se lee sin desplegarla."""
-    if not count:
-        return "Al dia"
-    return "1 regla movida" if count == 1 else f"{count} reglas movidas"
-
-
-class UBSAuditorLogicMixin:
-    """Auditoria de reglas por etapa, resumen de pendientes y sus arreglos."""
+    Hereda las dos consultas en vez de pedirselas a otro mixin para que la
+    pantalla siga entrando por un solo nombre: `app_ui` y las pruebas montan
+    este y lo tienen todo.
+    """
 
     # ------------------------------------------------------------------
     # Cuenta y run auditados
@@ -217,179 +215,6 @@ class UBSAuditorLogicMixin:
         }
 
     # ------------------------------------------------------------------
-    # Consultas
-    # ------------------------------------------------------------------
-    def _ubs_auditor_open_memory(self) -> sqlite3.Connection | None:
-        memory_path = self._ubs_auditor_memory_path()
-        if memory_path is None:
-            self.ubs_auditor_status.set("Cuenta invalida.")
-            return None
-        if not memory_path.exists():
-            self.ubs_auditor_status.set(f"No existe memoria {self.ubs_auditor_account.get()}.")
-            return None
-        conn = connect_memory(memory_path)
-        conn.row_factory = sqlite3.Row
-        self._ensure_ubs_memory_schema(conn)
-        return conn
-
-    def _audit_ubs_stage_rules_clicked(self) -> None:
-        try:
-            current = self._ubs_auditor_current_rules()
-        except ValueError as exc:
-            self._show_error("Auditor UBS", str(exc))
-            return
-        conn = self._ubs_auditor_open_memory()
-        if conn is None:
-            return
-        try:
-            audits = audit_stage_rules(
-                conn,
-                current,
-                final_statuses=AUDIT_FINAL_STATUSES,
-                run_id=self._ubs_auditor_selected_run_id(),
-            )
-        except sqlite3.Error as exc:
-            self._show_error("Auditor UBS", f"Error auditando reglas: {exc}")
-            return
-        finally:
-            conn.close()
-
-        self._ubs_auditor_audits = tuple(audits)
-        groups: list[tuple] = []
-        moved = 0
-        for audit in audits:
-            if audit.missing_table:
-                groups.append((audit.stage, audit.stage_label, (
-                    "Sin tabla", "esta memoria no tiene la tabla de la etapa",
-                    "", "", "", "",
-                ), "pending", ()))
-                continue
-            children: list[tuple] = []
-            for finding in audit.findings:
-                moved += 1
-                children.append(((
-                    "Regla movida", finding.rule_label, finding.current,
-                    finding.stored_summary(), _counted(finding.rows, audit.stage),
-                    str(finding.verdicts),
-                ), "rejected"))
-            if audit.unknown:
-                children.append(((
-                    "Sin saber", "no guardaron con que reglas se les juzgo", "", "",
-                    _counted(audit.unknown, audit.stage), "",
-                ), "pending"))
-            if audit.non_auditable:
-                children.append(((
-                    "Regla ciega", ", ".join(audit.non_auditable), "",
-                    "no se guarda en la memoria: cambiarla no se ve desde aqui", "", "",
-                ), "pending"))
-            summary = (
-                f"afecta a {_counted(audit.affected, audit.stage)}"
-                if audit.findings
-                else "se juzgaron con las reglas de ahora"
-            )
-            groups.append((audit.stage, audit.stage_label, (
-                _moved_rules(len(audit.findings)), "", "", summary,
-                _counted(audit.rows, audit.stage), str(audit.verdicts),
-            ), "rejected" if audit.findings else "accepted", tuple(children)))
-        self._populate_ubs_auditor_rows(groups)
-        scope = self._ubs_auditor_scope_label()
-        if moved:
-            affected = sum(audit.affected for audit in audits)
-            stages = sum(1 for audit in audits if audit.findings)
-            self.ubs_auditor_status.set(
-                f"{scope}: {moved} regla(s) movida(s) en {stages} etapa(s); "
-                f"{affected} semilla(s)/candidato(s) afectado(s), sumando etapas."
-            )
-        else:
-            self.ubs_auditor_status.set(f"{scope}: ninguna etapa se juzgo con otras reglas.")
-
-    def _audit_ubs_pending_states_clicked(self) -> None:
-        conn = self._ubs_auditor_open_memory()
-        if conn is None:
-            return
-        try:
-            summaries = audit_pending_states(
-                conn,
-                final_statuses=AUDIT_FINAL_STATUSES,
-                run_id=self._ubs_auditor_selected_run_id(),
-            )
-        except sqlite3.Error as exc:
-            self._show_error("Auditor UBS", f"Error consultando pendientes: {exc}")
-            return
-        finally:
-            conn.close()
-
-        self._ubs_auditor_audits = ()
-        groups: list[tuple] = []
-        pending_total = 0
-        for summary in summaries:
-            if summary.missing_table:
-                groups.append((summary.stage, summary.stage_label, (
-                    "Sin tabla", "esta memoria no tiene la tabla de la etapa",
-                    "", "", "", "",
-                ), "pending", ()))
-                continue
-            if not summary.pending:
-                groups.append((summary.stage, summary.stage_label, (
-                    "Al dia", "todos en estado final", "", "",
-                    _counted(summary.rows, summary.stage), "",
-                ), "accepted", ()))
-                continue
-            pending_total += summary.pending
-            # Mismo formato que los hallazgos, «valor (cuantos)», para que la
-            # columna ancha se lea igual venga de la consulta que venga.
-            detail = ", ".join(f"{status} ({count})" for status, count in summary.by_status)
-            groups.append((summary.stage, summary.stage_label, (
-                "Pendientes", "se quedaron sin estado final", "", detail,
-                _counted(summary.pending, summary.stage), "",
-            ), "rejected", ()))
-        self._populate_ubs_auditor_rows(groups)
-        scope = self._ubs_auditor_scope_label()
-        if pending_total:
-            self.ubs_auditor_status.set(
-                f"{scope}: {pending_total} semilla(s)/candidato(s) sin estado final. "
-                "Marca una etapa y pulsa Arreglar pendientes."
-            )
-        else:
-            self.ubs_auditor_status.set(f"{scope}: todas las etapas en estado final.")
-
-    def _populate_ubs_auditor_rows(self, groups) -> None:
-        """Una fila por etapa, y su detalle colgando de ella.
-
-        Antes cada hallazgo era una fila suelta que repetia el nombre de la
-        etapa, y ocho etapas se leian como veinte. Ahora la etapa se resume en
-        su propia fila y solo se despliega sola cuando hay reglas movidas.
-        """
-        tree = getattr(self, "ubs_auditor_tree", None)
-        if tree is None:
-            return
-        for item in tree.get_children():
-            tree.delete(item)
-        self.ubs_auditor_row_stage = {}
-        for stage, stage_label, values, tag, children in groups:
-            parent = tree.insert(
-                "",
-                "end",
-                text=f" {stage_label}",
-                values=values,
-                tags=(tag,),
-                open=any(child_tag == "rejected" for _values, child_tag in children),
-            )
-            self.ubs_auditor_row_stage[parent] = stage
-            for child_values, child_tag in children:
-                item = tree.insert(parent, "end", values=child_values, tags=(child_tag,))
-                self.ubs_auditor_row_stage[item] = stage
-
-    def _selected_ubs_auditor_stage(self) -> str:
-        tree = getattr(self, "ubs_auditor_tree", None)
-        if tree is None:
-            return ""
-        selection = tree.selection()
-        if not selection:
-            return ""
-        return str(getattr(self, "ubs_auditor_row_stage", {}).get(selection[0], ""))
-
-    # ------------------------------------------------------------------
     # Arreglo de reglas: repuntuado encadenado
     # ------------------------------------------------------------------
     def _ubs_auditor_robustness_rescore_args(self) -> list[str]:
@@ -489,19 +314,18 @@ class UBSAuditorLogicMixin:
         args.extend(self._effective_symbol_suffix_args())
         return args
 
-    def _fix_ubs_stage_rules_clicked(self) -> None:
+    def _rescore_ubs_affected_clicked(self) -> None:
         audits = getattr(self, "_ubs_auditor_audits", ())
         if not audits:
-            messagebox.showinfo("Auditor UBS", "Audita las reglas antes de arreglarlas.")
+            messagebox.showinfo("Auditor UBS", "Audita las reglas antes de repuntuar.")
             return
         stages = list(stages_to_rescore(audits))
-        blind = [
-            audit.stage_label
-            for audit in audits
-            if audit.findings and not stage_spec(audit.stage).rescore_flag
-        ]
+        blind = [stage_spec(stage).label for stage in stages_to_repeat(audits)]
         if not stages:
-            message = "Ninguna etapa con reglas movidas se puede repuntuar desde SQLite."
+            message = (
+                "Ninguna etapa con reglas movidas o cambiadas se puede repuntuar "
+                "desde SQLite."
+            )
             if blind:
                 message += "\n\nHay que repetir la etapa en: " + ", ".join(blind)
             messagebox.showinfo("Auditor UBS", message)
@@ -510,12 +334,15 @@ class UBSAuditorLogicMixin:
         details = [
             f"Cuenta: {self.ubs_auditor_account.get()}",
             f"Etapas a repuntuar: {', '.join(labels)}",
-            "Se aplican las reglas actuales sobre lo ya guardado; no abre MT5.",
+            "Se reescribe el accepted/rejected de lo ya guardado con las reglas "
+            "actuales; no abre MT5.",
             "El repuntuado recorre toda la memoria de la cuenta, no solo el run auditado.",
         ]
         if blind:
             details.append("Sin repuntuado (hay que repetir la etapa): " + ", ".join(blind))
-        if not self._confirm_execution_start("Confirmar arreglo de reglas", len(stages), details):
+        if not self._confirm_execution_start(
+            "Confirmar repuntuado de afectados", len(stages), details
+        ):
             return
         try:
             first_args = self._ubs_auditor_rescore_args(stages[0])

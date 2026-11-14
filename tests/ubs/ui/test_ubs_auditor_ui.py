@@ -8,10 +8,35 @@ que la cola de etapas avance solo cuando el proceso anterior termina bien.
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
-from ubs.stage_rules_audit import STAGE_SPECS
+from ubs.stage_rules_audit import STAGE_SPECS, stage_spec
 from ui.app_chrome import SIDEBAR_ITEMS
 from ui.ubs_auditor_logic import UBSAuditorLogicMixin
+from ui.ubs_auditor_queries import (
+    MAX_STORED_VALUES_SHOWN,
+    _blind_rules_note,
+    _of_total,
+    _pending_group,
+    _pending_headline,
+    _rule_group,
+    _rules_status_line,
+    _stage_headline,
+    _stored_cell,
+)
+from ui.ubs_auditor_view import (
+    AUDITOR_COLUMNS,
+    AUDITOR_PENDING_LAYOUT,
+    AUDITOR_RULE_LAYOUT,
+    AUDITOR_STAGE_COLUMN_WIDTH,
+)
+
+
+# Ancho util de la tabla con la ventana en su tamano de siempre, descontados el
+# margen de la tarjeta y la barra vertical. Es el presupuesto que no se puede
+# pasar: la columna ETAPA es la primera y se va con la barra horizontal, asi
+# que una tabla mas ancha que esto nace escondiendo lo que se viene a mirar.
+AUDITOR_TABLE_BUDGET = 930
 
 
 class FakeVar:
@@ -202,6 +227,208 @@ class RescoreQueueTests(unittest.TestCase):
         harness = AuditorHarness()
 
         self.assertFalse(harness._maybe_auto_run_ubs_auditor_rescore("ubs_agent.py", [], 0))
+
+
+class CellTests(unittest.TestCase):
+    def test_counts_say_what_they_count_and_against_what(self) -> None:
+        self.assertEqual(_of_total(2, 3798, "candidates"), "2 de 3798 candidatos")
+        self.assertEqual(_of_total(0, 322, "seeds"), "0 de 322 semillas")
+
+    def test_a_long_list_of_stored_values_is_summed_up(self) -> None:
+        finding = SimpleNamespace(
+            stored=(("2026.01.01", 2396), ("(vacio)", 1046), ("2025.09.01", 8))
+        )
+
+        cell = _stored_cell(finding)
+
+        self.assertEqual(cell, "2026.01.01 (2396), (vacio) (1046) +1 mas")
+        self.assertEqual(cell.count("("), MAX_STORED_VALUES_SHOWN + 1)
+
+    def test_a_short_list_is_left_alone(self) -> None:
+        finding = SimpleNamespace(stored=(("1970.01.01", 2),))
+
+        self.assertEqual(_stored_cell(finding), "1970.01.01 (2)")
+
+    def test_blind_rules_are_named_once_per_group_of_stages(self) -> None:
+        note = _blind_rules_note()
+
+        self.assertEqual(note.count("Min ops OHLC"), 1)
+        self.assertIn("Final Tick 6M", note)
+        self.assertIn("Robustez", note)
+
+
+class StageHeadlineTests(unittest.TestCase):
+    """Lo que se lee de una etapa sin desplegarla."""
+
+    @staticmethod
+    def _audit(*, findings=(), undated=0, undated_verdicts=0, stale=0):
+        return SimpleNamespace(
+            findings=findings,
+            undated=undated,
+            undated_verdicts=undated_verdicts,
+            stale=stale,
+        )
+
+    def test_moved_rules_win_the_headline(self) -> None:
+        self.assertEqual(_stage_headline(self._audit(findings=("a", "b"))), "2 reglas movidas")
+        self.assertEqual(_stage_headline(self._audit(findings=("a",))), "1 regla movida")
+
+    def test_a_changed_rule_also_takes_the_stage_out_of_date(self) -> None:
+        """Sin un umbral movido, la etapa sigue sin estar al dia."""
+        self.assertEqual(_stage_headline(self._audit(stale=12)), "Regla cambiada")
+
+    def test_a_moved_rule_is_more_concrete_than_a_changed_one(self) -> None:
+        audit = self._audit(findings=("a",), stale=12)
+
+        self.assertEqual(_stage_headline(audit), "1 regla movida")
+
+    def test_rows_judged_without_a_window_are_not_up_to_date(self) -> None:
+        audit = self._audit(undated=2, undated_verdicts=2)
+
+        self.assertEqual(_stage_headline(audit), "2 sin fecha valida")
+
+    def test_rows_that_simply_have_not_run_leave_the_stage_up_to_date(self) -> None:
+        audit = self._audit(undated=1046, undated_verdicts=0)
+
+        self.assertEqual(_stage_headline(audit), "Al dia")
+
+    def test_nothing_wrong_reads_as_up_to_date(self) -> None:
+        self.assertEqual(_stage_headline(self._audit()), "Al dia")
+
+
+def _audit_row(**overrides):
+    """Una etapa auditada de pega, con todo a cero salvo lo que pida la prueba."""
+    values = {
+        "stage": "final_tick",
+        "stage_label": "Final Tick",
+        "rows": 10,
+        "affected": 0,
+        "affected_verdicts": 0,
+        "findings": (),
+        "stale": 0,
+        "stale_verdicts": 0,
+        "undated": 0,
+        "undated_verdicts": 0,
+        "unknown": 0,
+        "missing_table": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _pending_row(**overrides):
+    values = {
+        "stage": "final_tick",
+        "stage_label": "Final Tick",
+        "rows": 10,
+        "pending": 0,
+        "missing": 0,
+        "by_status": (),
+        "missing_table": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+class RuleGroupTests(unittest.TestCase):
+    def test_a_changed_rule_hangs_off_the_stage_in_red(self) -> None:
+        _stage, _label, values, tag, children = _rule_group(
+            _audit_row(stale=4, stale_verdicts=3, affected=4, affected_verdicts=3)
+        )
+
+        self.assertEqual(tag, "rejected")
+        self.assertEqual(values[0], "Regla cambiada")
+        self.assertEqual(values[4], "4 de 10 candidatos")
+        self.assertEqual(len(children), 1)
+        child_values, child_tag = children[0]
+        self.assertEqual(child_tag, "rejected")
+        self.assertEqual(child_values[0], "Regla cambiada")
+        # La celda ancha dice que cambio y desde cuando, sin la hora. Lo lee de
+        # la declaracion: la fecha se movera cuando la regla vuelva a cambiar.
+        spec = stage_spec("final_tick")
+        self.assertIn(spec.rules_change_note, child_values[3])
+        self.assertIn(spec.rules_changed_at[:10], child_values[3])
+        self.assertNotIn(spec.rules_changed_at[10:], child_values[3])
+        self.assertEqual(child_values[5], "3")
+
+    def test_a_stage_with_nothing_wrong_stays_green_and_closed(self) -> None:
+        _stage, _label, values, tag, children = _rule_group(_audit_row())
+
+        self.assertEqual(tag, "accepted")
+        self.assertEqual(values[0], "Al dia")
+        self.assertEqual(children, ())
+
+
+class PendingGroupTests(unittest.TestCase):
+    def test_the_two_gaps_are_separate_children(self) -> None:
+        _stage, _label, values, tag, children = _pending_group(
+            _pending_row(rows=10, pending=2, missing=3, by_status=(("pending_ohlc", 2),))
+        )
+
+        self.assertEqual(tag, "rejected")
+        self.assertEqual(values[0], "A medias y sin correr")
+        # El total cuenta tambien a los que no tienen fila: 2 + 3 de 10 + 3.
+        self.assertEqual(values[4], "5 de 13 candidatos")
+        self.assertEqual([child[0][0] for child in children], ["Se quedaron a medias", "Sin fila todavia"])
+        self.assertEqual(children[0][0][4], "2 de 13 candidatos")
+        self.assertEqual(children[1][0][4], "3 de 13 candidatos")
+
+    def test_an_eligible_without_a_row_alone_still_opens_the_stage(self) -> None:
+        """Antes esta etapa salia «Al dia» porque sin fila no hay estado."""
+        _stage, _label, values, tag, children = _pending_group(
+            _pending_row(rows=0, pending=0, missing=4)
+        )
+
+        self.assertEqual(tag, "rejected")
+        self.assertEqual(values[0], "Sin correr")
+        self.assertEqual(values[4], "4 de 4 candidatos")
+        self.assertEqual(len(children), 1)
+
+    def test_a_stage_with_both_gaps_closed_is_up_to_date(self) -> None:
+        _stage, _label, values, tag, children = _pending_group(_pending_row())
+
+        self.assertEqual(tag, "accepted")
+        self.assertEqual(values[0], "Al dia")
+        self.assertEqual(children, ())
+
+    def test_each_gap_names_itself_in_the_headline(self) -> None:
+        self.assertEqual(_pending_headline(_pending_row(pending=1)), "Se quedaron a medias")
+        self.assertEqual(_pending_headline(_pending_row(missing=1)), "Sin correr")
+
+
+class StatusLineTests(unittest.TestCase):
+    def test_a_changed_rule_is_said_apart_from_a_moved_one(self) -> None:
+        line = _rules_status_line(
+            (_audit_row(stale=4, stale_verdicts=3, affected=4, affected_verdicts=3),),
+            0,
+            "ICTRADING/REAL | run #7",
+        )
+
+        self.assertIn("1 etapa(s) con la regla cambiada (4 fila(s))", line)
+        self.assertNotIn("regla(s) movida(s)", line)
+        self.assertIn("3 de ellos ya juzgados", line)
+
+    def test_nothing_found_says_so(self) -> None:
+        line = _rules_status_line((_audit_row(),), 0, "ICTRADING/REAL | run #7")
+
+        self.assertIn("ninguna etapa se juzgo con otras reglas", line)
+
+
+class TableLayoutTests(unittest.TestCase):
+    def test_every_layout_shows_declared_columns(self) -> None:
+        for layout in (AUDITOR_RULE_LAYOUT, AUDITOR_PENDING_LAYOUT):
+            for column, _heading, _width, _stretch in layout:
+                self.assertIn(column, AUDITOR_COLUMNS)
+
+    def test_no_layout_pushes_the_stage_column_off_screen(self) -> None:
+        for layout in (AUDITOR_RULE_LAYOUT, AUDITOR_PENDING_LAYOUT):
+            total = AUDITOR_STAGE_COLUMN_WIDTH + sum(width for _c, _h, width, _s in layout)
+            self.assertLessEqual(total, AUDITOR_TABLE_BUDGET, layout[0][1])
+
+    def test_each_layout_has_one_column_that_takes_the_slack(self) -> None:
+        for layout in (AUDITOR_RULE_LAYOUT, AUDITOR_PENDING_LAYOUT):
+            stretching = [column for column, _h, _w, stretch in layout if stretch]
+            self.assertEqual(len(stretching), 1, layout[0][1])
 
 
 class NavigationTests(unittest.TestCase):

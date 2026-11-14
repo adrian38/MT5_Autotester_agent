@@ -13,18 +13,32 @@ from tkinter import ttk
 
 
 # La etapa es la columna de arbol (#0): cada etapa es una fila y su detalle
-# cuelga de ella, asi que el nombre no se repite. `kind` dice en palabras que
-# es la fila (al dia, 2 reglas movidas, regla ciega, pendientes...) para que
-# las demas columnas se lean sin adivinar, y "CUANTOS" cuenta en voz alta
-# -«1046 candidatos», «322 semillas»- porque «filas» no le dice nada a nadie.
-AUDITOR_STAGE_COLUMN_WIDTH = 170
-AUDITOR_COLUMNS = (
-    ("kind", "QUE PASA", 130),
-    ("item", "REGLA", 190),
-    ("current", "AHORA", 80),
-    ("stored", "DETALLE (VALOR Y CUANTOS)", 270),
-    ("rows", "CUANTOS", 130),
-    ("verdicts", "YA JUZGADOS", 95),
+# cuelga de ella, asi que el nombre no se repite.
+#
+# Cada columna significa una sola cosa en todas las filas, y las que no
+# significan nada en una consulta no se ensenan: las dos consultas comparten el
+# arbol pero no las columnas, y antes compartian tambien los titulos, asi que
+# «DETALLE» tenia que valer a la vez para «se juzgo con 1970.01.01 (2)» y para
+# «error (12)». `displaycolumns` reparte cada juego de titulos a su consulta.
+#
+# Los anchos suman menos que el ancho util de la tabla a proposito: la columna
+# ETAPA es la primera y se va con la barra horizontal, y una tabla que nace
+# desplazada esconde justo lo que se viene a mirar. La columna ancha estira
+# para quedarse con lo que sobre.
+AUDITOR_STAGE_COLUMN_WIDTH = 140
+AUDITOR_COLUMNS = ("kind", "item", "current", "stored", "affected", "judged")
+AUDITOR_RULE_LAYOUT = (
+    ("kind", "QUE PASA", 110, False),
+    ("item", "REGLA", 130, False),
+    ("current", "AHORA", 85, False),
+    ("stored", "SE JUZGO CON", 180, True),
+    ("affected", "A CUANTOS AFECTA", 165, False),
+    ("judged", "YA JUZGADOS", 100, False),
+)
+AUDITOR_PENDING_LAYOUT = (
+    ("kind", "QUE PASA", 150, False),
+    ("stored", "EN QUE ESTADO SE QUEDARON", 330, True),
+    ("affected", "CUANTOS FALTAN", 190, False),
 )
 
 
@@ -51,8 +65,12 @@ class UBSAuditorViewMixin:
             text=(
                 "Semillas y candidatos son .set: el de partida y el que genero el "
                 "agente a partir de el. Auditar reglas compara los umbrales con los "
-                "que se juzgo cada uno con los de Configuracion; Consultar pendientes "
-                "lista los que no llegaron a un estado final."
+                "que se juzgo cada uno con los de Configuracion, y marca aparte la "
+                "etapa cuya regla cambio sin mover un umbral; Consultar pendientes "
+                "lista los que se quedaron a medias y los que, por haberse vuelto "
+                "elegibles al repuntuar, no tienen fila todavia. «A cuantos afecta» "
+                "son los que se juzgaron con otra regla, y «Ya juzgados», cuantos de "
+                "ellos tienen veredicto: solo esos pueden cambiar al repuntuar."
             ),
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
@@ -65,7 +83,7 @@ class UBSAuditorViewMixin:
             ("Auditar reglas", self._audit_ubs_stage_rules_clicked, self.colors["accent"], "#ffffff"),
             ("Consultar pendientes", self._audit_ubs_pending_states_clicked,
              self.colors["panel"], self.colors["muted"]),
-            ("Arreglar reglas", self._fix_ubs_stage_rules_clicked,
+            ("Repuntuar afectados", self._rescore_ubs_affected_clicked,
              self.colors["panel"], self.colors["muted"]),
             ("Arreglar pendientes", self._fix_ubs_pending_states_clicked,
              self.colors["panel"], self.colors["muted"]),
@@ -114,30 +132,52 @@ class UBSAuditorViewMixin:
         )
 
         table_frame = ttk.Frame(panel, style="Panel.TFrame")
-        table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 18))
+        table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 6))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        columns = tuple(column for column, _heading, _width in AUDITOR_COLUMNS)
         self.ubs_auditor_tree = ttk.Treeview(
-            table_frame, columns=columns, show="tree headings", height=16, selectmode="browse"
+            table_frame,
+            columns=AUDITOR_COLUMNS,
+            show="tree headings",
+            height=16,
+            selectmode="browse",
         )
         self.ubs_auditor_tree.heading("#0", text="ETAPA")
         self.ubs_auditor_tree.column(
-            "#0", width=AUDITOR_STAGE_COLUMN_WIDTH, minwidth=140, anchor="w", stretch=False
+            "#0", width=AUDITOR_STAGE_COLUMN_WIDTH, minwidth=110, anchor="w", stretch=False
         )
-        for column, heading, width in AUDITOR_COLUMNS:
-            self.ubs_auditor_tree.heading(column, text=heading)
-            self.ubs_auditor_tree.column(
-                column, width=width, minwidth=60, anchor="center", stretch=False
-            )
-        self.ubs_auditor_tree.column("item", anchor="w")
-        self.ubs_auditor_tree.column("rows", anchor="w")
-        self.ubs_auditor_tree.column("stored", anchor="w")
+        for column in AUDITOR_COLUMNS:
+            self.ubs_auditor_tree.heading(column, text=column.upper())
+            self.ubs_auditor_tree.column(column, width=120, minwidth=60, anchor="w")
         self.ubs_auditor_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
         self.ubs_auditor_tree.tag_configure("rejected", foreground=self.colors["danger"])
         self.ubs_auditor_tree.tag_configure("pending", foreground=self.colors["muted"])
         self._make_tree_sortable(self.ubs_auditor_tree)
+        self._show_ubs_auditor_columns(AUDITOR_RULE_LAYOUT)
         self._attach_tree_scrollbars(table_frame, self.ubs_auditor_tree, 0, vertical=True)
+
+        # Las reglas ciegas no dependen de la auditoria: son siempre las mismas
+        # y las comparten cuatro etapas. Como fila se repetian cuatro veces y
+        # se cortaban en su columna; debajo de la tabla se dicen una vez.
+        ttk.Label(
+            panel,
+            textvariable=self.ubs_auditor_blind_rules,
+            style="Muted.TLabel",
+            wraplength=900,
+            justify="left",
+        ).grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 16))
+
+    def _show_ubs_auditor_columns(self, layout) -> None:
+        """Ensena solo las columnas de la consulta que acaba de llenar la tabla."""
+        tree = getattr(self, "ubs_auditor_tree", None)
+        if tree is None:
+            return
+        tree.configure(displaycolumns=tuple(column for column, _t, _w, _s in layout))
+        for column, heading, width, stretch in layout:
+            # `heading(text=...)` solo toca el titulo, asi que el orden que
+            # dejo `_make_tree_sortable` sigue colgando de la cabecera.
+            tree.heading(column, text=heading)
+            tree.column(column, width=width, minwidth=min(width, 70), stretch=stretch)
 
     def _build_ubs_auditor(self, parent: ttk.Frame) -> None:
         panel, bar = self._build_ubs_auditor_panel(parent)

@@ -8,10 +8,35 @@ su `score_config` dentro de `metrics_json`. Comparar lo guardado con lo que hay
 hoy en Configuracion dice, sin reparsear un solo reporte HTML, que veredictos
 nacieron con otras reglas y que etapa hay que repuntuar.
 
+Una fecha guardada que no es una fecha -vacia, o el cero que MT5 escribe en un
+reporte sin periodo- tampoco es un umbral movido: es una fila que no se juzgo
+sobre ninguna ventana. Se cuenta aparte (`undated`), y si ademas tiene
+veredicto, ese veredicto no vale y la etapa no esta al dia por mucho que sus
+umbrales coincidan.
+
+Un cambio de regla no siempre se ve en lo guardado. Cuando lo que cambia es el
+codigo que aplica los umbrales -y no los umbrales- la fila sigue guardando los
+mismos numeros y la comparacion no encuentra nada, por mucho que el veredicto
+haya nacido con otra regla. Eso se declara a mano: `StageSpec.rules_changed_at`
+lleva el momento desde el que la regla nueva esta en vigor, y toda fila sellada
+antes se cuenta como juzgada con la vieja. El sello es `judged_column`, que ya
+existe en las ocho tablas, asi que el aviso se apaga solo en cuanto la fila se
+vuelve a juzgar; declarar la fecha es el unico paso manual, y va en el mismo
+commit que cambia la regla.
+
+Una etapa tampoco esta al dia cuando le faltan filas. Quien pasa de rejected a
+accepted se vuelve elegible para la etapa siguiente, y alli no se queda
+pendiente: no tiene fila ninguna, asi que no sale en ningun recuento de
+estados. `StageSpec.upstream_sql` cuenta esos, los que deberian tener fila y no
+la tienen.
+
 Lo que una etapa no guarda no se puede auditar asi: cada `StageSpec` declara en
 `non_auditable` sus reglas ciegas para que la pantalla lo diga en vez de
 callarlo. Aqui no se decide que estado es final ni que estado es reintentable:
 lo primero lo pasa quien llama, y lo segundo pertenece al runner de cada etapa.
+
+El catalogo de etapas vive en `ubs/stage_specs.py` y se reexporta desde aqui,
+que es donde lo pide todo el mundo. Aqui quedan las consultas que lo recorren.
 """
 from __future__ import annotations
 
@@ -19,6 +44,39 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
+
+from ubs.stage_specs import (
+    FINAL_TICK_BLIND_RULES,
+    FINAL_TICK_RULES,
+    SCORE_RULES,
+    STAGE_SPEC_BY_KEY,
+    STAGE_SPECS,
+    RuleSpec,
+    StageSpec,
+    stage_spec,
+)
+
+
+__all__ = [
+    "EPOCH_YEAR",
+    "FINAL_TICK_BLIND_RULES",
+    "FINAL_TICK_RULES",
+    "MAX_REPORTED_IDS",
+    "NUMBER_TOLERANCE",
+    "SCORE_RULES",
+    "STAGE_SPECS",
+    "STAGE_SPEC_BY_KEY",
+    "PendingAudit",
+    "RuleFinding",
+    "RuleSpec",
+    "StageAudit",
+    "StageSpec",
+    "audit_pending_states",
+    "audit_stage_rules",
+    "stage_spec",
+    "stages_to_repeat",
+    "stages_to_rescore",
+]
 
 
 # Tope de identificadores que se devuelven por hallazgo: la pantalla los usa
@@ -29,35 +87,9 @@ MAX_REPORTED_IDS = 200
 # la interfaz escribe texto: sin margen, "35" y 35.0 se verian distintos.
 NUMBER_TOLERANCE = 1e-6
 
-
-@dataclass(frozen=True)
-class RuleSpec:
-    """Una regla de etapa y donde quedo guardado el valor que se aplico."""
-
-    key: str
-    label: str
-    kind: str = "number"
-    column: str = ""
-    score_field: str = ""
-
-
-@dataclass(frozen=True)
-class StageSpec:
-    """Una etapa del pipeline: su tabla, sus reglas guardadas y su repuntuado."""
-
-    key: str
-    label: str
-    table: str
-    id_column: str
-    rules: tuple[RuleSpec, ...]
-    # Que es una fila de esta tabla, para poder contar en voz alta: las etapas
-    # de semilla puntuan el .set de partida y las demas, el .set generado.
-    unit: str = "candidatos"
-    run_column: str = ""
-    metrics_column: str = ""
-    rescore_flag: str = ""
-    row_filter: str = ""
-    non_auditable: tuple[str, ...] = ()
+# Ano hasta el que una fecha guardada se lee como el cero de MT5 y no como una
+# fecha que alguien puso.
+EPOCH_YEAR = 1970
 
 
 @dataclass(frozen=True)
@@ -87,9 +119,24 @@ class StageAudit:
     rows: int
     verdicts: int
     unknown: int
-    # Filas tocadas por al menos una regla movida. Se cuenta aparte porque los
-    # identificadores de cada hallazgo vienen recortados por `MAX_REPORTED_IDS`.
+    # Filas tocadas por al menos una regla movida o cambiada. Se cuenta aparte
+    # porque los identificadores de cada hallazgo vienen recortados por
+    # `MAX_REPORTED_IDS`.
     affected: int = 0
+    # De las afectadas, las que ya tienen veredicto: son las unicas que pueden
+    # cambiar al repuntuar, y por eso la pantalla las cuenta aparte.
+    affected_verdicts: int = 0
+    # Filas cuya fecha guardada no es una fecha (vacia o el cero de MT5), y
+    # cuantas de ellas ya tienen veredicto. Las que lo tienen son el problema:
+    # se juzgaron sobre una ventana imposible, asi que su veredicto no vale.
+    # Las que no, simplemente no han corrido todavia.
+    undated: int = 0
+    undated_verdicts: int = 0
+    # Filas selladas antes de `rules_changed_at`: sus umbrales son los de hoy,
+    # pero la regla que los aplico no. Las que ya tienen veredicto son las que
+    # pueden cambiar al repuntuar, igual que en un umbral movido.
+    stale: int = 0
+    stale_verdicts: int = 0
     findings: tuple[RuleFinding, ...] = ()
     missing_table: bool = False
     non_auditable: tuple[str, ...] = ()
@@ -106,141 +153,9 @@ class PendingAudit:
     by_status: tuple[tuple[str, int], ...] = ()
     ids: tuple[int, ...] = ()
     missing_table: bool = False
-
-
-SCORE_RULES: tuple[RuleSpec, ...] = (
-    RuleSpec("min_net_profit", "Net minimo", score_field="min_net_profit"),
-    RuleSpec("min_profit_factor", "PF minimo", score_field="min_profit_factor"),
-    RuleSpec("min_trades", "Operaciones minimas", score_field="min_trades"),
-    RuleSpec("max_drawdown_pct", "Drawdown maximo %", score_field="max_drawdown_pct"),
-    RuleSpec("min_recovery_factor", "Recovery minimo", score_field="min_recovery_factor"),
-)
-
-FINAL_TICK_RULES: tuple[RuleSpec, ...] = (
-    RuleSpec("min_history_quality", "Calidad minima", column="min_history_quality"),
-    RuleSpec("max_net_delta_pct", "Delta net %", column="max_net_delta_pct"),
-    RuleSpec("max_pf_delta_pct", "Delta PF %", column="max_pf_delta_pct"),
-    RuleSpec("max_dd_delta_pct", "Delta DD %", column="max_dd_delta_pct"),
-    RuleSpec("max_trades_delta_pct", "Delta trades %", column="max_trades_delta_pct"),
-    RuleSpec("max_dd_gap_pp", "Banda DD pp", column="max_dd_gap_pp"),
-    RuleSpec("from_date", "Desde", kind="date", column="from_date"),
-    RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
-)
-
-# Minimos de operaciones que el Final Tick aplica pero no guarda en su fila:
-# sin columna propia, un cambio en ellos no se puede ver desde la memoria.
-FINAL_TICK_BLIND_RULES = (
-    "Min ops OHLC",
-    "W1 min ops",
-    "MN min ops",
-)
-
-# En el orden del pipeline, que es el de la barra lateral: Seeds, Seeds Final
-# Tick, Seeds Final Tick 6M, Resultados, Robustez, Final Tick, Final Tick 6M,
-# Regresiva. La auditoria se lee de arriba abajo como se recorre el embudo, y
-# los nombres son los de las pantallas para no inventar un segundo vocabulario.
-STAGE_SPECS: tuple[StageSpec, ...] = (
-    StageSpec(
-        key="seeds",
-        label="Seeds",
-        table="seed_scores",
-        id_column="id",
-        rules=SCORE_RULES,
-        unit="semillas",
-        metrics_column="metrics_json",
-        rescore_flag="--rescore-seeds-only",
-        row_filter="active=1",
-    ),
-    StageSpec(
-        key="seed_final_tick",
-        label="Seeds Final Tick",
-        table="seed_final_tick",
-        id_column="seed_id",
-        rules=FINAL_TICK_RULES,
-        unit="semillas",
-        non_auditable=FINAL_TICK_BLIND_RULES,
-    ),
-    StageSpec(
-        key="seed_final_tick_6m",
-        label="Seeds Final Tick 6M",
-        table="seed_final_tick_6m",
-        id_column="seed_id",
-        rules=FINAL_TICK_RULES,
-        unit="semillas",
-        non_auditable=FINAL_TICK_BLIND_RULES,
-    ),
-    StageSpec(
-        key="candidates",
-        label="Resultados",
-        table="candidates",
-        id_column="id",
-        rules=SCORE_RULES,
-        run_column="run_id",
-        metrics_column="metrics_json",
-        rescore_flag="--rescore-candidates-only",
-    ),
-    StageSpec(
-        key="robustness",
-        label="Robustez",
-        table="candidate_robustness",
-        id_column="candidate_id",
-        rules=(
-            *SCORE_RULES,
-            RuleSpec("positive_bonus", "Bonus positivo", column="positive_bonus"),
-            RuleSpec("negative_bonus", "Bonus negativo", column="negative_bonus"),
-            RuleSpec("from_date", "Desde", kind="date", column="from_date"),
-            RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
-        ),
-        run_column="run_id",
-        metrics_column="metrics_json",
-        rescore_flag="--rescore-robustness-only",
-        non_auditable=("Retenciones de degradacion", "Inflacion DD"),
-    ),
-    StageSpec(
-        key="final_tick",
-        label="Final Tick",
-        table="candidate_final_tick",
-        id_column="candidate_id",
-        rules=FINAL_TICK_RULES,
-        run_column="run_id",
-        rescore_flag="--rescore-final-tick-only",
-        non_auditable=FINAL_TICK_BLIND_RULES,
-    ),
-    StageSpec(
-        key="final_tick_6m",
-        label="Final Tick 6M",
-        table="candidate_final_tick_6m",
-        id_column="candidate_id",
-        rules=FINAL_TICK_RULES,
-        run_column="run_id",
-        rescore_flag="--rescore-final-tick-only",
-        non_auditable=FINAL_TICK_BLIND_RULES,
-    ),
-    StageSpec(
-        key="regression",
-        label="Regresiva",
-        table="candidate_regression",
-        id_column="candidate_id",
-        rules=(
-            RuleSpec("positive_points", "Puntos OK", column="positive_points"),
-            RuleSpec("negative_points", "Puntos FAIL", column="negative_points"),
-            RuleSpec("from_date", "Desde", kind="date", column="from_date"),
-            RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
-        ),
-        run_column="run_id",
-        rescore_flag="--rescore-regression-only",
-        non_auditable=("Umbrales de aceptacion de la regresiva",),
-    ),
-)
-
-STAGE_SPEC_BY_KEY = {spec.key: spec for spec in STAGE_SPECS}
-
-
-def stage_spec(key: str) -> StageSpec:
-    try:
-        return STAGE_SPEC_BY_KEY[str(key)]
-    except KeyError:
-        raise ValueError(f"Etapa UBS desconocida: {key}") from None
+    # Elegibles que no llegaron a tener fila: quien acaba de pasar a accepted
+    # arriba todavia no ha corrido aqui, y sin fila no cuenta como pendiente.
+    missing: int = 0
 
 
 def _selected_specs(stages: Iterable[str] | None) -> tuple[StageSpec, ...]:
@@ -268,6 +183,8 @@ def _stage_rows(
     selected.extend(rule.column for rule in spec.rules if rule.column and rule.column in columns)
     if spec.metrics_column and spec.metrics_column in columns:
         selected.append(spec.metrics_column)
+    if spec.judged_column and spec.judged_column in columns:
+        selected.append(spec.judged_column)
     where: list[str] = []
     params: list[object] = []
     if spec.row_filter:
@@ -315,6 +232,48 @@ def _same_value(stored: object, current: object, kind: str) -> bool:
         return str(stored or "").strip() == str(current or "").strip()
 
 
+def _missing_date(value: object) -> bool:
+    """Una fecha vacia o el cero de MT5 no es una regla: es la falta de una.
+
+    Cuando el reporte OHLC no trae periodo -un backtest que no produjo nada-
+    MT5 escribe 1970.01.01, y `_read_ohlc_report_cfg_dates()` lo copia tal cual
+    a la fila. Compararlo con la ventana de hoy no dice que la regla se haya
+    movido: dice que esa fila no se juzgo con ninguna. Lo mismo vale para la
+    fecha vacia de una fila que aun no ha corrido.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return True
+    year = text[:4]
+    return year.isdigit() and int(year) <= EPOCH_YEAR
+
+
+def _judged_before_change(
+    row: sqlite3.Row,
+    spec: StageSpec,
+    *,
+    columns: set[str],
+    is_verdict: bool,
+) -> bool:
+    """Si la fila se juzgo con la regla anterior a `rules_changed_at`.
+
+    La comparacion es de texto porque la memoria sella en ISO
+    (`2026-11-12T05:17:49`), que ordena igual leido como fecha que como cadena.
+    Una fila sin sello no ha corrido todavia y correra con la regla de ahora,
+    asi que no cuenta; una etapa sin columna de sello no puede repartir el
+    cambio fila por fila, y entonces lo que esta en duda es todo lo que ya
+    tiene veredicto, que es lo unico que se sabe a ciencia cierta.
+    """
+    if not spec.rules_changed_at:
+        return False
+    if not spec.judged_column or spec.judged_column not in columns:
+        return is_verdict
+    stamp = str(row[spec.judged_column] or "").strip()
+    if not stamp:
+        return False
+    return stamp < spec.rules_changed_at
+
+
 def _display(value: object, kind: str) -> str:
     if kind == "date":
         return str(value or "").strip() or "(vacio)"
@@ -348,6 +307,11 @@ class _StageTally:
     ids: dict[str, list[int]] = field(default_factory=dict)
     verdicts: dict[str, int] = field(default_factory=dict)
     affected: set[int] = field(default_factory=set)
+    affected_verdicts: set[int] = field(default_factory=set)
+    undated: set[int] = field(default_factory=set)
+    undated_verdicts: set[int] = field(default_factory=set)
+    stale: set[int] = field(default_factory=set)
+    stale_verdicts: set[int] = field(default_factory=set)
     rows: int = 0
     row_verdicts: int = 0
     unknown: int = 0
@@ -359,6 +323,7 @@ class _StageTally:
         self.ids.setdefault(rule.key, []).append(row_id)
         self.affected.add(row_id)
         if is_verdict:
+            self.affected_verdicts.add(row_id)
             self.verdicts[rule.key] = self.verdicts.get(rule.key, 0) + 1
 
 
@@ -380,6 +345,14 @@ def _tally_stage_row(
         else None
     )
     row_id = int(row[spec.id_column] or 0)
+    if _judged_before_change(row, spec, columns=columns, is_verdict=is_verdict):
+        # Cuenta como afectada igual que un umbral movido: lo que la pantalla
+        # pregunta es a cuantos arrastra el cambio, no de que clase es.
+        tally.stale.add(row_id)
+        tally.affected.add(row_id)
+        if is_verdict:
+            tally.stale_verdicts.add(row_id)
+            tally.affected_verdicts.add(row_id)
     row_unknown = False
     for rule in spec.rules:
         if rule.key not in expected:
@@ -389,8 +362,14 @@ def _tally_stage_row(
         )
         if not present:
             # Una fila sin `score_config` no prueba nada: se cuenta aparte en
-            # vez de inventarle un valor guardado.
+            # vez de inventarle un valor guardado. Que la columna no exista en
+            # esta memoria es cosa del esquema, no de la fila, y no cuenta.
             row_unknown = row_unknown or bool(rule.score_field)
+            continue
+        if rule.kind == "date" and _missing_date(stored):
+            tally.undated.add(row_id)
+            if is_verdict:
+                tally.undated_verdicts.add(row_id)
             continue
         if _same_value(stored, expected[rule.key], rule.kind):
             continue
@@ -466,11 +445,37 @@ def audit_stage_rules(
                 verdicts=tally.row_verdicts,
                 unknown=tally.unknown,
                 affected=len(tally.affected),
+                affected_verdicts=len(tally.affected_verdicts),
+                undated=len(tally.undated),
+                undated_verdicts=len(tally.undated_verdicts),
+                stale=len(tally.stale),
+                stale_verdicts=len(tally.stale_verdicts),
                 findings=_stage_findings(spec, expected, tally),
                 non_auditable=spec.non_auditable,
             )
         )
     return audits
+
+
+def _missing_rows(conn: sqlite3.Connection, spec: StageSpec, *, run_id: int) -> int:
+    """Elegibles que todavia no tienen fila en la etapa.
+
+    Una memoria a la que le falta una tabla de mas arriba no es un error que
+    valga la pena contar aparte: la etapa ya se denuncia sola con
+    `missing_table`, y aqui se responde cero.
+    """
+    if not spec.upstream_sql:
+        return 0
+    run_filter = ""
+    params: tuple[object, ...] = ()
+    if run_id > 0 and spec.run_column:
+        run_filter = "and c.run_id=?"
+        params = (int(run_id),)
+    try:
+        row = conn.execute(spec.upstream_sql.format(run_filter=run_filter), params).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0] or 0) if row else 0
 
 
 def audit_pending_states(
@@ -513,13 +518,24 @@ def audit_pending_states(
                 pending=len(ids),
                 by_status=tuple(sorted(counts.items(), key=lambda item: (-item[1], item[0]))),
                 ids=tuple(ids[:MAX_REPORTED_IDS]),
+                missing=_missing_rows(conn, spec, run_id=run_id),
             )
         )
     return summaries
 
 
+def _stale_rescorable(audit: StageAudit, spec: StageSpec) -> bool:
+    """Si el cambio de regla declarado se arregla repuntuando lo guardado."""
+    return bool(audit.stale) and spec.rules_change_fix == "rescore"
+
+
 def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
-    """Etapas con reglas movidas y con un repuntuado que las pueda arreglar.
+    """Etapas tocadas y con un repuntuado que las pueda arreglar.
+
+    Tocadas son las de umbrales movidos y las del cambio de regla declarado
+    que se arregla desde SQLite; un cambio marcado `repeat` no entra aqui por
+    mucho repuntuado que tenga la etapa, porque lo que cambio no esta en lo
+    guardado.
 
     Final Tick corto y 6M comparten el flag `--rescore-final-tick-only`, pero
     cada uno repuntua su propia tabla con sus propias fechas y lo que los
@@ -527,8 +543,28 @@ def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     entrara el primero, la tabla 6M se quedaria con las reglas viejas y la
     siguiente auditoria volveria a denunciarla.
     """
-    return tuple(
-        audit.stage
-        for audit in audits
-        if audit.findings and stage_spec(audit.stage).rescore_flag
-    )
+    stages: list[str] = []
+    for audit in audits:
+        spec = stage_spec(audit.stage)
+        if not spec.rescore_flag:
+            continue
+        if audit.findings or _stale_rescorable(audit, spec):
+            stages.append(audit.stage)
+    return tuple(stages)
+
+
+def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
+    """Etapas tocadas que ningun repuntuado arregla: hay que repetirlas.
+
+    Son las dos caras de lo mismo: una etapa sin `rescore_flag` cuyos umbrales
+    se movieron, y una cuyo cambio de regla declarado se marco `repeat` porque
+    lo que cambio no se puede recalcular desde lo guardado.
+    """
+    stages: list[str] = []
+    for audit in audits:
+        spec = stage_spec(audit.stage)
+        if audit.findings and not spec.rescore_flag:
+            stages.append(audit.stage)
+        elif audit.stale and spec.rules_change_fix == "repeat":
+            stages.append(audit.stage)
+    return tuple(stages)
