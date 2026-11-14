@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
+from dataclasses import replace
+from unittest.mock import patch
 
 from ubs.memory_schema import SCHEMA_DDL
-from ubs.stage_rules_audit import stage_spec
+from ubs.stage_rules_audit import STAGE_SPEC_BY_KEY, stage_spec
 
 FINAL_STATUSES = ("accepted", "rejected")
 
@@ -90,15 +93,31 @@ def insert_final_tick(conn, candidate_id: int, *, run_id: int, status: str, **ov
     )
 
 
-def before_and_after(stage_key: str) -> tuple[str, str]:
-    """Dos sellos que rodean al cambio de regla declarado de una etapa.
+# Un cambio de regla de mentira y los dos sellos que lo rodean. En produccion
+# no hay ninguno declarado, ni deberia haberlo mientras nadie cambie el codigo
+# que decide accepted/rejected, asi que la prueba se lo pone ella.
+RULE_CHANGED_AT = "2026-06-01T12:00:00"
+BEFORE_CHANGE = "2026-05-01T09:00:00"
+AFTER_CHANGE = "2026-07-01T09:00:00"
+RULE_CHANGE_NOTE = "Cambio declarado de prueba"
 
-    Se derivan de la declaracion en vez de escribirse a mano: la fecha se
-    movera cuando la regla vuelva a cambiar, y la prueba pregunta por el antes
-    y el despues, no por un dia concreto.
+
+@contextmanager
+def declared_rule_change(stage_key: str, *, fix: str = "rescore"):
+    """Declara un cambio de regla en una etapa mientras dure la prueba.
+
+    `STAGE_SPEC_BY_KEY` es el mismo objeto que lee `stage_spec()`, asi que
+    cambiarlo aqui alcanza a quien pregunte por la etapa, venga de la auditoria
+    o de la pantalla.
     """
-    stamp = stage_spec(stage_key).rules_changed_at
-    return f"{int(stamp[:4]) - 1}-01-01T00:00:00", "9999-01-01T00:00:00"
+    spec = replace(
+        stage_spec(stage_key),
+        rules_changed_at=RULE_CHANGED_AT,
+        rules_change_note=RULE_CHANGE_NOTE,
+        rules_change_fix=fix,
+    )
+    with patch.dict(STAGE_SPEC_BY_KEY, {stage_key: spec}):
+        yield
 
 
 def insert_robustness(conn, candidate_id: int, *, run_id: int, status: str) -> None:

@@ -11,7 +11,9 @@ import unittest
 from tests.ubs.scoring.stage_audit_fixtures import (
     CURRENT_FINAL_TICK,
     FINAL_STATUSES,
-    before_and_after,
+    AFTER_CHANGE,
+    BEFORE_CHANGE,
+    declared_rule_change,
     insert_candidate,
     insert_final_tick,
     insert_robustness,
@@ -152,16 +154,16 @@ class StagesToRescoreTests(unittest.TestCase):
 
     def test_a_stale_row_without_a_verdict_queues_nothing(self) -> None:
         """Ni repuntuar ni repetir: cuando corra, correra con la regla de hoy."""
-        before, _after = before_and_after("final_tick")
         conn = memory()
-        insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at=before)
+        insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at=BEFORE_CHANGE)
 
-        audits = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )
+        with declared_rule_change("final_tick"):
+            audits = audit_stage_rules(
+                conn,
+                {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("final_tick",),
+            )
 
         self.assertEqual(stages_to_rescore(audits), ())
         self.assertEqual(stages_to_repeat(audits), ())
@@ -195,12 +197,13 @@ class StagesToRescoreTests(unittest.TestCase):
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")
 
-        audits = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )
+        with declared_rule_change("final_tick"):
+            audits = audit_stage_rules(
+                conn,
+                {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("final_tick",),
+            )
 
         self.assertEqual(audits[0].findings, ())
         self.assertEqual(stages_to_rescore(audits), ())
@@ -221,16 +224,16 @@ class StagesToRescoreTests(unittest.TestCase):
         self.assertEqual(stages_to_repeat(audits), ("final_tick",))
 
     def test_a_declared_rule_change_also_queues_the_rescore(self) -> None:
-        before, _after = before_and_after("final_tick")
         conn = memory()
-        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=before)
+        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=BEFORE_CHANGE)
 
-        audits = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )
+        with declared_rule_change("final_tick"):
+            audits = audit_stage_rules(
+                conn,
+                {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("final_tick",),
+            )
 
         self.assertEqual(audits[0].findings, ())
         self.assertEqual(stages_to_rescore(audits), ("final_tick",))
@@ -238,7 +241,6 @@ class StagesToRescoreTests(unittest.TestCase):
 
     def test_a_change_that_needs_the_stage_repeated_is_not_rescored(self) -> None:
         """Seeds Final Tick no tiene repuntuado: su cambio se declara `repeat`."""
-        before, _after = before_and_after("seed_final_tick")
         conn = memory()
         conn.execute(
             """
@@ -248,15 +250,16 @@ class StagesToRescoreTests(unittest.TestCase):
                 max_trades_delta_pct, max_dd_gap_pp, seed_mtime, seed_size, evaluated_at
             ) values (1, 'accepted', 80.0, '2026.05.01', '2026.05.31', 35.0, 35.0, 35.0, 35.0, 3.0, 0, 0, ?)
             """,
-            (before,),
+            (BEFORE_CHANGE,),
         )
 
-        audits = audit_stage_rules(
-            conn,
-            {"seed_final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("seed_final_tick",),
-        )
+        with declared_rule_change("seed_final_tick", fix="repeat"):
+            audits = audit_stage_rules(
+                conn,
+                {"seed_final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("seed_final_tick",),
+            )
 
         self.assertEqual(audits[0].stale, 1)
         self.assertEqual(stages_to_rescore(audits), ())

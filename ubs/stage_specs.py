@@ -108,13 +108,25 @@ FINAL_TICK_BLIND_RULES = (
     "MN min ops",
 )
 
-# Cuando las cuatro pantallas Final Tick pasaron a compartir reglas: los
-# umbrales no se movieron, asi que la comparacion no encuentra nada, pero el
-# codigo que los aplica si cambio y todo veredicto anterior nacio con otro.
-# Se arregla repuntuando: lo que cambio es como se juzga lo ya guardado, no lo
-# que hace falta guardar.
-FINAL_TICK_SHARED_RULES_AT = "2026-11-12T05:17:49"
-FINAL_TICK_SHARED_RULES_NOTE = "Las cuatro pantallas Final Tick pasaron a reglas compartidas"
+# Ahora mismo ninguna etapa declara un cambio de regla, y conviene que siga
+# asi: solo se declara cuando cambia el codigo que decide accepted/rejected
+# sin que cambie ningun umbral guardado, porque entonces la comparacion no
+# encuentra nada y aun asi el veredicto nacio con otra regla.
+#
+# El primero que se declaro fue el commit 62aef74, "Centraliza las reglas de
+# las cuatro pantallas Final Tick", y estaba mal: fuera de `ui/` ese commit
+# solo anadio `min_history_quality` a un SELECT para pintarlo, y
+# `ubs/agent/final_tick/` no se toco. Centralizo las pantallas, no el juicio.
+# Costo 480 veredictos marcados en rojo y a punto de repetirse con MT5.
+#
+# Asi se declara, en el mismo commit que cambia la regla:
+#
+#     rules_changed_at="2026-11-12T05:17:49",
+#     rules_change_note="Que cambio, dicho para la celda de la tabla",
+#     rules_change_fix="rescore",  # o "repeat" si hay que volver a correrla
+#
+# Antes de ponerlo, mira si el commit toca el camino que escribe el veredicto
+# -`ubs/agent/...`-, no solo la pantalla que lo ensena.
 
 # De donde sale cada etapa: el join con el que su runner elige a quien le toca
 # correr, reducido a contar los que aun no tienen fila. La fuente de verdad
@@ -199,10 +211,6 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         rules=FINAL_TICK_RULES,
         unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
-        rules_changed_at=FINAL_TICK_SHARED_RULES_AT,
-        rules_change_note=FINAL_TICK_SHARED_RULES_NOTE,
-        # Sin `--rescore-*-only` propio: la etapa hay que repetirla entera.
-        rules_change_fix="repeat",
         upstream_sql=SEED_FINAL_TICK_UPSTREAM,
     ),
     StageSpec(
@@ -213,9 +221,6 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         rules=FINAL_TICK_RULES,
         unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
-        rules_changed_at=FINAL_TICK_SHARED_RULES_AT,
-        rules_change_note=FINAL_TICK_SHARED_RULES_NOTE,
-        rules_change_fix="repeat",
         upstream_sql=SEED_FINAL_TICK_6M_UPSTREAM,
     ),
     StageSpec(
@@ -258,8 +263,6 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         run_column="run_id",
         rescore_flag="--rescore-final-tick-only",
         non_auditable=FINAL_TICK_BLIND_RULES,
-        rules_changed_at=FINAL_TICK_SHARED_RULES_AT,
-        rules_change_note=FINAL_TICK_SHARED_RULES_NOTE,
         upstream_sql=FINAL_TICK_UPSTREAM,
     ),
     StageSpec(
@@ -271,8 +274,6 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         run_column="run_id",
         rescore_flag="--rescore-final-tick-only",
         non_auditable=FINAL_TICK_BLIND_RULES,
-        rules_changed_at=FINAL_TICK_SHARED_RULES_AT,
-        rules_change_note=FINAL_TICK_SHARED_RULES_NOTE,
         upstream_sql=FINAL_TICK_6M_UPSTREAM,
     ),
     StageSpec(

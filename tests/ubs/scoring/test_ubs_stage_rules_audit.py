@@ -8,7 +8,9 @@ from tests.ubs.scoring.stage_audit_fixtures import (
     CURRENT_FINAL_TICK,
     CURRENT_SCORE,
     FINAL_STATUSES,
-    before_and_after,
+    AFTER_CHANGE,
+    BEFORE_CHANGE,
+    declared_rule_change,
     insert_candidate,
     insert_final_tick,
     memory,
@@ -258,18 +260,18 @@ class StageRulesAuditTests(unittest.TestCase):
         coincidiendo-, asi que solo el sello dice quien nacio con la regla
         vieja.
         """
-        before, after = before_and_after("final_tick")
         conn = memory()
-        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=before)
-        insert_final_tick(conn, 2, run_id=7, status="pending", evaluated_at=before)
-        insert_final_tick(conn, 3, run_id=7, status="accepted", evaluated_at=after)
+        insert_final_tick(conn, 1, run_id=7, status="accepted", evaluated_at=BEFORE_CHANGE)
+        insert_final_tick(conn, 2, run_id=7, status="pending", evaluated_at=BEFORE_CHANGE)
+        insert_final_tick(conn, 3, run_id=7, status="accepted", evaluated_at=AFTER_CHANGE)
 
-        audit = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )[0]
+        with declared_rule_change("final_tick"):
+            audit = audit_stage_rules(
+                conn,
+                {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("final_tick",),
+            )[0]
 
         self.assertEqual(audit.findings, ())
         self.assertEqual(audit.stale, 2)
@@ -285,16 +287,16 @@ class StageRulesAuditTests(unittest.TestCase):
         Contarlo dejaba la etapa en rojo despues de repuntuar, y por mucho que
         se repitiera: la fila sigue pendiente y su sello sigue siendo viejo.
         """
-        before, _after = before_and_after("final_tick")
         conn = memory()
-        insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at=before)
+        insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at=BEFORE_CHANGE)
 
-        audit = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )[0]
+        with declared_rule_change("final_tick"):
+            audit = audit_stage_rules(
+                conn,
+                {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("final_tick",),
+            )[0]
 
         self.assertEqual(audit.stale, 1)
         self.assertEqual(audit.stale_verdicts, 0)
@@ -305,12 +307,13 @@ class StageRulesAuditTests(unittest.TestCase):
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="pending", evaluated_at="")
 
-        audit = audit_stage_rules(
-            conn,
-            {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
-            final_statuses=FINAL_STATUSES,
-            stages=("final_tick",),
-        )[0]
+        with declared_rule_change("final_tick"):
+            audit = audit_stage_rules(
+                conn,
+                {"final_tick": {**CURRENT_FINAL_TICK, "max_pf_delta_pct": 35.0}},
+                final_statuses=FINAL_STATUSES,
+                stages=("final_tick",),
+            )[0]
 
         self.assertEqual(audit.stale, 0)
         self.assertEqual(audit.affected, 0)

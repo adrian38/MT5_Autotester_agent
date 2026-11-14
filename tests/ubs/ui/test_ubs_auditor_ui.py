@@ -10,7 +10,12 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from ubs.stage_rules_audit import STAGE_SPECS, stage_spec
+from tests.ubs.scoring.stage_audit_fixtures import (
+    RULE_CHANGE_NOTE,
+    RULE_CHANGED_AT,
+    declared_rule_change,
+)
+from ubs.stage_rules_audit import STAGE_SPECS
 from ui.app_chrome import SIDEBAR_ITEMS
 from ui.ubs_auditor_logic import UBSAuditorLogicMixin
 from ui.ubs_auditor_queries import (
@@ -396,9 +401,10 @@ def _pending_row(**overrides):
 
 class RuleGroupTests(unittest.TestCase):
     def test_a_changed_rule_hangs_off_the_stage_in_red(self) -> None:
-        _stage, _label, values, tag, children = _rule_group(
-            _audit_row(stale=4, stale_verdicts=3, affected=4, affected_verdicts=3)
-        )
+        with declared_rule_change("final_tick"):
+            _stage, _label, values, tag, children = _rule_group(
+                _audit_row(stale=4, stale_verdicts=3, affected=4, affected_verdicts=3)
+            )
 
         self.assertEqual(tag, "rejected")
         self.assertEqual(values[0], "Regla cambiada")
@@ -407,12 +413,10 @@ class RuleGroupTests(unittest.TestCase):
         child_values, child_tag = children[0]
         self.assertEqual(child_tag, "rejected")
         self.assertEqual(child_values[0], "Regla cambiada")
-        # La celda ancha dice que cambio y desde cuando, sin la hora. Lo lee de
-        # la declaracion: la fecha se movera cuando la regla vuelva a cambiar.
-        spec = stage_spec("final_tick")
-        self.assertIn(spec.rules_change_note, child_values[3])
-        self.assertIn(spec.rules_changed_at[:10], child_values[3])
-        self.assertNotIn(spec.rules_changed_at[10:], child_values[3])
+        # La celda ancha dice que cambio y desde cuando, sin la hora.
+        self.assertIn(RULE_CHANGE_NOTE, child_values[3])
+        self.assertIn(RULE_CHANGED_AT[:10], child_values[3])
+        self.assertNotIn(RULE_CHANGED_AT[10:], child_values[3])
 
     def test_a_changed_rule_nobody_judged_hangs_muted(self) -> None:
         """Lo que no tiene veredicto no arrastra: se dice, pero no en rojo."""

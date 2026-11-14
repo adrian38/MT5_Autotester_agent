@@ -73,6 +73,7 @@ __all__ = [
     "StageSpec",
     "audit_pending_states",
     "audit_stage_rules",
+    "missing_window_date",
     "stage_spec",
     "stages_to_repeat",
     "stages_to_rescore",
@@ -166,7 +167,7 @@ def _same_value(stored: object, current: object, kind: str) -> bool:
         return str(stored or "").strip() == str(current or "").strip()
 
 
-def _missing_date(value: object) -> bool:
+def missing_window_date(value: object) -> bool:
     """Una fecha vacia o el cero de MT5 no es una regla: es la falta de una.
 
     Cuando el reporte OHLC no trae periodo -un backtest que no produjo nada-
@@ -343,7 +344,7 @@ def _tally_stage_row(
             # esta memoria es cosa del esquema, no de la fila, y no cuenta.
             row_unknown = row_unknown or bool(rule.score_field)
             continue
-        if rule.kind == "date" and _missing_date(stored):
+        if rule.kind == "date" and missing_window_date(stored):
             row_undated.add(_undated_reason(stored))
             continue
         if _same_value(stored, expected[rule.key], rule.kind):

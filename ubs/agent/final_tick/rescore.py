@@ -11,6 +11,7 @@ from ubs.memory import AgentMemory, final_tick_table_for_stage, variant_from_can
 from ubs.models import Variant
 from ubs.path_utils import resolve_workspace_path
 from ubs.score import ScoreConfig, score_report_file
+from ubs.stage_rules_audit import missing_window_date
 from ubs.agent.final_tick.similarity import DEFAULT_MAX_DD_GAP_PP
 from ubs.agent.final_tick.evaluate import (
     _evaluate_final_tick_tick_report,
@@ -463,6 +464,30 @@ def _rescore_ohlc_result(
     return ohlc_result
 
 
+def _demote_if_windowless(
+    memory: AgentMemory, candidate_id: int, run_id: int, thresholds,
+    ohlc_report: Path, real_tick_report: Path | None, status_counts: dict[str, int],
+) -> bool:
+    """Devuelve a pendiente la fila cuyo reporte OHLC no trae periodo.
+
+    MT5 escribe el cero cuando el backtest no produjo nada, asi que no hay
+    ventana sobre la que juzgar y el veredicto guardado no vale. Repuntuarlo no
+    lo arregla -la parte rota es el reporte-, y dejarlo como veredicto lo daba
+    por bueno sobre una ventana que no existe. Como pendiente pasa a ser de
+    quien se ocupa Arreglar pendientes, que es quien puede volver a correrlo.
+    """
+    if not missing_window_date(thresholds.from_date) and not missing_window_date(
+        thresholds.to_date
+    ):
+        return False
+    _record_rescored_final_tick(
+        memory, candidate_id, run_id, "no_report", None, thresholds,
+        ohlc_report, real_tick_report, "reporte OHLC sin periodo", None,
+    )
+    status_counts["no_report"] = status_counts.get("no_report", 0) + 1
+    return True
+
+
 def _rescore_final_tick_row(
     args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig,
     symbol_map: dict[str, str], row, status_counts: dict[str, int],
@@ -482,6 +507,9 @@ def _rescore_final_tick_row(
         from_date or str(row["ft_from_date"] or args.from_date or ""),
         to_date or str(row["ft_to_date"] or args.to_date or ""),
     )
+    if _demote_if_windowless(memory, candidate_id, run_id, thresholds,
+                             ohlc_report, real_tick_report, status_counts):
+        return True
     original_variant = variant_from_candidate_row(row)
     ohlc_variant = _rescore_stage_variant(original_variant, ohlc_report, "final_tick_ohlc_rescore")
 
