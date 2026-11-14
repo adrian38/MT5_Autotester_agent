@@ -1570,8 +1570,10 @@ Tab `ubs_auditor` ("UBS Auditor", `ui/ubs_auditor_view.py` +
 over the pure audit in
 [`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py), whose stage catalog
 and result dataclasses live in [`ubs/stage_specs.py`](../ubs/stage_specs.py)
-— the vocabulary, no SQLite — and whose two fix lists live in
-[`ubs/stage_fixes.py`](../ubs/stage_fixes.py); both are re-exported from it.
+— the vocabulary, no SQLite —, whose two fix lists live in
+[`ubs/stage_fixes.py`](../ubs/stage_fixes.py) and whose value reading and
+comparing lives in [`ubs/stage_values.py`](../ubs/stage_values.py); all three
+are re-exported from it, which is where the rest of the code asks for them.
 
 **A rule is not a configuration**, and the module header of `stage_specs`
 states it, because the screen used to conflate them. A **rule** is the
@@ -1610,7 +1612,7 @@ means one thing on every row:
 
 | Column | Rules query | Pending query |
 |--------|-------------|---------------|
-| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `N sin fecha valida`, `Corrida sobre otra ventana`, `Sin saber`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
+| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `N sin fecha valida`, `Otra ventana`, `Sin saber`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
 | `item` | `REGLA`: the moved rule's label | hidden |
 | `current` | `AHORA`: what Configuración holds | hidden |
 | `stored` | `SE JUZGO CON`: stored values with their counts | `EN QUE ESTADO SE QUEDARON`: statuses with their counts |
@@ -1683,20 +1685,35 @@ means nothing unless you know that 1970.01.01 *is* the absence of a window —
   a muted child and `Consultar pendientes` is where it belongs.
 
 A row whose window is a real date but no longer the configured one is the other
-half, and it is **not** a finding either: `StageAudit.offwindow` /
-`offwindow_verdicts` / `offwindow_stored`, filled by `_tally_window_row()`.
-Each stored value is written with the name of its date (`Desde 2026.01.01`)
-because both fall in the same cell and otherwise you cannot tell which one
-moved; `window_now` carries today's window for the `AHORA` cell. The headline
-reads `Corrida sobre otra ventana` and the child row says `Hay que repetir`
-under `REGLA = Ventana`. It counts toward `affected`/`affected_verdicts` — a
-stage header must never read smaller than a child of its own — but never as a
-bent verdict, so `stages_to_rescore()` leaves it alone and `stages_to_repeat()`
-takes it. Before this, `Desde` was a `RuleSpec` like any threshold: the stage
-read `1 regla movida`, entered the rescore queue, walked all 3450 rows of
-`candidate_final_tick_6m` rewriting every verdict with the value it already
-had, and came back just as red — the window is re-read from the OHLC report, so
-no rescore can move it.
+half, and it is **not a problem at all** — the hardest part of this to get
+right. `StageAudit.offwindow` / `offwindow_verdicts` count the rows and
+`window_findings` details them date by date, filled by `_tally_window_row()`.
+The stage still reads `Al dia`, the child hangs muted as `Otra ventana` with
+the field's own label, today's value and the stored ones, and the `A CUANTOS
+AFECTA` cell is left empty, because the answer is none: that verdict is valid
+for the period it ran over.
+
+**Nobody re-runs those rows, and the runner says so.**
+`final_tick_row_pending_for_dates()`
+([`evaluate.py`](../ubs/agent/final_tick/evaluate.py)) stops looking at the
+window the moment a row holds a verdict — the date only decides for rows
+already in `pending_ohlc_trades` / `pending_history_quality`. So pressing the
+6M stage's own button skips all 2404 of them one by one. Two earlier versions
+of this screen got it wrong in opposite directions: first `Desde` was a
+`RuleSpec` like any threshold, so the stage read `1 regla movida` and entered
+the rescore queue, walking all 3450 rows of `candidate_final_tick_6m` to
+rewrite every verdict with the value it already had (the window is re-read from
+the OHLC report, so no rescore moves it); then it was red and in
+`stages_to_repeat()`, sending 2404 candidates back through MT5 for work no
+button performs. It is configuration drift, and the screen states it without
+asking for anything.
+
+One row per date, never merged. Collapsing `Desde` and `Hasta` into one cell
+forced writing the field name in front of every value (`Desde 2026.01.01`),
+and then neither that cell nor `AHORA` — which had to hold a whole
+`from -> to` — fit their columns: `QUE PASA`, `AHORA` and `SE JUZGO CON` all
+came out clipped mid-value, which is the thing `_values_cell()` exists to
+prevent.
 
 #### Which button actually fixes what
 
@@ -1713,11 +1730,11 @@ window that does not exist, which the rescore demotes to `no_report`. Nothing
 else. A stage where no rule moved stays out, because rescoring it would walk
 the whole memory rewriting every verdict with the value it already had.
 
-`stages_to_repeat()` — a verdict run over a window that is no longer the
-configured one (`offwindow_verdicts`), a declared change whose
-`rules_change_fix` is `"repeat"`, or a stage with no `rescore_flag` at all,
-which has no other way to straighten anything. `Seeds Final Tick` and `Seeds
-Final Tick 6M` are the stages with no rescore mode.
+`stages_to_repeat()` — a declared change whose `rules_change_fix` is
+`"repeat"`, or a stage with no `rescore_flag` at all, which has no other way to
+straighten anything. `Seeds Final Tick` and `Seeds Final Tick 6M` are the
+stages with no rescore mode. A moved window is **not** in this list, however
+many rows it reaches: see above.
 
 A stage can still appear in both: rescore what can be rescored, repeat it for
 the rest. `RuleSpec` no longer carries a `fix` — the window was its only user,

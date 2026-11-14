@@ -113,9 +113,9 @@ def _stage_headline(audit) -> str:
     se explican. Lo unico que la cabecera tiene que hacer bien es no decir «Al
     dia».
 
-    La ventana va la ultima y con su nombre. Llamarla «regla movida» hacia creer
-    que Repuntuar afectados la arreglaba, y no la toca nadie: la fila corrio
-    sobre ese periodo y solo cambia volviendola a correr.
+    La ventana no sale aqui aunque alcance a miles de filas: ninguna de ellas
+    esta mal juzgada -corrio sobre ese periodo y su veredicto vale-, asi que la
+    etapa esta al dia. Se dice en una hija apagada, que es lo que es: un dato.
     """
     count = _moved_verdicts(audit)
     if count:
@@ -125,8 +125,6 @@ def _stage_headline(audit) -> str:
     broken = audit.undated_verdicts
     if broken:
         return "1 sin fecha valida" if broken == 1 else f"{broken} sin fecha valida"
-    if audit.offwindow_verdicts:
-        return "Corrida sobre otra ventana"
     return "Al dia"
 
 
@@ -246,16 +244,15 @@ def _rule_children(audit) -> tuple:
             "Sin fecha valida", "", "", _values_cell(audit.undated_stored),
             _of_total(audit.undated_verdicts, audit.rows, audit.stage),
         ), "rejected" if audit.undated_verdicts else "pending"))
-    if audit.offwindow:
-        # La unica fila que avisa de que el boton no le llega. No es una regla
-        # movida -la ventana no juzga-, asi que no va en REGLA como un umbral:
-        # se nombra por lo que es y ensena las dos ventanas, la de ahora y las
-        # que corrieron.
+    for window in audit.window_findings:
+        # Una fila por fecha, como cualquier hallazgo, porque la de al lado ya
+        # dice cual es y asi el valor cabe entero. Apagada y sin cuenta en «a
+        # cuantos afecta»: no hay veredicto torcido que contar, solo filas que
+        # corrieron sobre otro periodo. Cuantas, lo dice su propia celda.
         children.append(((
-            "Hay que repetir", "Ventana", audit.window_now,
-            _values_cell(audit.offwindow_stored),
-            _of_total(audit.offwindow_verdicts, audit.rows, audit.stage),
-        ), "rejected" if audit.offwindow_verdicts else "pending"))
+            "Otra ventana", window.rule_label, window.current,
+            _stored_cell(window), "",
+        ), "pending"))
     if audit.unknown:
         children.append(((
             "Sin saber", "", "", "(no lo guardaron)",
@@ -270,12 +267,7 @@ def _rule_group(audit) -> tuple:
         return (audit.stage, audit.stage_label, (
             "Sin tabla", "", "", "la memoria no tiene su tabla", "",
         ), "pending", ())
-    broken = (
-        _moved_verdicts(audit)
-        or audit.stale_verdicts
-        or audit.undated_verdicts
-        or audit.offwindow_verdicts
-    )
+    broken = _moved_verdicts(audit) or audit.stale_verdicts or audit.undated_verdicts
     return (audit.stage, audit.stage_label, (
         _stage_headline(audit), "", "", "",
         _of_total(audit.affected_verdicts, audit.rows, audit.stage),

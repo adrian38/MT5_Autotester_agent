@@ -64,10 +64,17 @@ def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
 def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     """Etapas que ningun repuntuado pone al dia: hay que repetirlas con MT5.
 
-    Tres caras de lo mismo: la fila corrida sobre una ventana que ya no es la
-    configurada, el cambio de regla declarado que no se recalcula desde lo
-    guardado, y la etapa sin `rescore_flag`, a la que cualquier cosa que haya
-    torcido un veredicto le obliga a repetir porque no tiene otra forma.
+    Dos caras de lo mismo: el cambio de regla declarado que no se recalcula
+    desde lo guardado, y la etapa sin `rescore_flag`, a la que cualquier cosa
+    que haya torcido un veredicto le obliga a repetir porque no tiene otra
+    forma.
+
+    Una ventana distinta de la configurada no entra, aunque alcance a miles de
+    filas: su veredicto vale para el periodo que corrio y nadie lo va a volver
+    a dar. El propio runner lo trata asi -`final_tick_row_pending_for_dates()`
+    deja de mirar la ventana en cuanto la fila tiene veredicto-, de modo que
+    pedir repetir la etapa era mandar a MT5 un trabajo que el boton de esa
+    etapa se salta fila por fila.
 
     Entre esta lista y `stages_to_rescore()` tiene que salir toda etapa que la
     tabla pinte en rojo, o la pantalla enrojece una fila sobre la que luego no
@@ -76,8 +83,7 @@ def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
     stages: list[str] = []
     for audit in audits:
         spec = stage_spec(audit.stage)
-        declared = bool(audit.stale_verdicts) and spec.rules_change_fix == "repeat"
-        if audit.offwindow_verdicts or declared:
+        if bool(audit.stale_verdicts) and spec.rules_change_fix == "repeat":
             stages.append(audit.stage)
         elif not spec.rescore_flag and _rescore_would_change_it(audit):
             stages.append(audit.stage)

@@ -168,15 +168,14 @@ class StagesToRescoreTests(unittest.TestCase):
         self.assertEqual(stages_to_rescore(audits), ())
         self.assertEqual(stages_to_repeat(audits), ())
 
-    def test_a_moved_window_alone_only_asks_for_a_repeat(self) -> None:
-        """Mover la ventana no torcio ningun veredicto: no hay que repuntuar.
+    def test_a_moved_window_alone_asks_for_nothing(self) -> None:
+        """Mover la ventana no deja trabajo a nadie.
 
-        Ningun repuntuado mueve una fecha -Final Tick la relee del reporte
-        OHLC, robustez no la reescribe y la regresiva se salta la fila cuya
-        ventana no coincide-, y como ningun umbral se movio tampoco hay nada
-        mas que volver a juzgar: encolarla era recorrer la tabla entera para
-        reescribir cada veredicto con el valor que ya tenia y acabar igual de
-        roja.
+        No hay que repuntuar, porque ningun umbral se movio y ningun repuntuado
+        mueve una fecha. Y no hay que repetir, porque el veredicto vale para el
+        periodo que corrio: `final_tick_row_pending_for_dates()` deja de mirar
+        la ventana en cuanto la fila tiene veredicto, asi que el boton de la
+        etapa se saltaria una por una las filas que esta lista mandaba a MT5.
         """
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")
@@ -192,7 +191,7 @@ class StagesToRescoreTests(unittest.TestCase):
         self.assertEqual(audits[0].findings, ())
         self.assertEqual(audits[0].offwindow_verdicts, 1)
         self.assertEqual(stages_to_rescore(audits), ())
-        self.assertEqual(stages_to_repeat(audits), ("final_tick",))
+        self.assertEqual(stages_to_repeat(audits), ())
 
     def test_a_verdict_without_a_window_is_what_the_rescore_goes_for(self) -> None:
         """No se puede volver a juzgar, asi que el repuntuado lo baja a pendiente.
@@ -259,8 +258,8 @@ class StagesToRescoreTests(unittest.TestCase):
         self.assertEqual(audits[0].findings, ())
         self.assertEqual(stages_to_rescore(audits), ())
 
-    def test_a_moved_threshold_alongside_a_moved_window_still_rescores(self) -> None:
-        """La etapa entra por el umbral, y la fecha sigue pidiendo repetirla."""
+    def test_a_moved_threshold_alongside_a_moved_window_rescores_and_no_more(self) -> None:
+        """La etapa entra por el umbral; la fecha no le anade nada."""
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")
 
@@ -271,8 +270,10 @@ class StagesToRescoreTests(unittest.TestCase):
             stages=("final_tick",),
         )
 
+        self.assertEqual([f.rule for f in audits[0].findings], ["max_pf_delta_pct"])
+        self.assertEqual(audits[0].offwindow_verdicts, 1)
         self.assertEqual(stages_to_rescore(audits), ("final_tick",))
-        self.assertEqual(stages_to_repeat(audits), ("final_tick",))
+        self.assertEqual(stages_to_repeat(audits), ())
 
     def test_a_declared_rule_change_also_queues_the_rescore(self) -> None:
         conn = memory()

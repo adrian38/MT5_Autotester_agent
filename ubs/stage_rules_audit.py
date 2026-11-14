@@ -41,12 +41,23 @@ que es donde lo pide todo el mundo. Aqui quedan las consultas que lo recorren.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
 from ubs.stage_fixes import stages_to_repeat, stages_to_rescore  # noqa: F401
+from ubs.stage_values import (  # noqa: F401
+    EPOCH_YEAR,
+    NUMBER_TOLERANCE,
+    _by_count,
+    _display,
+    _format_number,
+    _same_value,
+    _score_config,
+    _stored_rule_value,
+    _undated_reason,
+    missing_window_date,
+)
 from ubs.stage_specs import (
     FINAL_TICK_BLIND_RULES,
     FINAL_TICK_RULES,
@@ -88,14 +99,6 @@ __all__ = [
 # Tope de identificadores que se devuelven por hallazgo: la pantalla los usa
 # para que el usuario reconozca las filas, no para reprocesarlas una por una.
 MAX_REPORTED_IDS = 200
-
-# Margen con el que se comparan dos umbrales numericos. SQLite guarda reales y
-# la interfaz escribe texto: sin margen, "35" y 35.0 se verian distintos.
-NUMBER_TOLERANCE = 1e-6
-
-# Ano hasta el que una fecha guardada se lee como el cero de MT5 y no como una
-# fecha que alguien puso.
-EPOCH_YEAR = 1970
 
 
 def _selected_specs(stages: Iterable[str] | None) -> tuple[StageSpec, ...]:
@@ -146,52 +149,6 @@ def _stage_rows(
         conn.row_factory = previous_factory
 
 
-def _score_config(raw: object) -> Mapping[str, object] | None:
-    try:
-        payload = json.loads(str(raw or "{}"))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, Mapping):
-        return None
-    stored = payload.get("score_config")
-    return stored if isinstance(stored, Mapping) else None
-
-
-def _format_number(value: object) -> str:
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return str(value)
-    if number == int(number):
-        return str(int(number))
-    return f"{number:g}"
-
-
-def _same_value(stored: object, current: object, kind: str) -> bool:
-    if kind == "date":
-        return str(stored or "").strip() == str(current or "").strip()
-    try:
-        return abs(float(stored) - float(current)) <= NUMBER_TOLERANCE  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return str(stored or "").strip() == str(current or "").strip()
-
-
-def missing_window_date(value: object) -> bool:
-    """Una fecha vacia o el cero de MT5 no es una regla: es la falta de una.
-
-    Cuando el reporte OHLC no trae periodo -un backtest que no produjo nada-
-    MT5 escribe 1970.01.01, y `_read_ohlc_report_cfg_dates()` lo copia tal cual
-    a la fila. Compararlo con la ventana de hoy no dice que la regla se haya
-    movido: dice que esa fila no se juzgo con ninguna. Lo mismo vale para la
-    fecha vacia de una fila que aun no ha corrido.
-    """
-    text = str(value or "").strip()
-    if not text:
-        return True
-    year = text[:4]
-    return year.isdigit() and int(year) <= EPOCH_YEAR
-
-
 def _judged_before_change(
     row: sqlite3.Row,
     spec: StageSpec,
@@ -218,40 +175,6 @@ def _judged_before_change(
     return stamp < spec.rules_changed_at
 
 
-def _undated_reason(value: object) -> str:
-    """Por que la fila no tiene ventana, que es lo unico que importa de ella.
-
-    El valor guardado no dice nada por si solo -1970.01.01 es el cero que MT5
-    escribe en un reporte sin periodo- y ensenarlo obligaba a saberse esa
-    equivalencia de memoria para leer la celda.
-    """
-    return "no ha corrido" if not str(value or "").strip() else "reporte sin periodo"
-
-
-def _display(value: object, kind: str) -> str:
-    if kind == "date":
-        return str(value or "").strip() or "(vacio)"
-    return _format_number(value)
-
-
-def _stored_rule_value(
-    row: sqlite3.Row,
-    rule: RuleSpec,
-    *,
-    columns: set[str],
-    score_config: Mapping[str, object] | None,
-) -> tuple[object, bool]:
-    """Valor con el que se juzgo la fila, y si la fila no lo guarda."""
-    if rule.column:
-        if rule.column not in columns:
-            return None, False
-        return row[rule.column], True
-    if rule.score_field:
-        if score_config is None or rule.score_field not in score_config:
-            return None, False
-        return score_config[rule.score_field], True
-    return None, False
-
 
 @dataclass
 class _StageTally:
@@ -270,7 +193,11 @@ class _StageTally:
     undated_values: dict[str, int] = field(default_factory=dict)
     offwindow: set[int] = field(default_factory=set)
     offwindow_verdicts: set[int] = field(default_factory=set)
-    offwindow_values: dict[str, int] = field(default_factory=dict)
+    # Lo mismo que `counts`/`ids`/`verdicts`, pero para las fechas: cada una
+    # lleva su cuenta aparte porque cada una se dice en su propia fila.
+    offwindow_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    offwindow_ids: dict[str, list[int]] = field(default_factory=dict)
+    offwindow_field_verdicts: dict[str, int] = field(default_factory=dict)
     stale: set[int] = field(default_factory=set)
     stale_verdicts: set[int] = field(default_factory=set)
     rows: int = 0
@@ -304,20 +231,32 @@ class _StageTally:
         for value in values:
             self.undated_values[value] = self.undated_values.get(value, 0) + 1
 
-    def record_offwindow(self, values: set[str], row_id: int, *, is_verdict: bool) -> None:
+    def record_offwindow(
+        self, values: dict[str, str], row_id: int, *, is_verdict: bool
+    ) -> None:
         """Una fila que corrio sobre un periodo que ya no es el configurado.
 
-        Cuenta en «a cuantos afecta» como todo lo demas que la etapa tiene mal
-        -la cabecera no puede decir menos que una hija suya-, pero no como
-        veredicto torcido: la ventana no juzga, asi que el repuntuado no tiene
-        nada que enderezar aqui y la etapa no entra en su cola por esto.
+        No cuenta como veredicto torcido ni como fila afectada: su veredicto es
+        valido para el periodo que corrio, y nadie lo va a volver a dar. El
+        propio runner lo dice -`final_tick_row_pending_for_dates()` ignora la
+        ventana en cuanto la fila tiene veredicto-, asi que exigir repetir la
+        etapa era pedir un trabajo que ningun boton hace. Se dice y ya.
+
+        `values` trae el valor guardado de cada fecha movida, por su clave,
+        porque cada fecha se cuenta y se dice por separado. La fila, en cambio,
+        se cuenta una vez aunque se le hayan movido las dos.
         """
         self.offwindow.add(row_id)
         if is_verdict:
             self.offwindow_verdicts.add(row_id)
-        self.bend(row_id, is_verdict=is_verdict)
-        for value in values:
-            self.offwindow_values[value] = self.offwindow_values.get(value, 0) + 1
+        for key, value in values.items():
+            counts = self.offwindow_counts.setdefault(key, {})
+            counts[value] = counts.get(value, 0) + 1
+            self.offwindow_ids.setdefault(key, []).append(row_id)
+            if is_verdict:
+                self.offwindow_field_verdicts[key] = (
+                    self.offwindow_field_verdicts.get(key, 0) + 1
+                )
 
     def record(self, rule: RuleSpec, stored: object, row_id: int, *, is_verdict: bool) -> None:
         counts = self.counts.setdefault(rule.key, {})
@@ -396,12 +335,13 @@ def _tally_window_row(
     pasarle, una fila puede traer las dos -la fecha de arranque sin poner y la
     de cierre movida- y entonces cuenta en cada una.
 
-    El valor guardado se dice con el nombre de su fecha («Desde 2026.01.01»)
-    porque las dos caen en la misma celda y, sin decirlo, no se sabe cual de
-    las dos se movio.
+    Cada fecha movida se devuelve por su clave, porque cada una se dice en su
+    propia fila: juntarlas en una sola celda obligaba a escribir «Desde» delante
+    de cada valor para saber cual era, y entonces ni la celda ni la columna de
+    al lado daban de si.
     """
     undated: set[str] = set()
-    elsewhere: set[str] = set()
+    elsewhere: dict[str, str] = {}
     for window_field in spec.window:
         if window_field.key not in expected:
             continue
@@ -415,21 +355,42 @@ def _tally_window_row(
             continue
         if _same_value(stored, expected[window_field.key], window_field.kind):
             continue
-        elsewhere.add(f"{window_field.label} {_display(stored, window_field.kind)}")
+        elsewhere[window_field.key] = _display(stored, window_field.kind)
     if undated:
         tally.record_undated(undated, row_id, is_verdict=is_verdict)
     if elsewhere:
         tally.record_offwindow(elsewhere, row_id, is_verdict=is_verdict)
 
 
-def _window_now(spec: StageSpec, expected: Mapping[str, object]) -> str:
-    """La ventana configurada, escrita como se lee: de una fecha a la otra."""
-    parts = [
-        _display(expected[window_field.key], window_field.kind)
-        for window_field in spec.window
-        if window_field.key in expected
-    ]
-    return " -> ".join(parts)
+def _window_findings(
+    spec: StageSpec, expected: Mapping[str, object], tally: _StageTally
+) -> tuple[RuleFinding, ...]:
+    """Cada fecha que ya no es la configurada, con lo que guardo cada fila.
+
+    Misma forma que un hallazgo de regla porque se lee igual -que hay ahora,
+    con que se corrio y a cuantos alcanza- y se pinta en las mismas columnas.
+    Lo que cambia es el tono: esto no torcio ningun veredicto.
+    """
+    findings: list[RuleFinding] = []
+    for window_field in spec.window:
+        counts = tally.offwindow_counts.get(window_field.key)
+        if not counts:
+            continue
+        ids = tally.offwindow_ids.get(window_field.key, [])
+        findings.append(
+            RuleFinding(
+                stage=spec.key,
+                stage_label=spec.label,
+                rule=window_field.key,
+                rule_label=window_field.label,
+                current=_display(expected[window_field.key], window_field.kind),
+                stored=_by_count(counts),
+                rows=len(ids),
+                verdicts=tally.offwindow_field_verdicts.get(window_field.key, 0),
+                ids=tuple(ids[:MAX_REPORTED_IDS]),
+            )
+        )
+    return tuple(findings)
 
 
 def _stage_findings(
@@ -496,11 +457,6 @@ def audit_stage_rules(
     return audits
 
 
-def _by_count(values: Mapping[str, int]) -> tuple[tuple[str, int], ...]:
-    """Valores con su cuenta, el mas repetido primero y a igualdad por nombre."""
-    return tuple(sorted(values.items(), key=lambda item: (-item[1], item[0])))
-
-
 def _stage_audit(
     spec: StageSpec, expected: Mapping[str, object], tally: _StageTally
 ) -> StageAudit:
@@ -518,8 +474,7 @@ def _stage_audit(
         undated_stored=_by_count(tally.undated_values),
         offwindow=len(tally.offwindow),
         offwindow_verdicts=len(tally.offwindow_verdicts),
-        offwindow_stored=_by_count(tally.offwindow_values),
-        window_now=_window_now(spec, expected),
+        window_findings=_window_findings(spec, expected, tally),
         stale=len(tally.stale),
         stale_verdicts=len(tally.stale_verdicts),
         findings=_stage_findings(spec, expected, tally),

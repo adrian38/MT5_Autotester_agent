@@ -382,8 +382,7 @@ def _audit_row(**overrides):
         "undated_stored": (),
         "offwindow": 0,
         "offwindow_verdicts": 0,
-        "offwindow_stored": (),
-        "window_now": "",
+        "window_findings": (),
         "unknown": 0,
         "missing_table": False,
     }
@@ -433,29 +432,29 @@ class RuleGroupTests(unittest.TestCase):
         self.assertEqual(values[4], "0 de 10 candidatos")
         self.assertEqual(children[0][1], "pending")
 
-    def test_the_window_is_not_a_rule_and_asks_for_a_repeat(self) -> None:
-        """Lo unico que el boton no alcanza, dicho en su propia fila.
+    def test_another_window_is_a_fact_not_a_problem(self) -> None:
+        """Corrieron sobre otro periodo, y su veredicto vale igual.
 
-        La fila corrio sobre otro periodo: su veredicto esta bien dado y no hay
-        nada que repuntuar, asi que no es una regla movida ni se cuela en la
-        columna REGLA como si fuera un umbral.
+        Ninguna regla se movio, asi que la etapa esta al dia y en verde. El
+        dato cuelga apagado, con una fila por fecha para que el valor quepa
+        entero, y sin cuenta en «a cuantos afecta»: no afecta a ninguno.
         """
+        window = SimpleNamespace(
+            rule="from_date", rule_label="Desde", current="2025.06.30",
+            stored=(("2026.01.01", 2396), ("2025.09.01", 8)),
+            rows=2404, verdicts=2404,
+        )
         _stage, _label, values, tag, children = _rule_group(
-            _audit_row(
-                offwindow=2404, offwindow_verdicts=2404,
-                offwindow_stored=(("Desde 2026.01.01", 2396), ("Desde 2025.09.01", 8)),
-                window_now="2025.06.30 -> 2026.06.30",
-                affected=2404, affected_verdicts=2404,
-            )
+            _audit_row(window_findings=(window,), offwindow=2404, offwindow_verdicts=2404)
         )
 
-        self.assertEqual(values[0], "Corrida sobre otra ventana")
-        self.assertEqual(tag, "rejected")
+        self.assertEqual(values[0], "Al dia")
+        self.assertEqual(tag, "accepted")
+        self.assertEqual(children[0][1], "pending")
         self.assertEqual(
-            children[0][0][:3],
-            ("Hay que repetir", "Ventana", "2025.06.30 -> 2026.06.30"),
+            children[0][0],
+            ("Otra ventana", "Desde", "2025.06.30", "2026.01.01 (2396), 2025.09.01 (8)", ""),
         )
-        self.assertEqual(children[0][0][3], "Desde 2026.01.01 (2396), Desde 2025.09.01 (8)")
 
     def test_the_invalid_dates_name_themselves_with_their_counts(self) -> None:
         _stage, _label, _values, _tag, children = _rule_group(
