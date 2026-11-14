@@ -8,11 +8,15 @@ su `score_config` dentro de `metrics_json`. Comparar lo guardado con lo que hay
 hoy en Configuracion dice, sin reparsear un solo reporte HTML, que veredictos
 nacieron con otras reglas y que etapa hay que repuntuar.
 
-Una fecha guardada que no es una fecha -vacia, o el cero que MT5 escribe en un
-reporte sin periodo- tampoco es un umbral movido: es una fila que no se juzgo
-sobre ninguna ventana. Se cuenta aparte (`undated`), y si ademas tiene
-veredicto, ese veredicto no vale y la etapa no esta al dia por mucho que sus
-umbrales coincidan.
+La ventana no es una regla y no se cuenta como tal: no decide accepted ni
+rejected, solo dice sobre que periodo corrio la fila (ver la cabecera de
+`stage_specs`). De ella salen dos cuentas propias. `undated` son las filas sin
+ninguna ventana -la fecha vacia de la que no ha corrido, o el cero que MT5
+escribe en un reporte sin periodo-, y la que ademas tiene veredicto lo dio
+sobre una ventana que no existe, asi que no vale por mucho que sus umbrales
+coincidan. `offwindow` son las que corrieron sobre un periodo que ya no es el
+configurado: ahi el veredicto esta bien dado y lo unico que cambia es volver a
+correrlas.
 
 Un cambio de regla no siempre se ve en lo guardado: cuando lo que cambia es el
 codigo que aplica los umbrales -y no los umbrales- la fila guarda los mismos
@@ -25,12 +29,12 @@ Una etapa tampoco esta al dia cuando le faltan filas: quien pasa de rejected a
 accepted se vuelve elegible para la siguiente y alli no se queda pendiente, es
 que no tiene fila. `StageSpec.upstream_sql` cuenta esos.
 
-Nada de esto dice como se arregla, y no todo se arregla igual: cada `RuleSpec`
-y cada cambio declarado llevan su `fix`, y de ahi salen `stages_to_rescore()` y
-`stages_to_repeat()`. Lo que una etapa no guarda no se puede auditar: cada
-`StageSpec` declara en `non_auditable` sus reglas ciegas para que la pantalla
-lo diga en vez de callarlo. Aqui tampoco se decide que estado es final ni cual
-es reintentable: lo primero lo pasa quien llama, lo segundo es del runner.
+Nada de esto dice como se arregla: eso es otra pregunta y vive en
+`ubs/stage_fixes.py`, reexportado desde aqui. Lo que una etapa no guarda no se
+puede auditar: cada `StageSpec` declara en `non_auditable` sus reglas ciegas
+para que la pantalla lo diga en vez de callarlo. Aqui tampoco se decide que
+estado es final ni cual es reintentable: lo primero lo pasa quien llama, lo
+segundo es del runner.
 
 El catalogo de etapas vive en `ubs/stage_specs.py` y se reexporta desde aqui,
 que es donde lo pide todo el mundo. Aqui quedan las consultas que lo recorren.
@@ -40,8 +44,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping
 
+from ubs.stage_fixes import stages_to_repeat, stages_to_rescore  # noqa: F401
 from ubs.stage_specs import (
     FINAL_TICK_BLIND_RULES,
     FINAL_TICK_RULES,
@@ -115,7 +120,11 @@ def _stage_rows(
     columns: set[str],
 ) -> list[sqlite3.Row]:
     selected = [spec.id_column, "status"]
-    selected.extend(rule.column for rule in spec.rules if rule.column and rule.column in columns)
+    selected.extend(
+        rule.column
+        for rule in (*spec.rules, *spec.window)
+        if rule.column and rule.column in columns
+    )
     if spec.metrics_column and spec.metrics_column in columns:
         selected.append(spec.metrics_column)
     if spec.judged_column and spec.judged_column in columns:
@@ -259,6 +268,9 @@ class _StageTally:
     # distintos -la vacia de la que no ha corrido y el cero de MT5- y decir
     # "vacia o 1970.01.01" obligaba a ir a mirar cual de los dos era.
     undated_values: dict[str, int] = field(default_factory=dict)
+    offwindow: set[int] = field(default_factory=set)
+    offwindow_verdicts: set[int] = field(default_factory=set)
+    offwindow_values: dict[str, int] = field(default_factory=dict)
     stale: set[int] = field(default_factory=set)
     stale_verdicts: set[int] = field(default_factory=set)
     rows: int = 0
@@ -291,6 +303,21 @@ class _StageTally:
         self.bend(row_id, is_verdict=is_verdict)
         for value in values:
             self.undated_values[value] = self.undated_values.get(value, 0) + 1
+
+    def record_offwindow(self, values: set[str], row_id: int, *, is_verdict: bool) -> None:
+        """Una fila que corrio sobre un periodo que ya no es el configurado.
+
+        Cuenta en «a cuantos afecta» como todo lo demas que la etapa tiene mal
+        -la cabecera no puede decir menos que una hija suya-, pero no como
+        veredicto torcido: la ventana no juzga, asi que el repuntuado no tiene
+        nada que enderezar aqui y la etapa no entra en su cola por esto.
+        """
+        self.offwindow.add(row_id)
+        if is_verdict:
+            self.offwindow_verdicts.add(row_id)
+        self.bend(row_id, is_verdict=is_verdict)
+        for value in values:
+            self.offwindow_values[value] = self.offwindow_values.get(value, 0) + 1
 
     def record(self, rule: RuleSpec, stored: object, row_id: int, *, is_verdict: bool) -> None:
         counts = self.counts.setdefault(rule.key, {})
@@ -331,7 +358,6 @@ def _tally_stage_row(
             tally.stale_verdicts.add(row_id)
         tally.bend(row_id, is_verdict=is_verdict)
     row_unknown = False
-    row_undated: set[str] = set()
     for rule in spec.rules:
         if rule.key not in expected:
             continue
@@ -344,15 +370,66 @@ def _tally_stage_row(
             # esta memoria es cosa del esquema, no de la fila, y no cuenta.
             row_unknown = row_unknown or bool(rule.score_field)
             continue
-        if rule.kind == "date" and missing_window_date(stored):
-            row_undated.add(_undated_reason(stored))
-            continue
         if _same_value(stored, expected[rule.key], rule.kind):
             continue
         tally.record(rule, stored, row_id, is_verdict=is_verdict)
-    if row_undated:
-        tally.record_undated(row_undated, row_id, is_verdict=is_verdict)
+    _tally_window_row(
+        row, spec, expected, tally, row_id, columns=columns, is_verdict=is_verdict
+    )
     tally.unknown += 1 if row_unknown else 0
+
+
+def _tally_window_row(
+    row: sqlite3.Row,
+    spec: StageSpec,
+    expected: Mapping[str, object],
+    tally: _StageTally,
+    row_id: int,
+    *,
+    columns: set[str],
+    is_verdict: bool,
+) -> None:
+    """La ventana de la fila: la que falta, o la que ya no es la configurada.
+
+    Se mira aparte de las reglas porque no es una: no decide accepted ni
+    rejected, solo dice sobre que periodo corrio. De las dos cosas que pueden
+    pasarle, una fila puede traer las dos -la fecha de arranque sin poner y la
+    de cierre movida- y entonces cuenta en cada una.
+
+    El valor guardado se dice con el nombre de su fecha («Desde 2026.01.01»)
+    porque las dos caen en la misma celda y, sin decirlo, no se sabe cual de
+    las dos se movio.
+    """
+    undated: set[str] = set()
+    elsewhere: set[str] = set()
+    for window_field in spec.window:
+        if window_field.key not in expected:
+            continue
+        stored, present = _stored_rule_value(
+            row, window_field, columns=columns, score_config=None
+        )
+        if not present:
+            continue
+        if missing_window_date(stored):
+            undated.add(_undated_reason(stored))
+            continue
+        if _same_value(stored, expected[window_field.key], window_field.kind):
+            continue
+        elsewhere.add(f"{window_field.label} {_display(stored, window_field.kind)}")
+    if undated:
+        tally.record_undated(undated, row_id, is_verdict=is_verdict)
+    if elsewhere:
+        tally.record_offwindow(elsewhere, row_id, is_verdict=is_verdict)
+
+
+def _window_now(spec: StageSpec, expected: Mapping[str, object]) -> str:
+    """La ventana configurada, escrita como se lee: de una fecha a la otra."""
+    parts = [
+        _display(expected[window_field.key], window_field.kind)
+        for window_field in spec.window
+        if window_field.key in expected
+    ]
+    return " -> ".join(parts)
 
 
 def _stage_findings(
@@ -375,7 +452,6 @@ def _stage_findings(
                 rows=len(ids),
                 verdicts=tally.verdicts.get(rule.key, 0),
                 ids=tuple(ids[:MAX_REPORTED_IDS]),
-                fix=rule.fix,
             )
         )
     return tuple(findings)
@@ -416,27 +492,39 @@ def audit_stage_rules(
         tally = _StageTally()
         for row in _stage_rows(conn, spec, run_id=run_id, columns=columns):
             _tally_stage_row(row, spec, expected, tally, columns=columns, finals=finals)
-        audits.append(
-            StageAudit(
-                stage=spec.key,
-                stage_label=spec.label,
-                rows=tally.rows,
-                verdicts=tally.row_verdicts,
-                unknown=tally.unknown,
-                affected=len(tally.affected),
-                affected_verdicts=len(tally.affected_verdicts),
-                undated=len(tally.undated),
-                undated_verdicts=len(tally.undated_verdicts),
-                undated_stored=tuple(
-                    sorted(tally.undated_values.items(), key=lambda item: (-item[1], item[0]))
-                ),
-                stale=len(tally.stale),
-                stale_verdicts=len(tally.stale_verdicts),
-                findings=_stage_findings(spec, expected, tally),
-                non_auditable=spec.non_auditable,
-            )
-        )
+        audits.append(_stage_audit(spec, expected, tally))
     return audits
+
+
+def _by_count(values: Mapping[str, int]) -> tuple[tuple[str, int], ...]:
+    """Valores con su cuenta, el mas repetido primero y a igualdad por nombre."""
+    return tuple(sorted(values.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _stage_audit(
+    spec: StageSpec, expected: Mapping[str, object], tally: _StageTally
+) -> StageAudit:
+    """Lo contado en una etapa, ya en la forma en que se contesta."""
+    return StageAudit(
+        stage=spec.key,
+        stage_label=spec.label,
+        rows=tally.rows,
+        verdicts=tally.row_verdicts,
+        unknown=tally.unknown,
+        affected=len(tally.affected),
+        affected_verdicts=len(tally.affected_verdicts),
+        undated=len(tally.undated),
+        undated_verdicts=len(tally.undated_verdicts),
+        undated_stored=_by_count(tally.undated_values),
+        offwindow=len(tally.offwindow),
+        offwindow_verdicts=len(tally.offwindow_verdicts),
+        offwindow_stored=_by_count(tally.offwindow_values),
+        window_now=_window_now(spec, expected),
+        stale=len(tally.stale),
+        stale_verdicts=len(tally.stale_verdicts),
+        findings=_stage_findings(spec, expected, tally),
+        non_auditable=spec.non_auditable,
+    )
 
 
 def _missing_rows(conn: sqlite3.Connection, spec: StageSpec, *, run_id: int) -> int:
@@ -504,67 +592,3 @@ def audit_pending_states(
             )
         )
     return summaries
-
-
-def _needs(audit: StageAudit, spec: StageSpec, fix: str) -> bool:
-    """Si a la etapa le hace falta ese arreglo por un veredicto que encontro.
-
-    Siempre veredictos: lo que sigue pendiente no hay quien lo repuntue ni por
-    que repetirlo -cuando corra, correra con la regla de ahora-, y contarlo
-    dejaba la etapa en cola para siempre.
-    """
-    if any(finding.fix == fix and finding.verdicts for finding in audit.findings):
-        return True
-    return bool(audit.stale_verdicts) and spec.rules_change_fix == fix
-
-
-def _bent_a_verdict(audit: StageAudit) -> bool:
-    """Si la etapa juzgo algo con una regla que ya no es la de ahora."""
-    return bool(audit.stale_verdicts) or any(
-        finding.verdicts for finding in audit.findings
-    )
-
-
-def stages_to_rescore(audits: Sequence[StageAudit]) -> tuple[str, ...]:
-    """Etapas donde la regla de hoy no es la que juzgo, y se pueden repuntuar.
-
-    Entra la etapa en cuanto algo no cuadra, sin mirar si ese algo en concreto
-    lo arregla el repuntuado: el boton existe para volver a juzgar con las
-    reglas de ahora alli donde las reglas cambiaron, y una ventana que no se
-    puede mover no es motivo para dejar sin repuntuar todo lo demas de esa
-    etapa. Que la ventana siga pidiendo repetirla se dice aparte, en
-    `stages_to_repeat()`.
-
-    Lo que no entra es una etapa donde no cambio nada: repuntuarla igualmente
-    seria recorrer la memoria entera para reescribir cada veredicto con el
-    valor que ya tenia.
-
-    Final Tick corto y 6M comparten el flag `--rescore-final-tick-only` pero se
-    encolan por separado, cada uno con su `--final-tick-stage` y sus fechas,
-    porque cada uno repuntua su propia tabla.
-    """
-    return tuple(
-        audit.stage
-        for audit in audits
-        if stage_spec(audit.stage).rescore_flag and _bent_a_verdict(audit)
-    )
-
-
-def stages_to_repeat(audits: Sequence[StageAudit]) -> tuple[str, ...]:
-    """Etapas que ningun repuntuado pone al dia: hay que repetirlas con MT5.
-
-    Cuatro caras de lo mismo: la ventana movida, el cambio de regla declarado
-    que no se recalcula desde lo guardado, la etapa sin `rescore_flag` a la que
-    cualquier hallazgo le obliga a repetir, y el veredicto dado sobre una
-    ventana imposible, cuyo reporte guardado es la parte rota. Este ultimo se
-    quedaba fuera, y la pantalla pintaba la etapa en rojo para luego no saber
-    decir que hacer con ella.
-    """
-    stages: list[str] = []
-    for audit in audits:
-        spec = stage_spec(audit.stage)
-        if _needs(audit, spec, "repeat") or audit.undated_verdicts:
-            stages.append(audit.stage)
-        elif not spec.rescore_flag and _bent_a_verdict(audit):
-            stages.append(audit.stage)
-    return tuple(stages)

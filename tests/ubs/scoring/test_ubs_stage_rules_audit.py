@@ -124,7 +124,13 @@ class StageRulesAuditTests(unittest.TestCase):
             audit.undated_stored, (("no ha corrido", 2), ("reporte sin periodo", 2))
         )
 
-    def test_a_real_date_move_is_still_reported(self) -> None:
+    def test_a_real_date_move_is_reported_as_window_not_as_rule(self) -> None:
+        """La ventana se dice, pero no como regla movida: no juzga nada.
+
+        La fila corrio sobre ese periodo y su veredicto esta bien dado. Cuenta
+        en «a cuantos afecta», porque la etapa tiene que poder decir en voz
+        alta lo que cuelga de ella, pero no entra en los hallazgos.
+        """
         conn = memory()
         insert_final_tick(
             conn, 1, run_id=7, status="accepted",
@@ -138,8 +144,9 @@ class StageRulesAuditTests(unittest.TestCase):
             stages=("final_tick",),
         )[0]
 
-        self.assertEqual([finding.rule for finding in audit.findings], ["from_date"])
-        self.assertEqual(audit.findings[0].stored, (("2026.01.01", 1),))
+        self.assertEqual(audit.findings, ())
+        self.assertEqual(audit.offwindow_verdicts, 1)
+        self.assertEqual(audit.offwindow_stored, (("Desde 2026.01.01", 1),))
         self.assertEqual(audit.affected_verdicts, 1)
 
     def test_affected_verdicts_count_each_row_once(self) -> None:
@@ -201,10 +208,8 @@ class StageRulesAuditTests(unittest.TestCase):
             stages=("final_tick",),
         )
 
-        findings = {finding.rule: finding for finding in audits[0].findings}
-        self.assertIn("from_date", findings)
-        self.assertEqual(findings["from_date"].stored, (("2026.04.01", 1),))
-        self.assertEqual(findings["from_date"].current, "2026.05.01")
+        self.assertEqual(audits[0].offwindow_stored, (("Desde 2026.04.01", 1),))
+        self.assertEqual(audits[0].window_now, "2026.05.01 -> 2026.05.31")
 
     def test_score_config_lives_inside_metrics_json(self) -> None:
         conn = memory()

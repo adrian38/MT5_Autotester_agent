@@ -8,12 +8,27 @@ lee o en que orden va, importa de aqui; `stage_rules_audit` reexporta lo
 mismo para quien ya lo pedia alli.
 
 Una etapa se describe entera en su `StageSpec`: su tabla y su clave, las
-reglas que guarda y las que aplica sin guardar (`non_auditable`), con que
-flag se repuntua, como sella el momento en que juzgo, cuando cambio su regla
-y de donde salen las filas que deberia tener. Detras van los tres dataclass
-con los que la auditoria contesta -`RuleFinding`, `StageAudit`,
-`PendingAudit`-, que son la otra mitad del mismo vocabulario y aqui no tocan
-SQLite: las consultas que los llenan viven en `stage_rules_audit`.
+reglas que guarda y las que aplica sin guardar (`non_auditable`), la ventana
+sobre la que corrio, con que flag se repuntua, como sella el momento en que
+juzgo, cuando cambio su regla y de donde salen las filas que deberia tener.
+Detras van los tres dataclass con los que la auditoria contesta
+-`RuleFinding`, `StageAudit`, `PendingAudit`-, que son la otra mitad del mismo
+vocabulario y aqui no tocan SQLite: las consultas que los llenan viven en
+`stage_rules_audit`.
+
+Regla y configuracion no son lo mismo y este fichero las separa:
+
+- **Regla** es la comparacion que, a partir del resultado, decide accepted o
+  rejected: la calidad minima, los minimos de operaciones, las deltas de
+  net/PF/DD/trades, la banda de DD. Si cambia, el veredicto viejo nacio con
+  otra y hay que volver a juzgarlo, que es lo que hace el repuntuado.
+- **Configuracion** es lo demas que la corrida necesita y acaba guardado en la
+  misma fila, empezando por la ventana `Desde`/`Hasta`. Moverla no deja mal
+  dado ningun veredicto: deja filas corridas sobre otra cosa, y eso solo lo
+  arregla volver a correrlas.
+
+Por eso la ventana no va en `rules` sino en `window`, y la auditoria la cuenta
+aparte en vez de llamarla regla movida.
 """
 from __future__ import annotations
 
@@ -22,28 +37,31 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RuleSpec:
-    """Una regla de etapa y donde quedo guardado el valor que se aplico."""
+    """Una regla de etapa y donde quedo guardado el valor que se aplico.
+
+    Toda regla se arregla repuntuando, porque una regla es una comparacion
+    sobre un resultado que ya esta guardado: volver a aplicarla no necesita
+    MT5. La etapa que no tiene repuntuado es otra cosa, y eso lo dice su
+    `StageSpec`, no la regla.
+    """
 
     key: str
     label: str
     kind: str = "number"
     column: str = ""
     score_field: str = ""
-    # Que hace falta para ponerla al dia: volver a puntuar lo guardado
-    # ("rescore") o repetir la etapa con MT5 ("repeat"), cuando lo que la regla
-    # describe no es como se juzgo sino con que se produjo.
-    fix: str = "rescore"
 
 
-# Las fechas no son un umbral que se aplique al puntuar: son la ventana sobre
-# la que corrio el backtest, y ningun repuntuado las mueve. Final Tick las
-# relee del reporte OHLC (`_read_ohlc_report_cfg_dates`), robustez no las
-# reescribe, y la regresiva se salta la fila cuya ventana no coincide. Cambiar
-# la ventana en Configuracion no deja las filas viejas mal puntuadas: las deja
-# corridas sobre otra ventana, y eso solo lo arregla repetir la etapa.
-WINDOW_RULES: tuple[RuleSpec, ...] = (
-    RuleSpec("from_date", "Desde", kind="date", column="from_date", fix="repeat"),
-    RuleSpec("to_date", "Hasta", kind="date", column="to_date", fix="repeat"),
+# La ventana se guarda en la fila y se compara igual que una regla, asi que
+# reusa la misma forma, pero no es una regla: no se aplica al puntuar. Es el
+# periodo sobre el que corrio el backtest, y ningun repuntuado lo mueve -Final
+# Tick lo relee del reporte OHLC (`_read_ohlc_report_cfg_dates`), robustez no
+# reescribe esas columnas y la regresiva se salta la fila cuya ventana no
+# coincide-. Cambiarla en Configuracion no deja ninguna fila mal puntuada: las
+# deja corridas sobre otro periodo, y eso solo lo arregla repetir la etapa.
+WINDOW_FIELDS: tuple[RuleSpec, ...] = (
+    RuleSpec("from_date", "Desde", kind="date", column="from_date"),
+    RuleSpec("to_date", "Hasta", kind="date", column="to_date"),
 )
 
 
@@ -56,6 +74,9 @@ class StageSpec:
     table: str
     id_column: str
     rules: tuple[RuleSpec, ...]
+    # La ventana que la etapa guarda, cuando guarda alguna. Va aparte de las
+    # reglas porque no decide ningun veredicto: ver la cabecera del modulo.
+    window: tuple[RuleSpec, ...] = ()
     # Que es una fila de esta tabla, para poder contar en voz alta: las etapas
     # de semilla puntuan el .set de partida y las demas, el .set generado.
     unit: str = "candidatos"
@@ -97,7 +118,6 @@ FINAL_TICK_RULES: tuple[RuleSpec, ...] = (
     RuleSpec("max_dd_delta_pct", "Delta DD %", column="max_dd_delta_pct"),
     RuleSpec("max_trades_delta_pct", "Delta trades %", column="max_trades_delta_pct"),
     RuleSpec("max_dd_gap_pp", "Banda DD pp", column="max_dd_gap_pp"),
-    *WINDOW_RULES,
 )
 
 # Minimos de operaciones que el Final Tick aplica pero no guarda en su fila:
@@ -209,6 +229,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="seed_final_tick",
         id_column="seed_id",
         rules=FINAL_TICK_RULES,
+        window=WINDOW_FIELDS,
         unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
         upstream_sql=SEED_FINAL_TICK_UPSTREAM,
@@ -219,6 +240,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="seed_final_tick_6m",
         id_column="seed_id",
         rules=FINAL_TICK_RULES,
+        window=WINDOW_FIELDS,
         unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
         upstream_sql=SEED_FINAL_TICK_6M_UPSTREAM,
@@ -246,8 +268,8 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
             *SCORE_RULES,
             RuleSpec("positive_bonus", "Bonus positivo", column="positive_bonus"),
             RuleSpec("negative_bonus", "Bonus negativo", column="negative_bonus"),
-            *WINDOW_RULES,
         ),
+        window=WINDOW_FIELDS,
         run_column="run_id",
         metrics_column="metrics_json",
         rescore_flag="--rescore-robustness-only",
@@ -260,6 +282,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="candidate_final_tick",
         id_column="candidate_id",
         rules=FINAL_TICK_RULES,
+        window=WINDOW_FIELDS,
         run_column="run_id",
         rescore_flag="--rescore-final-tick-only",
         non_auditable=FINAL_TICK_BLIND_RULES,
@@ -271,6 +294,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         table="candidate_final_tick_6m",
         id_column="candidate_id",
         rules=FINAL_TICK_RULES,
+        window=WINDOW_FIELDS,
         run_column="run_id",
         rescore_flag="--rescore-final-tick-only",
         non_auditable=FINAL_TICK_BLIND_RULES,
@@ -284,8 +308,8 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         rules=(
             RuleSpec("positive_points", "Puntos OK", column="positive_points"),
             RuleSpec("negative_points", "Puntos FAIL", column="negative_points"),
-            *WINDOW_RULES,
         ),
+        window=WINDOW_FIELDS,
         run_column="run_id",
         rescore_flag="--rescore-regression-only",
         non_auditable=("Umbrales de aceptacion de la regresiva",),
@@ -315,8 +339,6 @@ class RuleFinding:
     rows: int
     verdicts: int
     ids: tuple[int, ...] = ()
-    # Lo que hace falta para ponerla al dia, copiado de su `RuleSpec`.
-    fix: str = "rescore"
 
     def stored_summary(self) -> str:
         return ", ".join(f"{value} ({count})" for value, count in self.stored) or "sin dato"
@@ -347,6 +369,16 @@ class StageAudit:
     # Por que no tienen ventana y a cuantas filas alcanza cada motivo: no es lo
     # mismo la que no ha corrido que la que corrio sin producir nada.
     undated_stored: tuple[tuple[str, int], ...] = ()
+    # Filas que corrieron sobre una ventana distinta de la configurada. No es
+    # una regla movida -la ventana no juzga-, asi que no cuenta como veredicto
+    # torcido: cuenta como trabajo hecho sobre otro periodo, y lo unico que lo
+    # cambia es volver a correrlo.
+    offwindow: int = 0
+    offwindow_verdicts: int = 0
+    offwindow_stored: tuple[tuple[str, int], ...] = ()
+    # La ventana que Configuracion tiene ahora, ya escrita para la celda que la
+    # ensena al lado de las guardadas.
+    window_now: str = ""
     # Filas selladas antes de `rules_changed_at`: sus umbrales son los de hoy,
     # pero la regla que los aplico no. Las que ya tienen veredicto son las que
     # pueden cambiar al repuntuar, igual que en un umbral movido.

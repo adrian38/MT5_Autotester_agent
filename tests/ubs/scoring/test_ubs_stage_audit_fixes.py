@@ -168,13 +168,15 @@ class StagesToRescoreTests(unittest.TestCase):
         self.assertEqual(stages_to_rescore(audits), ())
         self.assertEqual(stages_to_repeat(audits), ())
 
-    def test_a_moved_window_rescores_and_still_asks_for_a_repeat(self) -> None:
-        """La etapa cambio de regla: se repuntua, y ademas hay que repetirla.
+    def test_a_moved_window_alone_only_asks_for_a_repeat(self) -> None:
+        """Mover la ventana no torcio ningun veredicto: no hay que repuntuar.
 
         Ningun repuntuado mueve una fecha -Final Tick la relee del reporte
         OHLC, robustez no la reescribe y la regresiva se salta la fila cuya
-        ventana no coincide-, pero eso no es motivo para dejar sin repuntuar
-        todo lo demas de la etapa.
+        ventana no coincide-, y como ningun umbral se movio tampoco hay nada
+        mas que volver a juzgar: encolarla era recorrer la tabla entera para
+        reescribir cada veredicto con el valor que ya tenia y acabar igual de
+        roja.
         """
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")
@@ -187,10 +189,59 @@ class StagesToRescoreTests(unittest.TestCase):
             stages=("final_tick",),
         )
 
-        self.assertEqual([f.rule for f in audits[0].findings], ["from_date"])
-        self.assertEqual(audits[0].findings[0].fix, "repeat")
-        self.assertEqual(stages_to_rescore(audits), ("final_tick",))
+        self.assertEqual(audits[0].findings, ())
+        self.assertEqual(audits[0].offwindow_verdicts, 1)
+        self.assertEqual(stages_to_rescore(audits), ())
         self.assertEqual(stages_to_repeat(audits), ("final_tick",))
+
+    def test_a_verdict_without_a_window_is_what_the_rescore_goes_for(self) -> None:
+        """No se puede volver a juzgar, asi que el repuntuado lo baja a pendiente.
+
+        Es el unico caso en el que el boton entra sin que se haya movido una
+        regla: el veredicto se dio sobre una ventana que no existe y no vale,
+        y `_demote_if_windowless()` lo devuelve a `no_report`. Repetir la etapa
+        entera no hace falta: la fila ya pasa a ser de Arreglar pendientes.
+        """
+        conn = memory()
+        insert_final_tick(
+            conn, 1, run_id=7, status="rejected",
+            from_date="1970.01.01", to_date="1970.01.01",
+        )
+
+        audits = audit_stage_rules(
+            conn,
+            {"final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("final_tick",),
+        )
+
+        self.assertEqual(audits[0].undated_verdicts, 1)
+        self.assertEqual(stages_to_rescore(audits), ("final_tick",))
+        self.assertEqual(stages_to_repeat(audits), ())
+
+    def test_without_a_rescore_mode_that_same_row_asks_for_a_repeat(self) -> None:
+        """Seeds Final Tick no tiene `--rescore-*-only`: nadie puede bajarla."""
+        conn = memory()
+        conn.execute(
+            """
+            insert into seed_final_tick (
+                seed_id, status, min_history_quality, from_date, to_date,
+                max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct,
+                max_trades_delta_pct, max_dd_gap_pp, seed_mtime, seed_size, evaluated_at
+            ) values (1, 'accepted', 80.0, '1970.01.01', '1970.01.01', 35.0, 35.0, 35.0, 35.0, 3.0, 0, 0, '')
+            """
+        )
+
+        audits = audit_stage_rules(
+            conn,
+            {"seed_final_tick": CURRENT_FINAL_TICK},
+            final_statuses=FINAL_STATUSES,
+            stages=("seed_final_tick",),
+        )
+
+        self.assertEqual(audits[0].undated_verdicts, 1)
+        self.assertEqual(stages_to_rescore(audits), ())
+        self.assertEqual(stages_to_repeat(audits), ("seed_final_tick",))
 
     def test_a_stage_where_nothing_moved_is_not_queued(self) -> None:
         """Repuntuarla seria reescribir cada veredicto con el valor que tenia."""

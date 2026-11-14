@@ -1563,7 +1563,21 @@ Tab `ubs_auditor` ("UBS Auditor", `ui/ubs_auditor_view.py` +
 over the pure audit in
 [`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py), whose stage catalog
 and result dataclasses live in [`ubs/stage_specs.py`](../ubs/stage_specs.py)
-— the vocabulary, no SQLite — and are re-exported from it. Stage rules change often, and every row stores the rules it was judged
+— the vocabulary, no SQLite — and whose two fix lists live in
+[`ubs/stage_fixes.py`](../ubs/stage_fixes.py); both are re-exported from it.
+
+**A rule is not a configuration**, and the module header of `stage_specs`
+states it, because the screen used to conflate them. A **rule** is the
+comparison that turns a result into accepted or rejected: minimum history
+quality, minimum trades, the net/PF/DD/trades deltas, the DD band. A
+**configuration** is everything else the run needs and stores in the same row,
+starting with the `Desde`/`Hasta` window. Moving a rule leaves old verdicts
+misjudged and a rescore straightens them; moving the window leaves no verdict
+wrong at all — it leaves rows run over another period, and only running them
+again changes that. So the window lives in `StageSpec.window`, never in
+`rules`, and the audit counts it apart instead of calling it a moved rule.
+
+Stage rules change often, and every row stores the rules it was judged
 with: the four Final Tick tables store their deltas and minimum history
 quality, `candidate_robustness` its bonuses and window, `candidate_regression`
 its points, and base/seed rows carry their `score_config` inside
@@ -1589,7 +1603,7 @@ means one thing on every row:
 
 | Column | Rules query | Pending query |
 |--------|-------------|---------------|
-| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `Sin saber`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
+| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `N sin fecha valida`, `Corrida sobre otra ventana`, `Sin saber`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
 | `item` | `REGLA`: the moved rule's label | hidden |
 | `current` | `AHORA`: what Configuración holds | hidden |
 | `stored` | `SE JUZGO CON`: stored values with their counts | `EN QUE ESTADO SE QUEDARON`: statuses with their counts |
@@ -1637,36 +1651,60 @@ means nothing unless you know that 1970.01.01 *is* the absence of a window —
 - **with a verdict** — the row was judged over an impossible window, so its
   verdict is worthless. `_stage_headline()` puts `N sin fecha valida` on the
   stage in red *even when every threshold matches today's*: a stage that hides
-  this behind a green `Al dia` is lying. A rescore does not fix it (the stored
-  report is the broken part), so `stages_to_rescore()` does not key off it and
-  `stages_to_repeat()` does. Between those two every stage the table paints red
-  has to come out of one of them, or the screen reddens a row it cannot then
-  say anything about — which is exactly what happened while this case was in
-  neither.
+  this behind a green `Al dia` is lying. It cannot be re-judged either — there
+  is no window to judge over — so the rescore **demotes** it:
+  `_demote_if_windowless()` writes `no_report`, a retryable status, and the row
+  leaves the rules audit for `Consultar pendientes`, where `Arreglar
+  pendientes` picks it up. That is why `stages_to_rescore()` keys off
+  `undated_verdicts` although no rule moved: it is the one case where the
+  button's job is to take a verdict away rather than rewrite it. A stage with
+  no `rescore_flag` has nobody to do that, so there it still asks for a repeat.
+  The rescore reaches the row even when its OHLC report is not on this machine:
+  `_rescored_window()` falls back to the dates the row itself stored.
 - **without a verdict** — the row simply has not run. It hangs off the stage as
   a muted child and `Consultar pendientes` is where it belongs.
 
-#### Which button actually fixes each finding
+A row whose window is a real date but no longer the configured one is the other
+half, and it is **not** a finding either: `StageAudit.offwindow` /
+`offwindow_verdicts` / `offwindow_stored`, filled by `_tally_window_row()`.
+Each stored value is written with the name of its date (`Desde 2026.01.01`)
+because both fall in the same cell and otherwise you cannot tell which one
+moved; `window_now` carries today's window for the `AHORA` cell. The headline
+reads `Corrida sobre otra ventana` and the child row says `Hay que repetir`
+under `REGLA = Ventana`. It counts toward `affected`/`affected_verdicts` — a
+stage header must never read smaller than a child of its own — but never as a
+bent verdict, so `stages_to_rescore()` leaves it alone and `stages_to_repeat()`
+takes it. Before this, `Desde` was a `RuleSpec` like any threshold: the stage
+read `1 regla movida`, entered the rescore queue, walked all 3450 rows of
+`candidate_final_tick_6m` rewriting every verdict with the value it already
+had, and came back just as red — the window is re-read from the OHLC report, so
+no rescore can move it.
 
-Not every finding is repaired by a rescore, and the screen used to send them
-all to the same button. `RuleSpec.fix` says which: `"rescore"` (re-judge what is
-stored) or `"repeat"` (run the stage again under MT5). `WINDOW_RULES` —
-`from_date`/`to_date`, shared by Final Tick, Robustez and Regresiva — are
-`"repeat"`, because they are not a threshold applied at scoring time but the
-window the backtest ran over, and **no rescore moves them**: Final Tick re-reads
-them from the OHLC report (`_read_ohlc_report_cfg_dates`), the robustness
-rescore does not write those columns at all, and the regression rescore skips
-any row whose stored window differs (`window_mismatch`). Changing the window in
-Configuración does not leave the old rows mis-scored; it leaves them run over
-another window, and only repeating the stage changes that.
+#### Which button actually fixes what
 
-`fix` drives the advice, not the queue: `stages_to_repeat()` takes the
-`"repeat"` ones, plus any stage with no `rescore_flag` at all and any stage
-holding a verdict given over an impossible window, while `stages_to_rescore()`
-ignores `fix` entirely. In the table, a finding the button cannot undo says
-`Hay que repetir` in `QUE PASA`, the column a rescorable finding leaves blank,
-so a stage can legitimately appear in both lists: rescore what can be
-rescored, repeat it for the rest.
+The two lists live in [`ubs/stage_fixes.py`](../ubs/stage_fixes.py), which
+answers a different question from the audit and touches no SQLite to do it: it
+needs only the counted `StageAudit` and the stage's `StageSpec`. Between them,
+every stage the table paints red has to come out of one, or the screen reddens
+a row it cannot then say anything about.
+
+`stages_to_rescore()` — the stage has a `rescore_flag` and
+`_rescore_would_change_it()`: a verdict judged under a rule that is no longer
+today's (a moved threshold or a declared change), or a verdict judged over a
+window that does not exist, which the rescore demotes to `no_report`. Nothing
+else. A stage where no rule moved stays out, because rescoring it would walk
+the whole memory rewriting every verdict with the value it already had.
+
+`stages_to_repeat()` — a verdict run over a window that is no longer the
+configured one (`offwindow_verdicts`), a declared change whose
+`rules_change_fix` is `"repeat"`, or a stage with no `rescore_flag` at all,
+which has no other way to straighten anything. `Seeds Final Tick` and `Seeds
+Final Tick 6M` are the stages with no rescore mode.
+
+A stage can still appear in both: rescore what can be rescored, repeat it for
+the rest. `RuleSpec` no longer carries a `fix` — the window was its only user,
+and every actual rule is rescorable by definition, since a rule is a comparison
+over a result that is already stored.
 
 #### Declared rule changes (the stored values cannot show them)
 
@@ -1696,12 +1734,17 @@ carrying a verdict is counted, which is all that is honestly known. Stale rows
 join `affected`/`affected_verdicts` like a moved threshold, since the screen
 asks how many are dragged along, not of what kind the change is.
 `stages_to_rescore()` picks up the `"rescore"` ones and `stages_to_repeat()`
-the rest, together with the stages whose moved thresholds have no rescore mode.
+the rest, together with the stages that have no rescore mode.
 
-The four Final Tick stages carry `FINAL_TICK_SHARED_RULES_AT`
-(`2026-11-12T05:17:49`, commit `62aef74`), when they went to shared rules
-without a single threshold moving. The two seed ones are `"repeat"`: they have
-no `--rescore-*-only`.
+**No stage declares one right now, and that is how it should stay** until
+somebody changes the code that decides accepted/rejected. `62aef74`
+("Centraliza las reglas de las cuatro pantallas Final Tick") was declared and
+should not have been: the flags the UI hands the agent are identical before and
+after it, the four screens already read the same threshold variables, and
+outside `ui/` the whole commit is one column added to a SELECT so it can be
+painted. It cost 480 verdicts in red and nearly sent both seed stages to MT5
+for nothing. Before declaring one, check that the commit touches the path that
+*writes* the verdict, not only the screen that shows it.
 
 - **Auditar reglas** — per stage, each rule whose stored value differs, the
   value configured now, the stored values with their row counts, affected rows
@@ -1736,12 +1779,13 @@ no `--rescore-*-only`.
   with its own `--final-tick-stage` and dates, because each one rescores its
   own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
   they are reported, through `stages_to_repeat()`, as stages to run again.
-  **Only where the rule changed.** `stages_to_rescore()` takes a stage as soon
-  as something it found bent a verdict, without asking whether that particular
-  finding is one a rescore can undo: a window it cannot move is no reason to
-  leave the rest of the stage unscored, and the repeat is said separately. A
-  stage where nothing moved stays out — rescoring it would walk the whole
-  memory to rewrite every verdict with the value it already had.
+  **Only where a rule changed, or where a verdict has to be taken away.**
+  `stages_to_rescore()` takes a stage whose rules moved, and the stage holding
+  a verdict given over a window that does not exist, which it demotes to
+  `no_report`. A stage whose only complaint is the window stays out: there is
+  nothing to re-judge and the window is re-read from the report anyway, so
+  queueing it walked the whole table to rewrite every verdict with the value it
+  already had and came back just as red.
   `_ubs_auditor_stages_to_rescore()` overrides that with the stage selected in
   the table, which is how a blind rule is asked for: the rescore *does* apply
   the three Final Tick minimum-trade limits and the robustness retentions,

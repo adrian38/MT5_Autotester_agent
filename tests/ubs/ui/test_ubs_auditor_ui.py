@@ -167,7 +167,7 @@ class CurrentRulesTests(unittest.TestCase):
         for spec in STAGE_SPECS:
             self.assertIn(spec.key, current, spec.label)
             self.assertEqual(
-                {rule.key for rule in spec.rules},
+                {rule.key for rule in (*spec.rules, *spec.window)},
                 set(current[spec.key]),
                 f"Reglas sin valor vigente en {spec.label}",
             )
@@ -306,11 +306,13 @@ class StageHeadlineTests(unittest.TestCase):
     """Lo que se lee de una etapa sin desplegarla."""
 
     @staticmethod
-    def _audit(*, moved=0, undated=0, undated_verdicts=0, stale=0, stale_verdicts=None):
+    def _audit(*, moved=0, undated=0, undated_verdicts=0, offwindow_verdicts=0,
+               stale=0, stale_verdicts=None):
         return SimpleNamespace(
             findings=tuple(_finding(verdicts=1) for _ in range(moved)),
             undated=undated,
             undated_verdicts=undated_verdicts,
+            offwindow_verdicts=offwindow_verdicts,
             stale=stale,
             stale_verdicts=stale if stale_verdicts is None else stale_verdicts,
         )
@@ -378,6 +380,10 @@ def _audit_row(**overrides):
         "undated": 0,
         "undated_verdicts": 0,
         "undated_stored": (),
+        "offwindow": 0,
+        "offwindow_verdicts": 0,
+        "offwindow_stored": (),
+        "window_now": "",
         "unknown": 0,
         "missing_table": False,
     }
@@ -427,18 +433,29 @@ class RuleGroupTests(unittest.TestCase):
         self.assertEqual(values[4], "0 de 10 candidatos")
         self.assertEqual(children[0][1], "pending")
 
-    def test_a_finding_the_button_cannot_fix_says_so(self) -> None:
-        """La ventana movida no se repuntua: la fila corrio sobre otras fechas."""
-        window = SimpleNamespace(
-            rule="from_date", rule_label="Desde", current="2025.06.30",
-            stored=(("2026.01.01", 2396),), rows=2404, verdicts=2404, fix="repeat",
-        )
-        _stage, _label, _values, _tag, children = _rule_group(
-            _audit_row(findings=(window,), affected=2404, affected_verdicts=2404)
+    def test_the_window_is_not_a_rule_and_asks_for_a_repeat(self) -> None:
+        """Lo unico que el boton no alcanza, dicho en su propia fila.
+
+        La fila corrio sobre otro periodo: su veredicto esta bien dado y no hay
+        nada que repuntuar, asi que no es una regla movida ni se cuela en la
+        columna REGLA como si fuera un umbral.
+        """
+        _stage, _label, values, tag, children = _rule_group(
+            _audit_row(
+                offwindow=2404, offwindow_verdicts=2404,
+                offwindow_stored=(("Desde 2026.01.01", 2396), ("Desde 2025.09.01", 8)),
+                window_now="2025.06.30 -> 2026.06.30",
+                affected=2404, affected_verdicts=2404,
+            )
         )
 
-        self.assertEqual(children[0][0][0], "Hay que repetir")
-        self.assertEqual(children[0][0][1], "Desde")
+        self.assertEqual(values[0], "Corrida sobre otra ventana")
+        self.assertEqual(tag, "rejected")
+        self.assertEqual(
+            children[0][0][:3],
+            ("Hay que repetir", "Ventana", "2025.06.30 -> 2026.06.30"),
+        )
+        self.assertEqual(children[0][0][3], "Desde 2026.01.01 (2396), Desde 2025.09.01 (8)")
 
     def test_the_invalid_dates_name_themselves_with_their_counts(self) -> None:
         _stage, _label, _values, _tag, children = _rule_group(
