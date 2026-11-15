@@ -312,15 +312,23 @@ class FakeMenu:
 
 
 class FakeTree:
-    """Lo justo del Treeview que el menu toca: que fila hay bajo el raton."""
+    """Lo justo del Treeview que el menu toca: que fila hay bajo el raton.
 
-    def __init__(self, row_at: dict[int, str]) -> None:
+    Y de quien cuelga: el menu solo se abre sobre la fila de la etapa, asi que
+    tiene que poder distinguirla de su detalle.
+    """
+
+    def __init__(self, row_at: dict[int, str], parents: dict[str, str] | None = None) -> None:
         self._row_at = row_at
+        self._parents = parents or {}
         self.selected: list[str] = []
         self.focused = ""
 
     def identify_row(self, y: int) -> str:
         return self._row_at.get(y, "")
+
+    def parent(self, item: str) -> str:
+        return self._parents.get(item, "")
 
     def selection_set(self, item: str) -> None:
         self.selected.append(item)
@@ -329,9 +337,9 @@ class FakeTree:
         self.focused = item
 
 
-def _menu_harness(row_at: dict[int, str], row_stage: dict[str, str]):
+def _menu_harness(row_at: dict[int, str], row_stage: dict[str, str], parents=None):
     harness = AuditorHarness()
-    harness.ubs_auditor_tree = FakeTree(row_at)
+    harness.ubs_auditor_tree = FakeTree(row_at, parents)
     harness.ubs_auditor_row_stage = row_stage
     menu = FakeMenu()
     harness._new_ubs_auditor_menu = lambda: menu
@@ -363,13 +371,23 @@ class RowMenuTests(unittest.TestCase):
         command()
         self.assertEqual(harness.fixed, ["fix"])
 
-    def test_a_detail_row_answers_for_its_stage(self) -> None:
-        """Las hijas cuelgan de su etapa, asi que valen igual que la cabecera."""
-        harness, menu = _menu_harness({60: "I003"}, {"I002": "regression", "I003": "regression"})
+    def test_a_detail_row_opens_nothing(self) -> None:
+        """La hija es el detalle de lo encontrado, no algo que arreglar aparte.
+
+        El arreglo es siempre de la etapa entera, asi que colgarlo de una hija
+        prometia una precision que no existe.
+        """
+        harness, menu = _menu_harness(
+            {60: "I003"},
+            {"I002": "regression", "I003": "regression"},
+            parents={"I003": "I002"},
+        )
 
         harness._ubs_auditor_row_menu(SimpleNamespace(y=60, x_root=0, y_root=0))
 
-        self.assertEqual(menu.items[0][0], "Arreglar pendientes de Regresiva")
+        self.assertEqual(menu.items, [])
+        self.assertIsNone(menu.popped_at)
+        self.assertEqual(harness.ubs_auditor_tree.selected, [])
 
     def test_clicking_below_the_rows_opens_nothing(self) -> None:
         harness, menu = _menu_harness({}, {"I002": "robustness"})
@@ -382,3 +400,76 @@ class RowMenuTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _QueueHarness(AuditorHarness):
+    """Auditor cuya etapa apunta los runs que le mandan en vez de correrlos.
+
+    `runs_that_do_nothing` son los que el runner deja pasar -el .set ya no
+    esta, el estado no es de los suyos-: no dejan proceso, asi que de ellos no
+    cuelga el siguiente de la cola.
+    """
+
+    def __init__(self, *, runs_that_do_nothing=()) -> None:
+        super().__init__()
+        self.started: list[int] = []
+        self._skip = set(runs_that_do_nothing)
+
+    def _run_ubs_auditor_pending(self, stage_key: str, run_id: int) -> bool:
+        self.started.append(run_id)
+        return run_id not in self._skip
+
+
+class PendingQueueTests(unittest.TestCase):
+    """La cola de runs del arreglo de pendientes."""
+
+    @staticmethod
+    def _harness(queue, **kwargs) -> _QueueHarness:
+        harness = _QueueHarness(**kwargs)
+        harness._ubs_auditor_pending_stage = "final_tick_6m"
+        harness._ubs_auditor_pending_queue = list(queue)
+        return harness
+
+    def test_the_queue_advances_one_run_per_process(self) -> None:
+        harness = self._harness([7, 8, 9])
+
+        self.assertTrue(harness._start_next_ubs_auditor_pending())
+
+        self.assertEqual(harness.started, [7])
+        self.assertEqual(harness._ubs_auditor_pending_queue, [8, 9])
+
+        harness._maybe_auto_run_ubs_auditor_pending("ubs_agent.py", [], 0)
+
+        self.assertEqual(harness.started, [7, 8])
+        self.assertEqual(harness._ubs_auditor_pending_queue, [9])
+
+    def test_a_run_the_runner_skips_does_not_stall_the_queue(self) -> None:
+        """Sin proceso no hay final al que colgar el siguiente."""
+        harness = self._harness([7, 8, 9], runs_that_do_nothing=(7, 8))
+
+        self.assertTrue(harness._start_next_ubs_auditor_pending())
+
+        self.assertEqual(harness.started, [7, 8, 9])
+        self.assertEqual(harness._ubs_auditor_pending_queue, [])
+
+    def test_a_queue_nobody_runs_ends_saying_so(self) -> None:
+        harness = self._harness([7, 8], runs_that_do_nothing=(7, 8))
+
+        self.assertFalse(harness._start_next_ubs_auditor_pending())
+
+        self.assertIn("2 run(s) sin nada", harness.ubs_auditor_status.get())
+
+    def test_a_bad_exit_cancels_what_was_left(self) -> None:
+        harness = self._harness([7, 8])
+
+        started = harness._maybe_auto_run_ubs_auditor_pending("ubs_agent.py", [], 2)
+
+        self.assertFalse(started)
+        self.assertEqual(harness.started, [])
+        self.assertEqual(harness._ubs_auditor_pending_queue, [])
+        self.assertTrue(any("cancelada" in line for line in harness.console))
+
+    def test_an_empty_queue_lets_the_other_chains_answer(self) -> None:
+        harness = self._harness([])
+
+        self.assertFalse(harness._maybe_auto_run_ubs_auditor_pending("ubs_agent.py", [], 0))

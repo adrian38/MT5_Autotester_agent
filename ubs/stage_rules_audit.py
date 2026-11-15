@@ -84,11 +84,13 @@ __all__ = [
     "STAGE_SPECS",
     "STAGE_SPEC_BY_KEY",
     "PendingAudit",
+    "RunGap",
     "RuleFinding",
     "RuleSpec",
     "StageAudit",
     "StageSpec",
     "audit_pending_states",
+    "pending_runs",
     "audit_stage_rules",
     "missing_window_date",
     "stage_spec",
@@ -124,6 +126,8 @@ def _stage_rows(
     columns: set[str],
 ) -> list[sqlite3.Row]:
     selected = [spec.id_column, "status"]
+    if spec.run_column and spec.run_column in columns:
+        selected.append(spec.run_column)
     selected.extend(
         rule.column
         for rule in (*spec.rules, *spec.window)
@@ -423,6 +427,87 @@ def _missing_rows(conn: sqlite3.Connection, spec: StageSpec, *, run_id: int) -> 
     except sqlite3.OperationalError:
         return 0
     return int(row[0] or 0) if row else 0
+
+
+@dataclass(frozen=True)
+class RunGap:
+    """Lo que a un run le falta por correr en una etapa."""
+
+    run_id: int
+    pending: int
+    missing: int
+
+    @property
+    def rows(self) -> int:
+        return self.pending + self.missing
+
+
+def _grouped_upstream_sql(spec: StageSpec) -> str:
+    """El join de elegibilidad de la etapa, contado por run en vez de entero.
+
+    `upstream_sql` cuenta de una vez los elegibles que todavia no tienen fila.
+    Para repartir el arreglo por runs hace falta la misma cuenta abierta por
+    run, y es la misma consulta: solo cambia que se pide tambien la columna y
+    se agrupa por ella. Se deriva en vez de declararse dos veces para que no
+    puedan separarse; `tests/ubs/scoring/test_ubs_stage_pending_runs.py`
+    comprueba que las cuatro etapas de candidato tienen la forma que esto
+    supone.
+    """
+    return (
+        spec.upstream_sql.replace("select count(*)", "select c.run_id, count(*)", 1).format(
+            run_filter=""
+        )
+        + " group by c.run_id"
+    )
+
+
+def _missing_by_run(conn: sqlite3.Connection, spec: StageSpec) -> dict[int, int]:
+    if not spec.upstream_sql:
+        return {}
+    try:
+        rows = conn.execute(_grouped_upstream_sql(spec)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {int(row[0] or 0): int(row[1] or 0) for row in rows}
+
+
+def pending_runs(
+    conn: sqlite3.Connection,
+    stage: str,
+    *,
+    final_statuses: Iterable[str],
+) -> tuple[RunGap, ...]:
+    """Los runs de una etapa a los que les queda algo, y cuanto a cada uno.
+
+    Los dos huecos que cuenta `audit_pending_states` repartidos por run, que
+    es como se arreglan: el runner de cada etapa trabaja sobre un run, con su
+    carpeta de salida y sus .set. Arreglar una etapa entera es recorrerlos.
+
+    Un run sin nada que hacer no sale, asi que la lista es exactamente lo que
+    hay que lanzar. Las etapas de semilla no cuelgan de ningun run y devuelven
+    la lista vacia: las arregla una sola corrida.
+    """
+    spec = stage_spec(stage)
+    if not spec.run_column:
+        return ()
+    columns = _table_columns(conn, spec.table)
+    if not columns or spec.run_column not in columns:
+        return ()
+    finals = _normalized_statuses(final_statuses)
+    settled = {status.strip().lower() for status in spec.settled_statuses}
+    pending: dict[int, int] = {}
+    for row in _stage_rows(conn, spec, run_id=0, columns=columns):
+        status = str(row["status"] or "").strip().lower() or "(sin estado)"
+        if status in finals or status in settled:
+            continue
+        run_id = int(row[spec.run_column] or 0)
+        pending[run_id] = pending.get(run_id, 0) + 1
+    missing = _missing_by_run(conn, spec)
+    return tuple(
+        RunGap(run_id=run_id, pending=pending.get(run_id, 0), missing=missing.get(run_id, 0))
+        for run_id in sorted(set(pending) | set(missing))
+        if pending.get(run_id, 0) or missing.get(run_id, 0)
+    )
 
 
 def audit_pending_states(

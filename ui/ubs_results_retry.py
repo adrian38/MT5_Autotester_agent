@@ -139,16 +139,29 @@ class UBSResultsRetryMixin:
             error_label="No se pudo preparar retry de fila",
         )
 
-    def _retry_visible_ubs_run_mismatches(self) -> None:
+    def _retry_visible_ubs_run_mismatches(
+        self, *, run_id: int = 0, confirm: bool = True
+    ) -> bool:
+        """Continua un run: los que fallaron por algo que otro backtest arregla.
+
+        Sin `run_id` es el run que la pantalla tiene a la vista, que es como lo
+        usa su boton. El auditor sí lo pasa, porque recorre todos los runs de
+        la etapa de uno en uno y ya pregunto una vez por el total: por eso
+        tambien puede apagar la confirmacion por run, y por eso devuelve si
+        llego a lanzar algo: de eso cuelga el siguiente run de su cola.
+        """
         try:
-            run_id = self._visible_ubs_run_id()
+            run_id = int(run_id or 0) or self._visible_ubs_run_id()
             if run_id <= 0:
                 messagebox.showinfo("Agente UBS", "No hay run visible para continuar.")
-                return
+                return False
             problem_count = self._count_ubs_run_retryable_problems(run_id)
             if problem_count <= 0:
-                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch/sin reporte pendientes.")
-                return
+                if confirm:
+                    messagebox.showinfo(
+                        "Agente UBS", f"Run #{run_id} no tiene mismatch/sin reporte pendientes."
+                    )
+                return False
             conn = connect_memory(self._ubs_memory_path())
             try:
                 run = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
@@ -169,7 +182,7 @@ class UBSResultsRetryMixin:
             ])
         except Exception as exc:
             self._show_error("No se pudo preparar continuar run", str(exc))
-            return
+            return False
 
         details = [
             "Accion: Continuar run UBS (recuperar mismatch/sin reporte)",
@@ -179,8 +192,12 @@ class UBSResultsRetryMixin:
             "Al terminar actualiza esas mismas filas SQLite.",
         ]
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar continuar run", problem_count, details):
-            self._run_script("ubs_agent.py", args)
+        if confirm and not self._confirm_execution_start(
+            "Confirmar continuar run", problem_count, details
+        ):
+            return False
+        self._run_script("ubs_agent.py", args)
+        return True
 
     def _retry_visible_ubs_full_run(self) -> None:
         try:

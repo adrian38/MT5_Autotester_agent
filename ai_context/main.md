@@ -1836,6 +1836,47 @@ for nothing. Before declaring one, check that the commit touches the path that
   `pending_only` mode is "accepted without a row + retryable", so the newly
   eligible rows a rescore just created are picked up with the half-finished
   ones, and no separate "repair the updated states" action is needed.
+  **Right-clicking a stage row** does the same thing for that stage, which
+  saves marking it first; only the stage row, never a detail child — the fix
+  is always the whole stage, so offering it under a child promised a precision
+  that does not exist. It is the same `_fix_ubs_pending_states_clicked`, not a
+  copy, so it keeps the account and run checks.
+
+#### Fixing a stage means walking its runs
+
+Every runner is scoped to one run — it lays its .set files out under that
+run's `output_dir` and prints per run — so fixing a stage is running them one
+after another. The screen used to refuse instead, with "Elige un run concreto
+para repetir pendientes de Resultados", which asked the user to pick
+something the audit had not measured: the table counts the whole memory
+unless a run is selected.
+
+`pending_runs()` in [`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py)
+returns the runs that have something left, as `RunGap(run_id, pending,
+missing)`, classifying rows exactly as `audit_pending_states()` does — so the
+queue and the table cannot disagree. The "no row yet" half comes from the same
+`upstream_sql` each stage already declares, *derived* into a per-run form by
+`_grouped_upstream_sql()` rather than declared twice, so the two cannot drift;
+`tests/ubs/scoring/test_ubs_stage_pending_runs.py` guards the shape that
+derivation assumes. Counting only statuses would have left Regresiva out
+entirely: it has nothing half-finished, only 2 175 eligible rows with no row
+yet. A stage with no `run_column` (the three seed stages) returns an empty
+tuple and is fixed by a single run.
+
+The Auditor asks once, for the whole stage — the dialog names the number of
+runs, both gaps and that each run opens MT5 on its own — and then launches
+each run with the runner's own `confirm=False`: chaining 323 dialogs is not
+confirming anything. `_ubs_auditor_pending_queue` advances on process exit 0
+through `_maybe_auto_run_ubs_auditor_pending`, hooked in `app_process.py`
+beside the rescore chain.
+
+`_start_next_ubs_auditor_pending()` **skips forward** instead of launching
+blindly, because the audit and the runner do not count the same thing: the
+runner also wants the .set still on disk and the status in its own retryable
+set. A run it declines leaves no process, and with no process there is no exit
+to hang the next run on, so the queue would stall at the first disagreement.
+Over ICTRADING/STANDARD the stages are 8 runs (Resultados), 10 (Final Tick),
+225 (Robustez), 323 (Final Tick 6M) and 336 (Regresiva).
 
 #### Pending is what a report can still be made for
 
