@@ -391,26 +391,40 @@ class UBSResultsRunsMixin:
             self._run_script("ubs_agent.py", args)
 
     def _run_visible_ubs_complete_run(self) -> None:
-        visible_info = self._visible_ubs_pending_backtests_info()
+        """Termina el run del selector, no el ultimo que haya en memoria.
+
+        Los dos contadores que miraba salian de `order by id desc limit 1`, asi
+        que con un run viejo a la vista el boton opinaba sobre otro run: con el
+        #86 en pantalla decidia sobre el #505 y el pendiente del #86 no era de
+        nadie. Y completo tampoco lo era: solo contaba los `generated`, de modo
+        que un `no_report` -el reporte que nunca aparecio- se quedaba fuera.
+
+        Encadenar generaciones nuevas sigue siendo cosa del ultimo run, que es
+        el unico que el agente sabe continuar. Lo que cualquier run puede hacer
+        a cualquier edad es acabar de darse reportes, y eso es «Continuar run»:
+        por eso se cae a el cuando el de la vista tiene pendientes."""
+        run_id = self._visible_ubs_run_id()
+        if run_id <= 0:
+            messagebox.showinfo("Completar run", "No hay run visible para completar.")
+            return
         continuation_info = self._ubs_continuation_info()
-        if not continuation_info.get("available"):
+        continuable_run_id = int(continuation_info.get("run_id") or 0)
+        if run_id == continuable_run_id and continuation_info.get("available"):
+            remaining = int(continuation_info.get("remaining") or 0)
+            pending_count = int(continuation_info.get("pending_count") or 0)
+            if remaining > 0 or pending_count > 0:
+                self._run_ubs_continue()
+                return
+        if self._count_ubs_run_retryable_problems(run_id) > 0:
+            self._retry_visible_ubs_run_mismatches(run_id=run_id)
+            return
+        if run_id == continuable_run_id and not continuation_info.get("available"):
             messagebox.showinfo(
                 "Completar run",
-                str(continuation_info.get("message") or "No hay run pendiente para completar."),
+                str(continuation_info.get("message") or f"Run #{run_id} ya esta completo."),
             )
             return
-        if int(visible_info.get("run_id") or 0) != int(continuation_info.get("run_id") or 0):
-            messagebox.showwarning(
-                "Completar run",
-                "El run visible no coincide con el ultimo run continuable. Actualiza la vista antes de ejecutar.",
-            )
-            return
-        remaining = int(continuation_info.get("remaining") or 0)
-        pending_count = int(continuation_info.get("pending_count") or 0)
-        if remaining <= 0 and pending_count <= 0:
-            messagebox.showinfo("Completar run", "El run visible ya esta completo.")
-            return
-        self._run_ubs_continue()
+        messagebox.showinfo("Completar run", f"Run #{run_id} ya esta completo.")
 
     def _ubs_results_run_options(self, conn: sqlite3.Connection) -> list[tuple[int, str]]:
         rows = conn.execute(
