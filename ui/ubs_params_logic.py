@@ -7,9 +7,10 @@ from tkinter import messagebox, ttk
 from ubs.params_catalog import (
     UBS_PARAM_DESCRIPTIONS,
     UBS_SECTION_LABELS,
-    fmt_num,
     fmt_num_str,
+    parse_set_parameter_text,
 )
+from ubs.set_rules import normalize_generated_set_text
 from ubs_agent import (
     GLOBAL_PARAMS_FILE,
     RULE_LOCKED_KEYS,
@@ -20,6 +21,7 @@ from ubs_agent import (
     save_mutation_overrides,
 )
 from ubs.set_utils import read_set_with_encoding
+from ubs.v6_parameters import UBS_VERSION, V6_DEFAULT_SET_TEXT
 
 
 PARAM_DIALOG_BG = "#1f2937"
@@ -40,40 +42,24 @@ def _ubs_param_info_parts(param: dict) -> list[str]:
 
 class UBSParamsLogicMixin:
     def _ubs_params_auto_load(self) -> None:
-        """Load global params from ubs_global_params.json, bootstrapping from the first seed if needed."""
+        """Load the canonical V6 structure overlaid with editable global values."""
         if self.ubs_params_data:
             return
-        # Try to bootstrap structure from first seed (for key/range info) but values from global file
-        try:
-            source_dir = self._ubs_generator_source_dir()
-            files = sorted(source_dir.rglob("*.set"))
-            seed_path = files[0] if files else None
-        except Exception:
-            seed_path = None
-
-        if seed_path:
-            try:
-                data = self._parse_set_file(seed_path)
-            except Exception:
-                data = []
-        else:
-            data = []
-
-        # Override values with what's stored in the global params file
+        normalized, _found, _missing = normalize_generated_set_text(V6_DEFAULT_SET_TEXT)
+        data = parse_set_parameter_text(normalized)
         global_vals = load_global_params()
         if global_vals:
             for p in data:
-                if p["key"] in global_vals:
+                if p["key"] in global_vals and p["key"] not in RULE_LOCKED_KEYS:
                     p["value"] = global_vals[p["key"]]
-        elif data:
-            # First run: persist the seed values as global baseline
-            save_global_params({p["key"]: p["value"] for p in data})
 
         self.ubs_params_data = data
         self.ubs_params_current_path = None
         self.ubs_params_modified = False
         self.ubs_params_file_label.set(
-            f"Global — {GLOBAL_PARAMS_FILE.name}" if GLOBAL_PARAMS_FILE.exists() else "Global (sin guardar aún)"
+            f"{UBS_VERSION} · Global — {GLOBAL_PARAMS_FILE.name}"
+            if GLOBAL_PARAMS_FILE.exists()
+            else f"{UBS_VERSION} · Global (sin guardar aun)"
         )
         self.ubs_params_desc_var.set("Selecciona un parámetro para ver su descripción")
         self._ubs_params_apply_filter()
@@ -89,47 +75,7 @@ class UBSParamsLogicMixin:
 
     def _parse_set_file(self, path: Path) -> list[dict]:
         text, _enc = read_set_with_encoding(path)
-        params: list[dict] = []
-        current_section = ""
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith(";"):
-                continue
-            if "=" not in stripped:
-                continue
-            key, _, rest = stripped.partition("=")
-            key = key.strip()
-            # Section header: value is a separator string
-            if rest.startswith("---") or rest.startswith("===") or (len(rest) > 6 and rest.count("-") > 4):
-                current_section = key
-                continue
-            parts = rest.split("||")
-            value = parts[0] if parts else rest
-            default = parts[1].strip() if len(parts) > 1 else ""
-            step = parts[2].strip() if len(parts) > 2 else ""
-            max_val = parts[3].strip() if len(parts) > 3 else ""
-            optimizable = parts[4].strip() if len(parts) > 4 else ""
-            # Determine range string
-            if step and max_val and step != "0.000000" and max_val != "0.000000":
-                try:
-                    mn = float(default) if default else 0.0
-                    mx = float(max_val)
-                    rng = f"{fmt_num(mn)} - {fmt_num(mx)}"
-                except ValueError:
-                    rng = f"{default} - {max_val}"
-            else:
-                rng = ""
-            params.append({
-                "section": current_section,
-                "key": key,
-                "value": value,
-                "default": default,
-                "step": step,
-                "max": max_val,
-                "optimizable": optimizable,
-                "range": rng,
-            })
-        return params
+        return parse_set_parameter_text(text)
 
     def _ubs_params_apply_filter(self) -> None:
         if not hasattr(self, "ubs_params_tree"):
@@ -161,17 +107,17 @@ class UBSParamsLogicMixin:
                     iid_counter += 1
                 last_section = section
             desc = UBS_PARAM_DESCRIPTIONS.get(key, "")
-            if key in frozen_ov:
+            if key in RULE_LOCKED_KEYS:
+                tag = "frozen"
+                agent_label = "⛓ regla"
+                display_value = p["value"]
+            elif key in frozen_ov:
                 tag = "overridden_frozen"
                 agent_label = "✦ fijo global"
                 display_value = global_vals.get(key) or frozen_ov.get(key) or p["value"]
             elif key in mutable_ov:
                 tag = "overridden_mutable"
                 agent_label = "✦ forzado mutable"
-                display_value = p["value"]
-            elif key in RULE_LOCKED_KEYS:
-                tag = "frozen"
-                agent_label = "⛓ regla"
                 display_value = p["value"]
             else:
                 tag = "mutable" if mutable else "frozen"
@@ -241,6 +187,16 @@ class UBSParamsLogicMixin:
         extra = f"  |  Rango: {rng}" if rng else ""
         self.ubs_params_desc_var.set(f"{desc}{extra}  |  Valor actual: {val}  |  {agent}")
 
+    @staticmethod
+    def _ubs_params_reject_locked_edit(key: str) -> bool:
+        if key not in RULE_LOCKED_KEYS:
+            return False
+        messagebox.showinfo(
+            "UBS Parámetros",
+            f"'{key}' esta bloqueado por una regla de generacion y no se puede editar aqui.",
+        )
+        return True
+
     def _ubs_params_edit_selected(self) -> None:
         selected = self.ubs_params_tree.selection()
         if not selected:
@@ -249,12 +205,13 @@ class UBSParamsLogicMixin:
         if not row_values or str(row_values[1]) == "":
             return
         key = str(row_values[0])
+        if self._ubs_params_reject_locked_edit(key):
+            return
         current_val = str(row_values[2])
         param = next((p for p in self.ubs_params_data if p["key"] == key), None)
         if not param:
             return
 
-        # Edit dialog
         dlg = tk.Toplevel(self)
         dlg.title(f"Editar: {key}")
         dlg.resizable(False, False)
@@ -302,6 +259,13 @@ class UBSParamsLogicMixin:
         dlg.geometry(f"+{x}+{y}")
 
     def _ubs_params_apply_edit(self, param: dict, key: str, new_val: str, dlg) -> None:
+        if key in RULE_LOCKED_KEYS:
+            messagebox.showinfo(
+                "UBS Parámetros",
+                f"'{key}' esta bloqueado por una regla de generacion.",
+            )
+            dlg.destroy()
+            return
         param["value"] = new_val
         try:
             gp = load_global_params()
@@ -359,7 +323,7 @@ class UBSParamsLogicMixin:
         if not messagebox.askyesno("Restaurar defaults", "¿Restaurar todos los valores al default del .set?"):
             return
         for p in self.ubs_params_data:
-            if p["default"]:
+            if p["default"] and p["key"] not in RULE_LOCKED_KEYS:
                 p["value"] = p["default"]
         self._ubs_params_apply_filter()
         self.ubs_params_modified = True

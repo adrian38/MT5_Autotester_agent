@@ -11,6 +11,12 @@ FINAL_TICK_STAGE_TABLES = {
     "probe": "candidate_final_tick",
     "six_month": "candidate_final_tick_6m",
 }
+ALL_FINAL_TICK_TABLES = (
+    ("candidate_final_tick", "candidate_id"),
+    ("candidate_final_tick_6m", "candidate_id"),
+    ("seed_final_tick", "seed_id"),
+    ("seed_final_tick_6m", "seed_id"),
+)
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
 
@@ -99,6 +105,56 @@ create table if not exists seed_overrides (
     period text not null default '',
     updated_at text not null
 );
+create table if not exists seed_final_tick (
+    seed_id integer primary key,
+    status text not null,
+    accepted integer,
+    ohlc_report_path text,
+    real_tick_report_path text,
+    ohlc_score real,
+    real_tick_score real,
+    ohlc_metrics_json text,
+    real_tick_metrics_json text,
+    similarity_json text,
+    history_quality real,
+    min_history_quality real not null default 80.0,
+    from_date text not null default '',
+    to_date text not null default '',
+    max_net_delta_pct real not null default 35.0,
+    max_pf_delta_pct real not null default 35.0,
+    max_dd_delta_pct real not null default 35.0,
+    max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
+    seed_mtime real not null,
+    seed_size integer not null,
+    evaluated_at text not null,
+    foreign key(seed_id) references seed_scores(id) on delete cascade
+);
+create table if not exists seed_final_tick_6m (
+    seed_id integer primary key,
+    status text not null,
+    accepted integer,
+    ohlc_report_path text,
+    real_tick_report_path text,
+    ohlc_score real,
+    real_tick_score real,
+    ohlc_metrics_json text,
+    real_tick_metrics_json text,
+    similarity_json text,
+    history_quality real,
+    min_history_quality real not null default 80.0,
+    from_date text not null default '',
+    to_date text not null default '',
+    max_net_delta_pct real not null default 35.0,
+    max_pf_delta_pct real not null default 35.0,
+    max_dd_delta_pct real not null default 35.0,
+    max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
+    seed_mtime real not null,
+    seed_size integer not null,
+    evaluated_at text not null,
+    foreign key(seed_id) references seed_scores(id) on delete cascade
+);
 create table if not exists candidate_robustness (
     candidate_id integer primary key,
     run_id integer not null,
@@ -134,6 +190,7 @@ create table if not exists candidate_final_tick (
     max_pf_delta_pct real not null default 35.0,
     max_dd_delta_pct real not null default 35.0,
     max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
     evaluated_at text not null
 );
 create table if not exists candidate_final_tick_6m (
@@ -156,6 +213,7 @@ create table if not exists candidate_final_tick_6m (
     max_pf_delta_pct real not null default 35.0,
     max_dd_delta_pct real not null default 35.0,
     max_trades_delta_pct real not null default 35.0,
+    max_dd_gap_pp real not null default 3.0,
     evaluated_at text not null
 );
 create table if not exists candidate_regression (
@@ -205,6 +263,11 @@ class MemorySchemaMixin:
         self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
         self._ensure_column("candidates", "mutation_details_json", "text not null default ''")
         self._ensure_column("candidate_robustness", "degradation_json", "text not null default ''")
+        for final_tick_table in (
+            "candidate_final_tick", "candidate_final_tick_6m",
+            "seed_final_tick", "seed_final_tick_6m",
+        ):
+            self._ensure_column(final_tick_table, "max_dd_gap_pp", "real not null default 3.0")
         self._ensure_column("generation_seed_selection", "fitness_probability", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_weight", "real not null default 0.0")
         self._ensure_column("generation_seed_selection", "fitness_evidence", "real not null default 0.0")
@@ -219,6 +282,7 @@ class MemorySchemaMixin:
         )
         self._reclassify_empty_tester_contexts()
         self._reclassify_legacy_real_tick_no_history()
+        self._reclassify_insufficient_final_tick_trades()
         self._reclassify_trade_disabled_no_trades()
         self._reclassify_invalid_stops_no_trades()
         self.conn.commit()
@@ -439,4 +503,30 @@ class MemorySchemaMixin:
         migrated_at = datetime.now().isoformat(timespec="seconds")
         for table in FINAL_TICK_STAGE_TABLES.values():
             migrated += self._reclassify_legacy_real_tick_table(table, migrated_at)
+        return migrated
+
+    def _reclassify_insufficient_final_tick_trades(self) -> int:
+        """Keep low-sample Real Tick evidence pending instead of rejected."""
+        migrated = 0
+        for table, key in ALL_FINAL_TICK_TABLES:
+            rows = self.conn.execute(
+                f"select {key}, similarity_json from {table} "
+                "where status='rejected' and coalesce(similarity_json, '') != ''"
+            ).fetchall()
+            for row in rows:
+                try:
+                    similarity = json.loads(row["similarity_json"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(similarity, dict):
+                    continue
+                reasons = {str(reason) for reason in similarity.get("reasons") or ()}
+                if reasons != {"tick_trades"}:
+                    continue
+                self.conn.execute(
+                    f"update {table} set status='pending_tick_trades', accepted=0 "
+                    f"where {key}=? and status='rejected'",
+                    (int(row[key]),),
+                )
+                migrated += 1
         return migrated

@@ -92,6 +92,19 @@ class SeedDuplicateIndex:
         self._by_hash.setdefault((*scope, fingerprint.content_hash), fingerprint)
         self._by_scope.setdefault(scope, []).append(fingerprint)
 
+    def remove_path(self, path: Path) -> None:
+        """Remove one stored path and rebuild hashes without stale entries."""
+        remaining = [
+            fingerprint
+            for group in self._by_scope.values()
+            for fingerprint in group
+            if fingerprint.path != path
+        ]
+        self._by_hash.clear()
+        self._by_scope.clear()
+        for fingerprint in remaining:
+            self.add(fingerprint)
+
     def find_duplicate(
         self, fingerprint: SeedFingerprint
     ) -> tuple[SeedFingerprint, str] | None:

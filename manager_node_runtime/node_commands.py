@@ -210,6 +210,7 @@ FINAL_TICK_OPTIONS = {
     "ubs_final_tick_max_net_delta_pct": "--final-tick-max-net-delta-pct",
     "ubs_final_tick_max_pf_delta_pct": "--final-tick-max-pf-delta-pct",
     "ubs_final_tick_max_dd_delta_pct": "--final-tick-max-dd-delta-pct",
+    "ubs_final_tick_max_dd_gap_pp": "--final-tick-max-dd-gap-pp",
     "ubs_final_tick_max_trades_delta_pct": "--final-tick-max-trades-delta-pct",
 }
 REGRESSION_OPTIONS = {

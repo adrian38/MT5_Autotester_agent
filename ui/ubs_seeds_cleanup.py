@@ -18,6 +18,18 @@ if getattr(sys, "frozen", False):
 class UBSSeedsCleanupMixin:
     """Limpieza y borrado de semillas y de su memoria."""
 
+    @staticmethod
+    def _delete_seed_final_tick_rows(conn, seed_where: str, params: list[str]) -> None:
+        for table in ("seed_final_tick", "seed_final_tick_6m"):
+            try:
+                conn.execute(
+                    f"delete from {table} where seed_id in (select id from seed_scores where {seed_where})",
+                    params,
+                )
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc).lower():
+                    raise
+
     def _cleanup_seed_db(self, conn, seed_paths: list[str]) -> None:
         """Borra seed_scores y seed_overrides de esas seeds."""
         if not seed_paths:
@@ -53,11 +65,15 @@ class UBSSeedsCleanupMixin:
         if keys:
             params = sorted(keys)
             ph = ",".join("?" for _ in params)
+            self._delete_seed_final_tick_rows(conn, f"seed_path in ({ph})", params)
             conn.execute(f"delete from seed_scores   where seed_path in ({ph})", params)
             conn.execute(f"delete from seed_overrides where seed_path in ({ph})", params)
         if normalized_keys:
             params = sorted(normalized_keys)
             ph = ",".join("?" for _ in params)
+            self._delete_seed_final_tick_rows(
+                conn, f"lower(replace(seed_path, '\\', '/')) in ({ph})", params,
+            )
             conn.execute(f"delete from seed_scores   where lower(replace(seed_path, '\\', '/')) in ({ph})", params)
             conn.execute(f"delete from seed_overrides where lower(replace(seed_path, '\\', '/')) in ({ph})", params)
         conn.execute("delete from seed_overrides where seed_path not in (select seed_path from seed_scores)")
@@ -71,6 +87,7 @@ class UBSSeedsCleanupMixin:
         return len(obsolete_paths)
 
     def _cleanup_all_seed_db(self, conn) -> None:
+        self._delete_seed_final_tick_rows(conn, "1=1", [])
         conn.execute("delete from seed_scores")
         conn.execute("delete from seed_overrides")
         conn.commit()
@@ -258,6 +275,7 @@ class UBSSeedsCleanupMixin:
                     pass
         try:
             conn = connect_memory(memory_path)
+            self._delete_seed_final_tick_rows(conn, "active=1", [])
             conn.execute("""
                 update seed_scores
                 set status='pending', score=null, accepted=null,

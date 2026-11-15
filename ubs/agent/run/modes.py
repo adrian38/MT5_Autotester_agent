@@ -1,0 +1,94 @@
+"""Modos sueltos del agente: evaluar, repuntuar, reintentar o reanudar."""
+from __future__ import annotations
+
+
+from ubs.regression import evaluate_candidate_regression, rescore_regression_only
+from ubs.agent.final_tick.entry import evaluate_candidate_final_tick
+from ubs.agent.final_tick.rescore import (
+    rescore_final_tick_only,
+)
+from ubs.agent.history import (
+    probe_universe_history,
+)
+from ubs.agent.rescore.main import (
+    rescore_candidate_scores_only,
+    rescore_robustness_only,
+)
+from ubs.agent.resume.main import (
+    resume_last_run,
+)
+from ubs.agent.evaluation.retry import (
+    retry_candidate,
+    retry_full_run,
+    retry_generation_mismatches,
+    retry_run_mismatches,
+    retry_seed,
+)
+from ubs.agent.evaluation.robustness import (
+    evaluate_candidate_robustness,
+)
+from ubs.agent.run.config import regression_runtime
+from ubs.agent.seeds.scores import (
+    evaluate_seed_scores,
+    rescore_seed_scores_only,
+)
+from ubs.agent.seeds.final_tick import evaluate_seed_final_tick
+from ubs.agent.generation.universe import regression_score_config
+
+
+def _run_and_close(action, args, memory, score_config) -> int:
+    try:
+        return action(args, memory, score_config)
+    finally:
+        memory.close()
+
+
+def _run_regression_and_close(action, args, memory) -> int:
+    try:
+        return action(
+            args,
+            memory,
+            regression_score_config(args),
+            regression_runtime(args),
+        )
+    finally:
+        memory.close()
+
+
+def run_standalone_mode(args, memory, score_config) -> int | None:
+    """Devuelve el codigo de salida del modo pedido, o None si no hay ninguno."""
+    if args.probe_universe_history:
+        return _run_and_close(probe_universe_history, args, memory, score_config)
+    if args.evaluate_seeds:
+        return _run_and_close(evaluate_seed_scores, args, memory, score_config)
+    if getattr(args, "evaluate_seed_final_tick", False):
+        return _run_and_close(evaluate_seed_final_tick, args, memory, score_config)
+    if args.evaluate_robustness:
+        return _run_and_close(evaluate_candidate_robustness, args, memory, score_config)
+    if args.evaluate_final_tick:
+        return _run_and_close(evaluate_candidate_final_tick, args, memory, score_config)
+    if args.evaluate_regression:
+        return _run_regression_and_close(evaluate_candidate_regression, args, memory)
+    if args.rescore_seeds_only:
+        return _run_and_close(rescore_seed_scores_only, args, memory, score_config)
+    if args.rescore_candidates_only:
+        return _run_and_close(rescore_candidate_scores_only, args, memory, score_config)
+    if args.rescore_robustness_only:
+        return _run_and_close(rescore_robustness_only, args, memory, score_config)
+    if args.rescore_final_tick_only:
+        return _run_and_close(rescore_final_tick_only, args, memory, score_config)
+    if args.rescore_regression_only:
+        return _run_regression_and_close(rescore_regression_only, args, memory)
+    if args.continue_last_run:
+        return _run_and_close(resume_last_run, args, memory, score_config)
+    if args.retry_candidate_id:
+        return _run_and_close(retry_candidate, args, memory, score_config)
+    if args.retry_seed_path:
+        return _run_and_close(retry_seed, args, memory, score_config)
+    if args.retry_full_run:
+        return _run_and_close(retry_full_run, args, memory, score_config)
+    if args.retry_mismatch_run:
+        return _run_and_close(retry_run_mismatches, args, memory, score_config)
+    if args.retry_mismatch_generation:
+        return _run_and_close(retry_generation_mismatches, args, memory, score_config)
+    return None

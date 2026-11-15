@@ -47,8 +47,9 @@ insert into {final_tick_table} (
     ohlc_metrics_json, real_tick_metrics_json, similarity_json,
     history_quality, min_history_quality, from_date, to_date,
     max_net_delta_pct, max_pf_delta_pct, max_dd_delta_pct, max_trades_delta_pct,
+    max_dd_gap_pp,
     evaluated_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 on conflict(candidate_id) do update set
     run_id=excluded.run_id,
     status=excluded.status,
@@ -68,6 +69,7 @@ on conflict(candidate_id) do update set
     max_pf_delta_pct=excluded.max_pf_delta_pct,
     max_dd_delta_pct=excluded.max_dd_delta_pct,
     max_trades_delta_pct=excluded.max_trades_delta_pct,
+    max_dd_gap_pp=excluded.max_dd_gap_pp,
     evaluated_at=excluded.evaluated_at
 """
 
@@ -226,6 +228,7 @@ class MemoryStagesMixin:
         max_dd_delta_pct: float,
         max_trades_delta_pct: float,
         *,
+        max_dd_gap_pp: float = 3.0,
         final_tick_stage: str | None = None,
     ) -> None:
         accepted = int(status == "accepted")
@@ -254,6 +257,7 @@ class MemoryStagesMixin:
                 float(max_pf_delta_pct),
                 float(max_dd_delta_pct),
                 float(max_trades_delta_pct),
+                float(max_dd_gap_pp),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )

@@ -16,14 +16,18 @@ SIDEBAR_ITEMS = (
     ("portfolio", "▤  Portfolio"), ("configuracion", "⚙  Configuracion"),
     ("archivos", "▤  Archivos"), ("logs", "≣  Logs"),
     ("agente_ubs", "UBS  Agente UBS"), ("ubs_seeds", "UBS  Seeds"),
+    ("ubs_seed_final_tick", "UBS  Seeds Final Tick"),
+    ("ubs_seed_final_tick_6m", "UBS  Seeds Final Tick 6M"),
     ("ubs_resultados", "UBS  Resultados"), ("ubs_robustez", "UBS  Robustez"),
     ("ubs_final_tick", "UBS  Final Tick"), ("ubs_final_tick_6m", "UBS  Final Tick 6M"),
     ("ubs_regression", "UBS  Regresiva"), ("ubs_historico", "UBS  Historico"),
     ("ubs_universo", "UBS  Universo"), ("ubs_comparar", "UBS  Comparar"),
     ("ubs_params", "UBS  Parámetros"), ("portafolio_ubs", "UBS  Portafolio"),
     ("portafolio_ubs_mensual", "UBS  Portafolio Mensual"),
-    ("buscador", "UBS  Buscador"),
+    ("buscador", "UBS  Buscador"), ("ubs_auditor", "UBS  Auditor"),
 )
+SIDEBAR_WIDTH = 268
+SIDEBAR_HORIZONTAL_PADDING = 16
 
 
 class AppChromeMixin:
@@ -211,6 +215,12 @@ class AppChromeMixin:
         try:
             return (0, float(numeric))
         except ValueError:
+            pass
+        # Una celda que cuenta en voz alta ("1046 candidatos") ordena por el
+        # numero; si el primer trozo no es uno, se ordena como texto.
+        try:
+            return (0, float(numeric.split(" ", 1)[0]))
+        except ValueError:
             return (1, raw.casefold())
 
     def _checkbox_text(self, checked: bool) -> str:
@@ -230,7 +240,7 @@ class AppChromeMixin:
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "ubs_auditor", "multiterminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -238,6 +248,8 @@ class AppChromeMixin:
         self._build_dashboard(self.section_frames["panel"])
         self._build_ubs_agent(self.section_frames["agente_ubs"])
         self._build_ubs_seeds(self.section_frames["ubs_seeds"])
+        self._build_ubs_seed_final_tick(self.section_frames["ubs_seed_final_tick"])
+        self._build_ubs_seed_final_tick_6m(self.section_frames["ubs_seed_final_tick_6m"])
         self._build_ubs_results(self.section_frames["ubs_resultados"])
         self._build_ubs_robustness(self.section_frames["ubs_robustez"])
         self._build_ubs_final_tick(self.section_frames["ubs_final_tick"])
@@ -251,6 +263,7 @@ class AppChromeMixin:
         self._build_ubs_portfolio(self.section_frames["portafolio_ubs"])
         self._build_ubs_monthly_portfolio(self.section_frames["portafolio_ubs_mensual"])
         self._build_ubs_search(self.section_frames["buscador"])
+        self._build_ubs_auditor(self.section_frames["ubs_auditor"])
         self._build_multiterminal(self.section_frames["multiterminal"])
         self._build_settings(self.section_frames["configuracion"])
         self._build_files(self.section_frames["archivos"])
@@ -268,9 +281,15 @@ class AppChromeMixin:
         ttk.Label(footer, textvariable=self.running_text, style="Subtitle.TLabel").grid(row=0, column=3, sticky="e")
 
     def _build_sidebar(self) -> None:
-        sidebar = ttk.Frame(self, style="Sidebar.TFrame", padding=(16, 18, 16, 16), width=240)
+        sidebar = ttk.Frame(
+            self,
+            style="Sidebar.TFrame",
+            padding=(SIDEBAR_HORIZONTAL_PADDING, 18, SIDEBAR_HORIZONTAL_PADDING, 16),
+            width=SIDEBAR_WIDTH,
+        )
         sidebar.grid(row=0, column=0, rowspan=3, sticky="nsw")
         sidebar.grid_propagate(False)
+        sidebar.columnconfigure(0, weight=1)
         sidebar.rowconfigure(1, weight=1)
 
         header = ttk.Frame(sidebar, style="Sidebar.TFrame")
@@ -283,6 +302,7 @@ class AppChromeMixin:
             bg=COLORS["sidebar_bg"],
             highlightthickness=0,
             bd=0,
+            width=SIDEBAR_WIDTH - (SIDEBAR_HORIZONTAL_PADDING * 2),
             yscrollincrement=24,
         )
         nav_canvas.grid(row=1, column=0, sticky="nsew")

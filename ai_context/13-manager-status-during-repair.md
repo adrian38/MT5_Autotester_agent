@@ -17,7 +17,7 @@ The manager separately retains the last successful response when polling fails,
 labels the card as stale, keeps counters and details visible, and disables
 mutation controls until a successful refresh. `/api/pulse` also exposes `stale`.
 
-Validation: `tests/test_manager_node_status.py` blocks a real repair preflight
+Validation: `tests/manager_node/test_status.py` blocks a real repair preflight
 in a worker thread and checks actual HTTP status/log requests remain available,
 then verifies refresh and nested snapshot isolation. The fixture never runs MT5.
 

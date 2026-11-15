@@ -272,13 +272,22 @@ class UBSResultsLogicMixin(
             f"Output: {latest_run['output_dir']} | Backtests: {backtests} | mostrando {shown}/{total}{extra_text}"
         )
         self._set_ubs_results_execute_backtests_enabled(generated > 0)
+        # Un run con pendientes nunca esta completo, tenga la edad que tenga.
+        # «Completar run» solo se encendia para el ultimo run continuable, asi
+        # que el `no_report` de un run viejo dejaba el boton apagado y no habia
+        # forma de pedirle el reporte que le faltaba. El recuento sale de
+        # `RETRYABLE_CANDIDATE_STATUSES` y no de una suma a mano: la de aqui
+        # contaba dos estados de los cinco y se dejaba fuera, entre otros, el
+        # .set generado que nunca corrio.
+        run_id = int(latest_run["id"])
+        retryable = self._count_ubs_run_retryable_problems(run_id)
         continuation_info = self._ubs_continuation_info()
-        complete_enabled = (
+        complete_enabled = retryable > 0 or (
             bool(continuation_info.get("available"))
-            and int(continuation_info.get("run_id") or 0) == int(latest_run["id"])
+            and int(continuation_info.get("run_id") or 0) == run_id
         )
         self._set_ubs_results_complete_run_enabled(complete_enabled)
-        self._set_ubs_results_continue_run_enabled((report_mismatch + no_report) > 0)
+        self._set_ubs_results_continue_run_enabled(retryable > 0)
 
     def _read_ubs_results_rows(self, conn, selected_run_id):
         """Recuentos por estado y filas del run seleccionado."""

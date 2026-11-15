@@ -72,7 +72,7 @@ batch wrappers.
 - UBS parameter mutability is defined by `is_agent_mutable_key()` in
   `ubs_agent.py` — NOT by the Y/N flag in `.set` files (that is the MT5
   optimizer flag, a different thing) and NOT by `is_mutable_key()` in
-  `ubs_generate_sets.py` (which has different constants). Always use
+  `ubs/generate_sets.py` (which has different constants). Always use
   `is_agent_mutable_key()` when reasoning about what the agent will mutate.
 - **`.set` generation rules are invariants, not preferences.** They live in
   `ubs/set_rules.py` and are listed in
@@ -84,10 +84,11 @@ batch wrappers.
   `AdjustLotsizeToVariableValues` to `false` with optimizer flag `N` in every
   set, and fix the NFP filter: `EnableNFP_Filter` is `true` for
   `Run_Strategy=1` (Breakout
-  Support/Resistance) and `false` for `2` (Volatility Breakout) and `3`
-  (Range), with `NFP_CloseOpenTrades`/`NFP_ClosePendingOrders` `true` and
+  Support/Resistance) and `false` for `2` (Volatility Breakout). The current
+  V6 contract has no strategy `3`; legacy Range seeds are invalid and must not
+  reach MT5. `NFP_CloseOpenTrades`/`NFP_ClosePendingOrders` remain `true` and
   `NFP_MinutesBefore`/`NFP_MinutesAfter` `50`/`30` in every set. Existing `.set`
-  files are brought in line with `ubs_set_rules.py` (UI: *UBS Parámetros →
+  files are brought in line with `ubs/set_rules_sweep.py` (UI: *UBS Parámetros →
   Aplicar reglas a todos los sets*), which backs up what it rewrites.
 - UBS stage `.set` copies enforce `UseEveryTick`: `false` for generated/base
   results, OOS robustness, backward regression, and the OHLC copies in short
@@ -120,7 +121,8 @@ batch wrappers.
   leverage caps). `assets/<broker>_normalization.json` is shared: this project
   scores with it, the manager inverts it into notional per position. The
   dependency is one-way — nothing here reads the manager. Before "fixing" one of
-  those files, check who consumes each field; see § 1.16 of `requirements.md`.
+  those files, check who consumes each field; see § 1.16 of
+  `docs/requirements.md`.
 
 ## Topic Index
 
@@ -134,6 +136,7 @@ batch wrappers.
 | [06-conventions.md](06-conventions.md) | Coding style, UI conventions, generated files, packaging notes. |
 | [07-development.md](07-development.md) | Common commands, verification steps, debugging guidance. |
 | [08-ubs-parameters.md](08-ubs-parameters.md) | UBS EA parameter reference: all keys, sections, mutability, ranges. |
+| [seed_final_tick.md](seed_final_tick.md) | Seed-specific Final Tick and 6M screens, persistence, gating, and neutral weight policy. |
 | [09-design-system.md](09-design-system.md) | UI design rules: button types, input sizes, Treeview standard, spacing, colours. |
 | [10-regression-validation.md](10-regression-validation.md) | Backward 2017-2019 OHLC validation: rationale, scoring, statuses, CLI, and official MT5 sources. |
 | [11-live-audit.md](11-live-audit.md) | Embedded manager-node live-account audit, A/M/C variants, MT5 history synchronization, and diagnostics. |
@@ -142,6 +145,7 @@ batch wrappers.
 | [12-manager-universe-sync.md](12-manager-universe-sync.md) | Remote symbol sync, history probe, no_history policy, and node process control. |
 | [13-manager-status-during-repair.md](13-manager-status-during-repair.md) | Nonblocking status/log snapshots during bulk repair and stale manager cards. |
 | [node_thread_supervision.md](node_thread_supervision.md) | Why a dead node thread looks like «connection refused», and the stderr capture and supervision that answer it. |
+| [layout_del_repositorio.md](layout_del_repositorio.md) | Qué se rompe al mover un fichero de la raíz: `BASE_DIR`, los scripts que la interfaz lanza por nombre, el alcance de las guardas y el porting a los otros agentes. |
 
 ## Common Entry Points
 
@@ -165,6 +169,8 @@ batch wrappers.
 | `logs` | Logs | (part of files) | (part of files) |
 | `agente_ubs` | UBS Agente UBS | `ui/ubs_agent_view.py` | `ui/ubs_agent_logic.py` |
 | `ubs_seeds` | UBS Seeds | `ui/ubs_seeds_view.py` | `ui/ubs_seeds_logic.py` |
+| `ubs_seed_final_tick` | UBS Seeds Final Tick | `ui/ubs_seed_final_tick_view.py` | `ui/ubs_seed_final_tick_logic.py` |
+| `ubs_seed_final_tick_6m` | UBS Seeds Final Tick 6M | `ui/ubs_seed_final_tick_6m_view.py` | `ui/ubs_seed_final_tick_6m_logic.py` |
 | `ubs_resultados` | UBS Resultados | `ui/ubs_results_view.py` | `ui/ubs_results_logic.py` |
 | `ubs_robustez` | UBS Robustez | `ui/ubs_robustness_view.py` | `ui/ubs_robustness_logic.py` |
 | `ubs_final_tick` | UBS Final Tick | `ui/ubs_final_tick_view.py` | `ui/ubs_final_tick_logic.py` |
@@ -556,6 +562,22 @@ enter this queue.
   - `--final-tick-max-net-delta-pct`, `--final-tick-max-pf-delta-pct`,
     `--final-tick-max-dd-delta-pct`, `--final-tick-max-trades-delta-pct` — tolerances for
     comparing real-tick metrics against OHLC control metrics (all default `35.0`).
+  - `--final-tick-max-dd-gap-pp` (default `3.0`) — absolute drawdown band, in
+    percentage points. The drawdown check passes with **either** the relative
+    ratio or this band, because the ratio divides by the drawdown itself and is
+    therefore strictest where the risk is smallest: 6.5% vs 3.7% scores 43.9%
+    and used to be rejected, while 20% vs 27% — more risk, and worsening —
+    scores 25.9% and passed. Stored per row in `max_dd_gap_pp`, and reported in
+    `similarity_json` as `gap_pp` / `max_gap_pp` / `within_gap`.
+    `tools/repair_final_tick_dd_band.py` re-applies the verdict to rows already
+    in memory, seeds included, without opening MT5. The screens pass it like
+    every other threshold, through `_final_tick_threshold_args()` in
+    [`ui/ubs_final_tick_run.py`](../ui/ubs_final_tick_run.py) — the one builder
+    the four Final Tick screens share. It used to be the only one missing from
+    that list, so a run judged with the `3.0` default while the Auditor's
+    rescore, which did pass it, judged with whatever Configuración held: the
+    same row, two verdicts, depending on who looked at it. Any threshold added
+    to the screens goes in that list, or it decides nothing.
 - The agent copies each robust-accepted `.set` twice under
   `outputs/ubs_agent/{BROKER}/{ACCOUNT}/<run>/final_tick/...`: one OHLC batch with `Model=1` and
   one real-tick batch with `Model=4` (`Every tick based on real ticks`).
@@ -567,7 +589,10 @@ enter this queue.
   real-tick report has quality below threshold, or Model=4 ended with an empty
   tester context because tick download/synchronization failed;
   `pending_ohlc_trades` — the OHLC batch produced too few trades to make a valid
-  comparison, so OHLC retry dates may be used before re-running real tick.
+  comparison, so OHLC retry dates may be used before re-running real tick;
+  `pending_tick_trades` — Real Tick completed but its sample is below the
+  absolute minimum and that is the only failed criterion. It is neutral and is
+  not automatically retried over the same dates; mixed failures stay rejected.
 - Empty OHLC Model=1 shells (`Bars=0`, `Ticks=0`) are technical history failures,
   not low-trade strategy evidence. `run_tests.py` retries them once for every
   tester model. If the retry remains empty, Final Tick stores `no_report` with
@@ -583,8 +608,11 @@ enter this queue.
 - On memory initialization, `AgentMemory` idempotently upgrades only the legacy
   signature `rejected + real_tick_no_history + tick_download_failed=true` in
   both `candidate_final_tick` and `candidate_final_tick_6m`. It records a
-  `status_audit` object in `similarity_json`; real PF/DD/trades rejections are
-  not changed.
+  `status_audit` object in `similarity_json`; real PF/DD and mixed substantive
+  rejections are not changed.
+- On memory initialization it also upgrades `rejected` rows whose only reason
+  is `tick_trades` to `pending_tick_trades` across candidate and seed Final Tick
+  tables. Rows with any additional failed criterion are not changed.
 - A row is final `accepted` when history quality ≥ threshold AND the three active
   similarity checks pass (see below). `net_profit` is **not** an active check.
 - Percentage deltas use a symmetric max-denominator difference:
@@ -610,20 +638,30 @@ enter this queue.
 #### Final Tick similarity logic (`final_tick_similarity()` in `ubs_agent.py`)
 
 The same strategy is run twice (OHLC Model=1 and Every Tick Model=4) with the same
-date range. The goal is to verify the results are similar enough, not to determine
-which is better. All three active checks are **symmetric**.
+date range. The goal is to verify behavioral reproduction, not to determine
+which result is economically better. The active comparison checks are symmetric.
 
 | Check | Formula | Notes |
 |-------|---------|-------|
-| `profit_factor` | `\|tick_pf − ohlc_pf\| / max(ohlc_pf, 1.0) × 100` | PF capped [0,10]; floor 1.0 |
 | `drawdown_pct` | `\|tick_dd − ohlc_dd\| / max(ohlc_dd, tick_dd, 2.0) × 100` | 2 pp floor prevents false fails on tiny DDs |
 | `trades` | `\|tick_tr − ohlc_tr\| / max(ohlc_tr, 1.0) × 100` | Symmetric count |
 
-`net_profit` is stored in `checks["net_profit"]` with `"checked": false` and
-`"accepted": true` always — visible in UI/DB for inspection only. It was removed from
-active criteria because `normalized_net_profit` depends on the normalization group and
-produces false failures when absolute values are small (e.g. BA: −7.1 vs −17.6 → 148%
-delta, but PF/DD/trades practically identical).
+`net_profit`, `profit_factor`, score, the six-month PF floor, and the legacy
+lossless economic thresholds are stored as diagnostics with `"checked": false`
+and `"accepted": true`. They remain visible in UI/DB but never decide similarity.
+Only history quality plus the drawdown/trade-count comparison can prevent an
+otherwise valid pair from being accepted; missing or insufficient samples remain
+technical/pending states rather than economic rejections.
+
+Seed Final Tick is the scoped exception: both its probe and long-window stage
+also require OHLC and Every Tick to keep score and normalized net profit on the
+same side of zero and profit factor on the same side of 1.0. The seed adapter
+enables this gate without changing candidate Final Tick.
+It also enables an asymmetric drawdown-only rescue: a seed passes regardless of
+the favorable DD-gap magnitude when Every Tick has lower drawdown and no worse
+score, normalized net profit, profit factor, or recovery. Every Tick is the
+authoritative model for later audits. Other causes and trade-count failures are
+never rescued.
 
 The short Final Tick probe is a discard filter, not the final live-use gate.
 `accepted` advances to Final Tick 6M; `rejected` is terminal and invalidates any
@@ -685,16 +723,20 @@ Two different things, often confused:
 H2 (`16386`) and H3 (`16387`) were added in Aug 2026 to **both**: they are
 supported (classified, validated, evaluated, weighted, selectable as a
 Symbol/TF override) **and** part of the default generation universe, so the
-agent creates variants on them. MT5 encodes hourly timeframes as
-`16384 + hours`, so H6/H8/H12 (`16390`/`16392`/`16396`) are equally valid MT5
-values that this app still rejects — the rejection message names the supported
-universe rather than claiming the value is not valid MT5.
+agent creates variants on them. H6/H8/H12 (`16390`/`16392`/`16396`) joined the
+same supported and default-generation contract in Nov 2026. MT5 encodes hourly
+timeframes as `16384 + hours`; legacy minute values `360`/`480`/`720` normalize
+to those three enum values. A stored `invalid_seed` is revalidated against the
+current contract during a normal seed evaluation; if a contract expansion now
+accepts it, the seed returns to the pending backtest queue without a global
+evaluation reset.
 
-`related_timeframes()` filters through the active universe, so the H1/H2/H3/H4
-neighbour band only takes effect while those timeframes stay in it. The
+`related_timeframes()` filters through the active universe, so the hourly
+neighbour bands only take effect while those timeframes stay in it. The
 discovery-mode exploratory quotas (`FORCE_UNSEEDED_TIMEFRAME_MIN_RATIOS`) still
 cover only M1/M5/M15/M30; H2/H3 get coverage from the generic "reserve a slot
-for each allowed timeframe missing from the selected source seeds" rule.
+for each allowed timeframe missing from the selected source seeds" rule, as do
+H6/H8/H12.
 
 **Scope**: `TIMEFRAME_ENUM` / `TIMEFRAME_PATTERNS` live in `run_tests.py` and
 `ubs_timeframes.json` is a single shared file — timeframe support and universe
@@ -702,7 +744,8 @@ are **broker-agnostic**, unlike asset universes and disabled-symbol policies.
 A timeframe change affects every broker/account in the clone, and reaches the
 other broker clones only through a branch merge.
 
-Normal generation targets M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / D1. W1 / MN are
+Normal generation targets M1 / M5 / M15 / M30 / H1 / H2 / H3 / H4 / H6 / H8 /
+H12 / D1. W1 / MN are
 available only through the explicit **Experimentar W1/MN** toggle, persisted
 as `ubs_experimental_long_timeframes` and passed as
 `--experimental-long-timeframes`. MT5 supports W1/MN, but they are kept opt-in
@@ -977,15 +1020,27 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
 
 ### UBS Seeds tab — new features
 
+- The screen header shows the current working UBS generation as
+  `Semillas UBS · UBS V6`. This is an explicit product label, not metadata
+  inferred from individual `.set` files and not a table column.
+- UBS Parámetros uses the bundled 164-key V6 contract as its canonical
+  structure/default source. Rule-owned keys are normalized before display,
+  ignore global/mutable overrides, and cannot be edited or toggled.
 - **SEL checkbox column** + `self.ubs_seed_checked`.
+- Optional traceability columns **CLIENTE**, **ESTRATEGIA**, and **FAMILIA** are
+  derived from the imported hierarchy and `Run_Strategy`. `Client sets/<name>`
+  supplies the client; recognized non-client source trees use `Profalgo`.
+  Uncertain metadata stays blank.
 - **Criteria bar**: editable seed-only thresholds (net profit, PF, trades, DD,
   recovery). Persisted separately from UBS Agent thresholds.
 - **Fechas Seeds bar**: `ubs_seed_from_date` / `ubs_seed_to_date` override
   `FromDate`/`ToDate` for seed evaluation only.
 - **"⬆ Importar seeds"**: folder picker → normalises lot size (lote fijo 0.01
-  via `force_fixed_lot_text`) → deduplicates → copies to configured seeds
-  folder. Modal progress popup + summary dialog. Implemented in
-  `ui/ubs_seeds_logic.py:_import_ubs_seeds`.
+  via `force_fixed_lot_text`) → applies the active version contract →
+  deduplicates → copies to configured seeds folder. UBS V6 keeps only its 164
+  canonical real parameters; comments and section markers remain, while
+  missing V6 keys are not created. Modal progress popup + summary dialog.
+  Implemented in `ui/ubs_seeds_import.py:_import_ubs_seeds`.
   - Dedup lives in `ubs/seed_dedup.py` (`SeedDuplicateIndex`). The import
     **first indexes the `.set` files already in the destination**, then checks
     every incoming file against that index and re-adds each copied file, so the
@@ -994,11 +1049,19 @@ stale/missing reports, robustness bonuses, JSON metrics, and current weights.
     separately: `exact` (identical normalised content) and `equivalent` (same
     symbol/TF and identical values on **every shared key**, with ≥100 shared
     keys and ≥60% overlap).
-  - The `equivalent` pass exists because the EA keeps gaining parameters: the
-    same seed re-exported from a newer UBS build carries extra keys, so its
-    SHA256 differs and a hash-only dedup reimports the whole pool. This is not
-    hypothetical — the `UPDATED SETS UBS_V6.4` import (Aug 2026) copied 292
-    files of which 176 were already in the pool.
+  - Version filtering lives in `ubs/version_rules.py`. Incoming files and the
+    in-memory fingerprints of existing destination seeds use the same V6 view,
+    so keys from later EA builds cannot alter import identity. Existing files
+    are not rewritten by this comparison alone. When an incoming seed matches
+    an existing destination or fingerprint, however, the incoming normalized
+    file replaces the previous one at the existing path; `_2`/`_3` copies are
+    not created, and normal mtime/size freshness makes changed seeds evaluable
+    again.
+  - OneChart/main-EA aggregate settings (`UseAutoLoader=true`, including
+    `ubs_onechart_live_MainEA_Settings.set`) are listed as not imported and
+    never enter the seed pool. Files whose own name contains the exact
+    `optimization`/`optimisation` token are treated the same way; parent folder
+    names do not exclude otherwise valid seeds.
   - Values are compared after stripping optimisation ranges (`value||min||…`),
     so toggling a parameter's optimise flag does not create a false new seed.
   - Sets whose symbol/TF cannot be inferred **are still imported** (they land in
@@ -1275,18 +1338,36 @@ TESTER_STUCK_MARKERS = (
 - `kick_after_seconds` remains specific to `real_tick_model=True`.
 
 **All-model watchdog**:
-- Every model, including regression `Model=1`, monitors tester-journal and fresh
-  report progress every 10 seconds.
-- After `tester_stall_after` seconds without either signal, two consecutive
-  checks are required before the MT5 process tree is killed and retried once.
-  Default: `300` seconds.
+- Every model, including regression `Model=1`, monitors tester-journal progress,
+  fresh report progress and the terminal's own pass heartbeat every 10 seconds.
+- The heartbeat is the `AutoTesting processing N %` line MT5 writes every five
+  minutes to the **terminal** journal (`<data_dir>/logs`), never to the tester
+  journal (`<data_dir>/Tester/logs`), which stays silent from `testing of
+  <expert>` until the pass ends. Without it, any pass longer than the idle
+  window looked frozen and was killed alive: on 2026-11-15 that cost the IC
+  auditor `AUDJPY_M1_..._g002_s001_v005` (killed twice at 31 %, no report) and
+  one more M1 five-year pass the same night. Only lines matching
+  `TESTER_PROGRESS_MARKERS` count, so broker reconnections cannot mask a real
+  hang, and the first read of the day's journal is a reference only, since its
+  last heartbeat may belong to the previous job.
+- After `tester_stall_after` seconds without any of the three signals, two
+  consecutive checks are required before the MT5 process tree is killed and
+  retried once. Default: `300` seconds, raised to
+  `TESTER_PROGRESS_STALL_FLOOR_SECONDS` (`660`) once a heartbeat has been seen,
+  because an idle window shorter than two heartbeats kills live passes in the
+  gap between them.
 - Watchdog process actions are rate-limited across multiterminal workers:
   process-tree closures reserve slots at least `0.75` seconds apart, and
   watchdog retry launches reserve slots at least `3` seconds apart. This keeps
   confirmed stalls from turning into simultaneous `taskkill`/`Popen` storms;
   it does not change retry count or terminal-profile selection.
 - `tester_max_runtime` is an independent hard per-job ceiling even when the
-  journal cannot be located. Default: `1800` seconds.
+  journal cannot be located. Default: `1800` seconds. While the heartbeat keeps
+  moving, the job is allowed up to `MAX_RUNTIME_PROGRESS_FACTOR` (`4`) times
+  that ceiling: a five-year M1 pass needs around 48 minutes, and killing it at
+  30 means it never leaves a report and comes back as pending forever. The
+  ceiling still ends it, because the percentage only climbs and a live pass
+  finishes.
 - A watchdog termination writes
   `reports/<report>.watchdog_attempt_N.mt5log.txt` even when MT5 never generated
   an HTML report. Missing journals are recorded explicitly in that snapshot.
@@ -1464,7 +1545,7 @@ Final Tick is now a **two-stage pipeline**:
 | `probe` (default) | `--final-tick-stage probe` | `candidate_final_tick` | Short-window OHLC vs real-tick similarity filter. Same as before. |
 | `six_month` | `--final-tick-stage six_month` | `candidate_final_tick_6m` | 6-month validation for live portfolio eligibility. Requires ≥ 180-day date range. |
 
-The `six_month` stage adds an extra **PF floor check** (`min_model_profit_factor`): both OHLC and real-tick PF must meet the configured minimum profit factor. If either falls short, `reasons` gets `"profit_factor_floor"`. The PF delta tolerance is also tightened to `min(configured, 30.0)%` when running the 6M stage. This stricter check is applied only to `six_month`; the `probe` stage is unchanged.
+The `six_month` stage records an extra PF-floor diagnostic (`min_model_profit_factor`) for both OHLC and real-tick. It does not decide similarity: PF is an economic result, not behavioral reproduction. The stored check exposes `meets_floor`; trade-count and drawdown similarity remain the blocking behavioral criteria.
 
 The `--final-tick-stage` argument normalises `"6m"`, `"sixmonth"`, `"six_month"` → `"six_month"`. The stage controls which output directory (`final_tick/` vs `final_tick_6m/`) and which DB table is used.
 
@@ -1508,6 +1589,411 @@ A new tab `buscador` ("UBS Buscador", `ui/ubs_search_view.py` + `ui/ubs_search_l
 
 State: `self.ubs_search_query`, `self.ubs_search_status`, `self.ubs_search_paths`, `self.ubs_audit_account`, `self.ubs_audit_run_id`.
 
+### UBS Auditor tab (stage-rule drift + state repair)
+
+Tab `ubs_auditor` ("UBS Auditor", `ui/ubs_auditor_view.py` +
+`ui/ubs_auditor_logic.py` for scope/rules/repairs and
+`ui/ubs_auditor_queries.py` for the two queries and how they become rows),
+over the pure audit in
+[`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py), whose stage catalog
+and result dataclasses live in [`ubs/stage_specs.py`](../ubs/stage_specs.py)
+— the vocabulary, no SQLite —, whose two fix lists live in
+[`ubs/stage_fixes.py`](../ubs/stage_fixes.py) and whose value reading and
+comparing lives in [`ubs/stage_values.py`](../ubs/stage_values.py); all three
+are re-exported from it, which is where the rest of the code asks for them.
+
+**A rule is not a configuration**, and the module header of `stage_specs`
+states it, because the screen used to conflate them. A **rule** is the
+comparison that turns a result into accepted or rejected: minimum history
+quality, minimum trades, the net/PF/DD/trades deltas, the DD band. A
+**configuration** is everything else the run needs and stores in the same row,
+starting with the `Desde`/`Hasta` window. Moving a rule leaves old verdicts
+misjudged and a rescore straightens them; moving the window leaves no verdict
+wrong at all — it leaves rows run over another period, and only running them
+again changes that. So the window lives in `StageSpec.window`, never in
+`rules`, and the audit counts it apart instead of calling it a moved rule.
+
+Stage rules change often, and every row stores the rules it was judged
+with: the four Final Tick tables store their deltas and minimum history
+quality, `candidate_robustness` its bonuses and window, `candidate_regression`
+its points, and base/seed rows carry their `score_config` inside
+`metrics_json`. The screen compares that with what Configuración holds now — no
+HTML is reparsed.
+
+Scope selectors: any account of the active broker, and one run or the whole
+memory. `STAGE_SPECS` is ordered like the funnel and like the sidebar — Seeds,
+Seeds Final Tick, Seeds Final Tick 6M, Resultados, Robustez, Final Tick, Final
+Tick 6M, Regresiva — and each `label` is its screen's name, so the audit reads
+top-down and names nothing twice. Both queries fill the same tree: one row per
+stage (the `#0` column), with its findings and `score_config`-less rows hanging
+from it, so the stage name is never repeated and a stage opens by itself only
+when a rule moved.
+
+The two queries share the tree but not the columns. `AUDITOR_COLUMNS` declares
+all six; `AUDITOR_RULE_LAYOUT` and `AUDITOR_PENDING_LAYOUT` pick which ones
+each query shows, with what heading and width, and
+`_show_ubs_auditor_columns()` applies the chosen one through `displaycolumns`
+before the rows go in. Sharing the headings too meant one `DETALLE` column had
+to mean both "se juzgo con 1970.01.01 (2)" and "error (12)". Every column now
+means one thing on every row:
+
+| Column | Rules query | Pending query |
+|--------|-------------|---------------|
+| `kind` | `QUE PASA`: `Al dia`, `N reglas movidas`, `Regla cambiada`, `N sin fecha valida`, `Sin tabla` | `QUE PASA`: `Al dia`, `Se quedaron a medias`, `Sin fila todavia`, `Sin tabla` |
+| `item` | `REGLA`: the moved rule's label | hidden |
+| `current` | `AHORA`: what Configuración holds | hidden |
+| `stored` | `SE JUZGO CON`: stored values with their counts | `EN QUE ESTADO SE QUEDARON`: statuses with their counts |
+| `affected` | `A CUANTOS AFECTA`: how many **verdicts** | `CUANTOS FALTAN` |
+
+Everything the rules query counts is verdicts, because a verdict is the only
+thing a rule can have bent and the only thing a rescore can straighten: a
+pending row stores the old value like any other, but nothing re-scores it and
+when it runs it runs under today's rule. Counting rows instead gave a child
+reading "303 de 303" under a stage reading "207 de 303", and a `YA JUZGADOS`
+column that, once this was fixed, repeated the same number — so that column is
+gone. A finding, a declared change or an invalid date that reaches no verdict
+still hangs off the stage, muted, and leaves it green.
+
+`_of_total()` writes the count and what it is measured against in one cell —
+"2 de 3798 candidatos", from `StageSpec.unit` — because the affected count and
+the stage size used to sit in neighbouring columns and read as a
+contradiction; `_tree_sort_value()` falls back to the leading number so the
+column still sorts numerically. `_values_cell()` caps any "valor (cuantos)" list at
+`MAX_STORED_VALUES_SHOWN` and counts the rest ("+1 mas") instead of letting the
+column cut a value in half; moved thresholds (`_stored_cell()`) and invalid
+dates share it, because both answer "se juzgo con". The widths add up to less than the table's usable
+width on purpose: `ETAPA` is the first column and rides the horizontal
+scrollbar, so a wider table is born hiding the one thing the screen is opened
+for, and `stored` is the only stretching column, which takes the slack.
+`StageSpec.non_auditable` no longer gets a row per stage — it is constant and
+four stages share it — but a single muted line under the table,
+`_blind_rules_note()`, which groups the stages that are blind to the same
+rules. Four actions:
+
+A stored date that is empty or at the MT5 zero (`_missing_date()`, year
+`EPOCH_YEAR` or earlier) is not a threshold anybody set: `candidate_final_tick`
+takes its window from the OHLC report via `_read_ohlc_report_cfg_dates()`, and
+a report with no period line carries `1970.01.01`, while a row that has not run
+yet carries `''`. Neither is a finding — otherwise the screen sent a stage to be
+rescored because two broken reports and a thousand pending rows disagreed with
+today's window. They are counted as `StageAudit.undated`, split by
+`undated_verdicts`, with `undated_stored` holding **why** there is no window
+and how many rows each reason reaches: `no ha corrido` (empty) or `reporte sin
+periodo` (the MT5 zero). The cell first read "(vacia o 1970.01.01)", a guess
+between the two when the row holds the answer, and then the raw value, which
+means nothing unless you know that 1970.01.01 *is* the absence of a window —
+`_undated_reason()` translates it once, here. The two cases:
+
+- **with a verdict** — the row was judged over an impossible window, so its
+  verdict is worthless. `_stage_headline()` puts `N sin fecha valida` on the
+  stage in red *even when every threshold matches today's*: a stage that hides
+  this behind a green `Al dia` is lying. It cannot be re-judged either — there
+  is no window to judge over — so the rescore **demotes** it to `no_report`, a
+  retryable status, and the row leaves the rules audit for `Consultar
+  pendientes`, where `Arreglar pendientes` picks it up. Both rescore paths do
+  it, which matters because they are not the same one:
+  `rescore_final_tick_only()` re-judges from the metrics stored in SQLite
+  (`_rescore_stored_final_tick_row`) unless `--rescore-from-reports` is passed,
+  and the Auditor's button does not pass it — the check lived only in the
+  from-reports path at first, so the button walked all 3798 rows and left the
+  verdict exactly where it was. `_windowless_verdict()` is the one rule both
+  call, and it fires only on a row that *holds* a verdict: `pending_ohlc_trades`
+  and its kind assert nothing to retract, and rewriting them would erase the
+  state their own retry recognises them by. Demoting a Final Tick verdict also
+  drops that candidate's 6M and regression rows, which
+  `record_candidate_final_tick()` has always done — they were built on a verdict
+  that just went away. That is why `stages_to_rescore()` keys off
+  `undated_verdicts` although no rule moved: it is the one case where the
+  button's job is to take a verdict away rather than rewrite it. A stage with
+  no `rescore_flag` has nobody to do that, so there it still asks for a repeat.
+  The rescore reaches the row even when its OHLC report is not on this machine:
+  `_rescored_window()` falls back to the dates the row itself stored.
+- **without a verdict** — the row simply has not run. Nothing hangs off the
+  stage for it; `Consultar pendientes` is where it belongs and where it already
+  appears.
+
+#### Only what the button asks (nothing hangs in grey)
+
+`_rule_children()` hangs a child **only** when a verdict was given under a rule
+that is no longer today's. That is the whole question this button answers.
+Three things used to hang in grey under stages that read `Al dia`, and none of
+them answered it: a rule that moved but reached no verdict, a row with no
+window that had not run, and a row whose window is simply another one. The
+screen now stays silent about all three — a stage with nothing to say shows no
+children at all, and the whole table can legitimately be eight green lines.
+
+The third one is worth stating plainly, because two earlier versions got it
+wrong in opposite directions. **A window that is merely different is not
+compared at all.** `_tally_window_row()` reads the window columns looking only
+for a *missing* window; it never checks whether the stored one matches
+Configuración. The verdict is valid for the period it ran over, and **nobody
+re-runs those rows**: `final_tick_row_pending_for_dates()`
+([`evaluate.py`](../ubs/agent/final_tick/evaluate.py)) stops looking at the
+window the moment a row holds a verdict — the date only decides for rows
+already in `pending_ohlc_trades` / `pending_history_quality`, so pressing the
+6M stage's own button skips all 2404 of them one by one. First `Desde` was a
+`RuleSpec` like any threshold, so the stage read `1 regla movida` and entered
+the rescore queue, walking 3450 rows of `candidate_final_tick_6m` to rewrite
+every verdict with the value it already had (the window is re-read from the
+OHLC report, so no rescore moves it). Then it was red and in
+`stages_to_repeat()`, sending 2404 candidates back through MT5 for work no
+button performs. Then it hung in grey, which was merely noise. It is
+configuration, it belongs to whoever sets the dates, and this screen says
+nothing about it.
+
+#### Which button actually fixes what
+
+The two lists live in [`ubs/stage_fixes.py`](../ubs/stage_fixes.py), which
+answers a different question from the audit and touches no SQLite to do it: it
+needs only the counted `StageAudit` and the stage's `StageSpec`. Between them,
+every stage the table paints red has to come out of one, or the screen reddens
+a row it cannot then say anything about.
+
+`stages_to_rescore()` — the stage has a `rescore_flag` and
+`_rescore_would_change_it()`: a verdict judged under a rule that is no longer
+today's (a moved threshold or a declared change), or a verdict judged over a
+window that does not exist, which the rescore demotes to `no_report`. Nothing
+else. A stage where no rule moved stays out, because rescoring it would walk
+the whole memory rewriting every verdict with the value it already had.
+
+`stages_to_repeat()` — a declared change whose `rules_change_fix` is
+`"repeat"`, or a stage with no `rescore_flag` at all, which has no other way to
+straighten anything. `Seeds Final Tick` and `Seeds Final Tick 6M` are the
+stages with no rescore mode. A moved window is **not** in this list, however
+many rows it reaches: see above.
+
+A stage can still appear in both: rescore what can be rescored, repeat it for
+the rest. `RuleSpec` no longer carries a `fix` — the window was its only user,
+and every actual rule is rescorable by definition, since a rule is a comparison
+over a result that is already stored.
+
+#### Declared rule changes (the stored values cannot show them)
+
+When what changes is the code that applies the thresholds and not the
+thresholds, the row keeps storing the same numbers and the comparison finds
+nothing, although the verdict was born under another rule. That is declared by
+hand in `StageSpec`: `rules_changed_at` is the ISO instant the new rule took
+effect, `rules_change_note` what changed, and `rules_change_fix` whether a
+rescore settles it (`"rescore"`) or the stage must be run again (`"repeat"`).
+Bumping the date belongs in the same commit that changes the rule.
+
+A row counts as `StageAudit.stale` when its `judged_column` stamp — already
+written by the memory on all eight tables — is earlier than that instant, so
+the warning clears itself as soon as the row is judged again; an empty stamp is
+a row that has not run and will run under today's rule, so it does not count.
+Only `stale_verdicts` turns the stage red, feeds `affected` and reaches
+`stages_to_rescore()`/`stages_to_repeat()`, for the same reason `undated` is
+split: a row with no verdict will be judged under today's rule when it runs and
+a rescore never touches it (there is nothing to score again), so counting it
+left the stage red after every rescore, forever. It still hangs off the stage,
+muted, and `Consultar pendientes` is where it belongs. In ICTRADING/STANDARD
+that was 1046 `pending` rows of `candidate_final_tick_6m`.
+A stage with no stamp of its own declares `judged_column=""` (`candidates`,
+whose `created_at` is when the .set was generated and which a rescore does not
+touch): there the change cannot be split row by row, so everything already
+carrying a verdict is counted, which is all that is honestly known. Stale rows
+join `affected`/`affected_verdicts` like a moved threshold, since the screen
+asks how many are dragged along, not of what kind the change is.
+`stages_to_rescore()` picks up the `"rescore"` ones and `stages_to_repeat()`
+the rest, together with the stages that have no rescore mode.
+
+**No stage declares one right now, and that is how it should stay** until
+somebody changes the code that decides accepted/rejected. `62aef74`
+("Centraliza las reglas de las cuatro pantallas Final Tick") was declared and
+should not have been: the flags the UI hands the agent are identical before and
+after it, the four screens already read the same threshold variables, and
+outside `ui/` the whole commit is one column added to a SELECT so it can be
+painted. It cost 480 verdicts in red and nearly sent both seed stages to MT5
+for nothing. Before declaring one, check that the commit touches the path that
+*writes* the verdict, not only the screen that shows it.
+
+- **Auditar reglas** — per stage, each rule whose stored value differs, the
+  value configured now, the stored values with their row counts, affected rows
+  and how many of them already carry a verdict (`StageAudit.affected_verdicts`,
+  counted over distinct rows, since two moved rules on one row are still one
+  row). Those are the only ones a rescore can change. It also reports rows
+  without a stored `score_config`, and names under the table the rules a stage
+  applies but does not store (Final Tick minimum trades), which this audit
+  cannot see.
+- **Consultar pendientes** — per stage, the two ways a stage can be behind,
+  each its own child row. `Se quedaron a medias` are the rows that are still
+  waiting for somebody to run them, broken down by status: not
+  `accepted`/`rejected` (`AUDIT_FINAL_STATUSES` in
+  `ui/ubs_search_audit_base.py`, which the module itself decides nothing
+  about) **and** not in the stage's own `settled_statuses` — see below.
+  `Sin fila todavia` (`PendingAudit.missing`,
+  counted through `StageSpec.upstream_sql`) are the eligible ones that never
+  got a row at all — what a rescore leaves behind when it flips somebody from
+  rejected to accepted upstream. With no row there is no status to count, so
+  before this the stage read `Al dia` while exactly those were missing. Both
+  count toward the stage total, so `N de M` is measured against what should be
+  judged, not only against what exists. `upstream_sql` mirrors each runner's
+  own eligibility join (`ubs/memory_stages.py`,
+  `ubs/agent/seeds/final_tick.py`), which stays the source of truth.
+- **Repuntuar afectados** — the button repairs no rule: it repairs the
+  accepted/rejected of the seeds and candidates judged under another one. It
+  chains one `--rescore-*-only` per affected stage, in
+  `STAGE_SPECS` order, targeting the audited account's `--memory`. The agent
+  serves one mode per process, so the next stage starts from
+  `_maybe_auto_run_ubs_auditor_rescore()` when the previous one exits 0, and the
+  queue is dropped otherwise. Rescoring never opens MT5 and it covers the whole
+  account memory, not only the audited run. `final_tick` and `final_tick_6m`
+  share the `--rescore-final-tick-only` flag but are queued separately, each
+  with its own `--final-tick-stage` and dates, because each one rescores its
+  own table. `seed_final_tick` and `seed_final_tick_6m` have no rescore mode:
+  they are reported, through `stages_to_repeat()`, as stages to run again.
+  **Only where a rule changed, or where a verdict has to be taken away.**
+  `stages_to_rescore()` takes a stage whose rules moved, and the stage holding
+  a verdict given over a window that does not exist, which it demotes to
+  `no_report`. A stage whose only complaint is the window stays out: there is
+  nothing to re-judge and the window is re-read from the report anyway, so
+  queueing it walked the whole table to rewrite every verdict with the value it
+  already had and came back just as red.
+  `_ubs_auditor_stages_to_rescore()` overrides that with the stage selected in
+  the table, which is how a blind rule is asked for: the rescore *does* apply
+  the three Final Tick minimum-trade limits and the robustness retentions,
+  which the stage never stores, so moving one changes verdicts while leaving
+  the audit nothing to compare. The confirmation dialog says which of the two
+  cases it is and what has to be repeated instead.
+- **Arreglar pendientes** — routes the selected stage to its own runner
+  (seeds evaluation, mismatch retry, robustness/Final Tick/6M/regression
+  pending runs), which owns the retryable statuses and dates. This opens MT5
+  and requires the audited account to be the active UBS account. One button
+  covers both gaps because the runners already treat them alike: their
+  `pending_only` mode is "accepted without a row + retryable", so the newly
+  eligible rows a rescore just created are picked up with the half-finished
+  ones, and no separate "repair the updated states" action is needed.
+  **Right-clicking a stage row** does the same thing for that stage, which
+  saves marking it first; only the stage row, never a detail child — the fix
+  is always the whole stage, so offering it under a child promised a precision
+  that does not exist. It is the same `_fix_ubs_pending_states_clicked`, not a
+  copy, so it keeps the account and run checks.
+
+#### Pending has to be something a button can actually run
+
+A status the audit calls pending and no runner picks up is worse than a wrong
+count: the screen reports work nobody can do. That is what `generated` was —
+180 of Resultados' 188, `.set` files written but never backtested.
+`RETRYABLE_CANDIDATE_STATUSES` read as "technical problems" and a set that
+never ran did not look like one, so `Continuar run` skipped them. They are the
+opposite of a dead end: the only thing missing is the backtest, and
+`retry_run_mismatches` already handles them unchanged (it copies the `.set`,
+clears any report artifacts — a no-op when there are none — and runs the whole
+batch in one MT5 session). `parse_error` had the same hole.
+
+So for `candidates` every status now lands in exactly one of three places, and
+`tests/ubs/scoring/test_ubs_stage_settled_statuses.py` asserts exactly that
+over the table's whole status vocabulary — exactly one, because landing in two
+would mean a row is counted by one rule and fixed by another:
+
+| | Statuses |
+|---|---|
+| Verdict | `accepted`, `rejected` |
+| Parked (`settled_statuses`) | `no_trades`, `no_history`, `trade_disabled`, `symbol_not_exist` |
+| Still to run (`RETRYABLE_CANDIDATE_STATUSES`) | `generated`, `report_mismatch`, `no_report`, `parse_error`, `pending_tester_context` |
+
+That list had a third hand-written copy in `_count_ubs_run_retryable_problems`
+(`ui/ubs_results_retry.py`), already down to two statuses of the five, so the
+button said "no pendientes" about runs that had them. It now builds its `in
+(...)` from the constant.
+
+#### Fixing a stage means walking its runs
+
+Every runner is scoped to one run — it lays its .set files out under that
+run's `output_dir` and prints per run — so fixing a stage is running them one
+after another. The screen used to refuse instead, with "Elige un run concreto
+para repetir pendientes de Resultados", which asked the user to pick
+something the audit had not measured: the table counts the whole memory
+unless a run is selected.
+
+`pending_runs()` in [`ubs/stage_rules_audit.py`](../ubs/stage_rules_audit.py)
+returns the runs that have something left, as `RunGap(run_id, pending,
+missing)`, classifying rows exactly as `audit_pending_states()` does — so the
+queue and the table cannot disagree. The "no row yet" half comes from the same
+`upstream_sql` each stage already declares, *derived* into a per-run form by
+`_grouped_upstream_sql()` rather than declared twice, so the two cannot drift;
+`tests/ubs/scoring/test_ubs_stage_pending_runs.py` guards the shape that
+derivation assumes. Counting only statuses would have left Regresiva out
+entirely: it has nothing half-finished, only 2 175 eligible rows with no row
+yet. A stage with no `run_column` (the three seed stages) returns an empty
+tuple and is fixed by a single run.
+
+The Auditor asks once, for the whole stage — the dialog names the number of
+runs, both gaps and that each run opens MT5 on its own — and then launches
+each run with the runner's own `confirm=False`: chaining 323 dialogs is not
+confirming anything. `_ubs_auditor_pending_queue` advances on process exit 0
+through `_maybe_auto_run_ubs_auditor_pending`, hooked in `app_process.py`
+beside the rescore chain.
+
+`_start_next_ubs_auditor_pending()` **skips forward** instead of launching
+blindly, because the audit and the runner do not count the same thing: the
+runner also wants the .set still on disk and the status in its own retryable
+set. A run it declines leaves no process, and with no process there is no exit
+to hang the next run on, so the queue would stall at the first disagreement.
+Over ICTRADING/STANDARD the stages are 8 runs (Resultados), 10 (Final Tick),
+225 (Robustez), 323 (Final Tick 6M) and 336 (Regresiva).
+
+#### Pending is what a report can still be made for
+
+A row sits in one of three places: its stage's rule judged it
+(`accepted`/`rejected`), it stopped with no report left to produce, or it is
+still waiting to run. Only the third is pending, and that is all `Consultar
+pendientes` counts. Treating "not a verdict" as pending kept Resultados
+permanently red over 9 954 candidates that a repeat cannot get a report out
+of: history the broker does not have does not appear on the second attempt,
+and a run with no trades has none again.
+
+The special rejections are the same family right down the funnel —
+`SPECIAL_REJECTION_STATUSES` in `stage_specs`: `no_trades`, `no_history`,
+`trade_disabled`, `symbol_not_exist`. Every stage declares all four in
+`StageSpec.settled_statuses`, including the stages whose table never holds one
+of them, so a status cannot slip into a new table later and be counted as
+pending. On top of the family, three stages park one more:
+
+| Stage | Also parked | Why |
+|-------|-------------|-----|
+| Seeds | `invalid_seed` | the .set is one MT5 will not run, so there is no report to make |
+| Seeds Final Tick, Final Tick | `pending_ohlc_trades` | the probe never re-queues it; the candidate moves on to the 6M stage carrying it |
+| Regresiva | `watchdog_timeout` | the watchdog killed the run before a report existed |
+
+The 6M stages add nothing: there `pending_ohlc_trades` *is* re-queued when the
+window moves. Declaring it parked there would hide a row the stage's own
+button really does run again.
+
+**Some runners re-queue a parked status anyway, and that is deliberate, not an
+oversight.** The Auditor answers "what is left to run"; a runner's
+`pending_only` mode answers "what do I give another pass to", and on three
+statuses they disagree: `no_trades` for Seeds and Robustez
+(`ROBUST_RETRYABLE_STATUSES`), `no_history` and `symbol_not_exist` for Seeds,
+`no_history` for Regresiva (`REGRESSION_RETRYABLE_STATUSES`). Pressing
+`Arreglar pendientes` on those stages touches rows the screen does not count —
+in ICTRADING/STANDARD, 27 in Robustez and 1 in Regresiva. The divergence is
+listed as `RETRIED_ANYWAY` in
+[`tests/ubs/scoring/test_ubs_stage_settled_statuses.py`](../tests/ubs/scoring/test_ubs_stage_settled_statuses.py),
+which computes the real overlap by asking each runner's own predicate
+(`final_tick_row_pending_for_dates()`, `robust_status_pending_for_retry()`,
+`SEED_KEPT_STATUSES`, …) and fails when it changes in either direction. So
+`_settled_note()` does not claim nobody retries them — only that repeating
+them yields no report, which is the part that holds.
+
+Parked rows leave the stage total too: `PendingAudit.rows` is what the stage's
+rule answers for, so `N de M` compares like with like — the rules query, which
+asks a different question, keeps counting them. They are not silent:
+`_settled_note()` says once, under the table, how many were set aside and in
+what state. No child row, because there is nothing to look at in them.
+
+`candidates` also gained a `row_filter`, `ifnull(policy,'')<>'history_probe'`,
+the same filter `manager_node_runtime/universe_service.py` already used.
+History probes are not strategy .set files: they are the .set the agent runs to
+ask the broker whether a symbol has data, and `history_ok` / `no_history`
+answers that question, not a rule. All 8 391 of them were counted as
+half-finished candidates. That filter applies to both queries, so Resultados
+measures 77 846 candidates instead of 86 237.
+
+State: `self.ubs_auditor_account`, `self.ubs_auditor_run_id`,
+`self.ubs_auditor_status`, `self._ubs_auditor_audits`,
+`self.ubs_auditor_row_stage`, `self._ubs_auditor_rescore_queue`.
+
 ### Multiterminal — Limpiar Tester button
 
 A **"Limpiar Tester"** danger button was added to the Multiterminal toolbar. It scans configured MT5 data directories and safely removes disposable Tester files:
@@ -1539,9 +2025,11 @@ Repair consulta el modo persistido de cada run para añadir regresión únicamen
 a runs Production. Modos antiguos o desconocidos no habilitan regresión de
 forma implícita; la acción manual Regression continúa siendo independiente.
 
-### Final Tick similarity — `profit_factor_floor` check (6M only)
+### Final Tick similarity — economic diagnostics in 6M
 
-`final_tick_similarity()` in `ubs_agent.py` accepts an optional `min_model_profit_factor` parameter. When set (only for `six_month` stage), it adds a **symmetric floor check**: both OHLC PF and real-tick PF must be ≥ the minimum. This is separate from the delta check and fires even when the two values are close to each other but both below the threshold. The check appears as `"profit_factor_floor"` in `similarity_json.checks` and in UI `CAUSA` columns.
+`final_tick_similarity()` records the PF floor and lossless 6M thresholds in `similarity_json.checks`, but they are informational. They expose `meets_floor`/`meets_limit` without adding rejection reasons. Final Tick validates behavioral reproduction between OHLC and Every Tick; economic level, score, profit factor, net profit, recovery, and positive-month ratio do not decide that comparison.
+Seed Final Tick is stricter: its adapter enables the economic-direction gate for
+score, normalized net profit, and profit-factor regime in both seed stages.
 
 ### UBS Portafolio Mensual
 
