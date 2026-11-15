@@ -189,6 +189,32 @@ class PendingGroupTests(unittest.TestCase):
         self.assertEqual(children[0][0][4], "2 de 13 candidatos")
         self.assertEqual(children[1][0][4], "3 de 13 candidatos")
 
+    def test_what_is_half_done_names_its_run_in_the_detail(self) -> None:
+        """Sin el run, el desglose decia que paso pero no donde arreglarlo."""
+        _stage, _label, _values, _tag, children = _pending_group(
+            fake_pending_row(
+                rows=10,
+                pending=3,
+                by_status=(("no_report", 2), ("generated", 1)),
+                by_run_status=(
+                    (7, (("no_report", 2),)),
+                    (9, (("generated", 1),)),
+                ),
+            )
+        )
+
+        self.assertEqual(
+            children[0][0][3], "run #7: no_report (2); run #9: generated (1)"
+        )
+
+    def test_a_stage_without_runs_keeps_the_bare_status(self) -> None:
+        """Las de semilla no cuelgan de ningun run: no se inventa uno."""
+        _stage, _label, _values, _tag, children = _pending_group(
+            fake_pending_row(rows=10, pending=2, by_status=(("pending", 2),))
+        )
+
+        self.assertEqual(children[0][0][3], "pending (2)")
+
     def test_an_eligible_without_a_row_alone_still_opens_the_stage(self) -> None:
         """Antes esta etapa salia «Al dia» porque sin fila no hay estado."""
         _stage, _label, values, tag, children = _pending_group(

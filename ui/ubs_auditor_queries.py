@@ -222,6 +222,30 @@ def _pending_headline(summary) -> str:
     return "Se quedaron a medias" if summary.pending else "Sin correr"
 
 
+def _pending_detail(summary) -> str:
+    """Que se quedo a medias, en que estado y en que run.
+
+    El estado solo decia que les paso; el run dice donde, que es lo que hace
+    falta para arreglarlo: el runner de cada etapa trabaja sobre un run, asi
+    que «no_report (2)» obligaba a ir a buscar en cual de los 67.870 estaban.
+
+    Las etapas de semilla no cuelgan de ningun run y se quedan con el estado a
+    secas, que alli es todo lo que hay que decir.
+    """
+    if not summary.by_run_status:
+        return ", ".join(f"{status} ({count})" for status, count in summary.by_status)
+    return "; ".join(
+        f"{_run_label(run)}: "
+        + ", ".join(f"{status} ({count})" for status, count in by_status)
+        for run, by_status in summary.by_run_status
+    )
+
+
+def _run_label(run_id: int) -> str:
+    """El run de una fila, o que no lo tiene: cero no es el run numero cero."""
+    return f"run #{run_id}" if run_id > 0 else "sin run"
+
+
 def _pending_status_line(pending: int, missing: int, scope: str) -> str:
     """Resumen de una linea de la consulta de pendientes.
 
@@ -330,9 +354,8 @@ def _pending_group(summary) -> tuple:
     if summary.pending:
         # Mismo formato que los hallazgos, «valor (cuantos)», para que la
         # columna ancha se lea igual venga de la consulta que venga.
-        detail = ", ".join(f"{status} ({count})" for status, count in summary.by_status)
         children.append(((
-            "Se quedaron a medias", "", "", detail,
+            "Se quedaron a medias", "", "", _pending_detail(summary),
             _of_total(summary.pending, total, summary.stage),
         ), "rejected"))
     if summary.missing:

@@ -542,7 +542,9 @@ def audit_pending_states(
             continue
         rows = _stage_rows(conn, spec, run_id=run_id, columns=columns)
         settled_statuses = {status.strip().lower() for status in spec.settled_statuses}
+        run_column = spec.run_column if spec.run_column in columns else ""
         counts: dict[str, int] = {}
+        by_run: dict[int, dict[str, int]] = {}
         settled: dict[str, int] = {}
         ids: list[int] = []
         for row in rows:
@@ -553,6 +555,9 @@ def audit_pending_states(
                 settled[status] = settled.get(status, 0) + 1
                 continue
             counts[status] = counts.get(status, 0) + 1
+            if run_column:
+                run_counts = by_run.setdefault(int(row[run_column] or 0), {})
+                run_counts[status] = run_counts.get(status, 0) + 1
             ids.append(int(row[spec.id_column] or 0))
         summaries.append(
             PendingAudit(
@@ -561,6 +566,10 @@ def audit_pending_states(
                 rows=len(rows) - sum(settled.values()),
                 pending=len(ids),
                 by_status=tuple(_by_count(counts)),
+                by_run_status=tuple(
+                    (run, tuple(_by_count(run_counts)))
+                    for run, run_counts in sorted(by_run.items())
+                ),
                 ids=tuple(ids[:MAX_REPORTED_IDS]),
                 settled=sum(settled.values()),
                 settled_by_status=tuple(_by_count(settled)),

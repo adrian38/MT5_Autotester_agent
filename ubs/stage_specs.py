@@ -458,6 +458,11 @@ class PendingAudit:
     rows: int
     pending: int
     by_status: tuple[tuple[str, int], ...] = ()
+    # Los mismos pendientes, pero repartidos por el run al que pertenecen: sin
+    # el run, el desglose dice que estado se quedo a medias y no donde, que es
+    # justo lo que hay que mirar para arreglarlo -cada runner trabaja sobre un
+    # run-. Las etapas de semilla no cuelgan de ninguno y lo dejan vacio.
+    by_run_status: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = ()
     ids: tuple[int, ...] = ()
     missing_table: bool = False
     # Las que se quedaron sin veredicto y sin reporte que hacer, por estado.

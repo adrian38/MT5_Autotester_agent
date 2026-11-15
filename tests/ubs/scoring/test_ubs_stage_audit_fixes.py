@@ -48,6 +48,45 @@ class PendingStatesAuditTests(unittest.TestCase):
         )
         self.assertEqual(summary.ids, (3, 4, 5))
 
+    def test_what_is_half_done_says_in_which_run_it_is(self) -> None:
+        """El estado dice que paso; el run, donde arreglarlo."""
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="pending_tick_trades")
+        insert_final_tick(conn, 2, run_id=7, status="pending_tick_trades")
+        insert_final_tick(conn, 3, run_id=9, status="pending_history_quality")
+        insert_final_tick(conn, 4, run_id=9, status="accepted")
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("final_tick",)
+        )[0]
+
+        self.assertEqual(
+            summary.by_run_status,
+            (
+                (7, (("pending_tick_trades", 2),)),
+                (9, (("pending_history_quality", 1),)),
+            ),
+        )
+
+    def test_a_seed_stage_has_no_run_to_name(self) -> None:
+        """Las de semilla no cuelgan de ningun run: no se inventa uno."""
+        conn = memory()
+        conn.execute(
+            """
+            insert into seed_scores (
+                seed_path, seed_mtime, seed_size, symbol, period, family,
+                run_strategy, status, active, last_seen
+            ) values ('seed.set', 0, 0, 'EURUSD', 'H1', 'fam', 'run', 'pending', 1, '')
+            """
+        )
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("seeds",)
+        )[0]
+
+        self.assertEqual(summary.pending, 1)
+        self.assertEqual(summary.by_run_status, ())
+
     def test_a_state_nobody_retries_is_not_pending(self) -> None:
         """El Final Tick que se quedo corto de operaciones no espera nada.
 

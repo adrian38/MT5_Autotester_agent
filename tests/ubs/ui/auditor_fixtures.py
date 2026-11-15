@@ -57,6 +57,7 @@ def fake_pending_row(**overrides):
         "pending": 0,
         "missing": 0,
         "by_status": (),
+        "by_run_status": (),
         "missing_table": False,
         "settled": 0,
         "settled_by_status": (),
