@@ -3,29 +3,63 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from backtest.base import (
+    MAX_RUNTIME_PROGRESS_FACTOR,
     NO_WINDOW,
     REPORT_SAVE_CHECK_INTERVAL,
     REPORT_SAVE_STALL_SECONDS,
+    TESTER_PROGRESS_INTERVAL_SECONDS,
+    TESTER_PROGRESS_MARKERS,
+    TESTER_PROGRESS_STALL_FLOOR_SECONDS,
     TESTER_STUCK_MARKERS,
 )
 from backtest.logging import _WATCHDOG_TERMINATE_LIMITER
 from backtest.reports import (
+    find_terminal_journal_log,
     find_tester_journal_log,
     fresh_report_signature,
     read_tester_journal_tail,
+    read_tester_journal_tail_text,
     write_tester_journal_snapshot,
 )
+
+_TERMINAL_PROGRESS_TAIL_BYTES = 8192
+_PERCENT_RE = re.compile(r"(\d+)\s*%")
 
 
 def _tester_log_is_stuck(last_line: str) -> bool:
     lower = last_line.lower()
     return any(marker.lower() in lower for marker in TESTER_STUCK_MARKERS)
+
+def _is_terminal_progress_line(line: str) -> bool:
+    lower = line.lower()
+    return all(marker in lower for marker in TESTER_PROGRESS_MARKERS)
+
+def _terminal_progress_line(journal: Path | None) -> str:
+    """Ultimo latido 'AutoTesting processing N %' del journal del terminal.
+
+    Es la unica senal en tiempo real de que una pasada normal avanza: el
+    journal del tester no escribe nada entre 'testing of ...' y el final, asi
+    que una pasada larga parecia congelada y el detector la mataba viva.
+    """
+    if journal is None:
+        return ""
+    text = read_tester_journal_tail_text(journal, max_bytes=_TERMINAL_PROGRESS_TAIL_BYTES)
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if stripped and _is_terminal_progress_line(stripped):
+            return stripped
+    return ""
+
+def _terminal_progress_percent(line: str) -> str:
+    match = _PERCENT_RE.search(line)
+    return f"{match.group(1)}%" if match else "porcentaje desconocido"
 
 def _tick_bases_progress_signature(terminal_data_dirs: list[Path]) -> tuple[int, int, float]:
     """Firma de progreso de la descarga de ticks: (n_archivos, bytes, mtime max)
@@ -162,6 +196,10 @@ class _Mt5Watchdog:
         self.generic_stall_checks = 0
         self.last_progress_at = 0.0
         self.last_bases_signature: tuple[int, int, float] | None = None
+        self.last_terminal_line = ""
+        self.terminal_checked = False
+        self.terminal_progress_at: float | None = None
+        self.next_overrun_log = 0.0
         self.next_report_check = 0.0
         self.last_report_signature: tuple[tuple[str, int, int], ...] = ()
         self.report_stable_since: float | None = None
@@ -233,6 +271,43 @@ class _Mt5Watchdog:
         self.last_bases_signature = combined
         return bases_signature, bases_progress, first_bases_check
 
+    def _terminal_state(self, elapsed: float) -> bool:
+        """Progreso segun el latido de pasada del journal del terminal.
+
+        El journal es del dia, no del trabajo: en la primera lectura el ultimo
+        latido puede ser el del trabajo anterior, asi que esa lectura solo
+        sirve de referencia y nunca cuenta como progreso. Si todavia no hay
+        journal, el primer latido que aparezca si cuenta: equivocarse por ahi
+        retrasa una vez la deteccion de un atasco, y equivocarse al reves
+        vuelve a matar pasadas vivas, que es lo que se esta arreglando.
+        """
+        if not self.limits.use_generic_stall_check:
+            return False
+        journal = find_terminal_journal_log(
+            self.limits.tester_log_dirs, min_mtime=self.limits.log_check_min_mtime
+        )
+        line = _terminal_progress_line(journal)
+        first_check = not self.terminal_checked
+        self.terminal_checked = True
+        changed = bool(line) and line != self.last_terminal_line
+        if line:
+            self.last_terminal_line = line
+        if not (changed and not first_check):
+            return False
+        self.terminal_progress_at = elapsed
+        return True
+
+    def _stall_window(self) -> int:
+        """Inactividad tolerada antes de dar la pasada por atascada.
+
+        Mientras el terminal lata cada cinco minutos, un margen mas corto que
+        dos latidos mata pasadas vivas entre latido y latido.
+        """
+        window = self.limits.stall_after_seconds
+        if self.terminal_progress_at is not None:
+            window = max(window, TESTER_PROGRESS_STALL_FLOOR_SECONDS)
+        return window
+
     def _journal_state(self, journal: Path, bases_progress: bool) -> tuple[bool, bool, str]:
         """Lee la cola del journal y decide si el tester esta atascado."""
         last_line, current_size = read_tester_journal_tail(journal)
@@ -294,7 +369,12 @@ class _Mt5Watchdog:
         return None
 
     def _apply_generic_stall(
-        self, elapsed: float, journal_progress: bool, bases_progress: bool, stuck_detail: str
+        self,
+        elapsed: float,
+        journal_progress: bool,
+        bases_progress: bool,
+        terminal_progress: bool,
+        stuck_detail: str,
     ) -> tuple[int, bool, float] | None:
         """Reinicia MT5 cuando ningun modelo progresa durante el margen dado."""
         stalled_for = elapsed - self.last_progress_at
@@ -302,14 +382,15 @@ class _Mt5Watchdog:
             self.limits.use_generic_stall_check
             and not journal_progress
             and not bases_progress
-            and stalled_for >= self.limits.stall_after_seconds
+            and not terminal_progress
+            and stalled_for >= self._stall_window()
         )
         if generic_stalled:
             self.generic_stall_checks += 1
             if self.generic_stall_checks >= 2:
                 self.logger.write(
-                    f"MT5 Model={self.limits.model_label} lleva {stalled_for:.0f}s sin progreso de journal "
-                    f"ni de reporte (2 checks); se reinicia el proceso."
+                    f"MT5 Model={self.limits.model_label} lleva {stalled_for:.0f}s sin progreso de journal, "
+                    f"de reporte ni de latido del terminal (2 checks); se reinicia el proceso."
                 )
                 self.logger.write(f"  {stuck_detail}")
                 self._terminate()
@@ -318,7 +399,7 @@ class _Mt5Watchdog:
                 f"MT5 Model={self.limits.model_label} sin progreso durante {stalled_for:.0f}s; "
                 f"se confirmara en {_LOG_CHECK_INTERVAL}s."
             )
-        elif journal_progress or bases_progress:
+        elif journal_progress or bases_progress or terminal_progress:
             self.generic_stall_checks = 0
         return None
 
@@ -334,13 +415,19 @@ class _Mt5Watchdog:
             journal_progress, marker_stuck_now, stuck_detail = self._no_journal_state(
                 elapsed, bases_signature, bases_progress, first_bases_check
             )
-        if journal_progress or bases_progress:
+        terminal_progress = self._terminal_state(elapsed)
+        if terminal_progress:
+            marker_stuck_now = False
+            stuck_detail = f"ultimo latido del terminal: {self.last_terminal_line!r}"
+        if journal_progress or bases_progress or terminal_progress:
             self.last_progress_at = elapsed
             self.generic_stall_checks = 0
         result = self._apply_marker_stuck(elapsed, marker_stuck_now, stuck_detail)
         if result is not None:
             return result
-        result = self._apply_generic_stall(elapsed, journal_progress, bases_progress, stuck_detail)
+        result = self._apply_generic_stall(
+            elapsed, journal_progress, bases_progress, terminal_progress, stuck_detail
+        )
         if result is not None:
             return result
         self.next_log_check = elapsed + _LOG_CHECK_INTERVAL
@@ -361,13 +448,47 @@ class _Mt5Watchdog:
         self._terminate()
         return self._restart_result(elapsed)
 
+    def _pass_is_advancing(self, elapsed: float) -> bool:
+        """El terminal latio hace poco: la pasada avanza, no esta colgada."""
+        if self.terminal_progress_at is None:
+            return False
+        return elapsed - self.terminal_progress_at <= self._stall_window()
+
     def _check_max_runtime(self, elapsed: float) -> tuple[int, bool, float] | None:
-        """Failsafe absoluto por trabajo, independiente de cualquier detector."""
+        """Failsafe absoluto por trabajo, salvo que la pasada siga avanzando.
+
+        Una pasada M1 de cinco anos tarda mas que el limite por defecto, y
+        matarla al llegar a el no deja reporte ni forma de completarla nunca:
+        vuelve como pendiente a la siguiente auditoria y muere igual. Mientras
+        el terminal siga latiendo se le deja llegar al techo, que existe
+        porque el porcentaje solo sube y una pasada viva termina.
+        """
         if not (self.limits.max_runtime_seconds > 0 and elapsed >= self.limits.max_runtime_seconds):
             return None
+        ceiling = self.limits.max_runtime_seconds * MAX_RUNTIME_PROGRESS_FACTOR
+        if self._pass_is_advancing(elapsed) and elapsed < ceiling:
+            if elapsed >= self.next_overrun_log:
+                self.logger.write(
+                    f"MT5 Model={self.limits.model_label} supero el limite absoluto de "
+                    f"{self.limits.max_runtime_seconds}s, pero la pasada va por "
+                    f"{_terminal_progress_percent(self.last_terminal_line)} y sigue avanzando; "
+                    f"se le deja llegar hasta {ceiling}s."
+                )
+                self.next_overrun_log = elapsed + TESTER_PROGRESS_INTERVAL_SECONDS
+            return None
+        if elapsed >= ceiling:
+            reason = (
+                f"supero el techo de {ceiling}s que se concede a una pasada que avanza"
+            )
+        elif self.terminal_progress_at is not None:
+            reason = (
+                f"supero el limite absoluto de {self.limits.max_runtime_seconds}s y el "
+                f"terminal lleva {elapsed - self.terminal_progress_at:.0f}s sin latir"
+            )
+        else:
+            reason = f"supero el limite absoluto de {self.limits.max_runtime_seconds}s"
         self.logger.write(
-            f"MT5 Model={self.limits.model_label} supero el limite absoluto "
-            f"de {self.limits.max_runtime_seconds}s; se termina el proceso."
+            f"MT5 Model={self.limits.model_label} {reason}; se termina el proceso."
         )
         self._terminate()
         return self._restart_result(elapsed)
@@ -423,8 +544,12 @@ def wait_for_mt5_process(
     MT5 rebuilds them there is neither journal nor tick progress, so without
     them the detector kills the very synchronization it asked for.
     Independently, stall_after_seconds applies to every model: if neither the
-    tester journal nor a fresh report progresses for two checks after that idle
-    window, MT5 is killed. max_runtime_seconds is an absolute per-job failsafe.
+    tester journal, nor a fresh report, nor the terminal's own "processing N %"
+    heartbeat progresses for two checks after that idle window, MT5 is killed.
+    The heartbeat matters because the tester journal says nothing at all while
+    a normal pass runs, so without it any pass longer than the idle window was
+    killed alive. max_runtime_seconds is an absolute per-job failsafe, extended
+    up to MAX_RUNTIME_PROGRESS_FACTOR times while that heartbeat keeps moving.
 
     If tester_log_dirs is empty/None, falls back to the original fixed-timeout
     behaviour (kill after kick_after_seconds of no exit).

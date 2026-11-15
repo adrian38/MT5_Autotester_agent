@@ -58,6 +58,19 @@ GENERATED_SET_ROOT_PREFIXES = ("accepted_gen_", "mismatch_gen_")
 TESTER_STUCK_MARKERS = (
     "preliminary downloading of history ticks started",
 )
+
+# Heartbeat of a pass that is actually running. MT5 writes it ONLY to the
+# terminal journal (<data_dir>/logs), as "AutoTesting processing N %", once
+# every five minutes. The tester journal (<data_dir>/Tester/logs) goes silent
+# between "testing of <expert>" and the end of the pass, so a long pass looks
+# frozen to any detector that only watches that file.
+TESTER_PROGRESS_MARKERS = ("autotesting", "processing")
+TESTER_PROGRESS_INTERVAL_SECONDS = 300
+# Two heartbeats plus margin: with a shorter idle window the detector kills
+# live passes in the gap between one heartbeat and the next.
+TESTER_PROGRESS_STALL_FLOOR_SECONDS = 2 * TESTER_PROGRESS_INTERVAL_SECONDS + 60
+# How far past the absolute limit a pass may go while it keeps advancing.
+MAX_RUNTIME_PROGRESS_FACTOR = 4
 REPORT_SAVE_STALL_SECONDS = 30
 REPORT_SAVE_CHECK_INTERVAL = 2
 DEFAULT_TESTER_STALL_AFTER_SECONDS = 300

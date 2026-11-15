@@ -307,12 +307,14 @@ def finish_model4_history_preflight(
                 f"desde {rotation.backup}: {exc}"
             )
 
-def find_tester_journal_log(terminal_data_dirs: list[Path], min_mtime: float = 0.0) -> Path | None:
-    """Return the most recently modified .log in <data_dir>/Tester/logs/ modified after min_mtime."""
+def _newest_log_in(
+    terminal_data_dirs: list[Path], relative: tuple[str, ...], min_mtime: float
+) -> Path | None:
+    """Most recently modified .log under <data_dir>/<relative>/ after min_mtime."""
     best: Path | None = None
     best_mtime = min_mtime
     for data_dir in terminal_data_dirs:
-        logs_dir = data_dir / "Tester" / "logs"
+        logs_dir = data_dir.joinpath(*relative)
         if not logs_dir.is_dir():
             continue
         for log_file in logs_dir.glob("*.log"):
@@ -324,6 +326,18 @@ def find_tester_journal_log(terminal_data_dirs: list[Path], min_mtime: float = 0
             except OSError:
                 continue
     return best
+
+def find_tester_journal_log(terminal_data_dirs: list[Path], min_mtime: float = 0.0) -> Path | None:
+    """Return the most recently modified .log in <data_dir>/Tester/logs/ modified after min_mtime."""
+    return _newest_log_in(terminal_data_dirs, ("Tester", "logs"), min_mtime)
+
+def find_terminal_journal_log(terminal_data_dirs: list[Path], min_mtime: float = 0.0) -> Path | None:
+    """Return the most recently modified .log in <data_dir>/logs/ modified after min_mtime.
+
+    This is the terminal's own journal, not the tester's: the only place where
+    MT5 reports the progress of a running pass while it runs.
+    """
+    return _newest_log_in(terminal_data_dirs, ("logs",), min_mtime)
 
 def read_tester_journal_tail(log_path: Path) -> tuple[str, int]:
     """Return (last_nonempty_line, file_byte_size). Reads only the last 4 KB."""

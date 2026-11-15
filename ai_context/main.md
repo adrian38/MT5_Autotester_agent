@@ -1337,18 +1337,36 @@ TESTER_STUCK_MARKERS = (
 - `kick_after_seconds` remains specific to `real_tick_model=True`.
 
 **All-model watchdog**:
-- Every model, including regression `Model=1`, monitors tester-journal and fresh
-  report progress every 10 seconds.
-- After `tester_stall_after` seconds without either signal, two consecutive
-  checks are required before the MT5 process tree is killed and retried once.
-  Default: `300` seconds.
+- Every model, including regression `Model=1`, monitors tester-journal progress,
+  fresh report progress and the terminal's own pass heartbeat every 10 seconds.
+- The heartbeat is the `AutoTesting processing N %` line MT5 writes every five
+  minutes to the **terminal** journal (`<data_dir>/logs`), never to the tester
+  journal (`<data_dir>/Tester/logs`), which stays silent from `testing of
+  <expert>` until the pass ends. Without it, any pass longer than the idle
+  window looked frozen and was killed alive: on 2026-11-15 that cost the IC
+  auditor `AUDJPY_M1_..._g002_s001_v005` (killed twice at 31 %, no report) and
+  one more M1 five-year pass the same night. Only lines matching
+  `TESTER_PROGRESS_MARKERS` count, so broker reconnections cannot mask a real
+  hang, and the first read of the day's journal is a reference only, since its
+  last heartbeat may belong to the previous job.
+- After `tester_stall_after` seconds without any of the three signals, two
+  consecutive checks are required before the MT5 process tree is killed and
+  retried once. Default: `300` seconds, raised to
+  `TESTER_PROGRESS_STALL_FLOOR_SECONDS` (`660`) once a heartbeat has been seen,
+  because an idle window shorter than two heartbeats kills live passes in the
+  gap between them.
 - Watchdog process actions are rate-limited across multiterminal workers:
   process-tree closures reserve slots at least `0.75` seconds apart, and
   watchdog retry launches reserve slots at least `3` seconds apart. This keeps
   confirmed stalls from turning into simultaneous `taskkill`/`Popen` storms;
   it does not change retry count or terminal-profile selection.
 - `tester_max_runtime` is an independent hard per-job ceiling even when the
-  journal cannot be located. Default: `1800` seconds.
+  journal cannot be located. Default: `1800` seconds. While the heartbeat keeps
+  moving, the job is allowed up to `MAX_RUNTIME_PROGRESS_FACTOR` (`4`) times
+  that ceiling: a five-year M1 pass needs around 48 minutes, and killing it at
+  30 means it never leaves a report and comes back as pending forever. The
+  ceiling still ends it, because the percentage only climbs and a live pass
+  finishes.
 - A watchdog termination writes
   `reports/<report>.watchdog_attempt_N.mt5log.txt` even when MT5 never generated
   an HTML report. Missing journals are recorded explicitly in that snapshot.
