@@ -12,7 +12,7 @@ el portafolio y se serializa mediante la cola normal del nodo.
 MT5 path lookup order in `run_tests.py`:
 
 1. CLI `--mt5-path`.
-2. Environment variables / `.env` via `mt5_env.py`:
+2. Environment variables / `.env` via `common/mt5_env.py`:
    - `MT5_TERMINAL_PATH`
    - `MT5_PATH`
 3. Known default install locations:
@@ -35,7 +35,7 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
 
 `compile_mq5.py`:
 
-1. Determine source directory from CLI `--source-dir` or `compile_root.txt`.
+1. Determine source directory from CLI `--source-dir` or `config/compile_root.txt`.
 2. If `--source-file` is provided, compile only that `.mq5`.
 3. Otherwise compile root-level `*.mq5`. The current implementation accepts a
    `--recursive` flag but source discovery uses `glob("*.mq5")`; verify before
@@ -56,8 +56,8 @@ MetaEditor lookup in `compile_mq5.py` follows a similar pattern:
 3. Resolve experts:
    - specific `--expert`;
    - `.ex5` files in `--experts-dir`;
-   - first active line of `experts_root.txt`;
-   - entries in `experts_list.txt`.
+   - first active line of `config/experts_root.txt`;
+   - entries in `config/experts_list.txt`.
 4. Resolve `.set` files from `--set-dir` and/or repeated `--set-file`.
 5. Load `tester_template.ini`.
 6. For each expert or expert/set combination:
@@ -150,7 +150,7 @@ Report=
 - BTCUSD.
 - US100/US30/US500/DAX indices.
 - XTIUSD/WTI/crude oil.
-- Timeframes such as M1, M5, M15, M30, H1, H2, H3, H4, D1, W1.
+- Timeframes such as M1, M5, M15, M30, H1, H2, H3, H4, H6, H8, H12, D1, W1.
 
 Broker symbol rewriting can be configured through a `source=target` symbol map
 from the UI or `--symbol-map`.
@@ -264,6 +264,16 @@ On top of that, the stages no longer *enqueue* retired symbols at all:
 `split_retired_symbols(items, args, row_of=…)` partitions the batch before any
 `.set` is copied or `run_tests.py` is spawned (robustness, Final Tick, and the
 regression's own equivalent inside `evaluate_candidate_regression`).
+
+The technical-problem retries do the same, via `_skip_retired_candidates()` in
+`ubs/agent/evaluation/retry.py` (single candidate, by generation, by run). There
+the filter is not only about wasting a launch: `write_retry_set()` is strict on
+ICTrading, and a retired name is by definition absent from the universe it
+resolves the MT5 spelling against, so the stage copy raised `ValueError` and
+aborted the whole auditor pass — one retired symbol took down the other seven
+runs with it. `Reprobar run completo` splits them too but records nothing,
+because that batch also carries `accepted` candidates whose report is still the
+good one; the pending ones are marked by the technical-problem route.
 
 **Filtering without recording would be a new infinite loop.** Stage selection is
 "no row OR retryable status" (`robust_status_pending_for_retry`,

@@ -8,8 +8,16 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.memory import RETRYABLE_CANDIDATE_STATUSES
 from ui.ubs_results_base import ubs_run_base_dates
 from ubs.path_utils import resolve_workspace_path, workspace_path_exists
+
+
+# La misma lista que usa el agente para elegir a quien reintenta, escrita para
+# el `in (...)` de la consulta. Era una tercera copia a mano y ya se habia
+# quedado corta: contaba dos estados de los cinco, asi que el boton decia «no
+# tiene pendientes» sobre un run que si los tenia.
+RETRYABLE_CANDIDATE_SQL = ", ".join(f"'{status}'" for status in RETRYABLE_CANDIDATE_STATUSES)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -139,28 +147,56 @@ class UBSResultsRetryMixin:
             error_label="No se pudo preparar retry de fila",
         )
 
-    def _retry_visible_ubs_run_mismatches(self) -> None:
+    def _ubs_run_base_dates_or_fail(self, run_id: int) -> tuple[str, str]:
+        """Las fechas con las que nacio el run, que son con las que se repite.
+
+        Sin ellas no se continua: coger las de la plantilla de ahora seria
+        repetir el backtest sobre otro tramo y comparar lo que no se puede.
+        """
+        conn = connect_memory(self._ubs_memory_path())
         try:
-            run_id = self._visible_ubs_run_id()
+            run = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
+        finally:
+            conn.close()
+        if run is None:
+            raise ValueError(f"No existe el run #{run_id} en memoria.")
+        from_date, to_date = ubs_run_base_dates(run["config_json"])
+        if not from_date or not to_date:
+            raise ValueError(
+                f"El run #{run_id} no guarda sus fechas base; se cancela el retry "
+                "para no usar la plantilla actual."
+            )
+        return from_date, to_date
+
+    def _retry_visible_ubs_run_mismatches(
+        self, *, run_id: int = 0, confirm: bool = True
+    ) -> bool:
+        """Continua un run: lo que todavia puede dar un reporte.
+
+        El .set que se genero y nunca corrio, y los fallos tecnicos que un
+        segundo backtest arregla. No el que corrio y no dejo nada que juzgar:
+        ese no mejora por repetirlo, y lo dice `RETRYABLE_CANDIDATE_STATUSES`.
+
+        Sin `run_id` es el run que la pantalla tiene a la vista, que es como lo
+        usa su boton. El auditor sí lo pasa, porque recorre todos los runs de
+        la etapa de uno en uno y ya pregunto una vez por el total: por eso
+        tambien puede apagar la confirmacion por run, y por eso devuelve si
+        llego a lanzar algo: de eso cuelga el siguiente run de su cola.
+        """
+        try:
+            run_id = int(run_id or 0) or self._visible_ubs_run_id()
             if run_id <= 0:
                 messagebox.showinfo("Agente UBS", "No hay run visible para continuar.")
-                return
+                return False
             problem_count = self._count_ubs_run_retryable_problems(run_id)
             if problem_count <= 0:
-                messagebox.showinfo("Agente UBS", f"Run #{run_id} no tiene mismatch/sin reporte pendientes.")
-                return
-            conn = connect_memory(self._ubs_memory_path())
-            try:
-                run = conn.execute("select config_json from runs where id=?", (run_id,)).fetchone()
-            finally:
-                conn.close()
-            if run is None:
-                raise ValueError(f"No existe el run #{run_id} en memoria.")
-            from_date, to_date = ubs_run_base_dates(run["config_json"])
-            if not from_date or not to_date:
-                raise ValueError(
-                    f"El run #{run_id} no guarda sus fechas base; se cancela el retry para no usar la plantilla actual."
-                )
+                if confirm:
+                    messagebox.showinfo(
+                        "Agente UBS",
+                        f"Run #{run_id} no tiene nada a lo que hacerle el reporte.",
+                    )
+                return False
+            from_date, to_date = self._ubs_run_base_dates_or_fail(run_id)
             args = self._ubs_retry_args([
                 "--retry-run-id", str(run_id),
                 "--retry-mismatch-run",
@@ -169,18 +205,22 @@ class UBSResultsRetryMixin:
             ])
         except Exception as exc:
             self._show_error("No se pudo preparar continuar run", str(exc))
-            return
+            return False
 
         details = [
-            "Accion: Continuar run UBS (recuperar mismatch/sin reporte)",
+            "Accion: Continuar run UBS (los que aun pueden dar reporte)",
             f"Run: #{run_id}",
             f"Fechas base originales: {from_date} -> {to_date}",
             f"Backtests previstos: {problem_count}",
             "Al terminar actualiza esas mismas filas SQLite.",
         ]
         details.extend(self._multiterminal_execution_details())
-        if self._confirm_execution_start("Confirmar continuar run", problem_count, details):
-            self._run_script("ubs_agent.py", args)
+        if confirm and not self._confirm_execution_start(
+            "Confirmar continuar run", problem_count, details
+        ):
+            return False
+        self._run_script("ubs_agent.py", args)
+        return True
 
     def _retry_visible_ubs_full_run(self) -> None:
         try:
@@ -283,8 +323,8 @@ class UBSResultsRetryMixin:
                 """
                 select count(*) as total
                 from candidates
-                where run_id=? and status in ('report_mismatch', 'no_report')
-                """,
+                where run_id=? and status in ({statuses})
+                """.format(statuses=RETRYABLE_CANDIDATE_SQL),
                 (run_id,),
             ).fetchone()
             return int(row[0] or 0) if row else 0

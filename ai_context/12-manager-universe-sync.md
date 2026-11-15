@@ -48,7 +48,7 @@ symbol sync too, so local script starts cannot collide with it.
 Restart the agent app to load the routes. AXI/RoboForex copies have not been
 modified by this task. The manager's `mt5_manager/node.py` is not this runtime.
 
-Validation: 594 agent unittests pass; `tests/test_manager_node_universe.py`
+Validation: 594 agent unittests pass; `tests/manager_node/test_universe.py`
 covers file persistence/backups, alias and latest-verdict behavior, scoped
 destinations, credentials, busy states, actual HTTP/child-process completion
 using a harmless stub, and probe resume. Manager tests additionally drive this

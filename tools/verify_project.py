@@ -71,7 +71,8 @@ def command_specs(
     specs.extend(group_spec(group) for group in groups if group != GUARD_GROUP)
     if include_full_suite:
         specs.append(CommandSpec(
-            "suite AXI", (sys.executable, "-m", "unittest", "discover", "-s", "tests"),
+            "suite AXI",
+            (sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."),
         ))
     return specs
 

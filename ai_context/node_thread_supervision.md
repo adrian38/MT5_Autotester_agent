@@ -40,7 +40,7 @@ sitio equivocado.
 atrapa. Lo primero lo hace `stop()`, y `logs/manager_node.log` lo habría
 anotado: su última línea es «Nodo integrado iniciado» de la 1:07:24 y no hay
 ninguna de «detenido». Lo segundo mata el hilo e imprime la traza por
-`threading.excepthook`, que escribe en `stderr`. Con `run_ui.bat` (`py
+`threading.excepthook`, que escribe en `stderr`. Con `scripts/run_ui.bat` (`py
 app_ui.py`) `stderr` es la consola del lanzador, y ese `cmd` ya no existía.
 
 Descartado por el camino, para no volver a mirarlo:

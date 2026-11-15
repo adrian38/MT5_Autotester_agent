@@ -4,6 +4,7 @@ import json
 import sqlite3
 import sys
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 from run_tests import (
@@ -16,7 +17,9 @@ from run_tests import (
 from ubs.db import connect_memory
 from ubs.memory import metrics_have_empty_tester_context
 from ubs.path_utils import resolve_workspace_path
+from ubs.seeds import seed_from_path
 from ubs.tester_diagnostics import execution_failure_reason
+from ubs.agent.generation.sets import validate_seed_backtest_set
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,6 +34,8 @@ class UBSSeedsEvalMixin:
         for label, callback in (
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
             ("ubs_seeds", self._refresh_ubs_seeds),
+            ("ubs_seed_final_tick", self._refresh_ubs_seed_final_tick),
+            ("ubs_seed_final_tick_6m", self._refresh_ubs_seed_final_tick_6m),
             ("ubs_universe", self._refresh_ubs_universe),
         ):
             self._safe_refresh(label, callback)
@@ -210,6 +215,14 @@ class UBSSeedsEvalMixin:
             if symbol_disabled and not seed_allowed:
                 stats["disabled"] += 1
                 disabled_counts[(raw or symbol, mapped or raw or symbol)] += 1
+                continue
+
+            if row is not None and str(row["status"] or "") == "invalid_seed":
+                current_seed = replace(seed_from_path(path), symbol=symbol, period=period)
+                if validate_seed_backtest_set(current_seed):
+                    stats["invalid"] += 1
+                    continue
+                stats["pending"] += 1
                 continue
 
             if self._ubs_seed_needs_eval(row, stat, symbol, period, ready_statuses):

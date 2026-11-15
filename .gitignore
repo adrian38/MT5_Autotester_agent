@@ -37,6 +37,8 @@ ui_settings.ini
 tester_template.ini
 configs/
 sets/
+!tests/ubs/sets/
+!tests/ubs/sets/*.py
 *.set
 runtime/
 

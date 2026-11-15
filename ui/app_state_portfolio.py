@@ -323,6 +323,17 @@ class AppPortfolioStateMixin:
         self.ubs_audit_status = tk.StringVar(value="Selecciona cuenta/run y genera auditoria.")
         self.ubs_search_paths: dict[str, dict[str, str]] = {}
         self.ubs_audit_report_path = tk.StringVar(value="")
+        self.ubs_auditor_account = tk.StringVar(value=f"{self._ubs_broker()}/{self._ubs_account_type()}")
+        self.ubs_auditor_run_id = tk.StringVar(value="Toda la memoria")
+        self.ubs_auditor_status = tk.StringVar(
+            value="Elige cuenta y run, y audita reglas o pendientes."
+        )
+        self.ubs_auditor_blind_rules = tk.StringVar(value="")
+        # Lo que dejo la ultima auditoria de reglas, la etapa de cada fila de la
+        # tabla y la cola de repuntuados que queda por lanzar.
+        self._ubs_auditor_audits: tuple = ()
+        self.ubs_auditor_row_stage: dict[str, str] = {}
+        self._ubs_auditor_rescore_queue: list[str] = []
         self.ubs_results_summary = tk.StringVar(value="Sin resultados UBS")
         self.ubs_results_status = tk.StringVar(value="Memoria UBS no cargada")
         self.ubs_history_summary = tk.StringVar(value="Sin historico UBS")
@@ -334,10 +345,6 @@ class AppPortfolioStateMixin:
         self.ubs_final_tick_status = tk.StringVar(value="Sin resultados Final Tick")
         self.ubs_final_tick_6m_summary = tk.StringVar(value="Final Tick 6M: sin evaluar")
         self.ubs_final_tick_6m_status = tk.StringVar(value="Sin resultados Final Tick 6M")
-        self.ubs_seed_final_tick_summary = tk.StringVar(value="Seeds Tick: sin evaluar")
-        self.ubs_seed_final_tick_status = tk.StringVar(value="Sin resultados Seeds Tick")
-        self.ubs_seed_final_tick_6m_summary = tk.StringVar(value="Seeds Tick 6M: sin evaluar")
-        self.ubs_seed_final_tick_6m_status = tk.StringVar(value="Sin resultados Seeds Tick 6M")
         self.ubs_regression_summary = tk.StringVar(value="Regresiva: sin evaluar")
         self.ubs_regression_status = tk.StringVar(value="Sin resultados de la prueba regresiva")
         self.ubs_universe_summary = tk.StringVar(value="Sin universo UBS")
@@ -395,6 +402,7 @@ class AppPortfolioStateMixin:
         self._ubs_results_latest_seen_run_id = 0
         self._ubs_robust_latest_seen_run_id = 0
         self._ubs_final_tick_latest_seen_run_id = 0
+        self._ubs_final_tick_6m_latest_seen_run_id = 0
         self.multiterminal_checked: set[str] = set()
         self.ubs_seed_paths: dict[str, dict[str, str]] = {}
         self.ubs_seed_checked: set[str] = set()
@@ -403,8 +411,7 @@ class AppPortfolioStateMixin:
         self.ubs_final_tick_paths: dict[str, dict[str, str]] = {}
         self.ubs_final_tick_checked: set[str] = set()
         self.ubs_final_tick_6m_paths: dict[str, dict[str, str]] = {}
-        self.ubs_seed_final_tick_paths: dict[str, dict[str, str]] = {}
-        self.ubs_seed_final_tick_6m_paths: dict[str, dict[str, str]] = {}
+        self.ubs_final_tick_6m_checked: set[str] = set()
         self.ubs_regression_paths: dict[str, dict[str, str]] = {}
         self.ubs_regression_checked: set[str] = set()
         self.ubs_universe_paths: dict[str, dict[str, str]] = {}

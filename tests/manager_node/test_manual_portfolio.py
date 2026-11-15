@@ -1,0 +1,585 @@
+from __future__ import annotations
+
+import base64
+import contextlib
+import shutil
+import sqlite3
+import tempfile
+import threading
+import unittest
+import configparser
+from unittest import mock
+from pathlib import Path
+from typing import Any
+
+from manager_node_runtime.live_audit_sets import resolve_portfolio_set
+from manager_node_runtime.manual_portfolio import create_manual_portfolio, update_manual_portfolio
+from manager_node_runtime.manual_portfolio_history import build_history_command, history_defaults
+from manager_node_runtime.node import NodeHandler
+from manager_node_runtime import node_jobs_api
+from manager_node_runtime.node_jobs_api import JobApiMixin
+
+
+class _TerminalsInUse:
+    """El auditor, reducido a lo que la edicion de sets necesita de el.
+
+    El candado cuenta sus entradas porque el contrato no es «preguntar si hay
+    una auditoria corriendo» sino «cambiar los sets con el candado puesto»:
+    solo asi una auditoria o un sondeo no pueden arrancar entre la pregunta y
+    el commit de la composicion nueva.
+    """
+
+    def __init__(self, running: bool = False) -> None:
+        self.running = running
+        self.depth = 0
+        self.lock = self
+
+    def __enter__(self) -> "_TerminalsInUse":
+        self.depth += 1
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        self.depth -= 1
+        return False
+
+    def is_running(self) -> bool:
+        return self.running
+
+
+class ManualPortfolioTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.memory = self.root / "memory.sqlite"
+        self.runtime = self.root / "runtime"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    @staticmethod
+    def uploaded(name: str, text: str) -> dict[str, str]:
+        return {
+            "name": f"cartera/{name}",
+            "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        }
+
+    def test_uploaded_sets_become_an_auditable_saved_portfolio(self) -> None:
+        payload = {
+            "name": "Cartera AXI externa",
+            "portfolio_type": "balanced",
+            "files": [
+                self.uploaded("eurusd.set", "ForceSymbol=EURUSD||0||0||0||N\nTimeFrame=60||0||0||0||N\nStartLots=0.03||0||0||0||N\n"),
+                self.uploaded("xauusd.set", "ForceSymbol=XAUUSD||0||0||0||N\nTimeFrame=H1||0||0||0||N\nStartLots=0.01||0||0||0||N\n"),
+            ],
+        }
+
+        result = create_manual_portfolio(self.memory, self.runtime, payload)
+
+        self.assertEqual(result["strategies"], 2)
+        sets = Path(result["sets_folder"])
+        self.assertEqual(sorted(path.name for path in sets.iterdir()), ["eurusd.set", "xauusd.set"])
+        conn = sqlite3.connect(self.memory)
+        try:
+            conn.row_factory = sqlite3.Row
+            portfolio = conn.execute("select * from portfolios where id=?", (result["portfolio_id"],)).fetchone()
+            members = conn.execute(
+                "select symbol,timeframe,lot,set_path from portfolio_allocations where portfolio_id=? order by symbol",
+                (result["portfolio_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(portfolio["name"], "Cartera AXI externa")
+        self.assertEqual(portfolio["portfolio_type"], "balanced")
+        self.assertEqual([(row["symbol"], row["timeframe"], row["lot"]) for row in members], [
+            ("EURUSD", "H1", 0.01), ("XAUUSD", "H1", 0.01),
+        ])
+        self.assertTrue(all(Path(row["set_path"]).is_file() for row in members))
+        normalized = (sets / "eurusd.set").read_text(encoding="utf-8")
+        self.assertIn("StartLots=0.01||0.01||0.001000||0.100000||N", normalized)
+        self.assertIn("AdjustLotsizeToVariableValues=false||false||0||true||N", normalized)
+        self.assertIn("UseEveryTick=false||false||0||true||N", normalized)
+
+    def test_the_detail_keeps_the_stored_path_so_the_auditor_never_guesses(self) -> None:
+        # `set_id` de un portafolio manual es el nombre pelado del fichero; la
+        # ruta solo vive en `set_path`. Si el detalle no la reexporta, el auditor
+        # recibe «uno.set» y acaba en el rglob por nombre de
+        # `resolve_portfolio_set`, que con homonimos distintos se niega a elegir:
+        # «Se encontraron varios sets distintos para …».
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Manual auditable", "portfolio_type": "balanced",
+            "files": [self.uploaded("uno.set", "ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.02\n")],
+        })
+        homonym = self.root / "otra_campana" / "uno.set"
+        homonym.parent.mkdir()
+        homonym.write_text("ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.99\n", encoding="utf-8")
+
+        class Controller(JobApiMixin):
+            def __init__(self, config: dict) -> None:
+                self.config = config
+                self.lock = threading.Lock()
+
+        controller = Controller({
+            "project_dir": str(self.root), "memory_path": str(self.memory),
+            "settings_file": str(self.root / "ui_settings.ini"),
+        })
+        detail = controller.portfolio_detail(saved["portfolio_id"], "full_history")["portfolio"]
+        members = detail["members"]
+
+        stored = Path(saved["sets_folder"]) / "uno.set"
+        self.assertEqual([member["set_id"] for member in members], ["uno.set"])
+        self.assertEqual([member["set_path"] for member in members], [str(stored)])
+        self.assertEqual(
+            resolve_portfolio_set(self.root, members[0]["set_path"]).resolve(), stored.resolve(),
+        )
+        with self.assertRaisesRegex(FileNotFoundError, "varios sets distintos"):
+            resolve_portfolio_set(self.root, members[0]["set_id"])
+
+    def test_symbol_and_timeframe_use_the_standard_set_inference(self) -> None:
+        payload = {
+            "name": "Inferido", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "gold.set",
+                "ForceSymbol=XAUUSD\nRun_Strategy=1\nST1_Timeframe=16385\nStartLots=0.10\n",
+            )],
+        }
+
+        result = create_manual_portfolio(self.memory, self.runtime, payload)
+
+        conn = sqlite3.connect(self.memory)
+        try:
+            row = conn.execute(
+                "select symbol,timeframe,lot from portfolio_allocations where portfolio_id=?",
+                (result["portfolio_id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row, ("XAUUSD", "H1", 0.01))
+
+    def test_a_set_without_auditable_identity_is_rejected_and_cleaned(self) -> None:
+        payload = {
+            "name": "Incompleto", "portfolio_type": "balanced",
+            "files": [self.uploaded("bad.set", "StartLots=0.01||0||0||0||N\n")],
+        }
+        with self.assertRaisesRegex(ValueError, "inferir el simbolo y el timeframe"):
+            create_manual_portfolio(self.memory, self.runtime, payload)
+        self.assertFalse(any((self.runtime / "manual_portfolios").glob("*/sets/*.set")))
+
+    def _seed_pool_report(self, *names: str) -> None:
+        """Un candidato del pool con su informe base, como lo deja el agente."""
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            conn.execute("create table if not exists candidates (id integer, report_path text)")
+            conn.executemany(
+                "insert into candidates (id, report_path) values (?, ?)",
+                [(index, f"/data/axi/reports/{name}") for index, name in enumerate(names, 1)],
+            )
+            conn.commit()
+
+    def test_a_set_of_the_pool_can_be_uploaded(self) -> None:
+        # Los portafolios manuales son usos en real y sus estrategias suelen
+        # ser candidatos aceptados: prohibir el nombre prohibia el caso normal.
+        self._seed_pool_report("XAUUSD_H1_GOLD_g002_s013_v010.htm")
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Copia del pool", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "xauusd_h1_gold_g002_s013_v010.set",
+                "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        })
+        self.assertEqual(saved["strategies"], 1)
+        self.assertTrue(
+            (Path(saved["sets_folder"]) / "xauusd_h1_gold_g002_s013_v010.set").is_file()
+        )
+
+    def test_a_set_of_the_pool_can_also_be_added_later(self) -> None:
+        saved = self._manual("Ampliable")
+        self._seed_pool_report("USDJPY_H1_Advanced_Scalper.htm")
+        result = update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": saved["portfolio_id"],
+            "files": [self.uploaded(
+                "usdjpy_h1_advanced_scalper.set",
+                "ForceSymbol=USDJPY\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        })
+        self.assertEqual(result["added"], 1)
+        self.assertTrue(
+            (Path(saved["sets_folder"]) / "usdjpy_h1_advanced_scalper.set").is_file()
+        )
+
+    def test_sets_can_be_added_to_an_existing_manual_portfolio(self) -> None:
+        saved = self._manual("Ampliable")
+        result = update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": saved["portfolio_id"],
+            "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+        })
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["strategies"], 2)
+        self.assertTrue((Path(saved["sets_folder"]) / "dos.set").is_file())
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            counts = [conn.execute(
+                f"select count(*) from {table} where portfolio_id=?", (saved["portfolio_id"],),
+            ).fetchone()[0] for table in ("portfolio_allocations", "portfolio_members")]
+            totals = conn.execute(
+                "select active_strategies,target_strategies,total_units,total_lot "
+                "from portfolios where id=?", (saved["portfolio_id"],),
+            ).fetchone()
+        self.assertEqual(counts, [2, 2])
+        self.assertEqual(totals, (2, 2, 2, 0.02))
+
+    def test_one_set_can_be_removed_from_an_existing_manual_portfolio(self) -> None:
+        saved = self._manual("Reducible")
+        update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": saved["portfolio_id"],
+            "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+        })
+        removed = Path(saved["sets_folder"]) / "dos.set"
+        result = update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "remove", "portfolio_id": saved["portfolio_id"],
+            "set_path": str(removed),
+        })
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["strategies"], 1)
+        self.assertTrue(result["file_removed"])
+        self.assertFalse(removed.exists())
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            paths = conn.execute(
+                "select set_path from portfolio_allocations where portfolio_id=?",
+                (saved["portfolio_id"],),
+            ).fetchall()
+        self.assertEqual(paths, [(str(Path(saved["sets_folder"]) / "uno.set"),)])
+
+    def test_the_last_set_cannot_be_removed(self) -> None:
+        saved = self._manual("No vacia")
+        only = Path(saved["sets_folder"]) / "uno.set"
+        with self.assertRaisesRegex(ValueError, "ultimo set"):
+            update_manual_portfolio(self.memory, self.runtime, {
+                "operation": "remove", "portfolio_id": saved["portfolio_id"],
+                "set_path": str(only),
+            })
+        self.assertTrue(only.is_file())
+
+    def test_sets_do_not_change_while_the_node_audits_or_probes_accounts(self) -> None:
+        saved = self._manual("Ocupada")
+        controller = self._delete_controller(_TerminalsInUse(running=True))
+
+        with self.assertRaisesRegex(ValueError, "auditando o sondeando"):
+            controller.update_manual_portfolio({
+                "operation": "add", "portfolio_id": saved["portfolio_id"],
+                "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+            })
+
+        self.assertFalse((Path(saved["sets_folder"]) / "dos.set").exists())
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            count = conn.execute(
+                "select count(*) from portfolio_allocations where portfolio_id=?",
+                (saved["portfolio_id"],),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertEqual(controller.persisted, 0)
+
+    def test_the_change_commits_with_the_audit_lock_taken(self) -> None:
+        saved = self._manual("Con candado")
+        audits = _TerminalsInUse()
+        controller = self._delete_controller(audits)
+        original = node_jobs_api.update_manual_portfolio
+        depths: list[int] = []
+
+        def spy(memory: Any, runtime: Any, payload: Any) -> Any:
+            depths.append(audits.depth)
+            return original(memory, runtime, payload)
+
+        with mock.patch.object(node_jobs_api, "update_manual_portfolio", spy):
+            result = controller.update_manual_portfolio({
+                "operation": "add", "portfolio_id": saved["portfolio_id"],
+                "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+            })
+
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(depths, [1], "la composicion cambio sin el candado del auditor")
+        self.assertEqual(audits.depth, 0)
+        self.assertEqual(controller.persisted, 1)
+
+    def test_history_uses_template_dates_and_forces_ohlc_model(self) -> None:
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        settings = self.root / "ui_settings.ini"
+        settings.write_text(
+            f"[Paths]\ntemplate_path={template}\n"
+            "[General]\nsymbol_suffix_enabled=1\nsymbol_suffix=.sa\n"
+            "[Multiterminal]\nworkers=6\n",
+            encoding="utf-8",
+        )
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read(settings, encoding="utf-8")
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "OHLC", "portfolio_type": "balanced",
+            "files": [self.uploaded("one.set", "ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.02\n")],
+        })
+        config = {"project_dir": str(self.root), "settings_file": str(settings), "broker": "AXI"}
+
+        defaults = history_defaults(config, cfg)
+        normalized, command, cwd = build_history_command(
+            config, cfg, self.memory, {"portfolio_id": saved["portfolio_id"]},
+        )
+
+        self.assertEqual(defaults, {"from_date": "2020.01.01", "to_date": "2026.05.22", "model": "1"})
+        self.assertEqual(normalized["model"], 1)
+        self.assertEqual(command[command.index("--model") + 1], "1")
+        self.assertEqual(command[command.index("--from-date") + 1], "2020.01.01")
+        self.assertEqual(command[command.index("--to-date") + 1], "2026.05.22")
+        self.assertEqual(command[command.index("--symbol-suffix") + 1], ".sa")
+        self.assertEqual(command[command.index("--max-workers") + 1], "6")
+        self.assertTrue(normalized["use_multiterminal"])
+        self.assertEqual(cwd, self.root)
+
+        single, single_command, _cwd = build_history_command(
+            config, cfg, self.memory,
+            {"portfolio_id": saved["portfolio_id"], "use_multiterminal": False},
+        )
+        self.assertEqual(single_command[single_command.index("--max-workers") + 1], "1")
+        self.assertFalse(single["use_multiterminal"])
+
+    def test_history_runs_on_a_renamed_copy_so_it_cannot_overwrite_the_pool(self) -> None:
+        # Mismo nombre que un candidato del pool: con el nombre de origen, el
+        # backtest sustituia su informe base y las carteras que lo usaban se
+        # quedaban sin base reconstruible.
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read_dict({"Paths": {"template_path": str(template)}})
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Copia del pool", "portfolio_type": "balanced",
+            "files": [self.uploaded(
+                "btcusd_h1_mix_g001_s004_v008.set",
+                "ForceSymbol=BTCUSD\nTimeFrame=H1\nStartLots=0.01\n",
+            )],
+        })
+        pid = saved["portfolio_id"]
+        self._seed_pool_report("BTCUSD_H1_MIX_g001_s004_v008.htm")
+
+        _normalized, command, _cwd = build_history_command(
+            {"project_dir": str(self.root)}, cfg, self.memory, {"portfolio_id": pid},
+        )
+
+        sets = [command[i + 1] for i, part in enumerate(command) if part == "--set-file"]
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(
+            Path(sets[0]).name, f"manual_{pid:06d}_btcusd_h1_mix_g001_s004_v008.set",
+        )
+        # La copia vive dentro de la carpeta del portafolio, para irse con el.
+        self.assertEqual(Path(sets[0]).parent.name, "history_sets")
+        self.assertEqual(Path(sets[0]).parent.parent, Path(saved["sets_folder"]).parent)
+        # El set original no se toca: sigue siendo el que audita la cartera.
+        self.assertTrue(
+            (Path(saved["sets_folder"]) / "btcusd_h1_mix_g001_s004_v008.set").is_file()
+        )
+
+    def test_history_rebuilds_its_copies_so_a_removed_member_stops_running(self) -> None:
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read_dict({"Paths": {"template_path": str(template)}})
+        saved = self._manual("Con dos")
+        pid = saved["portfolio_id"]
+        update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "add", "portfolio_id": pid,
+            "files": [self.uploaded("dos.set", "ForceSymbol=XAUUSD\nTimeFrame=M15\nStartLots=0.03\n")],
+        })
+        config = {"project_dir": str(self.root)}
+        build_history_command(config, cfg, self.memory, {"portfolio_id": pid})
+        update_manual_portfolio(self.memory, self.runtime, {
+            "operation": "remove", "portfolio_id": pid,
+            "set_path": str(Path(saved["sets_folder"]) / "dos.set"),
+        })
+
+        _normalized, command, _cwd = build_history_command(
+            config, cfg, self.memory, {"portfolio_id": pid},
+        )
+
+        sets = [Path(command[i + 1]).name for i, part in enumerate(command) if part == "--set-file"]
+        self.assertEqual(sets, [f"manual_{pid:06d}_uno.set"])
+
+    def test_history_repairs_sets_and_allocations_created_before_normalization(self) -> None:
+        template = self.root / "tester_template.ini"
+        template.write_text("[Tester]\nFromDate=2020.01.01\nToDate=2026.05.22\n", encoding="utf-8")
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read_dict({"Paths": {"template_path": str(template)}})
+        saved = create_manual_portfolio(self.memory, self.runtime, {
+            "name": "Anterior", "portfolio_type": "balanced",
+            "files": [self.uploaded("old.set", "ForceSymbol=XAUUSD\nTimeFrame=H1\nStartLots=0.10\n")],
+        })
+        set_path = next(Path(saved["sets_folder"]).glob("*.set"))
+        set_path.write_text(
+            "ForceSymbol=XAUUSD\nTimeFrame=H1\nRisk=2\nStartLots=0.10\n"
+            "AdjustLotsizeToVariableValues=true\nUseEveryTick=true\n",
+            encoding="utf-8",
+        )
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            conn.execute(
+                "update portfolio_allocations set units=10,lot=0.10 where portfolio_id=?",
+                (saved["portfolio_id"],),
+            )
+            conn.execute(
+                "update portfolio_members set lot_multiplier=10,lot=0.10 where portfolio_id=?",
+                (saved["portfolio_id"],),
+            )
+            conn.execute(
+                "update portfolios set total_lot=0.10,total_units=10 where id=?",
+                (saved["portfolio_id"],),
+            )
+            conn.commit()
+
+        build_history_command(
+            {"project_dir": str(self.root)}, cfg, self.memory,
+            {"portfolio_id": saved["portfolio_id"]},
+        )
+
+        repaired = set_path.read_text(encoding="utf-8")
+        self.assertIn("Risk=0||0||0||20||N", repaired)
+        self.assertIn("StartLots=0.01||0.01||0.001000||0.100000||N", repaired)
+        self.assertIn("AdjustLotsizeToVariableValues=false||false||0||true||N", repaired)
+        self.assertIn("UseEveryTick=false", repaired)
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            allocation = conn.execute(
+                "select units,lot from portfolio_allocations where portfolio_id=?",
+                (saved["portfolio_id"],),
+            ).fetchone()
+            portfolio = conn.execute(
+                "select total_units,total_lot from portfolios where id=?",
+                (saved["portfolio_id"],),
+            ).fetchone()
+        self.assertEqual(allocation, (1, 0.01))
+        self.assertEqual(portfolio, (1, 0.01))
+
+    def _delete_controller(self, audits: Any = None) -> Any:
+        """El controlador de la API con lo justo para `delete_portfolio`."""
+        memory = self.memory
+        runtime = self.runtime
+        live_audits = audits if audits is not None else _TerminalsInUse()
+
+        class Controller(JobApiMixin):
+            def __init__(self) -> None:
+                self.config = {"project_dir": str(memory.parent), "node_id": "nodo"}
+                self.runtime_dir = runtime
+                self.lock = threading.Lock()
+                self.live_audits = live_audits
+                self.persisted = 0
+
+            def _settings_and_memory(self):
+                return configparser.ConfigParser(), memory
+
+            def _persist(self) -> None:
+                self.persisted += 1
+
+        return Controller()
+
+    def _manual(self, name: str, set_name: str = "uno.set") -> dict:
+        return create_manual_portfolio(self.memory, self.runtime, {
+            "name": name, "portfolio_type": "balanced",
+            "files": [self.uploaded(set_name, "ForceSymbol=EURUSD\nTimeFrame=H1\nStartLots=0.02\n")],
+        })
+
+    def test_deleting_a_manual_portfolio_also_removes_its_sets_folder(self) -> None:
+        # Sin esto la carpeta `<runtime>/manual_portfolios/<uuid>` queda
+        # huerfana para siempre: el portafolio que la nombraba ya no existe.
+        saved = self._manual("Para borrar")
+        folder = Path(saved["sets_folder"]).parent
+        self.assertTrue(folder.is_dir())
+
+        controller = self._delete_controller()
+        result = controller.delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["removed_folders"], [str(folder)])
+        self.assertFalse(folder.exists())
+        self.assertTrue(folder.parent.is_dir(), "no se toca `manual_portfolios`")
+
+    def test_a_folder_that_is_already_gone_does_not_break_the_delete(self) -> None:
+        saved = self._manual("Sin ficheros")
+        folder = Path(saved["sets_folder"]).parent
+        shutil.rmtree(folder)
+
+        controller = self._delete_controller()
+        result = controller.delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["removed_folders"], [])
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            self.assertIsNone(
+                conn.execute("select 1 from portfolios where id=?", (saved["portfolio_id"],)).fetchone()
+            )
+
+    def test_a_set_outside_manual_portfolios_keeps_its_file(self) -> None:
+        # El `set_path` de un portafolio UBS es la ruta del candidato del pool,
+        # fuera de `runtime/`: ni se borra el fichero ni su carpeta.
+        saved = self._manual("Reapuntado")
+        pool = self.root / "data" / "ICTRADING" / "sets"
+        pool.mkdir(parents=True)
+        candidate = pool / "Candidato.set"
+        candidate.write_text("Risk=1\n", encoding="utf-8")
+        folder = Path(saved["sets_folder"]).parent
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            for table in ("portfolio_allocations", "portfolio_members"):
+                conn.execute(
+                    f"update {table} set set_path=? where portfolio_id=?",
+                    (str(candidate), saved["portfolio_id"]),
+                )
+            conn.commit()
+
+        result = self._delete_controller().delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertEqual(result["removed_folders"], [])
+        self.assertTrue(candidate.is_file(), "se borro el set de un portafolio UBS")
+        self.assertTrue(pool.is_dir())
+        self.assertTrue(folder.is_dir(), "nadie la nombra ya, pero no es de este portafolio")
+
+    def test_a_folder_that_another_portfolio_still_uses_survives(self) -> None:
+        saved = self._manual("Primero")
+        other = self._manual("Segundo", "dos.set")
+        folder = Path(saved["sets_folder"]).parent
+        with contextlib.closing(sqlite3.connect(self.memory)) as conn:
+            for table in ("portfolio_allocations", "portfolio_members"):
+                conn.execute(
+                    f"update {table} set set_path=? where portfolio_id=?",
+                    (str(Path(saved["sets_folder"]) / "uno.set"), other["portfolio_id"]),
+                )
+            conn.commit()
+
+        result = self._delete_controller().delete_portfolio({"portfolio_id": saved["portfolio_id"]})
+
+        self.assertEqual(result["removed_folders"], [])
+        self.assertTrue(folder.is_dir(), "la carpeta la sigue usando otro portafolio")
+
+    def test_http_dispatch_exposes_history_defaults_and_start(self) -> None:
+        class Controller:
+            def manual_portfolio_defaults(self):
+                return {"model": "1"}
+
+            def start_manual_history(self, payload):
+                return {"payload": payload}
+
+            def update_manual_portfolio(self, payload):
+                return {"updated": payload}
+
+        class Request:
+            path = "/api/v1/portfolios/manual-defaults"
+
+            @staticmethod
+            def _body(maximum=1_000_000):
+                return {"portfolio_id": 4}
+
+        request = Request()
+        self.assertEqual(NodeHandler._dispatch_portfolio_post(request, Controller()), (200, {"model": "1"}))
+        request.path = "/api/v1/portfolios/manual-history"
+        self.assertEqual(
+            NodeHandler._dispatch_portfolio_post(request, Controller()),
+            (202, {"payload": {"portfolio_id": 4}}),
+        )
+        request.path = "/api/v1/portfolios/manual-members"
+        self.assertEqual(
+            NodeHandler._dispatch_portfolio_post(request, Controller()),
+            (200, {"updated": {"portfolio_id": 4}}),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

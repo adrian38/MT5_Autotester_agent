@@ -8,7 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-import crash_log
+from common import crash_log
 from manager_node_lifecycle import (
     NODE_SUPERVISION_INTERVAL_MS,
     EmbeddedManagerNode,
@@ -28,6 +28,8 @@ from ui.ubs_monthly_portfolio_logic import UBSMonthlyPortfolioLogicMixin
 from ui.ubs_monthly_portfolio_view import UBSMonthlyPortfolioViewMixin
 from ui.ubs_search_logic import UBSSearchLogicMixin
 from ui.ubs_search_view import UBSSearchViewMixin
+from ui.ubs_auditor_logic import UBSAuditorLogicMixin
+from ui.ubs_auditor_view import UBSAuditorViewMixin
 from ui.ubs_params_logic import UBSParamsLogicMixin
 from ui.ubs_params_view import UBSParamsViewMixin
 from ui.ubs_set_rules_logic import UBSSetRulesLogicMixin
@@ -48,10 +50,12 @@ from ui.ubs_robustness_logic import UBSRobustnessLogicMixin
 from ui.ubs_robustness_view import UBSRobustnessViewMixin
 from ui.ubs_universe_logic import UBSUniverseLogicMixin
 from ui.ubs_universe_view import UBSUniverseViewMixin
-from ui.ubs_seed_final_tick_logic import UBSSeedFinalTickLogicMixin
-from ui.ubs_seed_final_tick_view import UBSSeedFinalTickViewMixin
 from ui.ubs_seeds_logic import UBSSeedsLogicMixin
 from ui.ubs_seeds_view import UBSSeedsViewMixin
+from ui.ubs_seed_final_tick_logic import UBSSeedFinalTickLogicMixin
+from ui.ubs_seed_final_tick_view import UBSSeedFinalTickViewMixin
+from ui.ubs_seed_final_tick_6m_logic import UBSSeedFinalTick6MLogicMixin
+from ui.ubs_seed_final_tick_6m_view import UBSSeedFinalTick6MViewMixin
 
 # Reexportados para no cambiar a los consumidores de `app_ui`.
 from ui.app_base import (  # noqa: F401
@@ -110,6 +114,8 @@ class MT5AutotesterUI(
     UBSMonthlyPortfolioLogicMixin,
     UBSSearchViewMixin,
     UBSSearchLogicMixin,
+    UBSAuditorViewMixin,
+    UBSAuditorLogicMixin,
     SettingsViewMixin,
     SettingsLogicMixin,
     UBSAgentViewMixin,
@@ -131,6 +137,8 @@ class MT5AutotesterUI(
     UBSSeedsLogicMixin,
     UBSSeedFinalTickViewMixin,
     UBSSeedFinalTickLogicMixin,
+    UBSSeedFinalTick6MViewMixin,
+    UBSSeedFinalTick6MLogicMixin,
     UBSUniverseViewMixin,
     UBSUniverseLogicMixin,
     tk.Tk,
@@ -385,10 +393,10 @@ class MT5AutotesterUI(
             ("reports", self._refresh_reports),
             ("ubs_results", self._refresh_ubs_results),
             ("ubs_robustness", self._refresh_ubs_robustness),
-            ("ubs_seed_final_tick", self._refresh_ubs_seed_final_tick),
-            ("ubs_seed_final_tick_6m", self._refresh_ubs_seed_final_tick_6m),
             ("ubs_final_tick", self._refresh_ubs_final_tick),
             ("ubs_final_tick_6m", self._refresh_ubs_final_tick_6m),
+            ("ubs_seed_final_tick", self._refresh_ubs_seed_final_tick),
+            ("ubs_seed_final_tick_6m", self._refresh_ubs_seed_final_tick_6m),
             ("ubs_regression", self._refresh_ubs_regression),
             ("ubs_history", self._refresh_ubs_history),
             ("ubs_seed_summary", self._refresh_ubs_seed_eval_summary),
@@ -399,6 +407,7 @@ class MT5AutotesterUI(
             ("portfolio", self._refresh_portfolio_count),
             ("ubs_portfolios", self._refresh_ubs_portfolios),
             ("ubs_monthly_portfolios", self._refresh_ubs_monthly_portfolios),
+            ("ubs_auditor", self._refresh_ubs_auditor),
             ("last_log", self._refresh_last_log),
             ("multiterminal", self._refresh_multiterminal_tree),
         ):

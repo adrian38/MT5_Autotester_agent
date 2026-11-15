@@ -31,7 +31,7 @@ from run_tests import (
     parse_symbol_map,
     tester_journal_sidecar_path,
 )
-from ubs_generate_sets import format_like, parse_numeric
+from ubs.generate_sets import format_like, parse_numeric
 from ubs.account import (
     ACCOUNT_TYPES,
     BROKERS,
@@ -149,23 +149,23 @@ from ubs.weights import (
     MUTATION_SCORE_FULL_STRENGTH,
     score_aware_percentile_multipliers,
 )
-from ubs_agent_cli import (
+from ubs.agent.cli import (
     parse_args,
 )
-from ubs_agent_config import (
+from ubs.agent.config import (
     diag_args_summary,
     diag_log,
 )
-from ubs_agent_run import (
+from ubs.agent.run.main import (
     run_agent,
 )
 
 
 # Reexportados para no cambiar a los consumidores de `ubs_agent`.
-from ubs_agent_cli import (  # noqa: F401
+from ubs.agent.cli import (  # noqa: F401
     parse_args,
 )
-from ubs_agent_config import (  # noqa: F401
+from ubs.agent.config import (  # noqa: F401
     ALLOWED_MUTATION_KEYS,
     ALLOWED_MUTATION_PREFIXES,
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
@@ -231,7 +231,7 @@ from ubs_agent_config import (  # noqa: F401
     save_global_params,
     save_mutation_overrides,
 )
-from ubs_agent_evaluate import (  # noqa: F401
+from ubs.agent.evaluation.evaluate import (  # noqa: F401
     copy_accepted,
     count_valid_existing_reports,
     evaluate_history_probe,
@@ -250,7 +250,7 @@ from ubs_agent_evaluate import (  # noqa: F401
     select_next_seed_survivors,
     select_survivors,
 )
-from ubs_agent_final_tick import (  # noqa: F401
+from ubs.agent.final_tick.evaluate import (  # noqa: F401
     FINAL_TICK_PENDING_HISTORY_REASONS,
     _evaluate_final_tick_tick_report,
     _read_ohlc_report_cfg_dates,
@@ -268,23 +268,23 @@ from ubs_agent_final_tick import (  # noqa: F401
     normalize_final_tick_stage,
     validate_final_tick_stage_dates,
 )
-from ubs_agent_final_tick_entry import evaluate_candidate_final_tick  # noqa: F401
-from ubs_agent_final_tick_pass import (  # noqa: F401
+from ubs.agent.final_tick.entry import evaluate_candidate_final_tick  # noqa: F401
+from ubs.agent.final_tick.pass_stage import (  # noqa: F401
     _evaluate_candidate_final_tick_pass,
 )
-from ubs_agent_final_tick_rescore import (  # noqa: F401
+from ubs.agent.final_tick.rescore import (  # noqa: F401
     _rescore_final_tick_from_reports,
     reconcile_final_tick_reports,
     rescore_final_tick_only,
 )
-from ubs_agent_history import (  # noqa: F401
+from ubs.agent.history import (  # noqa: F401
     HISTORY_PROBE_FINAL_STATUSES,
     evaluate_generation,
     history_probe_latest_statuses,
     probe_universe_history,
     select_history_probe_seed,
 )
-from ubs_agent_policy import (  # noqa: F401
+from ubs.agent.generation.policy import (  # noqa: F401
     apply_discovery_target_policy_schedule,
     discovery_ranked_seed_selection,
     discovery_source_mix_feedback,
@@ -295,7 +295,7 @@ from ubs_agent_policy import (  # noqa: F401
     target_symbol_options_for_seed,
     unseeded_universe_targets,
 )
-from ubs_agent_reports import (  # noqa: F401
+from ubs.agent.evaluation.reports import (  # noqa: F401
     REPORT_SUFFIXES,
     WATCHDOG_SUFFIX,
     _REPORTS_NAME_INDEX,
@@ -313,7 +313,7 @@ from ubs_agent_reports import (  # noqa: F401
     tester_log_invalid_stops_metadata,
     tester_log_no_history_metadata,
 )
-from ubs_agent_rescore import (  # noqa: F401
+from ubs.agent.rescore.main import (  # noqa: F401
     _batched_memory_updates,
     _rescore_candidate_scores_from_reports,
     _rescore_metrics_json,
@@ -326,10 +326,10 @@ from ubs_agent_rescore import (  # noqa: F401
     rescore_robustness_only,
     robustness_degradation_config,
 )
-from ubs_agent_resume import (  # noqa: F401
+from ubs.agent.resume.main import (  # noqa: F401
     resume_last_run,
 )
-from ubs_agent_retry import (  # noqa: F401
+from ubs.agent.evaluation.retry import (  # noqa: F401
     _retry_single_candidate,
     retry_candidate,
     retry_full_run,
@@ -337,17 +337,17 @@ from ubs_agent_retry import (  # noqa: F401
     retry_run_mismatches,
     retry_seed,
 )
-from ubs_agent_robustness import (  # noqa: F401
+from ubs.agent.evaluation.robustness import (  # noqa: F401
     ROBUST_RETRYABLE_STATUSES,
     _bounded_profit_factor,
     _relative_delta_pct,
     evaluate_candidate_robustness,
     robust_status_pending_for_retry,
 )
-from ubs_agent_run import (  # noqa: F401
+from ubs.agent.run.main import (  # noqa: F401
     run_agent,
 )
-from ubs_agent_run_config import (  # noqa: F401
+from ubs.agent.run.config import (  # noqa: F401
     build_run_config,
     json_safe,
     regression_runtime,
@@ -357,7 +357,7 @@ from ubs_agent_run_config import (  # noqa: F401
     restored_discovery_exploitable_ratio,
     restored_discovery_universe_feedback_probability,
 )
-from ubs_agent_seed_scores import (  # noqa: F401
+from ubs.agent.seeds.scores import (  # noqa: F401
     _parse_eval_dir_timestamp,
     _seed_override_updated_at,
     evaluate_seed_scores,
@@ -366,7 +366,7 @@ from ubs_agent_seed_scores import (  # noqa: F401
     rescore_existing_seed_scores,
     rescore_seed_scores_only,
 )
-from ubs_agent_seeds_plan import (  # noqa: F401
+from ubs.agent.seeds.plan import (  # noqa: F401
     TargetDiversityLimiter,
     apply_reserved_timeframe,
     asset_group_map,
@@ -390,7 +390,7 @@ from ubs_agent_seeds_plan import (  # noqa: F401
     unseeded_timeframe_force_probability,
     variant_as_next_seed,
 )
-from ubs_agent_sets import (  # noqa: F401
+from ubs.agent.generation.sets import (  # noqa: F401
     _set_param_active,
     copy_seed_for_backtest,
     infer_missing_run_strategy_from_set,
@@ -407,7 +407,7 @@ from ubs_agent_sets import (  # noqa: F401
     write_retry_set,
     write_set_force_symbol,
 )
-from ubs_agent_targets import (  # noqa: F401
+from ubs.agent.generation.targets import (  # noqa: F401
     choose_diverse_target,
     choose_group_guided_unseeded_symbol,
     choose_target_period,
@@ -416,7 +416,7 @@ from ubs_agent_targets import (  # noqa: F401
     filter_timeframe_universe,
     related_timeframes,
 )
-from ubs_agent_universe import (  # noqa: F401
+from ubs.agent.generation.universe import (  # noqa: F401
     _BROKER_UNIVERSE_SYMBOLS_CACHE,
     _row_target_symbol,
     broker_universe_symbols,
@@ -432,7 +432,7 @@ from ubs_agent_universe import (  # noqa: F401
     target_timeframe_universe,
     variant_symbol_not_offered,
 )
-from ubs_agent_variants import (  # noqa: F401
+from ubs.agent.evaluation.variants import (  # noqa: F401
     create_history_probe_variant,
     create_variant,
     run_backtests,

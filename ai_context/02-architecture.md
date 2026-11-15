@@ -6,19 +6,13 @@
 .
 |-- app_ui.py                    # Tkinter app entry point and composition root
 |-- ubs_agent.py                 # UBS set-generation/scoring agent (CLI)
-|-- ubs_generate_sets.py         # UBS set mutation/generation helpers (standalone CLI)
-|-- ubs_prepare_sets.py          # UBS source-set normalization/import helper (CLI)
 |-- compile_mq5.py               # MetaEditor compile runner (CLI)
 |-- compile_and_backtest.py      # Orchestrates compile then backtest (CLI)
-|-- run_tests.py                 # Batch Strategy Tester runner (CLI)
-|-- mt5_env.py                   # .env/env-var path resolution helpers
-|-- telegram_notify.py           # Optional Telegram notification helper
+|-- run_tests.py                 # Batch Strategy Tester runner (CLI facade over backtest/)
+|-- manager_node_lifecycle.py    # Embeds and supervises the manager node thread
 |-- pyproject.toml               # Project metadata and dependencies
 |-- tester_template.ini          # Base MT5 Strategy Tester config
 |-- ui_settings.ini              # UI runtime settings, paths, theme
-|-- experts_list.txt             # Optional explicit .ex5 list
-|-- experts_root.txt             # Optional root folder for .ex5 discovery
-|-- compile_root.txt             # Optional root folder for .mq5 discovery
 |
 |-- ui/                          # UI screen mixin modules (view/logic pairs per tab)
 |   |-- __init__.py
@@ -42,15 +36,54 @@
 |   |-- ubs_results_logic.py     # UBS Results/History/Compare logic
 |   |-- ubs_robustness_view.py   # UBS Robustness OOS widget/layout mixin
 |   |-- ubs_robustness_logic.py  # UBS Robustness OOS launch/table logic
+|   |-- ubs_final_tick_shared.py # Rules the four Final Tick screens share
+|   |-- ubs_final_tick_queries.py# Per-stage SQL and labels (probe vs 6M)
+|   |-- ubs_final_tick_rows.py   # Thresholds, stage dates and cause text
+|   |-- ubs_final_tick_stage.py  # Per-stage state, run picker, row marking
+|   |-- ubs_final_tick_run.py    # Final Tick launch arguments and chaining
 |   |-- ubs_final_tick_view.py   # UBS Final Tick widget/layout mixin
-|   |-- ubs_final_tick_logic.py  # UBS Final Tick launch/table logic
+|   |-- ubs_final_tick_logic.py  # UBS Final Tick panel/manual-status logic
 |   |-- ubs_seeds_view.py        # UBS Seeds widget/layout mixin
 |   |-- ubs_seeds_logic.py       # UBS Seeds tab/evaluation logic
 |   |-- ubs_universe_view.py     # UBS Universe widget/layout mixin
 |   `-- ubs_universe_logic.py    # UBS Universe enable/weights logic
 |
+|-- common/                      # Primitives every domain uses and none owns
+|   |-- __init__.py
+|   |-- crash_log.py             # stderr duplication and excepthook install
+|   |-- mt5_env.py               # .env/env-var path resolution helpers
+|   `-- telegram_notify.py       # Optional Telegram notification helper
+|
+|-- backtest/                    # Strategy Tester runner implementation
+|   |-- __init__.py
+|   |-- base.py                  # BASE_DIR, tester constants and shared dataclasses
+|   |-- cli.py                   # Runner argument parser
+|   |-- experts.py               # Expert/set discovery and tester .ini creation
+|   |-- logging.py               # Run logger and action rate limiting
+|   |-- main.py                  # Job building, validation and run orchestration
+|   |-- parallel.py              # Runner failure summaries for parallel runs
+|   |-- reports.py               # Report discovery, journals and Model=4 history
+|   |-- runner.py                # Single job execution and parallel dispatch
+|   |-- symbols.py               # Symbol/timeframe inference, aliases and suffixes
+|   |-- terminals.py             # Terminal profiles, data dirs and release waits
+|   `-- watchdog.py              # MT5 stall detection, restarts and history sync
+|
 |-- ubs/                         # UBS agent support library
 |   |-- __init__.py
+|   |-- agent/                   # UBS orchestration implementation
+|   |   |-- cli.py               # UBS CLI parser and dispatch
+|   |   |-- config.py            # Agent configuration and retry states
+|   |   |-- history.py           # Historical probe evaluation
+|   |   |-- evaluation/          # Reports, retries, robustness and variant evaluation
+|   |   |-- final_tick/          # Final Tick evaluation, passes, similarity and rescore
+|   |   |-- generation/          # Target policies, universe and set generation
+|   |   |-- rescore/             # Candidate and robustness rescoring
+|   |   |-- resume/              # Cycle resume and regeneration
+|   |   |-- run/                 # Cycle configuration, setup and execution
+|   |   `-- seeds/               # Seed planning, scoring, retry and Final Tick
+|   |-- generate_sets.py         # Legacy set mutation/generation CLI (no agent memory)
+|   |-- prepare_sets.py          # Source-set normalization/import CLI
+|   |-- set_rules_sweep.py       # Applies ubs/set_rules.py over the existing .set history
 |   |-- models.py                # Shared Seed/Variant dataclasses
 |   |-- db.py                    # SQLite connection defaults for UBS memory
 |   |-- memory.py                # SQLite persistence and row mapping
@@ -88,11 +121,38 @@
 |   |-- 06-conventions.md        # Coding conventions
 |   |-- 07-development.md        # Development workflow
 |   `-- 08-ubs-parameters.md     # UBS EA parameter reference
+|-- tests/                       # Automated tests and shared test support
+|   |-- backtest/                # Runner, report, terminal and watchdog tests
+|   |-- guided/                  # Guided-batch protocol and HTTP tests
+|   |-- integrations/            # Optional external integration tests
+|   |-- manager_node/            # Embedded manager-node tests and fixtures
+|   |-- portfolio/               # Report parsing and portfolio calculations
+|   |-- quality/                 # Repository guards and their baselines
+|   |-- ubs/                     # UBS domain tests
+|   |   |-- account/             # Broker/account isolation and migrations
+|   |   |-- agent/               # Agent orchestration and execution
+|   |   |-- diagnostics/         # Reports, symbols and terminal diagnostics
+|   |   |-- final_tick/          # Final Tick and regression stages
+|   |   |-- portfolio/           # UBS portfolio persistence and repair
+|   |   |-- scoring/             # Scores, normalization, selection and weights
+|   |   |-- seeds/               # Seed imports, metadata and evaluation
+|   |   |-- sets/                # Set rules, mutation and staging
+|   |   `-- ui/                  # UBS stage UI tests
+|   |-- ui/                      # App composition, paths, theme and settings
+|   `-- __init__.py              # Shared PROJECT_ROOT test helper
 |-- tools/
 |   |-- build_installer.ps1      # PyInstaller packaging script
 |   `-- installer_app.py         # Tkinter installer UI
 |-- assets/                      # App icons and RoboForex asset universe
-`-- scripts/                     # PowerShell cleanup helpers for MT5 data
+|-- config/                      # What the user edits, and the one-off templates
+|   |-- experts_list.txt         # Optional explicit .ex5 list
+|   |-- experts_root.txt         # Optional root folder for .ex5 discovery
+|   |-- compile_root.txt         # Optional root folder for .mq5 discovery
+|   |-- .env.example             # Expected .env format
+|   `-- manager_node.example.json  # Template for manager_node.json
+|-- docs/                        # Documents for people, not agent notes
+|   `-- requirements.md          # Functional requirements and debt backlog
+`-- scripts/                     # Cleanup helpers and double-click launchers
 ```
 
 ## Composition Root
@@ -117,15 +177,35 @@ only when it is genuinely shell-level or generic infrastructure.
 The CLI scripts can still run independently and should remain usable without
 the UI.
 
+## Test Layout
+
+Tests are grouped by the subsystem they exercise. Fixtures stay beside the
+suite that owns them, and repository guard baselines live under
+`tests/quality/`. Subsystem groups are importable packages with an
+`__init__.py`, while
+`python -m unittest discover -s tests -t .` remains the repository-wide discovery
+contract.
+The root of `tests/` contains no test modules; `tests/__init__.py` only exposes
+the repository root used by tests that inspect source files.
+
 ## Main Module Responsibilities
 
 ### `run_tests.py`
+
+The implementation lives in the `backtest/` package; `run_tests.py` keeps the
+`main()` entry point and re-exports every public name so `import run_tests`
+callers, the `run-tests` console script and the PyInstaller build are unchanged.
+Each module keeps its own `REPORT_DIR`/`CONFIG_DIR`/`LOG_DIR` reference, so the
+launchers that redirect those folders (the live audit tester and the manual
+check) must repoint `run_tests` **and** every `backtest.*` module in
+`sys.modules`; repointing only the facade leaves the reports in the project
+folders.
 
 Owns the Strategy Tester workflow:
 
 - Resolve MT5 terminal path.
 - Resolve terminal data directory.
-- Load experts from `experts_list.txt`, `experts_root.txt`, CLI `--experts-dir`,
+- Load experts from `config/experts_list.txt`, `config/experts_root.txt`, CLI `--experts-dir`,
   or a specific `--expert`.
 - Load `.set` files and infer tester `Symbol`/`Period` when requested.
 - Generate per-run `.ini` files.
@@ -221,6 +301,7 @@ Owns the UBS agent workflow:
 | `--final-tick-max-net-delta-pct` (default 35) | Max net-profit divergence % |
 | `--final-tick-max-pf-delta-pct` (default 35) | Max PF divergence % |
 | `--final-tick-max-dd-delta-pct` (default 35) | Max DD divergence % |
+| `--final-tick-max-dd-gap-pp` (default 3) | Absolute DD band in points; accepts when the relative ratio fails |
 | `--final-tick-max-trades-delta-pct` (default 35) | Max trade count divergence % |
 | `--from-date` / `--to-date` | Override template dates for any run |
 | `--generation-mode production\|discovery` | Normal evidence-driven generation or explicit unseeded exploration |
@@ -336,11 +417,11 @@ Scores MT5 reports for UBS:
 - `ScoreResult.reasons` is a tuple of failing metric names. Empty = accepted.
 - All results serialised via `ScoreResult.to_json()` into `metrics_json` column.
 
-### `ubs_generate_sets.py`
+### `ubs/generate_sets.py`
 
 Standalone CLI for simple set mutation without agent memory. Has its own
 `is_mutable_key()` with different constants than `ubs_agent.py`. **Do not use
-`ubs_generate_sets.is_mutable_key()` to reason about agent behavior** — use
+`ubs.generate_sets.is_mutable_key()` to reason about agent behavior** — use
 `ubs_agent.is_agent_mutable_key()` instead.
 
 ### `compile_mq5.py`
@@ -348,7 +429,7 @@ Standalone CLI for simple set mutation without agent memory. Has its own
 Owns MetaEditor compilation:
 
 - Resolve `MetaEditor64.exe`, directly or from the MT5 terminal path.
-- Load `.mq5` sources from `compile_root.txt` or CLI `--source-dir`.
+- Load `.mq5` sources from `config/compile_root.txt` or CLI `--source-dir`.
 - Compile a single file or all root-level `.mq5` files.
 - Verify that expected `.ex5` outputs are created or updated.
 - Write compile logs under `logs/`.

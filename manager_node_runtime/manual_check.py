@@ -237,9 +237,9 @@ def _report_dirs(work: Path, model: str) -> tuple[Path, Path, Path]:
 def _wrapper(reports_dir: Path, configs_dir: Path, logs_dir: Path) -> str:
     """El runner con sus carpetas apuntando al area de la comprobacion.
 
-    `run_tests` esta partido en modulos y cada uno guarda su propia referencia
-    a REPORT_DIR/CONFIG_DIR/LOG_DIR: reapuntar solo la fachada deja los
-    reportes en las carpetas del proyecto.
+    El runner vive en el paquete `backtest` y cada modulo guarda su propia
+    referencia a REPORT_DIR/CONFIG_DIR/LOG_DIR: reapuntar solo la fachada
+    `run_tests` deja los reportes en las carpetas del proyecto.
     """
     return (
         "import sys, run_tests; from pathlib import Path; "
@@ -248,7 +248,7 @@ def _wrapper(reports_dir: Path, configs_dir: Path, logs_dir: Path) -> str:
         f"('LOG_DIR', Path({str(logs_dir)!r}))); "
         "[setattr(module, name, value) "
         "for key, module in list(sys.modules.items()) "
-        "if key == 'run_tests' or key.startswith('run_tests_') "
+        "if key in ('run_tests', 'backtest') or key.startswith('backtest.') "
         "for name, value in _dirs if hasattr(module, name)]; "
         "sys.argv = ['run_tests.py'] + sys.argv[1:]; "
         "raise SystemExit(run_tests.main())"

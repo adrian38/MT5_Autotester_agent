@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import telegram_notify
+from common import telegram_notify
 
 from . import node_settings, node_snapshots
 from .common import safe_int, save_json, utc_now

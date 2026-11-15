@@ -1,6 +1,49 @@
 # UBS EA Parameters Reference
 
-Source: Ultimate Breakout System Manual V5.0
+Source: user-supplied UBS V6 key catalog (`UBS_keys_v6.xlsx`) and canonical
+default set (`setfile_keys_v6_default.set`), received 2026-11-04.
+
+The executable contract is embedded in `ubs/v6_parameters.py`: 164 ordered
+parameter keys plus their V6 default set lines and optimizer metadata. The UBS
+Parámetros screen always starts from this V6 structure and overlays only
+editable values from `ubs_global_params.json`. It no longer derives its shape
+from whichever seed happens to sort first.
+
+Versioned seed-import contracts live in `ubs/version_rules.py`. V6 import is a
+closed schema: real parameter lines outside the 164 canonical keys are removed
+before value-rule normalization and deduplication. Comments and section markers
+are preserved, and missing V6 keys are not added. Existing destination seeds
+are filtered in memory for the duplicate fingerprint but are not rewritten.
+During import, an incoming seed replaces an older file when either the
+deterministic symbol/timeframe/family/name destination already exists or the V6
+fingerprint matches another stored seed. The existing path is reused and no
+`_2`/`_3` copy is created; the changed mtime/size freshness guard schedules a
+new evaluation when the normalized contents differ.
+OneChart/main-EA aggregate settings are not seeds. Import rejects files with
+`UseAutoLoader=true` or the combined OneChart/main/settings filename markers and
+lists them as not imported; `ubs_onechart_live_MainEA_Settings.set` is the V9
+reference case. Optimization templates are also rejected when their filename
+contains the exact `optimization` or `optimisation` token. Folder names are not
+considered, so real seeds under an `old optimizations` directory remain valid.
+
+The supplied default set is reference input, not authority over generation
+rules. It contains current values that conflict with project invariants
+(`AdjustLotsizeToVariableValues=true`, `OnlyUp=true`, and strategy-1
+`EnableNFP_Filter=false`). The UI normalizes the reference through
+`normalize_generated_set_text()` before display, so rule-owned values remain
+locked and take precedence over global or mutability overrides.
+
+The current V6 enum exposes exactly two strategies: `1` = Breakout
+Support/Resistance and `2` = Volatility Breakout. Legacy seeds with
+`Run_Strategy=3` belong to an obsolete Range contract that is absent from the
+canonical 164-key V6 schema and from the supplied default set. They are marked
+`invalid_seed` before MT5. A normal seed evaluation also revalidates unchanged
+non-V6 strategy values so previously scored legacy rows are corrected.
+
+The execution timeframe is strategy-specific: strategy `1` uses
+`Entry_Timing`, while strategy `2` uses `VolTimeframe`. `ST1_Timeframe` belongs
+to the support/resistance calculation and must not override strategy `1`'s
+execution timeframe.
 
 ## .set file format
 
@@ -85,8 +128,8 @@ SectionKey=----- Section label -----
 |-----|-------------|-----|
 | `AllowBuyTrades` | Allow long (buy) trades | N |
 | `AllowSellTrades` | Allow short (sell) trades | N |
-| `ST1_Timeframe` | Timeframe for strategy 1 (0 = chart timeframe) | N |
-| `Entry_Timing` | Entry timing mode (MT5 timeframe enum) | N |
+| `ST1_Timeframe` | Support/resistance calculation timeframe (0 = chart timeframe) | N |
+| `Entry_Timing` | Execution timeframe for Breakout Support/Resistance (MT5 timeframe enum) | N |
 | `ST1_HL_strength_L` | Bars to the LEFT of pivot to validate High/Low | **Y** |
 | `ST1_HL_strength_R` | Bars to the RIGHT of pivot to validate High/Low | **Y** |
 | `ST1_countback` | Number of bars to look back when searching for High/Low | **Y** |
@@ -305,22 +348,22 @@ fronts at once:
 
 1. **Creation.** Every path that mints a `.set` normalizes through
    `normalize_generated_set_text()` — agent variants
-   (`ubs_agent_variants.create_variant`), the legacy generator
-   (`ubs_generate_sets.mutate_text`), seed preparation (`ubs_prepare_sets.py`)
+   (`ubs.agent.evaluation.variants.create_variant`), the legacy generator
+   (`ubs.generate_sets.mutate_text`), seed preparation (`ubs/prepare_sets.py`)
    and seed import/dedup (`ui/ubs_seeds_import.py`,
    `ui/ubs_seeds_duplicates.py`). Stage copies (robustness, regression, Final
    Tick, retries) inherit the values from their already-compliant source.
 2. **Mutation.** The keys a rule owns are in `RULE_LOCKED_KEYS`
-   (`ubs_agent_config.py`). `is_agent_mutable_key()` denies them *before*
+   (`ubs/agent/config.py`). `is_agent_mutable_key()` denies them *before*
    reading `ubs_mutation_overrides.json`, so neither a `mutable_override` nor
    the *Toggle inamovible/mutable* button can unfreeze them; the UBS Parámetros
-   table shows them as `⛓ regla`. `ubs_generate_sets.FROZEN_EXACT` mirrors the
+   table shows them as `⛓ regla`. `ubs.generate_sets.FROZEN_EXACT` mirrors the
    same keys for the legacy generator.
 3. **Repair and audit.** `repair_seed_backtest_set()` re-applies the rules, and
    `validate_seed_backtest_set()` reports a violation as a seed issue.
 
 Existing `.set` files are brought in line by
-[`ubs_set_rules.py`](../ubs_set_rules.py) — UI: *UBS Parámetros → Aplicar
+[`ubs/set_rules_sweep.py`](../ubs/set_rules_sweep.py) — UI: *UBS Parámetros → Aplicar
 reglas a todos los sets* (`Sí` applies, `No` simulates). It sweeps `sets/`,
 `live_sets/`, `sets_1.7/`, `MQL5/Profiles/Tester/` and `outputs/`, rewrites
 only the files that break a rule, copies each one to `outputs/backups/` first
@@ -350,14 +393,12 @@ line is added.
 
 `EnableNFP_Filter` is decided by `Run_Strategy` alone. Strategy 1 trades
 against support/resistance levels that the NFP release breaks on volatility
-alone, so it pauses; strategies 2 and 3 live off that volatility, so they do
-not.
+alone, so it pauses; strategy 2 lives off that volatility, so it does not.
 
 | `Run_Strategy` | Strategy | `EnableNFP_Filter` |
 |---|---|---|
 | `1` | Breakout Support/Resistance | `true` |
 | `2` | Volatility Breakout | `false` |
-| `3` | Range | `false` |
 
 The other four keys are constant in every set, whatever the strategy:
 
@@ -370,16 +411,18 @@ The other four keys are constant in every set, whatever the strategy:
 
 Rewrites touch only the current value, keeping the `||default||step||max||Y/N`
 optimizer metadata and the file's own line endings. A set whose `Run_Strategy`
-is missing has it inferred from the one active strategy block
-(`ST1_Timeframe`/`Entry_Timing`, `VolTimeframe`, `RNG_Timeframe`); if that is
-ambiguous, the four constants are still applied and `EnableNFP_Filter` is left
-alone. A set with no NFP block at all (another EA version) is reported, never
-given invented keys.
+is missing has it inferred from the one active V6 strategy block
+(`ST1_Timeframe`/`Entry_Timing` or `VolTimeframe`); if that is ambiguous, the
+four constants are still applied and `EnableNFP_Filter` is left alone. An
+explicit unsupported value is never silently inferred as another strategy. A
+set with no NFP block at all (another EA version) is reported, never given
+invented keys.
 
 ### Adding a rule
 
 Add the constants and the decision to `ubs/set_rules.py`, extend
 `apply_nfp_rules_text()` or add a sibling applied from
 `normalize_generated_set_text()`, add the keys to `RULE_LOCKED_KEYS` and to
-`ubs_generate_sets.FROZEN_EXACT`, cover it in
-`tests/test_ubs_set_rules.py`, and run `ubs_set_rules.py` over the history.
+`ubs.generate_sets.FROZEN_EXACT`, cover it in
+`tests/ubs/sets/test_ubs_set_rules.py`, and run `ubs/set_rules_sweep.py` over the
+history.

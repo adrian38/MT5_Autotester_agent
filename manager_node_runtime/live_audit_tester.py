@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from run_tests_parallel import runner_failure_summary
+from backtest.parallel import runner_failure_summary
 
 from .live_audit_helpers import audit_set_name, _member_strategy_id, _metric_number, _read_set_text, _redact_log_files, _redact_runner_output
 from .live_audit_symbols import normalize_live_audit_set_symbols
@@ -321,10 +321,10 @@ class LiveAuditTesterMixin:
     def _tester_wrapper(reports_dir: Path, configs_dir: Path, logs_dir: Path) -> str:
         """Lanzador del runner con sus carpetas apuntando al area de la auditoria.
 
-        El runner esta partido en modulos y cada uno conserva su propia
-        referencia a REPORT_DIR/CONFIG_DIR/LOG_DIR, asi que reapuntar solo la
-        fachada `run_tests` dejaba los reportes y los INI del tester en las
-        carpetas del proyecto y la auditoria no encontraba ningun reporte.
+        El runner vive en el paquete `backtest` y cada modulo conserva su
+        propia referencia a REPORT_DIR/CONFIG_DIR/LOG_DIR, asi que reapuntar
+        solo la fachada `run_tests` dejaba los reportes y los INI del tester en
+        las carpetas del proyecto y la auditoria no encontraba ningun reporte.
         """
         return (
             "import sys, run_tests; from pathlib import Path; "
@@ -333,7 +333,7 @@ class LiveAuditTesterMixin:
             f"('LOG_DIR', Path({str(logs_dir)!r}))); "
             "[setattr(module, name, value) "
             "for key, module in list(sys.modules.items()) "
-            "if key == 'run_tests' or key.startswith('run_tests_') "
+            "if key in ('run_tests', 'backtest') or key.startswith('backtest.') "
             "for name, value in _dirs if hasattr(module, name)]; "
             "sys.argv = ['run_tests.py'] + sys.argv[1:]; "
             "raise SystemExit(run_tests.main())"
