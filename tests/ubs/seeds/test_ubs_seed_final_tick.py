@@ -17,7 +17,9 @@ from ui.app_chrome import SIDEBAR_ITEMS
 from ui.ubs_seeds_cleanup import UBSSeedsCleanupMixin
 
 
-class UBSSeedFinalTickTests(unittest.TestCase):
+class SeedFinalTickFixture(unittest.TestCase):
+    """Memoria con una seed aceptada y su adaptador de etapa."""
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
@@ -50,6 +52,8 @@ class UBSSeedFinalTickTests(unittest.TestCase):
             final_tick_stage=stage,
         )
 
+
+class UBSSeedFinalTickTests(SeedFinalTickFixture):
     def test_seed_tabs_follow_seeds_in_sidebar(self) -> None:
         keys = [key for key, _label in SIDEBAR_ITEMS]
         seed_index = keys.index("ubs_seeds")
@@ -187,6 +191,106 @@ class UBSSeedFinalTickTests(unittest.TestCase):
             "select status from candidate_final_tick_6m where candidate_id=2"
         ).fetchone()[0]
         self.assertEqual(mixed_status, "rejected")
+
+
+LEGACY_SEED_FINAL_TICK_DDL = """
+create table {table} (
+    seed_path text primary key,
+    symbol text not null default '',
+    period text not null default '',
+    status text not null,
+    accepted integer,
+    ohlc_report_path text,
+    real_tick_report_path text,
+    ohlc_score real,
+    real_tick_score real,
+    ohlc_metrics_json text,
+    real_tick_metrics_json text,
+    similarity_json text,
+    history_quality real,
+    min_history_quality real not null default 80.0,
+    from_date text not null default '',
+    to_date text not null default '',
+    max_net_delta_pct real not null default 35.0,
+    max_pf_delta_pct real not null default 35.0,
+    max_dd_delta_pct real not null default 35.0,
+    max_trades_delta_pct real not null default 35.0,
+    evaluated_at text not null
+)
+"""
+
+
+class UBSSeedFinalTickLegacyKeyTests(SeedFinalTickFixture):
+    """La etapa vivio clavada en seed_path: abrir esa memoria no puede romperse."""
+
+    def _downgrade(self, table: str, orphan: bool = False) -> None:
+        self.memory.conn.execute(f"drop table {table}")
+        self.memory.conn.executescript(LEGACY_SEED_FINAL_TICK_DDL.format(table=table))
+        self.memory.conn.execute(
+            f"insert into {table} (seed_path, symbol, period, status, accepted, "
+            "ohlc_score, real_tick_score, evaluated_at) values (?, 'EURUSD', 'H1', "
+            "'accepted', 1, 88.5, 87.0, 'antes')",
+            (str(self.seed_path),),
+        )
+        if orphan:
+            self.memory.conn.execute(
+                f"insert into {table} (seed_path, symbol, period, status, accepted, "
+                "evaluated_at) values ('X:/borrada.set', 'EURUSD', 'H1', 'rejected', 0, 'antes')"
+            )
+        self.memory.conn.commit()
+
+    def _reopen(self) -> None:
+        self.memory.close()
+        self.memory = AgentMemory(Path(self.temp_dir.name) / "memory.sqlite")
+
+    def test_legacy_rows_are_rekeyed_by_seed_id(self) -> None:
+        self._downgrade("seed_final_tick")
+        self._reopen()
+
+        row = self.memory.conn.execute(
+            "select seed_id, status, ohlc_score, real_tick_score, seed_mtime, seed_size "
+            "from seed_final_tick"
+        ).fetchone()
+        stat = self.seed_path.stat()
+        self.assertEqual(int(row["seed_id"]), self.seed_id)
+        self.assertEqual(row["status"], "accepted")
+        self.assertEqual(row["ohlc_score"], 88.5)
+        self.assertEqual(row["real_tick_score"], 87.0)
+        self.assertEqual(int(row["seed_size"]), stat.st_size)
+        self.assertEqual(
+            self.memory.conn.execute(
+                "select count(*) from sqlite_master where name='seed_final_tick_legacy_seed_path'"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_rows_without_seed_keep_their_table(self) -> None:
+        self._downgrade("seed_final_tick_6m", orphan=True)
+        self._reopen()
+
+        self.assertEqual(
+            self.memory.conn.execute("select count(*) from seed_final_tick_6m").fetchone()[0], 1
+        )
+        kept = self.memory.conn.execute(
+            "select seed_path from seed_final_tick_6m_legacy_seed_path "
+            "where seed_path='X:/borrada.set'"
+        ).fetchone()
+        self.assertIsNotNone(kept)
+
+    def test_second_open_does_not_migrate_again(self) -> None:
+        self._downgrade("seed_final_tick")
+        self._reopen()
+        self.memory.conn.execute(
+            "update seed_final_tick set status='pending_tick_trades' where seed_id=?",
+            (self.seed_id,),
+        )
+        self.memory.conn.commit()
+        self._reopen()
+
+        status = self.memory.conn.execute(
+            "select status from seed_final_tick where seed_id=?", (self.seed_id,)
+        ).fetchone()[0]
+        self.assertEqual(status, "pending_tick_trades")
 
 
 if __name__ == "__main__":

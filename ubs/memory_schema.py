@@ -258,6 +258,7 @@ class MemorySchemaMixin:
         self.conn.executescript(
             SCHEMA_DDL
         )
+        self._migrate_legacy_seed_final_tick_tables()
         self._ensure_column("runs", "hidden", "integer not null default 0")
         self._ensure_column("runs", "config_json", "text not null default ''")
         self._ensure_column("candidates", "timeframe_keys", "text not null default ''")
@@ -286,6 +287,47 @@ class MemorySchemaMixin:
         self._reclassify_trade_disabled_no_trades()
         self._reclassify_invalid_stops_no_trades()
         self.conn.commit()
+
+    def _migrate_legacy_seed_final_tick_tables(self) -> None:
+        """Reclave las etapas Final Tick de seeds que aun viven con seed_path."""
+        for table in ("seed_final_tick", "seed_final_tick_6m"):
+            self._migrate_legacy_seed_final_tick_table(table)
+
+    def _migrate_legacy_seed_final_tick_table(self, table: str) -> None:
+        legacy_columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")}
+        if not legacy_columns or "seed_id" in legacy_columns:
+            return
+        legacy_table = f"{table}_legacy_seed_path"
+        self.conn.execute(f"drop table if exists {legacy_table}")
+        self.conn.execute(f"alter table {table} rename to {legacy_table}")
+        self.conn.executescript(SCHEMA_DDL)
+        target_columns = [str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")]
+        shared = [
+            column
+            for column in target_columns
+            if column in legacy_columns and column not in {"seed_id", "seed_mtime", "seed_size"}
+        ]
+        destination = ["seed_id", "seed_mtime", "seed_size", *shared]
+        source = [
+            "scores.id", "scores.seed_mtime", "scores.seed_size",
+            *(f"legacy.{column}" for column in shared),
+        ]
+        self.conn.execute(
+            f"""
+            insert or replace into {table} ({', '.join(destination)})
+            select {', '.join(source)}
+            from {legacy_table} as legacy
+            join seed_scores as scores on scores.seed_path = legacy.seed_path
+            """
+        )
+        orphans = self.conn.execute(
+            f"""
+            select count(*) as total from {legacy_table} as legacy
+            where not exists (select 1 from seed_scores where seed_path = legacy.seed_path)
+            """
+        ).fetchone()
+        if not int(orphans["total"] or 0):
+            self.conn.execute(f"drop table {legacy_table}")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {str(row["name"]) for row in self.conn.execute(f"pragma table_info({table})")}
