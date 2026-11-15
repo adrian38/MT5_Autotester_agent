@@ -18,10 +18,27 @@ import unittest
 
 from ubs.agent.evaluation.robustness import robust_status_pending_for_retry
 from ubs.agent.final_tick.evaluate import final_tick_row_pending_for_dates
-from ubs.memory import GENERATED_CANDIDATE_STATUS, RETRYABLE_CANDIDATE_STATUSES
+from ubs.memory import RETRYABLE_CANDIDATE_STATUSES
 from ubs.memory_scores import SEED_KEPT_STATUSES
 from ubs.regression_rules import REGRESSION_RETRYABLE_STATUSES
 from ubs.stage_specs import STAGE_SPECS, stage_spec
+
+# Lo que la tabla `candidates` puede llegar a guardar, de todos los sitios que
+# le escriben un estado. `history_ok` no esta porque es de las sondas de
+# historico, que `row_filter` deja fuera de la etapa.
+CANDIDATE_STATUSES = (
+    "accepted",
+    "rejected",
+    "generated",
+    "no_report",
+    "parse_error",
+    "report_mismatch",
+    "pending_tester_context",
+    "no_trades",
+    "trade_disabled",
+    "no_history",
+    "symbol_not_exist",
+)
 
 FROM_DATE = "2026.05.01"
 TO_DATE = "2026.05.31"
@@ -73,7 +90,7 @@ def _would_retry(stage_key: str, status: str) -> bool:
     if stage_key == "seeds":
         return status not in SEED_KEPT_STATUSES
     if stage_key == "candidates":
-        return status in {*RETRYABLE_CANDIDATE_STATUSES, GENERATED_CANDIDATE_STATUS}
+        return status in set(RETRYABLE_CANDIDATE_STATUSES)
     if stage_key == "robustness":
         return robust_status_pending_for_retry(status)
     if stage_key == "regression":
@@ -118,6 +135,26 @@ class SettledStatusesAreReallySettledTests(unittest.TestCase):
                     - set(spec.settled_statuses),
                     set(),
                 )
+
+    def test_every_candidate_status_lands_in_exactly_one_place(self) -> None:
+        """Veredicto, callejon sin salida, o algo a lo que le falta el backtest.
+
+        Esta es la prueba que faltaba. `generated` no estaba en ninguno de los
+        tres: la lista de reintentables se leia como «problemas tecnicos» y un
+        .set que nunca corrio no lo parecia, asi que 180 candidatos salian
+        pendientes en el auditor y ningun boton los tocaba. Caer en dos sitios
+        tambien es un error: querria decir que algo se cuenta y se arregla con
+        dos criterios distintos.
+        """
+        spec = stage_spec("candidates")
+        for status in CANDIDATE_STATUSES:
+            with self.subTest(status=status):
+                places = (
+                    status in {"accepted", "rejected"},
+                    status in spec.settled_statuses,
+                    status in RETRYABLE_CANDIDATE_STATUSES,
+                )
+                self.assertEqual(sum(places), 1, f"{status}: {places}")
 
     def test_the_six_month_stage_does_not_park_a_short_probe(self) -> None:
         """En el 6M `pending_ohlc_trades` si se reencola al mover la ventana.

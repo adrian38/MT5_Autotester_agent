@@ -1842,6 +1842,34 @@ for nothing. Before declaring one, check that the commit touches the path that
   that does not exist. It is the same `_fix_ubs_pending_states_clicked`, not a
   copy, so it keeps the account and run checks.
 
+#### Pending has to be something a button can actually run
+
+A status the audit calls pending and no runner picks up is worse than a wrong
+count: the screen reports work nobody can do. That is what `generated` was —
+180 of Resultados' 188, `.set` files written but never backtested.
+`RETRYABLE_CANDIDATE_STATUSES` read as "technical problems" and a set that
+never ran did not look like one, so `Continuar run` skipped them. They are the
+opposite of a dead end: the only thing missing is the backtest, and
+`retry_run_mismatches` already handles them unchanged (it copies the `.set`,
+clears any report artifacts — a no-op when there are none — and runs the whole
+batch in one MT5 session). `parse_error` had the same hole.
+
+So for `candidates` every status now lands in exactly one of three places, and
+`tests/ubs/scoring/test_ubs_stage_settled_statuses.py` asserts exactly that
+over the table's whole status vocabulary — exactly one, because landing in two
+would mean a row is counted by one rule and fixed by another:
+
+| | Statuses |
+|---|---|
+| Verdict | `accepted`, `rejected` |
+| Parked (`settled_statuses`) | `no_trades`, `no_history`, `trade_disabled`, `symbol_not_exist` |
+| Still to run (`RETRYABLE_CANDIDATE_STATUSES`) | `generated`, `report_mismatch`, `no_report`, `parse_error`, `pending_tester_context` |
+
+That list had a third hand-written copy in `_count_ubs_run_retryable_problems`
+(`ui/ubs_results_retry.py`), already down to two statuses of the five, so the
+button said "no pendientes" about runs that had them. It now builds its `in
+(...)` from the constant.
+
 #### Fixing a stage means walking its runs
 
 Every runner is scoped to one run — it lays its .set files out under that
