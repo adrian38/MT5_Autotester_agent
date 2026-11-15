@@ -16,6 +16,13 @@ FINAL_TICK_STAGE_TABLES = {
 }
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
+# Las semillas que no se vuelven a evaluar aunque el fichero siga en disco, y
+# que sin embargo no tienen veredicto: el .set no era valido, o el broker tenia
+# el trading cerrado en ese simbolo. El auditor las declara igual en
+# `StageSpec.settled_statuses`, que es lo que impide contarlas como pendientes.
+SEED_SETTLED_STATUSES = ("invalid_seed", "trade_disabled")
+SEED_KEPT_STATUSES = frozenset({"accepted", "rejected", *SEED_SETTLED_STATUSES})
+
 
 def metrics_have_empty_tester_context(metrics_json: object) -> bool:
     """Return whether stored score metrics came from an unusable MT5 report."""
@@ -310,7 +317,7 @@ class MemoryScoresMixin:
             or abs(float(row["seed_mtime"] or 0.0) - float(stat.st_mtime)) > 0.001
             or int(row["seed_size"] or -1) != int(stat.st_size)
             or (
-                previous_status not in {"accepted", "rejected", "invalid_seed", "trade_disabled"}
+                previous_status not in SEED_KEPT_STATUSES
                 and not quarantined_mismatch
             )
             or str(row["symbol"] or "").strip().upper() != seed.symbol.strip().upper()

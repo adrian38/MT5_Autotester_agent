@@ -19,6 +19,17 @@ FINAL_TICK_STAGE_TABLES = {
 }
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
+# Los candidatos que «Continuar run» vuelve a correr: un fallo tecnico que un
+# segundo backtest puede arreglar. El que se quedo sin operaciones, sin
+# historico, con el trading cerrado o con el simbolo retirado no esta aqui a
+# proposito -reintentarlo no cambiaria nada-, y por eso el auditor lo declara
+# parado en `StageSpec.settled_statuses` en vez de contarlo como pendiente.
+RETRYABLE_CANDIDATE_STATUSES = ("report_mismatch", "no_report", "pending_tester_context")
+# El .set generado que todavia no ha corrido. No lo recoge el retry sino el
+# resume del run, pero sigue siendo algo que esta por hacer.
+GENERATED_CANDIDATE_STATUS = "generated"
+_RETRYABLE_CANDIDATE_SQL = ", ".join(f"'{status}'" for status in RETRYABLE_CANDIDATE_STATUSES)
+
 
 def metrics_have_empty_tester_context(metrics_json: object) -> bool:
     """Return whether stored score metrics came from an unusable MT5 report."""
@@ -305,11 +316,11 @@ class AgentMemory(
 
     def retryable_problem_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             select *
             from candidates
             where run_id=? and generation=?
-              and status in ('report_mismatch', 'no_report', 'pending_tester_context')
+              and status in ({_RETRYABLE_CANDIDATE_SQL})
             order by id
             """,
             (run_id, generation),
@@ -317,10 +328,10 @@ class AgentMemory(
 
     def retryable_problem_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             select *
             from candidates
-            where run_id=? and status in ('report_mismatch', 'no_report', 'pending_tester_context')
+            where run_id=? and status in ({_RETRYABLE_CANDIDATE_SQL})
             order by generation, id
             """,
             (run_id,),
