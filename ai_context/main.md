@@ -1837,33 +1837,48 @@ for nothing. Before declaring one, check that the commit touches the path that
   eligible rows a rescore just created are picked up with the half-finished
   ones, and no separate "repair the updated states" action is needed.
 
-#### Pending means waiting, not merely unjudged
+#### Pending is what a report can still be made for
 
 A row sits in one of three places: its stage's rule judged it
-(`accepted`/`rejected`), it stopped somewhere no runner takes it out of, or it
-is still waiting to run. Only the third is pending, and that is all `Consultar
+(`accepted`/`rejected`), it stopped with no report left to produce, or it is
+still waiting to run. Only the third is pending, and that is all `Consultar
 pendientes` counts. Treating "not a verdict" as pending kept Resultados
-permanently red over 9 954 candidates no button can move.
+permanently red over 9 954 candidates that a repeat cannot get a report out
+of: history the broker does not have does not appear on the second attempt,
+and a run with no trades has none again.
 
-Where a row stops without a verdict is declared per stage in
-`StageSpec.settled_statuses`, by hand, so that a status nobody has declared
-shows up as pending — loudly — instead of disappearing on its own:
+The special rejections are the same family right down the funnel —
+`SPECIAL_REJECTION_STATUSES` in `stage_specs`: `no_trades`, `no_history`,
+`trade_disabled`, `symbol_not_exist`. Every stage declares all four in
+`StageSpec.settled_statuses`, including the stages whose table never holds one
+of them, so a status cannot slip into a new table later and be counted as
+pending. On top of the family, three stages park one more:
 
-| Stage | Parked | Why nobody retries it |
-|-------|--------|-----------------------|
-| Seeds | `invalid_seed`, `trade_disabled` | `SEED_KEPT_STATUSES` (`ubs/memory_scores.py`) keeps them while the file is unchanged |
+| Stage | Also parked | Why |
+|-------|-------------|-----|
+| Seeds | `invalid_seed` | the .set is one MT5 will not run, so there is no report to make |
 | Seeds Final Tick, Final Tick | `pending_ohlc_trades` | the probe never re-queues it; the candidate moves on to the 6M stage carrying it |
-| Resultados | `no_trades`, `trade_disabled`, `no_history`, `symbol_not_exist` | outside `RETRYABLE_CANDIDATE_STATUSES` (`ubs/memory.py`); `symbol_not_exist` is terminal on purpose |
-| Robustez | `symbol_not_exist` | `no_trades` **is** in `ROBUST_RETRYABLE_STATUSES`, so it stays pending |
-| Regresiva | `watchdog_timeout`, `no_trades` | the watchdog's row is never re-queued; `no_trades` here is the rule's own failure (`REGRESSION_FAILURE_STATUSES`) |
+| Regresiva | `watchdog_timeout` | the watchdog killed the run before a report existed |
 
-The 6M stages declare nothing: there `pending_ohlc_trades` *is* re-queued when
-the window moves, which is the exact point
-[`tests/ubs/scoring/test_ubs_stage_settled_statuses.py`](../tests/ubs/scoring/test_ubs_stage_settled_statuses.py)
-guards — every declaration is checked against its runner's retry set, and the
-Final Tick ones by calling `final_tick_row_pending_for_dates()` itself, so
-making a status retryable later cannot leave the Auditor claiming it waits for
-nothing.
+The 6M stages add nothing: there `pending_ohlc_trades` *is* re-queued when the
+window moves. Declaring it parked there would hide a row the stage's own
+button really does run again.
+
+**Some runners re-queue a parked status anyway, and that is deliberate, not an
+oversight.** The Auditor answers "what is left to run"; a runner's
+`pending_only` mode answers "what do I give another pass to", and on three
+statuses they disagree: `no_trades` for Seeds and Robustez
+(`ROBUST_RETRYABLE_STATUSES`), `no_history` and `symbol_not_exist` for Seeds,
+`no_history` for Regresiva (`REGRESSION_RETRYABLE_STATUSES`). Pressing
+`Arreglar pendientes` on those stages touches rows the screen does not count —
+in ICTRADING/STANDARD, 27 in Robustez and 1 in Regresiva. The divergence is
+listed as `RETRIED_ANYWAY` in
+[`tests/ubs/scoring/test_ubs_stage_settled_statuses.py`](../tests/ubs/scoring/test_ubs_stage_settled_statuses.py),
+which computes the real overlap by asking each runner's own predicate
+(`final_tick_row_pending_for_dates()`, `robust_status_pending_for_retry()`,
+`SEED_KEPT_STATUSES`, …) and fails when it changes in either direction. So
+`_settled_note()` does not claim nobody retries them — only that repeating
+them yields no report, which is the part that holds.
 
 Parked rows leave the stage total too: `PendingAudit.rows` is what the stage's
 rule answers for, so `N de M` compares like with like — the rules query, which

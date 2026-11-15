@@ -528,7 +528,7 @@ class SettledNoteTests(unittest.TestCase):
             _pending_row(),
         ))
 
-        self.assertIn("3 que no espera nada", note)
+        self.assertIn("3 sin reporte que hacer", note)
         self.assertIn("Resultados (no_trades 2, symbol_not_exist 1)", note)
         self.assertNotIn("Final Tick", note)
 

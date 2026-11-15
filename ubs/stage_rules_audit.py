@@ -435,8 +435,8 @@ def audit_pending_states(
     """Resumen por etapa de lo que todavia espera a que alguien lo corra.
 
     `final_statuses` son los veredictos -accepted y rejected-, y cada etapa
-    declara aparte en que estados se para una fila para siempre sin llegar a
-    ninguno de los dos (`settled_statuses`). Pendiente es lo que no es ni una
+    declara aparte en que estados se queda una fila sin veredicto y sin un
+    reporte que hacer (`settled_statuses`). Pendiente es lo que no es ni una
     cosa ni la otra: un estado nuevo que nadie haya declarado sale por aqui,
     que es donde se ve.
     """

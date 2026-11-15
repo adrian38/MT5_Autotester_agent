@@ -1,45 +1,48 @@
 """Lo que una etapa declara parado tiene que estarlo de verdad.
 
 `StageSpec.settled_statuses` saca filas de la cuenta de pendientes, asi que es
-la clase de declaracion que envejece mal y en silencio: el dia que alguien
-haga reintentable uno de esos estados, el auditor seguiria diciendo que no
-espera nada. Aqui se contrasta cada declaracion contra quien manda de verdad
--el set de reintento de su runner-, no contra otra lista escrita a mano.
+la clase de declaracion que envejece mal y en silencio. Aqui cada una se
+pregunta a quien manda -el runner de su etapa, llamando a su propia funcion
+cuando la tiene- en vez de contrastarla contra otra lista escrita a mano.
+
+Pendiente es aquello a lo que todavia se le puede hacer el reporte. Un rechazo
+especial no lo es: el historico que no esta no aparece al segundo intento y una
+corrida sin operaciones vuelve a no tenerlas. Algunos runners los reencolan de
+todas formas, y eso no es un descuido de nadie sino dos criterios distintos
+sobre la misma fila; `RETRIED_ANYWAY` los tiene contados uno a uno para que el
+dia que aparezca otro se vea aqui y no en una corrida de MT5.
 """
 from __future__ import annotations
 
 import unittest
 
-from ubs.agent.config import (
-    FINAL_TICK_DATE_RETRYABLE_STATUSES,
-    FINAL_TICK_RETRYABLE_STATUSES,
-)
-from ubs.agent.evaluation.robustness import ROBUST_RETRYABLE_STATUSES
+from ubs.agent.evaluation.robustness import robust_status_pending_for_retry
 from ubs.agent.final_tick.evaluate import final_tick_row_pending_for_dates
 from ubs.memory import GENERATED_CANDIDATE_STATUS, RETRYABLE_CANDIDATE_STATUSES
-from ubs.memory_scores import SEED_SETTLED_STATUSES
+from ubs.memory_scores import SEED_KEPT_STATUSES
 from ubs.regression_rules import REGRESSION_RETRYABLE_STATUSES
 from ubs.stage_specs import STAGE_SPECS, stage_spec
 
-# Que etapa corre con que set de reintento. Una etapa que falte aqui rompe la
-# primera prueba: declarar un estado parado sin decir quien lo reintentaria es
-# justo lo que esta hoja impide.
-RETRYABLE_BY_STAGE = {
-    "seeds": frozenset(),
-    "seed_final_tick": FINAL_TICK_RETRYABLE_STATUSES | FINAL_TICK_DATE_RETRYABLE_STATUSES,
-    "seed_final_tick_6m": FINAL_TICK_RETRYABLE_STATUSES | FINAL_TICK_DATE_RETRYABLE_STATUSES,
-    "candidates": frozenset({*RETRYABLE_CANDIDATE_STATUSES, GENERATED_CANDIDATE_STATUS}),
-    "robustness": frozenset(ROBUST_RETRYABLE_STATUSES),
-    "final_tick": FINAL_TICK_RETRYABLE_STATUSES | FINAL_TICK_DATE_RETRYABLE_STATUSES,
-    "final_tick_6m": FINAL_TICK_RETRYABLE_STATUSES | FINAL_TICK_DATE_RETRYABLE_STATUSES,
-    "regression": frozenset(REGRESSION_RETRYABLE_STATUSES),
-}
+FROM_DATE = "2026.05.01"
+TO_DATE = "2026.05.31"
 
+# Que etapa es un Final Tick y de cual de las dos: su runner decide con la
+# misma funcion pero no con la misma respuesta.
 FINAL_TICK_STAGES = {
     "seed_final_tick": "probe",
     "final_tick": "probe",
     "seed_final_tick_6m": "six_month",
     "final_tick_6m": "six_month",
+}
+
+# Estados declarados parados que su runner si volveria a encolar. No son un
+# error: el auditor contesta a «que falta por correr» y el runner a «a que le
+# doy otra pasada», y en estos tres no coinciden. Pulsar Arreglar pendientes
+# los toca aunque la pantalla no los cuente.
+RETRIED_ANYWAY = {
+    "seeds": {"no_trades", "no_history", "symbol_not_exist"},
+    "robustness": {"no_trades"},
+    "regression": {"no_history"},
 }
 
 
@@ -52,24 +55,38 @@ def _final_tick_row(status: str) -> dict:
     """
     return {
         "final_tick_status": status,
-        "final_tick_from_date": "2026.05.01",
-        "final_tick_to_date": "2026.05.31",
+        "final_tick_from_date": FROM_DATE,
+        "final_tick_to_date": TO_DATE,
         "ft_ohlc_metrics_json": '{"trades": 3}',
     }
 
 
+def _would_retry(stage_key: str, status: str) -> bool:
+    """Si el runner de esa etapa volveria a correr una fila en ese estado."""
+    if stage_key in FINAL_TICK_STAGES:
+        return final_tick_row_pending_for_dates(
+            _final_tick_row(status),
+            FROM_DATE,
+            TO_DATE,
+            final_tick_stage=FINAL_TICK_STAGES[stage_key],
+        )
+    if stage_key == "seeds":
+        return status not in SEED_KEPT_STATUSES
+    if stage_key == "candidates":
+        return status in {*RETRYABLE_CANDIDATE_STATUSES, GENERATED_CANDIDATE_STATUS}
+    if stage_key == "robustness":
+        return robust_status_pending_for_retry(status)
+    if stage_key == "regression":
+        return status in REGRESSION_RETRYABLE_STATUSES
+    raise AssertionError(f"Etapa sin runner declarado en esta prueba: {stage_key}")
+
+
 class SettledStatusesAreReallySettledTests(unittest.TestCase):
     def test_every_stage_says_who_would_retry_it(self) -> None:
-        self.assertEqual(
-            {spec.key for spec in STAGE_SPECS}, set(RETRYABLE_BY_STAGE)
-        )
-
-    def test_no_declared_state_is_in_its_runners_retry_set(self) -> None:
+        """Declarar un estado parado sin decir quien lo reintentaria no vale."""
         for spec in STAGE_SPECS:
             with self.subTest(stage=spec.key):
-                self.assertEqual(
-                    set(spec.settled_statuses) & RETRYABLE_BY_STAGE[spec.key], set()
-                )
+                _would_retry(spec.key, "un_estado_cualquiera")
 
     def test_no_declared_state_is_a_verdict(self) -> None:
         """Parado quiere decir sin veredicto: accepted y rejected no caben."""
@@ -79,19 +96,28 @@ class SettledStatusesAreReallySettledTests(unittest.TestCase):
                     set(spec.settled_statuses) & {"accepted", "rejected"}, set()
                 )
 
-    def test_final_tick_asks_its_own_runner(self) -> None:
-        """La etapa de Final Tick se comprueba llamando a quien decide."""
-        for stage_key, final_tick_stage in FINAL_TICK_STAGES.items():
-            for status in stage_spec(stage_key).settled_statuses:
-                with self.subTest(stage=stage_key, status=status):
-                    self.assertFalse(
-                        final_tick_row_pending_for_dates(
-                            _final_tick_row(status),
-                            "2026.05.01",
-                            "2026.05.31",
-                            final_tick_stage=final_tick_stage,
-                        )
-                    )
+    def test_the_runners_that_disagree_are_the_declared_ones(self) -> None:
+        """El solape con los runners esta contado, no descubierto por ahi."""
+        for spec in STAGE_SPECS:
+            with self.subTest(stage=spec.key):
+                self.assertEqual(
+                    {
+                        status
+                        for status in spec.settled_statuses
+                        if _would_retry(spec.key, status)
+                    },
+                    RETRIED_ANYWAY.get(spec.key, set()),
+                )
+
+    def test_every_stage_parks_the_special_rejections(self) -> None:
+        """La familia es la misma en todo el embudo, etapa a etapa."""
+        for spec in STAGE_SPECS:
+            with self.subTest(stage=spec.key):
+                self.assertEqual(
+                    {"no_trades", "no_history", "trade_disabled", "symbol_not_exist"}
+                    - set(spec.settled_statuses),
+                    set(),
+                )
 
     def test_the_six_month_stage_does_not_park_a_short_probe(self) -> None:
         """En el 6M `pending_ohlc_trades` si se reencola al mover la ventana.

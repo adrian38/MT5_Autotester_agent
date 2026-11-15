@@ -187,12 +187,17 @@ def _repeat_tail(audits) -> str:
 def _settled_note(summaries) -> str:
     """Lo que la consulta aparto, dicho una vez y fuera de la tabla.
 
-    Son filas que se quedaron sin veredicto y que ningun boton mueve: sin
-    operaciones, sin historico, con el simbolo retirado, con el trading
-    cerrado, o la sonda de Final Tick que se quedo corta y siguio al 6M.
-    Contarlas como pendientes dejaba Resultados en rojo para siempre; no
-    decirlas seria esconder una etapa mas pequena de lo que es. Van en la
-    linea de aviso, no como hijas: no hay nada que mirar en ellas.
+    Son filas a las que ya no se les puede hacer el reporte: sin operaciones,
+    sin historico, con el simbolo retirado, con el trading cerrado, o la sonda
+    de Final Tick que se quedo corta y siguio al 6M. Contarlas como pendientes
+    dejaba Resultados en rojo para siempre; no decirlas seria esconder una
+    etapa mas pequena de lo que es. Van en la linea de aviso, no como hijas:
+    no hay nada que mirar en ellas.
+
+    La frase no promete que nadie las toque, porque no seria verdad: Robustez
+    y la Regresiva si reencolan algunas al pulsar Arreglar pendientes. Lo que
+    dice es lo unico que se sostiene: repetirlas no produce un reporte que no
+    hubo.
     """
     parts = [
         f"{summary.stage_label} ({', '.join(f'{status} {count}' for status, count in summary.settled_by_status)})"
@@ -203,8 +208,10 @@ def _settled_note(summaries) -> str:
         return ""
     total = sum(summary.settled for summary in summaries)
     return (
-        f"Fuera de la cuenta, {total} que no espera nada: ninguna regla llego a "
-        "juzgarlas y ningun reintento las recoge. " + "; ".join(parts) + "."
+        f"Fuera de la cuenta, {total} sin reporte que hacer: ninguna regla "
+        "llego a juzgarlas y repetirlas no daria nada distinto. "
+        + "; ".join(parts)
+        + "."
     )
 
 
