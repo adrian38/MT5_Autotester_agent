@@ -27,6 +27,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+import tkinter as tk
 from tkinter import messagebox
 
 from ubs.account import account_memory_path
@@ -425,6 +426,48 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin):
             return False
         broker, account_type = context
         return broker == self._ubs_broker() and account_type == self._ubs_account_type()
+
+    def _new_ubs_auditor_menu(self):
+        """El menu que se abre sobre la tabla, en un metodo propio.
+
+        Es la unica linea que necesita un Tk de verdad, asi que sale aparte y
+        lo demas -que fila se pulso, que etapa es, que dice la entrada- se
+        puede probar sin abrir una ventana.
+        """
+        return tk.Menu(self.ubs_auditor_tree, tearoff=0)
+
+    def _ubs_auditor_row_menu(self, event) -> None:
+        """Clic derecho sobre una fila: arreglar los pendientes de esa etapa.
+
+        El boton de la barra ya lo hace, pero sobre lo que este marcado, y
+        marcar primero para pulsar despues es un paso de mas: la fila sobre la
+        que se pulsa ya dice que etapa es. Se marca al abrir el menu, asi que
+        la tabla ensena sobre que se va a actuar antes de elegir nada, y el
+        arreglo sigue siendo el mismo de siempre -con sus avisos de cuenta
+        activa y de run-, no una segunda copia que se quedaria atras.
+
+        Las hijas cuelgan de su etapa en `ubs_auditor_row_stage`, asi que el
+        clic derecho sobre un detalle vale igual que sobre la cabecera. Fuera
+        de las filas no se abre nada.
+        """
+        tree = getattr(self, "ubs_auditor_tree", None)
+        if tree is None:
+            return
+        item = tree.identify_row(event.y)
+        stage_key = str(getattr(self, "ubs_auditor_row_stage", {}).get(item, ""))
+        if not stage_key:
+            return
+        tree.selection_set(item)
+        tree.focus(item)
+        menu = self._new_ubs_auditor_menu()
+        menu.add_command(
+            label=f"Arreglar pendientes de {stage_spec(stage_key).label}",
+            command=self._fix_ubs_pending_states_clicked,
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _fix_ubs_pending_states_clicked(self) -> None:
         stage_key = self._selected_ubs_auditor_stage()

@@ -5,6 +5,9 @@ sin valor vigente en la interfaz (si no, la auditoria la ignoraria en
 silencio), que el repuntuado apunte a la cuenta auditada y no a la activa, y
 que la cola de etapas avance solo cuando el proceso anterior termina bien.
 
+Tambien que el clic derecho sobre una fila lleve al arreglo de esa etapa, que
+es el mismo del boton y no una segunda copia.
+
 Lo que la pantalla pinta a partir de lo contado -las filas, sus cabeceras y
 las lineas de resumen- se mira en `test_ubs_auditor_rows.py`.
 """
@@ -288,6 +291,93 @@ class NavigationTests(unittest.TestCase):
         keys = [key for key, _label in SIDEBAR_ITEMS]
 
         self.assertIn("ubs_auditor", keys)
+
+
+class FakeMenu:
+    """Un menu que apunta lo que se le cuelga en vez de abrirse."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[str, object]] = []
+        self.popped_at: tuple[int, int] | None = None
+        self.released = False
+
+    def add_command(self, *, label: str, command) -> None:
+        self.items.append((label, command))
+
+    def tk_popup(self, x_root: int, y_root: int) -> None:
+        self.popped_at = (x_root, y_root)
+
+    def grab_release(self) -> None:
+        self.released = True
+
+
+class FakeTree:
+    """Lo justo del Treeview que el menu toca: que fila hay bajo el raton."""
+
+    def __init__(self, row_at: dict[int, str]) -> None:
+        self._row_at = row_at
+        self.selected: list[str] = []
+        self.focused = ""
+
+    def identify_row(self, y: int) -> str:
+        return self._row_at.get(y, "")
+
+    def selection_set(self, item: str) -> None:
+        self.selected.append(item)
+
+    def focus(self, item: str) -> None:
+        self.focused = item
+
+
+def _menu_harness(row_at: dict[int, str], row_stage: dict[str, str]):
+    harness = AuditorHarness()
+    harness.ubs_auditor_tree = FakeTree(row_at)
+    harness.ubs_auditor_row_stage = row_stage
+    menu = FakeMenu()
+    harness._new_ubs_auditor_menu = lambda: menu
+    harness.fixed = []
+    harness._fix_ubs_pending_states_clicked = lambda: harness.fixed.append("fix")
+    return harness, menu
+
+
+class RowMenuTests(unittest.TestCase):
+    def test_the_row_under_the_pointer_becomes_the_marked_stage(self) -> None:
+        """Pulsar la fila es marcarla: el arreglo es el de siempre."""
+        harness, menu = _menu_harness({40: "I002"}, {"I002": "robustness"})
+
+        harness._ubs_auditor_row_menu(SimpleNamespace(y=40, x_root=300, y_root=200))
+
+        self.assertEqual(harness.ubs_auditor_tree.selected, ["I002"])
+        self.assertEqual(harness.ubs_auditor_tree.focused, "I002")
+        self.assertEqual(menu.popped_at, (300, 200))
+        self.assertTrue(menu.released)
+
+    def test_the_entry_names_the_stage_and_launches_its_fix(self) -> None:
+        harness, menu = _menu_harness({40: "I002"}, {"I002": "final_tick_6m"})
+
+        harness._ubs_auditor_row_menu(SimpleNamespace(y=40, x_root=0, y_root=0))
+
+        self.assertEqual(len(menu.items), 1)
+        label, command = menu.items[0]
+        self.assertEqual(label, "Arreglar pendientes de Final Tick 6M")
+        command()
+        self.assertEqual(harness.fixed, ["fix"])
+
+    def test_a_detail_row_answers_for_its_stage(self) -> None:
+        """Las hijas cuelgan de su etapa, asi que valen igual que la cabecera."""
+        harness, menu = _menu_harness({60: "I003"}, {"I002": "regression", "I003": "regression"})
+
+        harness._ubs_auditor_row_menu(SimpleNamespace(y=60, x_root=0, y_root=0))
+
+        self.assertEqual(menu.items[0][0], "Arreglar pendientes de Regresiva")
+
+    def test_clicking_below_the_rows_opens_nothing(self) -> None:
+        harness, menu = _menu_harness({}, {"I002": "robustness"})
+
+        harness._ubs_auditor_row_menu(SimpleNamespace(y=900, x_root=0, y_root=0))
+
+        self.assertEqual(menu.items, [])
+        self.assertIsNone(menu.popped_at)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
-"""Pantalla UBS Auditor: una tabla y cuatro acciones.
+"""Pantalla UBS Auditor: una tabla y cinco acciones.
 
 Las dos consultas (reglas movidas y estados pendientes) llenan la misma tabla,
 porque las dos responden a lo mismo: que etapa esta fuera de sitio y a cuantas
 semillas o candidatos arrastra. La tabla es un arbol de una fila por etapa, en
 el orden del embudo, con el detalle colgando de ella. Los dos arreglos van
 detras, en el mismo orden en que se usan.
+
+El clic derecho sobre una fila arregla los pendientes de esa etapa: es el
+mismo arreglo del boton, sobre la fila que se pulsa, sin tener que marcarla
+antes. Lo que hace vive en `ui/ubs_auditor_logic.py`, con el resto.
 """
 from __future__ import annotations
 
@@ -79,7 +83,9 @@ class UBSAuditorViewMixin:
                 "lista los que se quedaron a medias y los que, por haberse vuelto "
                 "elegibles al repuntuar, no tienen fila todavia. «A cuantos afecta» "
                 "cuenta veredictos, que es lo unico que el repuntuado puede cambiar: "
-                "lo que sigue pendiente se juzgara con la regla de ahora al correr."
+                "lo que sigue pendiente se juzgara con la regla de ahora al correr. "
+                "Con el clic derecho sobre una fila se arreglan los pendientes de esa "
+                "etapa directamente."
             ),
             bg=self.colors["panel_alt"],
             fg=self.colors["muted"],
@@ -168,6 +174,10 @@ class UBSAuditorViewMixin:
         self.ubs_auditor_tree.tag_configure("accepted", foreground=self.colors["accent_soft_text"])
         self.ubs_auditor_tree.tag_configure("rejected", foreground=self.colors["danger"])
         self.ubs_auditor_tree.tag_configure("pending", foreground=self.colors["muted"])
+        # Clic derecho sobre una fila: arreglar los pendientes de esa etapa sin
+        # pasar por marcarla y buscar el boton. Lo que hace vive en
+        # `_ubs_auditor_row_menu`, junto al arreglo que acaba lanzando.
+        self.ubs_auditor_tree.bind("<Button-3>", self._ubs_auditor_row_menu)
         self._make_tree_sortable(self.ubs_auditor_tree)
         self._show_ubs_auditor_columns(AUDITOR_RULE_LAYOUT)
         self._attach_tree_scrollbars(table_frame, self.ubs_auditor_tree, 0, vertical=True)
