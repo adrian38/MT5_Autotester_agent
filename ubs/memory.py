@@ -19,6 +19,28 @@ FINAL_TICK_STAGE_TABLES = {
 }
 FINAL_TICK_6M_PROBE_ELIGIBLE_STATUSES = ("accepted", "pending_ohlc_trades")
 
+# Los candidatos a los que todavia se les puede hacer el reporte, que son los
+# que «Continuar run» vuelve a correr: el .set que se genero y nunca llego a
+# correr, y los tres fallos tecnicos que un segundo backtest arregla -el
+# reporte que no aparecio, el que no se pudo leer y el que salio sin contexto
+# del tester-. El que se quedo sin operaciones, sin historico, con el trading
+# cerrado o con el simbolo retirado no esta aqui a proposito -repetirlo no da
+# un reporte que no hubo-, y por eso el auditor lo declara parado en
+# `StageSpec.settled_statuses` en vez de contarlo como pendiente.
+#
+# `generated` entro tarde: la lista se leia como «problemas tecnicos» y un
+# .set sin correr no lo parecia, asi que 180 candidatos salian como pendientes
+# en el auditor y ningun boton los tocaba. Son justo lo contrario de un caso
+# perdido: lo unico que les falta es el backtest.
+RETRYABLE_CANDIDATE_STATUSES = (
+    "generated",
+    "report_mismatch",
+    "no_report",
+    "parse_error",
+    "pending_tester_context",
+)
+_RETRYABLE_CANDIDATE_SQL = ", ".join(f"'{status}'" for status in RETRYABLE_CANDIDATE_STATUSES)
+
 
 def metrics_have_empty_tester_context(metrics_json: object) -> bool:
     """Return whether stored score metrics came from an unusable MT5 report."""
@@ -305,11 +327,11 @@ class AgentMemory(
 
     def retryable_problem_candidates_for_generation(self, run_id: int, generation: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             select *
             from candidates
             where run_id=? and generation=?
-              and status in ('report_mismatch', 'no_report', 'pending_tester_context')
+              and status in ({_RETRYABLE_CANDIDATE_SQL})
             order by id
             """,
             (run_id, generation),
@@ -317,10 +339,10 @@ class AgentMemory(
 
     def retryable_problem_candidates_for_run(self, run_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             select *
             from candidates
-            where run_id=? and status in ('report_mismatch', 'no_report', 'pending_tester_context')
+            where run_id=? and status in ({_RETRYABLE_CANDIDATE_SQL})
             order by generation, id
             """,
             (run_id,),

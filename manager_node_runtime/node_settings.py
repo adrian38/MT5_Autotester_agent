@@ -183,7 +183,7 @@ def declared_cli_options(script: Path) -> set[str] | None:
     """Opciones que `ubs_agent.py` declara, o None cuando no declara ninguna.
 
     None significa «no se puede saber», nunca «no soporta nada»: desde que el
-    parser vive en `ubs_agent_cli.py` la fachada no contiene ni un literal
+    parser vive en `ubs/agent/cli.py`; la fachada no contiene ni un literal
     `--opcion`, y exigirle uno daba por no soportada hasta la memoria por
     broker. El centinela es `--generations`, que declara toda rama con parser
     propio. Detalle en

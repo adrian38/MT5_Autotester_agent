@@ -2,6 +2,26 @@
 
 ## Common Commands
 
+Run all automated tests:
+
+```powershell
+python -m unittest discover -s tests -t .
+```
+
+Run only the embedded manager-node suite:
+
+```powershell
+python -m unittest discover -s tests/manager_node -t .
+```
+
+Replace `manager_node` with `backtest`, `guided`, `integrations`, `portfolio`,
+`quality`, `ubs`, or `ui` to run another isolated suite. UBS subdomains can be
+run more narrowly, for example:
+
+```powershell
+python -m unittest discover -s tests/ubs/final_tick -t .
+```
+
 Run the desktop UI:
 
 ```powershell

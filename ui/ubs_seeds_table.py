@@ -10,6 +10,7 @@ from tkinter import messagebox
 from ubs.db import connect_memory
 from ubs.manual_status import mark_seed_scores
 from ubs.path_utils import resolve_workspace_path, workspace_path_exists
+from ubs.seed_metadata import seed_trace_from_file, seed_trace_from_path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -63,6 +64,7 @@ class UBSSeedsTableMixin:
             override_symbol, override_period = overrides.get(path_text, ("", ""))
             symbol = override_symbol or str(row["symbol"] or "").strip().upper()
             period = override_period or str(row["period"] or "").strip().upper()
+            trace = seed_trace_from_path(Path(path_text))
             reason = self._ubs_seed_reason(row, status)
             item = tree.insert(
                 "",
@@ -72,6 +74,9 @@ class UBSSeedsTableMixin:
                     "obsoleta",
                     symbol,
                     period,
+                    trace.client,
+                    trace.strategy_type,
+                    trace.family,
                     self._format_ubs_number(row["score"]),
                     "",
                     "si" if override_symbol or override_period else "no",
@@ -91,6 +96,7 @@ class UBSSeedsTableMixin:
         override_symbol, override_period = overrides.get(path_text, ("", ""))
         symbol = override_symbol or (str(row["symbol"] or "").strip().upper() if row else inferred_symbol)
         period = override_period or (str(row["period"] or "").strip().upper() if row else inferred_period)
+        trace = seed_trace_from_file(path)
         status = str(row["status"] or "pending") if row else "pending"
         display_status = status
         if (not symbol or not period or symbol == "UNKNOWN" or period == "UNKNOWN") and not override_symbol:
@@ -107,6 +113,9 @@ class UBSSeedsTableMixin:
                 self._format_ubs_status(display_status),
                 symbol,
                 period,
+                trace.client,
+                trace.strategy_type,
+                trace.family,
                 self._format_ubs_number(row["score"] if row else None),
                 accepted,
                 "si" if override_symbol or override_period else "no",

@@ -73,19 +73,29 @@ Copy-Item -LiteralPath (Join-Path $PyInstallerOut "compile_mq5.exe") -Destinatio
 Copy-Item -LiteralPath (Join-Path $PyInstallerOut "run_tests.exe") -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $PyInstallerOut "compile_and_backtest.exe") -Destination $StageDir
 
+# A la raiz de la instalacion: lo que la aplicacion lee de `BASE_DIR`, mas el
+# ejemplo de `.env`, que se copia a mano una vez y por eso viaja al lado.
 $contentFiles = @(
     "README.md",
-    ".env.example",
+    "config/.env.example",
     ".env",
-    "tester_template.ini",
-    "compile_root.txt",
-    "experts_root.txt",
-    "experts_list.txt"
+    "tester_template.ini"
 )
 foreach ($file in $contentFiles) {
     $source = Join-Path $Root $file
     if (Test-Path $source) {
         Copy-Item -LiteralPath $source -Destination $StageDir -Force
+    }
+}
+
+# A `config/` de la instalacion: las tres listas que edita el usuario, que es
+# donde las buscan `backtest/base.py`, `compile_mq5.py` y la interfaz.
+$ConfigDest = Join-Path $StageDir "config"
+New-Item -ItemType Directory -Path $ConfigDest -Force | Out-Null
+foreach ($file in @("compile_root.txt", "experts_root.txt", "experts_list.txt")) {
+    $source = Join-Path $Root (Join-Path "config" $file)
+    if (Test-Path $source) {
+        Copy-Item -LiteralPath $source -Destination $ConfigDest -Force
     }
 }
 
@@ -96,11 +106,14 @@ if (Test-Path $IconPng) {
     Copy-Item -LiteralPath $IconPng -Destination $StageDir -Force
 }
 
+# Solo los .ps1 de limpieza. Los .bat de `scripts/` lanzan los `.py` del
+# proyecto y la instalacion no los tiene -lleva los cuatro .exe-, asi que
+# copiarlos dejaria atajos que no pueden funcionar.
 $ScriptsSource = Join-Path $Root "scripts"
 if (Test-Path $ScriptsSource) {
     $ScriptsDest = Join-Path $StageDir "scripts"
     New-Item -ItemType Directory -Path $ScriptsDest -Force | Out-Null
-    Get-ChildItem -LiteralPath $ScriptsSource -File | ForEach-Object {
+    Get-ChildItem -LiteralPath $ScriptsSource -File -Filter *.ps1 | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $ScriptsDest -Force
     }
 }

@@ -2,8 +2,10 @@
 
 ## Environment File
 
-`mt5_env.py` reads `.env` from the app base directory. In source mode, that is
-the repository root. In PyInstaller frozen mode, it is the executable folder.
+`common/mt5_env.py` reads `.env` from the app base directory. In source mode,
+that is the repository root — `app_base_dir()` resolves `parents[1]` because the
+module lives in `common/`. In PyInstaller frozen mode, it is the executable
+folder.
 
 Supported variables:
 
@@ -16,7 +18,8 @@ Supported variables:
 | `TELEGRAM_BOT_TOKEN` | Optional Telegram bot token. |
 | `TELEGRAM_CHAT_ID` | Optional Telegram chat ID. |
 
-`.env.example` documents the expected format.
+`config/.env.example` documents the expected format; se copia a mano a `.env`
+en la raiz, que es de donde se lee.
 
 ## UI Settings
 
@@ -61,7 +64,8 @@ keys include:
 - `ubs_final_tick_ohlc_from_date`, `ubs_final_tick_ohlc_to_date`
 - `ubs_final_tick_min_history_quality`, `ubs_final_tick_min_ohlc_trades`
 - `ubs_final_tick_max_net_delta_pct`, `ubs_final_tick_max_pf_delta_pct`,
-  `ubs_final_tick_max_dd_delta_pct`, `ubs_final_tick_max_trades_delta_pct`
+  `ubs_final_tick_max_dd_delta_pct`, `ubs_final_tick_max_trades_delta_pct`,
+  `ubs_final_tick_max_dd_gap_pp`
 - UBS Portfolio: `ubs_portfolio_num_symbols`, `ubs_portfolio_type`,
   `ubs_portfolio_valley_pct`, `ubs_portfolio_point_pct`, `ubs_portfolio_capital`,
   `ubs_portfolio_top_k`, `ubs_portfolio_max_candidates`, `ubs_portfolio_min_trades`,
@@ -86,11 +90,11 @@ machine-specific absolute paths.
 
 The project also uses simple text files for source discovery:
 
-- `compile_root.txt`: first active non-comment line points to `.mq5` source
+- `config/compile_root.txt`: first active non-comment line points to `.mq5` source
   directory.
-- `experts_root.txt`: first active non-comment line points to `.ex5` discovery
+- `config/experts_root.txt`: first active non-comment line points to `.ex5` discovery
   directory.
-- `experts_list.txt`: explicit `.ex5` paths relative to MT5 `MQL5/Experts`.
+- `config/experts_list.txt`: explicit `.ex5` paths relative to MT5 `MQL5/Experts`.
 
 ## Generated Directories
 

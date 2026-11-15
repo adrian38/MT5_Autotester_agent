@@ -113,14 +113,18 @@ probabilities. Once evidence exists, an empirical global prior (clamped to
 ## MT5 runtime watchdog
 
 Regression uses `Model=1`, but it is protected by the same general runner
-watchdog as every other model. `run_tests.py` polls the fresh tester journal and
-report artifacts every 10 seconds. The defaults are:
+watchdog as every other model. `run_tests.py` polls the fresh tester journal,
+the report artifacts and the terminal's `AutoTesting processing N %` heartbeat
+every 10 seconds. The defaults are:
 
-- `tester_stall_after=300`: after five minutes without journal or report
-  progress, two consecutive checks terminate the process tree and retry the
-  candidate once.
+- `tester_stall_after=300`: after five minutes without journal, report or
+  heartbeat progress, two consecutive checks terminate the process tree and
+  retry the candidate once. Once a heartbeat has been seen the idle window is
+  raised to `660` seconds, two heartbeats plus margin.
 - `tester_max_runtime=1800`: absolute 30-minute ceiling for one backtest,
-  including cases where the journal cannot be found.
+  including cases where the journal cannot be found. A pass whose heartbeat
+  keeps moving is allowed up to four times that ceiling, because a five-year
+  M1 pass outlives 30 minutes and dying there leaves no report at all.
 
 Both values live in `[Multiterminal]` in `ui_settings.ini` and have CLI
 overrides `--tester-stall-after` and `--tester-max-runtime`. A forced

@@ -24,15 +24,17 @@ def command_specs(*, include_full_suite: bool = True) -> list[CommandSpec]:
         CommandSpec("contexto", (python, "-m", "tools.ai_context_index")),
         CommandSpec("protocolo", (python, "-m", "tools.protocol_parity")),
         CommandSpec("guardas", (
-            python, "-m", "unittest", "tests.test_project_rules",
-            "tests.test_function_length", "tests.test_file_length",
-            "tests.test_ai_context_index", "tests.test_undefined_names",
-            "tests.test_verify_project",
+            python, "-m", "unittest", "tests.quality.test_project_rules",
+            "tests.quality.test_repository_root",
+            "tests.quality.test_function_length", "tests.quality.test_file_length",
+            "tests.quality.test_ai_context_index", "tests.quality.test_undefined_names",
+            "tests.quality.test_verify_project",
         )),
     ]
     if include_full_suite:
         specs.append(CommandSpec(
-            "suite IC", (python, "-m", "unittest", "discover", "-s", "tests"),
+            "suite IC",
+            (python, "-m", "unittest", "discover", "-s", "tests", "-t", "."),
         ))
     return specs
 
