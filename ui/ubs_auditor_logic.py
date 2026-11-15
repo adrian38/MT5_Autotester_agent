@@ -20,6 +20,8 @@ arreglos:
   huecos a la vez, porque el runner ya los trata igual: el que se quedo a
   medias y el que acaba de volverse elegible y no tiene fila todavia -lo que
   deja detras un repuntuado que paso a alguien de rejected a accepted-.
+  Sin etapa marcada arregla todas, como la tabla cuenta toda la memoria
+  mientras no se marque nada; con una marcada, solo esa.
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ from tkinter import messagebox
 
 from ubs.account import account_memory_path
 from ubs.db import connect_memory
-from ubs.stage_rules_audit import pending_runs, stage_spec
+from ubs.stage_rules_audit import audit_pending_states, pending_runs, stage_spec
 from ui.ubs_auditor_queries import UBSAuditorQueriesMixin
 from ui.ubs_auditor_rescore import UBSAuditorRescoreMixin
 from ui.ubs_search_audit_base import AUDIT_FINAL_STATUSES
@@ -227,7 +229,7 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
         broker, account_type = context
         return broker == self._ubs_broker() and account_type == self._ubs_account_type()
 
-    def _ubs_auditor_pending_runs(self, stage_key: str):
+    def _ubs_auditor_pending_runs(self, stage_key: str, *, quiet: bool = False):
         """Los runs de la etapa a los que les queda algo, o `None` si fallo.
 
         Las etapas de semilla no cuelgan de ningun run y devuelven la lista
@@ -235,6 +237,9 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
         mira solo ese, que es lo que la tabla esta ensenando; sin marcar, la
         etapa entera, porque arreglar «Resultados» es arreglar los resultados,
         no los de un run que el auditor no ha elegido.
+
+        `quiet` calla el aviso de «no tiene pendientes»: en el barrido de todas
+        las etapas, una vacia es lo normal y no un dialogo que cerrar.
         """
         spec = stage_spec(stage_key)
         if not spec.run_column:
@@ -253,30 +258,97 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
         if selected:
             gaps = tuple(gap for gap in gaps if gap.run_id == selected)
         if not gaps:
-            messagebox.showinfo(
-                "Auditor UBS",
-                f"{spec.label} no tiene pendientes"
-                + (f" en el run #{selected}." if selected else " en esta memoria."),
-            )
+            if not quiet:
+                messagebox.showinfo(
+                    "Auditor UBS",
+                    f"{spec.label} no tiene pendientes"
+                    + (f" en el run #{selected}." if selected else " en esta memoria."),
+                )
             return None
         return gaps
 
-    def _confirm_ubs_auditor_pending(self, stage_key: str, gaps) -> bool:
-        """Pregunta una vez por toda la etapa, con el alcance a la vista.
+    def _ubs_auditor_stage_queue(
+        self, stage_key: str, *, quiet: bool = False, rows: tuple[int, int] = (0, 0)
+    ) -> list[tuple]:
+        """La cola de una etapa: una corrida por run con hueco.
 
-        Lo que hay que ver antes de decir que si son los runs: cada uno abre
-        MT5 por su cuenta y van uno detras de otro, asi que trescientos runs
-        no son un boton, son una tarde.
+        Las de semilla no cuelgan de ningun run y salen como una sola corrida
+        con el run cero, que su runner ignora, para que el camino sea uno solo.
+        Sus cuentas no vienen por run, asi que las pone quien las sepa (`rows`)
+        o el dialogo prometeria cero semillas.
         """
-        pending = sum(gap.pending for gap in gaps)
-        missing = sum(gap.missing for gap in gaps)
+        gaps = self._ubs_auditor_pending_runs(stage_key, quiet=quiet)
+        if gaps is None:
+            return []
+        return [
+            (stage_key, gap.run_id, gap.pending, gap.missing) for gap in gaps
+        ] or [(stage_key, 0, rows[0], rows[1])]
+
+    def _ubs_auditor_every_stage_queue(self) -> list[tuple]:
+        """La cola de todas las etapas, que es lo que el boton hace sin marca.
+
+        Sin fila marcada el boton arregla lo que la tabla cuenta: la memoria
+        entera. Las etapas van en el orden de `STAGE_SPECS`, que es el del
+        pipeline, porque arreglar Resultados da de comer a Robustez y esta a
+        Final Tick; al reves, la de abajo correria antes de que existiera su
+        entrada y habria que volver a pasar.
+
+        Se pregunta primero quien tiene algo -la misma cuenta que Consultar
+        pendientes- en vez de encolar las ocho: las tres de semilla recorren el
+        disco entero y abrir MT5 para nada es media tarde.
+        """
+        conn = self._ubs_auditor_open_memory()
+        if conn is None:
+            return []
+        try:
+            summaries = audit_pending_states(
+                conn,
+                final_statuses=AUDIT_FINAL_STATUSES,
+                run_id=self._ubs_auditor_selected_run_id(),
+            )
+        except sqlite3.Error as exc:
+            self._show_error("Auditor UBS", f"Error buscando pendientes: {exc}")
+            return []
+        finally:
+            conn.close()
+        queue: list[tuple] = []
+        for summary in summaries:
+            if not (summary.pending + summary.missing):
+                continue
+            queue.extend(
+                self._ubs_auditor_stage_queue(
+                    summary.stage, quiet=True, rows=(summary.pending, summary.missing)
+                )
+            )
+        if not queue:
+            selected = self._ubs_auditor_selected_run_id()
+            messagebox.showinfo(
+                "Auditor UBS",
+                "Ninguna etapa tiene pendientes"
+                + (f" en el run #{selected}." if selected else " en esta memoria."),
+            )
+        return queue
+
+    def _confirm_ubs_auditor_pending(self, queue) -> bool:
+        """Pregunta una vez por toda la cola, con el alcance a la vista.
+
+        Lo que hay que ver antes de decir que si son las corridas: cada una
+        abre MT5 por su cuenta y van una detras de otra, asi que trescientos
+        runs no son un boton, son una tarde.
+        """
+        stages: list[str] = []
+        for stage_key, _run_id, _pending, _missing in queue:
+            if stage_key not in stages:
+                stages.append(stage_key)
+        pending = sum(item[2] for item in queue)
+        missing = sum(item[3] for item in queue)
         details = [
-            f"Etapa: {stage_spec(stage_key).label}",
-            f"Runs con algo que hacer: {len(gaps)}",
+            "Etapas: " + ", ".join(stage_spec(key).label for key in stages),
+            f"Corridas en cola: {len(queue)}",
             f"Se quedaron a medias: {pending}",
             f"Sin fila todavia: {missing}",
-            "Cada run abre MT5 por su cuenta, uno detras de otro.",
-            "Si uno termina mal, la cola se para.",
+            "Cada corrida abre MT5 por su cuenta, una detras de otra.",
+            "Si una termina mal, la cola se para.",
         ]
         return self._confirm_execution_start(
             "Confirmar arreglo de pendientes", pending + missing, details
@@ -315,23 +387,26 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
         quedaria parada en el primer desacuerdo. Por eso se salta en el sitio
         hasta dar con uno que arranque.
         """
-        stage_key = str(getattr(self, "_ubs_auditor_pending_stage", ""))
         queue = list(getattr(self, "_ubs_auditor_pending_queue", []))
-        label = stage_spec(stage_key).label if stage_key else ""
         skipped = 0
         while queue:
-            run_id = int(queue.pop(0))
+            stage_key, run_id = queue[0][0], int(queue[0][1])
+            queue.pop(0)
             self._ubs_auditor_pending_queue = queue
+            # La etapa es de la corrida, no de la cola: sin marca van varias, y
+            # de ella cuelga el permiso para encadenar la siguiente.
+            self._ubs_auditor_pending_stage = stage_key
+            label = stage_spec(stage_key).label
             if self._run_ubs_auditor_pending(stage_key, run_id):
                 self.ubs_auditor_status.set(
                     f"Pendientes de {label}"
                     + (f" en el run #{run_id}" if run_id else "")
-                    + f"; quedan {len(queue)} run(s)."
+                    + f"; quedan {len(queue)} corrida(s)."
                 )
                 self._append_console(
                     f"\n[Auditor UBS] Pendientes de {label}"
                     + (f" en el run #{run_id}" if run_id else "")
-                    + f"; quedan {len(queue)} run(s).\n",
+                    + f"; quedan {len(queue)} corrida(s).\n",
                     tag="info",
                 )
                 return True
@@ -339,7 +414,7 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
         self._ubs_auditor_pending_queue = []
         if skipped:
             self.ubs_auditor_status.set(
-                f"Pendientes de {label}: {skipped} run(s) sin nada que su runner "
+                f"Arreglar pendientes: {skipped} corrida(s) sin nada que su runner "
                 "reconozca. Vuelve a consultar pendientes."
             )
         return False
@@ -390,13 +465,13 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
             menu.grab_release()
 
     def _fix_ubs_pending_states_clicked(self) -> None:
-        stage_key = self._selected_ubs_auditor_stage()
-        if not stage_key:
-            messagebox.showinfo(
-                "Auditor UBS",
-                "Selecciona la fila de la etapa cuyos pendientes quieres arreglar.",
-            )
-            return
+        """Arregla los pendientes de la etapa marcada, o de todas si no hay.
+
+        La marca es un filtro, no un requisito: la tabla ya cuenta la memoria
+        entera mientras no se marque nada, y pedir una fila para arreglar lo
+        que se acaba de contar era un paso de mas. El menu del clic derecho
+        marca la fila antes de llamar aqui, asi que sigue arreglando una.
+        """
         if not self._ubs_auditor_account_is_active():
             messagebox.showinfo(
                 "Auditor UBS",
@@ -405,17 +480,23 @@ class UBSAuditorLogicMixin(UBSAuditorQueriesMixin, UBSAuditorRescoreMixin):
                 f"{self.ubs_auditor_account.get()} y vuelve a intentarlo.",
             )
             return
-        gaps = self._ubs_auditor_pending_runs(stage_key)
-        if gaps is None:
+        stage_key = self._selected_ubs_auditor_stage()
+        queue = (
+            self._ubs_auditor_stage_queue(stage_key) if stage_key
+            else self._ubs_auditor_every_stage_queue()
+        )
+        if not queue:
             return
-        if gaps and not self._confirm_ubs_auditor_pending(stage_key, gaps):
+        if not self._confirm_ubs_auditor_pending(queue):
             return
-        self._ubs_auditor_pending_stage = stage_key
-        # Las etapas de semilla no cuelgan de ningun run: su cola es el run
-        # cero, que su runner ignora, para que el camino sea uno solo.
-        self._ubs_auditor_pending_queue = [gap.run_id for gap in gaps] or [0]
+        self._ubs_auditor_pending_queue = queue
+        self._ubs_auditor_pending_stage = queue[0][0]
+        scope = (
+            stage_spec(stage_key).label if stage_key
+            else f"{len({item[0] for item in queue})} etapa(s)"
+        )
         self.ubs_auditor_status.set(
-            f"Pendientes de {stage_spec(stage_key).label}: {len(gaps) or 1} run(s) en cola."
+            f"Pendientes de {scope}: {len(queue)} corrida(s) en cola."
         )
         self._start_next_ubs_auditor_pending()
 

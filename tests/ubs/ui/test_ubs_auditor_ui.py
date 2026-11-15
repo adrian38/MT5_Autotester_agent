@@ -9,17 +9,18 @@ Tambien que el clic derecho sobre una fila lleve al arreglo de esa etapa, que
 es el mismo del boton y no una segunda copia.
 
 Lo que la pantalla pinta a partir de lo contado -las filas, sus cabeceras y
-las lineas de resumen- se mira en `test_ubs_auditor_rows.py`.
+las lineas de resumen- se mira en `test_ubs_auditor_rows.py`, y el arreglo de
+pendientes -a que etapas llega y como avanza su cola- en
+`test_ubs_auditor_pending.py`.
 """
 from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
 
-from tests.ubs.ui.auditor_fixtures import fake_finding
+from tests.ubs.ui.auditor_fixtures import AuditorHarness, fake_finding
 from ubs.stage_rules_audit import STAGE_SPECS
 from ui.app_chrome import SIDEBAR_ITEMS
-from ui.ubs_auditor_logic import UBSAuditorLogicMixin
 from ui.ubs_auditor_view import (
     AUDITOR_COLUMNS,
     AUDITOR_PENDING_LAYOUT,
@@ -35,120 +36,6 @@ from ui.ubs_auditor_view import (
 # que una tabla mas ancha que esto nace escondiendo lo que se viene a mirar.
 AUDITOR_TABLE_BUDGET = 930
 
-
-class FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self._value = value
-
-    def get(self) -> object:
-        return self._value
-
-    def set(self, value: object) -> None:
-        self._value = value
-
-
-class AuditorHarness(UBSAuditorLogicMixin):
-    """Auditor con variables, rutas y lanzamientos de pega."""
-
-    def __init__(self) -> None:
-        self.ubs_auditor_account = FakeVar("ICTRADING/REAL")
-        self.ubs_auditor_run_id = FakeVar("#7 | 2026-11-01 10:00")
-        self.ubs_auditor_status = FakeVar("")
-        self.ubs_seed_pass_min_net_profit = FakeVar("0")
-        self.ubs_seed_pass_min_profit_factor = FakeVar("1.20")
-        self.ubs_seed_pass_min_trades = FakeVar(50)
-        self.ubs_seed_pass_max_drawdown_pct = FakeVar("25")
-        self.ubs_seed_pass_min_recovery_factor = FakeVar("1.0")
-        self.ubs_pass_min_net_profit = FakeVar("100")
-        self.ubs_pass_min_profit_factor = FakeVar("1.20")
-        self.ubs_pass_min_trades = FakeVar(50)
-        self.ubs_pass_max_drawdown_pct = FakeVar("25")
-        self.ubs_pass_min_recovery_factor = FakeVar("1.0")
-        self.ubs_robust_pass_min_net_profit = FakeVar("100")
-        self.ubs_robust_pass_min_profit_factor = FakeVar("1.20")
-        self.ubs_robust_pass_min_trades = FakeVar(50)
-        self.ubs_robust_pass_max_drawdown_pct = FakeVar("25")
-        self.ubs_robust_pass_min_recovery_factor = FakeVar("1.0")
-        self.ubs_robust_from_date = FakeVar("2024.01.01")
-        self.ubs_robust_to_date = FakeVar("2025.12.31")
-        self.ubs_regression_positive_points = FakeVar("80")
-        self.ubs_regression_negative_points = FakeVar("-100")
-        self.ubs_regression_from_date = FakeVar("2017.01.01")
-        self.ubs_regression_to_date = FakeVar("2019.12.31")
-        self._ubs_auditor_rescore_queue: list[str] = []
-        self.launched: list[list[str]] = []
-        self.console: list[str] = []
-
-    # Reglas y umbrales vigentes
-    def _score_float(self, variable, label, *, minimum=None, maximum=None) -> float:
-        return float(str(variable.get()).replace(",", "."))
-
-    def _ubs_robust_bonus_values(self) -> tuple[float, float]:
-        return 70.0, -70.0
-
-    def _ubs_final_tick_threshold_values(self) -> dict[str, float]:
-        return {
-            "min_quality": 80.0,
-            "min_ohlc_trades": 5,
-            "min_trades_w1": 2,
-            "min_trades_mn": 1,
-            "net_delta": 35.0,
-            "pf_delta": 35.0,
-            "dd_delta": 35.0,
-            "trades_delta": 35.0,
-            "dd_gap_pp": 3.0,
-        }
-
-    def _final_tick_stage_dates(self, final_tick_stage: str = "probe"):
-        if final_tick_stage == "six_month":
-            return "2026.01.01", "2026.06.30", "", ""
-        return "2026.05.01", "2026.05.31", "", ""
-
-    def _ubs_regression_threshold_values(self) -> dict[str, object]:
-        return {
-            "net": 0.0, "pf": 1.10, "trades": 36, "trades_w1": 12, "trades_mn": 4,
-            "dd": 30.0, "recovery": 0.75, "months": 0.50, "pf_efficiency": 0.50,
-            "dd_ratio": 2.0, "positive": 80.0, "negative": -100.0,
-        }
-
-    # Contexto de cuenta y rutas
-    def _parse_ubs_account_context(self, value):
-        text = str(value or "")
-        if "/" not in text:
-            return None
-        broker, account = text.split("/", 1)
-        return broker.strip().upper(), account.strip().upper()
-
-    def _ubs_generator_source_dir(self):
-        return "sets"
-
-    def _ubs_generation_output_dir(self):
-        return "outputs"
-
-    def _ubs_seed_score_args(self) -> list[str]:
-        return ["--min-trades", "50"]
-
-    def _ubs_score_args(self) -> list[str]:
-        return ["--min-trades", "50", "--robust-min-net-retention", "0.50"]
-
-    def _ubs_robust_score_args(self) -> list[str]:
-        return ["--min-trades", "50"]
-
-    def _effective_ubs_symbol_map_text(self) -> str:
-        return ""
-
-    def _effective_symbol_suffix_args(self) -> list[str]:
-        return []
-
-    # Proceso
-    def _run_script(self, script_name: str, args: list[str]) -> None:
-        self.launched.append(list(args))
-
-    def _append_console(self, text: str, tag: str = "") -> None:
-        self.console.append(text)
-
-    def after(self, _delay, callback):
-        callback()
 
 
 class CurrentRulesTests(unittest.TestCase):
@@ -402,74 +289,3 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class _QueueHarness(AuditorHarness):
-    """Auditor cuya etapa apunta los runs que le mandan en vez de correrlos.
-
-    `runs_that_do_nothing` son los que el runner deja pasar -el .set ya no
-    esta, el estado no es de los suyos-: no dejan proceso, asi que de ellos no
-    cuelga el siguiente de la cola.
-    """
-
-    def __init__(self, *, runs_that_do_nothing=()) -> None:
-        super().__init__()
-        self.started: list[int] = []
-        self._skip = set(runs_that_do_nothing)
-
-    def _run_ubs_auditor_pending(self, stage_key: str, run_id: int) -> bool:
-        self.started.append(run_id)
-        return run_id not in self._skip
-
-
-class PendingQueueTests(unittest.TestCase):
-    """La cola de runs del arreglo de pendientes."""
-
-    @staticmethod
-    def _harness(queue, **kwargs) -> _QueueHarness:
-        harness = _QueueHarness(**kwargs)
-        harness._ubs_auditor_pending_stage = "final_tick_6m"
-        harness._ubs_auditor_pending_queue = list(queue)
-        return harness
-
-    def test_the_queue_advances_one_run_per_process(self) -> None:
-        harness = self._harness([7, 8, 9])
-
-        self.assertTrue(harness._start_next_ubs_auditor_pending())
-
-        self.assertEqual(harness.started, [7])
-        self.assertEqual(harness._ubs_auditor_pending_queue, [8, 9])
-
-        harness._maybe_auto_run_ubs_auditor_pending("ubs_agent.py", [], 0)
-
-        self.assertEqual(harness.started, [7, 8])
-        self.assertEqual(harness._ubs_auditor_pending_queue, [9])
-
-    def test_a_run_the_runner_skips_does_not_stall_the_queue(self) -> None:
-        """Sin proceso no hay final al que colgar el siguiente."""
-        harness = self._harness([7, 8, 9], runs_that_do_nothing=(7, 8))
-
-        self.assertTrue(harness._start_next_ubs_auditor_pending())
-
-        self.assertEqual(harness.started, [7, 8, 9])
-        self.assertEqual(harness._ubs_auditor_pending_queue, [])
-
-    def test_a_queue_nobody_runs_ends_saying_so(self) -> None:
-        harness = self._harness([7, 8], runs_that_do_nothing=(7, 8))
-
-        self.assertFalse(harness._start_next_ubs_auditor_pending())
-
-        self.assertIn("2 run(s) sin nada", harness.ubs_auditor_status.get())
-
-    def test_a_bad_exit_cancels_what_was_left(self) -> None:
-        harness = self._harness([7, 8])
-
-        started = harness._maybe_auto_run_ubs_auditor_pending("ubs_agent.py", [], 2)
-
-        self.assertFalse(started)
-        self.assertEqual(harness.started, [])
-        self.assertEqual(harness._ubs_auditor_pending_queue, [])
-        self.assertTrue(any("cancelada" in line for line in harness.console))
-
-    def test_an_empty_queue_lets_the_other_chains_answer(self) -> None:
-        harness = self._harness([])
-
-        self.assertFalse(harness._maybe_auto_run_ubs_auditor_pending("ubs_agent.py", [], 0))
