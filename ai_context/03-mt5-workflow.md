@@ -265,6 +265,16 @@ On top of that, the stages no longer *enqueue* retired symbols at all:
 `.set` is copied or `run_tests.py` is spawned (robustness, Final Tick, and the
 regression's own equivalent inside `evaluate_candidate_regression`).
 
+The technical-problem retries do the same, via `_skip_retired_candidates()` in
+`ubs/agent/evaluation/retry.py` (single candidate, by generation, by run). There
+the filter is not only about wasting a launch: `write_retry_set()` is strict on
+ICTrading, and a retired name is by definition absent from the universe it
+resolves the MT5 spelling against, so the stage copy raised `ValueError` and
+aborted the whole auditor pass — one retired symbol took down the other seven
+runs with it. `Reprobar run completo` splits them too but records nothing,
+because that batch also carries `accepted` candidates whose report is still the
+good one; the pending ones are marked by the technical-problem route.
+
 **Filtering without recording would be a new infinite loop.** Stage selection is
 "no row OR retryable status" (`robust_status_pending_for_retry`,
 `ubs/regression.py`), so a candidate that is silently dropped keeps no row and

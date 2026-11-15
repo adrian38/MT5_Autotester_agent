@@ -11,6 +11,7 @@ import ubs.agent.generation.sets
 import ubs.agent.run.config
 import ubs.agent.evaluation.robustness
 import ubs.agent.evaluation.evaluate
+import ubs.agent.evaluation.retry
 import ubs.agent.config
 from ubs.models import Seed, Variant
 
@@ -307,6 +308,101 @@ class StageRetrySetsTests(unittest.TestCase):
         ):
             with self.subTest(retry_set=name):
                 self.assertNotIn(status, retryable)
+
+
+class MismatchRetryRetiredSymbolTests(unittest.TestCase):
+    """El retry de problemas tecnicos tampoco encola simbolos retirados.
+
+    Era la unica etapa sin el filtro: la copia de etapa es estricta en ICTrading
+    y abortaba la pasada entera del auditor con un ValueError al no poder
+    resolver la ortografia MT5 de un nombre que ya no esta en el universo."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        assets = root / "assets.ini"
+        write_universe(assets, ["XAUUSD", "USDRUB"])
+        self.args = argparse.Namespace(
+            assets=str(assets),
+            symbol_map="",
+            broker="ICTRADING",
+            expert=True,
+            multi_terminal=False,
+            dry_run=False,
+            retry_run_id=7,
+        )
+        self.run_dir = root / "run"
+        self.run_dir.mkdir()
+        self.rows = []
+        for candidate_id, symbol in ((1, "SSSS.NAS"), (2, "XAUUSD")):
+            set_path = self.run_dir / f"candidate_{candidate_id}.set"
+            set_path.write_text("ForceSymbol=XAUUSD\n", encoding="utf-8")
+            self.rows.append(
+                {
+                    "id": candidate_id,
+                    "run_id": 7,
+                    "generation": 2,
+                    "target_symbol": symbol,
+                    "set_path": str(set_path),
+                }
+            )
+        self.memory = Mock()
+        self.memory.run_by_id.return_value = {"id": 7, "output_dir": str(self.run_dir)}
+        self.memory.mismatch_candidates_for_run.return_value = self.rows
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+
+    def tearDown(self) -> None:
+        ubs.agent.generation.universe._BROKER_UNIVERSE_SYMBOLS_CACHE.clear()
+        self.temp.cleanup()
+
+    def test_retired_candidate_is_marked_and_not_prepared(self) -> None:
+        prepared = Mock(return_value=None)
+        with patch.object(ubs.agent.evaluation.retry, "_prepare_mismatch_retry", prepared), \
+             patch.object(ubs.agent.evaluation.retry, "recreate_work_dir", side_effect=lambda path: path):
+            ubs.agent.evaluation.retry.retry_run_mismatches(self.args, self.memory, Mock())
+
+        self.memory.record_score.assert_called_once_with(
+            Path(self.rows[0]["set_path"]), None, ubs.agent.config.SYMBOL_NOT_EXIST_STATUS, None
+        )
+        rows_with_paths = prepared.call_args.args[1]
+        self.assertEqual([row["id"] for row, _set_path in rows_with_paths], [2])
+
+    def test_batch_of_only_retired_candidates_does_not_launch_mt5(self) -> None:
+        self.memory.mismatch_candidates_for_run.return_value = [self.rows[0]]
+        run_backtests = Mock()
+        with patch.object(ubs.agent.evaluation.retry, "run_backtests", run_backtests), \
+             patch.object(ubs.agent.evaluation.retry, "recreate_work_dir", side_effect=lambda path: path):
+            code = ubs.agent.evaluation.retry.retry_run_mismatches(self.args, self.memory, Mock())
+
+        # Cero: se ha resuelto lo que habia que resolver, no es un fallo de etapa.
+        self.assertEqual(code, 0)
+        run_backtests.assert_not_called()
+
+    def test_single_candidate_retry_stops_before_the_stage_copy(self) -> None:
+        self.memory.candidate_by_id.return_value = self.rows[0]
+        write_retry_set = Mock()
+        with patch.object(ubs.agent.evaluation.retry, "write_retry_set", write_retry_set):
+            code = ubs.agent.evaluation.retry._retry_single_candidate(
+                1, self.args, self.memory, Mock()
+            )
+
+        self.assertEqual(code, 0)
+        write_retry_set.assert_not_called()
+        self.memory.record_score.assert_called_once_with(
+            Path(self.rows[0]["set_path"]), None, ubs.agent.config.SYMBOL_NOT_EXIST_STATUS, None
+        )
+
+    def test_full_rerun_skips_retired_without_touching_its_score(self) -> None:
+        """Reprobar completo arrastra aceptados: apartarlos no debe puntuarlos."""
+        self.memory.candidates_for_run.return_value = self.rows
+        self.args.retry_candidate_id = []
+
+        rows_with_paths, _requested = ubs.agent.evaluation.retry._retry_full_rows(
+            self.args, self.memory, 7
+        )
+
+        self.assertEqual([row["id"] for row, _set_path in rows_with_paths], [2])
+        self.memory.record_score.assert_not_called()
 
 
 class BrokerUniverseSymbolsTests(unittest.TestCase):

@@ -16,6 +16,7 @@ from ubs.seeds import seed_eval_filename, seed_from_path
 from ubs.agent.config import (
     BASE_DIR,
     DEFAULT_OUTPUT,
+    SYMBOL_NOT_EXIST_STATUS,
 )
 from ubs.agent.evaluation.evaluate import (
     copy_accepted,
@@ -36,7 +37,9 @@ from ubs.agent.generation.sets import (
 )
 from ubs.agent.generation.universe import (
     broker_universe_symbols,
+    format_retired_symbol_rows,
     missing_report_status,
+    split_retired_symbols,
 )
 from ubs.agent.seeds.retry import retry_seed  # noqa: F401
 from ubs.agent.evaluation.variants import (
@@ -90,6 +93,37 @@ def _evaluate_retried_candidate(
         print(f"Retry terminado con estado: {status}")
 
 
+def _skip_retired_candidates(
+    args: argparse.Namespace,
+    memory: AgentMemory,
+    items: list,
+    label: str,
+    *,
+    row_of=None,
+) -> tuple[list, list]:
+    """Aparta del reintento los candidatos cuyo simbolo ya no ofrece el broker.
+
+    Reintentar no puede cambiar nada: MT5 ni abre el Strategy Tester para un
+    simbolo que no existe en el servidor. Peor aun, la copia de etapa aborta la
+    pasada entera en ICTrading, donde la ortografia MT5 exacta es obligatoria y
+    un nombre retirado ya no esta en el universo contra el que se resuelve.
+
+    El estado que se graba es terminal a proposito: ``no_report`` es retryable y
+    la seleccion de etapa lo volveria a elegir en cada pasada del auditor."""
+    kept, retired = split_retired_symbols(items, args, row_of=row_of)
+    for row in retired:
+        # La clave de la fila es la ruta tal y como la grabo el run; resolverla
+        # contra este checkout no encontraria el candidato.
+        memory.record_score(Path(row["set_path"]), None, SYMBOL_NOT_EXIST_STATUS, None)
+    if retired:
+        print(
+            f"{label}: {len(retired)} candidato(s) omitidos sin abrir MT5 por simbolo "
+            f"retirado del broker ({format_retired_symbol_rows(retired)}); "
+            f"marcados {SYMBOL_NOT_EXIST_STATUS}."
+        )
+    return kept, retired
+
+
 def _retry_single_candidate(
     candidate_id: int,
     args: argparse.Namespace,
@@ -105,6 +139,12 @@ def _retry_single_candidate(
     if not set_path.exists():
         print(f"ERROR: no existe el set del candidato: {set_path}")
         return 1
+
+    _kept, retired = _skip_retired_candidates(
+        args, memory, [row], f"Retry candidate #{candidate_id}"
+    )
+    if retired:
+        return 0
 
     run = memory.run_by_id(int(row["run_id"]))
     run_dir = resolve_workspace_path(run["output_dir"]) if run else DEFAULT_OUTPUT
@@ -229,7 +269,14 @@ def retry_generation_mismatches(args: argparse.Namespace, memory: AgentMemory, s
         for row in memory.mismatch_candidates_for_generation(run_id, generation)
     ]
     rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
+    rows_with_paths, retired = _skip_retired_candidates(
+        args, memory, rows_with_paths,
+        f"Retry problemas tecnicos run #{run_id} gen {generation}",
+        row_of=lambda item: item[0],
+    )
     if not rows_with_paths:
+        if retired:
+            return 0
         print(f"ERROR: run #{run_id} gen {generation} no tiene problemas reintentables con .set existente")
         return 1
 
@@ -274,7 +321,13 @@ def retry_run_mismatches(args: argparse.Namespace, memory: AgentMemory, score_co
         for row in memory.mismatch_candidates_for_run(run_id)
     ]
     rows_with_paths = [(row, set_path) for row, set_path in rows_with_paths if set_path.exists()]
+    rows_with_paths, retired = _skip_retired_candidates(
+        args, memory, rows_with_paths, f"Retry problemas tecnicos run #{run_id}",
+        row_of=lambda item: item[0],
+    )
     if not rows_with_paths:
+        if retired:
+            return 0
         print(f"ERROR: run #{run_id} no tiene problemas reintentables con .set existente")
         return 1
 
@@ -327,6 +380,21 @@ def _retry_full_rows(args: argparse.Namespace, memory: AgentMemory, run_id: int)
             return None, requested_ids
     if not rows_with_paths:
         print(f"ERROR: run #{run_id} no tiene candidatos con .set existente")
+        return None, requested_ids
+    rows_with_paths, retired = split_retired_symbols(
+        rows_with_paths, args, row_of=lambda item: item[0]
+    )
+    if retired:
+        # Aqui no se graba el estado terminal: reprobar completo arrastra tambien
+        # candidatos aceptados, cuyo reporte sigue siendo el bueno. Apartarlos sin
+        # tocarlos los deja intactos en vez de borrarles la puntuacion; a los que
+        # de verdad estan pendientes los marca la ruta de problemas tecnicos.
+        print(
+            f"Reprobar run completo #{run_id}: {len(retired)} candidato(s) omitidos por "
+            f"simbolo retirado del broker ({format_retired_symbol_rows(retired)})."
+        )
+    if not rows_with_paths:
+        print(f"ERROR: run #{run_id} solo tiene candidatos de simbolos retirados por el broker")
         return None, requested_ids
     return rows_with_paths, requested_ids
 
