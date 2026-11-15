@@ -432,7 +432,14 @@ def audit_pending_states(
     run_id: int = 0,
     stages: Iterable[str] | None = None,
 ) -> list[PendingAudit]:
-    """Resumen por etapa de las filas que no llegaron a un estado final."""
+    """Resumen por etapa de lo que todavia espera a que alguien lo corra.
+
+    `final_statuses` son los veredictos -accepted y rejected-, y cada etapa
+    declara aparte en que estados se para una fila para siempre sin llegar a
+    ninguno de los dos (`settled_statuses`). Pendiente es lo que no es ni una
+    cosa ni la otra: un estado nuevo que nadie haya declarado sale por aqui,
+    que es donde se ve.
+    """
     finals = _normalized_statuses(final_statuses)
     summaries: list[PendingAudit] = []
     for spec in _selected_specs(stages):
@@ -449,11 +456,16 @@ def audit_pending_states(
             )
             continue
         rows = _stage_rows(conn, spec, run_id=run_id, columns=columns)
+        settled_statuses = {status.strip().lower() for status in spec.settled_statuses}
         counts: dict[str, int] = {}
+        settled: dict[str, int] = {}
         ids: list[int] = []
         for row in rows:
             status = str(row["status"] or "").strip().lower() or "(sin estado)"
             if status in finals:
+                continue
+            if status in settled_statuses:
+                settled[status] = settled.get(status, 0) + 1
                 continue
             counts[status] = counts.get(status, 0) + 1
             ids.append(int(row[spec.id_column] or 0))
@@ -461,10 +473,12 @@ def audit_pending_states(
             PendingAudit(
                 stage=spec.key,
                 stage_label=spec.label,
-                rows=len(rows),
+                rows=len(rows) - sum(settled.values()),
                 pending=len(ids),
-                by_status=tuple(sorted(counts.items(), key=lambda item: (-item[1], item[0]))),
+                by_status=tuple(_by_count(counts)),
                 ids=tuple(ids[:MAX_REPORTED_IDS]),
+                settled=sum(settled.values()),
+                settled_by_status=tuple(_by_count(settled)),
                 missing=_missing_rows(conn, spec, run_id=run_id),
             )
         )

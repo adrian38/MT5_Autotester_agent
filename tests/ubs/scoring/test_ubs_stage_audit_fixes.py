@@ -48,6 +48,81 @@ class PendingStatesAuditTests(unittest.TestCase):
         )
         self.assertEqual(summary.ids, (3, 4, 5))
 
+    def test_a_state_nobody_retries_is_not_pending(self) -> None:
+        """El Final Tick que se quedo corto de operaciones no espera nada.
+
+        Sigue el embudo hacia el 6M con ese estado y ningun runner lo reencola,
+        asi que contarlo como pendiente dejaba la etapa a medias para siempre.
+        """
+        conn = memory()
+        insert_final_tick(conn, 1, run_id=7, status="accepted")
+        insert_final_tick(conn, 2, run_id=7, status="pending_ohlc_trades")
+        insert_final_tick(conn, 3, run_id=7, status="pending_ohlc_trades")
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("final_tick",)
+        )[0]
+
+        self.assertEqual(summary.pending, 0)
+        self.assertEqual(summary.by_status, ())
+        self.assertEqual(summary.settled, 2)
+        self.assertEqual(summary.settled_by_status, (("pending_ohlc_trades", 2),))
+        # Y no cuentan como tamano de la etapa: la regla no responde de ellas.
+        self.assertEqual(summary.rows, 1)
+
+    def test_a_history_probe_is_not_a_candidate(self) -> None:
+        """La sonda con la que se pregunta por el historico no es un .set.
+
+        Nunca se puntua, asi que ni esta pendiente ni cuenta para el tamano de
+        Resultados: 8.391 de ellas tenian la etapa en rojo sin nada que hacer.
+        """
+        conn = memory()
+        insert_candidate(conn, 1, run_id=7, status="accepted", min_trades=60)
+        insert_candidate(
+            conn, 2, run_id=7, status="no_history", min_trades=None, policy="history_probe"
+        )
+        insert_candidate(
+            conn, 3, run_id=7, status="history_ok", min_trades=None, policy="history_probe"
+        )
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("candidates",)
+        )[0]
+
+        self.assertEqual(summary.rows, 1)
+        self.assertEqual(summary.pending, 0)
+        self.assertEqual(summary.settled, 0)
+
+    def test_a_candidate_without_trades_is_settled_but_a_generated_one_waits(self) -> None:
+        conn = memory()
+        insert_candidate(conn, 1, run_id=7, status="no_trades", min_trades=60)
+        insert_candidate(conn, 2, run_id=7, status="symbol_not_exist", min_trades=60)
+        insert_candidate(conn, 3, run_id=7, status="generated", min_trades=60)
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("candidates",)
+        )[0]
+
+        self.assertEqual(summary.pending, 1)
+        self.assertEqual(summary.by_status, (("generated", 1),))
+        self.assertEqual(summary.settled, 2)
+        self.assertEqual(
+            summary.settled_by_status, (("no_trades", 1), ("symbol_not_exist", 1))
+        )
+        self.assertEqual(summary.rows, 1)
+
+    def test_an_undeclared_state_still_shows_up_as_pending(self) -> None:
+        """Lo que nadie ha declarado sale a la cara, no desaparece."""
+        conn = memory()
+        insert_candidate(conn, 1, run_id=7, status="estado_nuevo", min_trades=60)
+
+        summary = audit_pending_states(
+            conn, final_statuses=FINAL_STATUSES, stages=("candidates",)
+        )[0]
+
+        self.assertEqual(summary.pending, 1)
+        self.assertEqual(summary.by_status, (("estado_nuevo", 1),))
+
     def test_stage_without_pending_rows_reports_zero(self) -> None:
         conn = memory()
         insert_final_tick(conn, 1, run_id=7, status="accepted")

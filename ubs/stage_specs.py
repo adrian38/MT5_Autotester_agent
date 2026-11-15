@@ -84,6 +84,15 @@ class StageSpec:
     metrics_column: str = ""
     rescore_flag: str = ""
     row_filter: str = ""
+    # Estados en los que la fila se queda para siempre sin que la regla de la
+    # etapa haya dicho accepted ni rejected: no hubo operaciones, el simbolo ya
+    # no existe, el broker tenia el trading cerrado, el reporte se quedo corto
+    # y la etapa lo paso al 6M. Nadie los reintenta -no estan en el set de
+    # retry de su runner, y la prueba de guardia lo comprueba-, asi que no son
+    # pendientes: contarlos como tales ponia a Resultados a medias para
+    # siempre. Se declaran a mano porque un estado nuevo tiene que salir a la
+    # cara como pendiente, no desaparecer solo.
+    settled_statuses: tuple[str, ...] = ()
     non_auditable: tuple[str, ...] = ()
     # Cuando se juzgo la fila, que no es cuando se creo. Vacio en las etapas
     # que no lo sellan: alli un cambio de regla no se puede repartir fila por
@@ -126,6 +135,24 @@ FINAL_TICK_BLIND_RULES = (
     "Min ops OHLC",
     "W1 min ops",
     "MN min ops",
+)
+
+# El Final Tick de sonda que no reunio operaciones suficientes en el OHLC no se
+# reintenta nunca -`final_tick_row_pending_for_dates` solo lo reencola en la
+# etapa de seis meses-: su candidato sigue el embudo con ese estado, que es lo
+# que miran los joins de mas abajo. La etapa no llego a juzgarlo, y volver a
+# correrla no cambiaria nada.
+PROBE_SETTLED_STATUSES = ("pending_ohlc_trades",)
+
+# Lo que el backtest no produjo y ningun retry de candidatos recoge: sin
+# operaciones, el broker con el trading cerrado, sin historico y el simbolo que
+# el broker ya no ofrece -este ultimo terminal a proposito, ver
+# `SYMBOL_NOT_EXIST_STATUS`-.
+CANDIDATE_SETTLED_STATUSES = (
+    "no_trades",
+    "trade_disabled",
+    "no_history",
+    "symbol_not_exist",
 )
 
 # Ahora mismo ninguna etapa declara un cambio de regla, y conviene que siga
@@ -222,6 +249,9 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         metrics_column="metrics_json",
         rescore_flag="--rescore-seeds-only",
         row_filter="active=1",
+        # Las dos que `memory_scores` no vuelve a evaluar aunque la semilla
+        # siga en disco: el .set no es valido, o el broker no dejaba operar.
+        settled_statuses=("invalid_seed", "trade_disabled"),
     ),
     StageSpec(
         key="seed_final_tick",
@@ -232,6 +262,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         window=WINDOW_FIELDS,
         unit="semillas",
         non_auditable=FINAL_TICK_BLIND_RULES,
+        settled_statuses=PROBE_SETTLED_STATUSES,
         upstream_sql=SEED_FINAL_TICK_UPSTREAM,
     ),
     StageSpec(
@@ -254,6 +285,13 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         run_column="run_id",
         metrics_column="metrics_json",
         rescore_flag="--rescore-candidates-only",
+        # Las sondas de historico no son candidatos: son el .set con el que el
+        # agente le pregunta al broker si ese simbolo tiene datos, y su estado
+        # -`history_ok`, `no_history`- contesta a esa pregunta, no a la regla.
+        # Ninguna regla las juzga, asi que no cuentan ni como pendientes ni
+        # como tamano de la etapa. Mismo filtro que usa `universe_service`.
+        row_filter="ifnull(policy,'')<>'history_probe'",
+        settled_statuses=CANDIDATE_SETTLED_STATUSES,
         # `created_at` es cuando se genero el .set, no cuando se puntuo, y
         # repuntuar no lo toca: como sello de juicio mentiria en las dos
         # direcciones, asi que esta etapa no tiene.
@@ -273,6 +311,9 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         run_column="run_id",
         metrics_column="metrics_json",
         rescore_flag="--rescore-robustness-only",
+        # `no_trades` si lo reintenta -esta en `ROBUST_RETRYABLE_STATUSES`-;
+        # el simbolo retirado no, y por eso es el unico que se queda.
+        settled_statuses=("symbol_not_exist",),
         non_auditable=("Retenciones de degradacion", "Inflacion DD"),
         upstream_sql=ROBUSTNESS_UPSTREAM,
     ),
@@ -286,6 +327,7 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         run_column="run_id",
         rescore_flag="--rescore-final-tick-only",
         non_auditable=FINAL_TICK_BLIND_RULES,
+        settled_statuses=PROBE_SETTLED_STATUSES,
         upstream_sql=FINAL_TICK_UPSTREAM,
     ),
     StageSpec(
@@ -312,6 +354,10 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         window=WINDOW_FIELDS,
         run_column="run_id",
         rescore_flag="--rescore-regression-only",
+        # El watchdog corto la corrida y nadie la reencola; `no_trades` aqui si
+        # es la respuesta de la regla -puntua en negativo, ver
+        # `REGRESSION_FAILURE_STATUSES`-, pero tampoco espera nada.
+        settled_statuses=("watchdog_timeout", "no_trades"),
         non_auditable=("Umbrales de aceptacion de la regresiva",),
         upstream_sql=REGRESSION_UPSTREAM,
     ),
@@ -381,7 +427,18 @@ class StageAudit:
 
 @dataclass(frozen=True)
 class PendingAudit:
-    """Filas de una etapa que no llegaron a un estado final."""
+    """Lo que a una etapa le queda por correr, y nada mas.
+
+    Una fila de la etapa esta en uno de tres sitios: la juzgo su regla
+    (accepted o rejected), se quedo en un estado del que nadie la saca
+    (`settled_statuses`), o sigue esperando a que alguien la corra. Solo lo
+    tercero es un pendiente, que es lo unico que este resumen cuenta.
+
+    `rows` son las filas de las que responde la regla de la etapa: ni las
+    paradas para siempre ni las que `row_filter` deja fuera por no ser suyas.
+    Contar aquellas dentro dejaba a Resultados «a medias» con 9.954
+    candidatos que ningun boton puede mover.
+    """
 
     stage: str
     stage_label: str
@@ -390,6 +447,11 @@ class PendingAudit:
     by_status: tuple[tuple[str, int], ...] = ()
     ids: tuple[int, ...] = ()
     missing_table: bool = False
+    # Las que se quedaron sin veredicto y sin reintento, por estado. No son un
+    # problema que arreglar, pero se dicen una vez para que se vea que la
+    # etapa las tenia y la auditoria las aparto a proposito.
+    settled: int = 0
+    settled_by_status: tuple[tuple[str, int], ...] = ()
     # Elegibles que no llegaron a tener fila: quien acaba de pasar a accepted
     # arriba todavia no ha corrido aqui, y sin fila no cuenta como pendiente.
     missing: int = 0

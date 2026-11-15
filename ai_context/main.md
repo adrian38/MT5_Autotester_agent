@@ -1789,10 +1789,12 @@ for nothing. Before declaring one, check that the commit touches the path that
   applies but does not store (Final Tick minimum trades), which this audit
   cannot see.
 - **Consultar pendientes** — per stage, the two ways a stage can be behind,
-  each its own child row. `Se quedaron a medias` are the rows whose status is
-  not `accepted`/`rejected`, broken down by status; final statuses come from
-  `AUDIT_FINAL_STATUSES` in `ui/ubs_search_audit_base.py` and the module itself
-  decides nothing about that. `Sin fila todavia` (`PendingAudit.missing`,
+  each its own child row. `Se quedaron a medias` are the rows that are still
+  waiting for somebody to run them, broken down by status: not
+  `accepted`/`rejected` (`AUDIT_FINAL_STATUSES` in
+  `ui/ubs_search_audit_base.py`, which the module itself decides nothing
+  about) **and** not in the stage's own `settled_statuses` — see below.
+  `Sin fila todavia` (`PendingAudit.missing`,
   counted through `StageSpec.upstream_sql`) are the eligible ones that never
   got a row at all — what a rescore leaves behind when it flips somebody from
   rejected to accepted upstream. With no row there is no status to count, so
@@ -1834,6 +1836,48 @@ for nothing. Before declaring one, check that the commit touches the path that
   `pending_only` mode is "accepted without a row + retryable", so the newly
   eligible rows a rescore just created are picked up with the half-finished
   ones, and no separate "repair the updated states" action is needed.
+
+#### Pending means waiting, not merely unjudged
+
+A row sits in one of three places: its stage's rule judged it
+(`accepted`/`rejected`), it stopped somewhere no runner takes it out of, or it
+is still waiting to run. Only the third is pending, and that is all `Consultar
+pendientes` counts. Treating "not a verdict" as pending kept Resultados
+permanently red over 9 954 candidates no button can move.
+
+Where a row stops without a verdict is declared per stage in
+`StageSpec.settled_statuses`, by hand, so that a status nobody has declared
+shows up as pending — loudly — instead of disappearing on its own:
+
+| Stage | Parked | Why nobody retries it |
+|-------|--------|-----------------------|
+| Seeds | `invalid_seed`, `trade_disabled` | `SEED_KEPT_STATUSES` (`ubs/memory_scores.py`) keeps them while the file is unchanged |
+| Seeds Final Tick, Final Tick | `pending_ohlc_trades` | the probe never re-queues it; the candidate moves on to the 6M stage carrying it |
+| Resultados | `no_trades`, `trade_disabled`, `no_history`, `symbol_not_exist` | outside `RETRYABLE_CANDIDATE_STATUSES` (`ubs/memory.py`); `symbol_not_exist` is terminal on purpose |
+| Robustez | `symbol_not_exist` | `no_trades` **is** in `ROBUST_RETRYABLE_STATUSES`, so it stays pending |
+| Regresiva | `watchdog_timeout`, `no_trades` | the watchdog's row is never re-queued; `no_trades` here is the rule's own failure (`REGRESSION_FAILURE_STATUSES`) |
+
+The 6M stages declare nothing: there `pending_ohlc_trades` *is* re-queued when
+the window moves, which is the exact point
+[`tests/ubs/scoring/test_ubs_stage_settled_statuses.py`](../tests/ubs/scoring/test_ubs_stage_settled_statuses.py)
+guards — every declaration is checked against its runner's retry set, and the
+Final Tick ones by calling `final_tick_row_pending_for_dates()` itself, so
+making a status retryable later cannot leave the Auditor claiming it waits for
+nothing.
+
+Parked rows leave the stage total too: `PendingAudit.rows` is what the stage's
+rule answers for, so `N de M` compares like with like — the rules query, which
+asks a different question, keeps counting them. They are not silent:
+`_settled_note()` says once, under the table, how many were set aside and in
+what state. No child row, because there is nothing to look at in them.
+
+`candidates` also gained a `row_filter`, `ifnull(policy,'')<>'history_probe'`,
+the same filter `manager_node_runtime/universe_service.py` already used.
+History probes are not strategy .set files: they are the .set the agent runs to
+ask the broker whether a symbol has data, and `history_ok` / `no_history`
+answers that question, not a rule. All 8 391 of them were counted as
+half-finished candidates. That filter applies to both queries, so Resultados
+measures 77 846 candidates instead of 86 237.
 
 State: `self.ubs_auditor_account`, `self.ubs_auditor_run_id`,
 `self.ubs_auditor_status`, `self._ubs_auditor_audits`,

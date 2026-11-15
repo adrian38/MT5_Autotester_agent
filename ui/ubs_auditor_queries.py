@@ -184,6 +184,30 @@ def _repeat_tail(audits) -> str:
     return tail
 
 
+def _settled_note(summaries) -> str:
+    """Lo que la consulta aparto, dicho una vez y fuera de la tabla.
+
+    Son filas que se quedaron sin veredicto y que ningun boton mueve: sin
+    operaciones, sin historico, con el simbolo retirado, con el trading
+    cerrado, o la sonda de Final Tick que se quedo corta y siguio al 6M.
+    Contarlas como pendientes dejaba Resultados en rojo para siempre; no
+    decirlas seria esconder una etapa mas pequena de lo que es. Van en la
+    linea de aviso, no como hijas: no hay nada que mirar en ellas.
+    """
+    parts = [
+        f"{summary.stage_label} ({', '.join(f'{status} {count}' for status, count in summary.settled_by_status)})"
+        for summary in summaries
+        if summary.settled
+    ]
+    if not parts:
+        return ""
+    total = sum(summary.settled for summary in summaries)
+    return (
+        f"Fuera de la cuenta, {total} que no espera nada: ninguna regla llego a "
+        "juzgarlas y ningun reintento las recoge. " + "; ".join(parts) + "."
+    )
+
+
 def _pending_headline(summary) -> str:
     """Por que una etapa no esta al dia: a medias, sin empezar, o las dos."""
     if summary.pending and summary.missing:
@@ -276,7 +300,13 @@ def _rule_group(audit) -> tuple:
 
 
 def _pending_group(summary) -> tuple:
-    """Una etapa de la consulta de pendientes, con sus dos huecos separados."""
+    """Una etapa de la consulta de pendientes, con sus dos huecos separados.
+
+    Los dos huecos son lo que falta por correr: el que empezo y no termino y el
+    que no tiene fila todavia. Lo que se quedo parado sin veredicto no es un
+    hueco -ningun boton lo mueve-, asi que ni abre la etapa ni cuenta para su
+    tamano: se dice una vez en `_settled_note` y se acabo.
+    """
     if summary.missing_table:
         return (summary.stage, summary.stage_label, (
             "Sin tabla", "", "", "la memoria no tiene su tabla", "",
@@ -376,7 +406,7 @@ class UBSAuditorQueriesMixin:
         self._populate_ubs_auditor_rows(
             [_pending_group(summary) for summary in summaries], AUDITOR_PENDING_LAYOUT
         )
-        self.ubs_auditor_blind_rules.set("")
+        self.ubs_auditor_blind_rules.set(_settled_note(summaries))
         self.ubs_auditor_status.set(
             _pending_status_line(
                 sum(summary.pending for summary in summaries),

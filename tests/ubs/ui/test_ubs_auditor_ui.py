@@ -24,6 +24,7 @@ from ui.ubs_auditor_queries import (
     _of_total,
     _pending_group,
     _pending_headline,
+    _settled_note,
     _rule_group,
     _rules_status_line,
     _stage_headline,
@@ -399,6 +400,8 @@ def _pending_row(**overrides):
         "missing": 0,
         "by_status": (),
         "missing_table": False,
+        "settled": 0,
+        "settled_by_status": (),
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -501,6 +504,36 @@ class PendingGroupTests(unittest.TestCase):
     def test_each_gap_names_itself_in_the_headline(self) -> None:
         self.assertEqual(_pending_headline(_pending_row(pending=1)), "Se quedaron a medias")
         self.assertEqual(_pending_headline(_pending_row(missing=1)), "Sin correr")
+
+    def test_what_nobody_retries_does_not_open_the_stage(self) -> None:
+        """La etapa con 9.954 parados y nada pendiente esta al dia."""
+        _stage, _label, values, tag, children = _pending_group(
+            _pending_row(rows=10, settled=9954, settled_by_status=(("no_trades", 9954),))
+        )
+
+        self.assertEqual(tag, "accepted")
+        self.assertEqual(values[0], "Al dia")
+        self.assertEqual(children, ())
+
+
+class SettledNoteTests(unittest.TestCase):
+    def test_what_was_left_out_is_said_once_and_outside_the_table(self) -> None:
+        note = _settled_note((
+            _pending_row(
+                stage="candidates",
+                stage_label="Resultados",
+                settled=3,
+                settled_by_status=(("no_trades", 2), ("symbol_not_exist", 1)),
+            ),
+            _pending_row(),
+        ))
+
+        self.assertIn("3 que no espera nada", note)
+        self.assertIn("Resultados (no_trades 2, symbol_not_exist 1)", note)
+        self.assertNotIn("Final Tick", note)
+
+    def test_a_memory_without_parked_rows_says_nothing(self) -> None:
+        self.assertEqual(_settled_note((_pending_row(),)), "")
 
 
 class StatusLineTests(unittest.TestCase):

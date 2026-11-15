@@ -44,7 +44,15 @@ def memory() -> sqlite3.Connection:
     return conn
 
 
-def insert_candidate(conn, candidate_id: int, *, run_id: int, status: str, min_trades: object) -> None:
+def insert_candidate(
+    conn,
+    candidate_id: int,
+    *,
+    run_id: int,
+    status: str,
+    min_trades: object,
+    policy: str = "",
+) -> None:
     metrics = {}
     if min_trades is not None:
         metrics["score_config"] = {**CURRENT_SCORE, "min_trades": min_trades}
@@ -54,9 +62,9 @@ def insert_candidate(conn, candidate_id: int, *, run_id: int, status: str, min_t
             id, run_id, generation, seed_path, set_path, symbol, target_symbol, period,
             family, run_strategy, mutated_keys, timeframe_keys, mutation_details_json,
             missing_lot_keys, policy, metrics_json, status, created_at
-        ) values (?, ?, 1, '', '', 'EURUSD', 'EURUSD', 'H1', 'fam', 'run', '', '', '', '', '', ?, ?, '')
+        ) values (?, ?, 1, '', '', 'EURUSD', 'EURUSD', 'H1', 'fam', 'run', '', '', '', '', ?, ?, ?, '')
         """,
-        (candidate_id, run_id, json.dumps(metrics), status),
+        (candidate_id, run_id, policy, json.dumps(metrics), status),
     )
 
 
