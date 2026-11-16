@@ -163,6 +163,41 @@ def augment_aliases_with_symbol_map(
     return result
 
 
+def universe_symbol_identities(universe_path: Path) -> dict[str, str]:
+    """Ortografia del broker -> nombre sin sufijo, para los que lo llevan.
+
+    Quien dice que `.sa` es decoracion y `.NAS` no es el universo, que conserva
+    la caja original de cada simbolo. La politica de deshabilitados la pierde
+    al guardarse -escribe `GER40.SA`-, asi que no puede contestarlo sola.
+    """
+    groups, _aliases = load_asset_universe(universe_path, include_disabled=True)
+    identities: dict[str, str] = {}
+    for listed in (symbol for items in groups.values() for symbol in items):
+        name = str(listed).strip()
+        bare = normalize_set_symbol(name)
+        if name and bare != name.upper():
+            identities[name.upper()] = bare
+    return identities
+
+
+def policy_symbols_with_identities(
+    symbols: set[str], identities: dict[str, str]
+) -> set[str]:
+    """La politica mas el nombre sin sufijo de cada entrada que lo lleve.
+
+    El fichero de deshabilitados se escribe en la ortografia del broker,
+    mientras que el simbolo de una seed viaja desnudo y solo gana el sufijo al
+    ejecutarse, en `apply_symbol_suffix`. Comparando solo la ortografia
+    literal, una seed DE40 pasaba el filtro con `GER40.sa` apagado: el mapa de
+    AXI traduce a `GER40` y ahi no habia nada que coincidiera.
+
+    Se anade, nunca se sustituye: la ortografia literal sigue siendo la que
+    filtra el universo en ``load_asset_universe``.
+    """
+    policy = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    return policy | {identities[entry] for entry in policy if entry in identities}
+
+
 def seed_symbol_disabled(
     seed: Seed,
     disabled_symbols: set[str],

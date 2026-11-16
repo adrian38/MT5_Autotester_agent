@@ -10,7 +10,14 @@ from ubs.account import DEFAULT_BROKER, account_disabled_symbols_path
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
 from ubs.strategies import VALID_RUN_STRATEGIES
-from ubs.universe import canonical_symbol, seed_symbol_disabled
+from ubs.universe import (
+    canonical_symbol,
+    load_disabled_symbols,
+    load_seed_enabled_disabled_symbols,
+    policy_symbols_with_identities,
+    seed_symbol_disabled,
+    universe_symbol_identities,
+)
 from ubs.agent.config import (
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
     ASSET_UNSEEDED_FORCE_PROB_LATE,
@@ -447,3 +454,23 @@ def generation_source_seeds(
 
 def disabled_symbols_file_for_account(account_type: object, broker: object = DEFAULT_BROKER) -> Path:
     return account_disabled_symbols_path(BASE_DIR, account_type, broker)
+
+
+def account_symbol_policy(args: argparse.Namespace) -> tuple[set[str], set[str]]:
+    """Politica de simbolos de la cuenta: apagados y excepciones para seeds.
+
+    Las dos listas vuelven con la identidad sin sufijo de cada entrada
+    -`GER40.SA` trae tambien `GER40`-, porque el simbolo de una seed viaja
+    desnudo y solo gana el sufijo al ejecutarse. Las dos a la vez y no solo la
+    de apagados: si no, un `USTECH.SA` con permiso para seeds quedaria
+    bloqueado por su propia identidad, que es el fallo al reves.
+    """
+    policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
+    identities = universe_symbol_identities(
+        Path(str(getattr(args, "assets", "") or "")).expanduser()
+    )
+    disabled = policy_symbols_with_identities(load_disabled_symbols(policy_path), identities)
+    seed_enabled = policy_symbols_with_identities(
+        load_seed_enabled_disabled_symbols(policy_path), identities
+    )
+    return disabled, seed_enabled & disabled

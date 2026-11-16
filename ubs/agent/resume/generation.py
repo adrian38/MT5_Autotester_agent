@@ -14,8 +14,6 @@ from ubs.seeds import load_seeds
 from ubs.universe import (
     augment_aliases_with_symbol_map,
     load_asset_universe,
-    load_disabled_symbols,
-    load_seed_enabled_disabled_symbols,
 )
 from ubs.agent.config import (
     BASE_DIR,
@@ -46,9 +44,9 @@ from ubs.agent.run.generation import (
     _target_plan,
 )
 from ubs.agent.seeds.plan import (
+    account_symbol_policy,
     apply_reserved_timeframe,
     asset_group_map,
-    disabled_symbols_file_for_account,
     generation_source_seeds,
     next_generation_seed_pool,
     seeds_from_survivors,
@@ -105,10 +103,7 @@ def _restore_run_args(args: argparse.Namespace, run) -> None:
 
 def _resume_universe(args: argparse.Namespace):
     """Universo y politica de simbolos vigentes para la continuacion."""
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
-    disabled_symbols = load_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled &= disabled_symbols
+    disabled_symbols, seed_enabled_when_disabled = account_symbol_policy(args)
     symbol_map = parse_symbol_map(args.symbol_map)
     asset_groups, aliases = load_asset_universe(
         Path(args.assets).expanduser(),

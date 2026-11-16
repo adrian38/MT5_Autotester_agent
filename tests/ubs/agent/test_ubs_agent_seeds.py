@@ -1,4 +1,5 @@
 import random
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,9 +10,12 @@ from ubs.account import account_disabled_symbols_path
 from ubs.universe import (
     load_disabled_symbols,
     load_seed_enabled_disabled_symbols,
+    policy_symbols_with_identities,
     save_disabled_symbols,
     seed_symbol_disabled,
+    universe_symbol_identities,
 )
+from ubs.agent.seeds.plan import account_symbol_policy
 from ubs_agent import (
     choose_target_symbol,
     copy_accepted,
@@ -402,3 +406,94 @@ class UBSAgentSeedTests(unittest.TestCase):
         self.assertEqual(next_seed.period, "D1")
         self.assertEqual(next_seed.family, seed.family)
         self.assertEqual(next_seed.run_strategy, seed.run_strategy)
+
+
+AXI_UNIVERSE_INI = """[Indices]
+symbols = GER40.sa, USTECH.sa, NAS100.fs
+
+[Stocks]
+symbols = Tesla+, Apple+
+
+[Forex]
+symbols = EURUSD.sa
+"""
+
+ICTRADING_UNIVERSE_INI = """[Stocks]
+symbols = AAPL.NAS, TSLA.NAS
+"""
+
+
+class PolicySpellingTests(unittest.TestCase):
+    """La politica se escribe como el broker; la seed viaja desnuda."""
+
+    def _universe(self, text: str) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = directory / "assets.ini"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_identity_covers_broker_decoration_only(self) -> None:
+        identities = universe_symbol_identities(self._universe(AXI_UNIVERSE_INI))
+
+        self.assertEqual(
+            identities,
+            {
+                "GER40.SA": "GER40",
+                "USTECH.SA": "USTECH",
+                "NAS100.FS": "NAS100",
+                "EURUSD.SA": "EURUSD",
+            },
+        )
+
+    def test_exchange_qualifier_is_never_an_identity(self) -> None:
+        identities = universe_symbol_identities(self._universe(ICTRADING_UNIVERSE_INI))
+
+        self.assertEqual(identities, {})
+
+    def test_policy_written_with_suffix_blocks_a_bare_seed(self) -> None:
+        seed = Seed(Path("DAX_M15.set"), "DE40", "M15", "family", "1")
+        symbol_map = parse_symbol_map("DE40=GER40")
+        identities = universe_symbol_identities(self._universe(AXI_UNIVERSE_INI))
+
+        # Asi era antes: el mapa de AXI deja `GER40` y la politica dice
+        # `GER40.SA`, de modo que la seed pasaba con el simbolo apagado.
+        self.assertFalse(seed_symbol_disabled(seed, {"GER40.SA"}, symbol_map))
+        self.assertTrue(
+            seed_symbol_disabled(
+                seed,
+                policy_symbols_with_identities({"GER40.SA"}, identities),
+                symbol_map,
+            )
+        )
+
+    def test_seed_permission_survives_the_identity(self) -> None:
+        seed = Seed(Path("USTEC_M15.set"), "USTEC", "M15", "family", "1")
+        symbol_map = parse_symbol_map("USTEC=USTECH")
+        identities = universe_symbol_identities(self._universe(AXI_UNIVERSE_INI))
+        disabled = policy_symbols_with_identities({"USTECH.SA"}, identities)
+        seed_enabled = policy_symbols_with_identities({"USTECH.SA"}, identities)
+
+        self.assertFalse(seed_symbol_disabled(seed, disabled, symbol_map, seed_enabled))
+
+    def test_exchange_qualifier_does_not_block_its_bare_ticker(self) -> None:
+        seed = Seed(Path("Apple_H1.set"), "AAPL", "H1", "family", "1")
+        identities = universe_symbol_identities(self._universe(ICTRADING_UNIVERSE_INI))
+        disabled = policy_symbols_with_identities({"AAPL.NAS"}, identities)
+
+        self.assertFalse(seed_symbol_disabled(seed, disabled, {}))
+
+    def test_account_policy_widens_both_lists(self) -> None:
+        universe = self._universe(AXI_UNIVERSE_INI)
+        policy_path = universe.parent / "ubs_disabled_symbols_AXI_STANDARD.json"
+        save_disabled_symbols(policy_path, {"GER40.SA", "USTECH.SA"}, {"USTECH.SA"})
+        args = Mock(account_type="STANDARD", broker="AXI", assets=str(universe))
+
+        with patch(
+            "ubs.agent.seeds.plan.disabled_symbols_file_for_account",
+            return_value=policy_path,
+        ):
+            disabled, seed_enabled = account_symbol_policy(args)
+
+        self.assertEqual(disabled, {"GER40.SA", "GER40", "USTECH.SA", "USTECH"})
+        self.assertEqual(seed_enabled, {"USTECH.SA", "USTECH"})

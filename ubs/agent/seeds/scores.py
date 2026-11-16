@@ -21,8 +21,6 @@ from ubs.score import ScoreConfig, score_report_file
 from ubs.seeds import file_digest, load_seeds, seed_eval_filename
 from ubs.strategies import VALID_RUN_STRATEGIES
 from ubs.universe import (
-    load_disabled_symbols,
-    load_seed_enabled_disabled_symbols,
     seed_symbol_disabled,
 )
 from ubs.agent.config import (
@@ -37,7 +35,7 @@ from ubs.agent.evaluation.reports import (
     report_matches_variant,
 )
 from ubs.agent.seeds.plan import (
-    disabled_symbols_file_for_account,
+    account_symbol_policy,
 )
 from ubs.agent.generation.sets import (
     copy_seed_for_backtest,
@@ -337,10 +335,7 @@ def _print_seed_evaluation_summary(disabled_pending, invalid_pending, invalid_se
 
 def _filter_disabled_seeds(args, memory, symbol_map, pending, blocked_count):
     """Aparta las semillas cuyo simbolo esta desactivado en la politica."""
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
-    disabled_symbols = load_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled &= disabled_symbols
+    disabled_symbols, seed_enabled_when_disabled = account_symbol_policy(args)
     disabled_pending = [
         seed for seed in pending
         if seed_symbol_disabled(seed, disabled_symbols, symbol_map, seed_enabled_when_disabled)

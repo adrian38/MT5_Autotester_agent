@@ -17,8 +17,6 @@ from ubs.universe import (
     augment_aliases_with_symbol_map,
     canonical_symbol,
     load_asset_universe,
-    load_disabled_symbols,
-    load_seed_enabled_disabled_symbols,
 )
 from ubs.agent.config import (
     BASE_DIR,
@@ -32,7 +30,7 @@ from ubs.agent.evaluation.evaluate import (
     select_survivors,
 )
 from ubs.agent.seeds.plan import (
-    disabled_symbols_file_for_account,
+    account_symbol_policy,
     generation_source_seeds,
 )
 from ubs.agent.generation.universe import (
@@ -90,10 +88,7 @@ def _probe_history_preflight(args: argparse.Namespace) -> int | None:
 
 def _probe_template_seed(args: argparse.Namespace, memory: AgentMemory, symbol_map: dict[str, str]):
     """Seed que sirve de plantilla del probe y seeds bloqueadas como fuente."""
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
-    disabled_symbols = load_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled &= disabled_symbols
+    disabled_symbols, seed_enabled_when_disabled = account_symbol_policy(args)
     seeds = memory.apply_seed_overrides(
         load_seeds(resolve_workspace_path(args.source_dir), base_dir=BASE_DIR)
     )
