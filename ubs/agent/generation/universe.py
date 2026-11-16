@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
-from run_tests import apply_symbol_map, normalize_set_symbol, parse_symbol_map
+from run_tests import (
+    EXCHANGE_SYMBOL_SUFFIXES,
+    apply_symbol_map,
+    apply_symbol_suffix,
+    normalize_set_symbol,
+    parse_symbol_map,
+)
 from ubs.account import DEFAULT_ACCOUNT_TYPE, DEFAULT_BROKER, load_account_timeframe_universe
 from ubs.memory import AgentMemory
 from ubs.models import Variant
@@ -39,6 +46,14 @@ def broker_universe_symbols(args: argparse.Namespace) -> set[str]:
     objetivos parecerian retirados y acabarian con un estado terminal
     irreversible. Fallar hacia el lado retryable es preferible.
 
+    Incluye tambien cada simbolo sin su sufijo de presentacion. El universo se
+    sincroniza con la ortografia literal del servidor —AXI escribe `USTECH.sa`
+    en `Axi-US51-Live` y `USTECH` en `Axi-US50-Live`—, mientras que el objetivo
+    de un candidato viaja sin sufijo y solo lo gana al ejecutarse, en
+    `apply_symbol_suffix`. Comparando solo la ortografia literal, un mapa que
+    traduce `USTEC` a `USTECH` daba por retirado un simbolo que el terminal
+    tiene y testea sin problema.
+
     Se cachea por ruta y mtime porque las llamadas estan dentro de bucles de
     evaluacion; si el universo cambia en disco, el mtime invalida la entrada."""
     raw_path = str(getattr(args, "assets", "") or "").strip()
@@ -54,15 +69,77 @@ def broker_universe_symbols(args: argparse.Namespace) -> set[str]:
     if cached is not None and cached[0] == mtime:
         return set(cached[1])
     groups, aliases = load_asset_universe(path, include_disabled=True)
-    symbols = {
-        str(symbol).strip().upper()
+    listed = {
+        str(symbol).strip()
         for group_symbols in groups.values()
         for symbol in group_symbols
         if str(symbol).strip()
     }
+    symbols = {symbol.upper() for symbol in listed}
     symbols |= {str(alias).strip().upper() for alias in aliases if str(alias).strip()}
+    symbols |= universe_identity_keys(listed, args)
     _BROKER_UNIVERSE_SYMBOLS_CACHE[key] = (mtime, frozenset(symbols))
     return symbols
+
+
+_PRESENTATION_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,3}$")
+
+
+def universe_suffixes(symbols: set[str], args: argparse.Namespace | None = None) -> tuple[str, ...]:
+    """Sufijos de presentacion que usa este universo, del mas largo al mas corto.
+
+    Se toman los configurados para el run y, ademas, los que el propio fichero
+    repite: el universo se resincroniza por servidor y es la fuente que no se
+    queda vieja cuando AXI pasa de `.sa` a `.s` o a ningun sufijo. Se exige mas
+    de una aparicion para no confundir un nombre con punto (`C3.AI`) con un
+    sufijo de verdad.
+
+    Un sufijo de bolsa (`.NAS`, `.LSE`, `.US`) nunca cuenta como presentacion:
+    en ICTrading distingue dos productos distintos sobre el mismo ticker, asi
+    que quitarlo mezclaria simbolos. Es la misma regla que ya aplica
+    ``normalize_set_symbol``, de donde sale tambien que solo un sufijo en
+    minusculas es decoracion del broker.
+    """
+    configured = {
+        str(getattr(args, name, "") or "").strip()
+        for name in ("symbol_shares_suffix", "symbol_futures_suffix", "symbol_suffix")
+    } if args is not None else set()
+    seen: dict[str, int] = {}
+    for symbol in symbols:
+        if symbol.endswith("+"):
+            suffix = "+"
+        else:
+            match = _PRESENTATION_SUFFIX.search(symbol)
+            if not match:
+                continue
+            suffix = match.group(0)
+            body = suffix[1:]
+            if not body.islower() or body.upper() in EXCHANGE_SYMBOL_SUFFIXES:
+                continue
+        seen[suffix] = seen.get(suffix, 0) + 1
+    suffixes = {suffix for suffix in configured if suffix}
+    suffixes |= {suffix for suffix, count in seen.items() if count > 1}
+    # Del mas largo al mas corto para que `.sa` gane a `.s`, y por nombre a
+    # igual longitud para que el orden no dependa del hash de la ejecucion.
+    return tuple(sorted(suffixes, key=lambda suffix: (-len(suffix), suffix)))
+
+
+def universe_identity_keys(symbols: set[str], args: argparse.Namespace | None = None) -> set[str]:
+    """Cada simbolo del universo tambien sin su sufijo de presentacion."""
+    suffixes = universe_suffixes(symbols, args)
+    if not suffixes:
+        return set()
+    keys: set[str] = set()
+    for symbol in symbols:
+        folded = symbol.casefold()
+        for suffix in suffixes:
+            if not folded.endswith(suffix.casefold()):
+                continue
+            base = symbol[: -len(suffix)].strip()
+            if base:
+                keys.add(base.upper())
+            break
+    return keys
 
 
 def current_set_symbol(lines: list[str]) -> str:
@@ -110,12 +187,33 @@ def variant_symbol_not_offered(
     return symbol_not_offered(getattr(variant, "target_symbol", ""), universe_symbols, symbol_map)
 
 
+def symbol_spellings(
+    symbol: str,
+    symbol_map: dict[str, str] | None = None,
+    symbol_suffix: str = "",
+) -> tuple[str, ...]:
+    """Nombres con los que el journal de MT5 puede referirse a este simbolo.
+
+    El objetivo de un candidato viaja en el nombre logico (`USTEC`) y solo gana
+    la ortografia del broker al ejecutarse, que es la unica que aparece en el
+    journal (`USTECH.sa`). Buscar solo el nombre logico dejaba sin leer la
+    evidencia de primera mano del terminal.
+    """
+    raw = str(symbol or "").strip()
+    if not raw:
+        return ()
+    mapped = apply_symbol_map(raw, symbol_map or {})
+    spellings = {raw, str(mapped).strip(), apply_symbol_suffix(mapped, symbol_suffix)}
+    return tuple(sorted(value for value in spellings if value))
+
+
 def variant_missing_report_status(
     memory: AgentMemory,
     variant: Variant,
     symbol_map: dict[str, str],
     universe_symbols: set[str] | None,
     min_report_mtime: float | None,
+    symbol_suffix: str = "",
 ) -> str:
     """Estado de un candidato sin reporte: fallo tecnico o simbolo retirado.
 
@@ -137,7 +235,11 @@ def variant_missing_report_status(
     # reparacion lo reencolaba para que MT5 volviera a no abrir el tester. El
     # journal del propio terminal lo dice sin ambiguedad.
     if set_symbol_missing_in_terminal(
-        variant.path, variant.target_symbol, min_mtime=min_report_mtime,
+        variant.path,
+        variant.target_symbol,
+        min_mtime=min_report_mtime,
+        spellings=symbol_spellings(variant.target_symbol, symbol_map, symbol_suffix),
+        universe_symbols=universe_symbols,
     ):
         print(
             f"AVISO: MT5 no encuentra {variant.target_symbol} en el servidor del "
@@ -224,10 +326,17 @@ def missing_report_status(
             symbol_map = parse_symbol_map(getattr(args, "symbol_map", "") or "")
         except ValueError:
             symbol_map = {}
-    if symbol_not_offered(symbol, broker_universe_symbols(args), symbol_map):
+    universe = broker_universe_symbols(args)
+    if symbol_not_offered(symbol, universe, symbol_map):
         return SYMBOL_NOT_EXIST_STATUS
     if set_path is not None and set_symbol_missing_in_terminal(
-        set_path, symbol, min_mtime=min_mtime,
+        set_path,
+        symbol,
+        min_mtime=min_mtime,
+        spellings=symbol_spellings(
+            symbol, symbol_map, str(getattr(args, "symbol_suffix", "") or ""),
+        ),
+        universe_symbols=universe,
     ):
         return SYMBOL_NOT_EXIST_STATUS
     return "no_report"

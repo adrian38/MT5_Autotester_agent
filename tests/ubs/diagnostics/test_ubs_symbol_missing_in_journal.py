@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import ubs.agent.evaluation.reports
-from ubs.tester_diagnostics import journal_symbol_missing
+from ubs.tester_diagnostics import journal_contradicts_universe, journal_symbol_missing
 
 
 # Transcrito del journal real de ICTRADING del 2026-10-04: el futuro DXY_U6
@@ -66,6 +66,55 @@ class SetSymbolMissingInTerminalTests(unittest.TestCase):
                         base / "DXY_U6_M15_bf04fa.set", "DXY_U6"
                     )
                 )
+
+
+# Transcrito del journal de AXI del 2026-11-15: cuatro de las diez terminales
+# estaban en `Axi-US50-Live`, que escribe `EURUSD`, mientras los jobs salian
+# con la ortografia de `Axi-US51-Live`. El terminal nego el catalogo entero.
+WRONG_SERVER_JOURNAL = (
+    "RD\t2\t21:05:57.712\tTester\tcannot select symbol in market watch\n"
+    "PJ\t2\t21:05:57.787\tTester\tsymbol XAUUSD.sa not exist\n"
+    "DK\t2\t21:07:26.802\tTester\tsymbol EURUSD.sa not exist\n"
+    "DJ\t2\t21:09:02.723\tTester\tsymbol USDJPY.sa not exist\n"
+    "IP\t2\t21:13:47.358\tTester\tsymbol USTECH.sa not exist\n"
+)
+AXI_UNIVERSE_SYMBOLS = {"XAUUSD.SA", "EURUSD.SA", "USDJPY.SA", "USTECH.SA", "US30.SA"}
+
+
+class JournalSpellingTests(unittest.TestCase):
+    def test_recognises_the_symbol_under_its_broker_spelling(self) -> None:
+        # El objetivo del candidato es `USTEC`; el journal solo habla de
+        # `USTECH.sa`, que es lo que recibe MT5 al ejecutarse.
+        journal = "IP\t2\t21:13:47.358\tTester\tsymbol USTECH.sa not exist\n"
+        self.assertFalse(journal_symbol_missing(journal, "USTEC"))
+        self.assertTrue(
+            journal_symbol_missing(journal, "USTEC", spellings=("USTECH", "USTECH.sa"))
+        )
+
+    def test_a_journal_that_denies_the_whole_catalogue_is_not_evidence(self) -> None:
+        self.assertTrue(journal_contradicts_universe(WRONG_SERVER_JOURNAL, AXI_UNIVERSE_SYMBOLS))
+        self.assertFalse(
+            journal_symbol_missing(
+                WRONG_SERVER_JOURNAL,
+                "USTEC",
+                spellings=("USTECH.sa",),
+                universe_symbols=AXI_UNIVERSE_SYMBOLS,
+            )
+        )
+
+    def test_one_retired_future_is_still_believed(self) -> None:
+        # El caso para el que existe la deteccion: el universo se mantiene a
+        # mano y sigue listando un futuro que el broker ya retiro.
+        self.assertFalse(journal_contradicts_universe(JOURNAL, AXI_UNIVERSE_SYMBOLS))
+        self.assertTrue(
+            journal_symbol_missing(JOURNAL, "DXY_U6", universe_symbols=AXI_UNIVERSE_SYMBOLS)
+        )
+
+    def test_without_a_universe_nothing_changes(self) -> None:
+        self.assertFalse(journal_contradicts_universe(WRONG_SERVER_JOURNAL, None))
+        self.assertTrue(
+            journal_symbol_missing(WRONG_SERVER_JOURNAL, "EURUSD.sa", universe_symbols=None)
+        )
 
 
 if __name__ == "__main__":

@@ -131,6 +131,8 @@ def set_symbol_missing_in_terminal(
     symbol: str,
     *,
     min_mtime: float | None = None,
+    spellings: tuple[str, ...] = (),
+    universe_symbols: set[str] | None = None,
 ) -> bool:
     """True si algun journal guardado del .set dice que el simbolo no existe.
 
@@ -151,7 +153,9 @@ def set_symbol_missing_in_terminal(
             text = journal.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if journal_symbol_missing(text, symbol):
+        if journal_symbol_missing(
+            text, symbol, spellings=spellings, universe_symbols=universe_symbols,
+        ):
             return True
     return False
 

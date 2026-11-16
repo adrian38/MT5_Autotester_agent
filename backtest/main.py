@@ -34,6 +34,7 @@ from backtest.reports import (
 from backtest.runner import run_jobs_parallel, run_test
 from backtest.symbols import load_symbol_suffix_universe, parse_symbol_map
 from backtest.terminals import (
+    check_terminal_servers,
     discover_terminal_data_dirs,
     find_matching_running_terminals,
     find_mt5_path,
@@ -45,7 +46,9 @@ from backtest.terminals import (
     terminal_data_dir_from_cli,
     terminal_data_dir_from_experts_dir,
     terminal_data_dir_from_origin,
+    terminals_config_pool,
 )
+from ubs.account import broker_universe_server
 
 
 def _apply_symbol_universe(args: argparse.Namespace) -> dict:
@@ -131,10 +134,48 @@ def terminal_profiles_for_run(
     if not configured_profiles:
         logger.write("ERROR: no hay terminales habilitadas en la configuracion multiterminal.")
         return 1
+    configured_profiles = _profiles_on_expected_server(args, configured_profiles, logger)
+    if not configured_profiles:
+        return 1
     worker_limit = args.max_workers if args.max_workers > 0 else len(configured_profiles)
     terminal_profiles = configured_profiles[: max(1, min(worker_limit, len(configured_profiles)))]
     log_runner_diagnostics(logger, "AFTER_PROFILE_LOAD", terminal_profiles)
     return terminal_profiles
+
+
+def _profiles_on_expected_server(
+    args: argparse.Namespace, profiles: list[TerminalProfile], logger: RunLogger,
+) -> list[TerminalProfile]:
+    """Aparta las terminales conectadas a otro servidor del mismo broker.
+
+    El universo, los sufijos y los margenes del run describen un servidor
+    concreto (el que midio `assets/<broker>_symbol_specs.json`). Una terminal
+    en otro servidor acepta su parte de la cola y falla todos los jobs con
+    `symbol X not exist`, que es retryable e indistinguible de un corte de red,
+    asi que el pool parece sano mientras una parte no produce ni un reporte.
+    Mas vale un pool mas pequeno y honesto.
+    """
+    broker, configured_server = terminals_config_pool(Path(args.terminals_config).expanduser())
+    expected = configured_server or broker_universe_server(BASE_DIR, broker)
+    checks = check_terminal_servers(profiles, expected)
+    kept = [check.profile for check in checks if check.matches]
+    for check in checks:
+        logger.write(f"DIAG TERMINAL_SERVER {check.describe()}")
+    mismatched = [check for check in checks if not check.matches]
+    if mismatched:
+        logger.write(
+            f"AVISO: {len(mismatched)} terminal(es) fuera del servidor esperado "
+            f"({expected}); no entran en el pool."
+        )
+        for check in mismatched:
+            logger.write(f"  {check.describe()}")
+    if not kept:
+        logger.write(
+            f"ERROR: ninguna terminal esta conectada a {expected}. "
+            "Conecta las terminales a ese servidor o resincroniza el universo "
+            "con el servidor que esten usando."
+        )
+    return kept
 
 
 def _log_missing_experts(args: argparse.Namespace, experts_dir: Path | None, logger: RunLogger) -> None:

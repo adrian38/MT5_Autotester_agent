@@ -263,6 +263,7 @@ def evaluate_variant(
     if not report:
         return variant_missing_report_status(
             memory, variant, symbol_map, universe_symbols, min_report_mtime,
+            symbol_suffix,
         ), None
     return evaluate_variant_report(
         memory,
