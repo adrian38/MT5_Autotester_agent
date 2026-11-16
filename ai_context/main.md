@@ -1288,8 +1288,12 @@ in `ui_settings.ini` under `[General]`.
 Legacy RoboForex data is preserved by `migrate_legacy_roboforex_storage()`:
 on UI startup (and in CLI tools before opening the default memory), old
 account-only ECN/PRO files and folders are copied into the new
-`ROBOFOREX/{ECN|PRO}` layout only when the new destination does not already
-exist. Legacy ECN/PRO disabled-symbol JSON files are copied into
+`ROBOFOREX/{ECN|PRO}` layout. Memory DBs and `outputs/` are copied only when
+the new destination does not already exist, but the **seed pool is merged file
+by file on every startup**: any `.set` present under the legacy
+`sets/ubs_ready/{ECN|PRO}` tree and missing from `ROBOFOREX/{ECN|PRO}` is
+copied back. Deleting a seed only sticks once the legacy tree itself is gone.
+Legacy ECN/PRO disabled-symbol JSON files are copied into
 `outputs/ubs_disabled_symbols_ROBOFOREX_{ECN|PRO}.json`. The migration is
 non-destructive; it never deletes or overwrites the legacy paths.
 
