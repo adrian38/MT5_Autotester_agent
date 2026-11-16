@@ -12,6 +12,13 @@ from ubs.strategies import GENERAL_TIMEFRAME_KEYS, STRATEGY_TIMEFRAME_KEYS
 def _symbol_endswith(value: str, suffix: str) -> bool:
     return bool(suffix) and value.upper().endswith(suffix.upper())
 
+def _symbol_exchange_suffix(symbol: str) -> str:
+    """Devuelve el sufijo de bolsa (.NAS, .LSE...) de ``symbol``, si lo lleva."""
+    match = re.search(r"(?<=[A-Za-z0-9])\.([A-Za-z0-9]+)$", symbol.strip())
+    if match and match.group(1).upper() in EXCHANGE_SYMBOL_SUFFIXES:
+        return match.group(1)
+    return ""
+
 def _symbol_has_explicit_suffix(symbol: str, suffixes: tuple[str, ...]) -> bool:
     if any(_symbol_endswith(symbol, suffix) for suffix in suffixes if suffix):
         return True
@@ -143,10 +150,15 @@ def parse_symbol_map(value: str) -> dict[str, str]:
     return mapping
 
 def apply_symbol_map(symbol: str, symbol_map: dict[str, str]) -> str:
-    if _symbol_has_explicit_suffix(symbol.strip(), ()):
-        return symbol.strip()
-    base_symbol = normalize_set_symbol(symbol)
-    return symbol_map.get(base_symbol, symbol.strip())
+    # Un sufijo de broker (.fs, .sa, +) ya es la ortografia exacta del servidor y
+    # no se remapea. Uno de bolsa (.NAS, .LSE...) solo dice donde cotiza el
+    # titulo, y cada broker lo escribe a su manera: ahi el mapa es precisamente
+    # quien traduce, asi que TSLA.NAS=TSLA tiene que poder aplicarse.
+    value = symbol.strip()
+    if _symbol_has_explicit_suffix(value, ()) and not _symbol_exchange_suffix(value):
+        return value
+    base_symbol = normalize_set_symbol(value)
+    return symbol_map.get(base_symbol, value)
 
 FOREX_SYMBOLS = {
     a + b

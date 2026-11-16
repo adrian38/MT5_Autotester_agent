@@ -29,6 +29,22 @@ DEFAULT_UI_ACCOUNT_TYPE = "RAW"
 DEFAULT_TIMEFRAME_UNIVERSE = (
     "M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
 )
+# Vantage nombra los indices con el nombre del futuro subyacente (DJ30, NAS100)
+# y los titulos sin la bolsa (.NAS), mientras las semillas vienen escritas con la
+# ortografia de los otros brokers. Las entradas llevan la ortografia exacta del
+# .ini porque ``symbol_not_offered`` compara contra el inventario sin normalizar:
+# un destino a medias (DJ30 en vez de DJ30.r) seguiria pareciendo retirado.
+# Solo renombres: los sufijos (.r, ft.r, +) ya los resuelve el universo.
+VANTAGE_DEFAULT_SYMBOL_MAP = (
+    "US30=DJ30.r,DJI=DJ30.r,US100=NAS100.r,USTEC=NAS100.r,USTECH=NAS100.r,"
+    "NASDAQ=NAS100.r,US500=SP500.r,SPX500=SP500.r,DAX=GER40.r,DE40=GER40.r,"
+    "CAC40=FRA40.r,FTSE=UK100.r,FT100=UK100.r,JP225=Nikkei225,JPN225=Nikkei225,"
+    "NK225=Nikkei225,HSI=HK50.r,CN50=CHINA50.r,AUS200=SPI200.r,STOXX50=EU50.r,"
+    "EUSTX50=EU50.r,EURO50=EU50.r,DXY=USDX.r,USDINDEX=USDX.r,"
+    "WTI=USOUSD,XTIUSD=USOUSD,USOIL=USOUSD,CRUDEOIL=USOUSD,"
+    "BRENT=UKOUSD,XBRUSD=UKOUSD,UKOIL=UKOUSD,"
+    "GOLD=XAUUSD+,SILVER=XAGUSD,TSLA.NAS=TSLA,AAPL.NAS=AAPL"
+)
 ROBOFOREX_DEFAULT_SYMBOL_MAP = (
     "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,"
     "US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash,TSLA.NAS=TSLA"
@@ -62,7 +78,7 @@ AXI_CASH_FUTURE_SYMBOL_FAMILIES = (
     (("UKOIL", "XBRUSD", "BRENT"), ("UKOIL.sa", "BRENT.fs")),
 )
 DEFAULT_SYMBOL_MAPS_BY_BROKER = {
-    "VANTAGE": "",
+    "VANTAGE": VANTAGE_DEFAULT_SYMBOL_MAP,
     "ROBOFOREX": ROBOFOREX_DEFAULT_SYMBOL_MAP,
     "ICTRADING": ICTRADING_DEFAULT_SYMBOL_MAP,
     "AXI": AXI_DEFAULT_SYMBOL_MAP,
