@@ -190,6 +190,7 @@ class UBSSeedsImportMixin:
         if not messagebox.askyesno(
             "Importar seeds",
             f"Importar {total} .set desde:\n{source_dir}\n\n"
+            f"CUENTA DESTINO: {self._ubs_broker()} / {self._ubs_account_type()}\n"
             f"Destino: {output_dir}\n\n"
             "Se eliminarán las keys ajenas al contrato UBS V6, se normalizará\n"
             "el lotaje (lote fijo 0.01) y cada seed nueva sustituirá la versión\n"

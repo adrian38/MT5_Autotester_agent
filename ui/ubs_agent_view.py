@@ -72,6 +72,13 @@ class UBSAgentViewMixin(UBSAgentViewCardsMixin):
         self.ubs_account_combo = account_combo
         account_combo.grid(row=0, column=3, sticky="w", padx=(0, 14))
         account_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_ubs_account_type_changed())
+        # La rueda del raton cambia un Combobox readonly sin abrir el
+        # desplegable: anulada en broker/cuenta para que la cuenta activa
+        # solo cambie con una seleccion deliberada.
+        for _combo in (broker_combo, account_combo):
+            _combo.bind("<MouseWheel>", lambda _event: "break")
+            _combo.bind("<Button-4>", lambda _event: "break")
+            _combo.bind("<Button-5>", lambda _event: "break")
         ttk.Button(
             account_row,
             text="Ajustar",
