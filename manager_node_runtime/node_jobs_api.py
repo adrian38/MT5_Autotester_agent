@@ -94,6 +94,7 @@ class JobApiMixin:
                 # de pedirlo: un agente sin portar devolvería «Ruta no
                 # encontrada» a cada cita y el cron lo contaría como fallo.
                 "live_account_snapshot": True,
+                "live_account_snapshot_stop": True,
                 "live_account_audit": True, "live_audit_restore_account": True,
                 "live_audit_manual_reports": True,
                 "live_audit_stop": True,

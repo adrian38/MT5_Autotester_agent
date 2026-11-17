@@ -322,6 +322,10 @@ class NodeHandler(BaseHTTPRequestHandler):
             return 202, {
                 "snapshot": controller.live_audits.start_account_snapshot(self._body()),
             }
+        if self.path == "/api/v1/live-accounts/snapshot/stop":
+            return 200, {
+                "snapshot": controller.live_audits.stop_account_snapshot(),
+            }
         if self.path == "/api/v1/universe/symbols":
             return 200, controller.update_universe(self._body())
         if self.path in {
