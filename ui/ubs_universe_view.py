@@ -57,6 +57,7 @@ class UBSUniverseViewMixin:
             ("Extraer MT5", "standard", self._extract_mt5_universe_symbols),
             ("Sincronizacion de simbolos", "standard", self._sync_mt5_universe_symbols),
             ("Probar history GEN", "standard", self._run_ubs_universe_history_probe),
+            ("Probar history marcados", "standard", self._run_ubs_universe_history_probe_selected),
             ("Deshabilitar simbolos sin history", "danger", self._disable_no_history_universe_symbols),
             ("Deshabilitar trading bloqueado", "danger", self._disable_trade_disabled_universe_symbols),
         ]

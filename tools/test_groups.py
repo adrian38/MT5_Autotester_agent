@@ -36,6 +36,7 @@ TEST_GROUPS: dict[str, tuple[str, ...]] = {
     "agente": (
         "ubs.agent.test_ubs_agent_discovery",
         "ubs.agent.test_ubs_agent_files",
+        "ubs.agent.test_ubs_agent_history_probe",
         "ubs.agent.test_ubs_agent_reconcile",
         "ubs.agent.test_ubs_agent_rescore",
         "ubs.agent.test_ubs_agent_retry_spelling",

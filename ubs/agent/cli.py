@@ -174,6 +174,7 @@ def _add_seed_stage_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--probe-universe-history", action="store_true", help="Prueba si los simbolos activos del universo tienen historico para el rango configurado.")
     parser.add_argument("--probe-history-timeframe", default="H1", help="Timeframe usado para el probe de historico del universo.")
     parser.add_argument("--probe-history-limit", type=int, default=0, help="Limita el numero de simbolos a probar; 0 = todos los GEN=si.")
+    parser.add_argument("--probe-symbol", action="append", default=[], help="Sondea solo estos simbolos del universo, aunque esten deshabilitados o ya tengan veredicto.")
 
 
 def _add_robustness_arguments(parser: argparse.ArgumentParser) -> None:
