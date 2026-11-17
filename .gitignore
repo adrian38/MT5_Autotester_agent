@@ -76,5 +76,10 @@ Thumbs.db
 *.bak
 *.bak_*
 .claude
+# ...except the shared hook config (the SessionStart codebase-memory check).
+# .claude/settings.local.json stays ignored: it is per-machine.
+!.claude/
+.claude/*
+!.claude/settings.json
 .mcp.json
 .codex/config.toml
