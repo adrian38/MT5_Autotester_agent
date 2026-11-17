@@ -10,6 +10,7 @@ from common.mt5_env import ENV_FILE
 from run_tests import EXPERTS_ROOT_FILE, TESTER_DEFAULTS
 from ubs.account import (
     BROKERS,
+    DEFAULT_BROKER,
     default_symbol_map_for_broker,
     normalize_broker,
     symbol_map_setting_key,
@@ -329,8 +330,22 @@ class SettingsLogicMixin(SettingsGeneralMixin, SettingsCleanupMixin):
                 "portable": "1" if bool(profile.get("portable")) else "0",
             }
 
+    def _write_mt4_terminal_settings(self, parser) -> None:
+        """Un bloque por terminal MT4: solo rutas, porque no se usa el EA."""
+        for index, profile in enumerate(getattr(self, "mt4_terminal_profiles", []), start=1):
+            parser[f"MT4Terminal.{index}"] = {
+                "enabled": "1" if bool(profile.get("enabled")) else "0",
+                "broker": str(profile.get("broker") or DEFAULT_BROKER).strip().upper(),
+                "name": str(profile.get("name") or f"MT4 {index}").strip(),
+                "mt4_path": str(profile.get("mt4_path") or "").strip(),
+                "data_dir": str(profile.get("data_dir") or "").strip(),
+                "portable": "1" if bool(profile.get("portable")) else "0",
+            }
+
     def _write_ui_settings(self) -> None:
         self._save_current_multiterminal_editor()
+        if hasattr(self, "_save_current_mt4_terminal_editor"):
+            self._save_current_mt4_terminal_editor()
         saved_multiterminal_tuning = {
             "terminal_cooldown": "1",
             "tester_kick_after": "30",
@@ -363,9 +378,12 @@ class SettingsLogicMixin(SettingsGeneralMixin, SettingsCleanupMixin):
         }
         self._write_general_settings(parser)
         self._write_multiterminal_settings(parser, saved_multiterminal_tuning)
+        self._write_mt4_terminal_settings(parser)
         with UI_SETTINGS_FILE.open("w", encoding="utf-8", newline="\n") as file:
             parser.write(file, space_around_delimiters=False)
         self._update_multiterminal_summary()
+        if hasattr(self, "_update_mt4_terminal_summary"):
+            self._update_mt4_terminal_summary()
 
     def _write_single_path(self, path: Path, value: str, comment: str) -> None:
         text = f"# {comment}\n{value.strip()}\n" if value.strip() else f"# {comment}\n"

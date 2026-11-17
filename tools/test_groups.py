@@ -166,6 +166,7 @@ TEST_GROUPS: dict[str, tuple[str, ...]] = {
         "ui.test_app_ui_output_queue",
         "ui.test_app_ui_paths",
         "ui.test_app_ui_theme",
+        "ui.test_mt4_terminal_logic",
         "ui.test_settings_logic",
     ),
     # Utilidades de tools/: auditorias, repuntuaciones y copias de memoria.

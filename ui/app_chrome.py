@@ -13,6 +13,7 @@ from ui.app_widgets import RoundedButton, RoundedCard
 
 SIDEBAR_ITEMS = (
     ("panel", "▦  Panel"), ("multiterminal", "MT5  Multiterminales"),
+    ("mt4_terminal", "MT4  Terminales MT4"),
     ("portfolio", "▤  Portfolio"), ("configuracion", "⚙  Configuracion"),
     ("archivos", "▤  Archivos"), ("logs", "≣  Logs"),
     ("agente_ubs", "UBS  Agente UBS"), ("ubs_seeds", "UBS  Seeds"),
@@ -240,7 +241,7 @@ class AppChromeMixin:
         content_holder.columnconfigure(0, weight=1)
         content_holder.rowconfigure(0, weight=1)
 
-        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "ubs_auditor", "multiterminal", "configuracion", "archivos", "logs"):
+        for key in ("panel", "agente_ubs", "ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m", "ubs_resultados", "ubs_robustez", "ubs_final_tick", "ubs_final_tick_6m", "ubs_regression", "ubs_historico", "ubs_universo", "ubs_comparar", "ubs_params", "portfolio", "portafolio_ubs", "portafolio_ubs_mensual", "buscador", "ubs_auditor", "multiterminal", "mt4_terminal", "configuracion", "archivos", "logs"):
             frame = ttk.Frame(content_holder, padding=0)
             frame.grid(row=0, column=0, sticky="nsew")
             self.section_frames[key] = frame
@@ -265,6 +266,7 @@ class AppChromeMixin:
         self._build_ubs_search(self.section_frames["buscador"])
         self._build_ubs_auditor(self.section_frames["ubs_auditor"])
         self._build_multiterminal(self.section_frames["multiterminal"])
+        self._build_mt4_terminal(self.section_frames["mt4_terminal"])
         self._build_settings(self.section_frames["configuracion"])
         self._build_files(self.section_frames["archivos"])
         self._build_logs(self.section_frames["logs"])

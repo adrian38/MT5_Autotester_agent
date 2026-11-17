@@ -162,6 +162,7 @@ batch wrappers.
 |-----|--------------|-------------|--------------|
 | `panel` | Panel | `ui/dashboard_view.py` | `ui/dashboard_logic.py` |
 | `multiterminal` | MT5 Multiterminales | `ui/multiterminal_view.py` | `ui/multiterminal_logic.py` |
+| `mt4_terminal` | MT4 Terminales MT4 | `ui/mt4_terminal_view.py` | `ui/mt4_terminal_logic.py` |
 | `portfolio` | Portfolio | `ui/portfolio_view.py` | `ui/portfolio_logic.py` |
 | `configuracion` | Configuracion | `ui/settings_view.py` | `ui/settings_logic.py` |
 | `archivos` | Archivos | `ui/files_view.py` | `ui/files_logic.py` |

@@ -271,6 +271,20 @@ class AppStateMixin:
         self.multiterminal_summary = tk.StringVar(value="")
 
 
+    def _init_mt4_terminal_vars(self, ui_settings) -> None:
+        """Perfiles de terminal MT4, que solo se leen (sin EA)."""
+        self.mt4_terminal_profiles = self._read_mt4_terminal_profiles(ui_settings)
+        self.mt4_terminal_checked: set[str] = set()
+        self.mt4_selected_index: int | None = None
+        self.mt4_profile_enabled = tk.BooleanVar(value=True)
+        self.mt4_profile_portable = tk.BooleanVar(value=False)
+        self.mt4_profile_broker = tk.StringVar(value=self.ubs_broker.get())
+        self.mt4_profile_name = tk.StringVar(value="")
+        self.mt4_profile_mt4_path = tk.StringVar(value="")
+        self.mt4_profile_data_dir = tk.StringVar(value="")
+        self.mt4_terminal_summary = tk.StringVar(value="")
+
+
     def _init_status_vars(self) -> None:
         """Textos de estado y contadores de la cabecera."""
         self.tester_vars: dict[str, tk.StringVar] = {}

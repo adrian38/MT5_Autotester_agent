@@ -18,6 +18,8 @@ from ui.dashboard_logic import DashboardLogicMixin
 from ui.dashboard_view import DashboardViewMixin
 from ui.files_logic import FilesLogicMixin
 from ui.files_view import FilesViewMixin
+from ui.mt4_terminal_logic import MT4TerminalLogicMixin
+from ui.mt4_terminal_view import MT4TerminalViewMixin
 from ui.multiterminal_logic import MultiterminalLogicMixin
 from ui.multiterminal_view import MultiterminalViewMixin
 from ui.portfolio_logic import PortfolioLogicMixin
@@ -106,6 +108,8 @@ class MT5AutotesterUI(
     FilesLogicMixin,
     MultiterminalViewMixin,
     MultiterminalLogicMixin,
+    MT4TerminalViewMixin,
+    MT4TerminalLogicMixin,
     PortfolioViewMixin,
     PortfolioLogicMixin,
     UBSPortfolioViewMixin,
@@ -188,6 +192,7 @@ class MT5AutotesterUI(
         self._init_symbol_vars(saved_general)
         self._init_notification_vars(saved_general)
         self._init_multiterminal_vars(ui_settings, saved_multi)
+        self._init_mt4_terminal_vars(ui_settings)
         self._init_status_vars()
         self._init_portfolio_inputs(saved_general)
         self._init_portfolio_filters(saved_general)
@@ -410,6 +415,7 @@ class MT5AutotesterUI(
             ("ubs_auditor", self._refresh_ubs_auditor),
             ("last_log", self._refresh_last_log),
             ("multiterminal", self._refresh_multiterminal_tree),
+            ("mt4_terminal", self._refresh_mt4_terminal_tree),
         ):
             self._safe_refresh(label, callback)
 
