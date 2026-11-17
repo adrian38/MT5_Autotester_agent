@@ -111,6 +111,7 @@ TEST_GROUPS: dict[str, tuple[str, ...]] = {
         "manager_node.test_exclusions",
         "manager_node.test_lifecycle",
         "manager_node.test_live_audit",
+        "manager_node.test_live_account_mt4",
         "manager_node.test_live_audit_report_upload",
         "manager_node.test_live_audit_set_names",
         "manager_node.test_live_audit_sets",
