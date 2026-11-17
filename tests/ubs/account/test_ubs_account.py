@@ -201,6 +201,38 @@ class UBSAccountTests(unittest.TestCase):
         self.assertIn("multiterminal", refreshed)
         self.assertIn("multiterminal_tree", refreshed)
 
+    def test_account_change_guard_asks_and_reverts_on_decline(self) -> None:
+        from unittest.mock import patch
+        import ui.ubs_agent_logic as logic
+
+        agent = _FakeAgent("ECN", "", "")
+        agent._ubs_confirmed_account = ("ROBOFOREX", "ECN")
+
+        agent.ubs_account_type.set("PRO")
+        with patch.object(logic.messagebox, "askyesno", return_value=False) as ask:
+            self.assertFalse(agent._confirm_ubs_account_change())
+        ask.assert_called_once()
+        self.assertEqual(agent.ubs_account_type.get(), "ECN")
+        self.assertEqual(agent.ubs_broker.get(), "ROBOFOREX")
+        self.assertEqual(agent._ubs_confirmed_account, ("ROBOFOREX", "ECN"))
+
+        agent.ubs_account_type.set("PRO")
+        with patch.object(logic.messagebox, "askyesno", return_value=True) as ask:
+            self.assertTrue(agent._confirm_ubs_account_change())
+        ask.assert_called_once()
+        self.assertEqual(agent.ubs_account_type.get(), "PRO")
+        self.assertEqual(agent._ubs_confirmed_account, ("ROBOFOREX", "PRO"))
+
+    def test_account_change_guard_accepts_first_selection_silently(self) -> None:
+        from unittest.mock import patch
+        import ui.ubs_agent_logic as logic
+
+        agent = _FakeAgent("PRO", "", "")
+        with patch.object(logic.messagebox, "askyesno") as ask:
+            self.assertTrue(agent._confirm_ubs_account_change())
+        ask.assert_not_called()
+        self.assertEqual(agent._ubs_confirmed_account, ("ROBOFOREX", "PRO"))
+
     def test_ubs_portfolio_sources_are_limited_to_active_broker(self) -> None:
         import ui.ubs_portfolio_schema as portfolio_logic
         from unittest.mock import patch
