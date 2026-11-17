@@ -1218,6 +1218,16 @@ Resolved items go to [§ 2.8 Resolved](#28-resolved-debt).
 
 ### 2.8 Resolved debt
 
+- **2026-11** — Guard against silent UBS account switches: on Windows a
+  mouse-wheel tick over the readonly Broker/Cuenta comboboxes changed the
+  selection without opening the dropdown (and `ui_settings.ini` persisted
+  it), so whole seed-import batches landed in `ROBOFOREX/PRO` twice without
+  the user ever picking PRO. The wheel is now ignored on both combos, every
+  broker/account change asks for confirmation in a popup and reverts on
+  "No" (`_confirm_ubs_account_change`), and the import confirmation dialog
+  states `CUENTA DESTINO: <broker> / <cuenta>`. `ui/ubs_agent_view.py` +
+  `ui/ubs_agent_logic.py` + `ui/ubs_seeds_import.py`.
+
 - **2026-11** — Added the `UBS Auditor` tab: it compares the stage rules stored
   in every memory row with the ones configured now, summarizes the rows that
   never reached a final state, chains `--rescore-*-only` for the stages whose

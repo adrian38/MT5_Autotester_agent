@@ -178,6 +178,7 @@ class UBSAgentLogicMixin:
 
     def _refresh_ubs_account_context(self, *, force: bool = False) -> None:
         self._normalize_ubs_account_selection()
+        self._ubs_confirmed_account = (self._ubs_broker(), self._ubs_account_type())
         margin_profile_var = getattr(self, "ubs_portfolio_margin_profile", None)
         if margin_profile_var is not None and str(margin_profile_var.get()).strip().upper() != "TTP":
             margin_profile_var.set(self._ubs_broker())
@@ -199,11 +200,47 @@ class UBSAgentLogicMixin:
             if callback is not None:
                 self._safe_refresh(label, callback)
 
+    def _confirm_ubs_account_change(self) -> bool:
+        """Guarda contra cambios de broker/cuenta inadvertidos desde los combos.
+
+        La rueda del raton cambia un Combobox readonly sin abrir el
+        desplegable (asi acabaron lotes de seeds importados en PRO sin
+        tocar el selector), y el valor se persiste en ui_settings.ini.
+        Ningun cambio entra sin confirmarse en un pop-up; al rechazarlo
+        se restaura la seleccion anterior.
+        """
+        current = (self._ubs_broker(), self._ubs_account_type())
+        previous = getattr(self, "_ubs_confirmed_account", None)
+        if previous is None or previous == current:
+            self._ubs_confirmed_account = current
+            return True
+        if messagebox.askyesno(
+            "Confirmar cambio de cuenta UBS",
+            f"Cuenta activa: {previous[0]} / {previous[1]}\n"
+            f"Cuenta nueva: {current[0]} / {current[1]}\n\n"
+            "Seeds, memoria, resultados e importaciones pasarán a\n"
+            "trabajar sobre la cuenta nueva.\n\n"
+            "¿Confirmar el cambio?",
+        ):
+            self._ubs_confirmed_account = current
+            return True
+        broker, account = previous
+        self.ubs_broker.set(broker)
+        account_combo = getattr(self, "ubs_account_combo", None)
+        if account_combo is not None:
+            account_combo.configure(values=account_types_for_broker(broker))
+        self.ubs_account_type.set(account)
+        return False
+
     def _on_ubs_account_type_changed(self) -> None:
+        if not self._confirm_ubs_account_change():
+            return
         self._refresh_ubs_account_context()
 
     def _on_ubs_broker_changed(self) -> None:
         self._normalize_ubs_account_selection()
+        if not self._confirm_ubs_account_change():
+            return
         self._sync_ubs_symbol_map_for_broker(self._ubs_broker())
         account_combo = getattr(self, "ubs_account_combo", None)
         if account_combo is not None:
