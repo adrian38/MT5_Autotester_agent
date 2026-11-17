@@ -13,6 +13,36 @@ from manager_node_runtime.node import (
     historical_cleanup_scripts,
 )
 
+TERMINALS = r"""[Multiterminal]
+enabled=1
+broker=ICTRADING
+
+[Terminal.1]
+enabled=1
+broker=ROBOFOREX
+name=MT5 principal
+mt5_path=C:\Program Files\RoboForex MT5 Terminal\terminal64.exe
+data_dir=C:\MT5\OTRO
+
+[Terminal.2]
+enabled=1
+broker=ICTRADING
+name=MT5_IC_1
+mt5_path=C:\Program Files\IC\terminal64.exe
+data_dir=C:\MT5\IC_1
+
+[Terminal.3]
+enabled=0
+broker=ICTRADING
+name=MT5_IC_2
+mt5_path=C:\Program Files\IC\terminal64.exe
+data_dir=C:\MT5\IC_2
+"""
+"""Las terminales tal y como las declara el `ui_settings.ini` del agente.
+
+El `[Terminal.1]` de RoboForex no esta de adorno: ese mismo lo arrastran el
+`ui_settings.ini` de IC y el de AXI, y es el que la limpieza no debe tocar."""
+
 
 class ManagerNodeCleanupTests(unittest.TestCase):
     def _project(self, root: Path) -> None:
@@ -20,6 +50,7 @@ class ManagerNodeCleanupTests(unittest.TestCase):
         scripts.mkdir()
         for filename in ("cleanOldTest.ps1", "cleanOlddata.ps1"):
             (scripts / filename).write_text("Write-Host clean\n", encoding="utf-8")
+        (root / "ui_settings.ini").write_text(TERMINALS, encoding="utf-8")
 
     def _controller(self, project: Path) -> JobController:
         return JobController(
@@ -31,7 +62,7 @@ class ManagerNodeCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)
             self._project(project)
-            config = {"project_dir": str(project)}
+            config = {"project_dir": str(project), "broker": "ICTRADING"}
 
             scripts = historical_cleanup_scripts(config)
             tester_command, cwd = build_historical_cleanup_command(config, "cleanup_tester")
@@ -40,8 +71,45 @@ class ManagerNodeCleanupTests(unittest.TestCase):
             self.assertEqual(cwd, project)
             self.assertEqual(scripts["cleanup_tester"], project / "scripts" / "cleanOldTest.ps1")
             self.assertEqual(scripts["cleanup_data"], project / "scripts" / "cleanOlddata.ps1")
-            self.assertEqual(tester_command[-1], str(scripts["cleanup_tester"]))
+            self.assertEqual(tester_command[5], str(scripts["cleanup_tester"]))
             self.assertEqual(verify_command[:2], [sys.executable, "-c"])
+
+    def test_the_cleanup_only_reaches_the_terminals_of_this_broker(self) -> None:
+        """Lo que fallo el 2026-11-17: IC borraba la cache del Tester de AXI.
+
+        El criterio era `%APPDATA%\\MetaQuotes` entero, asi que este agente
+        entraba en las carpetas de los otros -que corren en otra sesion de
+        Windows y las tienen abiertas-, no podia borrarlas y `cleanup_verify`
+        marcaba el trabajo como fallido. Ahora las carpetas salen del
+        `ui_settings.ini` y son solo las de su broker.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            self._project(project)
+            config = {"project_dir": str(project), "broker": "ICTRADING"}
+
+            tester_command, _ = build_historical_cleanup_command(config, "cleanup_tester")
+            verify_command, _ = build_historical_cleanup_command(config, "cleanup_verify")
+            data_dirs = tester_command[tester_command.index("-DataDirs") + 1]
+            executables = tester_command[tester_command.index("-TerminalPaths") + 1]
+
+            self.assertEqual(data_dirs.split("|"), [r"C:\MT5\IC_1", r"C:\MT5\IC_2"])
+            self.assertEqual(executables.split("|"), [r"C:\Program Files\IC\terminal64.exe"])
+            self.assertEqual(verify_command[3:], [r"C:\MT5\IC_1", r"C:\MT5\IC_2"])
+            self.assertNotIn(r"C:\MT5\OTRO", tester_command + verify_command)
+            self.assertNotIn("MetaQuotes", "".join(verify_command[2:]))
+
+    def test_an_agent_without_terminals_of_its_own_refuses_to_clean(self) -> None:
+        """Sin terminales declaradas no se limpia «todo»: no se limpia nada."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            self._project(project)
+            config = {"project_dir": str(project), "broker": "VANTAGE"}
+
+            for stage in CLEANUP_STAGES:
+                with self.subTest(stage=stage), self.assertRaises(ValueError) as error:
+                    build_historical_cleanup_command(config, stage)
+                self.assertIn("VANTAGE", str(error.exception))
 
     def test_generation_cleans_after_every_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
