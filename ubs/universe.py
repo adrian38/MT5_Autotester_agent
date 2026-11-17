@@ -198,6 +198,29 @@ def policy_symbols_with_identities(
     return policy | {identities[entry] for entry in policy if entry in identities}
 
 
+def policy_with_universe_identities(
+    policy_path: Path, universe_path: Path
+) -> tuple[set[str], set[str]]:
+    """Politica de simbolos de la cuenta: apagados y excepciones de seeds.
+
+    Las dos listas vuelven con la identidad sin sufijo de cada entrada
+    -`GER40.SA` trae tambien `GER40`-, porque el simbolo de una seed viaja
+    desnudo y solo gana el sufijo al ejecutarse. Las dos a la vez y no solo
+    la de apagados: si no, un `USTECH.SA` con permiso para seeds quedaria
+    bloqueado por su propia identidad, que es el fallo al reves.
+
+    Vive aqui y no en el agente porque la UI tiene que contestar lo mismo:
+    su dialogo previo anuncia cuantas seeds van a correr, y si ensancha de
+    otra manera promete pasadas que luego el agente no hace.
+    """
+    identities = universe_symbol_identities(universe_path)
+    disabled = policy_symbols_with_identities(load_disabled_symbols(policy_path), identities)
+    seed_enabled = policy_symbols_with_identities(
+        load_seed_enabled_disabled_symbols(policy_path), identities
+    )
+    return disabled, seed_enabled & disabled
+
+
 def seed_symbol_disabled(
     seed: Seed,
     disabled_symbols: set[str],

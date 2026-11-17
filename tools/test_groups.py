@@ -161,6 +161,7 @@ TEST_GROUPS: dict[str, tuple[str, ...]] = {
         "ubs.ui.test_ubs_complete_run_button",
         "ubs.ui.test_ubs_final_tick_run_args",
         "ubs.ui.test_ubs_final_tick_shared_rules",
+        "ubs.ui.test_ubs_seed_eval_plan",
         "ui.test_app_script_commands",
         "ui.test_app_ui_output_queue",
         "ui.test_app_ui_paths",

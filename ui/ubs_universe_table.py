@@ -266,6 +266,14 @@ class UBSUniverseTableMixin:
         from ubs.universe import load_seed_enabled_disabled_symbols
         return load_seed_enabled_disabled_symbols(self._disabled_symbols_path())
 
+    def _ubs_symbol_policy_with_identities(self) -> tuple[set, set]:
+        """La politica tal y como la lee el agente, identidades incluidas."""
+        from ubs.universe import policy_with_universe_identities
+        return policy_with_universe_identities(
+            self._disabled_symbols_path(),
+            broker_asset_universe_path_with_fallback(BASE_DIR, self._ubs_broker()),
+        )
+
     def _save_disabled_ubs_symbols(self, symbols: set, seed_enabled_when_disabled: set | None = None):
         """Escribe la politica de deshabilitados dejando antes una copia.
 
