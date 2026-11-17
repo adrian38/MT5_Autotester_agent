@@ -75,7 +75,7 @@ this workstation:
 | | |
 |---|---|
 | Panel URL | `http://127.0.0.1:9749` (JSON-RPC at `/rpc`, REST at `/api/*`) |
-| Shared store | `C:\Users\13199\.cache\codebase-memory-mcp\<project-key>.db` |
+| Store used here | `C:\Users\13199\.cache\codebase-memory-mcp\<project-key>.db` |
 | UI build (**used by `.mcp.json`**) | `%LOCALAPPDATA%\codebase-memory-mcp\codebase-memory-mcp.exe` — v0.9.0 `ui` variant, on `PATH`, serves the panel |
 | Standard build | `~\.claude\tools\codebase-memory-mcp\codebase-memory-mcp.exe` — same version, **no UI**: `--ui=true` does nothing. Kept as fallback |
 
@@ -92,8 +92,14 @@ DACL entry 4 grants mutation rights to untrusted identity (… -1009)
 
 The profile `C:\Users\13199` grants `FullControl` to the local accounts `robo`
 and `demo`, and the newer builds treat that as untrusted. v0.12.1 fails the same
-way but reports only `could not load saved runtime settings`. Until those ACLs
-are cleaned up, **v0.9.0 is the ceiling**; reinstall a pinned version with:
+way but reports only `could not load saved runtime settings`, which leads
+nowhere — v0.11.0 is the one that names the reason.
+
+It is the **coordination directory's ACL**, not the profile as such, so moving
+it does not dodge the check: with `CBM_RUNTIME_DIR` pointed at `C:\cbm` (what
+the ICTrading and manager checkouts use) v0.11.0 refuses the same way over
+`Authenticated Users` on `C:\cbm`. Until those ACLs are cleaned up, **v0.9.0 is
+the ceiling**; reinstall a pinned version with:
 
 ```powershell
 $env:CBM_DOWNLOAD_URL = "https://github.com/DeusData/codebase-memory-mcp/releases/download/v0.9.0"
@@ -101,10 +107,17 @@ $env:CBM_DOWNLOAD_URL = "https://github.com/DeusData/codebase-memory-mcp/release
     "--dir=$env:LOCALAPPDATA\codebase-memory-mcp"
 ```
 
-Both builds read the same store, but the panel's project list is a **snapshot
-taken when its process started** — it never picks up projects indexed later. A
-project missing from the panel does not mean it is unindexed: check
-`list_projects` first, then restart the panel process to refresh it:
+**There are two graph stores on this machine.** This checkout, RoboForex and
+Vantage use the default one under the profile; the ICTrading checkout and the
+manager repo set `CBM_CACHE_DIR` in their `.mcp.json` and live in `C:\cbm\cache`
+instead. A server only ever sees the store it started with, and the panel shows
+the store of whichever process holds port 9749 — so a project missing from
+`list_projects` or from the panel is **not** evidence that it is unindexed, only
+that you are looking at the other store.
+
+Both builds read whichever store they are pointed at, and the panel's project
+list is fixed when its process starts: it never picks up projects indexed later.
+Restart the panel process to refresh it:
 
 ```powershell
 $uiPid = (Get-NetTCPConnection -LocalPort 9749 -State Listen).OwningProcess
