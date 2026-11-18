@@ -1,9 +1,11 @@
+import os
 import random
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
+from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 from ubs.account import account_disabled_symbols_path
 from ubs.universe import (
@@ -401,3 +403,64 @@ class UBSAgentSeedTests(unittest.TestCase):
         self.assertEqual(next_seed.period, "D1")
         self.assertEqual(next_seed.family, seed.family)
         self.assertEqual(next_seed.run_strategy, seed.run_strategy)
+
+
+class SeedMismatchQuarantineTests(unittest.TestCase):
+    """Un report_mismatch solo se queda parado si su reporte aun vale."""
+
+    def _seed_row(self, memory, seed, report: Path, seed_mtime: float) -> None:
+        memory.conn.execute(
+            """
+            insert into seed_scores (
+                seed_path, seed_mtime, seed_size, symbol, period, family, run_strategy,
+                report_path, score, accepted, metrics_json, status, active, last_seen
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, 1.0, 0, ?, 'report_mismatch', 1, 'ahora')
+            """,
+            (
+                str(seed.path),
+                seed_mtime,
+                seed.path.stat().st_size,
+                seed.symbol,
+                seed.period,
+                seed.family,
+                seed.run_strategy,
+                str(report),
+                '{"symbol": "AUDJPY", "timeframe": "H1", "trades": 40}',
+            ),
+        )
+        memory.conn.commit()
+
+    def _prepared(self, report_age: float) -> tuple[list, object]:
+        """Prepara una semilla con un reporte mas viejo (o mas nuevo) que el .set."""
+        temp_dir = tempfile.mkdtemp()
+        root = Path(temp_dir)
+        set_path = root / "seed.set"
+        set_path.write_text("Run_Strategy=1\n", encoding="utf-8")
+        report = root / "seed.htm"
+        report.write_text("reporte", encoding="utf-8")
+        seed_mtime = set_path.stat().st_mtime
+        os.utime(report, (seed_mtime + report_age, seed_mtime + report_age))
+        seed = Seed(set_path, "AUDJPY", "D1", "family", "1")
+
+        memory = AgentMemory(root / "memory.sqlite")
+        self.addCleanup(memory.close)
+        self._seed_row(memory, seed, report, seed_mtime)
+        pending = memory.prepare_seed_evaluation([seed], force=False)
+        row = memory.conn.execute("select * from seed_scores").fetchone()
+        return pending, row
+
+    def test_stale_report_sends_the_seed_back_to_the_queue(self) -> None:
+        pending, row = self._prepared(report_age=-60.0)
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(str(row["status"]), "pending")
+        # Lo que pidio el usuario: antes de soltar la semilla se le quita el
+        # reporte de encima, para no dejar pegado uno que no la describe.
+        self.assertIsNone(row["report_path"])
+        self.assertIsNone(row["metrics_json"])
+
+    def test_report_newer_than_the_seed_stays_quarantined(self) -> None:
+        pending, row = self._prepared(report_age=60.0)
+
+        self.assertEqual(pending, [])
+        self.assertEqual(str(row["status"]), "report_mismatch")

@@ -15,7 +15,7 @@ from run_tests import (
     parse_symbol_map,
 )
 from ubs.db import connect_memory
-from ubs.memory import metrics_have_empty_tester_context
+from ubs.memory_scores import mismatch_report_stays_quarantined
 from ubs.path_utils import resolve_workspace_path
 from ubs.seeds import seed_from_path
 from ubs.tester_diagnostics import execution_failure_reason
@@ -173,7 +173,7 @@ class UBSSeedsEvalMixin:
             or str(row["status"] or "") not in ready_statuses
             or (
                 str(row["status"] or "") == "report_mismatch"
-                and metrics_have_empty_tester_context(row["metrics_json"])
+                and not mismatch_report_stays_quarantined(row, stat)
             )
             or str(row["symbol"] or "").strip().upper() != symbol.strip().upper()
             or str(row["period"] or "").strip().upper() != period.strip().upper()

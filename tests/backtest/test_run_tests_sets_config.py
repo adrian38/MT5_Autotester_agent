@@ -250,8 +250,40 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
 
         self.assertEqual(run_tests.apply_symbol_map("TSLA.NAS", symbol_map), "TSLA")
         self.assertEqual(run_tests.apply_symbol_map("tsla.nas", symbol_map), "TSLA")
+        self.assertEqual(run_tests.apply_symbol_map("AAPL.NAS", symbol_map), "AAPL")
         # Sin entrada propia, el sufijo de bolsa se sigue respetando.
-        self.assertEqual(run_tests.apply_symbol_map("AAPL.NAS", symbol_map), "AAPL.NAS")
+        self.assertEqual(run_tests.apply_symbol_map("NFLX.NAS", symbol_map), "NFLX.NAS")
+
+    def test_roboforex_exchange_aliases_match_the_assets_file(self) -> None:
+        """El mapa por defecto y el universo del broker dicen lo mismo.
+
+        Son dos sitios distintos -uno traduce, el otro decide si el simbolo
+        existe-, y una accion declarada solo en uno sale como symbol_not_exist
+        sin que se vea por que."""
+        import configparser
+
+        from ubs.account import default_symbol_map_for_broker
+
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(run_tests.Path("assets/roboforex_assets.ini"), encoding="utf-8-sig")
+        aliases = {
+            key.upper(): value.strip()
+            for key, value in parser["CommonAliases"].items()
+            if "." in key.split("=")[0]
+        }
+        symbol_map = run_tests.parse_symbol_map(default_symbol_map_for_broker("ROBOFOREX"))
+        stocks = {
+            item.strip().upper()
+            for item in parser["Stocks"].get("symbols", "").split(",")
+            if item.strip()
+        }
+
+        for source, target in aliases.items():
+            if not source.endswith(".NAS"):
+                continue
+            self.assertEqual(symbol_map.get(source), target, source)
+            self.assertIn(target.upper(), stocks, source)
 
     def test_axi_ustec_alias_resolves_to_cash_symbol(self) -> None:
         from ubs.account import default_symbol_map_for_broker

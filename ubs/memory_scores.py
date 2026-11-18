@@ -39,6 +39,29 @@ def metrics_have_empty_tester_context(metrics_json: object) -> bool:
     return trades <= 0 and (not symbol or timeframe in {"", "M0"})
 
 
+def mismatch_report_stays_quarantined(row: object, stat: object) -> bool:
+    """Si un ``report_mismatch`` se queda parado en vez de volver a la cola.
+
+    La cuarentena esta para no gastar corridas de MT5 en una semilla mal
+    declarada: eso se arregla con un override a mano, no repitiendo el
+    backtest. Pero solo vale mientras el reporte guardado pueda describir a la
+    semilla que hay en disco. Uno anterior al propio .set es de otra version de
+    la semilla -otro timeframe, otro simbolo- y no prueba nada sobre esta, asi
+    que se suelta. Al reencolarla, `_touch_prepared_seed` le quita el reporte
+    de encima en vez de dejarlo mal pegado.
+    """
+    if metrics_have_empty_tester_context(row["metrics_json"]):
+        return False
+    report_raw = str(row["report_path"] or "").strip()
+    if not report_raw:
+        return False
+    try:
+        report_mtime = Path(report_raw).stat().st_mtime
+    except OSError:
+        return False
+    return report_mtime >= float(stat.st_mtime)
+
+
 def final_tick_table_for_stage(stage: str | None) -> str:
     key = str(stage or "probe").strip().lower().replace("-", "_")
     if key in {"6m", "sixmonth", "six_month"}:
@@ -310,7 +333,7 @@ class MemoryScoresMixin:
         previous_status = str(row["status"] or "") if row is not None else ""
         quarantined_mismatch = (
             previous_status == "report_mismatch"
-            and not metrics_have_empty_tester_context(row["metrics_json"])
+            and mismatch_report_stays_quarantined(row, stat)
         ) if row is not None else False
         changed = (
             row is None
