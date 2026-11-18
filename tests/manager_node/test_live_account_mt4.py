@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from manager_node_runtime import live_account_mt4, live_account_snapshot
+from manager_node_runtime import (
+    live_account_mt4,
+    live_account_snapshot,
+    mt4_native_history_report,
+)
 
 
 class RequestTests(unittest.TestCase):
@@ -47,11 +51,13 @@ class Mt4ReadingTests(unittest.TestCase):
                 encoding="utf-8",
             )
             reports = root / "reports"
+            closed: list[set[int]] = []
             controller = SimpleNamespace(
                 owner=SimpleNamespace(config={"broker": "AXI"}),
                 runtime_dir=root,
                 _settings_path=lambda: settings,
                 _snapshot_reports_dir=lambda _snapshot: reports,
+                _close_terminal_pids_gracefully=lambda pids: closed.append(set(pids)),
             )
             captured: dict[str, str] = {}
 
@@ -88,10 +94,20 @@ class Mt4ReadingTests(unittest.TestCase):
 
             self.assertIn("Login=60090762", captured["config"])
             self.assertIn("Password=secret", captured["config"])
-            self.assertEqual(result["terminal"], "mt4")
-            self.assertEqual(result["balance"], 1234.5)
-            self.assertEqual(result["equity"], 1240.25)
-            self.assertEqual(result["currency"], "USD")
+            values = tuple(result[key] for key in ("terminal", "balance", "equity", "currency"))
+            self.assertEqual(values, ("mt4", 1234.5, 1240.25, "USD"))
+            self.assertEqual(closed, [{42}])
+
+    def test_the_mfc_panel_is_allowed_to_finish_building_after_login(self) -> None:
+        exporter = object.__new__(mt4_native_history_report._WindowsMt4ReportExporter)
+        exporter._custom_history_tab = mock.Mock(side_effect=[None, (4, -1, -1)])
+        exporter._process = mock.Mock(return_value=10)
+        exporter._children = mock.Mock(return_value=[])
+        exporter.kernel32 = SimpleNamespace(CloseHandle=mock.Mock())
+        exporter._wait = lambda predicate, _message: predicate() or predicate()
+
+        self.assertEqual(exporter._history_tab(20, 1), (4, -1, -1))
+        self.assertEqual(exporter._custom_history_tab.call_count, 2)
 
 
 if __name__ == "__main__":
