@@ -213,16 +213,20 @@ borra cuando deje de existir.
 
 ## Verificación obligatoria
 
-Ejecutar primero pruebas focalizadas y después la puerta del repositorio:
+De oficio se pasan **sólo las pruebas focalizadas**: los módulos de `tests/`
+que cubren lo tocado, más `tests/quality` si el cambio mueve longitudes de
+fichero o de función.
 
 ```text
+python -m unittest tests.<modulo1> tests.<modulo2>
 python -m tools.verify_project --quick
-python -m tools.verify_project
 ```
 
-La primera ejecuta auditorías y guardas; la segunda añade
-`python -m unittest discover -s tests -t .`. No usar `pytest`: no forma parte del
-contrato instalado. La puerta no debe lanzar MT5 ni alterar memoria, reportes,
+La suite entera (`python -m unittest discover -s tests -t .`, que es lo que
+añade `python -m tools.verify_project` sin `--quick`) **no se lanza salvo que
+el usuario la pida**: tarda minutos y arrastra fallos de calidad heredados que
+no dicen nada del cambio en curso. No usar `pytest`: no forma parte del
+contrato instalado. Nada de esto debe lanzar MT5 ni alterar memoria, reportes,
 sets o configuración operativa.
 
 ## Definición de terminado y entrega
@@ -230,7 +234,7 @@ sets o configuración operativa.
 Un cambio sólo está terminado cuando:
 
 1. el alcance real y los repositorios hermanos afectados están identificados;
-2. las pruebas focalizadas y `python -m tools.verify_project` pasan;
+2. las pruebas focalizadas y `python -m tools.verify_project --quick` pasan;
 3. el diff y `git status` contienen sólo cambios intencionados;
 4. los cambios estructurales se reindexaron;
 5. las decisiones duraderas quedaron en `ai_context/` y su índice;
