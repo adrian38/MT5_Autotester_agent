@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import time
 from collections import Counter
 from datetime import datetime
@@ -59,32 +58,19 @@ def _parse_eval_dir_timestamp(eval_dir: Path) -> datetime | None:
         return None
 
 
-def _seed_override_updated_at(memory: AgentMemory, seed_path: Path) -> datetime | None:
-    try:
-        row = memory.conn.execute(
-            "select updated_at from seed_overrides where seed_path=?",
-            (str(seed_path),),
-        ).fetchone()
-    except sqlite3.Error:
-        return None
-    if row is None:
-        return None
-    try:
-        return datetime.fromisoformat(str(row["updated_at"] or ""))
-    except (TypeError, ValueError):
-        return None
-
-
-def _report_matches_seed_override(
-    memory, seed, eval_started, copied_set, parsed_result, symbol_map, symbol_suffix, broker,
+def _report_describes_seed_target(
+    seed, copied_set, parsed_result, symbol_map, symbol_suffix, broker,
 ) -> bool:
-    override_updated_at = _seed_override_updated_at(memory, seed.path)
-    if override_updated_at is None or eval_started > override_updated_at:
-        return True
-    # Override guardado despues de la evaluacion: el reporte solo es
-    # reutilizable si coincide con el target efectivo actual (caso
-    # tipico: override que no cambia symbol/TF). Si no coincide, se
-    # deja pendiente para re-ejecutar en MT5.
+    """Si el informe hallado describe el objetivo que la semilla declara hoy.
+
+    Reconciliar sirve para no repetir una corrida que MT5 ya pago, no para
+    adoptar cualquier informe que lleve los mismos bytes del .set. El .set no
+    fija el symbol/TF del tester -eso lo pone el .ini de la corrida-, asi que
+    una evaluacion vieja pudo lanzar esa misma semilla en otro timeframe. Ese
+    informe no dice nada del objetivo de ahora: pegarselo la deja con un
+    veredicto prestado y, al ser `report_mismatch`, parado para siempre. Mejor
+    dejarla pendiente y que MT5 la vuelva a correr.
+    """
     if seed.symbol == "UNKNOWN" or seed.period == "UNKNOWN":
         return False
     probe_variant = Variant(
@@ -129,8 +115,8 @@ def _reconcile_seed_eval_copy(
             "se ignora y la seed permanece pendiente para un backtest nuevo."
         )
         return
-    if not _report_matches_seed_override(
-        memory, seed, eval_started, copied_set, parsed_result, symbol_map, symbol_suffix, broker,
+    if not _report_describes_seed_target(
+        seed, copied_set, parsed_result, symbol_map, symbol_suffix, broker,
     ):
         return
     seed_path = str(seed.path)

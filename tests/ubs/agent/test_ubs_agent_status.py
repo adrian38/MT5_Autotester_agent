@@ -467,6 +467,55 @@ class UBSAgentStatusTests(unittest.TestCase):
             report,
         )
 
+    def _reconcile_single_seed(self, seed_period: str, report_result):
+        """Reconcilia una semilla contra un informe de una evaluacion anterior."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_root = root / "output"
+            eval_dir = output_root / "seed_eval" / "eval_20260810_191052"
+            eval_dir.mkdir(parents=True)
+            source = root / "seed.set"
+            copied = eval_dir / "seed_0001_XAUUSD_H1_seed.set"
+            source.write_text("ForceSymbol=XAUUSD\n", encoding="utf-8")
+            copied.write_text("ForceSymbol=XAUUSD\n", encoding="utf-8")
+            report = root / "report.htm"
+            report.write_text("<html></html>", encoding="utf-8")
+            seed = Seed(source, "XAUUSD", seed_period, "family", "1")
+            memory = Mock()
+            memory.seed_score_row.return_value = {"status": "report_mismatch"}
+
+            with (
+                patch("ubs.agent.seeds.scores.find_report_for_set", return_value=report),
+                patch("ubs.agent.seeds.scores.score_report_file", return_value=report_result),
+            ):
+                counts, processed = reconcile_seed_eval_reports(
+                    memory,
+                    [seed],
+                    output_root,
+                    ScoreConfig(),
+                    {},
+                    "ROBOFOREX",
+                )
+            return memory, counts, processed
+
+    def test_seed_reconcile_refuses_a_report_of_another_timeframe(self) -> None:
+        memory, counts, processed = self._reconcile_single_seed(
+            "D1", score(10.0, symbol="XAUUSD", timeframe="H1"),
+        )
+
+        self.assertEqual(counts, {})
+        self.assertEqual(processed, set())
+        memory.record_seed_score.assert_not_called()
+
+    def test_seed_reconcile_keeps_a_report_of_the_declared_target(self) -> None:
+        memory, counts, processed = self._reconcile_single_seed(
+            "H1", score(10.0, symbol="XAUUSD", timeframe="H1"),
+        )
+
+        self.assertEqual(counts, {"accepted": 1})
+        self.assertEqual(len(processed), 1)
+        memory.record_seed_score.assert_called_once()
+
     def test_seed_reconcile_does_not_consume_empty_tester_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -491,8 +540,8 @@ class UBSAgentStatusTests(unittest.TestCase):
             )
 
             with (
-                patch("ubs.agent.evaluation.evaluate.find_report_for_set", return_value=report),
-                patch("ubs.agent.evaluation.evaluate.score_report_file", return_value=empty_result),
+                patch("ubs.agent.seeds.scores.find_report_for_set", return_value=report),
+                patch("ubs.agent.seeds.scores.score_report_file", return_value=empty_result),
             ):
                 counts, processed = reconcile_seed_eval_reports(
                     memory,

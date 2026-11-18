@@ -359,7 +359,6 @@ from ubs.agent.run.config import (  # noqa: F401
 )
 from ubs.agent.seeds.scores import (  # noqa: F401
     _parse_eval_dir_timestamp,
-    _seed_override_updated_at,
     evaluate_seed_scores,
     format_disabled_seed_counts,
     reconcile_seed_eval_reports,
