@@ -243,6 +243,16 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
         self.assertEqual(run_tests.apply_symbol_map("WTI.fs", symbol_map), "WTI.fs")
         self.assertEqual(run_tests.apply_symbol_map("Apple+", symbol_map), "Apple+")
 
+    def test_symbol_map_entry_with_suffix_beats_the_suffix_guard(self) -> None:
+        from ubs.account import default_symbol_map_for_broker
+
+        symbol_map = run_tests.parse_symbol_map(default_symbol_map_for_broker("ROBOFOREX"))
+
+        self.assertEqual(run_tests.apply_symbol_map("TSLA.NAS", symbol_map), "TSLA")
+        self.assertEqual(run_tests.apply_symbol_map("tsla.nas", symbol_map), "TSLA")
+        # Sin entrada propia, el sufijo de bolsa se sigue respetando.
+        self.assertEqual(run_tests.apply_symbol_map("AAPL.NAS", symbol_map), "AAPL.NAS")
+
     def test_axi_ustec_alias_resolves_to_cash_symbol(self) -> None:
         from ubs.account import default_symbol_map_for_broker
 

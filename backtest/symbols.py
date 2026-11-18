@@ -141,10 +141,16 @@ def parse_symbol_map(value: str) -> dict[str, str]:
     return mapping
 
 def apply_symbol_map(symbol: str, symbol_map: dict[str, str]) -> str:
-    if _symbol_has_explicit_suffix(symbol.strip(), ()):
-        return symbol.strip()
-    base_symbol = normalize_set_symbol(symbol)
-    return symbol_map.get(base_symbol, symbol.strip())
+    value = symbol.strip()
+    # Una entrada escrita con el sufijo incluido (TSLA.NAS=TSLA) manda sobre la
+    # proteccion de sufijos: es la unica forma de traducir un simbolo de bolsa.
+    literal = symbol_map.get(value.upper(), "")
+    if literal:
+        return literal
+    if _symbol_has_explicit_suffix(value, ()):
+        return value
+    base_symbol = normalize_set_symbol(value)
+    return symbol_map.get(base_symbol, value)
 
 FOREX_SYMBOLS = {
     a + b
