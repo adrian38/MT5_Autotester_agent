@@ -14,6 +14,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from run_tests import RUNNING_TERMINAL_EXIT_CODE, find_matching_running_terminals
+from ui.app_run_log import new_run_output_path, run_log
 from ui.app_base import (
     BASE_DIR,
     COLORS,
@@ -41,10 +42,13 @@ class AppProcessMixin:
             subprocess.Popen(["explorer", "/select,", str(path)])
 
     def _run_script(self, script_name: str, args: list[str]) -> None:
+        run_log(f"REQUEST script={script_name} args={' '.join(args)}")
         if self._manager_node.job_running:
+            run_log(f"BLOCKED script={script_name} reason=manager_busy")
             messagebox.showwarning("Proceso remoto activo", "El manager esta utilizando el agente. Espera a que termine.")
             return
         if self.process and self.process.poll() is None:
+            run_log(f"BLOCKED script={script_name} reason=process_active pid={self.process.pid}")
             messagebox.showwarning("Proceso activo", "Ya hay un proceso en ejecucion.")
             return
         if self._should_block_for_running_mt5(script_name, args):
@@ -54,6 +58,7 @@ class AppProcessMixin:
             command = self._script_command(script_name, args)
             self._running_script_name = script_name
             self._running_script_args = list(args)
+            self._run_output_path = new_run_output_path(script_name)
             self._append_console(f"\n> {self._format_command(command)}\n", tag="debug")
             self.status_text.set(f"Ejecutando {script_name}")
             self.running_text.set("Proceso activo")
@@ -89,11 +94,17 @@ class AppProcessMixin:
                 creationflags=NO_WINDOW,
             )
         except Exception as exc:
+            run_log(f"SPAWN_FAILED script={script_name} error={exc!r}")
             self.running_text.set("Sin proceso activo")
             self.status_text.set("No se pudo iniciar el proceso")
             self._show_error("No se pudo iniciar", str(exc), traceback.format_exc())
             return
 
+        run_log(
+            f"LAUNCHED script={script_name} pid={self.process.pid} "
+            f"output={self._run_output_path or '(sin fichero)'} "
+            f"command={self._format_command(command)}"
+        )
         self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
         self.reader_thread.start()
 
@@ -128,6 +139,10 @@ class AppProcessMixin:
             return False
 
         process_lines = "\n".join(f"PID {process['pid']}: {process['path']}" for process in running)
+        run_log(
+            f"BLOCKED script={script_name} reason=mt5_running mt5_path={mt5_path} "
+            f"pids={','.join(str(process['pid']) for process in running)}"
+        )
         messagebox.showerror(
             "MT5 ya esta abierto",
             "RoboForex MT5 ya esta abierto.\n\n"
@@ -151,6 +166,7 @@ class AppProcessMixin:
                 running_lines.append(f"{name} | PID {process['pid']}: {process['path']}")
         if not running_lines:
             return False
+        run_log("BLOCKED reason=mt5_multiterminal " + " | ".join(running_lines))
         messagebox.showerror(
             "MT5 multiterminal ya abierto",
             "Hay una o mas terminales MT5 de perfiles multiterminal abiertas.\n\n"
@@ -160,11 +176,34 @@ class AppProcessMixin:
         self.status_text.set("Backtest cancelado: MT5 multiterminal ya abierto")
         return True
 
+    def _open_run_output_file(self):
+        """Fichero espejo de la consola, o None si no se puede abrir."""
+        path = getattr(self, "_run_output_path", None)
+        if path is None:
+            return None
+        try:
+            return path.open("w", encoding="utf-8", errors="replace", buffering=1)
+        except OSError as exc:
+            run_log(f"OUTPUT_FILE_FAILED path={path} error={exc!r}")
+            return None
+
     def _read_process_output(self) -> None:
         assert self.process is not None
         assert self.process.stdout is not None
-        for line in self.process.stdout:
-            self.output_queue.put(line)
+        mirror = self._open_run_output_file()
+        try:
+            for line in self.process.stdout:
+                if mirror is not None:
+                    try:
+                        mirror.write(line)
+                    except OSError as exc:
+                        run_log(f"OUTPUT_FILE_LOST error={exc!r}")
+                        mirror.close()
+                        mirror = None
+                self.output_queue.put(line)
+        finally:
+            if mirror is not None:
+                mirror.close()
         code = self.process.wait()
         self.output_queue.put(("DONE", code))
 
@@ -252,6 +291,11 @@ class AppProcessMixin:
         """Cierra la ejecucion terminada y encadena lo que proceda."""
         finished_script_name = getattr(self, "_running_script_name", "")
         finished_script_args = list(getattr(self, "_running_script_args", []))
+        run_log(
+            f"FINISHED script={finished_script_name} code={code} "
+            f"stopped_by_user={bool(self.stop_requested)} "
+            f"output={getattr(self, '_run_output_path', None) or '(sin fichero)'}"
+        )
         self._finish_progress_state()
         current_pct = int(round(float(self.progress_var.get())))
         if self.stop_requested:

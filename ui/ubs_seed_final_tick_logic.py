@@ -7,6 +7,7 @@ from tkinter import messagebox
 from ubs.memory import AgentMemory
 from ubs.path_utils import resolve_workspace_path
 from ubs.agent.seeds.final_tick import eligible_seed_final_tick_rows
+from ui.app_run_log import run_log
 from ui.ubs_final_tick_shared import stage_label, stage_suffix
 
 
@@ -136,11 +137,16 @@ class UBSSeedFinalTickLogicMixin:
         retry_quality: bool = False, reconcile_only: bool = False,
     ) -> None:
         label = f"UBS {stage_label(stage, 'Seeds Final Tick')}"
+        run_log(
+            f"SEED_FINAL_TICK stage={stage} pending_only={pending_only} "
+            f"retry_quality={retry_quality} reconcile_only={reconcile_only}"
+        )
         try:
             rows = self._seed_final_tick_scope_rows(
                 stage, pending_only=pending_only, retry_quality=retry_quality,
             )
             if not rows:
+                run_log(f"SEED_FINAL_TICK_ABORT stage={stage} reason=sin_seeds_en_scope")
                 messagebox.showinfo(label, "No hay seeds elegibles pendientes para esta accion.")
                 return
             args = self._seed_final_tick_cli_args(
@@ -148,11 +154,13 @@ class UBSSeedFinalTickLogicMixin:
                 reconcile_only=reconcile_only,
             )
         except Exception as exc:
+            run_log(f"SEED_FINAL_TICK_ABORT stage={stage} reason=preparacion error={exc!r}")
             self._show_error(f"No se pudo preparar {label}", str(exc))
             return
         mode = "reconciliar reportes" if reconcile_only else ("continuar pendientes" if pending_only else "reprobar todas")
         details = [f"Etapa: {label}", f"Accion: {mode}", f"Seeds: {len(rows)}"]
         if not self._confirm_execution_start(f"Confirmar {label}", len(rows), details):
+            run_log(f"SEED_FINAL_TICK_ABORT stage={stage} reason=cancelado_por_usuario seeds={len(rows)}")
             return
         self._show_section(f"ubs_seed_final_tick{stage_suffix(stage)}")
         self.status_text.set(f"Preparando {label}: {len(rows)} seed(s)")

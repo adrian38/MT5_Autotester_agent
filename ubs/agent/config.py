@@ -65,7 +65,16 @@ def diag_args_summary(args: argparse.Namespace) -> str:
         f"broker={getattr(args, 'broker', '')} account={getattr(args, 'account_type', '')} "
         f"generations={getattr(args, 'generations', '')} variants_per_seed={getattr(args, 'variants_per_seed', '')} "
         f"max_seeds={getattr(args, 'max_seeds', '')} execute_backtests={bool(getattr(args, 'execute_backtests', False))} "
-        f"multi_terminal={bool(getattr(args, 'multi_terminal', False))} max_workers={getattr(args, 'max_workers', '')}"
+        f"multi_terminal={bool(getattr(args, 'multi_terminal', False))} max_workers={getattr(args, 'max_workers', '')} "
+        f"evaluate_final_tick={bool(getattr(args, 'evaluate_final_tick', False))} "
+        f"evaluate_seed_final_tick={bool(getattr(args, 'evaluate_seed_final_tick', False))} "
+        f"final_tick_stage={getattr(args, 'final_tick_stage', '')} "
+        f"final_tick_pending_only={bool(getattr(args, 'final_tick_pending_only', False))} "
+        f"final_tick_reconcile_only={bool(getattr(args, 'final_tick_reconcile_only', False))} "
+        f"from_date={getattr(args, 'from_date', '')} to_date={getattr(args, 'to_date', '')} "
+        f"ohlc_from_date={getattr(args, 'final_tick_ohlc_from_date', '')} "
+        f"ohlc_to_date={getattr(args, 'final_tick_ohlc_to_date', '')} "
+        f"output_dir={getattr(args, 'output_dir', '')} memory={getattr(args, 'memory', '')}"
     )
 EXPERIMENTAL_LONG_TIMEFRAMES = ("W1", "MN")
 TIMEFRAME_UNIVERSE = BASE_TIMEFRAME_UNIVERSE

@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import traceback
 from collections import Counter
 from collections.abc import Iterable
 from contextlib import nullcontext
@@ -494,7 +495,13 @@ def main() -> int:
         if args.regression_positive_points < 0 or args.regression_negative_points > 0:
             print("ERROR: puntos regresivos OK deben ser >=0 y FAIL <=0")
             return 1
-    return run_agent(args, sys.modules[__name__])
+    try:
+        code = run_agent(args, sys.modules[__name__])
+    except BaseException as exc:
+        diag_log(f"MAIN_CRASH {exc!r}\n{traceback.format_exc()}")
+        raise
+    diag_log(f"MAIN_END code={code}")
+    return code
 
 
 if __name__ == "__main__":
