@@ -110,6 +110,30 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             )
         )
 
+    def test_six_month_retries_pending_economic_sample_with_long_dates(self) -> None:
+        row = {
+            "final_tick_status": "pending_economic_sample",
+            "final_tick_from_date": "2026.01.01",
+            "final_tick_to_date": "2026.06.30",
+        }
+
+        self.assertTrue(
+            final_tick_row_pending_for_dates(
+                row,
+                "2024.07.01",
+                "2026.06.30",
+                final_tick_stage="six_month",
+            )
+        )
+        self.assertTrue(
+            final_tick_ohlc_retry_needed_for_dates(
+                [row],
+                "2024.07.01",
+                "2026.06.30",
+                final_tick_stage="six_month",
+            )
+        )
+
     def test_six_month_ohlc_retry_not_needed_when_pending_row_already_used_retry_dates(self) -> None:
         rows = [
             {
@@ -275,6 +299,40 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
         ) as pass_mock:
             self.assertEqual(evaluate_candidate_final_tick(args, Mock(), ScoreConfig()), 1)
         self.assertEqual(pass_mock.call_count, 1)
+
+    def test_seed_economic_pending_runs_long_window_in_same_process(self) -> None:
+        args = SimpleNamespace(
+            final_tick_stage="six_month",
+            final_tick_run_id=1,
+            final_tick_pending_only=False,
+            final_tick_reconcile_only=False,
+            final_tick_ohlc_from_date="2024.07.01",
+            final_tick_ohlc_to_date="2026.06.30",
+            from_date="2026.01.01",
+            to_date="2026.06.30",
+        )
+        memory = Mock()
+        memory.automatic_economic_sample_retry = True
+        memory.accepted_candidates_for_final_tick.return_value = [{
+            "final_tick_status": "pending_economic_sample",
+            "final_tick_from_date": "2026.01.01",
+            "final_tick_to_date": "2026.06.30",
+        }]
+        pending_modes = []
+
+        def fake_pass(pass_args, _memory, _score, **_kwargs):
+            pending_modes.append(bool(pass_args.final_tick_pending_only))
+            return 0
+
+        with patch(
+            "ubs.agent.final_tick.entry._evaluate_candidate_final_tick_pass",
+            side_effect=fake_pass,
+        ):
+            code = evaluate_candidate_final_tick(args, memory, ScoreConfig())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(pending_modes, [False, True])
+        self.assertFalse(args.final_tick_pending_only)
 
     @staticmethod
     def _quality_retry_rows(root: Path) -> list[dict]:

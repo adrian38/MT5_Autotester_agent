@@ -10,6 +10,10 @@ class FinalTickReasonHarness(UBSFinalTickLogicMixin):
             return ""
         return f"{float(value):g}"
 
+    @staticmethod
+    def _format_ubs_int(value: object) -> str:
+        return "" if value is None else str(int(float(value)))
+
 
 class UBSFinalTickReasonTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -88,6 +92,28 @@ class UBSFinalTickReasonTests(unittest.TestCase):
         )
 
         self.assertEqual(reason, "direccion economica distinta: score, PF")
+
+    def test_pending_economic_sample_names_counts_and_long_window(self) -> None:
+        reason = self.logic._ubs_final_tick_reason(
+            "pending_economic_sample",
+            {
+                "checks": {
+                    "economic_sample": {
+                        "ohlc_trades": 11,
+                        "real_tick_trades": 12,
+                        "min_trades": 50,
+                        "retry_from": "2024.07.01",
+                        "retry_to": "2026.06.30",
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(
+            reason,
+            "muestra economica pendiente: OHLC 11 / tick 12 < 50; "
+            "ampliar 2024.07.01 -> 2026.06.30",
+        )
 
 
 if __name__ == "__main__":

@@ -123,6 +123,10 @@ FINAL_TICK_RETRYABLE_STATUSES = {
 FINAL_TICK_DATE_RETRYABLE_STATUSES = {
     "pending_history_quality",
 }
+FINAL_TICK_LONG_WINDOW_PENDING_STATUSES = {
+    "pending_ohlc_trades",
+    "pending_economic_sample",
+}
 
 
 def generation_random_stream(

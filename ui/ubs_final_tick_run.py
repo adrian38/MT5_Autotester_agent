@@ -4,7 +4,11 @@ from __future__ import annotations
 from tkinter import messagebox
 
 from ubs.path_utils import resolve_workspace_path
-from ui.ubs_final_tick_shared import is_six_month, stage_label
+from ui.ubs_final_tick_shared import (
+    FINAL_TICK_LONG_WINDOW_PENDING_STATUSES,
+    is_six_month,
+    stage_label,
+)
 
 
 class UBSFinalTickRunMixin:
@@ -112,13 +116,14 @@ class UBSFinalTickRunMixin:
         _from_date, _to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
         has_ohlc_retry = is_six_month(final_tick_stage) and bool(ohlc_from and ohlc_to)
         has_ohlc_pending = is_six_month(final_tick_stage) and any(
-            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades" for row in rows
+            str(row["final_tick_status"] or "").strip()
+            in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES for row in rows
         )
         if not (has_ohlc_retry and has_ohlc_pending):
             return rows
 
         def in_retry_scope(row) -> bool:
-            if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
+            if str(row["final_tick_status"] or "").strip() in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
                 return True
             return (
                 str(row["final_tick_from_date"] or "").strip() == ohlc_from

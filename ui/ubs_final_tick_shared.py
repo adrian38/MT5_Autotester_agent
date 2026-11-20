@@ -15,6 +15,10 @@ from tkinter import ttk
 
 
 SIX_MONTH_STAGES = {"six_month", "6m", "sixmonth"}
+FINAL_TICK_LONG_WINDOW_PENDING_STATUSES = {
+    "pending_ohlc_trades",
+    "pending_economic_sample",
+}
 
 
 def is_six_month(stage: object) -> bool:

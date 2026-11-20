@@ -18,6 +18,7 @@ from ubs.agent.final_tick.similarity import final_tick_similarity
 from ubs.agent.config import (
     FINAL_TICK_6M_MIN_DAYS,
     FINAL_TICK_DATE_RETRYABLE_STATUSES,
+    FINAL_TICK_LONG_WINDOW_PENDING_STATUSES,
     FINAL_TICK_RETRYABLE_STATUSES,
     LosslessControlGate,
 )
@@ -166,8 +167,8 @@ def final_tick_row_pending_for_dates(
         return True
     if force_quality_retry and status == "pending_history_quality":
         return True  # retry regardless of stored dates
-    if stage == "six_month" and status == "pending_ohlc_trades":
-        if final_tick_stored_ohlc_is_empty_context(row):
+    if stage == "six_month" and status in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
+        if status == "pending_ohlc_trades" and final_tick_stored_ohlc_is_empty_context(row):
             return True
         return not final_tick_dates_match(row, from_date, to_date)
     if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
@@ -186,7 +187,7 @@ def final_tick_ohlc_retry_needed_for_dates(
     if normalize_final_tick_stage(final_tick_stage) != "six_month":
         return False
     for row in rows:
-        if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades":
+        if str(row["final_tick_status"] or "").strip() not in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
             continue
         if final_tick_row_pending_for_dates(
             row,
@@ -200,9 +201,10 @@ def final_tick_ohlc_retry_needed_for_dates(
 
 
 def final_tick_ohlc_retry_exhausted_for_dates(row: sqlite3.Row, from_date: str, to_date: str) -> bool:
-    if str(row["final_tick_status"] or "").strip() != "pending_ohlc_trades":
+    status = str(row["final_tick_status"] or "").strip()
+    if status not in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
         return False
-    if final_tick_stored_ohlc_is_empty_context(row):
+    if status == "pending_ohlc_trades" and final_tick_stored_ohlc_is_empty_context(row):
         return False
     return final_tick_dates_match(row, from_date, to_date)
 
@@ -388,8 +390,12 @@ def _final_tick_similarity_verdict(
             getattr(record.memory, "allow_better_tick_drawdown_rescue", False)
         ),
     )
+    status = final_tick_status_from_similarity(similarity) or "rejected"
+    override = getattr(record.memory, "final_tick_similarity_status", None)
+    if callable(override):
+        status = override(status, record.ohlc_result, real_tick_result, similarity, args)
     return record.write(
-        final_tick_status_from_similarity(similarity) or "rejected",
+        status,
         real_tick_result,
         similarity=json.dumps(similarity, ensure_ascii=True, sort_keys=True),
         history_quality=real_tick_result.history_quality,

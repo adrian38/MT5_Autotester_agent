@@ -36,6 +36,19 @@ The magnitude of score, net-profit and relative profit-factor differences, PF
 floors, and lossless economic controls remain diagnostics. Candidate Final Tick
 keeps its original behavioral-only contract; the stricter gate applies to both
 seed probe and seed long-window validation through the seed adapter.
+
+The 6M seed stage does not make that economic-direction rejection final while
+the comparison still has fewer trades than the configured seed minimum. If
+`economic_direction` is the only failed similarity check and the behavioral
+trade-count comparison passed, at least 80% of the OHLC/Tick trades align by
+side and open/close time (five-minute tolerance), and either leg is still below
+the configured seed trade minimum, the row is stored as
+`pending_economic_sample`. The same process then runs OHLC and Every Tick again
+with the configured `Ops bajas desde/hasta` range. That second range always
+produces the final verdict, even if its sample remains below the minimum, so the
+rule cannot loop. `Revisar muestra` on the Seed Final Tick 6M screen applies the
+same classification to existing primary-window rejections and launches their
+long-window pass without deleting the original reports.
 A seed-only asymmetric rescue accepts a drawdown-only failure when Every Tick
 has lower drawdown and does not worsen score, normalized net profit, profit
 factor, or recovery. The magnitude of the favorable drawdown difference is not

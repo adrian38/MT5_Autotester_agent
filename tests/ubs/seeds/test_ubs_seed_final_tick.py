@@ -3,17 +3,26 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from backtest.symbols import infer_period_from_path
 from ubs.memory import AgentMemory, variant_from_candidate_row
 from ubs.agent.final_tick.pass_stage import _final_tick_set_names
 from ubs.agent.seeds.final_tick import (
+    PENDING_ECONOMIC_SAMPLE,
     SeedFinalTickMemoryAdapter,
+    economic_sample_pending_check,
     eligible_seed_final_tick_rows,
+    mark_seed_economic_sample_pending,
+    seed_economic_sample_review_rows,
     seed_final_tick_cohort_id,
 )
+from ubs.agent.seeds.trade_alignment import final_tick_trade_alignment
 from ui.app_chrome import SIDEBAR_ITEMS
+from ui.ubs_seed_final_tick_view import UBSSeedFinalTickViewMixin
 from ui.ubs_seeds_cleanup import UBSSeedsCleanupMixin
 
 
@@ -54,6 +63,27 @@ class SeedFinalTickFixture(unittest.TestCase):
 
 
 class UBSSeedFinalTickTests(SeedFinalTickFixture):
+    MATCHED_TRADES = {"accepted": True, "matched": 11, "match_ratio": 11 / 12}
+
+    @staticmethod
+    def _economic_similarity(ohlc_trades: int = 11, tick_trades: int = 12) -> dict:
+        return {
+            "accepted": False,
+            "reasons": ["economic_direction"],
+            "checks": {
+                "economic_direction": {
+                    "required": True,
+                    "matches": False,
+                },
+                "trades": {
+                    "accepted": True,
+                    "ohlc": ohlc_trades,
+                    "real_tick": tick_trades,
+                },
+                "drawdown_pct": {"accepted": True},
+            },
+        }
+
     def test_seed_tabs_follow_seeds_in_sidebar(self) -> None:
         keys = [key for key, _label in SIDEBAR_ITEMS]
         seed_index = keys.index("ubs_seeds")
@@ -62,9 +92,132 @@ class UBSSeedFinalTickTests(SeedFinalTickFixture):
             ["ubs_seeds", "ubs_seed_final_tick", "ubs_seed_final_tick_6m"],
         )
 
+    def test_six_month_actions_include_historical_sample_review(self) -> None:
+        self.assertIn(
+            "_review_ubs_seed_final_tick_6m_economic_samples",
+            UBSSeedFinalTickViewMixin._seed_final_tick_action_names("six_month"),
+        )
+        self.assertNotIn(
+            "_review_ubs_seed_final_tick_6m_economic_samples",
+            UBSSeedFinalTickViewMixin._seed_final_tick_action_names("probe"),
+        )
+
     def test_seed_adapter_enables_strict_economic_similarity(self) -> None:
         self.assertTrue(self.adapter.require_economic_direction_similarity)
         self.assertTrue(self.adapter.allow_better_tick_drawdown_rescue)
+
+    def test_small_isolated_economic_divergence_waits_for_long_window(self) -> None:
+        similarity = self._economic_similarity()
+        self.adapter.active_final_tick_stage = "six_month"
+        args = SimpleNamespace(
+            from_date="2026.01.01",
+            to_date="2026.06.30",
+            final_tick_ohlc_from_date="2024.07.01",
+            final_tick_ohlc_to_date="2026.06.30",
+            final_tick_economic_min_trades=50,
+        )
+
+        result = SimpleNamespace(report_path="report.htm")
+        with patch(
+            "ubs.agent.seeds.final_tick.final_tick_trade_alignment",
+            return_value=self.MATCHED_TRADES,
+        ):
+            status = self.adapter.final_tick_similarity_status(
+                "rejected", result, result, similarity, args,
+            )
+
+        self.assertEqual(status, PENDING_ECONOMIC_SAMPLE)
+        self.assertEqual(
+            similarity["checks"]["economic_sample"]["min_trades"], 50,
+        )
+
+    def test_long_window_makes_economic_divergence_final(self) -> None:
+        similarity = self._economic_similarity()
+        self.adapter.active_final_tick_stage = "six_month"
+        args = SimpleNamespace(
+            from_date="2024.07.01",
+            to_date="2026.06.30",
+            final_tick_ohlc_from_date="2024.07.01",
+            final_tick_ohlc_to_date="2026.06.30",
+            final_tick_economic_min_trades=50,
+        )
+
+        status = self.adapter.final_tick_similarity_status(
+            "rejected", None, None, similarity, args,
+        )
+
+        self.assertEqual(status, "rejected")
+
+    def test_review_reclassifies_existing_small_sample_rejection(self) -> None:
+        self._record("accepted")
+        self._record("rejected", "six_month")
+        similarity = json.dumps(self._economic_similarity())
+        self.memory.conn.execute(
+            "update seed_final_tick_6m set similarity_json=?, from_date=?, to_date=?, "
+            "ohlc_report_path='ohlc.htm', real_tick_report_path='tick.htm' "
+            "where seed_id=?",
+            (similarity, "2026.01.01", "2026.06.30", self.seed_id),
+        )
+        self.memory.conn.commit()
+
+        with patch(
+            "ubs.agent.seeds.final_tick.final_tick_trade_alignment",
+            return_value=self.MATCHED_TRADES,
+        ):
+            rows = seed_economic_sample_review_rows(
+                self.memory, 50, "2026.01.01", "2026.06.30",
+            )
+            updated = mark_seed_economic_sample_pending(
+                self.memory, rows, 50, "2024.07.01", "2026.06.30",
+            )
+
+        stored = self.memory.conn.execute(
+            "select status, similarity_json from seed_final_tick_6m where seed_id=?",
+            (self.seed_id,),
+        ).fetchone()
+        self.assertEqual(updated, 1)
+        self.assertEqual(stored["status"], PENDING_ECONOMIC_SAMPLE)
+        detail = json.loads(stored["similarity_json"])["checks"]["economic_sample"]
+        self.assertEqual(detail["retry_from"], "2024.07.01")
+
+    def test_other_failure_or_large_sample_remains_rejected(self) -> None:
+        similarity = self._economic_similarity(50, 51)
+        self.assertIsNone(
+            economic_sample_pending_check(similarity, 50, self.MATCHED_TRADES)
+        )
+        similarity["reasons"].append("drawdown_pct")
+        self.assertIsNone(
+            economic_sample_pending_check(similarity, 100, self.MATCHED_TRADES)
+        )
+
+    def test_unaligned_trades_do_not_get_a_longer_economic_retry(self) -> None:
+        similarity = self._economic_similarity()
+        alignment = {"accepted": False, "matched": 2, "match_ratio": 2 / 12}
+        self.assertIsNone(economic_sample_pending_check(similarity, 50, alignment))
+
+    def test_eleven_of_twelve_time_aligned_trades_are_similar(self) -> None:
+        start = datetime(2026, 1, 1, 12, 0)
+
+        def trade(index: int, seconds: int = 0):
+            opened = start + timedelta(days=index, seconds=seconds)
+            return SimpleNamespace(
+                trade_type="Buy", open_time=opened,
+                close_time=opened + timedelta(hours=1),
+            )
+
+        ohlc = SimpleNamespace(trades=[trade(index) for index in range(11)])
+        tick = SimpleNamespace(
+            trades=[trade(index, 30) for index in range(11)] + [trade(20)],
+        )
+        with patch(
+            "ubs.agent.seeds.trade_alignment.parse_report",
+            side_effect=[ohlc, tick],
+        ):
+            alignment = final_tick_trade_alignment("ohlc.htm", "tick.htm")
+
+        self.assertTrue(alignment["accepted"])
+        self.assertEqual(alignment["matched"], 11)
+        self.assertAlmostEqual(alignment["match_ratio"], 11 / 12, places=6)
 
     def test_probe_result_gates_six_month_stage(self) -> None:
         self.assertEqual(len(eligible_seed_final_tick_rows(self.memory, "probe")), 1)

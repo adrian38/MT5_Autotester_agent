@@ -24,14 +24,17 @@ class UBSSeedFinalTickViewMixin(UBSFinalTickSharedMixin):
         setattr(self, f"ubs_seed_final_tick{suffix}_checked", set())
 
     @staticmethod
-    def _seed_final_tick_action_names(stage: str) -> tuple[str, str, str, str]:
+    def _seed_final_tick_action_names(stage: str) -> tuple[str, ...]:
         suffix = stage_suffix(stage)
-        return (
+        names = (
             f"_run_ubs_seed_final_tick{suffix}",
             f"_rerun_ubs_seed_final_tick{suffix}",
             f"_retry_ubs_seed_final_tick{suffix}_quality",
             f"_reconcile_ubs_seed_final_tick{suffix}",
         )
+        if suffix:
+            return names + ("_review_ubs_seed_final_tick_6m_economic_samples",)
+        return names
 
     def _build_seed_final_tick_actions(self, panel, stage: str) -> None:
         suffix = stage_suffix(stage)
@@ -40,23 +43,32 @@ class UBSSeedFinalTickViewMixin(UBSFinalTickSharedMixin):
         bar.columnconfigure(0, weight=1)
         self._final_tick_summary_label(bar, getattr(self, f"ubs_seed_final_tick{suffix}_summary"))
         short_label = "6M" if self._final_tick_is_six_month(stage) else "Final Tick"
-        labels = (
+        labels = [
             f"Continuar {short_label}", f"Reprobar {short_label}",
             "Reintentar calidad baja", "Reconciliar",
-        )
+        ]
+        if suffix:
+            labels.append("Revisar muestra")
         for column, (label, name) in enumerate(
             zip(labels, self._seed_final_tick_action_names(stage)), start=1,
         ):
             self._final_tick_action_button(
                 bar, label, getattr(self, name), column, primary=column == 1,
             )
-        self._final_tick_action_button(bar, "Guardar config", self._save_config_clicked, 5)
+        config_column = len(labels) + 1
+        self._final_tick_action_button(
+            bar, "Guardar config", self._save_config_clicked, config_column,
+        )
         self._final_tick_action_button(
             bar, "Actualizar",
-            getattr(self, f"_refresh_ubs_seed_final_tick{suffix}"), 6, last=True,
+            getattr(self, f"_refresh_ubs_seed_final_tick{suffix}"),
+            config_column + 1, last=True,
         )
         file_row = tk.Frame(bar, bg=self.colors["panel_alt"])
-        file_row.grid(row=1, column=0, columnspan=7, sticky="ew", padx=10, pady=(0, 5))
+        file_row.grid(
+            row=1, column=0, columnspan=config_column + 2,
+            sticky="ew", padx=10, pady=(0, 5),
+        )
         file_row.columnconfigure(0, weight=1)
         for column, (label, kind) in enumerate((
             ("Abrir seed", "set"), ("Abrir OHLC", "ohlc"), ("Abrir Real Tick", "tick"),
