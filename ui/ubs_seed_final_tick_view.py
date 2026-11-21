@@ -32,9 +32,7 @@ class UBSSeedFinalTickViewMixin(UBSFinalTickSharedMixin):
             f"_retry_ubs_seed_final_tick{suffix}_quality",
             f"_reconcile_ubs_seed_final_tick{suffix}",
         )
-        if suffix:
-            return names + ("_review_ubs_seed_final_tick_6m_economic_samples",)
-        return names
+        return names + (f"_review_ubs_seed_final_tick{suffix}_economic_samples",)
 
     def _build_seed_final_tick_actions(self, panel, stage: str) -> None:
         suffix = stage_suffix(stage)
@@ -47,8 +45,7 @@ class UBSSeedFinalTickViewMixin(UBSFinalTickSharedMixin):
             f"Continuar {short_label}", f"Reprobar {short_label}",
             "Reintentar calidad baja", "Reconciliar",
         ]
-        if suffix:
-            labels.append("Revisar muestra")
+        labels.append("Revisar muestra")
         for column, (label, name) in enumerate(
             zip(labels, self._seed_final_tick_action_names(stage)), start=1,
         ):

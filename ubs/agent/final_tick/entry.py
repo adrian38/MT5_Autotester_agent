@@ -18,15 +18,13 @@ from ubs.agent.final_tick.pass_stage import _evaluate_candidate_final_tick_pass
 def _automatic_economic_sample_retry(
     args, memory, score_config, final_tick_label: str, code: int,
 ) -> int:
-    """Ejecuta el rango largo cuando una seed 6M acaba de quedar pendiente."""
-    stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    """Ejecuta el segundo rango cuando una muestra economica queda pendiente."""
     if (
         code != 0
-        or stage != "six_month"
-        or getattr(memory, "automatic_economic_sample_retry", False) is not True
         or getattr(args, "final_tick_reconcile_only", False)
     ):
         return code
+    stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
     retry_from = str(getattr(args, "final_tick_ohlc_from_date", "") or "").strip()
     retry_to = str(getattr(args, "final_tick_ohlc_to_date", "") or "").strip()
     if not retry_from or not retry_to:

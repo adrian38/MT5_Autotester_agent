@@ -19,4 +19,4 @@ class UBSSeedFinalTick6MLogicMixin:
         self._run_seed_final_tick_stage("six_month", reconcile_only=True)
 
     def _review_ubs_seed_final_tick_6m_economic_samples(self) -> None:
-        self._review_seed_final_tick_economic_samples()
+        self._review_seed_final_tick_economic_samples("six_month")

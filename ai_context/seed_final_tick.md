@@ -34,21 +34,21 @@ drawdown criteria, OHLC and Every Tick must stay on the same side of zero for
 score and normalized net profit, and on the same side of 1.0 for profit factor.
 The magnitude of score, net-profit and relative profit-factor differences, PF
 floors, and lossless economic controls remain diagnostics. Candidate Final Tick
-keeps its original behavioral-only contract; the stricter gate applies to both
-seed probe and seed long-window validation through the seed adapter.
+keeps economic direction informational as a final classification rule.
 
-The 6M seed stage does not make that economic-direction rejection final while
-the comparison still has fewer trades than the configured seed minimum. If
-`economic_direction` is the only failed similarity check and the behavioral
-trade-count comparison passed, at least 80% of the OHLC/Tick trades align by
-side and open/close time (five-minute tolerance), and either leg is still below
-the configured seed trade minimum, the row is stored as
-`pending_economic_sample`. The same process then runs OHLC and Every Tick again
-with the configured `Ops bajas desde/hasta` range. That second range always
-produces the final verdict, even if its sample remains below the minimum, so the
-rule cannot loop. `Revisar muestra` on the Seed Final Tick 6M screen applies the
-same classification to existing primary-window rejections and launches their
-long-window pass without deleting the original reports.
+All four Final Tick screens nevertheless use an economic-direction mismatch to
+decide whether the current sample is conclusive. If no behavioral check failed,
+the trade-count comparison passed, at least 80% of the OHLC/Tick trades align by
+side and open/close time (five-minute tolerance), and either leg is below the
+minimum configured for that workflow, the row is stored as
+`pending_economic_sample`. This applies to probe and 6M, for candidates and
+seeds; seed rows may also have `economic_direction` as their sole rejection
+reason, while candidate rows normally have no rejection reason at this point.
+The same process then runs OHLC and Every Tick with the configured second date
+range. That second range always produces the final verdict, even if its sample
+remains below the minimum, so the rule cannot loop. `Revisar muestra` on each
+screen applies the same rule to current stored accepted/rejected rows and
+launches their second-range pass without deleting the original reports.
 A seed-only asymmetric rescue accepts a drawdown-only failure when Every Tick
 has lower drawdown and does not worsen score, normalized net profit, profit
 factor, or recovery. The magnitude of the favorable drawdown difference is not

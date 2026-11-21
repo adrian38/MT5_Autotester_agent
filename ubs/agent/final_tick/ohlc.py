@@ -410,7 +410,7 @@ def _final_tick_retry_dates(
             for row in rows
         )
     using_ohlc_retry_dates = False
-    if allow_ohlc_retry and final_tick_stage == "six_month" and args.final_tick_pending_only and has_long_window_pending and (ohlc_retry_from or ohlc_retry_to):
+    if allow_ohlc_retry and args.final_tick_pending_only and has_long_window_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
             print(f"ERROR: {final_tick_label} OHLC retry requiere ambas fechas alternativas Desde y Hasta.")
             return 1, False

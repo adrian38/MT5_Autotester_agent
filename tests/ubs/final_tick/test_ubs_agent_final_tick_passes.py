@@ -7,6 +7,7 @@ import ubs.agent.generation.universe
 import contextlib
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -15,6 +16,10 @@ from pathlib import Path
 
 from ubs.models import Seed, Variant
 from ubs.score import ScoreConfig
+from ubs.agent.final_tick.economic_sample import (
+    candidate_economic_sample_review_rows,
+    mark_candidate_economic_sample_pending,
+)
 from ubs_agent import (
     evaluate_candidate_final_tick,
     final_tick_row_pending_for_dates,
@@ -28,6 +33,56 @@ from tests.ubs.agent.ubs_agent_files_fixtures import score
 
 
 class UBSAgentFinalTickPassTests(unittest.TestCase):
+    def test_review_marks_candidate_pending_and_removes_downstream(self) -> None:
+        similarity = {
+            "reasons": [],
+            "checks": {
+                "economic_direction": {"matches": False, "required": False},
+                "trades": {"accepted": True, "ohlc": 11, "real_tick": 12},
+            },
+        }
+        row = {
+            "id": 7, "final_status": "accepted",
+            "from_date": "2026.05.01", "to_date": "2026.05.31",
+            "similarity_json": json.dumps(similarity),
+            "ohlc_report_path": "ohlc.htm", "real_tick_report_path": "tick.htm",
+        }
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            "create table candidate_final_tick (candidate_id integer, status text, "
+            "accepted integer, similarity_json text);"
+            "create table candidate_final_tick_6m (candidate_id integer);"
+            "create table candidate_regression (candidate_id integer);"
+            "insert into candidate_final_tick values (7, 'accepted', 1, '{}');"
+            "insert into candidate_final_tick_6m values (7);"
+            "insert into candidate_regression values (7);"
+        )
+        with patch(
+            "ubs.agent.final_tick.economic_sample.final_tick_trade_alignment",
+            return_value={"accepted": True, "matched": 11, "match_ratio": 11 / 12},
+        ):
+            rows = candidate_economic_sample_review_rows(
+                [row], 50, "2026.05.01", "2026.05.31",
+                "2026.01.01", "2026.06.30",
+            )
+            updated = mark_candidate_economic_sample_pending(
+                conn, "probe", rows, 50, "2026.01.01", "2026.06.30",
+            )
+        stored = conn.execute(
+            "select status, accepted from candidate_final_tick where candidate_id=7"
+        ).fetchone()
+        downstream = conn.execute(
+            "select count(*) from candidate_final_tick_6m"
+        ).fetchone()[0]
+        regression = conn.execute(
+            "select count(*) from candidate_regression"
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(stored, ("pending_economic_sample", 0))
+        self.assertEqual((downstream, regression), (0, 0))
+
     def test_run_backtests_forwards_model_override(self) -> None:
         args = SimpleNamespace(
             expert="Ultimate Breakout System.ex5",
@@ -131,6 +186,24 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
                 "2024.07.01",
                 "2026.06.30",
                 final_tick_stage="six_month",
+            )
+        )
+
+    def test_probe_retries_pending_economic_sample_with_second_dates(self) -> None:
+        row = {
+            "final_tick_status": "pending_economic_sample",
+            "final_tick_from_date": "2026.05.01",
+            "final_tick_to_date": "2026.05.31",
+        }
+
+        self.assertTrue(
+            final_tick_row_pending_for_dates(
+                row, "2026.01.01", "2026.06.30", final_tick_stage="probe",
+            )
+        )
+        self.assertTrue(
+            final_tick_ohlc_retry_needed_for_dates(
+                [row], "2026.01.01", "2026.06.30", final_tick_stage="probe",
             )
         )
 
@@ -300,7 +373,7 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             self.assertEqual(evaluate_candidate_final_tick(args, Mock(), ScoreConfig()), 1)
         self.assertEqual(pass_mock.call_count, 1)
 
-    def test_seed_economic_pending_runs_long_window_in_same_process(self) -> None:
+    def test_economic_pending_runs_second_window_in_same_process(self) -> None:
         args = SimpleNamespace(
             final_tick_stage="six_month",
             final_tick_run_id=1,
@@ -312,7 +385,6 @@ class UBSAgentFinalTickPassTests(unittest.TestCase):
             to_date="2026.06.30",
         )
         memory = Mock()
-        memory.automatic_economic_sample_retry = True
         memory.accepted_candidates_for_final_tick.return_value = [{
             "final_tick_status": "pending_economic_sample",
             "final_tick_from_date": "2026.01.01",

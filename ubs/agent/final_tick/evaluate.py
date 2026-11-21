@@ -15,6 +15,7 @@ from ubs.memory import AgentMemory
 from ubs.models import Variant
 from ubs.score import ScoreConfig, ScoreResult, run_is_lossless, score_report_file
 from ubs.agent.final_tick.similarity import final_tick_similarity
+from ubs.agent.final_tick.economic_sample import economic_sample_status
 from ubs.agent.config import (
     FINAL_TICK_6M_MIN_DAYS,
     FINAL_TICK_DATE_RETRYABLE_STATUSES,
@@ -167,8 +168,10 @@ def final_tick_row_pending_for_dates(
         return True
     if force_quality_retry and status == "pending_history_quality":
         return True  # retry regardless of stored dates
-    if stage == "six_month" and status in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
-        if status == "pending_ohlc_trades" and final_tick_stored_ohlc_is_empty_context(row):
+    if status == "pending_economic_sample":
+        return not final_tick_dates_match(row, from_date, to_date)
+    if stage == "six_month" and status == "pending_ohlc_trades":
+        if final_tick_stored_ohlc_is_empty_context(row):
             return True
         return not final_tick_dates_match(row, from_date, to_date)
     if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
@@ -184,10 +187,12 @@ def final_tick_ohlc_retry_needed_for_dates(
     final_tick_stage: str = "probe",
     force_quality_retry: bool = False,
 ) -> bool:
-    if normalize_final_tick_stage(final_tick_stage) != "six_month":
-        return False
+    stage = normalize_final_tick_stage(final_tick_stage)
     for row in rows:
-        if str(row["final_tick_status"] or "").strip() not in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
+        status = str(row["final_tick_status"] or "").strip()
+        if status != "pending_economic_sample" and not (
+            stage == "six_month" and status == "pending_ohlc_trades"
+        ):
             continue
         if final_tick_row_pending_for_dates(
             row,
@@ -390,10 +395,13 @@ def _final_tick_similarity_verdict(
             getattr(record.memory, "allow_better_tick_drawdown_rescue", False)
         ),
     )
-    status = final_tick_status_from_similarity(similarity) or "rejected"
-    override = getattr(record.memory, "final_tick_similarity_status", None)
-    if callable(override):
-        status = override(status, record.ohlc_result, real_tick_result, similarity, args)
+    status = economic_sample_status(
+        final_tick_status_from_similarity(similarity) or "rejected",
+        record.ohlc_result,
+        real_tick_result,
+        similarity,
+        args,
+    )
     return record.write(
         status,
         real_tick_result,

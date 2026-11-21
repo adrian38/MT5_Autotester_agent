@@ -25,6 +25,13 @@ def is_six_month(stage: object) -> bool:
     return str(stage or "").strip().lower().replace("-", "_") in SIX_MONTH_STAGES
 
 
+def uses_final_tick_long_window(stage: object, status: object) -> bool:
+    normalized = str(status or "").strip()
+    if normalized not in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
+        return False
+    return normalized == "pending_economic_sample" or is_six_month(stage)
+
+
 def stage_suffix(stage: object) -> str:
     """Sufijo con el que cada etapa nombra sus atributos y metodos."""
     return "_6m" if is_six_month(stage) else ""
@@ -55,12 +62,14 @@ FINAL_TICK_DATE_FIELDS = {
     "": (
         ("Desde", "ubs_final_tick_from_date", 14),
         ("Hasta", "ubs_final_tick_to_date", 14),
+        ("2o rango desde", "ubs_final_tick_ohlc_from_date", 14),
+        ("2o rango hasta", "ubs_final_tick_ohlc_to_date", 14),
     ),
     "_6m": (
         ("Desde", "ubs_final_tick_6m_from_date", 14),
         ("Hasta", "ubs_final_tick_6m_to_date", 14),
-        ("Ops bajas desde", "ubs_final_tick_6m_ohlc_from_date", 14),
-        ("Ops bajas hasta", "ubs_final_tick_6m_ohlc_to_date", 14),
+        ("2o rango desde", "ubs_final_tick_6m_ohlc_from_date", 14),
+        ("2o rango hasta", "ubs_final_tick_6m_ohlc_to_date", 14),
     ),
 }
 

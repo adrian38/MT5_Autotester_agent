@@ -13,9 +13,9 @@ from pathlib import Path
 
 from ubs.db import connect_memory
 from ui.ubs_final_tick_shared import (
-    FINAL_TICK_LONG_WINDOW_PENDING_STATUSES,
     is_six_month,
     stage_suffix,
+    uses_final_tick_long_window,
 )
 
 
@@ -169,7 +169,7 @@ class UBSFinalTickRowsMixin:
     def _final_tick_effective_dates_for_row(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> tuple[str, str]:
         status = str(row["final_tick_status"] or "").strip()
         from_date, to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
-        if is_six_month(final_tick_stage) and status in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES and ohlc_from and ohlc_to:
+        if uses_final_tick_long_window(final_tick_stage, status) and ohlc_from and ohlc_to:
             return ohlc_from, ohlc_to
         return from_date, to_date
 
@@ -188,7 +188,7 @@ class UBSFinalTickRowsMixin:
             return True
         if status in FINAL_TICK_RETRYABLE_STATUSES:
             return True
-        if six_month and status in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES:
+        if uses_final_tick_long_window(final_tick_stage, status):
             return not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
         if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
             return six_month and not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)

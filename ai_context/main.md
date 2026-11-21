@@ -648,7 +648,11 @@ which result is economically better. The active comparison checks are symmetric.
 
 `net_profit`, `profit_factor`, score, the six-month PF floor, and the legacy
 lossless economic thresholds are stored as diagnostics with `"checked": false`
-and `"accepted": true`. They remain visible in UI/DB but never decide similarity.
+and `"accepted": true`. They remain visible in UI/DB and do not decide the
+final candidate verdict. Economic direction can only request more evidence:
+when it differs, behavior still passes, at least 80% of trades align within five
+minutes, and either leg is below the configured minimum, all four Final Tick
+screens store `pending_economic_sample` and use their second date range once.
 Only history quality plus the drawdown/trade-count comparison can prevent an
 otherwise valid pair from being accepted; missing or insufficient samples remain
 technical/pending states rather than economic rejections.
@@ -2019,7 +2023,7 @@ forma implícita; la acción manual Regression continúa siendo independiente.
 
 ### Final Tick similarity — economic diagnostics in 6M
 
-`final_tick_similarity()` records the PF floor and lossless 6M thresholds in `similarity_json.checks`, but they are informational. They expose `meets_floor`/`meets_limit` without adding rejection reasons. Final Tick validates behavioral reproduction between OHLC and Every Tick; economic level, score, profit factor, net profit, recovery, and positive-month ratio do not decide that comparison.
+`final_tick_similarity()` records the PF floor and lossless 6M thresholds in `similarity_json.checks`, but they are informational. They expose `meets_floor`/`meets_limit` without adding rejection reasons. Final Tick validates behavioral reproduction between OHLC and Every Tick; economic level, score, profit factor, net profit, recovery, and positive-month ratio do not decide the final comparison. An isolated economic-direction mismatch may produce `pending_economic_sample` once when the aligned trade sample is still below the configured minimum, so the second date range supplies more evidence.
 Seed Final Tick is stricter: its adapter enables the economic-direction gate for
 score, normalized net profit, and profit-factor regime in both seed stages.
 

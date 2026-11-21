@@ -22,6 +22,9 @@ class UBSFinalTick6MLogicMixin:
     def _retry_ubs_final_tick_6m_pending_quality(self) -> bool:
         return self._retry_ubs_final_tick_pending_quality(final_tick_stage="six_month")
 
+    def _review_ubs_final_tick_6m_economic_samples(self) -> None:
+        self._review_final_tick_economic_samples("six_month")
+
     def _manual_accept_selected_ubs_final_tick_6m(self) -> None:
         self._manual_mark_final_tick("six_month", "accepted")
 
