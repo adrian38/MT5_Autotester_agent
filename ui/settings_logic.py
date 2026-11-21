@@ -14,6 +14,7 @@ from ubs.account import (
     normalize_broker,
     symbol_map_setting_key,
 )
+from ui.universe_mt5_settings import universe_mt5_settings
 from ui.settings_cleanup import SettingsCleanupMixin
 from ui.settings_general import SettingsGeneralMixin
 
@@ -297,6 +298,7 @@ class SettingsLogicMixin(SettingsGeneralMixin, SettingsCleanupMixin):
             **self._general_agent_settings(symbol_maps),
             **self._general_stage_settings(symbol_maps),
             **self._general_symbol_settings(symbol_maps),
+            **universe_mt5_settings(self),
             **self._general_portfolio_settings(symbol_maps),
             **self._general_monthly_settings(symbol_maps),
         }

@@ -12,6 +12,13 @@ from ubs.strategies import GENERAL_TIMEFRAME_KEYS, STRATEGY_TIMEFRAME_KEYS
 def _symbol_endswith(value: str, suffix: str) -> bool:
     return bool(suffix) and value.upper().endswith(suffix.upper())
 
+def _symbol_exchange_suffix(symbol: str) -> str:
+    """Devuelve el sufijo de bolsa (.NAS, .LSE...) de ``symbol``, si lo lleva."""
+    match = re.search(r"(?<=[A-Za-z0-9])\.([A-Za-z0-9]+)$", symbol.strip())
+    if match and match.group(1).upper() in EXCHANGE_SYMBOL_SUFFIXES:
+        return match.group(1)
+    return ""
+
 def _symbol_has_explicit_suffix(symbol: str, suffixes: tuple[str, ...]) -> bool:
     if any(_symbol_endswith(symbol, suffix) for suffix in suffixes if suffix):
         return True
@@ -42,11 +49,11 @@ def load_symbol_suffix_universe(
     # also repair casing drift such as AXI ``APPLE+`` -> ``Apple+``.
     universe = SymbolSuffixUniverse()
     for source, target in load_symbol_suffix_target_map(path, symbol_suffix, futures_suffix, shares_suffix).items():
+        universe.exact_targets.setdefault(source, target)
+        universe.exact_targets.setdefault(normalize_set_symbol(target), target)
         for suffix in suffixes:
             if _symbol_endswith(target, suffix):
                 universe[source] = target[-len(suffix):]
-                universe.exact_targets[source] = target
-                universe.exact_targets.setdefault(normalize_set_symbol(target), target)
                 break
     return universe
 
@@ -78,6 +85,8 @@ def load_symbol_suffix_target_map(
             listed = item.strip()
             if not listed:
                 continue
+            listed_key = normalize_set_symbol(listed)
+            mapping.setdefault(listed_key, listed)
             for suffix in suffixes:
                 if _symbol_endswith(listed, suffix):
                     base = listed[: -len(suffix)]
@@ -142,15 +151,16 @@ def parse_symbol_map(value: str) -> dict[str, str]:
 
 def apply_symbol_map(symbol: str, symbol_map: dict[str, str]) -> str:
     value = symbol.strip()
-    # Una entrada escrita con el sufijo incluido (TSLA.NAS=TSLA) manda sobre la
-    # proteccion de sufijos: es la unica forma de traducir un simbolo de bolsa.
-    literal = symbol_map.get(value.upper(), "")
-    if literal:
-        return literal
+    mapping = symbol_map or {}
+    # Una entrada escrita con el sufijo de bolsa incluido (`TSLA.NAS=Tesla+`)
+    # gana antes del corte por sufijo explicito. Los sufijos propios del broker
+    # siguen protegidos y solo se traducen cuando existe una entrada literal.
+    exact = mapping.get(value.upper())
+    if exact:
+        return exact
     if _symbol_has_explicit_suffix(value, ()):
         return value
-    base_symbol = normalize_set_symbol(value)
-    return symbol_map.get(base_symbol, value)
+    return mapping.get(normalize_set_symbol(value), value)
 
 FOREX_SYMBOLS = {
     a + b

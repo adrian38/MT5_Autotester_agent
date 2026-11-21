@@ -57,6 +57,7 @@ class UBSSeedsLogicMixin(
         if not memory_path.exists():
             messagebox.showinfo("Calcular pesos", "Sin memoria UBS. Evalúa las semillas primero.")
             return
+        conn = None
         try:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
@@ -80,6 +81,7 @@ class UBSSeedsLogicMixin(
             if self._sqlite_table_exists(conn, "seed_scores"):
                 known_paths = {str(row["seed_path"]) for row in conn.execute("select seed_path from seed_scores where active=1").fetchall()}
             conn.close()
+            conn = None
             pending_count = int(pending["n"] if pending else 0)
             total_count = int(total["n"] if total else 0)
             missing_count = len(current_paths - known_paths)
@@ -89,6 +91,9 @@ class UBSSeedsLogicMixin(
         except Exception as exc:
             self._show_error("Error leyendo semillas", str(exc))
             return
+        finally:
+            if conn is not None:
+                conn.close()
         pending_count += missing_count
         total_count += missing_count
         if pending_count > 0:

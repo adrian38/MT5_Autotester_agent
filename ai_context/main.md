@@ -99,8 +99,9 @@ batch wrappers.
   modules in `ubs/` (`ubs/memory.py`, `ubs/score.py`, `ubs/account.py`,
   `ubs/manual_status.py`, etc.). Do NOT grow `app_ui.py` or `ubs_agent.py`
   with logic that belongs in a domain module.
-- **Broker/account isolation**: RoboForex ECN/PRO, ICTrading STANDARD, and AXI
-  STANDARD/PREMIUM use separate SQLite DBs, seed dirs, output dirs, and results.
+- **Broker/account isolation**: Vantage RAW, RoboForex ECN/PRO, ICTrading
+  STANDARD, and AXI STANDARD/PREMIUM use separate SQLite DBs, seed dirs, output
+  dirs, and results. The Vantage branch defaults to Vantage RAW.
   Asset universes are broker-scoped; disabled-symbol GEN/SEEDS policies are
   broker/account-scoped. Timeframe universe configuration is the only shared
   universe for now. All path resolution goes through `ubs/account.py` helpers.
@@ -1521,6 +1522,14 @@ the fresh-report filter if it happens to have a newer mtime than the batch start
   `[Terminal.N].broker` scopes each terminal profile. Legacy terminal profiles
   without a broker are treated as `ROBOFOREX`.
 - Compilation remains sequential; multiterminal applies to backtest queues.
+
+### Universe MT5 connection
+
+`UBS Universo` keeps its symbol-extraction connection in the visible screen and
+persists it under `[General]` in `ui_settings.ini`. `Usar esta cuenta` controls
+whether login, server and password are sent to MetaTrader5. When it is disabled,
+the extraction passes no credentials and uses the account already logged into
+the selected terminal.
 
 ### Portfolio parser English support
 

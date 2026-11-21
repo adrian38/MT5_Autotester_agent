@@ -236,6 +236,22 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
                 "MongoDB+",
             )
 
+    def test_vantage_universe_protects_exact_symbols_before_suffix_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            assets = run_tests.Path(temp_dir) / "vantage_assets.ini"
+            assets.write_text(
+                "[Forex]\nsymbols=AUDUSD,EURUSD+\n"
+                "[Indices]\nsymbols=DJ30.r,DJ30ft.r,Nikkei225\n",
+                encoding="utf-8",
+            )
+            universe = run_tests.load_symbol_suffix_universe(assets, ".r", "ft.r", "+")
+
+            self.assertEqual(run_tests.apply_symbol_suffix("AUDUSD", ".r", "ft.r", "+", universe), "AUDUSD")
+            self.assertEqual(run_tests.apply_symbol_suffix("EURUSD", ".r", "ft.r", "+", universe), "EURUSD+")
+            self.assertEqual(run_tests.apply_symbol_suffix("DJ30", ".r", "ft.r", "+", universe), "DJ30.r")
+            self.assertEqual(run_tests.apply_symbol_suffix("DJ30ft", ".r", "ft.r", "+", universe), "DJ30ft.r")
+            self.assertEqual(run_tests.apply_symbol_suffix("NIKKEI225", ".r", "ft.r", "+", universe), "Nikkei225")
+
     def test_symbol_map_preserves_explicit_broker_suffix(self) -> None:
         symbol_map = run_tests.parse_symbol_map("NAS100=USTECH,WTI=USOIL")
 
@@ -284,6 +300,35 @@ class RunTestsSetAndConfigTests(unittest.TestCase):
                 continue
             self.assertEqual(symbol_map.get(source), target, source)
             self.assertIn(target.upper(), stocks, source)
+
+    def test_symbol_map_translates_exchange_suffix(self) -> None:
+        """.NAS dice donde cotiza el titulo, no como lo escribe el broker."""
+        symbol_map = run_tests.parse_symbol_map("TSLA.NAS=TSLA,AAPL.NAS=AAPL")
+
+        self.assertEqual(run_tests.apply_symbol_map("TSLA.NAS", symbol_map), "TSLA")
+        self.assertEqual(run_tests.apply_symbol_map("AAPL.NAS", symbol_map), "AAPL")
+        self.assertEqual(run_tests.apply_symbol_map("MSFT.NAS", symbol_map), "MSFT.NAS")
+
+    def test_vantage_cross_broker_aliases_resolve_to_broker_symbols(self) -> None:
+        from ubs.account import default_symbol_map_for_broker
+
+        symbol_map = run_tests.parse_symbol_map(default_symbol_map_for_broker("VANTAGE"))
+        suffix_universe = run_tests.load_symbol_suffix_universe(
+            run_tests.Path("assets/vantage_assets.ini"), ".r", "ft.r", "+",
+        )
+        expected = {
+            "US30": "DJ30.r",
+            "USTEC": "NAS100.r",
+            "US500": "SP500.r",
+            "DE40": "GER40.r",
+            "XTIUSD": "USOUSD",
+            "TSLA.NAS": "TSLA",
+            "AAPL.NAS": "AAPL",
+        }
+        for seed_symbol, broker_symbol in expected.items():
+            mapped = run_tests.apply_symbol_map(seed_symbol, symbol_map)
+            resolved = run_tests.apply_symbol_suffix(mapped, ".r", "ft.r", "+", suffix_universe)
+            self.assertEqual(resolved, broker_symbol, seed_symbol)
 
     def test_axi_ustec_alias_resolves_to_cash_symbol(self) -> None:
         from ubs.account import default_symbol_map_for_broker

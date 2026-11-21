@@ -108,6 +108,7 @@ class UBSAgentRescoreTests(unittest.TestCase):
             report = root / "probe.htm"
             report.write_text("report", encoding="utf-8")
             db = sqlite3.connect(":memory:")
+            self.addCleanup(db.close)
             db.row_factory = sqlite3.Row
             db.execute(
                 """

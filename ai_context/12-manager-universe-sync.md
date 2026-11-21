@@ -53,3 +53,18 @@ covers file persistence/backups, alias and latest-verdict behavior, scoped
 destinations, credentials, busy states, actual HTTP/child-process completion
 using a harmless stub, and probe resume. Manager tests additionally drive this
 fork in a separate interpreter through ManagerServer. No real MT5 backtests ran.
+
+## Vantage symbol groups and suffix resolution
+
+Vantage index spellings such as `DJ30.r`, `CHINA50ft.r`, `Nikkei225` and
+`USDX.r` belong to `Indices`; they must never be left in `Other`, because the
+manager's portfolio contract does not expose that group. The extractor uses
+broker-name hints as well as MT5 paths so a later universe sync preserves this
+classification.
+
+When suffix handling is enabled, the complete active asset universe is also an
+exact-symbol allowlist. Exact broker symbols without a suffix (for example
+`AUDUSD` or `Nikkei225`) take precedence over the configured fallback suffix.
+Only a base name whose listed broker target is suffixed is expanded. This makes
+the Vantage combination `.r`, `ft.r`, `+` safe for mixed suffixed and
+unsuffixed symbols.
