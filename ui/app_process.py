@@ -272,7 +272,10 @@ class AppProcessMixin:
         self._notify_telegram(message)
         if code == 0:
             if not auto_followup_started:
-                messagebox.showinfo("Proceso terminado", "El proceso termino correctamente.")
+                messagebox.showinfo(
+                    "Proceso terminado",
+                    message or "El proceso termino correctamente.",
+                )
             return
         if code == RUNNING_TERMINAL_EXIT_CODE:
             messagebox.showerror(

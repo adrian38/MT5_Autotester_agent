@@ -153,8 +153,12 @@ def apply_symbol_map(symbol: str, symbol_map: dict[str, str]) -> str:
     value = symbol.strip()
     mapping = symbol_map or {}
     # Una entrada escrita con el sufijo de bolsa incluido (`TSLA.NAS=Tesla+`)
-    # gana antes del corte por sufijo explicito. Los sufijos propios del broker
-    # siguen protegidos y solo se traducen cuando existe una entrada literal.
+    # gana antes del corte por sufijo explicito. Si no, era letra muerta: el
+    # corte devolvia el simbolo tal cual y el mapa no llegaba a consultarse,
+    # asi que ningun alias podia traducir las acciones de un cliente al nombre
+    # con el que las lista el broker. `parse_symbol_map` solo conserva la clave
+    # entera cuando el sufijo es de bolsa, de modo que esto no puede reescribir
+    # un simbolo que ya venga en la ortografia del broker (`USOIL.sa`).
     exact = mapping.get(value.upper())
     if exact:
         return exact

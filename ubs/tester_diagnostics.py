@@ -34,7 +34,46 @@ _TRADE_RESTRICTIONS: tuple[tuple[str, int, tuple[re.Pattern[str], ...]], ...] = 
 _SYMBOL_NOT_EXIST = re.compile(r"\bsymbol\s+(?P<symbol>\S+)\s+not\s+exist", re.IGNORECASE)
 
 
-def journal_symbol_missing(text: str, symbol: str) -> bool:
+#: Cuantos simbolos del universo puede negar un journal antes de dejar de
+#: creerle. Un futuro vencido o dos son el caso que esta deteccion existe para
+#: cubrir; una decena es el terminal el que esta mal puesto.
+_JOURNAL_CONTRADICTION_LIMIT = 3
+
+
+def _journal_missing_symbols(text: str) -> set[str]:
+    return {
+        match.group("symbol").strip().strip(",;.").casefold()
+        for match in _SYMBOL_NOT_EXIST.finditer(text or "")
+    }
+
+
+def journal_contradicts_universe(
+    text: str, universe_symbols: Iterable[str] | None,
+) -> bool:
+    """True cuando el journal niega medio catalogo y no hay que creerle.
+
+    Un terminal conectado a otro servidor del mismo broker responde `symbol X
+    not exist` a todo, porque recibe la ortografia del servidor del universo
+    (`EURUSD.sa` en un servidor que escribe `EURUSD`). Visto de uno en uno es
+    identico a un simbolo retirado, y el estado que deriva de ello es terminal
+    y sin reintento, asi que un pool mal apuntado podria enterrar el pool de
+    seeds entero. Visto de golpe se distingue solo: el universo sincronizado
+    sigue listando lo que el terminal dice no tener.
+    """
+    if not universe_symbols:
+        return False
+    listed = {str(value).strip().casefold() for value in universe_symbols if str(value).strip()}
+    denied = {symbol for symbol in _journal_missing_symbols(text) if symbol in listed}
+    return len(denied) >= _JOURNAL_CONTRADICTION_LIMIT
+
+
+def journal_symbol_missing(
+    text: str,
+    symbol: str,
+    *,
+    spellings: Iterable[str] = (),
+    universe_symbols: Iterable[str] | None = None,
+) -> bool:
     """True cuando el journal de MT5 dice que el broker ya no lista ``symbol``.
 
     Es la unica fuente que sabe la verdad: el fichero de activos se configura a
@@ -42,14 +81,23 @@ def journal_symbol_missing(text: str, symbol: str) -> bool:
     Se exige que el nombre coincida porque el journal diario recoge todos los
     tests del terminal, y heredar la evidencia de otro simbolo marcaria como
     retirado algo que si existe (el estado que deriva de esto es terminal).
+
+    ``spellings`` admite las demas ortografias del mismo simbolo, porque el
+    objetivo de un candidato viaja sin sufijo (`USTEC`) y el journal habla
+    siempre en la del broker (`USTECH.sa`). ``universe_symbols`` desactiva la
+    deteccion cuando el journal se contradice con el universo entero; ver
+    ``journal_contradicts_universe``.
     """
-    target = str(symbol or "").strip().strip(",;.").casefold()
-    if not target:
+    targets = {
+        str(value or "").strip().strip(",;.").casefold()
+        for value in (symbol, *spellings)
+    }
+    targets.discard("")
+    if not targets:
         return False
-    for match in _SYMBOL_NOT_EXIST.finditer(text or ""):
-        if match.group("symbol").strip().strip(",;.").casefold() == target:
-            return True
-    return False
+    if journal_contradicts_universe(text, universe_symbols):
+        return False
+    return bool(targets & _journal_missing_symbols(text))
 
 
 def tester_journal_sidecar(report_path: Path) -> Path:

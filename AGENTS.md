@@ -220,21 +220,26 @@ borra cuando deje de existir.
 
 ## Verificación obligatoria
 
-De oficio se pasan **sólo las pruebas focalizadas**: los módulos de `tests/`
-que cubren lo tocado, más `tests/quality` si el cambio mueve longitudes de
-fichero o de función.
+Ejecutar la puerta del repositorio con el grupo del área que se toca:
 
 ```text
-python -m unittest tests.<modulo1> tests.<modulo2>
-python -m tools.verify_project --quick
+python -m tools.verify_project --list-groups
+python -m tools.verify_project --group final_tick
 ```
 
-La suite entera (`python -m unittest discover -s tests -t .`, que es lo que
-añade `python -m tools.verify_project` sin `--quick`) **no se lanza salvo que
-el usuario la pida**: tarda minutos y arrastra fallos de calidad heredados que
-no dicen nada del cambio en curso. No usar `pytest`: no forma parte del
-contrato instalado. Nada de esto debe lanzar MT5 ni alterar memoria, reportes,
-sets o configuración operativa.
+Sin argumentos corre lo barato: las auditorías mecánicas y el grupo `guardas`.
+Cada `--group` añade un grupo del reparto de `tools/test_groups.py`, que parte
+`tests/` por área (`agente`, `final_tick`, `portafolio`, `universo`, `nodo`,
+`runner`, `ui`, `herramientas`). `--quick` se mantiene como alias del modo por
+defecto.
+
+La suite completa (`python -m tools.verify_project --full`, equivalente a
+`python -m unittest discover -s tests -t .`) **no se ejecuta por rutina: sólo cuando
+el usuario la pide**. Un módulo de prueba nuevo tiene que entrar en un grupo o
+`tests/test_test_groups.py` falla, así que el reparto no deja pruebas huérfanas.
+
+No usar `pytest`: no forma parte del contrato instalado. La puerta no debe
+lanzar MT5 ni alterar memoria, reportes, sets o configuración operativa.
 
 ## Definición de terminado y entrega
 

@@ -207,8 +207,8 @@ class UBSAgentViewCardsMixin:
             [
                 ("Desde", self.ubs_final_tick_6m_from_date, "date"),
                 ("Hasta", self.ubs_final_tick_6m_to_date, "date"),
-                ("Ops bajas desde", self.ubs_final_tick_6m_ohlc_from_date, "date"),
-                ("Ops bajas hasta", self.ubs_final_tick_6m_ohlc_to_date, "date"),
+                ("2o rango desde", self.ubs_final_tick_6m_ohlc_from_date, "date"),
+                ("2o rango hasta", self.ubs_final_tick_6m_ohlc_to_date, "date"),
                 ("HQ min %", self.ubs_final_tick_min_history_quality, "entry"),
                 ("Min ops OHLC", self.ubs_final_tick_min_ohlc_trades, "spin"),
                 ("Net delta %", self.ubs_final_tick_max_net_delta_pct, "entry"),
@@ -224,12 +224,12 @@ class UBSAgentViewCardsMixin:
             spin_right_pad=None,
             date_tip="Formato: YYYY.MM.DD.\n"
             "Tramo principal de 6M para OHLC vs Every Tick real.\n"
-            "Ops bajas desde/hasta solo se usan para reintentar filas con pocas operaciones OHLC.",
+            "El segundo rango amplía muestras economicas alineadas o reintenta pocas operaciones OHLC.",
         )
         self._agent_card_footer(
             final_tick_6m,
             6,
-            "Valida el tramo largo para uso real. Portfolio solo usa Final Tick 6M accepted. Ops bajas reintenta solo pendientes por pocas operaciones OHLC.",
+            "Valida el tramo largo para uso real. Portfolio solo usa Final Tick 6M accepted. El segundo rango resuelve muestras economicas pendientes y pocas operaciones OHLC.",
             "Guardar Final Tick 6M",
         )
 

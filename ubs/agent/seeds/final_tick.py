@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 
 from ubs.path_utils import resolve_workspace_path
+from ubs.agent.final_tick.economic_sample import (
+    PENDING_ECONOMIC_SAMPLE,
+    reviewed_economic_sample,
+)
 from ubs.agent.final_tick.evaluate import normalize_final_tick_stage
 from ubs.agent.final_tick.entry import evaluate_candidate_final_tick
 
@@ -68,6 +73,53 @@ def seed_final_tick_cohort_id(rows: list, stage: str) -> int:
     )
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
     return int(digest[:8], 16) or 1
+
+
+def seed_economic_sample_review_rows(
+    memory, stage: str, min_trades: int, from_date: str, to_date: str,
+    retry_from: str, retry_to: str,
+) -> list:
+    """Filas seed ya juzgadas que la nueva regla debe ampliar."""
+    matches = []
+    for row in eligible_seed_final_tick_rows(memory, stage):
+        if str(row["final_tick_status"] or "") not in {"accepted", "rejected"}:
+            continue
+        if (str(row["final_tick_from_date"] or ""), str(row["final_tick_to_date"] or "")) != (from_date, to_date):
+            continue
+        reviewed = reviewed_economic_sample(
+            row["ft_similarity_json"], row["ft_ohlc_report_path"],
+            row["ft_real_tick_report_path"], min_trades, retry_from, retry_to,
+        )
+        if reviewed is not None:
+            matches.append(row)
+    return matches
+
+
+def mark_seed_economic_sample_pending(
+    memory, stage: str, rows: list, min_trades: int,
+    retry_from: str, retry_to: str,
+) -> int:
+    """Reclasifica filas historicas sin borrar sus informes de evidencia."""
+    table = seed_final_tick_table_for_stage(stage)
+    updated = 0
+    for row in rows:
+        similarity = reviewed_economic_sample(
+            row["ft_similarity_json"], row["ft_ohlc_report_path"],
+            row["ft_real_tick_report_path"], min_trades, retry_from, retry_to,
+        )
+        if similarity is None:
+            continue
+        memory.conn.execute(
+            f"update {table} set status=?, accepted=0, similarity_json=? where seed_id=?",
+            (PENDING_ECONOMIC_SAMPLE, json.dumps(similarity, sort_keys=True), int(row["id"])),
+        )
+        if table == "seed_final_tick":
+            memory.conn.execute(
+                "delete from seed_final_tick_6m where seed_id=?", (int(row["id"]),),
+            )
+        updated += 1
+    memory.conn.commit()
+    return updated
 
 
 class SeedFinalTickMemoryAdapter:

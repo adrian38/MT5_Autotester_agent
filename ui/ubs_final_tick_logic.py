@@ -11,7 +11,12 @@ from pathlib import Path
 from tkinter import messagebox
 
 from ubs.db import connect_memory
+from ubs.agent.final_tick.economic_sample import (
+    candidate_economic_sample_review_rows,
+    mark_candidate_economic_sample_pending,
+)
 from ubs.manual_status import mark_candidate_final_tick
+from ubs.path_utils import resolve_workspace_path
 from ui.ubs_final_tick_queries import (
     FINAL_TICK_ELIGIBLE_LABELS,
     FINAL_TICK_MANUAL_WARNINGS,
@@ -132,12 +137,66 @@ class UBSFinalTickLogicMixin(UBSFinalTickRunMixin, UBSFinalTickStageMixin):
             resumen = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
             self.status_text.set(f"{stage_label(stage)} reconciliado desde disco: {resumen}")
 
+    def _review_final_tick_economic_samples(self, stage: str) -> None:
+        """Reclasifica el run visible y lanza sus muestras con el segundo rango."""
+        label = f"UBS {stage_label(stage)}"
+        try:
+            loaded = self._load_final_tick_rows(stage)
+            if loaded is None:
+                return
+            run, all_rows = loaded
+            from_date, to_date, retry_from, retry_to = (
+                self._validated_final_tick_stage_dates(stage)
+            )
+            if not retry_from or not retry_to:
+                raise ValueError("Configura el segundo rango Desde y Hasta.")
+            minimum = max(1, int(float(self.ubs_pass_min_trades.get() or 50)))
+            rows = candidate_economic_sample_review_rows(
+                all_rows, minimum, from_date, to_date, retry_from, retry_to,
+            )
+            rows = [
+                row for row in rows
+                if resolve_workspace_path(row["set_path"]).exists()
+            ]
+            args = self._ubs_final_tick_args(
+                int(run["id"]), pending_only=True, final_tick_stage=stage,
+            )
+        except Exception as exc:
+            self._show_error(f"No se pudo revisar {label}", str(exc))
+            return
+        if not rows:
+            messagebox.showinfo(
+                label, "No hay resultados actuales que necesiten ampliar muestra.",
+            )
+            return
+        details = [
+            f"Etapa: {label}", "Accion: revisar muestra economica",
+            f"Candidatos: {len(rows)}", f"Minimo economico: {minimum} ops",
+            f"Segundo rango: {retry_from} -> {retry_to}",
+        ]
+        if not self._confirm_execution_start(f"Confirmar {label}", len(rows), details):
+            return
+        conn = connect_memory(self._ubs_memory_path())
+        try:
+            updated = mark_candidate_economic_sample_pending(
+                conn, stage, rows, minimum, retry_from, retry_to,
+            )
+        finally:
+            conn.close()
+        self._refresh_final_tick_panel(stage)
+        self._show_section(self._final_tick_section(stage))
+        self.status_text.set(f"Ampliando muestra economica: {updated} candidato(s)")
+        self.after(10, lambda: self._run_script("ubs_agent.py", args))
+
     # ------------------------------------------------------------------
     # Pintado de la tabla
     # ------------------------------------------------------------------
     def _final_tick_run_rows(self, conn: sqlite3.Connection, run_id: int, stage: str) -> list:
         """Candidatos elegibles del run con su resultado de la etapa, si lo tienen."""
         return conn.execute(final_tick_run_rows_sql(stage_suffix(stage)), (run_id,)).fetchall()
+
+    def _review_ubs_final_tick_economic_samples(self) -> None:
+        self._review_final_tick_economic_samples("probe")
 
     def _load_final_tick_rows(self, stage: str):
         """Run visible y sus filas; None si no hay memoria, run o la consulta falla."""

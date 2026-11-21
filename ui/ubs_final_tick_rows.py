@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 
 from ubs.db import connect_memory
-from ui.ubs_final_tick_shared import is_six_month, stage_suffix
+from ui.ubs_final_tick_shared import (
+    is_six_month,
+    stage_suffix,
+    uses_final_tick_long_window,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -165,7 +169,7 @@ class UBSFinalTickRowsMixin:
     def _final_tick_effective_dates_for_row(self, row: sqlite3.Row, *, final_tick_stage: str = "probe") -> tuple[str, str]:
         status = str(row["final_tick_status"] or "").strip()
         from_date, to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
-        if is_six_month(final_tick_stage) and status == "pending_ohlc_trades" and ohlc_from and ohlc_to:
+        if uses_final_tick_long_window(final_tick_stage, status) and ohlc_from and ohlc_to:
             return ohlc_from, ohlc_to
         return from_date, to_date
 
@@ -184,7 +188,7 @@ class UBSFinalTickRowsMixin:
             return True
         if status in FINAL_TICK_RETRYABLE_STATUSES:
             return True
-        if six_month and status == "pending_ohlc_trades":
+        if uses_final_tick_long_window(final_tick_stage, status):
             return not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
         if status in FINAL_TICK_DATE_RETRYABLE_STATUSES:
             return six_month and not self._final_tick_row_dates_match(row, final_tick_stage=final_tick_stage)
@@ -219,6 +223,14 @@ class UBSFinalTickRowsMixin:
             trades = check.get("ohlc") if isinstance(check, dict) else None
             minimum = check.get("min_trades") if isinstance(check, dict) else None
             return f"OHLC pendiente: {self._format_ubs_int(trades)} ops < {self._format_ubs_int(minimum)}"
+        if status == "pending_economic_sample":
+            check = similarity.get("checks", {}).get("economic_sample", {})
+            ohlc = self._format_ubs_int(check.get("ohlc_trades"))
+            tick = self._format_ubs_int(check.get("real_tick_trades"))
+            minimum = self._format_ubs_int(check.get("min_trades"))
+            retry_from = str(check.get("retry_from") or "")
+            retry_to = str(check.get("retry_to") or "")
+            return f"muestra economica pendiente: OHLC {ohlc} / tick {tick} < {minimum}; ampliar {retry_from} -> {retry_to}"
         if status == "no_report":
             if "empty_ohlc_context" in {str(reason) for reason in (similarity.get("reasons") or [])}:
                 return "histórico OHLC no disponible; reintento pendiente"

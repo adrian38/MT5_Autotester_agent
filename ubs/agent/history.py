@@ -17,8 +17,6 @@ from ubs.universe import (
     augment_aliases_with_symbol_map,
     canonical_symbol,
     load_asset_universe,
-    load_disabled_symbols,
-    load_seed_enabled_disabled_symbols,
 )
 from ubs.agent.config import (
     BASE_DIR,
@@ -32,7 +30,7 @@ from ubs.agent.evaluation.evaluate import (
     select_survivors,
 )
 from ubs.agent.seeds.plan import (
-    disabled_symbols_file_for_account,
+    account_symbol_policy,
     generation_source_seeds,
 )
 from ubs.agent.generation.universe import (
@@ -90,10 +88,7 @@ def _probe_history_preflight(args: argparse.Namespace) -> int | None:
 
 def _probe_template_seed(args: argparse.Namespace, memory: AgentMemory, symbol_map: dict[str, str]):
     """Seed que sirve de plantilla del probe y seeds bloqueadas como fuente."""
-    disabled_policy_path = disabled_symbols_file_for_account(args.account_type, args.broker)
-    disabled_symbols = load_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled = load_seed_enabled_disabled_symbols(disabled_policy_path)
-    seed_enabled_when_disabled &= disabled_symbols
+    disabled_symbols, seed_enabled_when_disabled = account_symbol_policy(args)
     seeds = memory.apply_seed_overrides(
         load_seeds(resolve_workspace_path(args.source_dir), base_dir=BASE_DIR)
     )
@@ -125,6 +120,58 @@ def _probe_pending_symbols(
     if args.probe_history_limit > 0:
         universe_symbols = universe_symbols[: args.probe_history_limit]
     return universe_symbols, all_universe_symbols
+
+
+def _probe_explicit_symbols(args: argparse.Namespace, requested: list[str]):
+    """Simbolos pedidos a mano, resueltos contra el universo entero.
+
+    Un probe explicito no filtra por GEN ni por veredicto previo: se pide
+    justo para volver a medir un simbolo apagado o ya sentenciado, y esos
+    dos filtros son los que lo dejarian fuera. `include_disabled` conserva
+    ademas la ortografia del `.ini`, que es la que viaja al tester.
+    """
+    asset_groups, _aliases = load_asset_universe(
+        Path(args.assets).expanduser(),
+        include_disabled=True,
+    )
+    all_universe_symbols = tuple(dict.fromkeys(symbol for symbols in asset_groups.values() for symbol in symbols))
+    listed_by_upper = {symbol.upper(): symbol for symbol in all_universe_symbols}
+    resolved: list[str] = []
+    unknown: list[str] = []
+    for symbol in requested:
+        listed = listed_by_upper.get(symbol.upper())
+        if listed is None:
+            unknown.append(symbol)
+        elif listed not in resolved:
+            resolved.append(listed)
+    return tuple(resolved), all_universe_symbols, unknown
+
+
+def _probe_run_symbols(
+    args: argparse.Namespace, memory: AgentMemory, symbol_map: dict[str, str], disabled_symbols: set
+):
+    """Simbolos de esta tanda: los pedidos a mano, o los GEN=si pendientes.
+
+    Devuelve tambien con que codigo salir cuando no queda nada que sondear,
+    porque los dos casos no significan lo mismo: pedir un simbolo que no
+    existe es un error, y quedarse sin pendientes es un final correcto.
+    """
+    requested = [
+        str(symbol).strip()
+        for symbol in (getattr(args, "probe_symbol", None) or [])
+        if str(symbol).strip()
+    ]
+    if requested:
+        symbols, universe, unknown = _probe_explicit_symbols(args, requested)
+        if unknown:
+            print(f"ERROR: simbolos fuera del universo: {', '.join(unknown)}")
+            return symbols, universe, requested, 1
+        return symbols, universe, requested, None
+    symbols, universe = _probe_pending_symbols(args, memory, symbol_map, disabled_symbols)
+    if not symbols:
+        print("No hay simbolos GEN=si pendientes de probe historico.")
+        return symbols, universe, requested, 0
+    return symbols, universe, requested, None
 
 
 def _probe_variants(
@@ -166,6 +213,7 @@ def _probe_evaluate_reports(
             universe_symbols=broker_universe_symbols(args),
         )
         status_counts[status] = status_counts.get(status, 0) + 1
+        print(f"  {variant.target_symbol} {variant.target_period}: {status}")
     return status_counts
 
 
@@ -181,17 +229,21 @@ def probe_universe_history(args: argparse.Namespace, memory: AgentMemory, score_
     if template_seed is None:
         print("ERROR: no hay una seed valida para usar como plantilla del probe")
         return 1
-    universe_symbols, all_universe_symbols = _probe_pending_symbols(
+    universe_symbols, all_universe_symbols, requested_symbols, stop_code = _probe_run_symbols(
         args, memory, symbol_map, disabled_symbols
     )
-    if not universe_symbols:
-        print("No hay simbolos GEN=si pendientes de probe historico.")
-        return 0
+    if stop_code is not None:
+        return stop_code
     run_dir = resolve_workspace_path(args.output_dir) / datetime.now().strftime("history_probe_%Y%m%d_%H%M%S")
     probe_dir = recreate_work_dir(run_dir / "gen_001")
     variants = _probe_variants(memory, template_seed, universe_symbols, target_period, probe_dir)
+    scope_label = (
+        f"simbolos pedidos={len(variants)}"
+        if requested_symbols
+        else f"pendientes GEN=si={len(variants)} de {len(all_universe_symbols)}"
+    )
     print(
-        f"Probe historico universo: pendientes GEN=si={len(variants)} de {len(all_universe_symbols)} | "
+        f"Probe historico universo: {scope_label} | "
         f"TF={target_period} | seed plantilla={template_seed.path.name}"
     )
     if blocked_source_count:

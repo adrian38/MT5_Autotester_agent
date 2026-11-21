@@ -104,6 +104,9 @@ class TerminalProfile:
     experts_root: Path
     ubs_ex5_file: Path | None
     portable: bool
+    # Servidor MT5 al que debe estar conectado este terminal. Vacio significa
+    # "el que espere el broker activo"; ver `expected_broker_server`.
+    expected_server: str = ""
 
 
 @dataclass(frozen=True)

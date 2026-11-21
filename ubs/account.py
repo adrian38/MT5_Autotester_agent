@@ -7,6 +7,17 @@ from datetime import datetime
 from pathlib import Path
 
 from ubs.path_utils import resolve_workspace_path
+from ubs.broker_symbol_maps import (  # noqa: F401  (reexportadas: su hogar es ubs.account)
+    AXI_CASH_FUTURE_SYMBOL_FAMILIES,
+    AXI_DEFAULT_SYMBOL_MAP,
+    AXI_SHARE_SYMBOL_ALIASES,
+    AXI_SHARE_SYMBOL_SUFFIXES,
+    BROKER_IDENTITY_SUFFIXES,
+    DEFAULT_SYMBOL_MAPS_BY_BROKER,
+    ICTRADING_DEFAULT_SYMBOL_MAP,
+    ROBOFOREX_DEFAULT_SYMBOL_MAP,
+    VANTAGE_DEFAULT_SYMBOL_MAP,
+)
 
 
 BROKER_ACCOUNTS = {
@@ -24,75 +35,11 @@ BROKER_ACCOUNT_TYPES = tuple(
 )
 DEFAULT_BROKER = "ROBOFOREX"
 DEFAULT_ACCOUNT_TYPE = "ECN"
-DEFAULT_UI_BROKER = "VANTAGE"
-DEFAULT_UI_ACCOUNT_TYPE = "RAW"
+DEFAULT_UI_BROKER = DEFAULT_BROKER
+DEFAULT_UI_ACCOUNT_TYPE = DEFAULT_ACCOUNT_TYPE
 DEFAULT_TIMEFRAME_UNIVERSE = (
     "M1", "M5", "M15", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
 )
-# Vantage nombra los indices con el nombre del futuro subyacente (DJ30, NAS100)
-# y los titulos sin la bolsa (.NAS), mientras las semillas vienen escritas con la
-# ortografia de los otros brokers. Las entradas llevan la ortografia exacta del
-# .ini porque ``symbol_not_offered`` compara contra el inventario sin normalizar:
-# un destino a medias (DJ30 en vez de DJ30.r) seguiria pareciendo retirado.
-# Solo renombres: los sufijos (.r, ft.r, +) ya los resuelve el universo.
-VANTAGE_DEFAULT_SYMBOL_MAP = (
-    "US30=DJ30.r,DJI=DJ30.r,US100=NAS100.r,USTEC=NAS100.r,USTECH=NAS100.r,"
-    "NASDAQ=NAS100.r,US500=SP500.r,SPX500=SP500.r,DAX=GER40.r,DE40=GER40.r,"
-    "CAC40=FRA40.r,FTSE=UK100.r,FT100=UK100.r,JP225=Nikkei225,JPN225=Nikkei225,"
-    "NK225=Nikkei225,HSI=HK50.r,CN50=CHINA50.r,AUS200=SPI200.r,STOXX50=EU50.r,"
-    "EUSTX50=EU50.r,EURO50=EU50.r,DXY=USDX.r,USDINDEX=USDX.r,"
-    "WTI=USOUSD,XTIUSD=USOUSD,USOIL=USOUSD,CRUDEOIL=USOUSD,"
-    "BRENT=UKOUSD,XBRUSD=UKOUSD,UKOIL=UKOUSD,"
-    "GOLD=XAUUSD+,SILVER=XAGUSD,TSLA.NAS=TSLA,AAPL.NAS=AAPL"
-)
-ROBOFOREX_DEFAULT_SYMBOL_MAP = (
-    "CRUDEOIL=WTI,XTIUSD=WTI,USTEC=.USTECHCash,US100=.USTECHCash,"
-    "US30=.US30Cash,US500=.US500Cash,DAX=.DE40Cash,DE40=.DE40Cash,"
-    "TSLA.NAS=TSLA,AAPL.NAS=AAPL"
-)
-ICTRADING_DEFAULT_SYMBOL_MAP = (
-    "US100=USTEC,NAS100=USTEC,NASDAQ=USTEC,SPX500=US500,DAX=DE40,"
-    "GER40=DE40,JPN225=JP225,BRENT=XBRUSD,UKOIL=XBRUSD,WTI=XTIUSD,"
-    "USOIL=XTIUSD,CRUDEOIL=XTIUSD,GOLD=XAUUSD,SILVER=XAGUSD"
-)
-AXI_DEFAULT_SYMBOL_MAP = (
-    "US100=USTECH,USTEC=USTECH,NAS100=NAS100.fs,NASDAQ=USTECH,SPX500=US500,SP500=US500,"
-    "DJ30=DJ30.fs,DJI=US30,DAX=GER40,DE40=GER40,CAC40=CAC40.fs,FTSE=UK100,FT100=FT100.fs,"
-    "JP225=JPN225,USOIL=USOIL,XTIUSD=USOIL,WTI=WTI.fs,CRUDEOIL=USOIL,"
-    "UKOIL=UKOIL,XBRUSD=UKOIL,BRENT=BRENT.fs,NATGAS=NATGAS.fs,XNGUSD=NATGAS.fs,"
-    "GOLD=XAUUSD,SILVER=XAGUSD,DXY=USDINDEX.fs,USDINDEX=USDINDEX.fs,"
-    "VIX=VIX.fs,STOXX50=EU50,EURO50=EU50"
-)
-AXI_CASH_FUTURE_SYMBOL_FAMILIES = (
-    (("DAX", "DE40", "GER40", "DAX40"), ("GER40.sa", "DAX40.fs")),
-    (("US100", "USTEC", "USTECH", "NAS100", "NASDAQ"), ("USTECH.sa", "NAS100.fs")),
-    (("US30", "DJ30", "DJI"), ("US30.sa", "DJ30.fs")),
-    (("US500", "SP500", "SPX500", "S&P"), ("US500.sa", "S&P.fs")),
-    (("UK100", "FTSE", "FT100"), ("UK100.sa", "FT100.fs")),
-    (("JP225", "JPN225", "NK225"), ("JPN225.sa", "NK225.fs")),
-    (("FRA40", "CAC40"), ("FRA40.sa", "CAC40.fs")),
-    (("CN50", "CHINA50"), ("CN50.sa", "CHINA50.fs")),
-    (("EU50", "EUSTX50", "STOXX50", "EURO50"), ("EU50.sa", "EUSTX50.fs")),
-    (("HK50", "HSI"), ("HK50.sa", "HSI.fs")),
-    (("AUS200", "SPI200"), ("AUS200.sa", "SPI200.fs")),
-    (("USOIL", "XTIUSD", "WTI", "CRUDEOIL"), ("USOIL.sa", "WTI.fs")),
-    (("UKOIL", "XBRUSD", "BRENT"), ("UKOIL.sa", "BRENT.fs")),
-)
-DEFAULT_SYMBOL_MAPS_BY_BROKER = {
-    "VANTAGE": VANTAGE_DEFAULT_SYMBOL_MAP,
-    "ROBOFOREX": ROBOFOREX_DEFAULT_SYMBOL_MAP,
-    "ICTRADING": ICTRADING_DEFAULT_SYMBOL_MAP,
-    "AXI": AXI_DEFAULT_SYMBOL_MAP,
-}
-
-# Suffixes that are presentation details rather than part of symbol identity.
-# Keep this policy broker-scoped: another broker may legitimately use the same
-# text as an exchange/product qualifier with different semantics.
-BROKER_IDENTITY_SUFFIXES = {
-    "AXI": (".sa", ".fs", "+"),
-}
-
-
 def normalize_broker(value: object) -> str:
     broker = str(value or DEFAULT_BROKER).strip().upper().replace(" ", "")
     aliases = {
@@ -208,6 +155,45 @@ def broker_asset_universe_path(base_dir: Path, broker: object = DEFAULT_BROKER) 
 
 def broker_asset_universe_path_with_fallback(base_dir: Path, broker: object = DEFAULT_BROKER) -> Path:
     return broker_asset_universe_path(base_dir, broker)
+
+
+def broker_symbol_specs_path(base_dir: Path, broker: object = DEFAULT_BROKER) -> Path:
+    broker_key = normalize_broker(broker).lower()
+    return base_dir / "assets" / f"{broker_key}_symbol_specs.json"
+
+
+def broker_normalization_path(base_dir: Path, broker: object = DEFAULT_BROKER) -> Path:
+    broker_key = normalize_broker(broker).lower()
+    return base_dir / "assets" / f"{broker_key}_normalization.json"
+
+
+def broker_universe_server(base_dir: Path, broker: object = DEFAULT_BROKER) -> str:
+    """Servidor MT5 del que salio el universo activo de ``broker``.
+
+    Las medidas de `assets/<broker>_symbol_specs.json` y del fichero de
+    normalizacion se toman conectados a un servidor concreto y guardan cual.
+    Ese nombre es la expectativa del run: el universo, los sufijos y los
+    margenes describen ese servidor y ningun otro.
+
+    Devuelve cadena vacia cuando no consta, que vale por "no se sabe": un
+    broker sin medidas no debe bloquear el pool.
+    """
+    for path in (
+        broker_symbol_specs_path(base_dir, broker),
+        broker_normalization_path(base_dir, broker),
+    ):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        server = str(data.get("server") or "").strip()
+        if server:
+            return server
+    return ""
 
 
 def timeframe_universe_path(base_dir: Path) -> Path:

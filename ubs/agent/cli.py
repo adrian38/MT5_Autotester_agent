@@ -174,6 +174,7 @@ def _add_seed_stage_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--probe-universe-history", action="store_true", help="Prueba si los simbolos activos del universo tienen historico para el rango configurado.")
     parser.add_argument("--probe-history-timeframe", default="H1", help="Timeframe usado para el probe de historico del universo.")
     parser.add_argument("--probe-history-limit", type=int, default=0, help="Limita el numero de simbolos a probar; 0 = todos los GEN=si.")
+    parser.add_argument("--probe-symbol", action="append", default=[], help="Sondea solo estos simbolos del universo, aunque esten deshabilitados o ya tengan veredicto.")
 
 
 def _add_robustness_arguments(parser: argparse.ArgumentParser) -> None:
@@ -228,6 +229,10 @@ def _add_final_tick_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--final-tick-max-dd-delta-pct", type=float, default=35.0, help="Diferencia maxima de DD pct vs OHLC.")
     parser.add_argument("--final-tick-max-dd-gap-pp", type=float, default=3.0, help="Banda absoluta de DD (puntos) que acepta aunque falle la relativa.")
     parser.add_argument("--final-tick-max-trades-delta-pct", type=float, default=35.0, help="Diferencia maxima de trades vs OHLC.")
+    parser.add_argument(
+        "--final-tick-economic-min-trades", type=int, default=50,
+        help="Muestra minima antes de decidir una divergencia economica de Seeds 6M.",
+    )
     # Respaldo para 6M cuando el control OHLC cierra sin ninguna operacion
     # perdedora: PF y DD dejan de ser comparables y la pata de tick pasa a
     # juzgarse sola. Defaults = p05 (p95 para DD) de la pata real-tick de las

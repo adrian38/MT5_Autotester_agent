@@ -8,9 +8,16 @@ import shutil
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from common.mt5_env import MT5_TERMINAL_ENV, terminal_path_from_env
+from backtest.terminal_identity import (
+    TerminalSession,
+    same_server,
+    servers_seen_in_log,
+    terminal_last_session,
+)
 from backtest.base import (
     DEFAULT_MT5_PATHS,
     DEFAULT_TESTER_MAX_RUNTIME_SECONDS,
@@ -317,6 +324,28 @@ def terminal_section_sort_key(section: str) -> tuple[int, str]:
     except ValueError:
         return (999999, section)
 
+def terminals_config_pool(config_path: Path) -> tuple[str, str]:
+    """Broker y servidor declarados en ``[Multiterminal]``.
+
+    El runner de backtests no recibe el broker por CLI: lo decide la misma
+    configuracion que lista las terminales, y de ahi sale tambien que universo
+    y que servidor describen el run.
+    """
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read(config_path, encoding="utf-8-sig")
+    except (OSError, configparser.Error):
+        return "ROBOFOREX", ""
+    if not parser.has_section("Multiterminal"):
+        return "ROBOFOREX", ""
+    section = parser["Multiterminal"]
+    return (
+        normalize_terminal_broker(section.get("broker", "ROBOFOREX")),
+        section.get("server", "").strip(),
+    )
+
+
 def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -> list[TerminalProfile]:
     if not config_path.exists():
         raise FileNotFoundError(f"No existe la configuracion multiterminal: {config_path}")
@@ -325,8 +354,10 @@ def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -
     parser.optionxform = str
     parser.read(config_path, encoding="utf-8-sig")
     target_broker = "ROBOFOREX"
+    default_server = ""
     if parser.has_section("Multiterminal"):
         target_broker = normalize_terminal_broker(parser["Multiterminal"].get("broker", target_broker))
+        default_server = parser["Multiterminal"].get("server", "").strip()
     profiles: list[TerminalProfile] = []
     sections = sorted(
         (section for section in parser.sections() if section.lower().startswith("terminal.")),
@@ -360,9 +391,69 @@ def load_terminal_profiles(config_path: Path, *, ignore_enabled: bool = False) -
                 experts_root=experts_root,
                 ubs_ex5_file=ubs_ex5_file,
                 portable=portable,
+                expected_server=values.get("server", "").strip() or default_server,
             )
         )
     return profiles
+
+
+@dataclass(frozen=True)
+class TerminalServerCheck:
+    """Veredicto de la guarda de servidor para un terminal del pool."""
+
+    profile: TerminalProfile
+    expected: str
+    session: TerminalSession | None
+    extra_servers: tuple[str, ...]
+
+    @property
+    def matches(self) -> bool:
+        """False solo cuando consta que el terminal esta en otro servidor.
+
+        Sin expectativa o sin journal legible no hay veredicto, y el terminal
+        se queda en el pool: la guarda existe para apartar lo que se sabe mal,
+        no para exigir papeles.
+        """
+        if not self.expected or self.session is None:
+            return True
+        return same_server(self.session.server, self.expected)
+
+    def describe(self) -> str:
+        if self.session is None:
+            return f"{self.profile.name}: sin sesion registrada en el journal"
+        detail = f"{self.profile.name}: conectado a {self.session.server} (cuenta {self.session.login})"
+        if self.expected and not self.matches:
+            detail += f", se esperaba {self.expected}"
+        if len(self.extra_servers) > 1:
+            detail += f"; el journal alterna entre {', '.join(self.extra_servers)}"
+        return detail
+
+
+def check_terminal_servers(
+    profiles: list[TerminalProfile], expected_server: str = "",
+) -> list[TerminalServerCheck]:
+    """Contrasta cada terminal del pool con el servidor que espera el run.
+
+    Un terminal conectado a otro servidor del mismo broker acepta trabajo y lo
+    falla entero: AXI ofrece el mismo catalogo como `EURUSD.sa` en
+    `Axi-US51-Live` y como `EURUSD` en `Axi-US50-Live`, asi que los jobs salen
+    con la ortografia del universo sincronizado y MT5 responde `symbol
+    EURUSD.sa not exist` en todos. Es indistinguible de un fallo tecnico, de
+    modo que el pool entero parece ir bien mientras una parte gira en vacio.
+    """
+    checks: list[TerminalServerCheck] = []
+    for profile in profiles:
+        expected = profile.expected_server or expected_server
+        data_dir = profile_data_dir(profile)
+        checks.append(
+            TerminalServerCheck(
+                profile=profile,
+                expected=expected,
+                session=terminal_last_session(data_dir),
+                extra_servers=servers_seen_in_log(data_dir),
+            )
+        )
+    return checks
 
 def profile_data_dir(profile: TerminalProfile) -> Path | None:
     return profile.data_dir or (portable_terminal_data_dir(profile.mt5_path) if profile.portable else terminal_data_dir_from_origin(profile.mt5_path))

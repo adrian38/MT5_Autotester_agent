@@ -6,9 +6,46 @@ import sqlite3
 
 from ubs.memory import AgentMemory
 from ubs.score import ScoreConfig
-from ubs.agent.final_tick.evaluate import final_tick_stage_label, normalize_final_tick_stage
+from ubs.agent.final_tick.evaluate import (
+    final_tick_ohlc_retry_needed_for_dates,
+    final_tick_stage_label,
+    normalize_final_tick_stage,
+)
 
 from ubs.agent.final_tick.pass_stage import _evaluate_candidate_final_tick_pass
+
+
+def _automatic_economic_sample_retry(
+    args, memory, score_config, final_tick_label: str, code: int,
+) -> int:
+    """Ejecuta el segundo rango cuando una muestra economica queda pendiente."""
+    if (
+        code != 0
+        or getattr(args, "final_tick_reconcile_only", False)
+    ):
+        return code
+    stage = normalize_final_tick_stage(getattr(args, "final_tick_stage", "probe"))
+    retry_from = str(getattr(args, "final_tick_ohlc_from_date", "") or "").strip()
+    retry_to = str(getattr(args, "final_tick_ohlc_to_date", "") or "").strip()
+    if not retry_from or not retry_to:
+        return code
+    rows = memory.accepted_candidates_for_final_tick(
+        int(args.final_tick_run_id), final_tick_stage=stage,
+    )
+    if not final_tick_ohlc_retry_needed_for_dates(
+        rows, retry_from, retry_to, final_tick_stage=stage,
+    ):
+        return code
+    print(
+        f"{final_tick_label}: ampliando automaticamente muestra economica "
+        f"a {retry_from} -> {retry_to}."
+    )
+    original_pending_only = bool(getattr(args, "final_tick_pending_only", False))
+    args.final_tick_pending_only = True
+    try:
+        return _evaluate_candidate_final_tick_pass(args, memory, score_config)
+    finally:
+        args.final_tick_pending_only = original_pending_only
 
 
 def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory, score_config: ScoreConfig) -> int:
@@ -31,17 +68,18 @@ def evaluate_candidate_final_tick(args: argparse.Namespace, memory: AgentMemory,
     code = _evaluate_candidate_final_tick_pass(
         args, memory, score_config, deferred_out=deferred
     )
-    if code != 0 or not deferred:
-        return code
-    args.from_date = main_from_date
-    args.to_date = main_to_date
-    print(
-        f"{final_tick_label} continuacion: {len(deferred)} fila(s) pendientes con "
-        f"fechas principales {main_from_date} -> {main_to_date}."
-    )
-    # ``allow_ohlc_retry=False`` fuerza la rama de fechas principales sin borrar
-    # el rango alternativo, que sigue haciendo falta para no reencolar las filas
-    # cuyo retry OHLC ya se agoto.
-    return _evaluate_candidate_final_tick_pass(
-        args, memory, score_config, allow_ohlc_retry=False
+    if code == 0 and deferred:
+        args.from_date = main_from_date
+        args.to_date = main_to_date
+        print(
+            f"{final_tick_label} continuacion: {len(deferred)} fila(s) pendientes con "
+            f"fechas principales {main_from_date} -> {main_to_date}."
+        )
+        # ``allow_ohlc_retry=False`` fuerza la rama de fechas principales sin
+        # borrar el rango alternativo, que aun sirve para la ampliacion final.
+        code = _evaluate_candidate_final_tick_pass(
+            args, memory, score_config, allow_ohlc_retry=False
+        )
+    return _automatic_economic_sample_retry(
+        args, memory, score_config, final_tick_label, code,
     )

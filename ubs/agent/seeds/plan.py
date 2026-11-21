@@ -10,7 +10,11 @@ from ubs.account import DEFAULT_BROKER, account_disabled_symbols_path
 from ubs.models import Seed, Variant
 from ubs.score import ScoreResult
 from ubs.strategies import VALID_RUN_STRATEGIES
-from ubs.universe import canonical_symbol, seed_symbol_disabled
+from ubs.universe import (
+    canonical_symbol,
+    policy_with_universe_identities,
+    seed_symbol_disabled,
+)
 from ubs.agent.config import (
     ASSET_UNSEEDED_FORCE_PROB_BY_GENERATION,
     ASSET_UNSEEDED_FORCE_PROB_LATE,
@@ -447,3 +451,11 @@ def generation_source_seeds(
 
 def disabled_symbols_file_for_account(account_type: object, broker: object = DEFAULT_BROKER) -> Path:
     return account_disabled_symbols_path(BASE_DIR, account_type, broker)
+
+
+def account_symbol_policy(args: argparse.Namespace) -> tuple[set[str], set[str]]:
+    """Politica de simbolos de la cuenta, ensanchada con las identidades."""
+    return policy_with_universe_identities(
+        disabled_symbols_file_for_account(args.account_type, args.broker),
+        Path(str(getattr(args, "assets", "") or "")).expanduser(),
+    )

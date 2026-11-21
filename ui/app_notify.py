@@ -226,17 +226,55 @@ class AppNotifyMixin:
             f"no_report: {counts.get('no_report', 0)}"
         )
 
+    _UBS_PROBE_BATCH_DETAIL_LIMIT = 15
+
+    def _ubs_notification_probe_batch(self, conn: sqlite3.Connection) -> list[str]:
+        """Veredicto por simbolo de la tanda que acaba de sondearse.
+
+        Los totales de `candidates` son el acumulado de todo el universo y no
+        contestan lo unico que se pregunta al lanzar un probe: si *este*
+        simbolo tiene historico. Que simbolos iban en la tanda lo guarda la UI
+        al lanzarla, porque el agente ya no esta para contarlo.
+        """
+        symbols = tuple(getattr(self, "_ubs_history_probe_batch", ()) or ())
+        if not symbols:
+            return []
+        shown = symbols[: self._UBS_PROBE_BATCH_DETAIL_LIMIT]
+        lines = [f"Esta tanda ({len(symbols)}):"]
+        for symbol in shown:
+            row = conn.execute(
+                """
+                select status
+                from candidates
+                where policy='history_probe' and upper(target_symbol)=upper(?)
+                order by id desc
+                limit 1
+                """,
+                (symbol,),
+            ).fetchone()
+            status = str(row["status"] or "") if row is not None else ""
+            lines.append(f"  {symbol}: {status or 'sin registro'}")
+        remaining = len(symbols) - len(shown)
+        if remaining > 0:
+            lines.append(f"  ... y {remaining} mas (ver consola)")
+        return lines
+
     def _ubs_notification_probe(self, conn: sqlite3.Connection, header: str) -> str:
         """Resumen del probe de historico del universo."""
         counts = self._ubs_status_counts(conn, "candidates", "policy='history_probe'")
         total = sum(counts.values())
         pending = total - counts.get("history_ok", 0) - counts.get("no_history", 0)
-        return (
-            f"{header}\n"
+        lines = [
+            header,
             f"Probe historico | simbolos: {total} | history_ok: {counts.get('history_ok', 0)} | "
             f"no_history: {counts.get('no_history', 0)} | pendientes: {pending} | "
-            f"mismatch: {counts.get('report_mismatch', 0)} | no_report: {counts.get('no_report', 0)}"
-        )
+            f"mismatch: {counts.get('report_mismatch', 0)} | no_report: {counts.get('no_report', 0)}",
+        ]
+        batch = self._ubs_notification_probe_batch(conn)
+        if batch:
+            lines.append("")
+            lines.extend(batch)
+        return "\n".join(lines)
 
     def _ubs_notification_candidate(self, conn: sqlite3.Connection, args: list[str], header: str) -> str | None:
         """Ficha del candidato reintentado, o None si ya no esta en memoria."""

@@ -15,6 +15,9 @@ from run_tests import (
     parse_symbol_map,
 )
 from ubs.db import connect_memory
+from ubs.memory import metrics_have_empty_tester_context
+from ubs.models import Seed
+from ubs.universe import seed_symbol_disabled
 from ubs.memory_scores import mismatch_report_stays_quarantined
 from ubs.path_utils import resolve_workspace_path
 from ubs.seeds import seed_from_path
@@ -179,12 +182,19 @@ class UBSSeedsEvalMixin:
             or str(row["period"] or "").strip().upper() != period.strip().upper()
         )
 
+    def _ubs_seed_plan_verdict(self, path, row, symbol, period, stat, ready_statuses) -> str:
+        """Que le toca a esta seed: set invalido, pasada pendiente o nada."""
+        if row is not None and str(row["status"] or "") == "invalid_seed":
+            current_seed = replace(seed_from_path(path), symbol=symbol, period=period)
+            return "invalid" if validate_seed_backtest_set(current_seed) else "pending"
+        if self._ubs_seed_needs_eval(row, stat, symbol, period, ready_statuses):
+            return "pending"
+        return "unchanged"
+
     def _ubs_seed_eval_plan(self, seed_files: list[Path]) -> dict[str, object]:
         """Estimate real MT5 jobs and skipped seed categories for the confirmation dialog."""
         memory_path = self._ubs_memory_path()
-        disabled_symbols = self._load_disabled_ubs_symbols()
-        seed_enabled_when_disabled = self._load_seed_enabled_disabled_ubs_symbols()
-        seed_enabled_when_disabled &= disabled_symbols
+        disabled_symbols, seed_enabled_when_disabled = self._ubs_symbol_policy_with_identities()
         symbol_map = self._active_ubs_symbol_map()
         rows, overrides = self._ubs_seed_plan_memory(memory_path)
 
@@ -210,25 +220,20 @@ class UBSSeedsEvalMixin:
 
             raw = normalize_set_symbol(symbol)
             mapped = normalize_set_symbol(apply_symbol_map(symbol, symbol_map))
-            symbol_disabled = raw in disabled_symbols or mapped in disabled_symbols
-            seed_allowed = raw in seed_enabled_when_disabled or mapped in seed_enabled_when_disabled
-            if symbol_disabled and not seed_allowed:
+            # El mismo juez que usa el agente, para que el numero anunciado
+            # sea el que luego se ejecuta. `Seed` se arma sin leer el .set:
+            # `seed_symbol_disabled` solo mira el simbolo.
+            if seed_symbol_disabled(
+                Seed(path, symbol, period, "", ""),
+                disabled_symbols,
+                symbol_map,
+                seed_enabled_when_disabled,
+            ):
                 stats["disabled"] += 1
                 disabled_counts[(raw or symbol, mapped or raw or symbol)] += 1
                 continue
 
-            if row is not None and str(row["status"] or "") == "invalid_seed":
-                current_seed = replace(seed_from_path(path), symbol=symbol, period=period)
-                if validate_seed_backtest_set(current_seed):
-                    stats["invalid"] += 1
-                    continue
-                stats["pending"] += 1
-                continue
-
-            if self._ubs_seed_needs_eval(row, stat, symbol, period, ready_statuses):
-                stats["pending"] += 1
-            else:
-                stats["unchanged"] += 1
+            stats[self._ubs_seed_plan_verdict(path, row, symbol, period, stat, ready_statuses)] += 1
 
         return {
             "pending": int(stats["pending"]),

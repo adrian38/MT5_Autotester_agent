@@ -163,6 +163,64 @@ def augment_aliases_with_symbol_map(
     return result
 
 
+def universe_symbol_identities(universe_path: Path) -> dict[str, str]:
+    """Ortografia del broker -> nombre sin sufijo, para los que lo llevan.
+
+    Quien dice que `.sa` es decoracion y `.NAS` no es el universo, que conserva
+    la caja original de cada simbolo. La politica de deshabilitados la pierde
+    al guardarse -escribe `GER40.SA`-, asi que no puede contestarlo sola.
+    """
+    groups, _aliases = load_asset_universe(universe_path, include_disabled=True)
+    identities: dict[str, str] = {}
+    for listed in (symbol for items in groups.values() for symbol in items):
+        name = str(listed).strip()
+        bare = normalize_set_symbol(name)
+        if name and bare != name.upper():
+            identities[name.upper()] = bare
+    return identities
+
+
+def policy_symbols_with_identities(
+    symbols: set[str], identities: dict[str, str]
+) -> set[str]:
+    """La politica mas el nombre sin sufijo de cada entrada que lo lleve.
+
+    El fichero de deshabilitados se escribe en la ortografia del broker,
+    mientras que el simbolo de una seed viaja desnudo y solo gana el sufijo al
+    ejecutarse, en `apply_symbol_suffix`. Comparando solo la ortografia
+    literal, una seed DE40 pasaba el filtro con `GER40.sa` apagado: el mapa de
+    AXI traduce a `GER40` y ahi no habia nada que coincidiera.
+
+    Se anade, nunca se sustituye: la ortografia literal sigue siendo la que
+    filtra el universo en ``load_asset_universe``.
+    """
+    policy = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    return policy | {identities[entry] for entry in policy if entry in identities}
+
+
+def policy_with_universe_identities(
+    policy_path: Path, universe_path: Path
+) -> tuple[set[str], set[str]]:
+    """Politica de simbolos de la cuenta: apagados y excepciones de seeds.
+
+    Las dos listas vuelven con la identidad sin sufijo de cada entrada
+    -`GER40.SA` trae tambien `GER40`-, porque el simbolo de una seed viaja
+    desnudo y solo gana el sufijo al ejecutarse. Las dos a la vez y no solo
+    la de apagados: si no, un `USTECH.SA` con permiso para seeds quedaria
+    bloqueado por su propia identidad, que es el fallo al reves.
+
+    Vive aqui y no en el agente porque la UI tiene que contestar lo mismo:
+    su dialogo previo anuncia cuantas seeds van a correr, y si ensancha de
+    otra manera promete pasadas que luego el agente no hace.
+    """
+    identities = universe_symbol_identities(universe_path)
+    disabled = policy_symbols_with_identities(load_disabled_symbols(policy_path), identities)
+    seed_enabled = policy_symbols_with_identities(
+        load_seed_enabled_disabled_symbols(policy_path), identities
+    )
+    return disabled, seed_enabled & disabled
+
+
 def seed_symbol_disabled(
     seed: Seed,
     disabled_symbols: set[str],

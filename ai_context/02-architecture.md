@@ -22,6 +22,8 @@
 |   |-- files_logic.py           # Files/Logs refresh logic mixin
 |   |-- multiterminal_view.py    # Multiterminal widget/layout mixin
 |   |-- multiterminal_logic.py   # Multiterminal profiles/state/validation mixin
+|   |-- mt4_terminal_view.py     # MT4 read-only terminals widget/layout mixin
+|   |-- mt4_terminal_logic.py    # MT4 terminal profiles/state/validation mixin
 |   |-- portfolio_view.py        # Portfolio tab widget/layout mixin
 |   |-- portfolio_logic.py       # Portfolio tab actions/workbook execution mixin
 |   |-- ubs_portfolio_view.py    # UBS Portfolio tab widget/layout mixin

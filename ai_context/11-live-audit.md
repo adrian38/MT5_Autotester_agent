@@ -236,6 +236,20 @@ se omite también el login, MT5 reabre la cuenta auditada anterior y muestra su
 diálogo de contraseña; indicar la cuenta obliga a recuperar su secreto desde
 `accounts.dat` y mantiene verificable la persistencia.
 
+## Sondeo de cuentas MT4 (2026-11-17)
+
+El payload de `/api/v1/live-accounts/snapshot` distingue `terminal=mt4|mt5`.
+MT5 sigue usando la API Python, registra las instalaciones tocadas y exige la
+cuenta `restore_*`. MT4 no dispone de esa API: el runtime toma el primer perfil
+activo `[MT4Terminal.N]` del broker del nodo, lo arranca con un INI temporal de
+login y exporta el informe nativo de `Account History` por Win32.
+
+Por petición del usuario, la terminal MT4 queda en la cuenta inicializada para
+leer. No se añade a `real_account_terminals` y una tanda sólo MT4 no exige
+`restore_*`; en una tanda mixta se restauran exclusivamente las MT5. El informe
+se valida por login y por su estructura `Closed Transactions`/`Summary`, y el
+estado público nunca conserva el password ni el INI temporal.
+
 ## Lote real independiente por estrategia (2026-09-14)
 
 El contrato del auditor acepta `real_strategy_lots`, indexado por el

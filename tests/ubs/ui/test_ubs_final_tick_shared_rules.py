@@ -70,18 +70,31 @@ class SharedThresholdTests(unittest.TestCase):
                 )
                 self.assertEqual([value for _label, value, _width in thresholds], expected)
 
-    def test_six_month_adds_its_retry_dates_and_probe_does_not(self) -> None:
+    def test_both_stages_expose_their_second_date_range(self) -> None:
         probe_dates, _ = UBSFinalTickViewMixin._final_tick_criteria_fields(
             ThresholdVariableHarness(), "probe",
         )
         six_month_dates, _ = UBSFinalTickViewMixin._final_tick_criteria_fields(
             ThresholdVariableHarness(), "six_month",
         )
-        self.assertEqual([label for label, _var, _width in probe_dates], ["Desde", "Hasta"])
+        self.assertEqual(
+            [label for label, _var, _width in probe_dates],
+            ["Desde", "Hasta", "2o rango desde", "2o rango hasta"],
+        )
         self.assertEqual(
             [label for label, _var, _width in six_month_dates],
-            ["Desde", "Hasta", "Ops bajas desde", "Ops bajas hasta"],
+            ["Desde", "Hasta", "2o rango desde", "2o rango hasta"],
         )
+
+    def test_candidate_actions_include_sample_review_in_both_stages(self) -> None:
+        for stage, expected in (
+            ("probe", "_review_ubs_final_tick_economic_samples"),
+            ("six_month", "_review_ubs_final_tick_6m_economic_samples"),
+        ):
+            with self.subTest(stage=stage):
+                self.assertIn(
+                    expected, UBSFinalTickViewMixin._final_tick_action_names(stage),
+                )
 
 
 class SharedTableTests(unittest.TestCase):

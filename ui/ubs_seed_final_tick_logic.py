@@ -6,7 +6,11 @@ from tkinter import messagebox
 
 from ubs.memory import AgentMemory
 from ubs.path_utils import resolve_workspace_path
-from ubs.agent.seeds.final_tick import eligible_seed_final_tick_rows
+from ubs.agent.seeds.final_tick import (
+    eligible_seed_final_tick_rows,
+    mark_seed_economic_sample_pending,
+    seed_economic_sample_review_rows,
+)
 from ui.app_run_log import run_log
 from ui.ubs_final_tick_shared import stage_label, stage_suffix
 
@@ -119,7 +123,63 @@ class UBSSeedFinalTickLogicMixin:
         del args[run_index:run_index + 2]
         if reconcile_only:
             args.append("--final-tick-reconcile-only")
+        minimum_index = args.index("--final-tick-economic-min-trades") + 1
+        args[minimum_index] = str(max(1, int(self.ubs_seed_pass_min_trades.get())))
         return args
+
+    def _review_seed_final_tick_economic_samples(self, stage: str) -> None:
+        """Reclasifica resultados seed antiguos y los lanza con rango largo."""
+        label = f"UBS {stage_label(stage, 'Seeds Final Tick')}"
+        try:
+            from_date, to_date, retry_from, retry_to = (
+                self._validated_final_tick_stage_dates(stage)
+            )
+            if not retry_from or not retry_to:
+                raise ValueError(
+                    "Configura ambas fechas del segundo rango para ampliar la muestra."
+                )
+            minimum = max(1, int(self.ubs_seed_pass_min_trades.get()))
+            memory = AgentMemory(self._ubs_memory_path())
+            try:
+                rows = seed_economic_sample_review_rows(
+                    memory, stage, minimum, from_date, to_date,
+                    retry_from, retry_to,
+                )
+            finally:
+                memory.close()
+            rows = [
+                row for row in rows
+                if resolve_workspace_path(row["seed_path"]).exists()
+            ]
+            args = self._seed_final_tick_cli_args(
+                stage, pending_only=True,
+            )
+        except Exception as exc:
+            self._show_error(f"No se pudo revisar {label}", str(exc))
+            return
+        if not rows:
+            messagebox.showinfo(
+                label, "No hay rechazos actuales que necesiten ampliar muestra.",
+            )
+            return
+        details = [
+            f"Etapa: {label}", "Accion: revisar muestra economica",
+            f"Seeds: {len(rows)}", f"Minimo economico: {minimum} ops",
+            f"Segundo rango: {retry_from} -> {retry_to}",
+        ]
+        if not self._confirm_execution_start(f"Confirmar {label}", len(rows), details):
+            return
+        memory = AgentMemory(self._ubs_memory_path())
+        try:
+            updated = mark_seed_economic_sample_pending(
+                memory, stage, rows, minimum, retry_from, retry_to,
+            )
+        finally:
+            memory.close()
+        self._refresh_seed_final_tick_stage(stage)
+        self._show_section(f"ubs_seed_final_tick{stage_suffix(stage)}")
+        self.status_text.set(f"Ampliando muestra economica: {updated} seed(s)")
+        self.after(10, lambda: self._run_script("ubs_agent.py", args))
 
     def _seed_final_tick_scope_rows(
         self, stage: str, *, pending_only: bool, retry_quality: bool,
@@ -192,3 +252,6 @@ class UBSSeedFinalTickLogicMixin:
 
     def _reconcile_ubs_seed_final_tick(self) -> None:
         self._run_seed_final_tick_stage("probe", reconcile_only=True)
+
+    def _review_ubs_seed_final_tick_economic_samples(self) -> None:
+        self._review_seed_final_tick_economic_samples("probe")

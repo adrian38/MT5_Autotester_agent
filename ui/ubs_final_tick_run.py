@@ -4,7 +4,11 @@ from __future__ import annotations
 from tkinter import messagebox
 
 from ubs.path_utils import resolve_workspace_path
-from ui.ubs_final_tick_shared import is_six_month, stage_label
+from ui.ubs_final_tick_shared import (
+    is_six_month,
+    stage_label,
+    uses_final_tick_long_window,
+)
 
 
 class UBSFinalTickRunMixin:
@@ -19,8 +23,10 @@ class UBSFinalTickRunMixin:
             raise ValueError("Final Tick requiere fechas Desde y Hasta.")
         if bool(ohlc_from_date) != bool(ohlc_to_date):
             if is_six_month(final_tick_stage):
-                raise ValueError("Final Tick 6M pocas ops OHLC requiere rellenar Ops bajas desde y Ops bajas hasta.")
-            raise ValueError("Final Tick OHLC retry requiere rellenar OHLC desde y OHLC hasta.")
+                raise ValueError(
+                    "Final Tick 6M requiere rellenar ambas fechas del segundo rango."
+                )
+            raise ValueError("Final Tick requiere rellenar ambas fechas del segundo rango.")
         if is_six_month(final_tick_stage):
             from ubs_agent import validate_final_tick_stage_dates
 
@@ -30,7 +36,7 @@ class UBSFinalTickRunMixin:
             if ohlc_from_date and ohlc_to_date:
                 ohlc_date_error = validate_final_tick_stage_dates("six_month", ohlc_from_date, ohlc_to_date)
                 if ohlc_date_error:
-                    raise ValueError(f"Final Tick 6M OHLC retry invalido: {ohlc_date_error}")
+                    raise ValueError(f"Segundo rango de Final Tick 6M invalido: {ohlc_date_error}")
         return from_date, to_date, ohlc_from_date, ohlc_to_date
 
     @staticmethod
@@ -78,6 +84,8 @@ class UBSFinalTickRunMixin:
             "--from-date", from_date,
             "--to-date", to_date,
             *self._final_tick_threshold_args(thresholds),
+            "--final-tick-economic-min-trades",
+            str(max(1, int(float(self.ubs_pass_min_trades.get() or 50)))),
             "--delay", str(self.delay.get()),
         ]
         if ohlc_from_date and ohlc_to_date:
@@ -110,15 +118,19 @@ class UBSFinalTickRunMixin:
             if self._final_tick_row_pending_for_current_dates(row, final_tick_stage=final_tick_stage)
         ]
         _from_date, _to_date, ohlc_from, ohlc_to = self._final_tick_stage_dates(final_tick_stage)
-        has_ohlc_retry = is_six_month(final_tick_stage) and bool(ohlc_from and ohlc_to)
-        has_ohlc_pending = is_six_month(final_tick_stage) and any(
-            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades" for row in rows
+        has_ohlc_retry = bool(ohlc_from and ohlc_to)
+        has_ohlc_pending = any(
+            uses_final_tick_long_window(
+                final_tick_stage, row["final_tick_status"],
+            ) for row in rows
         )
         if not (has_ohlc_retry and has_ohlc_pending):
             return rows
 
         def in_retry_scope(row) -> bool:
-            if str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades":
+            if uses_final_tick_long_window(
+                final_tick_stage, row["final_tick_status"],
+            ):
                 return True
             return (
                 str(row["final_tick_from_date"] or "").strip() == ohlc_from

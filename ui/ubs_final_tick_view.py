@@ -32,41 +32,45 @@ class UBSFinalTickViewMixin(UBSFinalTickSharedMixin):
         return panel, bar
 
     @staticmethod
-    def _final_tick_action_names(stage: str) -> tuple[str, str, str, str]:
+    def _final_tick_action_names(stage: str) -> tuple[str, ...]:
         suffix = stage_suffix(stage)
         return (
             f"_run_ubs_final_tick{suffix}_for_latest_run",
             f"_rerun_ubs_final_tick{suffix}_for_latest_run",
             f"_retry_ubs_final_tick{suffix}_pending_quality",
+            f"_review_ubs_final_tick{suffix}_economic_samples",
             f"_refresh_ubs_final_tick{suffix}_panel",
         )
 
     def _build_final_tick_actions(self, bar, stage: str) -> None:
         """Resumen y botones de accion de la barra superior."""
         self._final_tick_summary_label(bar, self._final_tick_screen_var(stage, "summary"))
-        run_name, rerun_name, retry_name, refresh_name = self._final_tick_action_names(stage)
+        run_name, rerun_name, retry_name, review_name, refresh_name = (
+            self._final_tick_action_names(stage)
+        )
         short_label = "6M" if self._final_tick_is_six_month(stage) else "Final Tick"
         for column, (label, name) in enumerate(
             (
                 (f"Continuar {short_label}", run_name),
                 (f"Reprobar {short_label}", rerun_name),
                 ("Reintentar calidad baja", retry_name),
+                ("Revisar muestra", review_name),
             ),
             start=1,
         ):
             self._final_tick_action_button(
                 bar, label, getattr(self, name), column, primary=column == 1,
             )
-        self._final_tick_action_button(bar, "Guardar config", self._save_config_clicked, 4)
+        self._final_tick_action_button(bar, "Guardar config", self._save_config_clicked, 5)
         self._final_tick_action_button(
-            bar, "Actualizar", getattr(self, refresh_name), 5, last=True,
+            bar, "Actualizar", getattr(self, refresh_name), 6, last=True,
         )
 
     def _build_final_tick_run_row(self, bar, stage: str) -> None:
         """Selector de run y accesos a los artefactos del candidato."""
         suffix = stage_suffix(stage)
         row1 = tk.Frame(bar, bg=self.colors["panel_alt"])
-        row1.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 5))
+        row1.grid(row=1, column=0, columnspan=7, sticky="ew", padx=10, pady=(0, 5))
         row1.columnconfigure(1, weight=1)
         tk.Label(
             row1,

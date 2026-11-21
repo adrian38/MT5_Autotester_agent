@@ -213,7 +213,8 @@ class UBSUniverseActionsMixin:
         )
         self._refresh_ubs_universe()
 
-    def _count_ubs_history_probe_symbols(self) -> int:
+    def _pending_ubs_history_probe_symbols(self) -> list[str]:
+        """Simbolos GEN=si que aun no tienen un veredicto final de historico."""
         assets, aliases = self._load_ubs_asset_universe()
         disabled, _seed_enabled = self._active_ubs_symbol_policy(aliases)
         active = [
@@ -223,8 +224,7 @@ class UBSUniverseActionsMixin:
         ]
         memory_path = self._ubs_memory_path()
         if not memory_path.exists():
-            return len(active)
-        conn = None
+            return active
         try:
             conn = connect_memory(memory_path)
             conn.row_factory = sqlite3.Row
@@ -236,22 +236,23 @@ class UBSUniverseActionsMixin:
                 order by id
                 """
             ).fetchall()
-        except sqlite3.Error as exc:
-            raise RuntimeError(f"No se pudo leer la memoria UBS: {exc}") from exc
-        finally:
-            if conn is not None:
-                conn.close()
+            conn.close()
+        except sqlite3.Error:
+            return active
         final_statuses = {"history_ok", "no_history"}
         latest = {
             self._canonical_ubs_symbol(str(row["target_symbol"] or ""), aliases).upper(): str(row["status"] or "")
             for row in rows
             if str(row["target_symbol"] or "").strip()
         }
-        return sum(
-            1
+        return [
+            symbol
             for symbol in active
             if latest.get(self._canonical_ubs_symbol(symbol, aliases).upper()) not in final_statuses
-        )
+        ]
+
+    def _count_ubs_history_probe_symbols(self) -> int:
+        return len(self._pending_ubs_history_probe_symbols())
 
     def _ubs_history_probe_date_range(self) -> tuple[str, str]:
         start_text = self.ubs_agent_from_date.get().strip() or "2020.01.01"
@@ -298,7 +299,8 @@ class UBSUniverseActionsMixin:
 
     def _run_ubs_universe_history_probe(self) -> None:
         try:
-            total = self._count_ubs_history_probe_symbols()
+            probe_symbols = self._pending_ubs_history_probe_symbols()
+            total = len(probe_symbols)
             if total <= 0:
                 messagebox.showinfo("Probe historico", "No hay simbolos GEN=si pendientes de probe historico.")
                 return
@@ -317,4 +319,49 @@ class UBSUniverseActionsMixin:
         ]
         details.extend(self._multiterminal_execution_details())
         if self._confirm_execution_start("Confirmar probe historico", total, details):
+            self._ubs_history_probe_batch = tuple(probe_symbols)
+            self._run_script("ubs_agent.py", args)
+
+    @staticmethod
+    def _format_probe_symbol_list(symbols: list[str], limit: int = 12) -> str:
+        shown = symbols[:limit]
+        remaining = len(symbols) - len(shown)
+        text = ", ".join(shown)
+        return f"{text} y {remaining} mas" if remaining > 0 else text
+
+    def _run_ubs_universe_history_probe_selected(self) -> None:
+        """Sondea el historico de los simbolos marcados, esten como esten.
+
+        El probe global solo mira los GEN=si sin veredicto, de modo que un
+        simbolo apagado -o uno ya sentenciado como `no_history`- no vuelve a
+        medirse nunca por esa via. Este boton existe para eso: pedirlo a mano.
+        """
+        symbols = sorted(self._selected_ubs_universe_symbols())
+        if not symbols:
+            messagebox.showinfo(
+                "Probe historico",
+                "Marca al menos un simbolo del universo, o selecciona su fila.",
+            )
+            return
+        try:
+            from_date, to_date = self._ubs_history_probe_date_range()
+            args = self._ubs_history_probe_args()
+        except Exception as exc:
+            self._show_error("No se pudo iniciar probe historico", str(exc))
+            return
+        for symbol in symbols:
+            args.extend(["--probe-symbol", symbol])
+        details = [
+            "Accion: Probar historico de los simbolos marcados",
+            f"Broker/cuenta: {self._ubs_broker()} / {self._ubs_account_type()}",
+            f"Simbolos marcados: {len(symbols)}",
+            f"Marcados: {self._format_probe_symbol_list(symbols)}",
+            "TF probe: H1",
+            f"Rango: {from_date} -> {to_date}",
+            "Ignora GEN y el veredicto anterior: reescribe history_ok/no_history de cada marcado.",
+            "Deshabilitar un simbolo no lo borra del universo, asi que tambien se puede sondear apagado.",
+        ]
+        details.extend(self._multiterminal_execution_details())
+        if self._confirm_execution_start("Confirmar probe historico marcados", len(symbols), details):
+            self._ubs_history_probe_batch = tuple(symbols)
             self._run_script("ubs_agent.py", args)

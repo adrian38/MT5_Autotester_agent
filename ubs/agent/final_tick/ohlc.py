@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from ubs.score import ScoreResult, score_report_file
+from ubs.agent.config import FINAL_TICK_LONG_WINDOW_PENDING_STATUSES
 
 from run_tests import RUNNING_TERMINAL_EXIT_CODE, report_has_empty_tester_data
 from ubs.agent.evaluation.evaluate import (
@@ -393,9 +394,9 @@ def _final_tick_retry_dates(
     ohlc_retry_from, ohlc_retry_to, retry_pending_quality, _row_uses_retry_dates,
 ) -> tuple[int | None, bool]:
     """Decide si la pasada usa las fechas alternativas de reintento OHLC."""
-    has_ohlc_trades_pending = False
+    has_long_window_pending = False
     if ohlc_retry_from and ohlc_retry_to:
-        has_ohlc_trades_pending = final_tick_ohlc_retry_needed_for_dates(
+        has_long_window_pending = final_tick_ohlc_retry_needed_for_dates(
             rows,
             ohlc_retry_from,
             ohlc_retry_to,
@@ -403,12 +404,13 @@ def _final_tick_retry_dates(
             force_quality_retry=retry_pending_quality,
         )
     else:
-        has_ohlc_trades_pending = any(
-            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+        has_long_window_pending = any(
+            str(row["final_tick_status"] or "").strip()
+            in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES
             for row in rows
         )
     using_ohlc_retry_dates = False
-    if allow_ohlc_retry and final_tick_stage == "six_month" and args.final_tick_pending_only and has_ohlc_trades_pending and (ohlc_retry_from or ohlc_retry_to):
+    if allow_ohlc_retry and args.final_tick_pending_only and has_long_window_pending and (ohlc_retry_from or ohlc_retry_to):
         if not ohlc_retry_from or not ohlc_retry_to:
             print(f"ERROR: {final_tick_label} OHLC retry requiere ambas fechas alternativas Desde y Hasta.")
             return 1, False
@@ -484,7 +486,8 @@ def _final_tick_rows_in_scope(
 
     def _row_in_retry_scope(row: sqlite3.Row) -> bool:
         return (
-            str(row["final_tick_status"] or "").strip() == "pending_ohlc_trades"
+            str(row["final_tick_status"] or "").strip()
+            in FINAL_TICK_LONG_WINDOW_PENDING_STATUSES
             or _row_uses_retry_dates(row)
         )
 

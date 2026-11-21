@@ -510,6 +510,37 @@ def pending_runs(
     )
 
 
+def _tally_stage_rows(
+    rows: list,
+    spec,
+    finals: set[str],
+    run_column: str,
+) -> tuple[dict[str, int], dict[int, dict[str, int]], dict[str, int], list[int]]:
+    """Reparte las filas de una etapa entre pendientes y ya resueltas.
+
+    Devuelve los pendientes por estado, los mismos desglosados por run, las
+    resueltas por estado y los ids pendientes en el orden en que salieron.
+    """
+    settled_statuses = {status.strip().lower() for status in spec.settled_statuses}
+    counts: dict[str, int] = {}
+    by_run: dict[int, dict[str, int]] = {}
+    settled: dict[str, int] = {}
+    ids: list[int] = []
+    for row in rows:
+        status = str(row["status"] or "").strip().lower() or "(sin estado)"
+        if status in finals:
+            continue
+        if status in settled_statuses:
+            settled[status] = settled.get(status, 0) + 1
+            continue
+        counts[status] = counts.get(status, 0) + 1
+        if run_column:
+            run_counts = by_run.setdefault(int(row[run_column] or 0), {})
+            run_counts[status] = run_counts.get(status, 0) + 1
+        ids.append(int(row[spec.id_column] or 0))
+    return counts, by_run, settled, ids
+
+
 def audit_pending_states(
     conn: sqlite3.Connection,
     *,
@@ -541,24 +572,8 @@ def audit_pending_states(
             )
             continue
         rows = _stage_rows(conn, spec, run_id=run_id, columns=columns)
-        settled_statuses = {status.strip().lower() for status in spec.settled_statuses}
         run_column = spec.run_column if spec.run_column in columns else ""
-        counts: dict[str, int] = {}
-        by_run: dict[int, dict[str, int]] = {}
-        settled: dict[str, int] = {}
-        ids: list[int] = []
-        for row in rows:
-            status = str(row["status"] or "").strip().lower() or "(sin estado)"
-            if status in finals:
-                continue
-            if status in settled_statuses:
-                settled[status] = settled.get(status, 0) + 1
-                continue
-            counts[status] = counts.get(status, 0) + 1
-            if run_column:
-                run_counts = by_run.setdefault(int(row[run_column] or 0), {})
-                run_counts[status] = run_counts.get(status, 0) + 1
-            ids.append(int(row[spec.id_column] or 0))
+        counts, by_run, settled, ids = _tally_stage_rows(rows, spec, finals, run_column)
         summaries.append(
             PendingAudit(
                 stage=spec.key,

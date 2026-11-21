@@ -180,6 +180,7 @@ class UBSResultsFormatMixin:
             "missing_6m": "sin 6M",
             "pending_history_quality": "pend. calidad",
             "pending_ohlc_trades": "pend. OHLC ops",
+            "pending_economic_sample": "pend. muestra econ.",
             "pending_risk_evidence": "pend. evidencia riesgo",
             "sin_evaluar": "sin evaluar",
         }
