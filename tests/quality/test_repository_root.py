@@ -138,7 +138,9 @@ class RootIsAClosedListTest(unittest.TestCase):
         intruders = {
             path.name: destination(path.name)
             for path in PROJECT_ROOT.iterdir()
-            if path.is_file() and not allowed_root_file(path.name)
+            # En un worktree, Git representa `.git` como archivo de control;
+            # en un checkout normal es la carpeta ya admitida en TOOLING_DIRS.
+            if path.is_file() and path.name != ".git" and not allowed_root_file(path.name)
         }
         self.assertFalse(
             intruders,

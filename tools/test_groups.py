@@ -101,7 +101,10 @@ TEST_GROUPS: dict[str, tuple[str, ...]] = {
         "ubs.scoring.test_ubs_stage_settled_statuses",
         "ubs.scoring.test_ubs_weights",
         "ubs.sets.test_ubs_timeframes",
+        "ubs.ui.test_ubs_universe_safety",
         "ubs.ui.test_ubs_universe_sync_ui",
+        "ubs.ui.test_ubs_universe_view",
+        "ui.test_universe_mt5_settings",
     ),
     # Runtime del nodo y el protocolo guiado con el manager.
     "nodo": (
