@@ -439,62 +439,56 @@ from ubs.agent.evaluation.variants import (  # noqa: F401
 )
 
 
-def main() -> int:
-    args = parse_args()
-    diag_log(f"MAIN_START ppid={os.getppid()} {diag_args_summary(args)}")
+def _main_validation_error(args: argparse.Namespace) -> str:
     if args.generations <= 0 or args.variants_per_seed <= 0:
-        print("ERROR: generations y variants-per-seed deben ser mayores que 0")
-        return 1
+        return "generations y variants-per-seed deben ser mayores que 0"
     if args.min_trades < 0:
-        print("ERROR: --min-trades no puede ser negativo")
-        return 1
+        return "--min-trades no puede ser negativo"
     if args.min_trades_w1 < 0 or args.min_trades_mn < 0:
-        print("ERROR: --min-trades-w1 y --min-trades-mn no pueden ser negativos")
-        return 1
+        return "--min-trades-w1 y --min-trades-mn no pueden ser negativos"
     if args.final_tick_min_ohlc_trades < 0 or args.final_tick_min_trades_w1 < 0 or args.final_tick_min_trades_mn < 0:
-        print("ERROR: minimos de operaciones Final Tick no pueden ser negativos")
-        return 1
+        return "minimos de operaciones Final Tick no pueden ser negativos"
     if args.min_profit_factor < 0 or args.max_drawdown_pct < 0:
-        print("ERROR: profit factor y drawdown deben ser mayores o iguales a 0")
-        return 1
+        return "profit factor y drawdown deben ser mayores o iguales a 0"
     if min(
         args.robust_min_net_retention,
         args.robust_min_pf_edge_retention,
         args.robust_min_recovery_retention,
         args.robust_max_dd_inflation,
     ) < 0:
-        print("ERROR: los limites de degradacion robusta deben ser >= 0 (0 desactiva)")
-        return 1
+        return "los limites de degradacion robusta deben ser >= 0 (0 desactiva)"
     if not 0 <= args.min_positive_month_ratio <= 1:
-        print("ERROR: --min-positive-month-ratio debe estar entre 0 y 1")
-        return 1
+        return "--min-positive-month-ratio debe estar entre 0 y 1"
     if args.evaluate_regression or args.rescore_regression_only:
         date_error = validate_regression_date_range(args.regression_from_date, args.regression_to_date)
         if date_error:
-            print(f"ERROR: rango regresivo invalido: {date_error}")
-            return 1
+            return f"rango regresivo invalido: {date_error}"
         if min(
             args.regression_min_trades,
             args.regression_min_trades_w1,
             args.regression_min_trades_mn,
         ) < 0:
-            print("ERROR: minimos de operaciones de la prueba regresiva no pueden ser negativos")
-            return 1
+            return "minimos de operaciones de la prueba regresiva no pueden ser negativos"
         if args.regression_min_profit_factor < 0 or args.regression_max_drawdown_pct < 0:
-            print("ERROR: profit factor y drawdown regresivos deben ser mayores o iguales a 0")
-            return 1
+            return "profit factor y drawdown regresivos deben ser mayores o iguales a 0"
         if args.regression_min_recovery_factor < 0:
-            print("ERROR: recovery regresivo debe ser mayor o igual a 0")
-            return 1
+            return "recovery regresivo debe ser mayor o igual a 0"
         if args.regression_min_pf_efficiency < 0 or args.regression_max_dd_ratio < 0:
-            print("ERROR: eficiencia PF y cociente DD regresivos deben ser >= 0 (0 desactiva)")
-            return 1
+            return "eficiencia PF y cociente DD regresivos deben ser >= 0 (0 desactiva)"
         if not 0 <= args.regression_min_positive_month_ratio <= 1:
-            print("ERROR: --regression-min-positive-month-ratio debe estar entre 0 y 1")
-            return 1
+            return "--regression-min-positive-month-ratio debe estar entre 0 y 1"
         if args.regression_positive_points < 0 or args.regression_negative_points > 0:
-            print("ERROR: puntos regresivos OK deben ser >=0 y FAIL <=0")
-            return 1
+            return "puntos regresivos OK deben ser >=0 y FAIL <=0"
+    return ""
+
+
+def main() -> int:
+    args = parse_args()
+    diag_log(f"MAIN_START ppid={os.getppid()} {diag_args_summary(args)}")
+    validation_error = _main_validation_error(args)
+    if validation_error:
+        print(f"ERROR: {validation_error}")
+        return 1
     try:
         code = run_agent(args, sys.modules[__name__])
     except BaseException as exc:

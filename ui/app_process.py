@@ -56,30 +56,7 @@ class AppProcessMixin:
         try:
             self._save_template()
             command = self._script_command(script_name, args)
-            self._running_script_name = script_name
-            self._running_script_args = list(args)
-            self._run_output_path = new_run_output_path(script_name)
-            self._append_console(f"\n> {self._format_command(command)}\n", tag="debug")
-            self.status_text.set(f"Ejecutando {script_name}")
-            self.running_text.set("Proceso activo")
-            self.active_task_text.set(self._script_label(script_name, args))
-            self.active_task_detail.set("0%")
-            self.engine_status_text.set("Engine Running")
-            if hasattr(self, "term_status_text"):
-                self.term_status_text.set(f"Running: {script_name}")
-                self.term_status_icon.configure(fg="#ffb95f")
-                self.idle_label.configure(text="RUN")
-            self._progress_total = 0
-            self._progress_done = 0
-            self._progress_target = 4.0
-            self._progress_running = True
-            self._set_progress_color("accent")
-            try:
-                self.progress_bar.stop()
-                self.progress_bar.configure(mode="determinate", maximum=100)
-                self.progress_var.set(0.0)
-            except Exception:
-                pass
+            self._prepare_script_launch(script_name, args, command)
             self.stop_requested = False
             self.process = subprocess.Popen(
                 command,
@@ -107,6 +84,34 @@ class AppProcessMixin:
         )
         self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
         self.reader_thread.start()
+
+    def _prepare_script_launch(
+        self, script_name: str, args: list[str], command: list[str]
+    ) -> None:
+        self._running_script_name = script_name
+        self._running_script_args = list(args)
+        self._run_output_path = new_run_output_path(script_name)
+        self._append_console(f"\n> {self._format_command(command)}\n", tag="debug")
+        self.status_text.set(f"Ejecutando {script_name}")
+        self.running_text.set("Proceso activo")
+        self.active_task_text.set(self._script_label(script_name, args))
+        self.active_task_detail.set("0%")
+        self.engine_status_text.set("Engine Running")
+        if hasattr(self, "term_status_text"):
+            self.term_status_text.set(f"Running: {script_name}")
+            self.term_status_icon.configure(fg="#ffb95f")
+            self.idle_label.configure(text="RUN")
+        self._progress_total = 0
+        self._progress_done = 0
+        self._progress_target = 4.0
+        self._progress_running = True
+        self._set_progress_color("accent")
+        try:
+            self.progress_bar.stop()
+            self.progress_bar.configure(mode="determinate", maximum=100)
+            self.progress_var.set(0.0)
+        except Exception:
+            pass
 
     def _should_block_for_running_mt5(self, script_name: str, args: list[str] | None = None) -> bool:
         if script_name not in {"run_tests.py", "compile_and_backtest.py", "ubs_agent.py"}:
