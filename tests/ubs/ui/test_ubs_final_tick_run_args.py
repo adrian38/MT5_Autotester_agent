@@ -45,6 +45,7 @@ class _RunHarness(UBSFinalTickRunMixin):
         self.multiterminal_enabled = SimpleNamespace(get=lambda: False)
         self.mt5_path = SimpleNamespace(get=lambda: "")
         self.mt5_data_root = SimpleNamespace(get=lambda: "")
+        self.ubs_pass_min_trades = SimpleNamespace(get=lambda: 50)
 
     def _final_tick_stage_dates(self, _stage: str) -> tuple[str, str, str, str]:
         return ("2026.05.01", "2026.05.31", "", "")
@@ -86,6 +87,7 @@ class FinalTickRunArgsTests(unittest.TestCase):
             with self.subTest(flag=flag):
                 self.assertIn(flag, args)
                 self.assertEqual(args[args.index(flag) + 1], str(THRESHOLDS[key]))
+        self.assertEqual(args[args.index("--final-tick-economic-min-trades") + 1], "50")
 
 
 if __name__ == "__main__":
