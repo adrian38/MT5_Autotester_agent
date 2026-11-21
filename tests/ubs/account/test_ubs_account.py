@@ -6,6 +6,8 @@ from ubs.memory import AgentMemory
 from ubs.models import Seed, Variant
 
 from ubs.account import (
+    DEFAULT_UI_ACCOUNT_TYPE,
+    DEFAULT_UI_BROKER,
     account_disabled_symbols_path,
     account_memory_path,
     account_output_dir,
@@ -42,7 +44,9 @@ from ui.ubs_universe_logic import UBSUniverseLogicMixin
 
 
 class UBSAccountTests(unittest.TestCase):
-    def test_vantage_raw_account_is_supported(self) -> None:
+    def test_vantage_raw_is_the_branch_default(self) -> None:
+        self.assertEqual(DEFAULT_UI_BROKER, "VANTAGE")
+        self.assertEqual(DEFAULT_UI_ACCOUNT_TYPE, "RAW")
         self.assertEqual(normalize_broker("vantage markets"), "VANTAGE")
         self.assertEqual(normalize_account_type("", "VANTAGE"), "RAW")
         self.assertEqual(normalize_account_type("ECN", "VANTAGE"), "RAW")
