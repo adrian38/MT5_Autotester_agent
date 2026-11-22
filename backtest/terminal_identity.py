@@ -9,7 +9,8 @@ trabajo y falla en todos los jobs con `symbol X not exist`, sin que nada lo
 distinga de un fallo tecnico.
 
 El journal diario del propio terminal es la unica fuente de primera mano que no
-exige abrir MT5: cada autorizacion deja `'<login>': authorized on <servidor>`.
+exige abrir MT5: cada autorizacion deja
+`'<login>': authorized on <servidor> through <punto de acceso> (ping: ...)`.
 """
 from __future__ import annotations
 
@@ -19,9 +20,25 @@ from pathlib import Path
 
 
 _AUTHORIZED = re.compile(
-    r"'(?P<login>\d+)':\s*authorized on\s+(?P<server>[^\s]+)",
+    r"'(?P<login>\d+)':\s*authorized on\s+(?P<server>[^(\r\n]+)",
     re.IGNORECASE,
 )
+"""El nombre del servidor llega hasta el punto de acceso, espacios incluidos.
+
+Vantage numera sus servidores con un espacio —`VantageMarkets-Live 10`—, asi
+que cortar en el primer blanco devolvia `VantageMarkets-Live` para todos y la
+guarda apartaba el pool entero: el 2026-11-22 una auditoria murio con
+`ninguna terminal esta conectada a VantageMarkets-Live 10` estando las
+terminales exactamente ahi. Los brokers de una sola palabra
+(`Axi-US51-Live`, `RoboForex-ECN`) no lo delataban.
+"""
+
+_ACCESS_POINT = re.compile(r"\s+through\s.*", re.IGNORECASE)
+
+
+def _server_name(raw: str) -> str:
+    """Servidor sin el punto de acceso ni la puntuacion que arrastra el journal."""
+    return _ACCESS_POINT.sub("", raw).strip().strip(",;")
 
 
 @dataclass(frozen=True)
@@ -51,13 +68,25 @@ def _terminal_log_text(path: Path) -> str:
     return ""
 
 
+_JOURNAL_NAME = re.compile(r"^\d{8}\.log$", re.IGNORECASE)
+
+
 def terminal_log_files(data_dir: Path | None) -> list[Path]:
-    """Journals del terminal, del mas reciente al mas antiguo."""
+    """Journals del terminal, del mas reciente al mas antiguo.
+
+    Solo los diarios `YYYYMMDD.log`, que es lo que ordena la fecha por nombre.
+    `logs/` guarda ademas `metaeditor.log`, que no es del terminal y que, por
+    empezar por letra, se colaba el primero: `servers_seen_in_log`, que mira un
+    solo fichero, no veia ni un servidor y el aviso perdia su mejor pista.
+    """
     if data_dir is None:
         return []
     logs_dir = Path(data_dir) / "logs"
     try:
-        files = [path for path in logs_dir.glob("*.log") if path.is_file()]
+        files = [
+            path for path in logs_dir.glob("*.log")
+            if path.is_file() and _JOURNAL_NAME.match(path.name)
+        ]
     except OSError:
         return []
     return sorted(files, key=lambda path: path.name, reverse=True)
@@ -81,7 +110,7 @@ def terminal_last_session(
         last = matches[-1]
         return TerminalSession(
             login=last.group("login"),
-            server=last.group("server").strip().strip(",;"),
+            server=_server_name(last.group("server")),
             log_path=log_path,
         )
     return None
@@ -97,7 +126,7 @@ def servers_seen_in_log(data_dir: Path | None, *, max_logs: int = 1) -> tuple[st
     servers: dict[str, None] = {}
     for log_path in terminal_log_files(data_dir)[:max_logs]:
         for match in _AUTHORIZED.finditer(_terminal_log_text(log_path)):
-            servers[match.group("server").strip().strip(",;")] = None
+            servers[_server_name(match.group("server"))] = None
     return tuple(servers)
 
 

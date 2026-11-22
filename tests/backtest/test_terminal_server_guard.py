@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from backtest.base import TerminalProfile
-from backtest.terminal_identity import terminal_last_session
+from backtest.terminal_identity import servers_seen_in_log, terminal_last_session
 from backtest.terminals import check_terminal_servers
 
 
@@ -67,6 +67,34 @@ class TerminalLastSessionTests(unittest.TestCase):
             )
             self.assertEqual(terminal_last_session(data_dir).server, "Axi-US51-Live")
 
+    def test_reads_a_server_whose_name_carries_a_space(self) -> None:
+        # Vantage numera con un espacio. Cortar en el primer blanco devolvia
+        # `VantageMarkets-Live` para todos y la guarda vaciaba el pool.
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            write_journal(
+                data_dir,
+                "20261122.log",
+                AUTHORIZED.format(login="34933859", server="VantageMarkets-Live 10"),
+            )
+            self.assertEqual(
+                terminal_last_session(data_dir).server, "VantageMarkets-Live 10"
+            )
+
+    def test_the_metaeditor_log_is_not_a_journal(self) -> None:
+        # `logs/` guarda tambien `metaeditor.log`, que por empezar por letra
+        # encabezaba el orden por nombre y tapaba el diario del terminal.
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            write_journal(data_dir, "metaeditor.log", "compilando\n")
+            write_journal(
+                data_dir, "20261122.log",
+                AUTHORIZED.format(login="34933859", server="VantageMarkets-Live 10"),
+            )
+            self.assertEqual(
+                servers_seen_in_log(data_dir), ("VantageMarkets-Live 10",)
+            )
+
     def test_without_journals_there_is_no_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             self.assertIsNone(terminal_last_session(Path(temporary)))
@@ -119,6 +147,29 @@ class CheckTerminalServersTests(unittest.TestCase):
             self.assertTrue(
                 check_terminal_servers([profile("AXI_1", data_dir)], "Axi-US51-Live")[0].matches
             )
+
+    def test_a_numbered_server_is_told_apart_from_its_siblings(self) -> None:
+        # Las dos cuentas del mismo broker viven en `VantageMarkets-Live 10` y
+        # `VantageMarkets-Live 14`: si el nombre se corta en el espacio, ambas
+        # se leen igual y la guarda deja de distinguir nada.
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            write_journal(
+                data_dir, "20261122.log",
+                AUTHORIZED.format(login="34933859", server="VantageMarkets-Live 10"),
+            )
+            other = Path(temporary) / "otra"
+            write_journal(
+                other, "20261122.log",
+                AUTHORIZED.format(login="33881723", server="VantageMarkets-Live 14"),
+            )
+            checks = check_terminal_servers(
+                [profile("VANTAGE_1", data_dir), profile("VANTAGE_2", other)],
+                "VantageMarkets-Live 10",
+            )
+            self.assertTrue(checks[0].matches)
+            self.assertFalse(checks[1].matches)
+            self.assertIn("VantageMarkets-Live 14", checks[1].describe())
 
     def test_without_expectation_or_journal_nobody_is_dropped(self) -> None:
         # Un broker sin medidas del servidor, o un terminal recien instalado,
