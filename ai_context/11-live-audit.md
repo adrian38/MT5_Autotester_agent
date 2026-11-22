@@ -404,3 +404,39 @@ noviembre aparecieron los cuatro síntomas: IC pidió
 Ese valor tiene precedencia sobre el broker y el universo en
 `_profiles_on_expected_server`; el broker sigue sirviendo para seleccionar el
 pool y normalizar símbolos, pero ya no puede sustituir el servidor de la cuenta.
+
+## El nombre del servidor puede llevar espacios (2026-11-22)
+
+Con el servidor verificado ya viajando al lanzador, la primera auditoría de
+Vantage murió igual:
+
+```
+La auditoría falló; restaurando las terminales: Strategy Tester terminó con
+código 1: ERROR: ninguna terminal esta conectada a VantageMarkets-Live 10.
+```
+
+La terminal estaba exactamente ahí. Su journal lo decía:
+
+```
+'34933859': authorized on VantageMarkets-Live 10 through AS04 (ping: 31.25 ms)
+```
+
+Pero `backtest/terminal_identity.py` leía el servidor con `[^\s]+`, que corta
+en el primer blanco: la guarda comparaba `VantageMarkets-Live` contra
+`VantageMarkets-Live 10` y apartaba **todas** las terminales, que es el único
+caso en el que el lanzador aborta en vez de avisar. Los brokers anteriores
+—`Axi-US51-Live`, `CapitalPointTrading-MT5-4`, `RoboForex-ECN`— nombran de una
+sola palabra y nunca lo delataron; Vantage numera con un espacio.
+
+El servidor llega ahora hasta el punto de acceso (`through …`) o hasta el
+paréntesis del ping, y `_server_name` le quita esa cola. Dos avisos:
+
+- **Un nombre truncado no se nota**: `VantageMarkets-Live 10` y
+  `VantageMarkets-Live 14` se leían iguales, así que la guarda también dejaba
+  pasar la terminal equivocada. Lo que se ve en el log es el nombre ya
+  recortado, no el del journal.
+- `logs/` guarda además `metaeditor.log`, que no es del terminal y que, por
+  empezar por letra, encabezaba el orden por nombre. `servers_seen_in_log`
+  mira un solo fichero y por eso no veía ni un servidor: el aviso de
+  `describe()` perdía su mejor pista. `terminal_log_files` acepta ya sólo los
+  diarios `YYYYMMDD.log`.
