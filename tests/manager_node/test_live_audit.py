@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from backtest.terminals import terminals_config_pool
 from manager_node_runtime.live_audit import (
     LiveAuditController, _audit_period, _read_set_text, _redact_log_files, _redact_runner_output,
     normalize_request, single_variant_mode,
@@ -325,6 +326,24 @@ class LiveAuditEngineTests(LiveAuditTestBase, unittest.TestCase):
         self.assertEqual(len(selected), 5)
         self.assertEqual(selected[0][0], "Terminal.3")
         self.assertEqual({section for section, _profile in selected}, {section for section, _profile in profiles})
+
+    def test_tester_config_pins_the_server_that_was_just_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _owner, controller = self._controller(root, "idle")
+            controller._remember_real_account_terminal = lambda *_args: None
+            payload = request()
+            payload["tester_server"] = "VantageMarkets-Live 10"
+            terminals = SimpleNamespace(
+                workers=1, tester_profile={"broker": "ROBOFOREX"},
+                profiles=[("Terminal.1", {"name": "MT5 principal", "broker": "ROBOFOREX"})],
+            )
+            path, _names = controller._write_terminal_config(payload, root, terminals)
+            config_text = path.read_text(encoding="utf-8")
+            pool_identity = terminals_config_pool(path)
+
+        self.assertIn("server = VantageMarkets-Live 10", config_text)
+        self.assertEqual(pool_identity, ("ROBOFOREX", "VantageMarkets-Live 10"))
 
     def test_native_report_fallback_uses_only_the_active_broker_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

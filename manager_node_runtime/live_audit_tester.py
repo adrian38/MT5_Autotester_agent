@@ -205,6 +205,7 @@ class LiveAuditTesterMixin:
         terminal_config.optionxform = str
         terminal_config["Multiterminal"] = {
             "enabled": "1", "workers": str(terminals.workers),
+            "server": str(request["tester_server"]),
             "broker": str(
                 terminals.tester_profile.get("broker") or self.owner.config.get("broker") or "ICTRADING"
             ),
