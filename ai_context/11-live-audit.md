@@ -387,3 +387,20 @@ el login `10068103` y el servidor `Axi-US50-Demo`. La excepción recibe el login
 desde la petición de auditoría y modifica únicamente `ForceSymbol`/`Symbol` en
 la copia temporal del set. Otras cuentas del mismo servidor y la misma cuenta
 en cualquier otro servidor continúan usando la normalización general.
+
+## El servidor verificado debe viajar al lanzador (2026-11-22)
+
+La auditoría confirmaba login y servidor en cada terminal, pero el
+`terminals.ini` temporal sólo guardaba el broker. `run_tests.py` reconstruía
+entonces el servidor esperado desde el universo global y descartaba las mismas
+terminales que el runtime acababa de verificar. En la ejecución del 22 de
+noviembre aparecieron los cuatro síntomas: IC pidió
+`CapitalPointTrading-MT5-4` tras validar `CapitalPointTrading-Demo`; AXI pidió
+`Axi-US51-Live` tras validar `Axi-US50-Live`; y Vantage llegó a heredar
+`RoboForex-ECN` después de validar `VantageMarkets-Live 10`.
+
+`LiveAuditTesterMixin._write_terminal_config` escribe ahora
+`Multiterminal.server` con el `tester_server` de la petición ya verificada.
+Ese valor tiene precedencia sobre el broker y el universo en
+`_profiles_on_expected_server`; el broker sigue sirviendo para seleccionar el
+pool y normalizar símbolos, pero ya no puede sustituir el servidor de la cuenta.
