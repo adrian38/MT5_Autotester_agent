@@ -196,6 +196,23 @@ class LiveAuditExtractMixin:
         return trades, points, history_detail
 
     @staticmethod
+    def _discard_rejected_report(destination: Path) -> None:
+        """Quita el HTML que dejo el intento anterior antes de volver a pedirlo.
+
+        `_save_report` empieza por rechazar un destino ocupado, y el intento
+        que falla **deja fichero** justo en los casos que mas piden otra
+        terminal: `validate_native_history_report` rechaza el informe de otra
+        cuenta o sin la firma del terminal **despues** de que MT5 lo haya
+        escrito. Sin esta limpieza cada terminal de respaldo hacia la pasada
+        entera por la GUI para morir con «el destino ya existe», que ademas
+        tapaba la causa real en la lista de errores.
+        """
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
     def _native_report_metadata(
         terminal_path: Path, login: str, server: str, period_start: datetime,
         period_end: datetime, destination: Path, profile_name: str, *, isolated: bool = False,
@@ -225,6 +242,7 @@ class LiveAuditExtractMixin:
                 path = Path(str(profile.get("mt5_path") or ""))
                 before = self._terminal_pids_for_path(str(path))
                 launched: set[int] = set()
+                self._discard_rejected_report(destination)
                 try:
                     if not mt5.initialize(
                         path=str(path), login=int(login), password=request["source_password"],
