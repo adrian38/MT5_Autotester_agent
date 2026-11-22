@@ -223,7 +223,7 @@ class LiveAuditExtractMixin:
             errors = [f"{profile_name}: {primary_error}"]
             for section, profile in self._native_report_profiles(terminal_path):
                 path = Path(str(profile.get("mt5_path") or ""))
-                before = self._terminal_pids()
+                before = self._terminal_pids_for_path(str(path))
                 launched: set[int] = set()
                 try:
                     if not mt5.initialize(
@@ -232,7 +232,7 @@ class LiveAuditExtractMixin:
                     ):
                         errors.append(f"{profile.get('name') or section}: {mt5.last_error()}")
                         continue
-                    launched = self._terminal_pids() - before
+                    launched = self._terminal_pids_for_path(str(path)) - before
                     # Este terminal no participa en el pipeline, pero también se
                     # queda con la cuenta real hasta que se restaure.
                     self._remember_real_account_terminal(
@@ -257,7 +257,7 @@ class LiveAuditExtractMixin:
                 finally:
                     mt5.shutdown()
                     self._close_terminal_pids_gracefully(
-                        launched or (self._terminal_pids() - before)
+                        launched or (self._terminal_pids_for_path(str(path)) - before)
                     )
             raise NativeHistoryReportError(
                 (
