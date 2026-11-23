@@ -212,10 +212,33 @@ class LiveAuditExtractMixin:
         except OSError:
             pass
 
+    def _native_report_candidates(
+        self, profile_name: str, primary_path: Path,
+    ) -> list[tuple[str, dict[str, str]]]:
+        """A quién pedirle el informe cuando el primer intento ya ha fallado.
+
+        Las otras instalaciones del agente y, delante de todas, **la suya** si
+        su proceso ya no existe. Ese es el caso que los tres reintentos de
+        `export_native_history_report` no pueden arreglar: se gastan esperando
+        hasta `timeout` una ventana que no puede volver, y un uso de una sola
+        terminal se quedaba sin nada más que intentar. Así murió la auditoría
+        del portafolio #2 de Vantage el 2026-11-22, 62 s esperando el proceso
+        que el agente de RoboForex le había cerrado.
+
+        Con el proceso vivo no se relanza: entonces el tropiezo fue de la GUI,
+        y por ahí ya han pasado esos tres intentos.
+        """
+        others = self._native_report_profiles(primary_path)
+        if self._terminal_pids_for_path(str(primary_path)):
+            return others
+        own = {"name": profile_name, "mt5_path": str(primary_path)}
+        return [(profile_name, own), *others]
+
     @staticmethod
     def _native_report_metadata(
         terminal_path: Path, login: str, server: str, period_start: datetime,
-        period_end: datetime, destination: Path, profile_name: str, *, isolated: bool = False,
+        period_end: datetime, destination: Path, profile_name: str, *,
+        isolated: bool = False, relaunched: bool = False,
     ) -> dict[str, object]:
         metadata = export_native_history_report(
             terminal_path=terminal_path, login=login, server=server,
@@ -224,6 +247,8 @@ class LiveAuditExtractMixin:
         metadata["capture_terminal_profile"] = profile_name
         if isolated:
             metadata["isolated_capture_terminal"] = True
+        if relaunched:
+            metadata["relaunched_capture_terminal"] = True
         return metadata
 
     def _export_native_account_report(
@@ -238,7 +263,9 @@ class LiveAuditExtractMixin:
         except NativeHistoryReportError as primary_error:
             mt5.shutdown()
             errors = [f"{profile_name}: {primary_error}"]
-            for section, profile in self._native_report_profiles(terminal_path):
+            for section, profile in self._native_report_candidates(
+                profile_name, terminal_path,
+            ):
                 path = Path(str(profile.get("mt5_path") or ""))
                 before = self._terminal_pids_for_path(str(path))
                 launched: set[int] = set()
@@ -266,9 +293,11 @@ class LiveAuditExtractMixin:
                         errors.append(f"{profile.get('name') or section}: la cuenta no quedó conectada")
                         continue
                     self._synchronised_history(mt5, period_start, period_end)
+                    own = str(path) == str(terminal_path)
                     return self._native_report_metadata(
                         path, login, server, period_start, period_end, destination,
-                        str(profile.get("name") or section), isolated=True,
+                        str(profile.get("name") or section),
+                        isolated=not own, relaunched=own,
                     )
                 except Exception as exc:
                     errors.append(f"{profile.get('name') or section}: {exc}")
@@ -280,7 +309,7 @@ class LiveAuditExtractMixin:
             raise NativeHistoryReportError(
                 (
                     "No se pudo obtener el HTML nativo y el uso corre con una sola "
-                    "terminal, así que no hay ninguna otra donde reintentarlo: "
+                    "terminal, así que no quedaba otra instalación donde recuperarlo: "
                     if self.single_terminal_audit else
                     "No se pudo obtener el HTML nativo en ninguna terminal IC accesible: "
                 )
